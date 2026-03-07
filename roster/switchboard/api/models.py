@@ -6,9 +6,11 @@ triage rules (switchboard butler).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 class RoutingEntry(BaseModel):
@@ -199,6 +201,88 @@ class IngestionOverviewStats(BaseModel):
     tier1_full_count: int = 0
     tier2_metadata_count: int = 0
     tier3_skip_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Source filter API models
+# ---------------------------------------------------------------------------
+
+
+class SourceFilter(BaseModel):
+    """A persisted source filter returned from the API."""
+
+    id: UUID
+    name: str
+    description: str | None = None
+    filter_mode: Literal["blacklist", "whitelist"]
+    source_key_type: str
+    patterns: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceFilterCreate(BaseModel):
+    """Request body for POST /api/switchboard/source-filters."""
+
+    name: str
+    description: str | None = None
+    filter_mode: Literal["blacklist", "whitelist"]
+    source_key_type: str
+    patterns: list[str]
+
+    @field_validator("name")
+    @classmethod
+    def name_non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name must be non-empty")
+        return value
+
+    @field_validator("source_key_type")
+    @classmethod
+    def source_key_type_non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("source_key_type must be non-empty")
+        return value
+
+    @field_validator("patterns")
+    @classmethod
+    def patterns_non_empty(cls, value: list[str]) -> list[str]:
+        cleaned = [pattern.strip() for pattern in value if pattern.strip()]
+        if not cleaned:
+            raise ValueError("patterns must contain at least one non-empty value")
+        return cleaned
+
+
+class SourceFilterUpdate(BaseModel):
+    """Request body for PATCH /api/switchboard/source-filters/{filter_id}."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    description: str | None = None
+    patterns: list[str] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def name_non_empty(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("name must be non-empty")
+        return value
+
+    @field_validator("patterns")
+    @classmethod
+    def patterns_non_empty(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [pattern.strip() for pattern in value if pattern.strip()]
+        if not cleaned:
+            raise ValueError("patterns must contain at least one non-empty value")
+        return cleaned
 
 
 # ---------------------------------------------------------------------------

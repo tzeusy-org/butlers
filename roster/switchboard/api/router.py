@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
@@ -53,6 +54,9 @@ if _spec is not None and _spec.loader is not None:
     ConnectorStatsDaily = _models.ConnectorStatsDaily
     FanoutRow = _models.FanoutRow
     IngestionOverviewStats = _models.IngestionOverviewStats
+    SourceFilter = _models.SourceFilter
+    SourceFilterCreate = _models.SourceFilterCreate
+    SourceFilterUpdate = _models.SourceFilterUpdate
     BackfillJobEntry = _models.BackfillJobEntry
     BackfillJobSummary = _models.BackfillJobSummary
     CreateBackfillJobRequest = _models.CreateBackfillJobRequest
@@ -1712,6 +1716,192 @@ async def get_backfill_job_progress(
     Returns 503 on database error.
     """
     return await get_backfill_job(job_id=job_id, db=db)
+
+
+# ---------------------------------------------------------------------------
+# Helpers + endpoints — source filters
+# ---------------------------------------------------------------------------
+
+
+def _row_to_source_filter(row: Any) -> SourceFilter:
+    """Convert an asyncpg record to a SourceFilter model."""
+    patterns_raw = row["patterns"]
+    patterns: list[str]
+    if isinstance(patterns_raw, list):
+        patterns = [str(item) for item in patterns_raw]
+    else:
+        patterns = []
+
+    return SourceFilter(
+        id=row["id"],
+        name=row["name"],
+        description=row["description"],
+        filter_mode=row["filter_mode"],
+        source_key_type=row["source_key_type"],
+        patterns=patterns,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+@router.get("/source-filters", response_model=ApiResponse[list[SourceFilter]])
+async def list_source_filters(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[SourceFilter]]:
+    """List all persisted source filters."""
+    pool = _pool(db)
+
+    rows = await pool.fetch(
+        "SELECT id, name, description, filter_mode, source_key_type, patterns,"
+        " created_at, updated_at"
+        " FROM source_filters"
+        " ORDER BY name ASC, created_at ASC",
+    )
+    return ApiResponse[list[SourceFilter]](data=[_row_to_source_filter(row) for row in rows])
+
+
+@router.post(
+    "/source-filters",
+    response_model=ApiResponse[SourceFilter],
+    status_code=201,
+)
+async def create_source_filter(
+    body: SourceFilterCreate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SourceFilter]:
+    """Create a new source filter."""
+    pool = _pool(db)
+
+    try:
+        row = await pool.fetchrow(
+            "INSERT INTO source_filters"
+            " (name, description, filter_mode, source_key_type, patterns)"
+            " VALUES ($1, $2, $3, $4, $5)"
+            " RETURNING id, name, description, filter_mode, source_key_type, patterns,"
+            "           created_at, updated_at",
+            body.name,
+            body.description,
+            body.filter_mode,
+            body.source_key_type,
+            body.patterns,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Source filter name '{body.name}' already exists",
+        )
+    if row is None:
+        raise HTTPException(status_code=503, detail="Failed to create source filter")
+
+    return ApiResponse[SourceFilter](data=_row_to_source_filter(row))
+
+
+@router.get("/source-filters/{filter_id}", response_model=ApiResponse[SourceFilter])
+async def get_source_filter(
+    filter_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SourceFilter]:
+    """Get a source filter by id."""
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT id, name, description, filter_mode, source_key_type, patterns,"
+        " created_at, updated_at"
+        " FROM source_filters"
+        " WHERE id = $1",
+        filter_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Source filter '{filter_id}' not found")
+
+    return ApiResponse[SourceFilter](data=_row_to_source_filter(row))
+
+
+@router.patch("/source-filters/{filter_id}", response_model=ApiResponse[SourceFilter])
+async def update_source_filter(
+    filter_id: UUID,
+    body: SourceFilterUpdate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SourceFilter]:
+    """Partially update a source filter."""
+    pool = _pool(db)
+
+    existing = await pool.fetchrow(
+        "SELECT id, name, description, filter_mode, source_key_type, patterns,"
+        " created_at, updated_at"
+        " FROM source_filters"
+        " WHERE id = $1",
+        filter_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Source filter '{filter_id}' not found")
+
+    updates: dict[str, Any] = {}
+    if "name" in body.model_fields_set:
+        updates["name"] = body.name
+    if "description" in body.model_fields_set:
+        updates["description"] = body.description
+    if "patterns" in body.model_fields_set:
+        updates["patterns"] = body.patterns
+
+    if not updates:
+        return ApiResponse[SourceFilter](data=_row_to_source_filter(existing))
+
+    set_parts: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    for column, value in updates.items():
+        if column == "patterns":
+            set_parts.append(f"{column} = ${idx}::text[]")
+        else:
+            set_parts.append(f"{column} = ${idx}")
+        args.append(value)
+        idx += 1
+
+    set_parts.append(f"updated_at = ${idx}")
+    args.append(datetime.datetime.now(datetime.UTC))
+    idx += 1
+    args.append(filter_id)
+
+    try:
+        row = await pool.fetchrow(
+            f"UPDATE source_filters SET {', '.join(set_parts)}"
+            f" WHERE id = ${idx}"
+            f" RETURNING id, name, description, filter_mode, source_key_type, patterns,"
+            f"           created_at, updated_at",
+            *args,
+        )
+    except asyncpg.UniqueViolationError:
+        conflict_name = body.name if body.name is not None else "unknown"
+        raise HTTPException(
+            status_code=409,
+            detail=f"Source filter name '{conflict_name}' already exists",
+        )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Source filter '{filter_id}' not found")
+
+    return ApiResponse[SourceFilter](data=_row_to_source_filter(row))
+
+
+@router.delete("/source-filters/{filter_id}", response_model=ApiResponse[dict[str, str]])
+async def delete_source_filter(
+    filter_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, str]]:
+    """Delete a source filter and cascade assignments."""
+    pool = _pool(db)
+
+    result = await pool.execute(
+        "DELETE FROM source_filters WHERE id = $1",
+        filter_id,
+    )
+    rows_affected = int(result.split(" ")[-1]) if result else 0
+    if rows_affected == 0:
+        raise HTTPException(status_code=404, detail=f"Source filter '{filter_id}' not found")
+
+    return ApiResponse[dict[str, str]](data={"id": str(filter_id)})
 
 
 # ---------------------------------------------------------------------------
