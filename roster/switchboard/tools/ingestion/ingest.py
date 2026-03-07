@@ -587,6 +587,46 @@ async def ingest_v1(
                     attachments_json,
                     lifecycle_state,
                 )
+
+                # Insert canonical ingestion event — same UUID7, same transaction.
+                # This row is the durable, normalised first-class record of every
+                # accepted ingest; downstream sessions reference it via FK.
+                await conn.execute(
+                    """
+                    INSERT INTO shared.ingestion_events (
+                        id,
+                        received_at,
+                        source_channel,
+                        source_provider,
+                        source_endpoint_identity,
+                        source_sender_identity,
+                        source_thread_identity,
+                        external_event_id,
+                        dedupe_key,
+                        dedupe_strategy,
+                        ingestion_tier,
+                        policy_tier,
+                        triage_decision,
+                        triage_target
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                    )
+                    """,
+                    request_id,
+                    received_at,
+                    envelope.source.channel,
+                    envelope.source.provider,
+                    envelope.source.endpoint_identity,
+                    envelope.sender.identity,
+                    envelope.event.external_thread_id,
+                    envelope.event.external_event_id,
+                    dedupe_key,
+                    "connector_api",
+                    ingestion_tier,
+                    envelope.control.policy_tier,
+                    triage_decision.decision if triage_decision is not None else None,
+                    triage_decision.target_butler if triage_decision is not None else None,
+                )
     except Exception as exc:
         logger.error("Failed to persist ingest envelope: %s", exc, exc_info=True)
         _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")

@@ -142,6 +142,30 @@ async def pool(provisioned_postgres_pool):
             "SELECT switchboard_message_inbox_ensure_partition(now() + INTERVAL '1 month')"
         )
 
+        # Create shared schema and shared.ingestion_events table (core_019 migration)
+        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        await p.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shared.ingestion_events (
+                id                       UUID PRIMARY KEY,
+                received_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+                source_channel           TEXT NOT NULL,
+                source_provider          TEXT NOT NULL,
+                source_endpoint_identity TEXT NOT NULL,
+                source_sender_identity   TEXT,
+                source_thread_identity   TEXT,
+                external_event_id        TEXT NOT NULL,
+                dedupe_key               TEXT NOT NULL,
+                dedupe_strategy          TEXT NOT NULL,
+                ingestion_tier           TEXT NOT NULL,
+                policy_tier              TEXT NOT NULL,
+                triage_decision          TEXT,
+                triage_target            TEXT,
+                CONSTRAINT uq_ingestion_events_dedupe_key UNIQUE (dedupe_key)
+            )
+            """
+        )
+
         yield p
 
 
