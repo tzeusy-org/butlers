@@ -99,10 +99,10 @@ describe("ContactsPage", () => {
     vi.mocked(triggerContactsSync).mockResolvedValue({
       provider: "google",
       mode: "incremental",
-      created: 1,
-      updated: 2,
+      fetched: 1,
+      applied: 2,
       skipped: 0,
-      errors: 0,
+      deleted: 0,
       summary: {},
       message: null,
     });

@@ -7,8 +7,7 @@
  *   grouping, stats summary aggregation, CrossConnectorSummary field mapping)
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MockedFunction } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mock fetch so we never hit the network

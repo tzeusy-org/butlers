@@ -37,7 +37,7 @@ export default function CrossTopicChart() {
             <XAxis dataKey="name" tick={{ fontSize: 12 }} />
             <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
             <Tooltip
-              formatter={(value: number) => [`${value}%`, "Mastery"]}
+              formatter={(value: number | undefined) => [`${value ?? 0}%`, "Mastery"]}
             />
             <Bar dataKey="mastery" fill="#3b82f6" radius={[4, 4, 0, 0]} />
           </BarChart>
