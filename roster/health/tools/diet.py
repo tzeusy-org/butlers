@@ -40,7 +40,7 @@ async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
             "SELECT id FROM shared.entities WHERE 'owner' = ANY(roles) LIMIT 1"
         )
         return row["id"] if row else None
-    except Exception:  # noqa: BLE001
+    except asyncpg.PostgresError:
         logger.debug(
             "_get_owner_entity_id: shared.entities query failed (table may not exist yet)",
             exc_info=True,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.tools.health.diet import _get_owner_entity_id, meal_log
@@ -90,16 +91,20 @@ class TestGetOwnerEntityId:
     async def test_returns_none_when_table_missing(self) -> None:
         """Returns None gracefully when shared.entities does not exist (pre-migration DB)."""
         pool = _make_pool(
-            fetchrow_side_effect=Exception('relation "shared.entities" does not exist')
+            fetchrow_side_effect=asyncpg.exceptions.UndefinedTableError(
+                'relation "shared.entities" does not exist'
+            )
         )
 
         result = await _get_owner_entity_id(pool)
 
         assert result is None
 
-    async def test_returns_none_on_any_db_error(self) -> None:
-        """Any database exception is swallowed and None is returned."""
-        pool = _make_pool(fetchrow_side_effect=RuntimeError("connection refused"))
+    async def test_returns_none_on_postgres_error(self) -> None:
+        """Any asyncpg.PostgresError is swallowed and None is returned."""
+        pool = _make_pool(
+            fetchrow_side_effect=asyncpg.exceptions.PostgresConnectionError("connection refused")
+        )
 
         result = await _get_owner_entity_id(pool)
 
@@ -191,7 +196,9 @@ class TestMealLogOwnerEntityFallback:
         """meal_log works on pre-migration databases where shared.entities doesn't exist."""
         fact_id = uuid.uuid4()
         pool = _make_full_pool(
-            fetchrow_side_effect=Exception('relation "shared.entities" does not exist')
+            fetchrow_side_effect=asyncpg.exceptions.UndefinedTableError(
+                'relation "shared.entities" does not exist'
+            )
         )
 
         with (
