@@ -119,6 +119,7 @@ class TestSessionTokenColumns:
             trigger_source="external",
             trace_id="test-trace-123",
             model="claude-opus-4",
+            request_id=str(uuid.uuid4()),
         )
 
         # Verify the session was created
@@ -145,18 +146,20 @@ class TestSessionTokenColumns:
             pool=pool_with_migrations,
             prompt="Parent prompt",
             trigger_source="external",
+            request_id=str(uuid.uuid4()),
         )
 
         # Create child session with explicit parent_session_id
         child_id = await pool_with_migrations.fetchval(
             """
-            INSERT INTO sessions (prompt, trigger_source, parent_session_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO sessions (prompt, trigger_source, parent_session_id, request_id)
+            VALUES ($1, $2, $3, $4)
             RETURNING id
             """,
             "Child prompt",
             "external",
             parent_id,
+            str(uuid.uuid4()),
         )
 
         # Verify parent-child relationship
@@ -179,6 +182,7 @@ class TestSessionTokenColumns:
             pool=pool_with_migrations,
             prompt="Test prompt",
             trigger_source="external",
+            request_id=str(uuid.uuid4()),
         )
 
         # Update with token counts
@@ -210,13 +214,14 @@ class TestSessionTokenColumns:
         """Parent session ID can be NULL (no parent)."""
         session_id = await pool_with_migrations.fetchval(
             """
-            INSERT INTO sessions (prompt, trigger_source, parent_session_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO sessions (prompt, trigger_source, parent_session_id, request_id)
+            VALUES ($1, $2, $3, $4)
             RETURNING id
             """,
             "Test prompt",
             "external",
             None,  # Explicitly NULL parent
+            str(uuid.uuid4()),
         )
 
         row = await pool_with_migrations.fetchrow(
@@ -234,13 +239,14 @@ class TestSessionTokenColumns:
         # This should work without FK constraint (for now)
         session_id = await pool_with_migrations.fetchval(
             """
-            INSERT INTO sessions (prompt, trigger_source, parent_session_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO sessions (prompt, trigger_source, parent_session_id, request_id)
+            VALUES ($1, $2, $3, $4)
             RETURNING id
             """,
             "Test prompt",
             "external",
             fake_parent_id,
+            str(uuid.uuid4()),
         )
 
         # Verify it was inserted
