@@ -52,10 +52,8 @@ _FILTER_ROW = {
 }
 
 
-
 def _current_get_db_manager():
     return sys.modules[_MODULE_NAME]._get_db_manager
-
 
 
 def _app_with_mock_db(
