@@ -723,6 +723,9 @@ make test-qg
 - Audit groups are keyed by normalized first-line error message and expose `occurrences`, `first_seen_at`, `last_seen_at`, and distinct `butlers`.
 - `GET /api/issues` is ordered by recency (`last_seen_at` desc), not severity-first; schedule-related groups (`operation=session` + `trigger_source` like `schedule:%`) are classified as `critical` `scheduled_task_failure:*`, all other audit groups are `warning` `audit_error_group:*`.
 
+### Audit log degraded-read contract
+- `GET /api/audit-log` must treat `asyncpg.exceptions.UndefinedTableError` on `dashboard_audit_log` as an empty page (`data=[]`, `total=0`) rather than a 500, because the dashboard can come up against an unmigrated or offline switchboard schema.
+
 ### State API JSON-shape contract
 - `src/butlers/api/models/state.py::StateEntry.value` and `StateSetRequest.value` are typed `Any` (widened from `dict[str, Any]` in PR #205); scalar/array/null JSON rows in `state.value` are now serialized correctly.
 - Keep list/get state endpoint value-shape contracts aligned with the full JSON domain accepted by the underlying state storage.

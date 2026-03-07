@@ -13,6 +13,7 @@ import json
 import logging
 from datetime import datetime
 
+from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
@@ -27,6 +28,14 @@ router = APIRouter(prefix="/api/audit-log", tags=["audit"])
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
     raise RuntimeError("DatabaseManager not initialized")
+
+
+def _empty_audit_page(*, offset: int, limit: int) -> PaginatedResponse[AuditEntry]:
+    """Return an empty audit payload for degraded-read scenarios."""
+    return PaginatedResponse[AuditEntry](
+        data=[],
+        meta=PaginationMeta(total=0, offset=offset, limit=limit),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +138,11 @@ async def list_audit_log(
 
     # Count query
     count_sql = f"SELECT count(*) FROM dashboard_audit_log{where_clause}"
-    total = await pool.fetchval(count_sql, *args) or 0
+    try:
+        total = await pool.fetchval(count_sql, *args) or 0
+    except UndefinedTableError:
+        logger.info("dashboard_audit_log missing; returning empty audit log payload")
+        return _empty_audit_page(offset=offset, limit=limit)
 
     # Data query
     data_sql = (
@@ -141,7 +154,11 @@ async def list_audit_log(
     )
     args.extend([offset, limit])
 
-    rows = await pool.fetch(data_sql, *args)
+    try:
+        rows = await pool.fetch(data_sql, *args)
+    except UndefinedTableError:
+        logger.info("dashboard_audit_log missing during fetch; returning empty audit log payload")
+        return _empty_audit_page(offset=offset, limit=limit)
 
     entries = [
         AuditEntry(

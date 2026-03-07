@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
@@ -135,6 +136,24 @@ class TestAuditLogListEndpoint:
         body = resp.json()
         assert body["data"] == []
         assert body["meta"]["total"] == 0
+
+    async def test_missing_audit_table_returns_empty_page(self, app):
+        """Endpoint should degrade gracefully when the audit table is absent."""
+        _, mock_db, mock_pool = _app_with_mock_db(app, fetch_rows=[], fetchval_result=0)
+        mock_pool.fetchval = AsyncMock(
+            side_effect=UndefinedTableError('relation "dashboard_audit_log" does not exist')
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            resp = await client.get("/api/audit-log")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+        assert body["meta"] == {"total": 0, "offset": 0, "limit": 50, "has_more": False}
 
     async def test_filter_by_butler(self, app):
         """Endpoint passes butler filter to SQL query."""
