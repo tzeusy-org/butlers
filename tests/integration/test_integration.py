@@ -12,7 +12,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
 import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
@@ -32,110 +31,6 @@ pytestmark = [
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
-# WARNING: This constant duplicates core table schemas. If you update
-# the schema via migrations, you MUST update it here as well to prevent
-# schema drift in tests.
-CORE_TABLES_SQL = """
-    CREATE TABLE IF NOT EXISTS state (
-        key TEXT PRIMARY KEY,
-        value JSONB NOT NULL DEFAULT '{}',
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        version INTEGER NOT NULL DEFAULT 1
-    );
-
-    CREATE TABLE IF NOT EXISTS scheduled_tasks (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name TEXT NOT NULL,
-        cron TEXT NOT NULL,
-        prompt TEXT,
-        dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
-        job_name TEXT,
-        job_args JSONB,
-        timezone TEXT NOT NULL DEFAULT 'UTC',
-        start_at TIMESTAMPTZ,
-        end_at TIMESTAMPTZ,
-        until_at TIMESTAMPTZ,
-        display_title TEXT,
-        calendar_event_id TEXT,
-        source TEXT NOT NULL DEFAULT 'db',
-        enabled BOOLEAN NOT NULL DEFAULT true,
-        next_run_at TIMESTAMPTZ,
-        last_run_at TIMESTAMPTZ,
-        last_result JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        CONSTRAINT scheduled_tasks_dispatch_mode_check
-            CHECK (dispatch_mode IN ('prompt', 'job')),
-        CONSTRAINT scheduled_tasks_dispatch_payload_check
-            CHECK (
-                (dispatch_mode = 'prompt' AND prompt IS NOT NULL AND job_name IS NULL)
-                OR (dispatch_mode = 'job' AND job_name IS NOT NULL)
-            ),
-        CONSTRAINT scheduled_tasks_window_bounds_check
-            CHECK (start_at IS NULL OR end_at IS NULL OR end_at > start_at),
-        CONSTRAINT scheduled_tasks_until_bounds_check
-            CHECK (until_at IS NULL OR start_at IS NULL OR until_at >= start_at)
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS ix_scheduled_tasks_calendar_event_id
-        ON scheduled_tasks (calendar_event_id)
-        WHERE calendar_event_id IS NOT NULL;
-
-    CREATE TABLE IF NOT EXISTS sessions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        prompt TEXT NOT NULL,
-        trigger_source TEXT NOT NULL,
-        result TEXT,
-        tool_calls JSONB NOT NULL DEFAULT '[]',
-        duration_ms INTEGER,
-        trace_id TEXT,
-        model TEXT,
-        cost JSONB,
-        success BOOLEAN,
-        error TEXT,
-        input_tokens INTEGER,
-        output_tokens INTEGER,
-        parent_session_id UUID,
-        request_id TEXT,
-        started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        completed_at TIMESTAMPTZ
-    );
-"""
-
-SWITCHBOARD_TABLES_SQL = """
-    CREATE TABLE IF NOT EXISTS butler_registry (
-        name TEXT PRIMARY KEY,
-        endpoint_url TEXT NOT NULL,
-        description TEXT,
-        modules JSONB NOT NULL DEFAULT '[]',
-        last_seen_at TIMESTAMPTZ,
-        eligibility_state TEXT NOT NULL DEFAULT 'active',
-        liveness_ttl_seconds INTEGER NOT NULL DEFAULT 300,
-        quarantined_at TIMESTAMPTZ,
-        quarantine_reason TEXT,
-        route_contract_min INTEGER NOT NULL DEFAULT 1,
-        route_contract_max INTEGER NOT NULL DEFAULT 1,
-        capabilities JSONB NOT NULL DEFAULT '[]',
-        eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-
-    CREATE TABLE IF NOT EXISTS routing_log (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        source_butler TEXT NOT NULL,
-        target_butler TEXT NOT NULL,
-        tool_name TEXT NOT NULL,
-        success BOOLEAN NOT NULL,
-        duration_ms INTEGER,
-        error TEXT,
-        thread_id TEXT,
-        source_channel TEXT,
-        contact_id UUID,
-        entity_id UUID,
-        sender_roles TEXT[],
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-"""
-
 
 def _unique_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
@@ -150,33 +45,41 @@ def postgres_container():
         yield pg
 
 
-async def _make_pool(postgres_container, sql: str) -> asyncpg.Pool:
-    """Create a fresh database, run the given SQL, and return a pool."""
-    db_name = _unique_db_name()
+async def _make_pool(postgres_container, *chains: str):
+    """Create a fresh database, run real Alembic migrations, and return a pool.
 
-    admin_conn = await asyncpg.connect(
+    Uses the same migration runner as the production daemon so the schema
+    automatically stays in sync with future migration additions.
+
+    Args:
+        postgres_container: A running testcontainers PostgresContainer.
+        *chains: One or more Alembic chain names to run (e.g. ``"core"``,
+            ``"switchboard"``). Defaults to just ``"core"`` when omitted.
+    """
+    import asyncpg as _asyncpg
+
+    from butlers.db import Database
+    from butlers.migrations import run_migrations
+
+    if not chains:
+        chains = ("core",)
+
+    db = Database(
+        db_name=_unique_db_name(),
         host=postgres_container.get_container_host_ip(),
         port=int(postgres_container.get_exposed_port(5432)),
         user=postgres_container.username,
         password=postgres_container.password,
-        database="postgres",
+        min_pool_size=1,
+        max_pool_size=3,
     )
-    try:
-        safe_name = db_name.replace('"', '""')
-        await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
-    finally:
-        await admin_conn.close()
+    await db.provision()
 
-    pool = await asyncpg.create_pool(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database=db_name,
-        min_size=1,
-        max_size=3,
-    )
-    await pool.execute(sql)
+    db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
+    for chain in chains:
+        await run_migrations(db_url, chain=chain)
+
+    pool: _asyncpg.Pool = await db.connect()
     return pool
 
 
@@ -194,8 +97,8 @@ class TestButlerStartupIntegration:
 
     @pytest.fixture
     async def pool(self, postgres_container):
-        """Create a fresh DB with all core tables."""
-        p = await _make_pool(postgres_container, CORE_TABLES_SQL)
+        """Create a fresh DB with all core tables via real Alembic migrations."""
+        p = await _make_pool(postgres_container, "core")
         yield p
         await p.close()
 
@@ -381,7 +284,9 @@ class TestButlerStartupIntegration:
         )
 
         # Create a session
-        session_id = await session_create(pool, "Hello butler", "trigger", trace_id="abc123")
+        session_id = await session_create(
+            pool, "Hello butler", "trigger", trace_id="abc123", request_id=str(uuid.uuid4())
+        )
         assert isinstance(session_id, uuid.UUID)
 
         # List sessions
@@ -427,7 +332,9 @@ class TestButlerStartupIntegration:
         # Use all three subsystems on the same pool
         await state_set(pool, "integration.status", "running")
         task_id = await schedule_create(pool, "integ-task", "0 9 * * *", "integration prompt")
-        session_id = await session_create(pool, "integration test", "trigger")
+        session_id = await session_create(
+            pool, "integration test", "trigger", request_id=str(uuid.uuid4())
+        )
 
         # Verify all operations succeeded
         val = await state_get(pool, "integration.status")
@@ -494,8 +401,8 @@ class TestSchedulerTickIntegration:
 
     @pytest.fixture
     async def pool(self, postgres_container):
-        """Create a fresh DB with core tables."""
-        p = await _make_pool(postgres_container, CORE_TABLES_SQL)
+        """Create a fresh DB with core tables via real Alembic migrations."""
+        p = await _make_pool(postgres_container, "core")
         yield p
         await p.close()
 
@@ -562,7 +469,9 @@ class TestSchedulerTickIntegration:
         session_ids: list[uuid.UUID] = []
 
         async def dispatch_fn(**kwargs):
-            sid = await session_create(pool, kwargs["prompt"], kwargs["trigger_source"])
+            sid = await session_create(
+                pool, kwargs["prompt"], kwargs["trigger_source"], request_id=str(uuid.uuid4())
+            )
             session_ids.append(sid)
 
         count = await tick(pool, dispatch_fn)
@@ -667,8 +576,8 @@ class TestSwitchboardRoutingIntegration:
 
     @pytest.fixture
     async def pool(self, postgres_container):
-        """Create a fresh DB with switchboard tables."""
-        p = await _make_pool(postgres_container, SWITCHBOARD_TABLES_SQL)
+        """Create a fresh DB with core + switchboard tables via real Alembic migrations."""
+        p = await _make_pool(postgres_container, "core", "switchboard")
         yield p
         await p.close()
 
