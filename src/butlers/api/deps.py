@@ -430,6 +430,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         audit,
         butlers,
         calendar_workspace,
+        ingestion_events,
         issues,
         memory,
         notifications,
@@ -440,7 +441,6 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         sessions,
         state,
         timeline,
-        traces,
     )
 
     # Wire static routers (existing core routers)
@@ -449,6 +449,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         audit,
         butlers,
         calendar_workspace,
+        ingestion_events,
         issues,
         memory,
         notifications,
@@ -459,7 +460,6 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         sessions,
         state,
         timeline,
-        traces,
     ]:
         app.dependency_overrides[module._get_db_manager] = get_db_manager
 

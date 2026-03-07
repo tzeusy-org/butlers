@@ -36,6 +36,7 @@ from butlers.api.routers.calendar_workspace import (
     router as calendar_workspace_router,
 )
 from butlers.api.routers.costs import router as costs_router
+from butlers.api.routers.ingestion_events import router as ingestion_events_router
 from butlers.api.routers.issues import router as issues_router
 from butlers.api.routers.memory import router as memory_router
 from butlers.api.routers.modules import router as modules_router
@@ -58,7 +59,6 @@ from butlers.api.routers.sessions import (
 from butlers.api.routers.sse import router as sse_router
 from butlers.api.routers.state import router as state_router
 from butlers.api.routers.timeline import router as timeline_router
-from butlers.api.routers.traces import router as traces_router
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ def create_app(
     app.include_router(modules_router)
     app.include_router(secrets_router)
     app.include_router(state_router)
-    app.include_router(traces_router)
+    app.include_router(ingestion_events_router)
     app.include_router(timeline_router)
     app.include_router(calendar_workspace_router)
     app.include_router(search_router)
