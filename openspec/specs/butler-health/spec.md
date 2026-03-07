@@ -76,5 +76,6 @@ The health butler stores meal observations using the memory module's meal-specif
 - **WHEN** `meal_log` is called to record a meal
 - **THEN** it MUST internally call `memory_store_fact` with the appropriate meal predicate, `valid_at`, and nutrition metadata
 - **AND** when `meal_history` is called to retrieve meal observations
-- **THEN** it MUST internally call `memory_search` or `memory_recall` with `scope='health'` and predicate filters for `meal_breakfast`, `meal_lunch`, `meal_dinner`, `meal_snack`
-- **AND** `nutrition_summary` MUST aggregate nutrition metadata across multiple meal facts in a date range by sum of calories and macros
+- **THEN** it SHOULD prefer `memory_search` or `memory_recall` with `scope='health'` and predicate filters for `meal_breakfast`, `meal_lunch`, `meal_dinner`, `meal_snack` for open-ended semantic searches
+- **BUT** when the query requires predicate filtering combined with a date-range constraint (e.g., "meals between 2024-01-01 and 2024-01-07"), `meal_history` MAY use direct asyncpg SQL against the health butler's fact tables instead of `memory_search`/`memory_recall`, because those memory APIs do not expose structured date-range predicates
+- **AND** `nutrition_summary` MUST aggregate nutrition metadata across multiple meal facts in a date range by sum of calories and macros; it MAY use direct SQL for this aggregation since it requires date-bounded GROUP BY queries that `memory_search`/`memory_recall` do not support
