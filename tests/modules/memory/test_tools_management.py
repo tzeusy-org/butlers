@@ -429,12 +429,11 @@ class TestPredicateList:
     """Tests for predicate_list tool wrapper."""
 
     async def test_returns_list_of_dicts(self, mock_pool: AsyncMock) -> None:
-        """predicate_list returns a list of dicts."""
+        """predicate_list returns a list of dicts matching the row data."""
         row = _make_predicate_row("knows")
-        mock_pool.fetch = AsyncMock(return_value=[MagicMock(**row, keys=lambda: row.keys())])
         mock_pool.fetch.return_value = [row]
         result = await predicate_list(mock_pool)
-        assert isinstance(result, list)
+        assert result == [row]
 
     async def test_row_shape_includes_is_temporal(self, mock_pool: AsyncMock) -> None:
         """Every returned row includes is_temporal."""
