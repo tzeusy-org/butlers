@@ -217,6 +217,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             nutrition=nutrition,
             eaten_at=eaten_at,
             notes=notes,
+            create_calendar_event_fn=module._make_calendar_event_fn(),
         )
 
     @mcp.tool()

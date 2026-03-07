@@ -838,6 +838,74 @@ async def test_meal_log_store_fact_called_with_correct_predicate(pool, mock_embe
     assert kwargs["metadata"]["meal_items"] == []
 
 
+async def test_meal_log_creates_calendar_event_for_future_meal(pool, mock_embedding_engine):
+    """meal_log calls create_calendar_event_fn for meals at or after now."""
+    from butlers.tools.health import meal_log
+
+    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_cal = AsyncMock()
+    future = datetime.now(UTC) + timedelta(hours=1)
+
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        await meal_log(
+            pool,
+            "lunch",
+            "Grilled salmon",
+            eaten_at=future,
+            notes="with lemon",
+            create_calendar_event_fn=mock_cal,
+        )
+
+    mock_cal.assert_awaited_once()
+    _, kwargs = mock_cal.call_args
+    assert kwargs["title"] == "Grilled salmon"
+    assert kwargs["start_at"] == future
+    assert kwargs["end_at"] == future + timedelta(minutes=30)
+    assert "Lunch" in kwargs["description"]
+    assert "with lemon" in kwargs["description"]
+
+
+async def test_meal_log_skips_calendar_event_for_past_meal(pool, mock_embedding_engine):
+    """meal_log does NOT call create_calendar_event_fn for historical meals."""
+    from butlers.tools.health import meal_log
+
+    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_cal = AsyncMock()
+    past = datetime.now(UTC) - timedelta(days=1)
+
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        await meal_log(
+            pool,
+            "dinner",
+            "Old pasta",
+            eaten_at=past,
+            create_calendar_event_fn=mock_cal,
+        )
+
+    mock_cal.assert_not_awaited()
+
+
+async def test_meal_log_calendar_error_does_not_fail_log(pool, mock_embedding_engine):
+    """A calendar event creation failure does not prevent the meal from being logged."""
+    from butlers.tools.health import meal_log
+
+    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_cal = AsyncMock(side_effect=RuntimeError("calendar unavailable"))
+    future = datetime.now(UTC) + timedelta(hours=1)
+
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        meal = await meal_log(
+            pool,
+            "breakfast",
+            "Eggs",
+            eaten_at=future,
+            create_calendar_event_fn=mock_cal,
+        )
+
+    assert meal["description"] == "Eggs"
+    mock_sf.assert_awaited_once()
+
+
 async def test_meal_history_all(pool):
     """meal_history returns all meals in reverse chronological order."""
     from butlers.tools.health import meal_history

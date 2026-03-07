@@ -6190,6 +6190,29 @@ class CalendarModule(Module):
             raise ValueError("calendar_id must be a non-empty string when provided")
         return normalized
 
+    async def create_user_event(
+        self,
+        *,
+        title: str,
+        start_at: datetime,
+        end_at: datetime,
+        description: str | None = None,
+    ) -> None:
+        """Programmatic event creation for inter-module use (e.g. auto-creating meal events).
+
+        Silently returns if the provider is not initialised (calendar module not ready).
+        """
+        if self._provider is None:
+            return
+        calendar_id = self._resolve_calendar_id(None)
+        payload = CalendarEventCreate(
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            description=description,
+        )
+        await self._provider.create_event(calendar_id=calendar_id, payload=payload)
+
     @staticmethod
     def _normalize_request_id(request_id: str | None) -> str | None:
         if request_id is None:

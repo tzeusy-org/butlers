@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -70,6 +70,7 @@ async def meal_log(
     nutrition: dict[str, Any] | None = None,
     eaten_at: datetime | None = None,
     notes: str | None = None,
+    create_calendar_event_fn: Any = None,
 ) -> dict[str, Any]:
     """Log a meal. Type must be one of: breakfast, lunch, dinner, snack."""
     if type not in VALID_MEAL_TYPES:
@@ -111,6 +112,20 @@ async def meal_log(
         valid_at=valid_at,
         metadata=metadata,
     )
+
+    if create_calendar_event_fn is not None and valid_at >= now:
+        event_description = type.capitalize()
+        if notes:
+            event_description = f"{event_description} — {notes}"
+        try:
+            await create_calendar_event_fn(
+                title=description,
+                start_at=valid_at,
+                end_at=valid_at + timedelta(minutes=30),
+                description=event_description,
+            )
+        except Exception:
+            logger.warning("meal_log: failed to create calendar event", exc_info=True)
 
     return {
         "id": str(fact_id),

@@ -4422,6 +4422,16 @@ class ButlerDaemon:
                     "Module '%s' disabled: tool registration failed: %s", mod.name, error_msg
                 )
 
+        # Allow modules to cross-wire after all tools are registered.
+        module_map = {mod.name: mod for mod in self._modules}
+        for mod in self._modules:
+            on_ready = getattr(mod, "on_all_modules_ready", None)
+            if on_ready is not None:
+                try:
+                    on_ready(module_map)
+                except Exception as exc:
+                    logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
+
     async def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.
 
