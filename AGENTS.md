@@ -142,6 +142,9 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Beads sync command drift
+- The current `bd` CLI in this repo/worktree no longer exposes `bd sync`; session close flows should use `bd export -o .beads/issues.jsonl` and regular git push semantics (or the project-approved replacement command when available) instead of assuming `bd sync` exists.
+
 ### Owner entity bootstrap conflict contract
 - `_ensure_owner_entity` in `src/butlers/daemon.py` must first resolve an existing owner via `WHERE 'owner' = ANY(roles)` before attempting insert, and the insert must use `ON CONFLICT DO NOTHING` (no explicit conflict target) so the partial unique index `shared.ix_entities_owner_singleton` cannot raise `UniqueViolationError` during startup.
 
