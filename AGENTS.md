@@ -243,8 +243,7 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - When tests create `sessions` manually, keep schema aligned with `core_003`+ columns (`model`, `success`, `error`, `input_tokens`, `output_tokens`, `parent_session_id`) to avoid `UndefinedColumnError` in `core.sessions` queries.
 - Integration test modules that create asyncpg pools in async fixtures must align asyncio loop scope under xdist (`@pytest.mark.asyncio(loop_scope="session")` on async test classes/modules) to avoid cross-loop `RuntimeError: ... Future ... attached to a different loop`.
 - `roster/health/tests/test_tools.py` currently reproduces the same asyncpg cross-loop failure on `main` under pytest-xdist (`uv run pytest roster/health/tests/test_tools.py::test_measurement_log_weight -n auto --maxfail=1`), so refinery scoped runs that select `roster/health/tests/` need baseline-failure triage rather than assuming an MR regression.
-- Root `conftest.py` has `SpawnerResult` and `MockSpawner` (visible to all test trees)
-- `tests/conftest.py` re-exports from root for backward compat (`from tests.conftest import ...`)
+- Shared test doubles for spawner behavior live in `src/butlers/testing/shared_fixtures.py`; both root `conftest.py` and `tests/conftest.py` re-export them so importlib-loaded/scoped-runner contexts do not rely on importing the repository-root `conftest` as a normal module.
 - CLI tests use Click's `CliRunner`
 - Telemetry tests use `InMemorySpanExporter`
 - Root `conftest.py` patches `testcontainers` teardown (`DockerContainer.stop`) with bounded retries for known transient Docker API teardown races (notably "did not receive an exit event") under `pytest-xdist`; non-transient errors must still raise.

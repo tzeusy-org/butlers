@@ -7,6 +7,6 @@ existing imports like ``from tests.conftest import SpawnerResult`` keep working.
 
 from __future__ import annotations
 
-from conftest import MockSpawner, SpawnerResult, mock_spawner  # noqa: F401
+from butlers.testing.shared_fixtures import MockSpawner, SpawnerResult, mock_spawner  # noqa: F401
 
 __all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
