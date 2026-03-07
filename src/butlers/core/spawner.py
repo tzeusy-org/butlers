@@ -48,6 +48,7 @@ from butlers.core.tool_call_capture import (
     ensure_runtime_session_capture,
     set_runtime_session_routing_context,
 )
+from butlers.core.utils import generate_uuid7_string
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -717,6 +718,12 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
+            # Ensure every session has a non-null request_id.
+            # Connector-sourced sessions supply one from the ingestion pipeline.
+            # Internally-triggered sessions (tick, scheduler, manual trigger) do
+            # not have an external request_id, so we mint a fresh UUID7 here.
+            effective_request_id: str = request_id or generate_uuid7_string()
+
             # Create session record with trace_id and request_id
             if self._pool is not None:
                 session_id = await session_create(
@@ -725,7 +732,7 @@ class Spawner:
                     trigger_source,
                     trace_id,
                     model=model,
-                    request_id=request_id,
+                    request_id=effective_request_id,
                 )
                 # Set session_id on span
                 span.set_attribute("session_id", str(session_id))
