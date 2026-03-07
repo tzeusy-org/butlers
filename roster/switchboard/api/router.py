@@ -2872,13 +2872,13 @@ async def replace_connector_filters(
                     " VALUES ($1, $2, $3::uuid, $4, $5)",
                     [
                         (
-                        connector_type,
-                        endpoint_identity,
-                        str(item.filter_id),
-                        item.enabled,
-                        item.priority,
-                    )
-                    for item in body
+                            connector_type,
+                            endpoint_identity,
+                            str(item.filter_id),
+                            item.enabled,
+                            item.priority,
+                        )
+                        for item in body
                     ],
                 )
 

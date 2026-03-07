@@ -199,9 +199,7 @@ class TestListConnectorFilters:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram-bot/bot-123/filters"
-            )
+            resp = await client.get("/api/switchboard/connectors/telegram-bot/bot-123/filters")
 
         assert resp.status_code == 200
         assert resp.json()["data"][0]["incompatible"] is True
@@ -213,9 +211,7 @@ class TestListConnectorFilters:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram-bot/bot-123/filters"
-            )
+            resp = await client.get("/api/switchboard/connectors/telegram-bot/bot-123/filters")
 
         assert resp.status_code == 200
         assert resp.json()["data"][0]["incompatible"] is False
