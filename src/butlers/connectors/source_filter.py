@@ -422,9 +422,45 @@ def extract_gmail_filter_key(from_header: str, key_type: str) -> str:
     return from_header
 
 
+# ---------------------------------------------------------------------------
+# Telegram filter key extraction helper
+# ---------------------------------------------------------------------------
+
+
+def extract_telegram_filter_key(update: dict, key_type: str) -> str:
+    """Extract the filter key from a Telegram update for the given key_type.
+
+    Parameters
+    ----------
+    update:
+        Raw Telegram update dict (as returned by getUpdates or POSTed by webhook).
+    key_type:
+        Only ``'chat_id'`` is valid for the Telegram connector.  All other
+        key_types return an empty string so that the evaluator's unknown-type
+        WARNING is emitted and the filter is skipped.
+
+    Returns
+    -------
+    str
+        The chat_id as a string (e.g. ``'987654321'`` or ``'-100987654321'``),
+        or ``''`` if the key_type is unsupported or no message is found.
+    """
+    if key_type != "chat_id":
+        return ""
+
+    for msg_key in ("message", "edited_message", "channel_post"):
+        msg = update.get(msg_key)
+        if isinstance(msg, dict):
+            chat = msg.get("chat")
+            if isinstance(chat, dict) and "id" in chat:
+                return str(chat["id"])
+    return ""
+
+
 __all__ = [
     "SourceFilterSpec",
     "FilterResult",
     "SourceFilterEvaluator",
     "extract_gmail_filter_key",
+    "extract_telegram_filter_key",
 ]
