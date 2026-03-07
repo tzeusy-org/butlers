@@ -56,7 +56,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Thread
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    import asyncpg
 
 import aiohttp
 import uvicorn
@@ -67,6 +70,7 @@ from pydantic import BaseModel
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.connectors.source_filter import SourceFilterEvaluator, extract_discord_filter_key
 from butlers.core.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -251,7 +255,11 @@ class DiscordUserConnector:
     - Bypass Switchboard canonical ingest semantics
     """
 
-    def __init__(self, config: DiscordUserConnectorConfig) -> None:
+    def __init__(
+        self,
+        config: DiscordUserConnectorConfig,
+        db_pool: asyncpg.Pool | None = None,
+    ) -> None:
         self._config = config
         self._mcp_client = CachedMCPClient(config.switchboard_mcp_url, client_name="discord-user")
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -286,6 +294,14 @@ class DiscordUserConnector:
 
         # Heartbeat
         self._switchboard_heartbeat: ConnectorHeartbeat | None = None
+
+        # Source filter evaluator (channel_id blacklist/whitelist).
+        # DB-backed with TTL refresh; fail-open when db_pool is None.
+        self._source_filter_evaluator = SourceFilterEvaluator(
+            connector_type="discord",
+            endpoint_identity=config.endpoint_identity,
+            db_pool=db_pool,
+        )
 
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
@@ -433,6 +449,9 @@ class DiscordUserConnector:
 
         # Start switchboard heartbeat (runs in background)
         self._start_switchboard_heartbeat()
+
+        # Load source filters before entering the Gateway ingestion loop.
+        await self._source_filter_evaluator.ensure_loaded()
 
         self._running = True
         logger.info(
@@ -761,7 +780,7 @@ class DiscordUserConnector:
                 if envelope is None:
                     return  # Nothing to ingest
 
-                # Apply scope filters
+                # Apply scope filters (env-based guild/channel allowlist)
                 if not self._is_allowed(event_data):
                     logger.debug(
                         "Discord event filtered by allowlist",
@@ -769,6 +788,18 @@ class DiscordUserConnector:
                             "guild_id": event_data.get("guild_id"),
                             "channel_id": event_data.get("channel_id"),
                         },
+                    )
+                    return
+
+                # Source filter gate: evaluate channel_id against DB-backed filters.
+                channel_id_key = extract_discord_filter_key(event_data, "channel_id")
+                sf_result = self._source_filter_evaluator.evaluate(channel_id_key)
+                if not sf_result.allowed:
+                    logger.debug(
+                        "Source filter blocked Discord event for channel %s: reason=%s filter=%s",
+                        event_data.get("channel_id"),
+                        sf_result.reason,
+                        sf_result.filter_name,
                     )
                     return
 

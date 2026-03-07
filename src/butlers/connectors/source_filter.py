@@ -20,6 +20,7 @@ Pattern matching per source_key_type
 - ``sender_address``: normalise full address, exact match.
 - ``substring``:      case-insensitive substring search in raw key_value.
 - ``chat_id``:        exact string equality against str(chat_id).
+- ``channel_id``:     exact string equality against str(channel_id) (Discord).
 - Unknown type:       skip filter with one-time WARNING per filter_id.
 """
 
@@ -67,7 +68,7 @@ class SourceFilterSpec:
     filter_mode: str
     """'blacklist' or 'whitelist'."""
     source_key_type: str
-    """'domain', 'sender_address', 'substring', or 'chat_id'."""
+    """'domain', 'sender_address', 'substring', 'chat_id', or 'channel_id'."""
     patterns: list[str]
     """List of pattern strings to match against."""
     priority: int
@@ -142,6 +143,9 @@ def _matches_pattern(
         return pattern.lower() in key_value.lower()
 
     if source_key_type == "chat_id":
+        return str(key_value) == str(pattern).strip()
+
+    if source_key_type == "channel_id":
         return str(key_value) == str(pattern).strip()
 
     return False
@@ -367,7 +371,7 @@ class SourceFilterEvaluator:
         sender_address filters receive the normalised address.
         """
         key_type = spec.source_key_type
-        if key_type not in ("domain", "sender_address", "substring", "chat_id"):
+        if key_type not in ("domain", "sender_address", "substring", "chat_id", "channel_id"):
             if spec.id not in self._warned_unknown_key_type:
                 logger.warning(
                     "source_filter: unknown source_key_type %r for filter %r (id=%s); skipping",
@@ -457,10 +461,44 @@ def extract_telegram_filter_key(update: dict, key_type: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Discord filter key extraction helper
+# ---------------------------------------------------------------------------
+
+
+def extract_discord_filter_key(event_data: dict, key_type: str) -> str:
+    """Extract the filter key from a Discord Gateway event data dict.
+
+    Parameters
+    ----------
+    event_data:
+        Raw Discord dispatch event data dict (the ``d`` field from a Gateway
+        MESSAGE_CREATE / MESSAGE_UPDATE / MESSAGE_DELETE payload).
+    key_type:
+        Only ``'channel_id'`` is valid for the Discord connector.  All other
+        key_types return an empty string so that the evaluator's unknown-type
+        WARNING is emitted and the filter is skipped.
+
+    Returns
+    -------
+    str
+        The channel_id as a string (e.g. ``'987654321098765432'``),
+        or ``''`` if the key_type is unsupported or no channel_id is found.
+    """
+    if key_type != "channel_id":
+        return ""
+
+    channel_id = event_data.get("channel_id")
+    if channel_id is not None:
+        return str(channel_id)
+    return ""
+
+
 __all__ = [
     "SourceFilterSpec",
     "FilterResult",
     "SourceFilterEvaluator",
+    "extract_discord_filter_key",
     "extract_gmail_filter_key",
     "extract_telegram_filter_key",
 ]
