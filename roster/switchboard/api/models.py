@@ -653,3 +653,34 @@ class RoutingInstructionUpdate(BaseModel):
         if v is not None and v < 0:
             raise ValueError("priority must be >= 0")
         return v
+
+
+# ---------------------------------------------------------------------------
+# Connector filter assignment models
+# ---------------------------------------------------------------------------
+
+
+class ConnectorFilterAssignment(BaseModel):
+    """One named source filter with its assignment state for a specific connector.
+
+    Returned by GET /connectors/{type}/{identity}/filters.
+    ALL named filters are returned regardless of whether they are attached.
+    Unattached filters have enabled=False and priority=0.
+    """
+
+    filter_id: Any  # UUID — typed as Any for asyncpg compat
+    name: str
+    filter_mode: str
+    source_key_type: str
+    pattern_count: int
+    enabled: bool
+    priority: int
+    incompatible: bool
+
+
+class ConnectorFilterAssignmentItem(BaseModel):
+    """One item in the PUT /connectors/{type}/{identity}/filters request body."""
+
+    filter_id: Any  # UUID — typed as Any for asyncpg compat
+    enabled: bool
+    priority: int = 0

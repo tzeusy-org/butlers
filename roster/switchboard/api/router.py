@@ -72,6 +72,8 @@ if _spec is not None and _spec.loader is not None:
     RoutingInstruction = _models.RoutingInstruction
     RoutingInstructionCreate = _models.RoutingInstructionCreate
     RoutingInstructionUpdate = _models.RoutingInstructionUpdate
+    ConnectorFilterAssignment = _models.ConnectorFilterAssignment
+    ConnectorFilterAssignmentItem = _models.ConnectorFilterAssignmentItem
     validate_condition = _models.validate_condition
     validate_action = _models.validate_action
 else:
@@ -2537,3 +2539,158 @@ async def delete_routing_instruction(
             status_code=404,
             detail=f"Routing instruction '{instruction_id}' not found",
         )
+
+
+# ---------------------------------------------------------------------------
+# Connector filter assignment endpoints
+# ---------------------------------------------------------------------------
+
+# Valid source_key_type values per connector_type channel.
+# Unknown connector types pass-through (incompatible=False for all key types).
+_CONNECTOR_VALID_KEY_TYPES: dict[str, set[str]] = {
+    "gmail": {"domain", "sender_address", "substring"},
+    "telegram-bot": {"chat_id"},
+    "telegram-user-client": {"chat_id"},
+    "discord": {"channel_id"},
+}
+
+
+# ---------------------------------------------------------------------------
+# GET /connectors/{connector_type}/{endpoint_identity}/filters
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/connectors/{connector_type}/{endpoint_identity}/filters",
+    response_model=ApiResponse[list[ConnectorFilterAssignment]],
+)
+async def list_connector_filters(
+    connector_type: str,
+    endpoint_identity: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ConnectorFilterAssignment]]:
+    """Return ALL named source filters with their assignment state for a connector.
+
+    Unattached filters are included with enabled=False and priority=0.
+    Results are ordered by priority ASC, name ASC.
+    The incompatible flag is set when the filter's source_key_type is not valid
+    for this connector's channel (per the module-level _CONNECTOR_VALID_KEY_TYPES map).
+    Unknown connector types are treated as pass-through (incompatible=False).
+    The connector does not need to exist in connector_registry.
+    """
+    pool = _pool(db)
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            sf.id                                        AS filter_id,
+            sf.name,
+            sf.filter_mode,
+            sf.source_key_type,
+            cardinality(sf.patterns)                    AS pattern_count,
+            COALESCE(csf.enabled, false)                AS enabled,
+            COALESCE(csf.priority, 0)                   AS priority
+        FROM source_filters sf
+        LEFT JOIN connector_source_filters csf
+            ON csf.filter_id = sf.id
+            AND csf.connector_type = $1
+            AND csf.endpoint_identity = $2
+        ORDER BY COALESCE(csf.priority, 0) ASC, sf.name ASC
+        """,
+        connector_type,
+        endpoint_identity,
+    )
+
+    valid_key_types = _CONNECTOR_VALID_KEY_TYPES.get(connector_type)
+
+    result: list[ConnectorFilterAssignment] = []
+    for row in rows:
+        r = dict(row)
+        if valid_key_types is None:
+            incompatible = False
+        else:
+            incompatible = r["source_key_type"] not in valid_key_types
+        result.append(
+            ConnectorFilterAssignment(
+                filter_id=str(r["filter_id"]),
+                name=r["name"],
+                filter_mode=r["filter_mode"],
+                source_key_type=r["source_key_type"],
+                pattern_count=r["pattern_count"],
+                enabled=r["enabled"],
+                priority=r["priority"],
+                incompatible=incompatible,
+            )
+        )
+
+    return ApiResponse[list[ConnectorFilterAssignment]](data=result)
+
+
+# ---------------------------------------------------------------------------
+# PUT /connectors/{connector_type}/{endpoint_identity}/filters
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/connectors/{connector_type}/{endpoint_identity}/filters",
+    response_model=ApiResponse[list[ConnectorFilterAssignment]],
+)
+async def replace_connector_filters(
+    connector_type: str,
+    endpoint_identity: str,
+    body: list[ConnectorFilterAssignmentItem] = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ConnectorFilterAssignment]]:
+    """Atomically replace all filter assignments for a connector.
+
+    Deletes all existing assignments and inserts the new set in a single
+    transaction.  An empty list detaches all filters.
+
+    Returns the updated assignment list in the same format as GET.
+    Returns 422 if any filter_id in the body does not exist in source_filters.
+    """
+    pool = _pool(db)
+
+    # Validate all filter_ids exist before touching DB state.
+    if body:
+        filter_ids = [str(item.filter_id) for item in body]
+        existing_rows = await pool.fetch(
+            "SELECT id FROM source_filters WHERE id = ANY($1::uuid[])",
+            filter_ids,
+        )
+        existing_ids = {str(row["id"]) for row in existing_rows}
+        missing = [fid for fid in filter_ids if fid not in existing_ids]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown filter_id(s): {', '.join(missing)}",
+            )
+
+    # Atomic replace inside a transaction.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM connector_source_filters"
+                " WHERE connector_type = $1 AND endpoint_identity = $2",
+                connector_type,
+                endpoint_identity,
+            )
+            if body:
+                await conn.executemany(
+                    "INSERT INTO connector_source_filters"
+                    " (connector_type, endpoint_identity, filter_id, enabled, priority)"
+                    " VALUES ($1, $2, $3::uuid, $4, $5)",
+                    [
+                        (
+                        connector_type,
+                        endpoint_identity,
+                        str(item.filter_id),
+                        item.enabled,
+                        item.priority,
+                    )
+                    for item in body
+                    ],
+                )
+
+    # Return the updated state (re-use the GET logic).
+    return await list_connector_filters(connector_type, endpoint_identity, db=db)
