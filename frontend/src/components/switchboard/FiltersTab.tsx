@@ -1,21 +1,33 @@
 /**
- * FiltersTab — Filters tab content for the Ingestion page.
+ * FiltersTab — Unified ingestion rules tab for the Ingestion page.
  *
  * Features:
- * - Rules table with priority, condition, action, match count, enabled toggle, CRUD actions
- * - Rule editor drawer for creating/editing rules with type-specific condition fields
+ * - Unified rules table with priority, scope (badge), condition, action (color-coded),
+ *   enabled toggle, and CRUD actions (edit/delete)
+ * - Scope filter dropdown above table: All / Global / per-connector
+ * - Rule editor drawer with scope selector (Global / Connector+type+identity pickers)
+ * - Scope-aware action constraint (connector scope → block only)
  * - Test rule dry-run flow with result feedback
- * - Thread affinity panel: global enable/disable toggle and TTL input
- * - Gmail label filters panel: include/exclude editable tag inputs
- * - Import defaults (seed rules) flow with preview-before-confirm dialog
+ * - Import defaults (unified seed rules) flow with preview-before-confirm dialog
+ * - Thread affinity panel: global enable/disable toggle and TTL input (preserved)
+ * - Gmail label filters panel: include/exclude editable tag inputs (preserved)
  */
 
 import { useState } from "react";
-import { AlertCircle, CheckCircle2, Edit2, FlaskConical, Loader2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Edit2,
+  FlaskConical,
+  Loader2,
+  Plus,
+  Trash2,
+} from "lucide-react";
 
-import { ManageSourceFiltersPanel } from "@/components/ingestion/ManageSourceFiltersPanel";
-
-import type { TriageRule, TriageRuleCreate, TriageRuleType } from "@/api/types.ts";
+import type {
+  IngestionRule,
+  IngestionRuleCreate,
+} from "@/api/types.ts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,34 +64,43 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  useCreateTriageRule,
-  useDeleteTriageRule,
-  useTestTriageRule,
+  useCreateIngestionRule,
+  useDeleteIngestionRule,
+  useIngestionRules,
+  useTestIngestionRule,
+  useUpdateIngestionRule,
+} from "@/hooks/use-ingestion-rules";
+import {
   useThreadAffinitySettings,
-  useTriageRules,
   useUpdateThreadAffinitySettings,
-  useUpdateTriageRule,
 } from "@/hooks/use-triage";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type IngestionRuleType = "sender_domain" | "sender_address" | "header_condition" | "mime_type";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const RULE_TYPES: { value: TriageRuleType; label: string }[] = [
+const RULE_TYPES: { value: IngestionRuleType; label: string }[] = [
   { value: "sender_domain", label: "Sender Domain" },
   { value: "sender_address", label: "Sender Address" },
   { value: "header_condition", label: "Email Header" },
   { value: "mime_type", label: "MIME Attachment Type" },
 ];
 
-const STATIC_ACTIONS = [
+const GLOBAL_ACTIONS = [
   { value: "skip", label: "Skip (tier 3)" },
   { value: "metadata_only", label: "Metadata only (tier 2)" },
   { value: "low_priority_queue", label: "Low priority queue" },
   { value: "pass_through", label: "Pass through to LLM" },
 ];
+
+const CONNECTOR_ACTIONS = [{ value: "block", label: "Block (drop before ingest)" }];
 
 const AVAILABLE_BUTLERS = ["finance", "relationship", "health", "general", "travel", "calendar"];
 
@@ -89,57 +110,66 @@ const HEADER_OPS = [
   { value: "contains", label: "contains" },
 ];
 
-/** Seed rules per spec section 7 of pre_classification_triage.md. */
-const SEED_RULES: TriageRuleCreate[] = [
+/** Seed rules per unified ingestion policy design (D10). */
+const SEED_RULES: IngestionRuleCreate[] = [
   {
+    scope: "global",
     rule_type: "sender_domain",
     condition: { domain: "chase.com", match: "suffix" },
     action: "route_to:finance",
     priority: 10,
   },
   {
+    scope: "global",
     rule_type: "sender_domain",
     condition: { domain: "americanexpress.com", match: "suffix" },
     action: "route_to:finance",
     priority: 11,
   },
   {
+    scope: "global",
     rule_type: "sender_domain",
     condition: { domain: "delta.com", match: "suffix" },
     action: "route_to:travel",
     priority: 20,
   },
   {
+    scope: "global",
     rule_type: "sender_domain",
     condition: { domain: "united.com", match: "suffix" },
     action: "route_to:travel",
     priority: 21,
   },
   {
+    scope: "global",
     rule_type: "sender_domain",
     condition: { domain: "paypal.com", match: "suffix" },
     action: "route_to:finance",
     priority: 30,
   },
   {
+    scope: "global",
     rule_type: "header_condition",
     condition: { header: "List-Unsubscribe", op: "present", value: null },
     action: "metadata_only",
     priority: 40,
   },
   {
+    scope: "global",
     rule_type: "header_condition",
     condition: { header: "Precedence", op: "equals", value: "bulk" },
     action: "low_priority_queue",
     priority: 41,
   },
   {
+    scope: "global",
     rule_type: "header_condition",
     condition: { header: "Auto-Submitted", op: "equals", value: "auto-generated" },
     action: "skip",
     priority: 42,
   },
   {
+    scope: "global",
     rule_type: "mime_type",
     condition: { type: "text/calendar" },
     action: "route_to:calendar",
@@ -153,7 +183,7 @@ const SEED_RULES: TriageRuleCreate[] = [
 
 function formatAction(action: string): string {
   if (action.startsWith("route_to:")) {
-    return `Route → ${action.slice("route_to:".length)}`;
+    return `Route \u2192 ${action.slice("route_to:".length)}`;
   }
   switch (action) {
     case "skip":
@@ -164,19 +194,25 @@ function formatAction(action: string): string {
       return "Low priority";
     case "pass_through":
       return "Pass through";
+    case "block":
+      return "Block";
     default:
       return action;
   }
 }
 
-function formatCondition(ruleType: TriageRuleType, condition: Record<string, unknown>): string {
+function formatCondition(
+  ruleType: string,
+  condition: Record<string, unknown>,
+): string {
   switch (ruleType) {
     case "sender_domain":
       return `domain ${condition.match === "suffix" ? "ends with" : "="} ${condition.domain}`;
     case "sender_address":
       return `address = ${condition.address}`;
     case "header_condition": {
-      const op = condition.op === "present" ? "present" : `${condition.op} "${condition.value}"`;
+      const op =
+        condition.op === "present" ? "present" : `${condition.op} "${condition.value}"`;
       return `${condition.header} ${op}`;
     }
     case "mime_type":
@@ -186,23 +222,63 @@ function formatCondition(ruleType: TriageRuleType, condition: Record<string, unk
   }
 }
 
-function actionBadgeVariant(action: string): "default" | "secondary" | "destructive" | "outline" {
+function actionBadgeVariant(
+  action: string,
+): "default" | "secondary" | "destructive" | "outline" {
+  if (action === "block") return "destructive";
   if (action.startsWith("route_to:")) return "default";
   if (action === "skip") return "destructive";
   if (action === "metadata_only") return "secondary";
   return "outline";
 }
 
+/** Format scope for display as a short badge label. */
+function formatScope(scope: string): string {
+  if (scope === "global") return "Global";
+  // connector:<type>:<identity> -> strip prefix, show type:identity
+  if (scope.startsWith("connector:")) {
+    return scope.slice("connector:".length);
+  }
+  return scope;
+}
+
+/** Badge variant for scope. */
+function scopeBadgeVariant(scope: string): "default" | "secondary" | "outline" {
+  if (scope === "global") return "secondary";
+  return "outline";
+}
+
+/** Check if a scope is connector-scoped. */
+function isConnectorScope(scope: string): boolean {
+  return scope.startsWith("connector:");
+}
+
+/** Extract unique scopes from a list of rules, sorted. */
+function extractUniqueScopes(rules: IngestionRule[]): string[] {
+  const set = new Set<string>();
+  for (const rule of rules) {
+    set.add(rule.scope);
+  }
+  const scopes = Array.from(set);
+  // Put "global" first, then connectors sorted
+  scopes.sort((a, b) => {
+    if (a === "global") return -1;
+    if (b === "global") return 1;
+    return a.localeCompare(b);
+  });
+  return scopes;
+}
+
 // ---------------------------------------------------------------------------
 // Condition field editors by rule_type
 // ---------------------------------------------------------------------------
 
-interface SenderDomainConditionProps {
+interface ConditionEditorProps {
   condition: Record<string, unknown>;
   onChange: (c: Record<string, unknown>) => void;
 }
 
-function SenderDomainCondition({ condition, onChange }: SenderDomainConditionProps) {
+function SenderDomainCondition({ condition, onChange }: ConditionEditorProps) {
   return (
     <div className="space-y-3">
       <div className="space-y-1">
@@ -232,12 +308,7 @@ function SenderDomainCondition({ condition, onChange }: SenderDomainConditionPro
   );
 }
 
-interface SenderAddressConditionProps {
-  condition: Record<string, unknown>;
-  onChange: (c: Record<string, unknown>) => void;
-}
-
-function SenderAddressCondition({ condition, onChange }: SenderAddressConditionProps) {
+function SenderAddressCondition({ condition, onChange }: ConditionEditorProps) {
   return (
     <div className="space-y-1">
       <Label htmlFor="address-input">Email address</Label>
@@ -252,12 +323,7 @@ function SenderAddressCondition({ condition, onChange }: SenderAddressConditionP
   );
 }
 
-interface HeaderConditionProps {
-  condition: Record<string, unknown>;
-  onChange: (c: Record<string, unknown>) => void;
-}
-
-function HeaderCondition({ condition, onChange }: HeaderConditionProps) {
+function HeaderCondition({ condition, onChange }: ConditionEditorProps) {
   const op = String(condition.op ?? "present");
   const needsValue = op === "equals" || op === "contains";
 
@@ -312,12 +378,7 @@ function HeaderCondition({ condition, onChange }: HeaderConditionProps) {
   );
 }
 
-interface MimeTypeConditionProps {
-  condition: Record<string, unknown>;
-  onChange: (c: Record<string, unknown>) => void;
-}
-
-function MimeTypeCondition({ condition, onChange }: MimeTypeConditionProps) {
+function MimeTypeCondition({ condition, onChange }: ConditionEditorProps) {
   return (
     <div className="space-y-1">
       <Label htmlFor="mime-input">MIME type</Label>
@@ -340,10 +401,10 @@ interface RuleEditorDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** If provided, the drawer edits this rule; otherwise creates a new one. */
-  editRule: TriageRule | null;
+  editRule: IngestionRule | null;
 }
 
-function defaultConditionForType(ruleType: TriageRuleType): Record<string, unknown> {
+function defaultConditionForType(ruleType: IngestionRuleType): Record<string, unknown> {
   switch (ruleType) {
     case "sender_domain":
       return { domain: "", match: "exact" };
@@ -359,13 +420,30 @@ function defaultConditionForType(ruleType: TriageRuleType): Record<string, unkno
 function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProps) {
   const isEditing = editRule !== null;
 
-  const [ruleType, setRuleType] = useState<TriageRuleType>(
-    (editRule?.rule_type as TriageRuleType) ?? "sender_domain",
+  // Scope state
+  const [scopeType, setScopeType] = useState<"global" | "connector">(
+    editRule && isConnectorScope(editRule.scope) ? "connector" : "global",
+  );
+  const [connectorType, setConnectorType] = useState<string>(
+    editRule && isConnectorScope(editRule.scope)
+      ? editRule.scope.split(":")[1] ?? "gmail"
+      : "gmail",
+  );
+  const [connectorIdentity, setConnectorIdentity] = useState<string>(
+    editRule && isConnectorScope(editRule.scope)
+      ? editRule.scope.split(":").slice(2).join(":") || ""
+      : "",
+  );
+
+  const [ruleType, setRuleType] = useState<IngestionRuleType>(
+    (editRule?.rule_type as IngestionRuleType) ?? "sender_domain",
   );
   const [condition, setCondition] = useState<Record<string, unknown>>(
     editRule?.condition ?? defaultConditionForType("sender_domain"),
   );
-  const [action, setAction] = useState<string>(editRule?.action ?? "skip");
+  const [action, setAction] = useState<string>(
+    editRule?.action ?? "skip",
+  );
   const [routeTarget, setRouteTarget] = useState<string>(
     editRule?.action.startsWith("route_to:")
       ? editRule.action.slice("route_to:".length)
@@ -384,25 +462,43 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
   } | null>(null);
   const [testSender, setTestSender] = useState("");
 
-  const createRule = useCreateTriageRule();
-  const updateRule = useUpdateTriageRule();
-  const testRule = useTestTriageRule();
+  const createRule = useCreateIngestionRule();
+  const updateRule = useUpdateIngestionRule();
+  const testRule = useTestIngestionRule();
 
   const isSaving = createRule.isPending || updateRule.isPending;
   const isTesting = testRule.isPending;
 
-  function handleRuleTypeChange(newType: TriageRuleType) {
+  const isConnector = scopeType === "connector";
+
+  function handleRuleTypeChange(newType: IngestionRuleType) {
     setRuleType(newType);
     setCondition(defaultConditionForType(newType));
     setTestResult(null);
   }
 
+  function handleScopeTypeChange(newScopeType: "global" | "connector") {
+    setScopeType(newScopeType);
+    if (newScopeType === "connector") {
+      // Connector-scoped rules can only use block
+      setAction("block");
+      setIsRouteAction(false);
+    }
+  }
+
+  function resolvedScope(): string {
+    if (scopeType === "global") return "global";
+    return `connector:${connectorType}:${connectorIdentity}`;
+  }
+
   function resolvedAction(): string {
+    if (isConnector) return "block";
     return isRouteAction ? `route_to:${routeTarget}` : action;
   }
 
-  function buildRuleCreate(): TriageRuleCreate {
+  function buildRuleCreate(): IngestionRuleCreate {
     return {
+      scope: resolvedScope(),
       rule_type: ruleType,
       condition,
       action: resolvedAction(),
@@ -432,8 +528,12 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
       setError("MIME type is required.");
       return;
     }
-    if (isRouteAction && !routeTarget.trim()) {
+    if (!isConnector && isRouteAction && !routeTarget.trim()) {
       setError("Route target butler is required.");
+      return;
+    }
+    if (isConnector && !connectorIdentity.trim()) {
+      setError("Connector identity is required.");
       return;
     }
 
@@ -442,6 +542,7 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
         await updateRule.mutateAsync({
           id: editRule.id,
           body: {
+            scope: ruleData.scope,
             condition: ruleData.condition,
             action: ruleData.action,
             priority: ruleData.priority,
@@ -465,8 +566,8 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
     }
     try {
       const result = await testRule.mutateAsync({
-        envelope: { sender: { identity: testSender.trim() } },
-        rule: buildRuleCreate(),
+        envelope: { sender_address: testSender.trim() },
+        scope: resolvedScope(),
       });
       setTestResult(result.data);
     } catch (err) {
@@ -490,12 +591,74 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
           <SheetTitle>{isEditing ? "Edit Rule" : "New Rule"}</SheetTitle>
           <SheetDescription>
             {isEditing
-              ? "Modify the triage rule settings."
-              : "Create a deterministic triage rule for email routing."}
+              ? "Modify the ingestion rule settings."
+              : "Create a deterministic ingestion rule for message routing or blocking."}
           </SheetDescription>
         </SheetHeader>
 
         <div className="px-4 space-y-5 pb-4">
+          {/* Scope selector */}
+          <div className="space-y-2" data-testid="scope-selector">
+            <Label>Scope</Label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className={`rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  scopeType === "global"
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-input text-muted-foreground hover:bg-accent"
+                }`}
+                onClick={() => handleScopeTypeChange("global")}
+                data-testid="scope-global-btn"
+              >
+                Global
+              </button>
+              <button
+                type="button"
+                className={`rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  scopeType === "connector"
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-input text-muted-foreground hover:bg-accent"
+                }`}
+                onClick={() => handleScopeTypeChange("connector")}
+                data-testid="scope-connector-btn"
+              >
+                Connector
+              </button>
+            </div>
+            {isConnector && (
+              <div className="space-y-3 rounded-md border border-muted p-3">
+                <div className="space-y-1">
+                  <Label htmlFor="connector-type-select">Connector type</Label>
+                  <select
+                    id="connector-type-select"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={connectorType}
+                    onChange={(e) => setConnectorType(e.target.value)}
+                    data-testid="connector-type-select"
+                  >
+                    <option value="gmail">Gmail</option>
+                    <option value="telegram-bot">Telegram Bot</option>
+                    <option value="discord">Discord</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="connector-identity-input">Endpoint identity</Label>
+                  <Input
+                    id="connector-identity-input"
+                    placeholder="e.g. gmail:user:dev"
+                    value={connectorIdentity}
+                    onChange={(e) => setConnectorIdentity(e.target.value)}
+                    data-testid="connector-identity-input"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Connector-scoped rules can only use the <strong>Block</strong> action.
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* Rule type selector */}
           <div className="space-y-1">
             <Label htmlFor="rule-type-select">Rule type</Label>
@@ -503,7 +666,7 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
               id="rule-type-select"
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={ruleType}
-              onChange={(e) => handleRuleTypeChange(e.target.value as TriageRuleType)}
+              onChange={(e) => handleRuleTypeChange(e.target.value as IngestionRuleType)}
               data-testid="rule-type-select"
             >
               {RULE_TYPES.map((t) => (
@@ -533,51 +696,62 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
             )}
           </div>
 
-          {/* Action selector */}
+          {/* Action selector — scope-aware */}
           <div className="space-y-2">
             <Label>Action</Label>
-            <div className="flex items-center gap-2 mb-2">
-              <input
-                type="checkbox"
-                id="route-action-toggle"
-                checked={isRouteAction}
-                onChange={(e) => {
-                  setIsRouteAction(e.target.checked);
-                  if (!e.target.checked) setAction("skip");
-                }}
-                className="h-4 w-4"
-                data-testid="route-action-toggle"
-              />
-              <Label htmlFor="route-action-toggle" className="font-normal cursor-pointer">
-                Route to butler
-              </Label>
-            </div>
-            {isRouteAction ? (
-              <select
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                value={routeTarget}
-                onChange={(e) => setRouteTarget(e.target.value)}
-                data-testid="route-target-select"
-              >
-                {AVAILABLE_BUTLERS.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
+            {isConnector ? (
+              <div className="rounded-md border border-muted p-3">
+                <Badge variant="destructive">Block</Badge>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Connector-scoped rules can only block messages before ingest.
+                </p>
+              </div>
             ) : (
-              <select
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                value={action}
-                onChange={(e) => setAction(e.target.value)}
-                data-testid="action-select"
-              >
-                {STATIC_ACTIONS.map((a) => (
-                  <option key={a.value} value={a.value}>
-                    {a.label}
-                  </option>
-                ))}
-              </select>
+              <>
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="checkbox"
+                    id="route-action-toggle"
+                    checked={isRouteAction}
+                    onChange={(e) => {
+                      setIsRouteAction(e.target.checked);
+                      if (!e.target.checked) setAction("skip");
+                    }}
+                    className="h-4 w-4"
+                    data-testid="route-action-toggle"
+                  />
+                  <Label htmlFor="route-action-toggle" className="font-normal cursor-pointer">
+                    Route to butler
+                  </Label>
+                </div>
+                {isRouteAction ? (
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={routeTarget}
+                    onChange={(e) => setRouteTarget(e.target.value)}
+                    data-testid="route-target-select"
+                  >
+                    {AVAILABLE_BUTLERS.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={action}
+                    onChange={(e) => setAction(e.target.value)}
+                    data-testid="action-select"
+                  >
+                    {GLOBAL_ACTIONS.map((a) => (
+                      <option key={a.value} value={a.value}>
+                        {a.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </>
             )}
           </div>
 
@@ -644,7 +818,7 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
                   {testResult.matched && testResult.decision && (
                     <p className="text-xs mt-0.5">
                       Decision: <span className="font-mono">{testResult.decision}</span>
-                      {testResult.target_butler && ` → ${testResult.target_butler}`}
+                      {testResult.target_butler && ` \u2192 ${testResult.target_butler}`}
                     </p>
                   )}
                 </div>
@@ -667,7 +841,12 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
           <Button type="button" variant="outline" onClick={() => handleClose(false)}>
             Cancel
           </Button>
-          <Button type="button" onClick={handleSave} disabled={isSaving} data-testid="save-rule-btn">
+          <Button
+            type="button"
+            onClick={handleSave}
+            disabled={isSaving}
+            data-testid="save-rule-btn"
+          >
             {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {isEditing ? "Save changes" : "Create rule"}
           </Button>
@@ -687,7 +866,7 @@ interface ImportDefaultsDialogProps {
 }
 
 function ImportDefaultsDialog({ open, onOpenChange }: ImportDefaultsDialogProps) {
-  const createRule = useCreateTriageRule();
+  const createRule = useCreateIngestionRule();
   const [importing, setImporting] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -736,6 +915,7 @@ function ImportDefaultsDialog({ open, onOpenChange }: ImportDefaultsDialogProps)
               <thead className="bg-muted/50">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Pri</th>
+                  <th className="px-3 py-2 text-left font-medium">Scope</th>
                   <th className="px-3 py-2 text-left font-medium">Type</th>
                   <th className="px-3 py-2 text-left font-medium">Condition</th>
                   <th className="px-3 py-2 text-left font-medium">Action</th>
@@ -745,6 +925,11 @@ function ImportDefaultsDialog({ open, onOpenChange }: ImportDefaultsDialogProps)
                 {SEED_RULES.map((r, i) => (
                   <tr key={i} className="border-t">
                     <td className="px-3 py-1.5 tabular-nums">{r.priority}</td>
+                    <td className="px-3 py-1.5">
+                      <Badge variant={scopeBadgeVariant(r.scope)} className="text-xs">
+                        {formatScope(r.scope)}
+                      </Badge>
+                    </td>
                     <td className="px-3 py-1.5 font-mono">{r.rule_type}</td>
                     <td className="px-3 py-1.5 font-mono">
                       {formatCondition(r.rule_type, r.condition as Record<string, unknown>)}
@@ -796,11 +981,16 @@ function ImportDefaultsDialog({ open, onOpenChange }: ImportDefaultsDialogProps)
 interface DeleteConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  rule: TriageRule | null;
+  rule: IngestionRule | null;
   onConfirm: (id: string) => Promise<void>;
 }
 
-function DeleteConfirmDialog({ open, onOpenChange, rule, onConfirm }: DeleteConfirmDialogProps) {
+function DeleteConfirmDialog({
+  open,
+  onOpenChange,
+  rule,
+  onConfirm,
+}: DeleteConfirmDialogProps) {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -825,7 +1015,7 @@ function DeleteConfirmDialog({ open, onOpenChange, rule, onConfirm }: DeleteConf
           <DialogTitle>Delete rule?</DialogTitle>
           <DialogDescription>
             {rule
-              ? `Priority ${rule.priority} — ${formatCondition(rule.rule_type as TriageRuleType, rule.condition as Record<string, unknown>)}`
+              ? `Priority ${rule.priority} \u2014 ${formatCondition(rule.rule_type, rule.condition as Record<string, unknown>)}`
               : ""}
             <br />
             This action cannot be undone.
@@ -877,27 +1067,34 @@ function SkeletonRows({ count = 4, cols = 7 }: { count?: number; cols?: number }
 }
 
 interface RulesTableProps {
-  onEdit: (rule: TriageRule) => void;
-  onDelete: (rule: TriageRule) => void;
+  onEdit: (rule: IngestionRule) => void;
+  onDelete: (rule: IngestionRule) => void;
   onImportDefaults: () => void;
   onNew: () => void;
 }
 
 function RulesTable({ onEdit, onDelete, onImportDefaults, onNew }: RulesTableProps) {
-  const { data, isLoading, error } = useTriageRules();
-  const updateRule = useUpdateTriageRule();
+  const { data, isLoading, error } = useIngestionRules();
+  const updateRule = useUpdateIngestionRule();
+  const [scopeFilter, setScopeFilter] = useState<string>("all");
 
-  const rules = data?.data ?? [];
+  const allRules = data?.data ?? [];
+  const uniqueScopes = extractUniqueScopes(allRules);
+  const rules =
+    scopeFilter === "all" ? allRules : allRules.filter((r) => r.scope === scopeFilter);
 
-  function handleToggleEnabled(rule: TriageRule) {
+  function handleToggleEnabled(rule: IngestionRule) {
     updateRule.mutate({ id: rule.id, body: { enabled: !rule.enabled } });
   }
 
   if (error) {
     return (
-      <div className="flex items-center gap-2 p-6 text-sm text-destructive" data-testid="rules-error">
+      <div
+        className="flex items-center gap-2 p-6 text-sm text-destructive"
+        data-testid="rules-error"
+      >
         <AlertCircle className="h-4 w-4" />
-        Failed to load triage rules. Check your connection and try again.
+        Failed to load ingestion rules. Check your connection and try again.
       </div>
     );
   }
@@ -916,6 +1113,20 @@ function RulesTable({ onEdit, onDelete, onImportDefaults, onNew }: RulesTablePro
           )}
         </div>
         <div className="flex gap-2">
+          {/* Scope filter dropdown */}
+          <select
+            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+            value={scopeFilter}
+            onChange={(e) => setScopeFilter(e.target.value)}
+            data-testid="scope-filter"
+          >
+            <option value="all">All scopes</option>
+            {uniqueScopes.map((scope) => (
+              <option key={scope} value={scope}>
+                {formatScope(scope)}
+              </option>
+            ))}
+          </select>
           <Button
             variant="outline"
             size="sm"
@@ -935,6 +1146,7 @@ function RulesTable({ onEdit, onDelete, onImportDefaults, onNew }: RulesTablePro
         <TableHeader>
           <TableRow>
             <TableHead className="w-16">Priority</TableHead>
+            <TableHead className="w-28">Scope</TableHead>
             <TableHead>Condition</TableHead>
             <TableHead>Action</TableHead>
             <TableHead className="text-center">Enabled</TableHead>
@@ -946,8 +1158,11 @@ function RulesTable({ onEdit, onDelete, onImportDefaults, onNew }: RulesTablePro
             <SkeletonRows />
           ) : rules.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
-                No triage rules yet. Click{" "}
+              <TableCell
+                colSpan={6}
+                className="py-12 text-center text-sm text-muted-foreground"
+              >
+                No ingestion rules yet. Click{" "}
                 <button
                   className="underline hover:no-underline"
                   onClick={onImportDefaults}
@@ -971,11 +1186,24 @@ function RulesTable({ onEdit, onDelete, onImportDefaults, onNew }: RulesTablePro
                 data-testid={`rule-row-${rule.id}`}
               >
                 <TableCell className="tabular-nums font-medium">{rule.priority}</TableCell>
+                <TableCell>
+                  <Badge
+                    variant={scopeBadgeVariant(rule.scope)}
+                    data-testid={`scope-badge-${rule.id}`}
+                  >
+                    {formatScope(rule.scope)}
+                  </Badge>
+                </TableCell>
                 <TableCell className="text-sm font-mono text-muted-foreground">
-                  {formatCondition(rule.rule_type as TriageRuleType, rule.condition as Record<string, unknown>)}
+                  {formatCondition(
+                    rule.rule_type,
+                    rule.condition as Record<string, unknown>,
+                  )}
                 </TableCell>
                 <TableCell>
-                  <Badge variant={actionBadgeVariant(rule.action)}>{formatAction(rule.action)}</Badge>
+                  <Badge variant={actionBadgeVariant(rule.action)}>
+                    {formatAction(rule.action)}
+                  </Badge>
                 </TableCell>
                 <TableCell className="text-center">
                   <button
@@ -1033,7 +1261,7 @@ function RulesTable({ onEdit, onDelete, onImportDefaults, onNew }: RulesTablePro
 }
 
 // ---------------------------------------------------------------------------
-// Thread affinity panel
+// Thread affinity panel (preserved unchanged)
 // ---------------------------------------------------------------------------
 
 function ThreadAffinityPanel() {
@@ -1068,7 +1296,10 @@ function ThreadAffinityPanel() {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-3" data-testid="thread-affinity-panel">
+    <div
+      className="flex flex-wrap items-center gap-x-6 gap-y-3"
+      data-testid="thread-affinity-panel"
+    >
       {/* Toggle */}
       <div className="flex items-center gap-2">
         <button
@@ -1089,7 +1320,9 @@ function ThreadAffinityPanel() {
         </button>
         <span className="text-sm">
           Thread affinity:{" "}
-          <span className={`font-medium ${enabled ? "text-primary" : "text-muted-foreground"}`}>
+          <span
+            className={`font-medium ${enabled ? "text-primary" : "text-muted-foreground"}`}
+          >
             {enabled ? "ON" : "OFF"}
           </span>
         </span>
@@ -1116,11 +1349,7 @@ function ThreadAffinityPanel() {
             <Button size="sm" variant="outline" onClick={handleTtlSave}>
               Save
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setTtlEditing(false)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setTtlEditing(false)}>
               Cancel
             </Button>
           </>
@@ -1142,7 +1371,7 @@ function ThreadAffinityPanel() {
 }
 
 // ---------------------------------------------------------------------------
-// Gmail label filters panel
+// Gmail label filters panel (preserved unchanged)
 // ---------------------------------------------------------------------------
 
 interface TagInputProps {
@@ -1180,13 +1409,13 @@ function TagInput({ tags, placeholder, onAdd, onRemove, testId }: TagInputProps)
             onClick={() => onRemove(tag)}
             aria-label={`Remove ${tag}`}
           >
-            ×
+            x
           </button>
         </Badge>
       ))}
       <input
         className="flex-1 min-w-[6rem] bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-        placeholder={tags.length === 0 ? placeholder : "Add label…"}
+        placeholder={tags.length === 0 ? placeholder : "Add label\u2026"}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
@@ -1218,50 +1447,55 @@ function GmailLabelFiltersPanel() {
   return (
     <div className="space-y-4" data-testid="gmail-label-panel">
       <p className="text-xs text-amber-600 dark:text-amber-400">
-        Changes are not yet persisted — this panel is a UI preview pending backend label-filter support.
+        Changes are not yet persisted — this panel is a UI preview pending backend label-filter
+        support.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <div className="space-y-1">
-        <Label>Include labels</Label>
-        <p className="text-xs text-muted-foreground">Only process emails with these labels.</p>
-        <TagInput
-          tags={includeLabels}
-          placeholder="Type a label and press Enter…"
-          onAdd={addInclude}
-          onRemove={removeInclude}
-          testId="include-labels-input"
-        />
-      </div>
-      <div className="space-y-1">
-        <Label>Exclude labels</Label>
-        <p className="text-xs text-muted-foreground">Skip emails that have any of these labels.</p>
-        <TagInput
-          tags={excludeLabels}
-          placeholder="Type a label and press Enter…"
-          onAdd={addExclude}
-          onRemove={removeExclude}
-          testId="exclude-labels-input"
-        />
-      </div>
+        <div className="space-y-1">
+          <Label>Include labels</Label>
+          <p className="text-xs text-muted-foreground">
+            Only process emails with these labels.
+          </p>
+          <TagInput
+            tags={includeLabels}
+            placeholder="Type a label and press Enter\u2026"
+            onAdd={addInclude}
+            onRemove={removeInclude}
+            testId="include-labels-input"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>Exclude labels</Label>
+          <p className="text-xs text-muted-foreground">
+            Skip emails that have any of these labels.
+          </p>
+          <TagInput
+            tags={excludeLabels}
+            placeholder="Type a label and press Enter\u2026"
+            onAdd={addExclude}
+            onRemove={removeExclude}
+            testId="exclude-labels-input"
+          />
+        </div>
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Email filters section
+// Ingestion rules section (replaces EmailFiltersSection)
 // ---------------------------------------------------------------------------
 
-function EmailFiltersSection() {
+function IngestionRulesSection() {
   const [editorOpen, setEditorOpen] = useState(false);
-  const [editingRule, setEditingRule] = useState<TriageRule | null>(null);
+  const [editingRule, setEditingRule] = useState<IngestionRule | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deletingRule, setDeletingRule] = useState<TriageRule | null>(null);
+  const [deletingRule, setDeletingRule] = useState<IngestionRule | null>(null);
 
-  const deleteRule = useDeleteTriageRule();
+  const deleteRule = useDeleteIngestionRule();
 
-  function handleEdit(rule: TriageRule) {
+  function handleEdit(rule: IngestionRule) {
     setEditingRule(rule);
     setEditorOpen(true);
   }
@@ -1271,7 +1505,7 @@ function EmailFiltersSection() {
     setEditorOpen(true);
   }
 
-  function handleDeleteRequest(rule: TriageRule) {
+  function handleDeleteRequest(rule: IngestionRule) {
     setDeletingRule(rule);
     setDeleteOpen(true);
   }
@@ -1286,7 +1520,7 @@ function EmailFiltersSection() {
   }
 
   return (
-    <div className="space-y-6" data-testid="email-filters-section">
+    <div className="space-y-6" data-testid="ingestion-rules-section">
       {/* Rules table */}
       <Card>
         <CardContent className="pt-4 p-4">
@@ -1352,56 +1586,23 @@ function EmailFiltersSection() {
 // ---------------------------------------------------------------------------
 
 export function FiltersTab() {
-  const [managePanelOpen, setManagePanelOpen] = useState(false);
-
   return (
     <div className="space-y-4" data-testid="filters-tab">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Filters</h2>
-          <p className="text-sm text-muted-foreground">
-            Deterministic ingestion policy — triage rules, thread affinity, and label filters.
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setManagePanelOpen(true)}
-          data-testid="manage-filters-btn"
-        >
-          <SlidersHorizontal className="size-3.5 mr-1.5" />
-          Manage Filters
-        </Button>
+      <div>
+        <h2 className="text-lg font-semibold">Ingestion Policy</h2>
+        <p className="text-sm text-muted-foreground">
+          Unified ingestion rules — deterministic routing, blocking, thread affinity, and label
+          filters.
+        </p>
       </div>
 
-      <ManageSourceFiltersPanel open={managePanelOpen} onOpenChange={setManagePanelOpen} />
-
-      <Tabs defaultValue="email">
-        <TabsList>
-          <TabsTrigger value="email">Email</TabsTrigger>
-          <TabsTrigger value="telegram">Telegram</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="email" className="mt-4">
-          <EmailFiltersSection />
-        </TabsContent>
-
-        <TabsContent value="telegram" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Telegram Filters</CardTitle>
-              <CardDescription>
-                Telegram filter controls will be available in a future update.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                This section is a placeholder for future Telegram-channel filter parity.
-              </p>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+      <IngestionRulesSection />
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Exports for testing
+// ---------------------------------------------------------------------------
+
+export { formatAction, formatCondition, formatScope, isConnectorScope, SEED_RULES };

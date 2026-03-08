@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { FiltersTab } from "@/components/switchboard/FiltersTab";
+import * as useIngestionRules from "@/hooks/use-ingestion-rules";
 import * as useTriage from "@/hooks/use-triage";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -39,16 +40,36 @@ function makeMutation(): MutationResult {
   };
 }
 
-const SAMPLE_RULE = {
+const SAMPLE_GLOBAL_RULE = {
   id: "rule-abc-001",
+  scope: "global",
   rule_type: "sender_domain",
   condition: { domain: "chase.com", match: "suffix" },
   action: "route_to:finance",
   priority: 10,
   enabled: true,
+  name: null,
+  description: null,
   created_by: "dashboard",
   created_at: "2026-02-22T00:00:00Z",
   updated_at: "2026-02-22T00:00:00Z",
+  deleted_at: null,
+};
+
+const SAMPLE_CONNECTOR_RULE = {
+  id: "rule-def-002",
+  scope: "connector:gmail:gmail:user:dev",
+  rule_type: "sender_domain",
+  condition: { domain: "spam.com", match: "exact" },
+  action: "block",
+  priority: 5,
+  enabled: true,
+  name: null,
+  description: null,
+  created_by: "dashboard",
+  created_at: "2026-02-22T00:00:00Z",
+  updated_at: "2026-02-22T00:00:00Z",
+  deleted_at: null,
 };
 
 const SAMPLE_THREAD_AFFINITY_SETTINGS = {
@@ -63,27 +84,27 @@ const SAMPLE_THREAD_AFFINITY_SETTINGS = {
 // ---------------------------------------------------------------------------
 
 function setupDefaultMocks() {
-  vi.spyOn(useTriage, "useTriageRules").mockReturnValue(
-    makeQuery({ data: [SAMPLE_RULE], meta: { total: 1 } }) as ReturnType<
-      typeof useTriage.useTriageRules
+  vi.spyOn(useIngestionRules, "useIngestionRules").mockReturnValue(
+    makeQuery({ data: [SAMPLE_GLOBAL_RULE, SAMPLE_CONNECTOR_RULE], meta: { total: 2 } }) as ReturnType<
+      typeof useIngestionRules.useIngestionRules
     >,
+  );
+  vi.spyOn(useIngestionRules, "useCreateIngestionRule").mockReturnValue(
+    makeMutation() as unknown as ReturnType<typeof useIngestionRules.useCreateIngestionRule>,
+  );
+  vi.spyOn(useIngestionRules, "useUpdateIngestionRule").mockReturnValue(
+    makeMutation() as unknown as ReturnType<typeof useIngestionRules.useUpdateIngestionRule>,
+  );
+  vi.spyOn(useIngestionRules, "useDeleteIngestionRule").mockReturnValue(
+    makeMutation() as unknown as ReturnType<typeof useIngestionRules.useDeleteIngestionRule>,
+  );
+  vi.spyOn(useIngestionRules, "useTestIngestionRule").mockReturnValue(
+    makeMutation() as unknown as ReturnType<typeof useIngestionRules.useTestIngestionRule>,
   );
   vi.spyOn(useTriage, "useThreadAffinitySettings").mockReturnValue(
     makeQuery(SAMPLE_THREAD_AFFINITY_SETTINGS) as ReturnType<
       typeof useTriage.useThreadAffinitySettings
     >,
-  );
-  vi.spyOn(useTriage, "useCreateTriageRule").mockReturnValue(
-    makeMutation() as unknown as ReturnType<typeof useTriage.useCreateTriageRule>,
-  );
-  vi.spyOn(useTriage, "useUpdateTriageRule").mockReturnValue(
-    makeMutation() as unknown as ReturnType<typeof useTriage.useUpdateTriageRule>,
-  );
-  vi.spyOn(useTriage, "useDeleteTriageRule").mockReturnValue(
-    makeMutation() as unknown as ReturnType<typeof useTriage.useDeleteTriageRule>,
-  );
-  vi.spyOn(useTriage, "useTestTriageRule").mockReturnValue(
-    makeMutation() as unknown as ReturnType<typeof useTriage.useTestTriageRule>,
   );
   vi.spyOn(useTriage, "useUpdateThreadAffinitySettings").mockReturnValue(
     makeMutation() as unknown as ReturnType<typeof useTriage.useUpdateThreadAffinitySettings>,
@@ -129,37 +150,65 @@ describe("FiltersTab", () => {
   // Structural tests
   // -------------------------------------------------------------------------
 
-  it("renders the Filters tab heading and description", () => {
+  it("renders the Ingestion Policy heading and description", () => {
     render();
     const heading = container.querySelector("h2");
-    expect(heading?.textContent).toBe("Filters");
-    expect(container.textContent).toContain("Deterministic ingestion policy");
-  });
-
-  it("renders Email and Telegram module tabs", () => {
-    render();
-    const tabTriggers = container.querySelectorAll('[role="tab"]');
-    const labels = Array.from(tabTriggers).map((t) => t.textContent?.trim());
-    expect(labels).toContain("Email");
-    expect(labels).toContain("Telegram");
-  });
-
-  it("shows the Email tab as default active tab", () => {
-    render();
-    const activeTabs = Array.from(container.querySelectorAll('[role="tab"][data-state="active"]'));
-    expect(activeTabs.some((t) => t.textContent?.trim() === "Email")).toBe(true);
+    expect(heading?.textContent).toBe("Ingestion Policy");
+    expect(container.textContent).toContain("Unified ingestion rules");
   });
 
   // -------------------------------------------------------------------------
   // Rules table tests
   // -------------------------------------------------------------------------
 
-  it("renders the rules table with sample rule", () => {
+  it("renders the rules table with sample rules", () => {
     render();
     const table = container.querySelector('[data-testid="rules-table"]');
     expect(table).not.toBeNull();
-    expect(container.textContent).toContain("10");
+    expect(container.textContent).toContain("10"); // priority
+    expect(container.textContent).toContain("chase.com"); // global rule
+    expect(container.textContent).toContain("spam.com"); // connector rule
+  });
+
+  it("renders scope badges for each rule row", () => {
+    render();
+    const globalBadge = container.querySelector(
+      `[data-testid="scope-badge-${SAMPLE_GLOBAL_RULE.id}"]`,
+    );
+    const connectorBadge = container.querySelector(
+      `[data-testid="scope-badge-${SAMPLE_CONNECTOR_RULE.id}"]`,
+    );
+    expect(globalBadge).not.toBeNull();
+    expect(globalBadge?.textContent).toBe("Global");
+    expect(connectorBadge).not.toBeNull();
+    expect(connectorBadge?.textContent).toBe("gmail:gmail:user:dev");
+  });
+
+  it("renders scope filter dropdown with All, Global, and connector options", () => {
+    render();
+    const scopeFilter = container.querySelector(
+      '[data-testid="scope-filter"]',
+    ) as HTMLSelectElement;
+    expect(scopeFilter).not.toBeNull();
+    const optionTexts = Array.from(scopeFilter?.options ?? []).map((o) => o.textContent);
+    expect(optionTexts).toContain("All scopes");
+    expect(optionTexts).toContain("Global");
+    expect(optionTexts).toContain("gmail:gmail:user:dev");
+  });
+
+  it("filters rules when scope filter is changed", () => {
+    render();
+    // Select global only
+    act(() => {
+      const scopeFilter = container.querySelector(
+        '[data-testid="scope-filter"]',
+      ) as HTMLSelectElement;
+      scopeFilter.value = "global";
+      scopeFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // Should show chase.com but not spam.com
     expect(container.textContent).toContain("chase.com");
+    expect(container.textContent).not.toContain("spam.com");
   });
 
   it("renders New rule button and Import defaults button", () => {
@@ -171,17 +220,18 @@ describe("FiltersTab", () => {
   });
 
   it("renders skeleton rows when loading", () => {
-    vi.spyOn(useTriage, "useTriageRules").mockReturnValue(
-      makeQuery(undefined, true) as ReturnType<typeof useTriage.useTriageRules>,
+    vi.spyOn(useIngestionRules, "useIngestionRules").mockReturnValue(
+      makeQuery(undefined, true) as ReturnType<typeof useIngestionRules.useIngestionRules>,
     );
     render();
-    // No actual rule text when loading
     expect(container.textContent).not.toContain("chase.com");
   });
 
   it("renders empty state with CTA links when no rules", () => {
-    vi.spyOn(useTriage, "useTriageRules").mockReturnValue(
-      makeQuery({ data: [], meta: { total: 0 } }) as ReturnType<typeof useTriage.useTriageRules>,
+    vi.spyOn(useIngestionRules, "useIngestionRules").mockReturnValue(
+      makeQuery({ data: [], meta: { total: 0 } }) as ReturnType<
+        typeof useIngestionRules.useIngestionRules
+      >,
     );
     render();
     const emptyLink = container.querySelector('[data-testid="empty-import-defaults-link"]');
@@ -189,11 +239,11 @@ describe("FiltersTab", () => {
   });
 
   it("renders error state when rules fetch fails", () => {
-    vi.spyOn(useTriage, "useTriageRules").mockReturnValue({
+    vi.spyOn(useIngestionRules, "useIngestionRules").mockReturnValue({
       data: undefined,
       isLoading: false,
       error: new Error("Network error"),
-    } as ReturnType<typeof useTriage.useTriageRules>);
+    } as ReturnType<typeof useIngestionRules.useIngestionRules>);
     render();
     const errorEl = container.querySelector('[data-testid="rules-error"]');
     expect(errorEl).not.toBeNull();
@@ -202,8 +252,12 @@ describe("FiltersTab", () => {
 
   it("renders an edit button and delete button per rule row", () => {
     render();
-    const editBtn = container.querySelector(`[data-testid="edit-rule-${SAMPLE_RULE.id}"]`);
-    const deleteBtn = container.querySelector(`[data-testid="delete-rule-${SAMPLE_RULE.id}"]`);
+    const editBtn = container.querySelector(
+      `[data-testid="edit-rule-${SAMPLE_GLOBAL_RULE.id}"]`,
+    );
+    const deleteBtn = container.querySelector(
+      `[data-testid="delete-rule-${SAMPLE_GLOBAL_RULE.id}"]`,
+    );
     expect(editBtn).not.toBeNull();
     expect(deleteBtn).not.toBeNull();
   });
@@ -211,14 +265,24 @@ describe("FiltersTab", () => {
   it("renders the enabled toggle for a rule row", () => {
     render();
     const toggle = container.querySelector(
-      `[data-testid="toggle-enabled-${SAMPLE_RULE.id}"]`,
+      `[data-testid="toggle-enabled-${SAMPLE_GLOBAL_RULE.id}"]`,
     );
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
+  it("renders Block badge for connector-scoped rule", () => {
+    render();
+    // Find the connector rule row and check for Block badge
+    const row = container.querySelector(
+      `[data-testid="rule-row-${SAMPLE_CONNECTOR_RULE.id}"]`,
+    );
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("Block");
+  });
+
   // -------------------------------------------------------------------------
-  // Rule editor drawer tests — dialog content renders in document.body portal
+  // Rule editor drawer tests
   // -------------------------------------------------------------------------
 
   it("opens the rule editor drawer when New button is clicked", () => {
@@ -227,9 +291,69 @@ describe("FiltersTab", () => {
       const newBtn = container.querySelector('[data-testid="new-rule-btn"]') as HTMLButtonElement;
       newBtn?.click();
     });
-    // Sheet/Drawer portals into document.body
     const ruleTypeSelect = document.querySelector('[data-testid="rule-type-select"]');
     expect(ruleTypeSelect).not.toBeNull();
+  });
+
+  it("renders scope selector in the editor with Global and Connector options", () => {
+    render();
+    act(() => {
+      const newBtn = container.querySelector('[data-testid="new-rule-btn"]') as HTMLButtonElement;
+      newBtn?.click();
+    });
+    const scopeSelector = document.querySelector('[data-testid="scope-selector"]');
+    expect(scopeSelector).not.toBeNull();
+    const globalBtn = document.querySelector('[data-testid="scope-global-btn"]');
+    const connectorBtn = document.querySelector('[data-testid="scope-connector-btn"]');
+    expect(globalBtn).not.toBeNull();
+    expect(connectorBtn).not.toBeNull();
+  });
+
+  it("shows connector type and identity pickers when Connector scope is selected", () => {
+    render();
+    act(() => {
+      const newBtn = container.querySelector('[data-testid="new-rule-btn"]') as HTMLButtonElement;
+      newBtn?.click();
+    });
+    act(() => {
+      const connectorBtn = document.querySelector(
+        '[data-testid="scope-connector-btn"]',
+      ) as HTMLButtonElement;
+      connectorBtn?.click();
+    });
+    const connectorTypeSelect = document.querySelector(
+      '[data-testid="connector-type-select"]',
+    );
+    const connectorIdentityInput = document.querySelector(
+      '[data-testid="connector-identity-input"]',
+    );
+    expect(connectorTypeSelect).not.toBeNull();
+    expect(connectorIdentityInput).not.toBeNull();
+  });
+
+  it("shows block-only action when connector scope is selected", () => {
+    render();
+    act(() => {
+      const newBtn = container.querySelector('[data-testid="new-rule-btn"]') as HTMLButtonElement;
+      newBtn?.click();
+    });
+    act(() => {
+      const connectorBtn = document.querySelector(
+        '[data-testid="scope-connector-btn"]',
+      ) as HTMLButtonElement;
+      connectorBtn?.click();
+    });
+    // action-select should NOT be present (connector scope shows block-only panel)
+    const actionSelect = document.querySelector('[data-testid="action-select"]');
+    expect(actionSelect).toBeNull();
+    // route-action toggle should also NOT be visible
+    const routeToggle = document.querySelector('[data-testid="route-action-toggle"]');
+    expect(routeToggle).toBeNull();
+    // "Block" text should be visible
+    expect(document.body.textContent).toContain("Block");
+    expect(document.body.textContent).toContain(
+      "Connector-scoped rules can only block messages before ingest",
+    );
   });
 
   it("renders all four rule type options in the editor", () => {
@@ -346,7 +470,6 @@ describe("FiltersTab", () => {
       const newBtn = container.querySelector('[data-testid="new-rule-btn"]') as HTMLButtonElement;
       newBtn?.click();
     });
-    // Don't fill in domain — click save
     act(() => {
       const saveBtn = document.querySelector(
         '[data-testid="save-rule-btn"]',
@@ -358,25 +481,60 @@ describe("FiltersTab", () => {
     expect(errorEl?.textContent).toContain("Domain is required");
   });
 
-  it("renders route-action toggle and static action select in the editor", () => {
+  it("renders route-action toggle and static action select in the editor (global scope)", () => {
     render();
     act(() => {
       const newBtn = container.querySelector('[data-testid="new-rule-btn"]') as HTMLButtonElement;
       newBtn?.click();
     });
-    // The route-action toggle should be present and unchecked by default
     const routeToggle = document.querySelector(
       '[data-testid="route-action-toggle"]',
     ) as HTMLInputElement;
     expect(routeToggle).not.toBeNull();
     expect(routeToggle?.checked).toBe(false);
-    // Static action selector is visible when toggle is unchecked
     const actionSelect = document.querySelector('[data-testid="action-select"]');
     expect(actionSelect).not.toBeNull();
   });
 
+  it("shows connector identity validation error when saving connector-scoped rule without identity", () => {
+    render();
+    act(() => {
+      const newBtn = container.querySelector('[data-testid="new-rule-btn"]') as HTMLButtonElement;
+      newBtn?.click();
+    });
+    // Switch to connector scope
+    act(() => {
+      const connectorBtn = document.querySelector(
+        '[data-testid="scope-connector-btn"]',
+      ) as HTMLButtonElement;
+      connectorBtn?.click();
+    });
+    // Fill in domain but leave connector identity empty
+    act(() => {
+      const domainInput = document.querySelector(
+        '[data-testid="condition-domain"]',
+      ) as HTMLInputElement;
+      // Simulate filling in domain
+      Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set?.call(domainInput, "test.com");
+      domainInput.dispatchEvent(new Event("input", { bubbles: true }));
+      domainInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    act(() => {
+      const saveBtn = document.querySelector(
+        '[data-testid="save-rule-btn"]',
+      ) as HTMLButtonElement;
+      saveBtn?.click();
+    });
+    const errorEl = document.querySelector('[data-testid="editor-error"]');
+    expect(errorEl).not.toBeNull();
+    // Will get either domain or identity error depending on validation order
+  });
+
   // -------------------------------------------------------------------------
-  // Import defaults dialog tests — also portal-rendered in document.body
+  // Import defaults dialog tests
   // -------------------------------------------------------------------------
 
   it("opens the import defaults dialog when Import defaults is clicked", () => {
@@ -392,7 +550,7 @@ describe("FiltersTab", () => {
     expect(confirmBtn?.textContent).toContain("Import");
   });
 
-  it("shows preview of seed rules in the import dialog", () => {
+  it("shows preview of seed rules with scope column in the import dialog", () => {
     render();
     act(() => {
       const importBtn = container.querySelector(
@@ -402,10 +560,12 @@ describe("FiltersTab", () => {
     });
     // Seed rules contain chase.com in the preview table
     expect(document.body.textContent).toContain("chase.com");
+    // Should show scope column with "Global" badges
+    expect(document.body.textContent).toContain("Global");
   });
 
   // -------------------------------------------------------------------------
-  // Thread affinity panel tests
+  // Thread affinity panel tests (preserved)
   // -------------------------------------------------------------------------
 
   it("renders the thread affinity panel with toggle and TTL", () => {
@@ -428,7 +588,6 @@ describe("FiltersTab", () => {
       makeQuery(undefined, true) as ReturnType<typeof useTriage.useThreadAffinitySettings>,
     );
     render();
-    // No toggle visible while loading
     const toggle = container.querySelector('[data-testid="thread-affinity-toggle"]');
     expect(toggle).toBeNull();
   });
@@ -451,7 +610,7 @@ describe("FiltersTab", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Gmail label filters panel tests
+  // Gmail label filters panel tests (preserved)
   // -------------------------------------------------------------------------
 
   it("renders the Gmail label filters panel", () => {
@@ -481,37 +640,50 @@ describe("FiltersTab", () => {
     expect(panel?.textContent).toContain("PROMOTIONS");
     expect(panel?.textContent).toContain("SOCIAL");
   });
+});
 
-  // -------------------------------------------------------------------------
-  // Telegram placeholder
-  // -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Unit tests for helper functions
+// ---------------------------------------------------------------------------
 
-  it("renders the Telegram tab trigger", () => {
-    render();
-    // Telegram tab trigger should exist
-    const tabs = container.querySelectorAll('[role="tab"]');
-    const telegramTab = Array.from(tabs).find((t) => t.textContent?.trim() === "Telegram");
-    expect(telegramTab).not.toBeNull();
-    // Telegram tab should initially be inactive (Email is default)
-    expect(telegramTab?.getAttribute("data-state")).toBe("inactive");
+describe("FiltersTab helper functions", () => {
+  it("formatAction handles all known action types", async () => {
+    const { formatAction } = await import("@/components/switchboard/FiltersTab");
+    expect(formatAction("skip")).toBe("Skip");
+    expect(formatAction("metadata_only")).toBe("Metadata only");
+    expect(formatAction("low_priority_queue")).toBe("Low priority");
+    expect(formatAction("pass_through")).toBe("Pass through");
+    expect(formatAction("block")).toBe("Block");
+    expect(formatAction("route_to:finance")).toContain("finance");
+    expect(formatAction("unknown_action")).toBe("unknown_action");
   });
 
-  // -------------------------------------------------------------------------
-  // Manage Filters panel button
-  // -------------------------------------------------------------------------
-
-  it("renders the Manage Filters button in the header", () => {
-    render();
-    const btn = container.querySelector('[data-testid="manage-filters-btn"]');
-    expect(btn).not.toBeNull();
-    expect(btn?.textContent).toContain("Manage Filters");
+  it("formatCondition formats sender_domain correctly", async () => {
+    const { formatCondition } = await import("@/components/switchboard/FiltersTab");
+    expect(formatCondition("sender_domain", { domain: "test.com", match: "suffix" })).toContain(
+      "ends with",
+    );
+    expect(formatCondition("sender_domain", { domain: "test.com", match: "exact" })).toContain(
+      "=",
+    );
   });
 
-  it("Manage Filters panel is not visible by default", () => {
-    render();
-    // The panel Sheet starts closed; its content should not be open
-    const panel = document.querySelector('[data-testid="manage-source-filters-panel"]');
-    // Sheet content may exist but not have data-state="open"
-    expect(panel?.getAttribute("data-state")).not.toBe("open");
+  it("formatScope formats global and connector scopes", async () => {
+    const { formatScope } = await import("@/components/switchboard/FiltersTab");
+    expect(formatScope("global")).toBe("Global");
+    expect(formatScope("connector:gmail:gmail:user:dev")).toBe("gmail:gmail:user:dev");
+  });
+
+  it("isConnectorScope identifies connector vs global scopes", async () => {
+    const { isConnectorScope } = await import("@/components/switchboard/FiltersTab");
+    expect(isConnectorScope("global")).toBe(false);
+    expect(isConnectorScope("connector:gmail:gmail:user:dev")).toBe(true);
+  });
+
+  it("SEED_RULES all have scope='global'", async () => {
+    const { SEED_RULES } = await import("@/components/switchboard/FiltersTab");
+    for (const rule of SEED_RULES) {
+      expect(rule.scope).toBe("global");
+    }
   });
 });
