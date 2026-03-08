@@ -364,7 +364,7 @@ class TestListIssuesEndpoint:
         issues = response.json()["data"]
         assert len(issues) == 1
         assert issues[0]["severity"] == "critical"
-        assert issues[0]["type"] == "scheduled_task_failure:eligibility_sweep"
+        assert issues[0]["type"] == "scheduled_task_failure:eligibility-sweep"
         assert issues[0]["butler"] == "switchboard"
         assert issues[0]["occurrences"] == 3
         assert issues[0]["first_seen_at"] == "2026-02-19T23:55:00Z"
