@@ -168,7 +168,7 @@ class TestTelegramUserClientConnector:
         connector._last_checkpoint_save = time.time()
 
         cursor, updated_at = connector._get_checkpoint()
-        assert cursor == "99999"
+        assert cursor == '{"last_message_id": 99999}'
         assert updated_at is not None
         assert isinstance(updated_at, datetime)
 
@@ -181,7 +181,7 @@ class TestTelegramUserClientConnector:
         # _last_checkpoint_save remains None
 
         cursor, updated_at = connector._get_checkpoint()
-        assert cursor == "12345"
+        assert cursor == '{"last_message_id": 12345}'
         assert updated_at is None
 
     def test_start_heartbeat_creates_heartbeat(

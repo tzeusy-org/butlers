@@ -332,12 +332,14 @@ class TelegramUserClientConnector:
         """Get current checkpoint state for heartbeat.
 
         Returns:
-            Tuple of (cursor, updated_at)
+            Tuple of (cursor_json, updated_at) — cursor_json matches the
+            format written by ``_save_checkpoint`` so the heartbeat UPSERT
+            does not corrupt the cursor for ``_load_checkpoint``.
         """
         if self._last_message_id is None:
             return (None, None)
 
-        cursor = str(self._last_message_id)
+        cursor = json.dumps({"last_message_id": self._last_message_id})
         updated_at = (
             datetime.fromtimestamp(self._last_checkpoint_save, UTC)
             if self._last_checkpoint_save is not None

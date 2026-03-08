@@ -57,7 +57,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
@@ -659,15 +659,22 @@ class GmailConnectorRuntime:
         """Get current checkpoint state for heartbeat.
 
         Returns:
-            Tuple of (cursor, updated_at)
+            Tuple of (cursor_json, updated_at) — cursor_json is the full
+            GmailCursor JSON so the heartbeat UPSERT writes a value that
+            ``_load_cursor`` can deserialize without error.
         """
-        cursor = self._last_history_id
+        if self._last_history_id is None:
+            return (None, None)
+        cursor_json = GmailCursor(
+            history_id=self._last_history_id,
+            last_updated_at=datetime.now(UTC).isoformat(),
+        ).model_dump_json()
         updated_at = (
             datetime.fromtimestamp(self._last_checkpoint_save, UTC)
             if self._last_checkpoint_save is not None
             else None
         )
-        return (cursor, updated_at)
+        return (cursor_json, updated_at)
 
     def _get_capabilities(self) -> dict[str, object]:
         """Return connector capabilities for heartbeat advertisement.
@@ -1102,10 +1109,9 @@ class GmailConnectorRuntime:
 
                             if not policy_result.should_ingest:
                                 rows_skipped += 1
-                                logger.debug(
-                                    "Backfill skipping message %s: tier=%d reason=%s",
-                                    message_id,
-                                    policy_result.ingestion_tier,
+                                logger.info(
+                                    "[Gmail] '%s' filtered out: %s",
+                                    self._get_subject(message_data),
                                     policy_result.filter_reason,
                                 )
                             else:
@@ -1114,11 +1120,9 @@ class GmailConnectorRuntime:
                                 _bf_decision = self._ingestion_policy.evaluate(_bf_envelope)
                                 if not _bf_decision.allowed:
                                     rows_skipped += 1
-                                    logger.debug(
-                                        "Backfill: ingestion policy blocked message %s: "
-                                        "action=%s reason=%s",
-                                        message_id,
-                                        _bf_decision.action,
+                                    logger.info(
+                                        "[Gmail] '%s' filtered out by rule: %s",
+                                        self._get_subject(message_data),
                                         _bf_decision.reason,
                                     )
                                 else:
@@ -1393,7 +1397,20 @@ class GmailConnectorRuntime:
                 "Cursor not found in DB for "
                 f"{self._config.connector_provider}/{self._config.connector_endpoint_identity}"
             )
-        cursor = GmailCursor.model_validate_json(raw)
+        try:
+            cursor = GmailCursor.model_validate_json(raw)
+        except (ValueError, ValidationError):
+            # Legacy/corrupt cursor: bare history_id integer stored instead of JSON.
+            # Upgrade in-place so future loads succeed.
+            logger.warning(
+                "Cursor value is not valid GmailCursor JSON (%r); treating as bare history_id",
+                raw[:120] if len(raw) > 120 else raw,
+            )
+            cursor = GmailCursor(
+                history_id=raw.strip(),
+                last_updated_at=datetime.now(UTC).isoformat(),
+            )
+            await self._save_cursor(cursor)
         self._last_history_id = cursor.history_id
         return cursor
 
@@ -1692,10 +1709,9 @@ class GmailConnectorRuntime:
 
                 # Tier 3: skip — do not submit to Switchboard
                 if not policy_result.should_ingest:
-                    logger.debug(
-                        "Skipping message %s: tier=%d reason=%s",
-                        message_id,
-                        policy_result.ingestion_tier,
+                    logger.info(
+                        "[Gmail] '%s' filtered out: %s",
+                        self._get_subject(message_data),
                         policy_result.filter_reason,
                     )
                     return
@@ -1704,10 +1720,9 @@ class GmailConnectorRuntime:
                 _ip_envelope = self._build_ingestion_envelope(message_data)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
                 if not _ip_decision.allowed:
-                    logger.debug(
-                        "Ingestion policy blocked message %s: action=%s reason=%s",
-                        message_id,
-                        _ip_decision.action,
+                    logger.info(
+                        "[Gmail] '%s' filtered out by rule: %s",
+                        self._get_subject(message_data),
                         _ip_decision.reason,
                     )
                     return
@@ -1749,6 +1764,15 @@ class GmailConnectorRuntime:
             if isinstance(header, dict) and header.get("name", "").lower() == "from":
                 return header.get("value", "")
         return ""
+
+    @staticmethod
+    def _get_subject(message_data: dict[str, Any]) -> str:
+        """Extract the Subject header value from a Gmail message payload."""
+        headers = message_data.get("payload", {}).get("headers", [])
+        for header in headers:
+            if isinstance(header, dict) and header.get("name", "").lower() == "subject":
+                return header.get("value", "")
+        return "(no subject)"
 
     @staticmethod
     def _build_ingestion_envelope(message_data: dict[str, Any]) -> IngestionEnvelope:

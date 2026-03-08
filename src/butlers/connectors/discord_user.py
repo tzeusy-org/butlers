@@ -400,12 +400,15 @@ class DiscordUserConnector:
         return ("healthy", None)
 
     def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
-        """Get current checkpoint state for heartbeat."""
+        """Get current checkpoint state for heartbeat.
+
+        Returns the same JSON format as ``_save_checkpoint`` so the heartbeat
+        UPSERT does not corrupt the cursor for ``_load_checkpoint``.
+        """
         if not self._channel_checkpoints:
             return (None, None)
 
-        # Report the most recent checkpoint across all channels
-        cursor = json.dumps(self._channel_checkpoints)
+        cursor = json.dumps({"channel_checkpoints": dict(self._channel_checkpoints)})
         updated_at = (
             datetime.fromtimestamp(self._last_checkpoint_save, UTC)
             if self._last_checkpoint_save is not None
