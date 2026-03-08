@@ -298,11 +298,6 @@ def _memory_context_token_budget(config: ButlerConfig) -> int:
     return parsed if parsed > 0 else 3000
 
 
-async def _reset_memory_client_cache_for_tests() -> None:
-    """Compatibility no-op for tests from legacy shared-memory architecture."""
-    return None
-
-
 async def fetch_memory_context(
     pool: asyncpg.Pool | None,
     butler_name: str,

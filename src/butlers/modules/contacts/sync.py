@@ -1027,23 +1027,11 @@ class ContactsSyncStateStore:
 
     Reads and writes sync state via asyncpg directly to the
     ``contacts_sync_state`` table created by the contacts module migration.
-    The ``key()`` helper is retained for backward-compatibility but is no
-    longer used for persistence.
     """
 
     def __init__(self, pool: Any, *, key_prefix: str = SYNC_STATE_KEY_PREFIX) -> None:
         self._pool = pool
         self._key_prefix = key_prefix
-
-    def key(self, *, provider: str, account_id: str) -> str:
-        """Return the legacy KV key for this (provider, account_id) pair.
-
-        Retained for backward-compatibility.  Persistence now uses the
-        ``contacts_sync_state`` relational table instead of the KV store.
-        """
-        provider_key = provider.strip().lower()
-        account_key = account_id.strip()
-        return f"{self._key_prefix}{provider_key}::{account_key}"
 
     async def load(self, *, provider: str, account_id: str) -> ContactsSyncState:
         """Load sync state from the ``contacts_sync_state`` table.
