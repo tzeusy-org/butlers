@@ -677,7 +677,7 @@ class TestGmailConnectorIntegration:
             ),
             patch.object(runtime, "_start_health_server"),
             patch.object(runtime, "_start_heartbeat"),
-            patch.object(runtime, "_ensure_cursor_file", new_callable=AsyncMock),
+            patch.object(runtime, "_ensure_cursor", new_callable=AsyncMock),
             patch(
                 "butlers.connectors.gmail.wait_for_switchboard_ready",
                 new_callable=AsyncMock,

@@ -422,7 +422,8 @@ async def test_submit_to_ingest_connection_error(
 # -----------------------------------------------------------------------------
 
 
-def test_load_checkpoint_file_exists(
+@pytest.mark.asyncio
+async def test_load_checkpoint_file_exists(
     connector: TelegramBotConnector,
     mock_config: TelegramBotConnectorConfig,
 ) -> None:
@@ -430,18 +431,20 @@ def test_load_checkpoint_file_exists(
     assert mock_config.cursor_path is not None
     mock_config.cursor_path.write_text(json.dumps({"last_update_id": 99999}))
 
-    connector._load_checkpoint()
+    await connector._load_checkpoint()
 
     assert connector._last_update_id == 99999
 
 
-def test_load_checkpoint_file_missing(connector: TelegramBotConnector) -> None:
+@pytest.mark.asyncio
+async def test_load_checkpoint_file_missing(connector: TelegramBotConnector) -> None:
     """Test loading checkpoint when file doesn't exist."""
-    connector._load_checkpoint()
+    await connector._load_checkpoint()
     assert connector._last_update_id is None
 
 
-def test_load_checkpoint_corrupted_file(
+@pytest.mark.asyncio
+async def test_load_checkpoint_corrupted_file(
     connector: TelegramBotConnector,
     mock_config: TelegramBotConnectorConfig,
 ) -> None:
@@ -449,19 +452,20 @@ def test_load_checkpoint_corrupted_file(
     assert mock_config.cursor_path is not None
     mock_config.cursor_path.write_text("invalid json{")
 
-    connector._load_checkpoint()
+    await connector._load_checkpoint()
     # Should fall back to None on error
     assert connector._last_update_id is None
 
 
-def test_save_checkpoint_creates_file(
+@pytest.mark.asyncio
+async def test_save_checkpoint_creates_file(
     connector: TelegramBotConnector,
     mock_config: TelegramBotConnectorConfig,
 ) -> None:
     """Test saving checkpoint creates file."""
     connector._last_update_id = 54321
 
-    connector._save_checkpoint()
+    await connector._save_checkpoint()
 
     assert mock_config.cursor_path is not None
     assert mock_config.cursor_path.exists()
@@ -469,7 +473,8 @@ def test_save_checkpoint_creates_file(
     assert data["last_update_id"] == 54321
 
 
-def test_save_checkpoint_creates_parent_directory(
+@pytest.mark.asyncio
+async def test_save_checkpoint_creates_parent_directory(
     connector: TelegramBotConnector,
     tmp_path: Path,
 ) -> None:
@@ -478,7 +483,7 @@ def test_save_checkpoint_creates_parent_directory(
     connector._config.cursor_path = nested_path
     connector._last_update_id = 11111
 
-    connector._save_checkpoint()
+    await connector._save_checkpoint()
 
     assert nested_path.exists()
     data = json.loads(nested_path.read_text())

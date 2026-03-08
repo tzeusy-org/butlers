@@ -252,7 +252,7 @@ class TestTelegramUserClientConnector:
         assert connector._last_checkpoint_save is None
 
         before = time.time()
-        connector._save_checkpoint()
+        await connector._save_checkpoint()
         after = time.time()
 
         assert connector._last_checkpoint_save is not None
@@ -399,13 +399,15 @@ class TestTelegramUserClientConnector:
             with pytest.raises(ConnectionError):
                 await connector._submit_to_ingest(envelope)
 
-    def test_load_checkpoint_no_file(self, config: TelegramUserClientConnectorConfig) -> None:
+    async def test_load_checkpoint_no_file(self, config: TelegramUserClientConnectorConfig) -> None:
         """Test loading checkpoint when no file exists."""
         connector = TelegramUserClientConnector(config)
-        connector._load_checkpoint()
+        await connector._load_checkpoint()
         assert connector._last_message_id is None
 
-    def test_load_checkpoint_with_file(self, config: TelegramUserClientConnectorConfig) -> None:
+    async def test_load_checkpoint_with_file(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
         """Test loading checkpoint from existing file."""
         # Write checkpoint file
         assert config.cursor_path is not None
@@ -414,14 +416,14 @@ class TestTelegramUserClientConnector:
             json.dump({"last_message_id": 99999}, f)
 
         connector = TelegramUserClientConnector(config)
-        connector._load_checkpoint()
+        await connector._load_checkpoint()
         assert connector._last_message_id == 99999
 
-    def test_save_checkpoint(self, config: TelegramUserClientConnectorConfig) -> None:
+    async def test_save_checkpoint(self, config: TelegramUserClientConnectorConfig) -> None:
         """Test saving checkpoint to disk."""
         connector = TelegramUserClientConnector(config)
         connector._last_message_id = 88888
-        connector._save_checkpoint()
+        await connector._save_checkpoint()
 
         # Verify checkpoint file was written
         assert config.cursor_path is not None
@@ -430,13 +432,15 @@ class TestTelegramUserClientConnector:
             data = json.load(f)
             assert data["last_message_id"] == 88888
 
-    def test_save_checkpoint_atomic_write(self, config: TelegramUserClientConnectorConfig) -> None:
+    async def test_save_checkpoint_atomic_write(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
         """Test that checkpoint save uses atomic write."""
         connector = TelegramUserClientConnector(config)
         connector._last_message_id = 77777
 
         # Save checkpoint
-        connector._save_checkpoint()
+        await connector._save_checkpoint()
 
         # Verify no .tmp file remains
         assert config.cursor_path is not None

@@ -509,12 +509,12 @@ class TestAllowlistFiltering:
 class TestCheckpoint:
     """Tests for checkpoint load/save/update."""
 
-    def test_load_checkpoint_missing_file(self, connector: DiscordUserConnector) -> None:
+    async def test_load_checkpoint_missing_file(self, connector: DiscordUserConnector) -> None:
         """Missing checkpoint file starts fresh without error."""
-        connector._load_checkpoint()
+        await connector._load_checkpoint()
         assert connector._channel_checkpoints == {}
 
-    def test_load_checkpoint_from_file(
+    async def test_load_checkpoint_from_file(
         self, connector: DiscordUserConnector, tmp_path: Path
     ) -> None:
         """Valid checkpoint file is loaded correctly."""
@@ -527,7 +527,7 @@ class TestCheckpoint:
         assert connector._config.cursor_path is not None
         connector._config.cursor_path.write_text(json.dumps(checkpoint_data))
 
-        connector._load_checkpoint()
+        await connector._load_checkpoint()
 
         assert connector._channel_checkpoints == {
             "111": "1234567890000000001",
@@ -569,12 +569,12 @@ class TestCheckpoint:
         assert not tmp_path.exists()
         assert connector._config.cursor_path.exists()
 
-    def test_load_checkpoint_corrupt_file(self, connector: DiscordUserConnector) -> None:
+    async def test_load_checkpoint_corrupt_file(self, connector: DiscordUserConnector) -> None:
         """Corrupt checkpoint file starts fresh without crashing."""
         assert connector._config.cursor_path is not None
         connector._config.cursor_path.write_text("not-valid-json{{")
 
-        connector._load_checkpoint()  # Should not raise
+        await connector._load_checkpoint()  # Should not raise
 
         assert connector._channel_checkpoints == {}
 

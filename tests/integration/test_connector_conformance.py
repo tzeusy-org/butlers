@@ -202,11 +202,11 @@ class TestTelegramConnectorConformance:
         telegram_connector._last_update_id = 50000
 
         # Save checkpoint
-        telegram_connector._save_checkpoint()
+        await telegram_connector._save_checkpoint()
 
         # Create new connector instance (simulates restart)
         new_connector = TelegramBotConnector(telegram_config)
-        new_connector._load_checkpoint()
+        await new_connector._load_checkpoint()
 
         # Verify checkpoint was restored
         assert new_connector._last_update_id == 50000

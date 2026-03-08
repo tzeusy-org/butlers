@@ -24,7 +24,7 @@ Environment variables:
 - CONNECTOR_PROVIDER=discord (required)
 - CONNECTOR_CHANNEL=discord (required)
 - CONNECTOR_ENDPOINT_IDENTITY (required; e.g. "discord:user:<user_id>")
-- CONNECTOR_CURSOR_PATH (required; checkpoint file path)
+- CONNECTOR_CURSOR_PATH (optional; legacy file-based cursor — ignored when DB pool is available)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40084)
 - DISCORD_BOT_TOKEN (required; Discord bot token resolved from env or DB)
@@ -259,6 +259,7 @@ class DiscordUserConnector:
         self,
         config: DiscordUserConnectorConfig,
         db_pool: asyncpg.Pool | None = None,
+        cursor_pool: asyncpg.Pool | None = None,
     ) -> None:
         self._config = config
         self._mcp_client = CachedMCPClient(config.switchboard_mcp_url, client_name="discord-user")
@@ -266,6 +267,10 @@ class DiscordUserConnector:
         self._http_session: aiohttp.ClientSession | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
+
+        # DB pool for cursor read/write to switchboard.connector_registry.
+        # When None, falls back to file-based cursor (legacy).
+        self._cursor_pool = cursor_pool
 
         # Gateway state
         self._sequence: int | None = None
@@ -432,11 +437,11 @@ class DiscordUserConnector:
         4. Runs identify/resume handshake
         5. Processes dispatch events until stopped
         """
-        if not self._config.cursor_path:
-            raise ValueError("CONNECTOR_CURSOR_PATH is required")
+        if not self._config.cursor_path and self._cursor_pool is None:
+            raise ValueError("CONNECTOR_CURSOR_PATH or DB cursor pool is required")
 
         # Load checkpoint
-        self._load_checkpoint()
+        await self._load_checkpoint()
 
         # Start health server
         self._start_health_server()
@@ -988,8 +993,32 @@ class DiscordUserConnector:
         """Update in-memory checkpoint for a channel."""
         self._channel_checkpoints[channel_id] = message_id
 
-    def _load_checkpoint(self) -> None:
-        """Load per-channel checkpoints from checkpoint file."""
+    async def _load_checkpoint(self) -> None:
+        """Load per-channel checkpoints from DB or file."""
+        if self._cursor_pool is not None:
+            from butlers.connectors.cursor_store import load_cursor
+
+            try:
+                raw = await load_cursor(
+                    self._cursor_pool,
+                    self._config.provider,
+                    self._config.endpoint_identity,
+                )
+                if raw is not None:
+                    data = json.loads(raw)
+                    checkpoints = data.get("channel_checkpoints", {})
+                    if isinstance(checkpoints, dict):
+                        self._channel_checkpoints = {str(k): str(v) for k, v in checkpoints.items()}
+                    logger.info(
+                        "Loaded checkpoint from DB",
+                        extra={"channel_count": len(self._channel_checkpoints)},
+                    )
+                else:
+                    logger.info("No checkpoint in DB, starting from scratch")
+            except Exception:
+                logger.exception("Failed to load checkpoint from DB, starting from scratch")
+            return
+
         if not self._config.cursor_path:
             return
 
@@ -1021,11 +1050,36 @@ class DiscordUserConnector:
             )
 
     async def _save_checkpoint(self) -> None:
-        """Persist per-channel checkpoints to checkpoint file atomically.
+        """Persist per-channel checkpoints to DB or file.
 
-        File I/O runs in a thread-pool executor to avoid blocking the asyncio
-        event loop while writing the checkpoint.
+        When using file-based persistence, file I/O runs in a thread-pool
+        executor to avoid blocking the asyncio event loop.
         """
+        if self._cursor_pool is not None:
+            try:
+                from butlers.connectors.cursor_store import save_cursor
+
+                checkpoints_snapshot = dict(self._channel_checkpoints)
+                await save_cursor(
+                    self._cursor_pool,
+                    self._config.provider,
+                    self._config.endpoint_identity,
+                    json.dumps({"channel_checkpoints": checkpoints_snapshot}),
+                )
+                self._last_checkpoint_save = time.time()
+                self._metrics.record_checkpoint_save(status="success")
+                logger.debug(
+                    "Saved checkpoint to DB",
+                    extra={"channel_count": len(self._channel_checkpoints)},
+                )
+            except Exception as exc:
+                self._metrics.record_checkpoint_save(status="error")
+                self._metrics.record_error(
+                    error_type=get_error_type(exc), operation="checkpoint_save"
+                )
+                logger.exception("Failed to save checkpoint to DB")
+            return
+
         if not self._config.cursor_path:
             return
 
@@ -1073,7 +1127,22 @@ async def run_discord_user_connector() -> None:
     configure_logging(level="INFO", butler_name="discord-user")
 
     config = DiscordUserConnectorConfig.from_env()
-    connector = DiscordUserConnector(config)
+
+    # Create cursor pool for DB-backed checkpoint persistence.
+    cursor_pool = None
+    try:
+        from butlers.connectors.cursor_store import create_cursor_pool_from_env
+
+        cursor_pool = await create_cursor_pool_from_env()
+        logger.info("Discord user connector: cursor pool created for DB-backed checkpoints")
+    except Exception as exc:
+        logger.warning(
+            "Discord user connector: failed to create cursor pool (%s); "
+            "falling back to file-based cursor if CONNECTOR_CURSOR_PATH is set",
+            exc,
+        )
+
+    connector = DiscordUserConnector(config, cursor_pool=cursor_pool)
 
     try:
         await connector.start()
@@ -1081,6 +1150,8 @@ async def run_discord_user_connector() -> None:
         logger.info("Received interrupt, stopping connector")
     finally:
         await connector.stop()
+        if cursor_pool is not None:
+            await cursor_pool.close()
 
 
 if __name__ == "__main__":

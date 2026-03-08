@@ -14,7 +14,7 @@ Environment Variables (from docs/connectors/telegram_bot.md):
     CONNECTOR_PROVIDER: "telegram" (required)
     CONNECTOR_CHANNEL: "telegram" (required)
     CONNECTOR_ENDPOINT_IDENTITY: Bot username or configured bot ID (required)
-    CONNECTOR_CURSOR_PATH: Checkpoint file path for polling mode (required for polling)
+    CONNECTOR_CURSOR_PATH: Legacy file checkpoint (optional; ignored when DB pool available)
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
@@ -226,6 +226,7 @@ class TelegramBotConnector:
         self,
         config: TelegramBotConnectorConfig,
         db_pool: asyncpg.Pool | None = None,
+        cursor_pool: asyncpg.Pool | None = None,
     ) -> None:
         self._config = config
         self._http_client = httpx.AsyncClient(timeout=30.0)
@@ -233,6 +234,10 @@ class TelegramBotConnector:
         self._last_update_id: int | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
+
+        # DB pool for cursor read/write to switchboard.connector_registry.
+        # When None, falls back to file-based cursor (legacy).
+        self._cursor_pool = cursor_pool
 
         # Metrics
         self._metrics = ConnectorMetrics(
@@ -393,8 +398,8 @@ class TelegramBotConnector:
         Loads checkpoint, polls for updates, normalizes and submits to ingest,
         persists new checkpoint after successful submission.
         """
-        if not self._config.cursor_path:
-            raise ValueError("CONNECTOR_CURSOR_PATH is required for polling mode")
+        if not self._config.cursor_path and self._cursor_pool is None:
+            raise ValueError("CONNECTOR_CURSOR_PATH or DB cursor pool is required for polling mode")
 
         # Start health server
         self._start_health_server()
@@ -403,7 +408,7 @@ class TelegramBotConnector:
         self._start_heartbeat()
 
         # Load checkpoint
-        self._load_checkpoint()
+        await self._load_checkpoint()
 
         # Load source filters before entering the ingestion loop.
         await self._source_filter_evaluator.ensure_loaded()
@@ -449,7 +454,7 @@ class TelegramBotConnector:
                         await self._process_update(update)
 
                     # Save checkpoint after successful batch
-                    self._save_checkpoint()
+                    await self._save_checkpoint()
 
                 # Successful poll — reset backoff
                 self._consecutive_failures = 0
@@ -888,8 +893,30 @@ class TelegramBotConnector:
     # Internal: Checkpoint persistence
     # -------------------------------------------------------------------------
 
-    def _load_checkpoint(self) -> None:
-        """Load polling cursor from checkpoint file."""
+    async def _load_checkpoint(self) -> None:
+        """Load polling cursor from DB or file."""
+        if self._cursor_pool is not None:
+            from butlers.connectors.cursor_store import load_cursor
+
+            try:
+                raw = await load_cursor(
+                    self._cursor_pool,
+                    self._config.provider,
+                    self._config.endpoint_identity,
+                )
+                if raw is not None:
+                    data = json.loads(raw)
+                    self._last_update_id = data.get("last_update_id")
+                    logger.info(
+                        "Loaded checkpoint from DB",
+                        extra={"last_update_id": self._last_update_id},
+                    )
+                else:
+                    logger.info("No checkpoint in DB, starting from scratch")
+            except Exception:
+                logger.exception("Failed to load checkpoint from DB, starting from scratch")
+            return
+
         if not self._config.cursor_path:
             return
 
@@ -918,8 +945,32 @@ class TelegramBotConnector:
                 extra={"cursor_path": str(self._config.cursor_path)},
             )
 
-    def _save_checkpoint(self) -> None:
-        """Persist polling cursor to checkpoint file."""
+    async def _save_checkpoint(self) -> None:
+        """Persist polling cursor to DB or file."""
+        if self._cursor_pool is not None:
+            try:
+                from butlers.connectors.cursor_store import save_cursor
+
+                await save_cursor(
+                    self._cursor_pool,
+                    self._config.provider,
+                    self._config.endpoint_identity,
+                    json.dumps({"last_update_id": self._last_update_id}),
+                )
+                self._last_checkpoint_save = time.time()
+                self._metrics.record_checkpoint_save(status="success")
+                logger.debug(
+                    "Saved checkpoint to DB",
+                    extra={"last_update_id": self._last_update_id},
+                )
+            except Exception as exc:
+                self._metrics.record_checkpoint_save(status="error")
+                self._metrics.record_error(
+                    error_type=get_error_type(exc), operation="checkpoint_save"
+                )
+                logger.exception("Failed to save checkpoint to DB")
+            return
+
         if not self._config.cursor_path:
             return
 
@@ -1083,24 +1134,41 @@ async def run_telegram_bot_connector() -> None:
         logger.debug("Telegram bot connector: config updated with DB-resolved token")
 
     assert config is not None
-    connector = TelegramBotConnector(config)
+
+    # Create cursor pool for DB-backed checkpoint persistence.
+    cursor_pool = None
+    try:
+        from butlers.connectors.cursor_store import create_cursor_pool_from_env
+
+        cursor_pool = await create_cursor_pool_from_env()
+        logger.info("Telegram bot connector: cursor pool created for DB-backed checkpoints")
+    except Exception as exc:
+        logger.warning(
+            "Telegram bot connector: failed to create cursor pool (%s); "
+            "falling back to file-based cursor if CONNECTOR_CURSOR_PATH is set",
+            exc,
+        )
+
+    connector = TelegramBotConnector(config, cursor_pool=cursor_pool)
 
     # Determine mode based on config
-    if config.webhook_url:
-        # Webhook mode
-        logger.info("Running in webhook mode")
-        await connector.start_webhook()
-        # In webhook mode, the connector just registers the webhook and exits
-        # Actual update handling happens via HTTP webhook endpoint
-    else:
-        # Polling mode
-        logger.info("Running in polling mode")
-        try:
-            await connector.start_polling()
-        except KeyboardInterrupt:
-            logger.info("Received interrupt, stopping connector")
-        finally:
-            await connector.stop()
+    try:
+        if config.webhook_url:
+            # Webhook mode
+            logger.info("Running in webhook mode")
+            await connector.start_webhook()
+        else:
+            # Polling mode
+            logger.info("Running in polling mode")
+            try:
+                await connector.start_polling()
+            except KeyboardInterrupt:
+                logger.info("Received interrupt, stopping connector")
+            finally:
+                await connector.stop()
+    finally:
+        if cursor_pool is not None:
+            await cursor_pool.close()
 
 
 if __name__ == "__main__":

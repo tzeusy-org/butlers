@@ -19,7 +19,7 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - CONNECTOR_PROVIDER=gmail (required)
 - CONNECTOR_CHANNEL=email (required)
 - CONNECTOR_ENDPOINT_IDENTITY (required, e.g. "gmail:user:alice@gmail.com")
-- CONNECTOR_CURSOR_PATH (required; stores last historyId)
+- CONNECTOR_CURSOR_PATH (optional; legacy file-based cursor — ignored when DB pool is available)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40082)
 - DATABASE_URL or POSTGRES_* (DB connectivity for credential lookup; defaults apply if unset)
@@ -201,7 +201,7 @@ class GmailConnectorConfig(BaseModel):
     connector_provider: str = "gmail"
     connector_channel: str = "email"
     connector_endpoint_identity: str
-    connector_cursor_path: Path
+    connector_cursor_path: Path | None = None
     connector_max_inflight: int = 8
 
     # Health check config
@@ -249,8 +249,6 @@ class GmailConnectorConfig(BaseModel):
     def _load_non_secret_env_config(cls) -> dict[str, Any]:
         """Load connector config from environment variables excluding OAuth secrets."""
         cursor_path_str = os.environ.get("CONNECTOR_CURSOR_PATH")
-        if not cursor_path_str:
-            raise ValueError("CONNECTOR_CURSOR_PATH is required")
 
         max_inflight_str = os.environ.get("CONNECTOR_MAX_INFLIGHT", "8")
         try:
@@ -345,7 +343,7 @@ class GmailConnectorConfig(BaseModel):
             "connector_provider": os.environ.get("CONNECTOR_PROVIDER", "gmail"),
             "connector_channel": os.environ.get("CONNECTOR_CHANNEL", "email"),
             "connector_endpoint_identity": os.environ["CONNECTOR_ENDPOINT_IDENTITY"],
-            "connector_cursor_path": Path(cursor_path_str),
+            "connector_cursor_path": Path(cursor_path_str) if cursor_path_str else None,
             "connector_max_inflight": max_inflight,
             "connector_health_port": health_port,
             "gmail_watch_renew_interval_s": watch_renew_interval,
@@ -443,12 +441,16 @@ class GmailConnectorRuntime:
         config: GmailConnectorConfig,
         blob_store: BlobStore | None = None,
         db_pool: asyncpg.Pool | None = None,
+        cursor_pool: asyncpg.Pool | None = None,
     ) -> None:
         self._config = config
         self._blob_store = blob_store
         # Optional DB pool for writing attachment_refs rows (lazy-fetch model).
         # When None, attachment metadata persistence is skipped but ingest continues.
         self._db_pool = db_pool
+        # DB pool for cursor read/write to switchboard.connector_registry.
+        # When None, falls back to file-based cursor (legacy).
+        self._cursor_pool = cursor_pool
         self._http_client: httpx.AsyncClient | None = None
         self._mcp_client = CachedMCPClient(
             config.switchboard_mcp_url, client_name="gmail-connector"
@@ -733,8 +735,8 @@ class GmailConnectorRuntime:
             self._config.connector_endpoint_identity,
         )
 
-        # Ensure cursor file exists
-        await self._ensure_cursor_file()
+        # Ensure cursor exists (DB or file)
+        await self._ensure_cursor()
 
         # Load source filters before starting ingestion loop
         await self._source_filter_evaluator.ensure_loaded()
@@ -1362,51 +1364,107 @@ class GmailConnectorRuntime:
             )
             return "ack"  # assume continue on progress reporting failures
 
-    async def _ensure_cursor_file(self) -> None:
-        """Ensure cursor file exists with initial state if missing."""
-        if not self._config.connector_cursor_path.exists():
-            # Initialize with current history ID from Gmail
-            try:
-                profile = await self._gmail_get_profile()
-                initial_history_id = profile.get("historyId", "1")
+    async def _ensure_cursor(self) -> None:
+        """Ensure cursor exists in DB (or file for legacy), initialize if missing."""
+        if self._cursor_pool is not None:
+            from butlers.connectors.cursor_store import load_cursor
+
+            existing = await load_cursor(
+                self._cursor_pool,
+                self._config.connector_provider,
+                self._config.connector_endpoint_identity,
+            )
+            if existing is None:
+                # Initialize with current history ID from Gmail
+                try:
+                    profile = await self._gmail_get_profile()
+                    initial_history_id = profile.get("historyId", "1")
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to fetch initial historyId from Gmail: %s. Using default.", exc
+                    )
+                    initial_history_id = "1"
                 initial_cursor = GmailCursor(
                     history_id=initial_history_id,
                     last_updated_at=datetime.now(UTC).isoformat(),
                 )
                 await self._save_cursor(initial_cursor)
                 logger.info(
-                    "Initialized cursor file with historyId=%s at %s",
+                    "Initialized cursor in DB with historyId=%s",
                     initial_history_id,
-                    self._config.connector_cursor_path,
                 )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to fetch initial historyId from Gmail: %s. Using default.", exc
-                )
-                initial_cursor = GmailCursor(
-                    history_id="1",
-                    last_updated_at=datetime.now(UTC).isoformat(),
-                )
-                await self._save_cursor(initial_cursor)
+        elif self._config.connector_cursor_path is not None:
+            # Legacy file-based path
+            if not self._config.connector_cursor_path.exists():
+                try:
+                    profile = await self._gmail_get_profile()
+                    initial_history_id = profile.get("historyId", "1")
+                    initial_cursor = GmailCursor(
+                        history_id=initial_history_id,
+                        last_updated_at=datetime.now(UTC).isoformat(),
+                    )
+                    await self._save_cursor(initial_cursor)
+                    logger.info(
+                        "Initialized cursor file with historyId=%s at %s",
+                        initial_history_id,
+                        self._config.connector_cursor_path,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to fetch initial historyId from Gmail: %s. Using default.", exc
+                    )
+                    initial_cursor = GmailCursor(
+                        history_id="1",
+                        last_updated_at=datetime.now(UTC).isoformat(),
+                    )
+                    await self._save_cursor(initial_cursor)
 
     async def _load_cursor(self) -> GmailCursor:
-        """Load cursor state from disk."""
+        """Load cursor state from DB or file."""
+        if self._cursor_pool is not None:
+            from butlers.connectors.cursor_store import load_cursor
+
+            raw = await load_cursor(
+                self._cursor_pool,
+                self._config.connector_provider,
+                self._config.connector_endpoint_identity,
+            )
+            if raw is None:
+                raise RuntimeError(
+                    "Cursor not found in DB for "
+                    f"{self._config.connector_provider}/{self._config.connector_endpoint_identity}"
+                )
+            cursor = GmailCursor.model_validate_json(raw)
+            self._last_history_id = cursor.history_id
+            return cursor
+
+        # Legacy file-based path
+        if self._config.connector_cursor_path is None:
+            raise RuntimeError("No cursor_pool and no connector_cursor_path configured")
         if not self._config.connector_cursor_path.exists():
             raise RuntimeError(f"Cursor file not found: {self._config.connector_cursor_path}")
-
         cursor_data = json.loads(self._config.connector_cursor_path.read_text())
         cursor = GmailCursor.model_validate(cursor_data)
-
-        # Track last history_id for heartbeat checkpoint
         self._last_history_id = cursor.history_id
-
         return cursor
 
     async def _save_cursor(self, cursor: GmailCursor) -> None:
-        """Save cursor state to disk."""
+        """Save cursor state to DB or file."""
         try:
-            self._config.connector_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            self._config.connector_cursor_path.write_text(cursor.model_dump_json(indent=2))
+            if self._cursor_pool is not None:
+                from butlers.connectors.cursor_store import save_cursor
+
+                await save_cursor(
+                    self._cursor_pool,
+                    self._config.connector_provider,
+                    self._config.connector_endpoint_identity,
+                    cursor.model_dump_json(),
+                )
+            elif self._config.connector_cursor_path is not None:
+                self._config.connector_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                self._config.connector_cursor_path.write_text(cursor.model_dump_json(indent=2))
+            else:
+                raise RuntimeError("No cursor_pool and no connector_cursor_path configured")
 
             # Track last history_id for heartbeat checkpoint
             self._last_history_id = cursor.history_id
@@ -2597,8 +2655,26 @@ async def run_gmail_connector() -> None:
         logger.error("Failed to build connector config from DB credentials: %s", exc)
         raise
 
-    connector = GmailConnectorRuntime(config)
-    await connector.start()
+    # Create cursor pool for DB-backed checkpoint persistence.
+    cursor_pool = None
+    try:
+        from butlers.connectors.cursor_store import create_cursor_pool_from_env
+
+        cursor_pool = await create_cursor_pool_from_env()
+        logger.info("Gmail connector: cursor pool created for DB-backed checkpoints")
+    except Exception as exc:
+        logger.warning(
+            "Gmail connector: failed to create cursor pool (%s); "
+            "falling back to file-based cursor if CONNECTOR_CURSOR_PATH is set",
+            exc,
+        )
+
+    connector = GmailConnectorRuntime(config, cursor_pool=cursor_pool)
+    try:
+        await connector.start()
+    finally:
+        if cursor_pool is not None:
+            await cursor_pool.close()
 
 
 def main() -> None:
