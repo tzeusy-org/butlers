@@ -638,6 +638,22 @@ async def list_activity(
 # GET /api/memory/entities
 # ---------------------------------------------------------------------------
 
+# Role priority for entity list ordering. Lower rank = higher in the list.
+# Add new roles here to extend the ranking; unlisted roles fall through to ELSE.
+_ENTITY_ROLE_RANK: dict[str, int] = {
+    "owner": 0,
+    "family": 1,
+}
+
+_ENTITY_ROLE_ORDER_SQL = (
+    "CASE "
+    + " ".join(
+        f"WHEN '{role}' = ANY(e.roles) THEN {rank}"
+        for role, rank in sorted(_ENTITY_ROLE_RANK.items(), key=lambda x: x[1])
+    )
+    + " ELSE 99 END"
+)
+
 
 @router.get("/entities", response_model=PaginatedResponse[EntitySummary])
 async def list_entities(
@@ -695,7 +711,7 @@ async def list_entities(
         f" e.roles AS linked_contact_roles,"
         f" COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified"
         f" FROM shared.entities e{where}"
-        f" ORDER BY e.canonical_name ASC"
+        f" ORDER BY {_ENTITY_ROLE_ORDER_SQL} ASC, e.canonical_name ASC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
         offset,
