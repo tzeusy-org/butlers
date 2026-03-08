@@ -119,6 +119,8 @@ def _quiz_response_record(
         "response_type": "review",
         "session_id": None,
         "responded_at": datetime.now(UTC),
+        "evaluator_notes": None,
+        "node_label": None,
     }
 
 
