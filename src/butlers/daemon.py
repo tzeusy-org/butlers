@@ -2909,6 +2909,8 @@ class ButlerDaemon:
             )
 
         # Switchboard-only: ingest + route_to_butler tools
+        # NOTE: `deliver` is registered by SwitchboardModule.register_tools()
+        # — do NOT register it inline here to avoid duplicate component warnings.
         if butler_name == "switchboard":
             import importlib.util as _ilu
 
@@ -2919,9 +2921,6 @@ class ButlerDaemon:
                 backfill_progress as _backfill_progress,
             )
             from butlers.tools.switchboard.ingestion.ingest import ingest_v1
-            from butlers.tools.switchboard.notification.deliver import (
-                deliver as _switchboard_deliver,
-            )
             from butlers.tools.switchboard.routing.route import (
                 route as _switchboard_route,
             )
@@ -3244,31 +3243,6 @@ class ButlerDaemon:
                         "butler": butler,
                         "error": f"{type(exc).__name__}: {exc}",
                     }
-
-            @mcp.tool()
-            @tool_span("deliver", butler_name=butler_name)
-            async def deliver(
-                source_butler: str = "switchboard",
-                channel: str | None = None,
-                message: str | None = None,
-                recipient: str | None = None,
-                metadata: dict[str, Any] | None = None,
-                notify_request: dict[str, Any] | None = None,
-            ) -> dict[str, Any]:
-                """Deliver a notification through a channel (telegram, email).
-
-                Accepts either a versioned notify.v1 envelope via notify_request,
-                or legacy positional args (channel, message, recipient).
-                """
-                return await _switchboard_deliver(
-                    pool,
-                    channel=channel,
-                    message=message,
-                    recipient=recipient,
-                    metadata=metadata,
-                    source_butler=source_butler,
-                    notify_request=notify_request,
-                )
 
             @mcp.tool(name="connector.heartbeat")
             @tool_span("connector.heartbeat", butler_name=butler_name)
