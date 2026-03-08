@@ -25,6 +25,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from butlers.ingestion_policy_metrics import IngestionPolicyMetrics
+
 if TYPE_CHECKING:
     import asyncpg
 
@@ -338,6 +340,7 @@ class IngestionPolicyEvaluator:
         self._last_loaded_at: float | None = None
         self._load_lock = asyncio.Lock()
         self._background_refresh_task: asyncio.Task[None] | None = None
+        self._metrics = IngestionPolicyMetrics(scope)
 
     @property
     def scope(self) -> str:
@@ -454,6 +457,9 @@ class IngestionPolicyEvaluator:
         **not** await it -- callers receive a response from the current
         cache without blocking.
 
+        Records OTel telemetry metrics (D11): rule_matched / rule_pass_through
+        counters and evaluation_latency_ms histogram.
+
         Parameters
         ----------
         envelope:
@@ -465,6 +471,7 @@ class IngestionPolicyEvaluator:
             The policy decision. No match returns ``action='pass_through'``.
         """
         self._maybe_schedule_refresh()
+        t0 = time.perf_counter()
 
         for rule in self._rules:
             try:
@@ -485,6 +492,14 @@ class IngestionPolicyEvaluator:
             rule_id = str(rule.get("id", "")) or None
             rule_type = str(rule.get("rule_type", "")) or None
 
+            latency_ms = (time.perf_counter() - t0) * 1000
+            self._metrics.record_match(
+                rule_type=rule_type or "unknown",
+                action=action_str,
+                source_channel=envelope.source_channel,
+                latency_ms=latency_ms,
+            )
+
             return PolicyDecision(
                 action=action_name,
                 target_butler=target_butler,
@@ -494,6 +509,13 @@ class IngestionPolicyEvaluator:
             )
 
         # No match -- pass through
+        latency_ms = (time.perf_counter() - t0) * 1000
+        self._metrics.record_pass_through(
+            source_channel=envelope.source_channel,
+            reason="no rule matched",
+            latency_ms=latency_ms,
+        )
+
         return PolicyDecision(
             action="pass_through",
             target_butler=None,

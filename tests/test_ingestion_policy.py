@@ -11,8 +11,10 @@ Covers:
 - Cache invalidation
 - IngestionEnvelope and PolicyDecision dataclasses
 - Scope-aware loading
+- Telemetry metrics integration (D11): rule_matched, rule_pass_through,
+  evaluation_latency_ms
 
-Issue: bu-r55.3
+Issue: bu-r55.3, bu-r55.4
 """
 
 from __future__ import annotations
@@ -23,6 +25,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from opentelemetry import metrics as otel_metrics
+from opentelemetry.metrics import _internal as _metrics_internal
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.util._once import Once
 
 from butlers.ingestion_policy import (
     IngestionEnvelope,
@@ -35,6 +42,11 @@ from butlers.ingestion_policy import (
     _match_sender_address,
     _match_sender_domain,
     _match_substring,
+)
+from butlers.ingestion_policy_metrics import (
+    IngestionPolicyMetrics,
+    _safe_action,
+    _scope_type,
 )
 
 pytestmark = pytest.mark.unit
@@ -1019,3 +1031,328 @@ class TestMixedRuleTypes:
         # Test: no match at all -> pass_through
         d4 = evaluator.evaluate(_email_envelope(sender="user@other.com", mime_parts=["text/plain"]))
         assert d4.action == "pass_through"
+
+
+# ---------------------------------------------------------------------------
+# Telemetry helpers (OTel InMemoryMetricReader)
+# ---------------------------------------------------------------------------
+
+
+def _reset_metrics_global_state() -> None:
+    """Reset the OTel global MeterProvider state for test isolation."""
+    _metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+    _metrics_internal._METER_PROVIDER = None
+
+
+def _make_in_memory_provider() -> tuple[MeterProvider, InMemoryMetricReader]:
+    """Create a MeterProvider with an InMemoryMetricReader for test assertions."""
+    _reset_metrics_global_state()
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    otel_metrics.set_meter_provider(provider)
+    return provider, reader
+
+
+def _collect_metrics(reader: InMemoryMetricReader) -> dict[str, Any]:
+    """Flatten metrics data into {metric_name: [data_points]} for easy assertions."""
+    result: dict[str, Any] = {}
+    data = reader.get_metrics_data()
+    for rm in data.resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.data.data_points:
+                    result[metric.name] = metric.data.data_points
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Cardinality-safe label helpers
+# ---------------------------------------------------------------------------
+
+
+class TestScopeType:
+    def test_global(self) -> None:
+        assert _scope_type("global") == "global"
+
+    def test_connector_gmail(self) -> None:
+        assert _scope_type("connector:gmail:gmail:user:dev") == "connector:gmail"
+
+    def test_connector_telegram_bot(self) -> None:
+        assert _scope_type("connector:telegram-bot:telegram-bot:my-bot") == "connector:telegram-bot"
+
+    def test_connector_minimal(self) -> None:
+        assert _scope_type("connector:discord") == "connector:discord"
+
+    def test_unknown_fallback(self) -> None:
+        assert _scope_type("something_else") == "something_else"
+
+
+class TestSafeAction:
+    def test_route_to_stripped(self) -> None:
+        assert _safe_action("route_to:finance") == "route_to"
+
+    def test_route_to_no_target(self) -> None:
+        assert _safe_action("route_to") == "route_to"
+
+    def test_skip_unchanged(self) -> None:
+        assert _safe_action("skip") == "skip"
+
+    def test_block_unchanged(self) -> None:
+        assert _safe_action("block") == "block"
+
+    def test_pass_through_unchanged(self) -> None:
+        assert _safe_action("pass_through") == "pass_through"
+
+
+# ---------------------------------------------------------------------------
+# IngestionPolicyMetrics — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionPolicyMetrics:
+    @pytest.fixture(autouse=True)
+    def _install_provider(self) -> None:
+        _provider, reader = _make_in_memory_provider()
+        self._reader = reader
+        yield
+        _reset_metrics_global_state()
+
+    def _metrics_map(self) -> dict[str, Any]:
+        return _collect_metrics(self._reader)
+
+    def test_record_match_counter(self) -> None:
+        m = IngestionPolicyMetrics(scope="global")
+        m.record_match(
+            rule_type="sender_domain",
+            action="skip",
+            source_channel="email",
+            latency_ms=0.5,
+        )
+        data = self._metrics_map()
+        assert "butlers.ingestion.rule_matched" in data
+        dp = data["butlers.ingestion.rule_matched"][0]
+        assert dp.value == 1
+        assert dp.attributes["scope_type"] == "global"
+        assert dp.attributes["rule_type"] == "sender_domain"
+        assert dp.attributes["action"] == "skip"
+        assert dp.attributes["source_channel"] == "email"
+
+    def test_record_match_route_to_action_sanitized(self) -> None:
+        m = IngestionPolicyMetrics(scope="global")
+        m.record_match(
+            rule_type="sender_domain",
+            action="route_to:finance",
+            source_channel="email",
+            latency_ms=0.3,
+        )
+        data = self._metrics_map()
+        dp = data["butlers.ingestion.rule_matched"][0]
+        assert dp.attributes["action"] == "route_to"
+
+    def test_record_match_latency_histogram(self) -> None:
+        m = IngestionPolicyMetrics(scope="global")
+        m.record_match(
+            rule_type="sender_domain",
+            action="skip",
+            source_channel="email",
+            latency_ms=1.5,
+        )
+        data = self._metrics_map()
+        assert "butlers.ingestion.evaluation_latency_ms" in data
+        dp = data["butlers.ingestion.evaluation_latency_ms"][0]
+        assert dp.count == 1
+        assert dp.sum == pytest.approx(1.5, rel=1e-2)
+        assert dp.attributes["scope_type"] == "global"
+        assert dp.attributes["result"] == "matched"
+
+    def test_record_pass_through_counter(self) -> None:
+        m = IngestionPolicyMetrics(scope="connector:gmail:gmail:user:dev")
+        m.record_pass_through(
+            source_channel="email",
+            reason="no rule matched",
+            latency_ms=0.2,
+        )
+        data = self._metrics_map()
+        assert "butlers.ingestion.rule_pass_through" in data
+        dp = data["butlers.ingestion.rule_pass_through"][0]
+        assert dp.value == 1
+        assert dp.attributes["scope_type"] == "connector:gmail"
+        assert dp.attributes["source_channel"] == "email"
+        assert dp.attributes["reason"] == "no rule matched"
+
+    def test_record_pass_through_latency_histogram(self) -> None:
+        m = IngestionPolicyMetrics(scope="global")
+        m.record_pass_through(
+            source_channel="telegram",
+            reason="no rule matched",
+            latency_ms=0.8,
+        )
+        data = self._metrics_map()
+        assert "butlers.ingestion.evaluation_latency_ms" in data
+        dp = data["butlers.ingestion.evaluation_latency_ms"][0]
+        assert dp.count == 1
+        assert dp.sum == pytest.approx(0.8, rel=1e-2)
+        assert dp.attributes["result"] == "pass_through"
+
+    def test_connector_scope_type_cardinality(self) -> None:
+        """Connector scope strips endpoint identity for cardinality safety."""
+        m = IngestionPolicyMetrics(scope="connector:telegram-bot:telegram-bot:my-bot")
+        m.record_match(
+            rule_type="chat_id",
+            action="block",
+            source_channel="telegram",
+            latency_ms=0.1,
+        )
+        data = self._metrics_map()
+        dp = data["butlers.ingestion.rule_matched"][0]
+        assert dp.attributes["scope_type"] == "connector:telegram-bot"
+
+
+# ---------------------------------------------------------------------------
+# Evaluator telemetry integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluatorTelemetryIntegration:
+    """Verify that evaluate() records OTel metrics end-to-end."""
+
+    @pytest.fixture(autouse=True)
+    def _install_provider(self) -> None:
+        _provider, reader = _make_in_memory_provider()
+        self._reader = reader
+        yield
+        _reset_metrics_global_state()
+
+    def _metrics_map(self) -> dict[str, Any]:
+        return _collect_metrics(self._reader)
+
+    def test_match_records_rule_matched_metric(self) -> None:
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = [
+            _rule(
+                rule_type="sender_domain",
+                condition={"domain": "chase.com", "match": "exact"},
+                action="skip",
+            )
+        ]
+
+        evaluator.evaluate(_email_envelope(sender="alerts@chase.com"))
+
+        data = self._metrics_map()
+        assert "butlers.ingestion.rule_matched" in data
+        dp = data["butlers.ingestion.rule_matched"][0]
+        assert dp.value == 1
+        assert dp.attributes["scope_type"] == "global"
+        assert dp.attributes["rule_type"] == "sender_domain"
+        assert dp.attributes["action"] == "skip"
+        assert dp.attributes["source_channel"] == "email"
+
+    def test_match_records_latency_with_matched_result(self) -> None:
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = [
+            _rule(
+                rule_type="sender_address",
+                condition={"address": "test@test.com"},
+                action="metadata_only",
+            )
+        ]
+
+        evaluator.evaluate(_email_envelope(sender="test@test.com"))
+
+        data = self._metrics_map()
+        assert "butlers.ingestion.evaluation_latency_ms" in data
+        dp = data["butlers.ingestion.evaluation_latency_ms"][0]
+        assert dp.count == 1
+        assert dp.sum >= 0
+        assert dp.attributes["result"] == "matched"
+
+    def test_no_match_records_pass_through_metric(self) -> None:
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = []
+
+        evaluator.evaluate(_email_envelope(sender="user@example.com"))
+
+        data = self._metrics_map()
+        assert "butlers.ingestion.rule_pass_through" in data
+        dp = data["butlers.ingestion.rule_pass_through"][0]
+        assert dp.value == 1
+        assert dp.attributes["scope_type"] == "global"
+        assert dp.attributes["source_channel"] == "email"
+        assert dp.attributes["reason"] == "no rule matched"
+
+    def test_no_match_records_latency_with_pass_through_result(self) -> None:
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = []
+
+        evaluator.evaluate(_email_envelope(sender="user@example.com"))
+
+        data = self._metrics_map()
+        assert "butlers.ingestion.evaluation_latency_ms" in data
+        dp = data["butlers.ingestion.evaluation_latency_ms"][0]
+        assert dp.count == 1
+        assert dp.attributes["result"] == "pass_through"
+
+    def test_connector_scope_match_uses_correct_scope_type(self) -> None:
+        evaluator = IngestionPolicyEvaluator(
+            scope="connector:gmail:gmail:user:alice@example.com", db_pool=None
+        )
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = [
+            _rule(
+                rule_type="sender_domain",
+                condition={"domain": "spam.com", "match": "exact"},
+                action="block",
+            )
+        ]
+
+        evaluator.evaluate(_email_envelope(sender="bad@spam.com"))
+
+        data = self._metrics_map()
+        dp = data["butlers.ingestion.rule_matched"][0]
+        assert dp.attributes["scope_type"] == "connector:gmail"
+
+    def test_route_to_action_sanitized_in_metric(self) -> None:
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = [
+            _rule(
+                rule_type="sender_domain",
+                condition={"domain": "paypal.com", "match": "suffix"},
+                action="route_to:finance",
+            )
+        ]
+
+        evaluator.evaluate(_email_envelope(sender="service@paypal.com"))
+
+        data = self._metrics_map()
+        dp = data["butlers.ingestion.rule_matched"][0]
+        assert dp.attributes["action"] == "route_to"
+
+    def test_multiple_evaluations_accumulate(self) -> None:
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = [
+            _rule(
+                rule_type="sender_domain",
+                condition={"domain": "example.com", "match": "exact"},
+                action="skip",
+            )
+        ]
+
+        # One match
+        evaluator.evaluate(_email_envelope(sender="user@example.com"))
+        # One pass-through
+        evaluator.evaluate(_email_envelope(sender="user@other.com"))
+        # Another match
+        evaluator.evaluate(_email_envelope(sender="admin@example.com"))
+
+        data = self._metrics_map()
+        matched_dp = data["butlers.ingestion.rule_matched"][0]
+        assert matched_dp.value == 2
+
+        pt_dp = data["butlers.ingestion.rule_pass_through"][0]
+        assert pt_dp.value == 1
