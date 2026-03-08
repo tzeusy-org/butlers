@@ -34,7 +34,6 @@ export CONNECTOR_PROVIDER="telegram"
 export CONNECTOR_CHANNEL="telegram"
 export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"
 export BUTLER_TELEGRAM_TOKEN="your-telegram-bot-token"
-export CONNECTOR_CURSOR_PATH="/path/to/checkpoint.json"
 export CONNECTOR_POLL_INTERVAL_S="1.0"
 
 python -m butlers.connectors.telegram_bot
@@ -67,7 +66,6 @@ Required environment variables:
 - `BUTLER_TELEGRAM_TOKEN`: Telegram bot token
 
 Polling mode requires:
-- `CONNECTOR_CURSOR_PATH`: Checkpoint file path
 - `CONNECTOR_POLL_INTERVAL_S`: Poll interval in seconds (default: 1.0)
 
 Webhook mode requires:
@@ -78,8 +76,8 @@ Optional:
 
 ### Checkpoint Persistence
 
-In polling mode, the connector persists a checkpoint file with the last 
-processed `update_id`. On restart, it resumes from the checkpoint to ensure 
+In polling mode, the connector persists a checkpoint to the DB with the last
+processed `update_id`. On restart, it resumes from the checkpoint to ensure
 at-least-once delivery semantics.
 
 Switchboard ingest deduplication ensures exactly-once effect at the canonical 

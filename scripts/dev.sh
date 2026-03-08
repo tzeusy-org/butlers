@@ -768,7 +768,7 @@ _build_gmail_pane_cmd() {
 
   if [ "$SKIP_OAUTH_CHECK" = "true" ] || _has_google_creds; then
     # Credentials available — start connector with DB-first lookup enabled.
-    printf '%s' "${gmail_cmd_base} && POSTGRES_HOST=${POSTGRES_HOST} POSTGRES_PORT=${POSTGRES_PORT} POSTGRES_USER=${POSTGRES_USER} CONNECTOR_BUTLER_DB_NAME=${gmail_creds_db} CONNECTOR_BUTLER_DB_SCHEMA=${gmail_creds_schema} BUTLER_SHARED_DB_NAME=${gmail_creds_db} BUTLER_SHARED_DB_SCHEMA=${gmail_creds_schema} CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} CONNECTOR_CURSOR_PATH=\${GMAIL_CONNECTOR_CURSOR_PATH:-.tmp/connectors/gmail_checkpoint.json} uv run python -m butlers.connectors.gmail"
+    printf '%s' "${gmail_cmd_base} && POSTGRES_HOST=${POSTGRES_HOST} POSTGRES_PORT=${POSTGRES_PORT} POSTGRES_USER=${POSTGRES_USER} CONNECTOR_BUTLER_DB_NAME=${gmail_creds_db} CONNECTOR_BUTLER_DB_SCHEMA=${gmail_creds_schema} BUTLER_SHARED_DB_NAME=${gmail_creds_db} BUTLER_SHARED_DB_SCHEMA=${gmail_creds_schema} CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} uv run python -m butlers.connectors.gmail"
     return 0
   fi
 
@@ -812,10 +812,10 @@ _pipe_pane_to_log "$PANE_GMAIL" "${LOGS_RUN_DIR}/connectors/gmail.log"
 sleep 0.3
 
 tmux send-keys -t "$PANE_TELEGRAM_BOT" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" Enter
+  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} uv run python -m butlers.connectors.telegram_bot" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} CONNECTOR_CURSOR_PATH=\${TELEGRAM_USER_CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_user_client_checkpoint.json} uv run python -m butlers.connectors.telegram_user_client" Enter
+  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} uv run python -m butlers.connectors.telegram_user_client" Enter
 
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)

@@ -21,7 +21,6 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - CONNECTOR_PROVIDER=telegram (required)
 - CONNECTOR_CHANNEL=telegram (required)
 - CONNECTOR_ENDPOINT_IDENTITY (required, user-client identity e.g. "telegram:user:123456")
-- CONNECTOR_CURSOR_PATH (optional; legacy file-based cursor — ignored when DB pool is available)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
@@ -49,7 +48,6 @@ import os
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -98,7 +96,6 @@ class TelegramUserClientConnectorConfig:
     telegram_user_session: str = field(default="")
 
     # State/checkpoint config
-    cursor_path: Path | None = None
     backfill_window_h: int | None = None
 
     # Concurrency control
@@ -127,9 +124,6 @@ class TelegramUserClientConnectorConfig:
         if not endpoint_identity:
             raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
 
-        cursor_path_str = os.environ.get("CONNECTOR_CURSOR_PATH")
-        cursor_path = Path(cursor_path_str) if cursor_path_str else None
-
         backfill_window_str = os.environ.get("CONNECTOR_BACKFILL_WINDOW_H")
         backfill_window_h = int(backfill_window_str) if backfill_window_str else None
 
@@ -144,7 +138,6 @@ class TelegramUserClientConnectorConfig:
             telegram_api_id=0,
             telegram_api_hash="",
             telegram_user_session="",
-            cursor_path=cursor_path,
             backfill_window_h=backfill_window_h,
             max_inflight=max_inflight,
         )
@@ -192,7 +185,6 @@ class TelegramUserClientConnector:
         self._last_message_id: int | None = None
 
         # DB pool for cursor read/write to switchboard.connector_registry.
-        # When None, falls back to file-based cursor (legacy).
         self._cursor_pool = cursor_pool
 
         # Metrics
@@ -225,8 +217,8 @@ class TelegramUserClientConnector:
         4. Subscribes to live message events
         5. Runs until stopped
         """
-        if not self._config.cursor_path and self._cursor_pool is None:
-            raise ValueError("CONNECTOR_CURSOR_PATH or DB cursor pool is required")
+        if self._cursor_pool is None:
+            raise ValueError("DB cursor pool is required")
 
         # Load checkpoint
         await self._load_checkpoint()
@@ -592,105 +584,45 @@ class TelegramUserClientConnector:
     # -------------------------------------------------------------------------
 
     async def _load_checkpoint(self) -> None:
-        """Load checkpoint from DB or file."""
-        if self._cursor_pool is not None:
-            from butlers.connectors.cursor_store import load_cursor
-
-            try:
-                raw = await load_cursor(
-                    self._cursor_pool,
-                    self._config.provider,
-                    self._config.endpoint_identity,
-                )
-                if raw is not None:
-                    data = json.loads(raw)
-                    self._last_message_id = data.get("last_message_id")
-                    logger.info(
-                        "Loaded checkpoint from DB",
-                        extra={"last_message_id": self._last_message_id},
-                    )
-                else:
-                    logger.info("No checkpoint in DB, starting from scratch")
-            except Exception:
-                logger.exception("Failed to load checkpoint from DB, starting from scratch")
-            return
-
-        if not self._config.cursor_path:
-            return
-
-        if not self._config.cursor_path.exists():
-            logger.info(
-                "No checkpoint file found, starting from scratch",
-                extra={"cursor_path": str(self._config.cursor_path)},
-            )
-            return
+        """Load checkpoint from DB."""
+        from butlers.connectors.cursor_store import load_cursor
 
         try:
-            with self._config.cursor_path.open("r") as f:
-                data = json.load(f)
+            raw = await load_cursor(
+                self._cursor_pool,
+                self._config.provider,
+                self._config.endpoint_identity,
+            )
+            if raw is not None:
+                data = json.loads(raw)
                 self._last_message_id = data.get("last_message_id")
-
-            logger.info(
-                "Loaded checkpoint",
-                extra={
-                    "cursor_path": str(self._config.cursor_path),
-                    "last_message_id": self._last_message_id,
-                },
-            )
-        except Exception:
-            logger.exception(
-                "Failed to load checkpoint, starting from scratch",
-                extra={"cursor_path": str(self._config.cursor_path)},
-            )
-
-    async def _save_checkpoint(self) -> None:
-        """Persist checkpoint to DB or file."""
-        if self._cursor_pool is not None:
-            try:
-                from butlers.connectors.cursor_store import save_cursor
-
-                await save_cursor(
-                    self._cursor_pool,
-                    self._config.provider,
-                    self._config.endpoint_identity,
-                    json.dumps({"last_message_id": self._last_message_id}),
-                )
-                self._last_checkpoint_save = time.time()
-                logger.debug(
-                    "Saved checkpoint to DB",
+                logger.info(
+                    "Loaded checkpoint from DB",
                     extra={"last_message_id": self._last_message_id},
                 )
-            except Exception:
-                logger.exception("Failed to save checkpoint to DB")
-            return
+            else:
+                logger.info("No checkpoint in DB, starting from scratch")
+        except Exception:
+            logger.exception("Failed to load checkpoint from DB, starting from scratch")
 
-        if not self._config.cursor_path:
-            return
-
+    async def _save_checkpoint(self) -> None:
+        """Persist checkpoint to DB."""
         try:
-            # Ensure parent directory exists
-            self._config.cursor_path.parent.mkdir(parents=True, exist_ok=True)
+            from butlers.connectors.cursor_store import save_cursor
 
-            # Write checkpoint atomically
-            tmp_path = self._config.cursor_path.with_suffix(".tmp")
-            with tmp_path.open("w") as f:
-                json.dump({"last_message_id": self._last_message_id}, f)
-
-            tmp_path.replace(self._config.cursor_path)
+            await save_cursor(
+                self._cursor_pool,
+                self._config.provider,
+                self._config.endpoint_identity,
+                json.dumps({"last_message_id": self._last_message_id}),
+            )
             self._last_checkpoint_save = time.time()
-
             logger.debug(
-                "Saved checkpoint",
-                extra={
-                    "cursor_path": str(self._config.cursor_path),
-                    "last_message_id": self._last_message_id,
-                },
+                "Saved checkpoint to DB",
+                extra={"last_message_id": self._last_message_id},
             )
         except Exception:
-            logger.exception(
-                "Failed to save checkpoint",
-                extra={"cursor_path": str(self._config.cursor_path)},
-            )
+            logger.exception("Failed to save checkpoint to DB")
 
 
 async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
@@ -832,18 +764,10 @@ async def run_telegram_user_client_connector() -> None:
     )
 
     # Create cursor pool for DB-backed checkpoint persistence.
-    cursor_pool = None
-    try:
-        from butlers.connectors.cursor_store import create_cursor_pool_from_env
+    from butlers.connectors.cursor_store import create_cursor_pool_from_env
 
-        cursor_pool = await create_cursor_pool_from_env()
-        logger.info("Telegram user-client connector: cursor pool created for DB-backed checkpoints")
-    except Exception as exc:
-        logger.warning(
-            "Telegram user-client connector: failed to create cursor pool (%s); "
-            "falling back to file-based cursor if CONNECTOR_CURSOR_PATH is set",
-            exc,
-        )
+    cursor_pool = await create_cursor_pool_from_env()
+    logger.info("Telegram user-client connector: cursor pool created for DB-backed checkpoints")
 
     connector = TelegramUserClientConnector(config, db_pool=None, cursor_pool=cursor_pool)
 
