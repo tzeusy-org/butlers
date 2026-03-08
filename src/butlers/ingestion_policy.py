@@ -362,8 +362,9 @@ class IngestionPolicyEvaluator:
         On DB error: log WARNING and retain previous cache (fail-open).
         """
         if self._db_pool is None:
-            logger.debug(
-                "ingestion_policy: no DB pool for scope=%s; skipping rule load",
+            logger.warning(
+                "ingestion_policy: no DB pool for scope=%s — ALL rules disabled (fail-open). "
+                "Pass a db_pool to the IngestionPolicyEvaluator to enable rule evaluation.",
                 self._scope,
             )
             self._last_loaded_at = time.monotonic()
@@ -413,15 +414,24 @@ class IngestionPolicyEvaluator:
 
                 new_rules.append(raw)
 
+            is_initial = self._last_loaded_at is None
             self._rules = new_rules
             self._last_loaded_at = time.monotonic()
 
-            logger.debug(
+            # Initial load at INFO so operators see rule count; refreshes at DEBUG.
+            log_fn = logger.info if is_initial else logger.debug
+            log_fn(
                 "ingestion_policy: loaded %d rule(s) for scope=%s (%d skipped)",
                 len(new_rules),
                 self._scope,
                 skipped,
             )
+            if is_initial and len(new_rules) == 0:
+                logger.warning(
+                    "ingestion_policy: zero rules loaded for scope=%s — "
+                    "no ingestion filtering will be applied for this scope",
+                    self._scope,
+                )
         except Exception as exc:
             logger.warning(
                 "ingestion_policy: failed to load rules for scope=%s "
