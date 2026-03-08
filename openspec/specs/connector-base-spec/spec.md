@@ -6,7 +6,7 @@ Defines the shared interface contract that ALL connectors must implement. Connec
 ## ADDED Requirements
 
 ### Requirement: Connector as Ingestion Primitive
-A connector is a long-running process (separate from any butler daemon) that bridges an external messaging system into the butler ecosystem. It is transport-only: read, normalize, submit, checkpoint.
+A connector is a long-running process (separate from any butler daemon) that bridges an external messaging system into the butler ecosystem. It is transport-only: read, normalize, filter, submit, checkpoint.
 
 #### Scenario: Connector responsibilities boundary
 - **WHEN** a connector processes external events
@@ -18,7 +18,7 @@ A connector is a long-running process (separate from any butler daemon) that bri
 - **WHEN** a connector runs
 - **THEN** it is a separate OS process from any butler daemon (not an in-daemon module)
 - **AND** it communicates with the Switchboard exclusively via MCP tool calls over SSE
-- **AND** it has no direct database access to butler schemas (it may access the shared credential store for DB-first token resolution)
+- **AND** it has no direct database access to butler schemas (it may access the shared credential store and the switchboard DB for filter loading via DB-first resolution)
 
 #### Scenario: At-least-once delivery guarantee
 - **WHEN** a connector submits events
@@ -28,36 +28,18 @@ A connector is a long-running process (separate from any butler daemon) that bri
 - **AND** messages blocked by source filters are intentionally dropped and their checkpoints advanced; they are NOT retried
 
 ### Requirement: Source Filter Gate (Base Contract)
-All connectors MUST implement the source filter gate as a mandatory pipeline step. After normalizing an event and before submitting to the Switchboard, each connector evaluates the message against its active source filters via `SourceFilterEvaluator`. Messages that fail the filter gate are dropped at the connector and never reach the Switchboard.
+All connectors MUST implement the source filter gate as specified in `connector-source-filter-enforcement`. This is a mandatory pipeline step, not optional.
 
-#### Scenario: Filter gate position in the connector pipeline
-- **WHEN** a connector processes an incoming message
-- **THEN** the execution order MUST be: (1) fetch/normalize from source → (2) evaluate source filters → (3) if blocked, drop and advance checkpoint → (4) if allowed, submit `ingest.v1` to Switchboard → (5) checkpoint
-- **AND** the filter gate runs BEFORE any Switchboard MCP call for that message
-
-#### Scenario: Blocked message handling
-- **WHEN** a message is blocked by the filter gate
-- **THEN** the connector MUST NOT call the Switchboard ingest API for that message
-- **AND** the connector MUST increment the `butlers_connector_source_filter_total` counter with labels `{endpoint_identity, action="blocked", filter_name, reason}`
-- **AND** the connector MUST advance its checkpoint past the blocked message (it is intentionally dropped, not retried)
+#### Scenario: Filter gate is mandatory for all connector types
+- **WHEN** a new connector type is implemented
+- **THEN** it MUST instantiate a `SourceFilterEvaluator` for its `(connector_type, endpoint_identity)` pair
+- **AND** it MUST call `SourceFilterEvaluator.evaluate(key_value)` for every normalized message before submitting to Switchboard
+- **AND** it MUST pass the appropriate key value for its source type (see `connector-source-filter-enforcement` for per-source-type key extraction rules)
 
 #### Scenario: Filter state at startup
 - **WHEN** a connector starts up
-- **THEN** it MUST call `SourceFilterEvaluator.ensure_loaded()` before processing the first message to perform the initial filter load from DB
-- **AND** if the initial filter load fails (e.g. DB unavailable), the evaluator logs a WARNING and proceeds with an empty filter set (fail-open) rather than aborting startup
-- **AND** subsequent cache refreshes are triggered lazily from `evaluate()` via a background task (TTL default 300 seconds, configurable via `CONNECTOR_FILTER_REFRESH_INTERVAL_S`)
-
-#### Scenario: DB error fail-open behavior
-- **WHEN** a DB error occurs during filter loading (initial or TTL refresh)
-- **THEN** the evaluator logs a WARNING and retains the previous cached filter set
-- **AND** the timestamp is updated so that the DB is not hammered on every `evaluate()` call during an outage
-- **AND** the connector continues processing messages with the stale (or empty) filter cache rather than dropping all messages
-
-#### Scenario: SourceFilterEvaluator contract
-- **WHEN** a connector type is implemented
-- **THEN** it MUST instantiate `SourceFilterEvaluator(connector_type=<type>, endpoint_identity=<identity>, db_pool=<pool>)` using the asyncpg pool already established for credential resolution
-- **AND** it MUST call `ensure_loaded()` once at startup before the ingestion loop begins
-- **AND** it MUST call `evaluate(key_value)` for every normalized message before submitting to Switchboard, passing the key appropriate for its source channel
+- **THEN** it MUST perform an initial filter load from DB before processing the first message
+- **AND** if the initial filter load fails (e.g. DB unavailable), the connector MUST log a WARNING and proceed with an empty filter set (fail-open) rather than aborting startup
 
 ### Requirement: ingest.v1 Envelope Schema
 The `ingest.v1` envelope is the canonical format for all messages entering the butler ecosystem. It is a Pydantic model (`IngestEnvelopeV1`) with five required sub-models validated at parse time.
@@ -119,19 +101,20 @@ The Switchboard computes a stable deduplication key for each ingest submission u
 #### Scenario: Advisory lock serialization
 - **WHEN** the Switchboard processes an ingest submission
 - **THEN** it acquires `pg_advisory_xact_lock(hashtext(dedupe_key))` within a transaction
-- **AND** inside the lock: re-checks for an existing record with the same dedupe key (optimistic check already done outside lock), and either returns the existing `request_id` with `duplicate=true` or inserts a new `message_inbox` row
+- **AND** inside the lock: re-checks for an existing record with the same dedupe key, and either returns the existing `request_id` with `duplicate=true` or inserts a new row into both `message_inbox` and `shared.ingestion_events` atomically within the same transaction
 
 #### Scenario: Ingest accepted response
 - **WHEN** the Switchboard accepts an ingest submission
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
 
 ### Requirement: Request Context Assignment
-The Switchboard builds an immutable request context from each accepted ingest envelope. This context travels with the message through classification, routing, and butler processing.
+The Switchboard builds an immutable request context from each accepted ingest envelope. This context travels with the message through classification, routing, and butler processing. The `request_id` is the UUID7 primary key of the corresponding `shared.ingestion_events` row.
 
 #### Scenario: Request context fields
 - **WHEN** a message is accepted for processing
-- **THEN** the Switchboard assigns: `request_id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `external_thread_id`), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
+- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `shared.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `external_thread_id`), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
 - **AND** if triage was evaluated: `triage_decision`, `triage_target`, `triage_rule_id`, `triage_rule_type`
+- **AND** the `request_id` is passed through to the spawned butler session as both `session.request_id` and `session.ingestion_event_id`
 
 ### Requirement: Triage Integration
 Connector-side and server-side triage rules gate ingestion tier assignment and early routing decisions before LLM classification.

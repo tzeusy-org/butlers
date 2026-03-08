@@ -233,11 +233,13 @@ The following is the complete endpoint inventory grouped by domain.
 | GET | `/api/butlers/{name}/sessions` | Butler-scoped paginated session list |
 | GET | `/api/butlers/{name}/sessions/{id}` | Session detail |
 
-#### Traces
+#### Ingestion Events
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/traces` | Cross-butler paginated trace list (fan-out) |
-| GET | `/api/traces/{traceId}` | Trace detail with span tree |
+| GET | `/api/ingestion/events` | Paginated ingestion event list (limit, offset, source_channel filter) |
+| GET | `/api/ingestion/events/{requestId}` | Single ingestion event detail |
+| GET | `/api/ingestion/events/{requestId}/sessions` | All sessions attributed to this request ID across all butlers |
+| GET | `/api/ingestion/events/{requestId}/rollup` | Token/cost/butler topology rollup for this request ID |
 
 #### Timeline
 | Method | Path | Purpose |
@@ -378,7 +380,7 @@ The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hoo
 | State entries | 30s | `useButlerState` |
 | Issues | 30s | `useIssues` |
 | Audit log | 30s | `useAuditLog` |
-| Traces list | 30s | `useTraces` |
+| Ingestion events | 30s | `useIngestionEvents` |
 | Timeline | 30s (default, overridable) | `useTimeline` |
 | Health measurements | 30s | `useMeasurements`, `useMedications`, `useConditions`, `useSymptoms`, `useMeals`, `useResearch` |
 | Memory stats/episodes/facts/rules | 30s | `useMemoryStats`, `useEpisodes`, `useFacts`, `useRules` |
@@ -397,7 +399,7 @@ The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hoo
 | Backfill job progress (idle) | 30s | `useBackfillJobProgress` (when status is completed/cancelled/paused) |
 | Approval pending actions | 15s | `useApprovalActions` (when status filter is `pending`) |
 | Approval rules / executed audit | 60s | `useApprovalRules`, `useExecutedActions` |
-| No auto-interval | n/a | Notifications, contacts, groups, labels, butler config/skills, session/trace detail, triage rules (use staleTime: 60s instead) |
+| No auto-interval | n/a | Notifications, contacts, groups, labels, butler config/skills, session detail, triage rules (use staleTime: 60s instead) |
 
 #### Scenario: Mutation invalidation pattern
 - **WHEN** a mutation hook succeeds (e.g., `useCreateSchedule`, `useSetState`, `useDeleteSecret`)
@@ -414,7 +416,7 @@ The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hoo
 - **THEN** the query is debounced by 300ms and only fires when the query length is at least 2 characters
 
 #### Scenario: Conditional query enablement
-- **WHEN** a hook receives a nullable identifier (e.g., `useButler(name)`, `useTraceDetail(traceId)`)
+- **WHEN** a hook receives a nullable identifier (e.g., `useButler(name)`)
 - **THEN** `enabled: !!identifier` prevents the query from executing until the identifier is available
 
 #### Scenario: User-controlled auto-refresh
@@ -617,3 +619,18 @@ Frontend hooks in `use-ingestion.ts` provide multi-tab analytics for the ingesti
 #### Scenario: Lazy-loaded per-tab data
 - **WHEN** a tab is inactive
 - **THEN** its `enabled` flag prevents unnecessary fetches until the tab is activated
+
+### Requirement: Ingestion Timeline Tab Frontend Hooks
+TanStack Query hooks for the Timeline tab on the Ingestion page, following the same cache-key and stale-time conventions as existing ingestion hooks.
+
+#### Scenario: Ingestion events list hook
+- **WHEN** the Timeline tab renders on the Ingestion page
+- **THEN** `useIngestionEvents(filters)` fetches from `GET /api/ingestion/events` with a 30s stale time
+- **AND** the cache key hierarchy is `["ingestion", "events", filters]`
+
+#### Scenario: Request lineage hook
+- **WHEN** a user selects a specific ingestion event on the Timeline tab
+- **THEN** `useIngestionEventLineage(requestId)` fetches sessions and rollup data in parallel
+- **AND** the sessions cache key is `["ingestion", "events", requestId, "sessions"]`
+- **AND** the rollup cache key is `["ingestion", "events", requestId, "rollup"]`
+- **AND** both use a 30s stale time (no auto-refresh interval; use staleTime only, same as session detail)

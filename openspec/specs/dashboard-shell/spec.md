@@ -114,7 +114,7 @@ The sidebar provides the primary navigation for the entire dashboard. It consist
 - **THEN** navigation items are organized into three labelled sections displayed in order:
   1. **Main** — Overview (`/`, exact match), Butlers (`/butlers`), Sessions (`/sessions`), Ingestion (`/ingestion`), Approvals (`/approvals`), Memory (`/memory`), Secrets (`/secrets`), Settings (`/settings`)
   2. **Dedicated Butlers** — Relationships group (Contacts `/contacts`, Groups `/groups`; butler-aware on `relationship`), Education (`/education`; butler-aware on `education`), Health (`/health/measurements`), Calendar (`/calendar`)
-  3. **Telemetry** — Traces (`/traces`), Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Audit Log (`/audit-log`)
+  3. **Telemetry** — Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Audit Log (`/audit-log`)
 - **AND** each section header is a clickable button containing an uppercase `text-[11px]` semibold label with `tracking-wider` and `text-muted-foreground/60` styling, plus a small chevron icon that rotates 90 degrees when expanded
 - **AND** clicking a section header toggles its expanded/collapsed state with `max-h` and `opacity` transitions over 200ms
 - **AND** Main and Dedicated Butlers sections default to expanded; Telemetry defaults to collapsed (`defaultExpanded: false`)
@@ -179,8 +179,6 @@ The router defines all application routes as children of the root layout. All ro
   - `/butlers/:name` -- Butler detail (parameterized)
   - `/sessions` -- Session list
   - `/sessions/:id` -- Session detail (parameterized)
-  - `/traces` -- Trace list
-  - `/traces/:traceId` -- Trace detail (parameterized)
   - `/timeline` -- Unified timeline
   - `/notifications` -- Notifications center
   - `/issues` -- Issues center
@@ -210,12 +208,14 @@ The router defines all application routes as children of the root layout. All ro
 #### Scenario: Ingestion routes with legacy redirects
 
 - **WHEN** the ingestion section is navigated to
-- **THEN** `/ingestion` renders the ingestion overview page
+- **THEN** `/ingestion` renders the ingestion overview page with tabs including Connectors and Timeline
 - **AND** `/ingestion/connectors/:connectorType/:endpointIdentity` renders the connector detail page
 - **WHEN** a user visits the legacy `/connectors` path
 - **THEN** they are redirected to `/ingestion?tab=connectors` via `<Navigate replace />`
 - **WHEN** a user visits `/connectors/:connectorType/:endpointIdentity`
 - **THEN** they are redirected to `/ingestion/connectors/:connectorType/:endpointIdentity` with query params preserved
+- **WHEN** a user visits the legacy `/traces` or `/traces/:traceId` path
+- **THEN** they are redirected to `/ingestion?tab=timeline` via `<Navigate replace />`
 
 ### Requirement: Page Header with Breadcrumbs
 
@@ -318,7 +318,6 @@ The application supports vim-inspired two-key navigation shortcuts and search sh
   - `g` then `b` -- Butlers (`/butlers`)
   - `g` then `s` -- Sessions (`/sessions`)
   - `g` then `t` -- Timeline (`/timeline`)
-  - `g` then `r` -- Traces (`/traces`)
   - `g` then `n` -- Notifications (`/notifications`)
   - `g` then `i` -- Issues (`/issues`)
   - `g` then `a` -- Audit Log (`/audit-log`)
