@@ -702,9 +702,6 @@ async def list_entities(
     rows = await pool.fetch(
         f"SELECT e.id, e.canonical_name, e.entity_type, e.aliases,"
         f" e.created_at, e.updated_at,"
-        f" (SELECT count(*) FROM facts f"
-        f"  WHERE f.entity_id = e.id AND f.validity = 'active'"
-        f" ) AS fact_count,"
         f" (SELECT c.id FROM shared.contacts c"
         f"  WHERE c.entity_id = e.id LIMIT 1"
         f" ) AS linked_contact_id,"
@@ -718,6 +715,27 @@ async def list_entities(
         limit,
     )
 
+    # Fact counts live in per-butler schemas — fan out across memory pools.
+    entity_ids = [r["id"] for r in rows]
+    fact_counts: dict[str, int] = {}
+    if entity_ids:
+
+        async def _count_facts(_: str, fpool: object) -> dict[str, int]:
+            fc_rows = await fpool.fetch(
+                "SELECT entity_id, count(*) AS cnt FROM facts"
+                " WHERE entity_id = ANY($1) AND validity = 'active'"
+                " GROUP BY entity_id",
+                entity_ids,
+            )
+            return {str(r["entity_id"]): r["cnt"] for r in fc_rows}
+
+        per_pool = await _fan_out_memory_queries(
+            db, query_name="entity_fact_counts", query_fn=_count_facts
+        )
+        for pool_counts in per_pool:
+            for eid_str, cnt in pool_counts.items():
+                fact_counts[eid_str] = fact_counts.get(eid_str, 0) + cnt
+
     data = [
         EntitySummary(
             id=str(r["id"]),
@@ -725,7 +743,7 @@ async def list_entities(
             entity_type=r["entity_type"],
             aliases=list(r["aliases"]) if r["aliases"] else [],
             roles=list(r["linked_contact_roles"]) if r["linked_contact_roles"] else [],
-            fact_count=r["fact_count"],
+            fact_count=fact_counts.get(str(r["id"]), 0),
             linked_contact_id=str(r["linked_contact_id"]) if r["linked_contact_id"] else None,
             unidentified=r["unidentified"],
             created_at=str(r["created_at"]),
@@ -756,14 +774,11 @@ async def get_entity(
     pool = _any_pool(db)
     eid = _uuid.UUID(entity_id)
 
+    # Entity metadata from shared schema — safe with any pool.
     row = await pool.fetchrow(
         "SELECT e.id, e.canonical_name, e.entity_type,"
         " e.aliases, e.metadata,"
         " e.created_at, e.updated_at,"
-        " (SELECT count(*) FROM facts f"
-        "  WHERE f.entity_id = e.id"
-        "  AND f.validity = 'active'"
-        " ) AS fact_count,"
         " (SELECT c.id FROM shared.contacts c"
         "  WHERE c.entity_id = e.id LIMIT 1"
         " ) AS linked_contact_id,"
@@ -778,15 +793,34 @@ async def get_entity(
     if row is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
-    fact_rows = await pool.fetch(
-        "SELECT id, subject, predicate, content, importance, confidence,"
-        " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-        " validity, scope, reference_count, created_at, last_referenced_at,"
-        " last_confirmed_at, tags, metadata"
-        " FROM facts WHERE entity_id = $1 AND validity = 'active'"
-        " ORDER BY created_at DESC LIMIT 20",
-        eid,
+    # Facts live in per-butler schemas — fan out across all memory pools.
+    async def _query_entity_facts(_: str, fpool: object) -> tuple[int, list[object]]:
+        count = (
+            await fpool.fetchval(
+                "SELECT count(*) FROM facts WHERE entity_id = $1 AND validity = 'active'",
+                eid,
+            )
+            or 0
+        )
+        rows = await fpool.fetch(
+            "SELECT id, subject, predicate, content, importance, confidence,"
+            " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
+            " validity, scope, reference_count, created_at, last_referenced_at,"
+            " last_confirmed_at, tags, metadata"
+            " FROM facts WHERE entity_id = $1 AND validity = 'active'"
+            " ORDER BY created_at DESC LIMIT 20",
+            eid,
+        )
+        return count, list(rows)
+
+    per_pool = await _fan_out_memory_queries(
+        db, query_name="entity_facts", query_fn=_query_entity_facts
     )
+    fact_count = sum(c for c, _ in per_pool)
+    merged_fact_rows: list[object] = []
+    for _, frows in per_pool:
+        merged_fact_rows.extend(frows)
+    merged_fact_rows = _sort_rows_by_created_at(merged_fact_rows)[:20]
 
     try:
         info_rows = await pool.fetch(
@@ -799,7 +833,7 @@ async def get_entity(
     except Exception:
         info_rows = []
 
-    recent_facts = [_row_to_fact(f) for f in fact_rows]
+    recent_facts = [_row_to_fact(f) for f in merged_fact_rows]
 
     entity_info = [
         EntityInfoEntry(
@@ -820,7 +854,7 @@ async def get_entity(
         aliases=list(row["aliases"]) if row["aliases"] else [],
         roles=list(row["linked_contact_roles"]) if row["linked_contact_roles"] else [],
         metadata=_parse_jsonb(row["metadata"]),
-        fact_count=row["fact_count"],
+        fact_count=fact_count,
         linked_contact_id=str(row["linked_contact_id"]) if row["linked_contact_id"] else None,
         linked_contact_name=row["linked_contact_name"],
         created_at=str(row["created_at"]),

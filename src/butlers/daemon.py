@@ -3238,17 +3238,26 @@ class ButlerDaemon:
                 if conversation_history:
                     _input["conversation_history"] = conversation_history
 
+                # Structured sender identity from resolution (contact_id, entity_id).
+                rc: dict[str, Any] = {
+                    "request_id": request_id,
+                    "received_at": datetime.now(UTC).isoformat(),
+                    "source_channel": source_channel,
+                    "source_endpoint_identity": "switchboard",
+                    "source_sender_identity": source_sender_identity,
+                    "source_thread_identity": source_thread_identity,
+                    "trace_context": {},
+                }
+                _src_contact_id = _routing_ctx.get("source_contact_id")
+                _src_entity_id = _routing_ctx.get("source_entity_id")
+                if _src_contact_id:
+                    rc["source_sender_contact_id"] = _src_contact_id
+                if _src_entity_id:
+                    rc["source_sender_entity_id"] = _src_entity_id
+
                 envelope: dict[str, Any] = {
                     "schema_version": "route.v1",
-                    "request_context": {
-                        "request_id": request_id,
-                        "received_at": datetime.now(UTC).isoformat(),
-                        "source_channel": source_channel,
-                        "source_endpoint_identity": "switchboard",
-                        "source_sender_identity": source_sender_identity,
-                        "source_thread_identity": source_thread_identity,
-                        "trace_context": {},
-                    },
+                    "request_context": rc,
                     "input": _input,
                     "target": {"butler": butler, "tool": "route.execute"},
                     "source_metadata": normalized_source_metadata,

@@ -610,6 +610,8 @@ class MessagePipeline:
         request_id: str = "unknown",
         conversation_history: str | None = None,
         identity_preamble: str | None = None,
+        source_contact_id: str | None = None,
+        source_entity_id: str | None = None,
     ) -> None:
         """Populate the per-task routing context via ContextVar before runtime spawn.
 
@@ -623,6 +625,8 @@ class MessagePipeline:
                 "request_id": request_id,
                 "conversation_history": conversation_history,
                 "identity_preamble": identity_preamble,
+                "source_contact_id": source_contact_id,
+                "source_entity_id": source_entity_id,
             }
         )
 
@@ -1349,6 +1353,8 @@ class MessagePipeline:
 
                     # Identity resolution: resolve sender → preamble injection
                     identity_preamble: str | None = None
+                    source_contact_id: str | None = None
+                    source_entity_id: str | None = None
                     if self._enable_identity_resolution:
                         with tracer.start_as_current_span(
                             "butlers.switchboard.routing.identity_resolution"
@@ -1370,6 +1376,10 @@ class MessagePipeline:
                                         notify_owner_fn=self._notify_owner_fn,
                                     )
                                     identity_preamble = identity_result.preamble or None
+                                    if identity_result.contact_id is not None:
+                                        source_contact_id = str(identity_result.contact_id)
+                                    if identity_result.entity_id is not None:
+                                        source_entity_id = str(identity_result.entity_id)
                             except Exception:
                                 logger.debug(
                                     "Identity resolution failed; proceeding without preamble",
@@ -1389,6 +1399,8 @@ class MessagePipeline:
                         request_id=request_id,
                         conversation_history=conversation_history or None,
                         identity_preamble=identity_preamble,
+                        source_contact_id=source_contact_id,
+                        source_entity_id=source_entity_id,
                     )
 
                     # Spawn CC — it calls route_to_butler tool(s) directly
