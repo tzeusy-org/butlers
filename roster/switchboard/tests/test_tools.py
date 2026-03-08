@@ -1380,6 +1380,16 @@ async def test_deliver_telegram_success(deliver_pool):
         message="Hello from health butler!",
         recipient="123456",
         source_butler="health",
+        notify_request={
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": "Hello from health butler!",
+                "recipient": "123456",
+            },
+        },
         call_fn=mock_call,
     )
 
@@ -1421,6 +1431,17 @@ async def test_deliver_email_success(deliver_pool):
         recipient="user@example.com",
         metadata={"subject": "Health Report"},
         source_butler="health",
+        notify_request={
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "send",
+                "channel": "email",
+                "message": "Your health report is ready.",
+                "recipient": "user@example.com",
+                "subject": "Health Report",
+            },
+        },
         call_fn=mock_call,
     )
 
@@ -1533,6 +1554,16 @@ async def test_deliver_route_failure_logs_error(deliver_pool):
         message="Hello",
         recipient="123456",
         source_butler="health",
+        notify_request={
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": "Hello",
+                "recipient": "123456",
+            },
+        },
         call_fn=failing_call,
     )
 
@@ -1566,6 +1597,16 @@ async def test_deliver_logs_to_routing_log(deliver_pool):
         message="Test",
         recipient="123",
         source_butler="health",
+        notify_request={
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": "Test",
+                "recipient": "123",
+            },
+        },
         call_fn=mock_call,
     )
 
@@ -1702,6 +1743,16 @@ async def test_deliver_creates_span_with_attributes(deliver_pool, otel_provider)
         message="Test",
         recipient="123",
         source_butler="health",
+        notify_request={
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": "Test",
+                "recipient": "123",
+            },
+        },
         call_fn=mock_call,
     )
 
