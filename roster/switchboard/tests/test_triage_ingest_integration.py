@@ -1,9 +1,10 @@
-"""Unit tests for triage integration in the ingest pipeline.
+"""Unit tests for ingestion policy evaluation in the ingest pipeline.
 
-Tests that ingest_v1 correctly applies triage decisions and embeds them
-in the request_context and response. Uses mocked DB pool (no Docker required).
+Tests that ingest_v1 correctly applies IngestionPolicyEvaluator decisions and
+embeds them in the request_context and response. Uses mocked DB pool (no Docker
+required).
 
-These are unit-level tests focused on triage integration semantics.
+These are unit-level tests focused on policy evaluation integration semantics.
 Integration-with-DB tests live in test_ingest_tier.py.
 """
 
@@ -14,12 +15,14 @@ from unittest.mock import patch
 
 import pytest
 
+from butlers.ingestion_policy import (
+    IngestionPolicyEvaluator,
+    PolicyDecision,
+)
 from butlers.tools.switchboard.ingestion.ingest import (
     IngestAcceptedResponse,
-    _run_triage,
-)
-from butlers.tools.switchboard.triage.evaluator import (
-    TriageDecision,
+    _make_ingestion_envelope,
+    _run_policy_evaluation,
 )
 
 pytestmark = pytest.mark.unit
@@ -28,6 +31,16 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _make_evaluator_with_rules(rules: list[dict]) -> IngestionPolicyEvaluator:
+    """Create an IngestionPolicyEvaluator with pre-loaded rules (no DB)."""
+    import time
+
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    evaluator._rules = rules
+    evaluator._last_loaded_at = time.monotonic()  # Mark as freshly loaded
+    return evaluator
 
 
 def _valid_rule(
@@ -74,48 +87,68 @@ def _base_email_payload(
 
 
 # ---------------------------------------------------------------------------
-# _run_triage unit tests
+# _run_policy_evaluation unit tests
 # ---------------------------------------------------------------------------
 
 
-class TestRunTriageFunction:
+class TestRunPolicyEvaluation:
     def test_matched_rule_returns_decision(self) -> None:
         payload = _base_email_payload(sender="alerts@chase.com")
-        rules = [_valid_rule(action="route_to:finance")]
-        decision = _run_triage(payload, rules, cache_available=True, source_channel="email")
-        assert decision.decision == "route_to"
+        evaluator = _make_evaluator_with_rules([_valid_rule(action="route_to:finance")])
+        decision = _run_policy_evaluation(payload, evaluator, source_channel="email")
+        assert decision.action == "route_to"
         assert decision.target_butler == "finance"
 
     def test_no_match_returns_pass_through(self) -> None:
         payload = _base_email_payload(sender="unknown@random.com")
-        rules = [_valid_rule(action="route_to:finance")]
-        decision = _run_triage(payload, rules, cache_available=True, source_channel="email")
-        assert decision.decision == "pass_through"
+        evaluator = _make_evaluator_with_rules([_valid_rule(action="route_to:finance")])
+        decision = _run_policy_evaluation(payload, evaluator, source_channel="email")
+        assert decision.action == "pass_through"
 
-    def test_cache_unavailable_returns_pass_through(self) -> None:
+    def test_thread_affinity_returns_route_to(self) -> None:
+        """Thread affinity target bypasses rule evaluation."""
+        payload = _base_email_payload(sender="unknown@random.com")
+        evaluator = _make_evaluator_with_rules([])
+        decision = _run_policy_evaluation(
+            payload,
+            evaluator,
+            source_channel="email",
+            thread_affinity_target="finance",
+        )
+        assert decision.action == "route_to"
+        assert decision.target_butler == "finance"
+        assert decision.matched_rule_type == "thread_affinity"
+
+    def test_thread_affinity_overrides_rules(self) -> None:
+        """Thread affinity takes precedence over matching rules."""
         payload = _base_email_payload(sender="alerts@chase.com")
-        rules = [_valid_rule(action="route_to:finance")]
-        decision = _run_triage(payload, rules, cache_available=False, source_channel="email")
-        assert decision.decision == "pass_through"
-        assert "cache" in decision.reason.lower()
+        evaluator = _make_evaluator_with_rules([_valid_rule(action="route_to:finance")])
+        decision = _run_policy_evaluation(
+            payload,
+            evaluator,
+            source_channel="email",
+            thread_affinity_target="relationship",
+        )
+        assert decision.action == "route_to"
+        assert decision.target_butler == "relationship"
+        assert decision.matched_rule_type == "thread_affinity"
 
     def test_exception_in_evaluator_fails_open(self) -> None:
-        """If evaluator raises, _run_triage returns pass_through (fail-open)."""
+        """If evaluator.evaluate raises, _run_policy_evaluation returns pass_through."""
         payload = _base_email_payload()
-        # Pass an invalid rule structure that will cause evaluation error
-        bad_rules = [{"id": "x", "rule_type": None, "condition": None, "action": None}]
+        evaluator = _make_evaluator_with_rules([])
 
-        # patch evaluate_triage to raise
-        with patch(
-            "butlers.tools.switchboard.ingestion.ingest.evaluate_triage",
+        with patch.object(
+            evaluator,
+            "evaluate",
             side_effect=RuntimeError("evaluator exploded"),
         ):
-            decision = _run_triage(payload, bad_rules, cache_available=True, source_channel="email")
+            decision = _run_policy_evaluation(payload, evaluator, source_channel="email")
 
-        assert decision.decision == "pass_through"
+        assert decision.action == "pass_through"
 
     def test_all_action_types_returned(self) -> None:
-        for action, expected_decision in [
+        for action, expected_action in [
             ("skip", "skip"),
             ("metadata_only", "metadata_only"),
             ("low_priority_queue", "low_priority_queue"),
@@ -123,11 +156,54 @@ class TestRunTriageFunction:
             ("route_to:travel", "route_to"),
         ]:
             payload = _base_email_payload(sender="alerts@chase.com")
-            rules = [_valid_rule(action=action)]
-            decision = _run_triage(payload, rules, cache_available=True, source_channel="email")
-            assert decision.decision == expected_decision, (
-                f"Expected {expected_decision!r} for action={action!r}, got {decision.decision!r}"
+            evaluator = _make_evaluator_with_rules([_valid_rule(action=action)])
+            decision = _run_policy_evaluation(payload, evaluator, source_channel="email")
+            assert decision.action == expected_action, (
+                f"Expected {expected_action!r} for action={action!r}, got {decision.action!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# _make_ingestion_envelope adapter
+# ---------------------------------------------------------------------------
+
+
+class TestMakeIngestionEnvelope:
+    def test_sender_address_extracted(self) -> None:
+        payload = _base_email_payload(sender="alerts@chase.com")
+        env = _make_ingestion_envelope(payload)
+        assert env.sender_address == "alerts@chase.com"
+
+    def test_sender_address_lowercased(self) -> None:
+        payload = _base_email_payload(sender="ALERTS@CHASE.COM")
+        env = _make_ingestion_envelope(payload)
+        assert env.sender_address == "alerts@chase.com"
+
+    def test_source_channel_extracted(self) -> None:
+        payload = _base_email_payload()
+        env = _make_ingestion_envelope(payload)
+        assert env.source_channel == "email"
+
+    def test_headers_extracted(self) -> None:
+        payload = _base_email_payload()
+        payload["payload"]["raw"]["headers"] = {
+            "List-Unsubscribe": "<mailto:unsub@example.com>",
+        }
+        env = _make_ingestion_envelope(payload)
+        assert "List-Unsubscribe" in env.headers
+
+    def test_mime_parts_from_attachments(self) -> None:
+        payload = _base_email_payload()
+        payload["payload"]["attachments"] = [
+            {"media_type": "text/calendar", "storage_ref": "s3://x", "size_bytes": 1024}
+        ]
+        env = _make_ingestion_envelope(payload)
+        assert "text/calendar" in env.mime_parts
+
+    def test_raw_key_for_email(self) -> None:
+        payload = _base_email_payload(sender="alerts@chase.com")
+        env = _make_ingestion_envelope(payload)
+        assert env.raw_key == "alerts@chase.com"
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +244,12 @@ class TestTriageDecisionEmbedding:
             control=IngestControlV1(ingestion_tier="full"),
         )
 
-        triage_decision = TriageDecision(
-            decision="route_to",
+        triage_decision = PolicyDecision(
+            action="route_to",
             target_butler="finance",
             matched_rule_id="rule-uuid-001",
             matched_rule_type="sender_domain",
-            reason="sender_domain match → route_to:finance",
+            reason="sender_domain match -> route_to:finance",
         )
 
         import uuid
@@ -265,9 +341,9 @@ class TestTriageDecisionEmbedding:
             control=IngestControlV1(ingestion_tier="full"),
         )
 
-        triage_decision = TriageDecision(
-            decision="pass_through",
-            reason="no deterministic rule matched",
+        triage_decision = PolicyDecision(
+            action="pass_through",
+            reason="no rule matched",
         )
 
         context = _build_request_context(

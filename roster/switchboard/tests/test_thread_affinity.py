@@ -10,6 +10,7 @@ See docs/switchboard/thread_affinity_routing.md for spec reference.
 
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -427,12 +428,15 @@ class TestIngestPipelineIntegration:
             payload["event"]["external_thread_id"] = thread_id
         return payload
 
-    async def test_affinity_hit_passes_target_to_triage(self) -> None:
-        """When affinity lookup hits, the target is passed to evaluate_triage."""
-        from butlers.tools.switchboard.ingestion.ingest import _run_triage
+    async def test_affinity_hit_passes_target_to_policy_evaluation(self) -> None:
+        """When affinity lookup hits, the target is passed to _run_policy_evaluation."""
+        from butlers.ingestion_policy import IngestionPolicyEvaluator
+        from butlers.tools.switchboard.ingestion.ingest import _run_policy_evaluation
 
         payload = self._base_email_payload(thread_id="<thread-abc@mail.example.com>")
-        rules = []  # No rules — only thread affinity should match
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._rules = []
+        evaluator._last_loaded_at = time.monotonic()
 
         with patch(
             "butlers.tools.switchboard.ingestion.ingest.lookup_thread_affinity",
@@ -441,24 +445,25 @@ class TestIngestPipelineIntegration:
                 outcome=AffinityOutcome.HIT, target_butler="finance"
             )
 
-            # _run_triage with thread_affinity_target="finance" should produce route_to
-            decision = _run_triage(
+            # thread_affinity_target="finance" should produce route_to
+            decision = _run_policy_evaluation(
                 payload,
-                rules,
-                cache_available=True,
+                evaluator,
                 source_channel="email",
                 thread_affinity_target="finance",
             )
 
-        assert decision.decision == "route_to"
+        assert decision.action == "route_to"
         assert decision.target_butler == "finance"
         assert decision.matched_rule_type == "thread_affinity"
 
     async def test_affinity_miss_falls_through_to_rules(self) -> None:
-        """When affinity misses, evaluate_triage falls through to rule evaluation."""
-        from butlers.tools.switchboard.ingestion.ingest import _run_triage
+        """When affinity misses, policy evaluator falls through to rule evaluation."""
+        from butlers.ingestion_policy import IngestionPolicyEvaluator
+        from butlers.tools.switchboard.ingestion.ingest import _run_policy_evaluation
 
-        rules = [
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._rules = [
             {
                 "id": "rule-001",
                 "rule_type": "sender_domain",
@@ -467,22 +472,23 @@ class TestIngestPipelineIntegration:
                 "priority": 10,
             }
         ]
+        evaluator._last_loaded_at = time.monotonic()
         payload = self._base_email_payload()
 
         # No thread affinity target — falls through to rule
-        decision = _run_triage(
+        decision = _run_policy_evaluation(
             payload,
-            rules,
-            cache_available=True,
+            evaluator,
             source_channel="email",
             thread_affinity_target=None,
         )
-        assert decision.decision == "route_to"
+        assert decision.action == "route_to"
         assert decision.target_butler == "health"
 
     async def test_affinity_not_called_for_non_email(self) -> None:
         """Thread affinity lookup is not attempted for non-email channels."""
-        from butlers.tools.switchboard.ingestion.ingest import _run_triage
+        from butlers.ingestion_policy import IngestionPolicyEvaluator
+        from butlers.tools.switchboard.ingestion.ingest import _run_policy_evaluation
 
         payload = {
             "schema_version": "ingest.v1",
@@ -493,12 +499,15 @@ class TestIngestPipelineIntegration:
             "control": {"ingestion_tier": "full"},
         }
 
-        # No thread_affinity_target → pass_through (no rules, no affinity)
-        decision = _run_triage(
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._rules = []
+        evaluator._last_loaded_at = time.monotonic()
+
+        # No thread_affinity_target -> pass_through (no rules, no affinity)
+        decision = _run_policy_evaluation(
             payload,
-            [],
-            cache_available=True,
+            evaluator,
             source_channel="telegram",
             thread_affinity_target=None,
         )
-        assert decision.decision == "pass_through"
+        assert decision.action == "pass_through"

@@ -17,8 +17,8 @@ Key behaviors:
 - Parses and validates `ingest.v1` envelopes using canonical contract models
 - Assigns canonical request context (request_id, received_at, etc.)
 - Performs deduplication based on source identity and idempotency keys
-- Runs deterministic pre-classification triage (spec §5) before returning
-- Returns 202 Accepted with canonical request reference and triage decision
+- Runs unified ingestion policy evaluation (replaces legacy triage) before returning
+- Returns 202 Accepted with canonical request reference and policy decision
 - Duplicate submissions return the same request reference (idempotent)
 
 Design notes:
@@ -26,8 +26,9 @@ Design notes:
 - Deduplication strategy follows `butlers-9aq.4` guidance
 - Lifecycle persistence uses partitioned `message_inbox` from `butlers-9aq.9`
 - Unique index on dedupe_key (migration sw_010) prevents race conditions
-- Triage integration: deterministic evaluation runs before LLM spawn per
-  docs/switchboard/pre_classification_triage.md §5.1
+- Ingestion policy evaluation via IngestionPolicyEvaluator(scope='global')
+  replaces legacy TriageRuleCache + evaluate_triage() per unified-ingestion-policy
+  design (D5-D7).
 """
 
 from __future__ import annotations
@@ -47,14 +48,14 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from butlers.core.metrics import ButlerMetrics
+from butlers.ingestion_policy import (
+    IngestionEnvelope,
+    IngestionPolicyEvaluator,
+    PolicyDecision,
+)
 from butlers.tools.switchboard.routing.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
-)
-from butlers.tools.switchboard.triage.evaluator import (
-    TriageDecision,
-    evaluate_triage,
-    make_triage_envelope_from_ingest,
 )
 from butlers.tools.switchboard.triage.telemetry import get_triage_telemetry
 from butlers.tools.switchboard.triage.thread_affinity import (
@@ -174,13 +175,17 @@ def _build_request_context(
     *,
     request_id: UUID,
     received_at: datetime,
-    triage_decision: TriageDecision | None = None,
+    triage_decision: PolicyDecision | None = None,
 ) -> dict[str, Any]:
     """Build canonical request context from ingest envelope.
 
     This function assigns the immutable request-context fields that will
-    be propagated through routing and fanout. Triage decision metadata is
+    be propagated through routing and fanout. Policy decision metadata is
     embedded when available for downstream pipeline visibility.
+
+    The ``triage_decision`` parameter name is kept for backward compatibility
+    with downstream consumers that read ``triage_*`` keys from request_context,
+    but it now accepts a ``PolicyDecision`` from IngestionPolicyEvaluator.
     """
     source = envelope.source
     event = envelope.event
@@ -208,9 +213,10 @@ def _build_request_context(
     # Tier annotation (always stored; defaults to "full" for backward compat)
     context["ingestion_tier"] = control.ingestion_tier
 
-    # Triage annotation: embed decision for downstream pipeline visibility
+    # Policy decision annotation: embed for downstream pipeline visibility.
+    # Keys use "triage_" prefix for backward compatibility with existing consumers.
     if triage_decision is not None:
-        context["triage_decision"] = triage_decision.decision
+        context["triage_decision"] = triage_decision.action
         if triage_decision.target_butler:
             context["triage_target"] = triage_decision.target_butler
         if triage_decision.matched_rule_id:
@@ -221,58 +227,124 @@ def _build_request_context(
     return context
 
 
-def _run_triage(
+def _make_ingestion_envelope(
     payload: Mapping[str, Any],
-    rules: list[dict[str, Any]],
+) -> IngestionEnvelope:
+    """Build an IngestionEnvelope from a raw ingest.v1 envelope dict.
+
+    This is the adapter between the raw connector payload and the unified
+    IngestionEnvelope type consumed by IngestionPolicyEvaluator.
+    """
+    sender = payload.get("sender") or {}
+    sender_address = str(sender.get("identity") or "").lower()
+
+    source = payload.get("source") or {}
+    source_channel = str(source.get("channel") or "")
+
+    payload_section = payload.get("payload") or {}
+    raw = payload_section.get("raw") or {}
+
+    # Extract headers from raw payload (email-specific)
+    raw_headers = raw.get("headers") or {}
+    if isinstance(raw_headers, dict):
+        headers = {str(k): str(v) for k, v in raw_headers.items()}
+    else:
+        headers = {}
+
+    # Extract MIME parts from attachments or payload
+    mime_parts: list[str] = []
+    attachments = payload_section.get("attachments") or []
+    for att in attachments:
+        if isinstance(att, dict) and att.get("media_type"):
+            mime_parts.append(str(att["media_type"]).lower())
+
+    # Also extract from raw.mime_parts if present
+    raw_mime = raw.get("mime_parts") or []
+    for part in raw_mime:
+        if isinstance(part, dict) and part.get("type"):
+            mime_parts.append(str(part["type"]).lower())
+        elif isinstance(part, str):
+            mime_parts.append(part.lower())
+
+    event = payload.get("event") or {}
+    thread_id = event.get("external_thread_id")
+
+    # Build raw_key based on channel
+    raw_key = ""
+    if source_channel == "email":
+        raw_key = sender_address
+    elif source_channel in ("telegram",):
+        raw_key = str(source.get("endpoint_identity") or "")
+    elif source_channel in ("discord",):
+        raw_key = str(source.get("endpoint_identity") or "")
+
+    return IngestionEnvelope(
+        sender_address=sender_address,
+        source_channel=source_channel,
+        headers=headers,
+        mime_parts=mime_parts,
+        thread_id=str(thread_id) if thread_id else None,
+        raw_key=raw_key,
+    )
+
+
+def _run_policy_evaluation(
+    payload: Mapping[str, Any],
+    evaluator: IngestionPolicyEvaluator,
     *,
-    cache_available: bool,
     source_channel: str,
     thread_affinity_target: str | None = None,
-) -> TriageDecision:
-    """Run deterministic triage evaluation with telemetry.
+) -> PolicyDecision:
+    """Run unified ingestion policy evaluation with telemetry.
 
-    Fail-open: if cache is unavailable or evaluation fails, returns pass_through.
+    Replaces the legacy ``_run_triage()`` function. Uses
+    ``IngestionPolicyEvaluator.evaluate()`` for rule matching and wraps
+    the call with triage telemetry for backward-compatible metrics.
+
+    Thread affinity is handled before rule evaluation: when a
+    ``thread_affinity_target`` is provided, a ``route_to`` decision is
+    returned immediately without consulting the evaluator's rule set.
+
+    Fail-open: if evaluation raises, returns pass_through.
 
     Parameters
     ----------
     payload:
         Raw ingest.v1 envelope payload dict.
-    rules:
-        Active triage rules from the cache.
-    cache_available:
-        Whether the triage rule cache has ever successfully loaded.
+    evaluator:
+        Pre-loaded IngestionPolicyEvaluator(scope='global').
     source_channel:
         Source channel string for telemetry attributes.
     thread_affinity_target:
         Pre-resolved thread affinity butler name (from lookup_thread_affinity).
-        When set, triage evaluator will use it as the highest-priority match.
+        When set, bypasses rule evaluation with a route_to decision.
     """
     telemetry = get_triage_telemetry()
     t0 = time.monotonic()
     result_label = "pass_through"
 
     try:
-        if not cache_available:
-            # Cache never loaded — fail open
-            decision = TriageDecision(
-                decision="pass_through",
-                reason="triage cache unavailable",
+        # Thread affinity has highest precedence (unchanged from legacy pipeline)
+        if thread_affinity_target:
+            decision = PolicyDecision(
+                action="route_to",
+                target_butler=thread_affinity_target,
+                matched_rule_id=None,
+                matched_rule_type="thread_affinity",
+                reason=f"thread affinity match -> {thread_affinity_target}",
             )
-            telemetry.record_pass_through(
+            telemetry.record_rule_matched(
+                rule_type="thread_affinity",
+                action=f"route_to:{thread_affinity_target}",
                 source_channel=source_channel,
-                reason="cache_unavailable",
             )
-            result_label = "pass_through"
+            result_label = "matched"
             return decision
 
-        triage_envelope = make_triage_envelope_from_ingest(dict(payload))
-        decision = evaluate_triage(
-            triage_envelope,
-            rules,
-            thread_affinity_target=thread_affinity_target,
-        )
+        envelope = _make_ingestion_envelope(dict(payload))
+        decision = evaluator.evaluate(envelope)
 
-        if decision.decision == "pass_through":
+        if decision.action == "pass_through":
             telemetry.record_pass_through(
                 source_channel=source_channel,
                 reason="no_match",
@@ -281,7 +353,7 @@ def _run_triage(
         else:
             telemetry.record_rule_matched(
                 rule_type=decision.matched_rule_type or "unknown",
-                action=decision.decision
+                action=decision.action
                 if not decision.target_butler
                 else f"route_to:{decision.target_butler}",
                 source_channel=source_channel,
@@ -291,11 +363,13 @@ def _run_triage(
         return decision
 
     except Exception:
-        logger.exception("Unexpected error during triage evaluation; failing open (pass_through)")
+        logger.exception(
+            "Unexpected error during ingestion policy evaluation; failing open (pass_through)"
+        )
         result_label = "error"
-        return TriageDecision(
-            decision="pass_through",
-            reason="triage evaluation error",
+        return PolicyDecision(
+            action="pass_through",
+            reason="ingestion policy evaluation error",
         )
     finally:
         latency_ms = (time.monotonic() - t0) * 1000
@@ -309,17 +383,16 @@ async def ingest_v1(
     pool: asyncpg.Pool,
     payload: Mapping[str, Any],
     *,
-    triage_rules: list[dict[str, Any]] | None = None,
-    triage_cache_available: bool = True,
+    policy_evaluator: IngestionPolicyEvaluator | None = None,
     thread_affinity_settings: ThreadAffinitySettings | None = None,
     enable_thread_affinity: bool = True,
 ) -> IngestAcceptedResponse:
     """Accept and persist an `ingest.v1` envelope submission.
 
     This is the canonical ingestion boundary for connector submissions.
-    It parses, validates, deduplicates, applies deterministic pre-classification
-    triage (including thread-affinity lookup), and persists the ingest envelope,
-    returning a canonical request reference.
+    It parses, validates, deduplicates, applies unified ingestion policy
+    evaluation (including thread-affinity lookup), and persists the ingest
+    envelope, returning a canonical request reference.
 
     Authentication and authorization are enforced at the MCP transport layer
     before this function is called. See module docstring for details.
@@ -330,13 +403,10 @@ async def ingest_v1(
         Database connection pool for Switchboard butler.
     payload:
         Raw ingest envelope payload (must validate as `ingest.v1`).
-    triage_rules:
-        Active triage rules from the cache. Pass [] to skip triage with empty
-        rule set (produces pass_through). Pass None to bypass triage entirely
-        (backward-compatible mode — no triage annotation).
-    triage_cache_available:
-        Whether the triage rule cache is available. False forces fail-open
-        (pass_through with reason='cache_unavailable').
+    policy_evaluator:
+        An ``IngestionPolicyEvaluator(scope='global')`` instance with rules
+        already loaded via ``ensure_loaded()``. Pass ``None`` to bypass
+        policy evaluation entirely (no triage annotation).
     thread_affinity_settings:
         Pre-loaded ThreadAffinitySettings. When None and enable_thread_affinity
         is True, settings will be fetched from the DB on each call.
@@ -397,16 +467,14 @@ async def ingest_v1(
             triage_target=None,
         )
 
-    # 4. Run deterministic triage (before classification runtime spawn, spec §5.1)
-    # Thread-affinity lookup runs before rule evaluation (spec §2 pipeline order):
-    #   1. Sender/header triage rules
-    #   2. Thread-affinity global/thread override checks
-    #   3. Thread-affinity lookup in routing history
-    #   4. LLM classification fallback
+    # 4. Run ingestion policy evaluation (before classification runtime spawn).
+    # Thread-affinity lookup runs before rule evaluation (pipeline order):
+    #   1. Thread-affinity lookup in routing history (highest precedence)
+    #   2. Ingestion policy rules (via IngestionPolicyEvaluator)
+    #   3. LLM classification fallback (pass_through)
     #
-    # triage_rules=None means caller did not provide a cache — skip triage annotation
-    # triage_rules=[] means cache loaded but no active rules — produces pass_through
-    triage_decision: TriageDecision | None = None
+    # policy_evaluator=None means caller did not provide one — skip annotation
+    triage_decision: PolicyDecision | None = None
     source_channel = envelope.source.channel
     thread_id: str | None = None
     if envelope.event.external_thread_id:
@@ -425,7 +493,7 @@ async def ingest_v1(
             if affinity_result.outcome.produces_route:
                 affinity_target = affinity_result.target_butler
                 logger.debug(
-                    "Thread affinity hit: thread=%s → butler=%s",
+                    "Thread affinity hit: thread=%s -> butler=%s",
                     thread_id,
                     affinity_target,
                 )
@@ -434,19 +502,18 @@ async def ingest_v1(
                 "Thread affinity lookup raised unexpectedly; failing open (no affinity)"
             )
 
-    if triage_rules is not None:
-        triage_decision = _run_triage(
+    if policy_evaluator is not None:
+        triage_decision = _run_policy_evaluation(
             payload,
-            triage_rules,
-            cache_available=triage_cache_available,
+            policy_evaluator,
             source_channel=source_channel,
             thread_affinity_target=affinity_target,
         )
         logger.debug(
-            "Triage decision for source=%s sender=%s: %s",
+            "Policy decision for source=%s sender=%s: %s",
             source_channel,
             envelope.sender.identity,
-            triage_decision.decision,
+            triage_decision.action,
         )
 
     # 5. Assign canonical request context
@@ -624,7 +691,7 @@ async def ingest_v1(
                     "connector_api",
                     ingestion_tier,
                     envelope.control.policy_tier,
-                    triage_decision.decision if triage_decision is not None else None,
+                    triage_decision.action if triage_decision is not None else None,
                     triage_decision.target_butler if triage_decision is not None else None,
                 )
     except Exception as exc:
@@ -642,7 +709,7 @@ async def ingest_v1(
         envelope.sender.identity,
         ingestion_tier,
         lifecycle_state,
-        triage_decision.decision if triage_decision else "n/a",
+        triage_decision.action if triage_decision else "n/a",
     )
 
     _ingest_metrics.record_ingest_result(source=source_channel, outcome="success")
@@ -650,6 +717,6 @@ async def ingest_v1(
         request_id=request_id,
         status="accepted",
         duplicate=False,
-        triage_decision=triage_decision.decision if triage_decision else None,
+        triage_decision=triage_decision.action if triage_decision else None,
         triage_target=triage_decision.target_butler if triage_decision else None,
     )

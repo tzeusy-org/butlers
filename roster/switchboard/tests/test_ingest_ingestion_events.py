@@ -193,7 +193,9 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="111")
 
-        result = await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        result = await ingest_v1(
+            pool, envelope, policy_evaluator=None, enable_thread_affinity=False
+        )
 
         assert isinstance(result, IngestAcceptedResponse)
         assert result.duplicate is False
@@ -206,7 +208,9 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="222")
 
-        result = await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        result = await ingest_v1(
+            pool, envelope, policy_evaluator=None, enable_thread_affinity=False
+        )
 
         args = pool.conn.ingestion_events_args()
         assert args is not None, "ingestion_events INSERT was not executed"
@@ -220,7 +224,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _email_envelope(message_id="<ch@example.com>")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -231,7 +235,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _email_envelope(message_id="<prov@example.com>")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -242,7 +246,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _email_envelope(mailbox="inbox@mybutler.com", message_id="<ep@example.com>")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -253,7 +257,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _email_envelope(sender="bob@example.com", message_id="<snd@example.com>")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -264,7 +268,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _email_envelope(thread_id="thread-xyz", message_id="<thr@example.com>")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -275,7 +279,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="333", thread_id=None)
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -286,7 +290,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _email_envelope(message_id="<evid@example.com>")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -297,7 +301,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="444")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -331,7 +335,7 @@ class TestIngestionEventsWriteOnAccept:
             },
         }
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
@@ -342,43 +346,50 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _email_envelope(policy_tier="high_priority", message_id="<hp@example.com>")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
         # $12 = policy_tier
         assert args[11] == "high_priority"
 
-    async def test_ingestion_events_triage_fields_null_when_no_triage(self) -> None:
-        """triage_decision and triage_target are None when triage_rules=None."""
+    async def test_ingestion_events_triage_fields_null_when_no_evaluator(self) -> None:
+        """triage_decision and triage_target are None when policy_evaluator=None."""
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="555")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
         # $13 = triage_decision, $14 = triage_target
-        assert args[12] is None, "triage_decision must be None when no triage rules"
-        assert args[13] is None, "triage_target must be None when no triage rules"
+        assert args[12] is None, "triage_decision must be None when no evaluator"
+        assert args[13] is None, "triage_target must be None when no evaluator"
 
     async def test_ingestion_events_triage_decision_populated(self) -> None:
-        """triage_decision and triage_target are written from the TriageDecision result."""
+        """triage_decision and triage_target are written from the PolicyDecision result."""
+        import time
+
+        from butlers.ingestion_policy import IngestionPolicyEvaluator
+
         pool = _FakePool()
         envelope = _email_envelope(message_id="<triage@example.com>")
 
-        # Pass empty rules list → produces pass_through via _run_triage
+        # Create evaluator with no rules -> produces pass_through
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        evaluator._rules = []
+        evaluator._last_loaded_at = time.monotonic()
+
         await ingest_v1(
             pool,
             envelope,
-            triage_rules=[],
-            triage_cache_available=True,
+            policy_evaluator=evaluator,
             enable_thread_affinity=False,
         )
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
-        # With an empty rule set, _run_triage produces pass_through; target_butler is None
+        # With an empty rule set, evaluator produces pass_through; target_butler is None
         assert args[12] == "pass_through", (
             "triage_decision should be 'pass_through' for empty rule set"
         )
@@ -389,7 +400,7 @@ class TestIngestionEventsWriteOnAccept:
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="666")
 
-        await ingest_v1(pool, envelope, triage_rules=None, enable_thread_affinity=False)
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
         # $2 in message_inbox INSERT and $2 in ingestion_events INSERT must match.
         inbox_received_at = None
@@ -422,7 +433,7 @@ class TestIngestionEventsSkippedOnDuplicate:
         pool.set_outer_existing({"request_id": existing_id})
 
         result = await ingest_v1(
-            pool, _telegram_envelope(), triage_rules=None, enable_thread_affinity=False
+            pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
         )
 
         assert result.duplicate is True
@@ -441,7 +452,7 @@ class TestIngestionEventsSkippedOnDuplicate:
         pool = _FakePool(inner_existing={"request_id": existing_id})
 
         result = await ingest_v1(
-            pool, _telegram_envelope(), triage_rules=None, enable_thread_affinity=False
+            pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
         )
 
         assert result.duplicate is True
@@ -460,7 +471,7 @@ class TestIngestionEventsSkippedOnDuplicate:
         pool.set_outer_existing({"request_id": canonical_id})
 
         result = await ingest_v1(
-            pool, _telegram_envelope(), triage_rules=None, enable_thread_affinity=False
+            pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
         )
 
         assert result.request_id == canonical_id
