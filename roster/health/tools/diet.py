@@ -130,13 +130,7 @@ async def meal_log(
         "symptom_notes": symptom_notes,
         "tags": tags,
     }
-    metadata.update(
-        {
-            key: value
-            for key, value in optional_metadata.items()
-            if value is not None
-        }
-    )
+    metadata.update({key: value for key, value in optional_metadata.items() if value is not None})
 
     fact_id = await store_fact(
         pool,

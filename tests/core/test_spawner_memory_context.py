@@ -174,7 +174,9 @@ class TestSpawnerMemoryContextInjection:
                 result="Done",
             )
 
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk))
+        spawner = Spawner(
+            config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk)
+        )
 
         with patch(
             "butlers.core.spawner.fetch_memory_context",

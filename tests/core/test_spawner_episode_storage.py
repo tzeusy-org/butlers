@@ -122,7 +122,9 @@ class TestSpawnerEpisodeStorageIntegration:
                 result="Task completed",
             )
 
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk))
+        spawner = Spawner(
+            config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk)
+        )
 
         with (
             patch(
@@ -166,7 +168,9 @@ class TestSpawnerEpisodeStorageIntegration:
                 result="Task completed",
             )
 
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk))
+        spawner = Spawner(
+            config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk)
+        )
 
         with patch(
             "butlers.core.spawner.store_session_episode",
@@ -187,7 +191,9 @@ class TestSpawnerEpisodeStorageIntegration:
             raise RuntimeError("SDK failure")
             yield  # pragma: no cover
 
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=failing_sdk))
+        spawner = Spawner(
+            config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=failing_sdk)
+        )
 
         with patch(
             "butlers.core.spawner.store_session_episode",

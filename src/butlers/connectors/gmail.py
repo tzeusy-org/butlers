@@ -131,7 +131,6 @@ SUPPORTED_ATTACHMENT_TYPES: frozenset[str] = frozenset(ATTACHMENT_POLICY.keys())
 GLOBAL_MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
 
 
-
 def _format_google_error(response: httpx.Response) -> str | None:
     """Extract a compact Google API/OAuth error summary from response JSON."""
     try:

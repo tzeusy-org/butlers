@@ -921,4 +921,3 @@ class Spawner:
             # End span and detach context
             span.end()
             trace.context_api.detach(token)
-
