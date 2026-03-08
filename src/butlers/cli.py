@@ -451,6 +451,17 @@ def _check_port_conflicts(configs: dict[str, Path]) -> dict[int, list[str]]:
     return {port: names for port, names in port_to_butlers.items() if len(names) > 1}
 
 
+_PORT_RETRY_MAX = 5
+_PORT_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt
+
+
+def _is_port_conflict(exc: Exception) -> bool:
+    """Return True if *exc* is an OSError caused by EADDRINUSE."""
+    import errno
+
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EADDRINUSE
+
+
 async def _start_all(configs: dict[str, Path]) -> None:
     """Start all butler daemons in a single event loop."""
     from butlers.daemon import ButlerDaemon
@@ -468,15 +479,30 @@ async def _start_all(configs: dict[str, Path]) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Start all daemons
+    # Start all daemons, retrying on port conflicts
     for name, config_dir in sorted(configs.items()):
-        daemon = ButlerDaemon(config_dir)
-        try:
-            await daemon.start()
-            daemons.append(daemon)
-            click.echo(f"  started: {name}")
-        except Exception as exc:
-            click.echo(f"  failed: {name}: {exc}")
+        started = False
+        for attempt in range(_PORT_RETRY_MAX):
+            daemon = ButlerDaemon(config_dir)
+            try:
+                await daemon.start()
+                daemons.append(daemon)
+                click.echo(f"  started: {name}")
+                started = True
+                break
+            except Exception as exc:
+                if _is_port_conflict(exc) and attempt < _PORT_RETRY_MAX - 1:
+                    delay = _PORT_RETRY_BASE_DELAY * (2**attempt)
+                    click.echo(
+                        f"  {name}: port in use, retrying in {delay:.0f}s "
+                        f"(attempt {attempt + 1}/{_PORT_RETRY_MAX})..."
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    click.echo(f"  failed: {name}: {exc}")
+                    break
+        if not started:
+            logger.warning("Butler %s failed to start after all attempts", name)
 
     if not daemons:
         click.echo("No butlers started successfully")
