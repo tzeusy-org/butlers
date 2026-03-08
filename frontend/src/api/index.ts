@@ -350,6 +350,21 @@ export type {
 } from "./types.ts";
 
 export {
+  listIngestionEvents,
+  getIngestionEvent,
+  getIngestionEventSessions,
+  getIngestionEventRollup,
+} from "./client.ts";
+
+export type {
+  IngestionEventSummary,
+  IngestionEventSession,
+  IngestionEventRollup,
+  IngestionEventsParams,
+  ButlerRollupEntry,
+} from "./types.ts";
+
+export {
   createIngestionRule,
   deleteIngestionRule,
   getIngestionRules,

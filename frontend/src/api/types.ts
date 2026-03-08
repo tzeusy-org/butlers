@@ -1795,6 +1795,67 @@ export interface ConnectorFanout {
 }
 
 // ---------------------------------------------------------------------------
+// Ingestion event lineage types (GET /api/switchboard/ingestion/events/*)
+// ---------------------------------------------------------------------------
+
+/** One ingestion event from shared.ingestion_events (list view). */
+export interface IngestionEventSummary {
+  id: string; // UUIDv7 — the request_id
+  received_at: string | null;
+  source_channel: string | null;
+  source_provider: string | null;
+  source_endpoint_identity: string | null;
+  source_sender_identity: string | null;
+  source_thread_identity: string | null;
+  external_event_id: string | null;
+  dedupe_key: string | null;
+  dedupe_strategy: string | null;
+  ingestion_tier: string | null;
+  policy_tier: string | null;
+  triage_decision: string | null;
+  triage_target: string | null;
+}
+
+/** One butler session spawned in response to an ingestion event. */
+export interface IngestionEventSession {
+  id: string; // session UUID
+  butler_name: string;
+  trigger_source: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  success: boolean | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost: Record<string, unknown> | null;
+  trace_id: string | null;
+}
+
+/** Per-butler breakdown within an IngestionEventRollup. */
+export interface ButlerRollupEntry {
+  sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost: number;
+}
+
+/** Aggregate cost/token totals for all sessions linked to one ingestion event. */
+export interface IngestionEventRollup {
+  request_id: string;
+  total_sessions: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost: number;
+  by_butler: Record<string, ButlerRollupEntry>;
+}
+
+/** Query parameters for GET /api/switchboard/ingestion/events. */
+export interface IngestionEventsParams {
+  limit?: number;
+  offset?: number;
+  source_channel?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Education
 // ---------------------------------------------------------------------------
 
