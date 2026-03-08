@@ -279,6 +279,9 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
         <TableCell className="text-sm tabular-nums">
           {r ? fmtNum(r.total_output_tokens) : "—"}
         </TableCell>
+        <TableCell className="text-sm tabular-nums">
+          {r ? formatCost(r.total_cost) : "—"}
+        </TableCell>
         <TableCell className="text-sm text-muted-foreground">
           <span
             className="text-xs select-none"
@@ -291,7 +294,7 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
 
       {isExpanded && (
         <TableRow>
-          <TableCell colSpan={8} className="p-0">
+          <TableCell colSpan={9} className="p-0">
             <LineageView requestId={event.id} />
           </TableCell>
         </TableRow>
@@ -307,7 +310,7 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
 function EventRowSkeleton() {
   return (
     <TableRow>
-      {Array.from({ length: 8 }).map((_, i) => (
+      {Array.from({ length: 9 }).map((_, i) => (
         <TableCell key={i}>
           <Skeleton className="h-4 w-full" />
         </TableCell>
@@ -360,6 +363,7 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                   <TableHead>Tier</TableHead>
                   <TableHead>Tokens In</TableHead>
                   <TableHead>Tokens Out</TableHead>
+                  <TableHead>Cost</TableHead>
                   <TableHead className="w-8" />
                 </TableRow>
               </TableHeader>
@@ -370,7 +374,7 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                   ))
                 ) : events.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8}>
+                    <TableCell colSpan={9}>
                       <EmptyState
                         title="No ingestion events"
                         description="Events will appear here once the system receives incoming messages."
