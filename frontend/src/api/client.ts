@@ -2233,10 +2233,10 @@ export function testIngestionRule(
 }
 
 // ---------------------------------------------------------------------------
-// Ingestion event lineage (GET /api/switchboard/ingestion/events/*)
+// Ingestion event lineage (GET /api/ingestion/events/*)
 // ---------------------------------------------------------------------------
 
-/** List ingestion events with optional filtering (GET /api/switchboard/ingestion/events). */
+/** List ingestion events with optional filtering (GET /api/ingestion/events). */
 export async function listIngestionEvents(
   params?: IngestionEventsParams,
 ): Promise<PaginatedResponse<IngestionEventSummary>> {
@@ -2246,33 +2246,33 @@ export async function listIngestionEvents(
   if (params?.source_channel) sp.set("source_channel", params.source_channel);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<PaginatedResponse<IngestionEventSummary>>(
-    `/switchboard/ingestion/events${qs}`,
+    `/ingestion/events${qs}`,
   );
 }
 
-/** Get a single ingestion event by request_id (GET /api/switchboard/ingestion/events/{id}). */
+/** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */
 export async function getIngestionEvent(
   requestId: string,
 ): Promise<ApiResponse<IngestionEventSummary>> {
   return apiFetch<ApiResponse<IngestionEventSummary>>(
-    `/switchboard/ingestion/events/${encodeURIComponent(requestId)}`,
+    `/ingestion/events/${encodeURIComponent(requestId)}`,
   );
 }
 
-/** Get sessions for an ingestion event (GET /api/switchboard/ingestion/events/{id}/sessions). */
+/** Get sessions for an ingestion event (GET /api/ingestion/events/{id}/sessions). */
 export async function getIngestionEventSessions(
   requestId: string,
 ): Promise<ApiResponse<IngestionEventSession[]>> {
   return apiFetch<ApiResponse<IngestionEventSession[]>>(
-    `/switchboard/ingestion/events/${encodeURIComponent(requestId)}/sessions`,
+    `/ingestion/events/${encodeURIComponent(requestId)}/sessions`,
   );
 }
 
-/** Get cost/token rollup for an ingestion event (GET /api/switchboard/ingestion/events/{id}/rollup). */
+/** Get cost/token rollup for an ingestion event (GET /api/ingestion/events/{id}/rollup). */
 export async function getIngestionEventRollup(
   requestId: string,
 ): Promise<ApiResponse<IngestionEventRollup>> {
   return apiFetch<ApiResponse<IngestionEventRollup>>(
-    `/switchboard/ingestion/events/${encodeURIComponent(requestId)}/rollup`,
+    `/ingestion/events/${encodeURIComponent(requestId)}/rollup`,
   );
 }

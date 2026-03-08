@@ -39,7 +39,7 @@ export const ingestionEventKeys = {
 /**
  * Paginated list of ingestion events, newest first.
  *
- * Fetches from GET /api/switchboard/ingestion/events.
+ * Fetches from GET /api/ingestion/events.
  * Supports optional source_channel filter, limit, and offset.
  */
 export function useIngestionEvents(
@@ -57,7 +57,7 @@ export function useIngestionEvents(
 /**
  * Fan-out sessions for a single ingestion event request_id.
  *
- * Fetches from GET /api/switchboard/ingestion/events/{requestId}/sessions.
+ * Fetches from GET /api/ingestion/events/{requestId}/sessions.
  * Only enabled when a non-empty requestId is provided.
  */
 export function useIngestionEventSessions(
@@ -75,7 +75,7 @@ export function useIngestionEventSessions(
 /**
  * Cost/token rollup for a single ingestion event request_id.
  *
- * Fetches from GET /api/switchboard/ingestion/events/{requestId}/rollup.
+ * Fetches from GET /api/ingestion/events/{requestId}/rollup.
  * Only enabled when a non-empty requestId is provided.
  */
 export function useIngestionEventRollup(
