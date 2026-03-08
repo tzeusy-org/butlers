@@ -1006,31 +1006,25 @@ async def test_polling_backoff_resets_after_recovery(
     """After errors, a successful poll resets backoff to base poll_interval_s."""
     poll_interval = mock_config.poll_interval_s
 
-    error_response = httpx.ReadError("Network error", request=None)
-    success_response = Mock()
-    success_response.json.return_value = {"ok": True, "result": []}
-    success_response.raise_for_status = Mock()
-
-    responses = iter([error_response, success_response])
+    # Use a counter instead of iter()/next() to avoid StopIteration inside
+    # async coroutines, which has unpredictable behaviour across Python versions.
+    get_updates_call = 0
 
     async def get_updates_side_effect() -> list:
-        resp = next(responses)
-        if isinstance(resp, Exception):
-            raise resp
-        connector._http_client.get = Mock(return_value=resp)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("result", [])
+        nonlocal get_updates_call
+        get_updates_call += 1
+        if get_updates_call == 1:
+            raise httpx.ReadError("Network error", request=None)
+        if get_updates_call == 2:
+            return []  # success — resets backoff
+        # 3rd call: stop the loop cleanly
+        connector._running = False
+        return []
 
     sleep_calls: list[float] = []
-    call_count = 0
 
     async def record_sleep(secs: float) -> None:
         sleep_calls.append(secs)
-        nonlocal call_count
-        call_count += 1
-        if call_count >= 2:
-            connector._running = False
 
     connector._running = True
 
@@ -1048,7 +1042,9 @@ async def test_polling_backoff_resets_after_recovery(
     ):
         await connector.start_polling()
 
-    assert len(sleep_calls) == 2
+    assert get_updates_call == 3
+    # At least 2 sleeps from the polling loop (error backoff + success interval)
+    assert len(sleep_calls) >= 2
     # First sleep: error → backoff (0.1 * 2^1 = 0.2, jitter=0)
     assert sleep_calls[0] == pytest.approx(poll_interval * 2, rel=1e-9)
     # Second sleep: success → back to poll_interval_s
