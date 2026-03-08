@@ -81,6 +81,14 @@ if _spec is not None and _spec.loader is not None:
     CursorUpdateRequest = _models.CursorUpdateRequest
     validate_condition = _models.validate_condition
     validate_action = _models.validate_action
+    IngestionRule = _models.IngestionRule
+    IngestionRuleCreate = _models.IngestionRuleCreate
+    IngestionRuleUpdate = _models.IngestionRuleUpdate
+    IngestionRuleTestRequest = _models.IngestionRuleTestRequest
+    IngestionRuleTestResult = _models.IngestionRuleTestResult
+    IngestionRuleTestResponse = _models.IngestionRuleTestResponse
+    validate_ingestion_action = _models.validate_ingestion_action
+    validate_rule_type_for_scope = _models.validate_rule_type_for_scope
 else:
     raise RuntimeError("Failed to load switchboard API models")
 
@@ -2953,3 +2961,406 @@ async def replace_connector_filters(
 
     # Return the updated state (re-use the GET logic).
     return await list_connector_filters(connector_type, endpoint_identity, db=db)
+
+
+# ---------------------------------------------------------------------------
+# Helpers — ingestion rules (unified, design.md D8)
+# ---------------------------------------------------------------------------
+
+# Module-level evaluator cache keyed by scope. Populated lazily by the /test
+# endpoint and invalidated on mutations.
+_ingestion_evaluators: dict[str, Any] = {}
+
+
+def _row_to_ingestion_rule(r: Any) -> IngestionRule:
+    """Convert an asyncpg row to an IngestionRule model."""
+    condition = r["condition"]
+    if isinstance(condition, str):
+        condition = json.loads(condition)
+    return IngestionRule(
+        id=str(r["id"]),
+        scope=r["scope"],
+        rule_type=r["rule_type"],
+        condition=condition,
+        action=r["action"],
+        priority=r["priority"],
+        enabled=r["enabled"],
+        name=r.get("name"),
+        description=r.get("description"),
+        created_by=r["created_by"],
+        created_at=str(r["created_at"]),
+        updated_at=str(r["updated_at"]),
+        deleted_at=str(r["deleted_at"]) if r.get("deleted_at") else None,
+    )
+
+
+def _invalidate_ingestion_cache() -> None:
+    """Invalidate all cached IngestionPolicyEvaluator instances.
+
+    Called after any mutation (create/update/delete) to ensure evaluators
+    pick up changes on their next refresh cycle.
+    """
+    for evaluator in _ingestion_evaluators.values():
+        evaluator.invalidate()
+
+
+# ---------------------------------------------------------------------------
+# GET /ingestion-rules — list rules with optional filters
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ingestion-rules", response_model=ApiResponse[list[IngestionRule]])
+async def list_ingestion_rules(
+    scope: str | None = Query(None, description="Filter by scope (e.g. 'global')"),
+    rule_type: str | None = Query(None, description="Filter by rule_type"),
+    action: str | None = Query(None, description="Filter by action"),
+    enabled: bool | None = Query(None, description="Filter by enabled state"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[IngestionRule]]:
+    """List active (non-deleted) ingestion rules with optional filters.
+
+    Results are ordered by priority ASC, created_at ASC, id ASC per design.md D4.
+    """
+    pool = _pool(db)
+
+    conditions = ["deleted_at IS NULL"]
+    args: list[Any] = []
+    idx = 1
+
+    if scope is not None:
+        conditions.append(f"scope = ${idx}")
+        args.append(scope)
+        idx += 1
+
+    if rule_type is not None:
+        conditions.append(f"rule_type = ${idx}")
+        args.append(rule_type)
+        idx += 1
+
+    if action is not None:
+        conditions.append(f"action = ${idx}")
+        args.append(action)
+        idx += 1
+
+    if enabled is not None:
+        conditions.append(f"enabled = ${idx}")
+        args.append(enabled)
+        idx += 1
+
+    where = " WHERE " + " AND ".join(conditions)
+
+    rows = await pool.fetch(
+        f"SELECT id, scope, rule_type, condition, action, priority, enabled,"
+        f" name, description, created_by, created_at, updated_at, deleted_at"
+        f" FROM ingestion_rules{where}"
+        f" ORDER BY priority ASC, created_at ASC, id ASC",
+        *args,
+    )
+
+    total = len(rows)
+    data = [_row_to_ingestion_rule(r) for r in rows]
+
+    from butlers.api.models import ApiMeta
+
+    return ApiResponse[list[IngestionRule]](data=data, meta=ApiMeta(total=total))
+
+
+# ---------------------------------------------------------------------------
+# POST /ingestion-rules — create rule
+# ---------------------------------------------------------------------------
+
+
+@router.post("/ingestion-rules", response_model=ApiResponse[IngestionRule], status_code=201)
+async def create_ingestion_rule(
+    body: IngestionRuleCreate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[IngestionRule]:
+    """Create a new ingestion rule.
+
+    Validates scope-action constraints, rule_type/condition schema compatibility,
+    and rule_type/scope compatibility before writing. For global scope with
+    route_to action, validates the target butler is registered.
+    """
+    pool = _pool(db)
+
+    # For global scope route_to, validate target butler exists
+    if body.scope == "global":
+        await _assert_route_to_eligible(pool, body.action)
+
+    # Re-validate and normalise condition
+    try:
+        validated_condition = validate_condition(body.rule_type, body.condition)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Validate rule_type compatibility with scope
+    try:
+        validate_rule_type_for_scope(body.rule_type, body.scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    row = await pool.fetchrow(
+        "INSERT INTO ingestion_rules"
+        " (scope, rule_type, condition, action, priority, enabled,"
+        "  name, description, created_by)"
+        " VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, 'dashboard')"
+        " RETURNING id, scope, rule_type, condition, action, priority, enabled,"
+        "           name, description, created_by, created_at, updated_at, deleted_at",
+        body.scope,
+        body.rule_type,
+        json.dumps(validated_condition),
+        body.action,
+        body.priority,
+        body.enabled,
+        body.name,
+        body.description,
+    )
+
+    _invalidate_ingestion_cache()
+
+    return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(row))
+
+
+# ---------------------------------------------------------------------------
+# GET /ingestion-rules/{rule_id} — get single rule
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ingestion-rules/{rule_id}", response_model=ApiResponse[IngestionRule])
+async def get_ingestion_rule(
+    rule_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[IngestionRule]:
+    """Get a single ingestion rule by ID.
+
+    Returns 404 when the rule does not exist or has been soft-deleted.
+    """
+    pool = _pool(db)
+
+    try:
+        UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+
+    row = await pool.fetchrow(
+        "SELECT id, scope, rule_type, condition, action, priority, enabled,"
+        " name, description, created_by, created_at, updated_at, deleted_at"
+        " FROM ingestion_rules WHERE id = $1 AND deleted_at IS NULL",
+        rule_id,
+    )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Ingestion rule '{rule_id}' not found")
+
+    return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(row))
+
+
+# ---------------------------------------------------------------------------
+# PATCH /ingestion-rules/{rule_id} — partial update
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/ingestion-rules/{rule_id}", response_model=ApiResponse[IngestionRule])
+async def update_ingestion_rule(
+    rule_id: str,
+    body: IngestionRuleUpdate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[IngestionRule]:
+    """Partially update an ingestion rule.
+
+    Supports partial fields: scope, condition, action, priority, enabled,
+    name, description. Returns 404 when the rule does not exist or has been
+    soft-deleted. Validates scope-action and rule_type-scope compatibility
+    using the effective (potentially updated) values.
+    """
+    pool = _pool(db)
+
+    try:
+        UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+
+    existing = await pool.fetchrow(
+        "SELECT id, scope, rule_type, condition, action, priority, enabled,"
+        " name, description, created_by, created_at, updated_at, deleted_at"
+        " FROM ingestion_rules WHERE id = $1 AND deleted_at IS NULL",
+        rule_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Ingestion rule '{rule_id}' not found")
+
+    # Determine effective values for cross-field validation
+    effective_scope = body.scope if body.scope is not None else existing["scope"]
+    effective_action = body.action if body.action is not None else existing["action"]
+    effective_rule_type = existing["rule_type"]  # rule_type is not updatable
+
+    # Validate scope-action compatibility
+    try:
+        validate_ingestion_action(effective_action, effective_scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Validate rule_type-scope compatibility
+    try:
+        validate_rule_type_for_scope(effective_rule_type, effective_scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # For global scope route_to, validate target butler exists
+    if effective_scope == "global":
+        await _assert_route_to_eligible(pool, effective_action)
+
+    updates: dict[str, Any] = {}
+
+    if body.scope is not None:
+        updates["scope"] = body.scope
+
+    if body.action is not None:
+        updates["action"] = body.action
+
+    if body.condition is not None:
+        try:
+            validated_condition = validate_condition(effective_rule_type, body.condition)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        updates["condition"] = json.dumps(validated_condition)
+
+    if body.priority is not None:
+        updates["priority"] = body.priority
+
+    if body.enabled is not None:
+        updates["enabled"] = body.enabled
+
+    if body.name is not None:
+        updates["name"] = body.name
+
+    if body.description is not None:
+        updates["description"] = body.description
+
+    if not updates:
+        return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(existing))
+
+    # Build SET clause
+    set_parts: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    for field, value in updates.items():
+        if field == "condition":
+            set_parts.append(f"condition = ${idx}::jsonb")
+        else:
+            set_parts.append(f"{field} = ${idx}")
+        args.append(value)
+        idx += 1
+
+    set_parts.append(f"updated_at = ${idx}")
+    args.append(datetime.datetime.now(datetime.UTC))
+    idx += 1
+
+    args.append(rule_id)
+
+    row = await pool.fetchrow(
+        f"UPDATE ingestion_rules SET {', '.join(set_parts)}"
+        f" WHERE id = ${idx} AND deleted_at IS NULL"
+        f" RETURNING id, scope, rule_type, condition, action, priority, enabled,"
+        f"           name, description, created_by, created_at, updated_at, deleted_at",
+        *args,
+    )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Ingestion rule '{rule_id}' not found")
+
+    _invalidate_ingestion_cache()
+
+    return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(row))
+
+
+# ---------------------------------------------------------------------------
+# DELETE /ingestion-rules/{rule_id} — soft-delete
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/ingestion-rules/{rule_id}", status_code=204)
+async def delete_ingestion_rule(
+    rule_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete an ingestion rule.
+
+    Sets ``deleted_at=NOW()`` and ``enabled=FALSE``.
+    Returns 204 No Content on success.
+    Returns 404 when the rule does not exist or is already deleted.
+    """
+    pool = _pool(db)
+
+    try:
+        UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+
+    now = datetime.datetime.now(datetime.UTC)
+    result = await pool.execute(
+        "UPDATE ingestion_rules"
+        " SET deleted_at = $1, enabled = FALSE, updated_at = $1"
+        " WHERE id = $2 AND deleted_at IS NULL",
+        now,
+        rule_id,
+    )
+
+    rows_affected = int(result.split(" ")[-1]) if result else 0
+    if rows_affected == 0:
+        raise HTTPException(status_code=404, detail=f"Ingestion rule '{rule_id}' not found")
+
+    _invalidate_ingestion_cache()
+
+
+# ---------------------------------------------------------------------------
+# POST /ingestion-rules/test — dry-run evaluation
+# ---------------------------------------------------------------------------
+
+
+@router.post("/ingestion-rules/test", response_model=IngestionRuleTestResponse)
+async def test_ingestion_rule(
+    body: IngestionRuleTestRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> IngestionRuleTestResponse:
+    """Dry-run: evaluate a test envelope against active ingestion rules.
+
+    Loads rules for the given scope, builds an IngestionEnvelope from the
+    request body, and evaluates using the IngestionPolicyEvaluator.
+    Does NOT write any routing or inbox state.
+    """
+    pool = _pool(db)
+
+    from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+
+    scope = body.scope
+
+    # Create a fresh evaluator for each test to ensure we load the latest rules.
+    evaluator = IngestionPolicyEvaluator(
+        scope=scope,
+        db_pool=pool,
+        refresh_interval_s=60,
+    )
+    await evaluator.ensure_loaded()
+
+    envelope = IngestionEnvelope(
+        sender_address=body.envelope.sender_address,
+        source_channel=body.envelope.source_channel,
+        headers=body.envelope.headers,
+        mime_parts=body.envelope.mime_parts,
+        raw_key=body.envelope.raw_key,
+    )
+
+    decision = evaluator.evaluate(envelope)
+
+    result = IngestionRuleTestResult(
+        matched=decision.action != "pass_through",
+        decision=decision.action if decision.action != "pass_through" else None,
+        target_butler=decision.target_butler,
+        matched_rule_id=decision.matched_rule_id,
+        matched_rule_type=decision.matched_rule_type,
+        reason=decision.reason,
+    )
+
+    return IngestionRuleTestResponse(data=result)
