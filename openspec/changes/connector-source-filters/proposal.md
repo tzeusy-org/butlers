@@ -1,3 +1,12 @@
+---
+superseded-by: unified-ingestion-policy
+---
+
+> **Note:** This change has been superseded by the
+> [unified-ingestion-policy](../unified-ingestion-policy/proposal.md) change,
+> which merges source filters and triage rules into a single Ingestion Policy
+> model. This proposal is retained for historical context.
+
 ## Why
 
 Every incoming message through a connector triggers downstream LLM processing; messages from spam domains, bot accounts, or unwanted Telegram chats waste tokens with zero signal value. A pre-ingest filter gate — evaluated at the connector before any Switchboard submission — eliminates this waste without touching the Switchboard or butler layers.
