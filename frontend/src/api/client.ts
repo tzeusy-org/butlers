@@ -2153,6 +2153,17 @@ export async function updateConnectorCursor(
   };
 }
 
+/** Delete (deregister) a connector and its heartbeat log. */
+export async function deleteConnector(
+  connectorType: string,
+  endpointIdentity: string,
+): Promise<ApiResponse<{ deleted: string }>> {
+  return apiFetch<ApiResponse<{ deleted: string }>>(
+    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
+    { method: "DELETE" },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Unified ingestion rules (design.md D8)
 // ---------------------------------------------------------------------------

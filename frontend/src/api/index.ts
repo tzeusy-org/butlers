@@ -322,6 +322,7 @@ export type {
 } from "./types.ts";
 
 export {
+  deleteConnector,
   getCrossConnectorSummary,
   getConnectorDetail,
   getConnectorFanout,

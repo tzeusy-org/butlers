@@ -16,6 +16,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  deleteConnector,
   getCrossConnectorSummary,
   getConnectorDetail,
   getConnectorFanout,
@@ -173,6 +174,31 @@ export function useUpdateConnectorCursor(
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.connectorDetail(connectorType, endpointIdentity),
+      });
+    },
+  });
+}
+
+/**
+ * Mutation to delete (deregister) a connector.
+ * Invalidates the connector list so the grid refreshes.
+ */
+export function useDeleteConnector() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      connectorType,
+      endpointIdentity,
+    }: {
+      connectorType: string;
+      endpointIdentity: string;
+    }) => deleteConnector(connectorType, endpointIdentity),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.connectorsList(),
+      });
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.all,
       });
     },
   });
