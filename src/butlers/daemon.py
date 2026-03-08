@@ -1859,16 +1859,32 @@ class ButlerDaemon:
                 self.switchboard_client = None
 
     async def _resolve_default_notify_recipient(
-        self, *, channel: str, intent: str, recipient: str | None
+        self,
+        *,
+        channel: str,
+        intent: str,
+        recipient: str | None,
+        request_context: dict[str, Any] | None = None,
     ) -> str | None:
-        """Resolve notify recipient, including schedule-safe Telegram default chat mapping.
+        """Resolve notify recipient with progressive fallback.
 
-        For Telegram send without an explicit recipient, looks up the owner entity's
-        ``entity_info`` entry with ``type='telegram_chat_id'`` in ``shared.entity_info``.
+        Resolution order:
+        1. Explicit ``recipient`` string → use as-is.
+        2. ``request_context.source_endpoint_identity`` for matching channel
+           → extract identifier (e.g. ``telegram:12345`` → ``12345``).
+        3. Owner entity lookup via ``shared.entity_info`` (Telegram send only).
         """
         resolved_recipient = recipient.strip() if isinstance(recipient, str) else None
         if resolved_recipient:
             return resolved_recipient
+
+        # Try extracting from request_context (the sender's channel identity).
+        if request_context is not None:
+            endpoint = request_context.get("source_endpoint_identity", "")
+            if isinstance(endpoint, str) and endpoint.startswith(f"{channel}:"):
+                extracted = endpoint[len(channel) + 1 :]
+                if extracted:
+                    return extracted
 
         if channel != "telegram" or intent != "send":
             return None
@@ -4083,6 +4099,7 @@ class ButlerDaemon:
                     channel=channel,
                     intent=intent,
                     recipient=recipient,
+                    request_context=request_context,
                 )
 
             if channel == "telegram" and intent == "send" and resolved_recipient is None:

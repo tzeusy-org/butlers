@@ -19,7 +19,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     from butlers.tools.switchboard.dead_letter import capture as _dl_capture
     from butlers.tools.switchboard.dead_letter import replay as _dl_replay
     from butlers.tools.switchboard.extraction import audit_log as _extraction
-    from butlers.tools.switchboard.notification import deliver as _notify
+    from butlers.tools.switchboard.notification.deliver import deliver as _deliver_notification
     from butlers.tools.switchboard.operator import controls as _operator
     from butlers.tools.switchboard.registry import registry as _registry
     from butlers.tools.switchboard.routing import route as _route
@@ -93,7 +93,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         notify_request: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Deliver a notification through the specified channel."""
-        return await _notify.deliver(
+        return await _deliver_notification(
             module._get_pool(),
             channel=channel,
             message=message,

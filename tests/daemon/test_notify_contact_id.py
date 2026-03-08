@@ -824,6 +824,7 @@ class TestNotifyOwnerDefaultResolution:
             channel="email",
             intent="send",
             recipient=None,
+            request_context=None,
         )
 
     async def test_no_contact_id_no_recipient_contact_resolver_not_called(
