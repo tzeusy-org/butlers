@@ -225,7 +225,7 @@ async def _seed_core_rows(dsn: str, schema: str) -> None:
             INSERT INTO "{schema}"."scheduled_tasks" (id, name, cron, prompt)
             VALUES (
                 '11111111-1111-1111-1111-111111111111',
-                'daily-digest',
+                'daily_digest',
                 '0 9 * * *',
                 'daily summary'
             )

@@ -20,9 +20,9 @@ def test_switchboard_deterministic_schedules_use_job_mode() -> None:
     schedules = config.get("butler", {}).get("schedule", [])
     by_name = {entry["name"]: entry for entry in schedules}
     expected_jobs = {
-        "eligibility-sweep": "eligibility_sweep",
-        "memory-consolidation": "memory_consolidation",
-        "memory-episode-cleanup": "memory_episode_cleanup",
+        "eligibility_sweep": "eligibility_sweep",
+        "memory_consolidation": "memory_consolidation",
+        "memory_episode_cleanup": "memory_episode_cleanup",
     }
 
     # Verify rollup jobs were removed (replaced by OTel/Prometheus pipeline in butlers-ufzc)

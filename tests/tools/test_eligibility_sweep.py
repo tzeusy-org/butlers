@@ -1,7 +1,7 @@
 """Tests for the eligibility sweep — butlers-976.4.
 
 Covers all acceptance criteria:
-1. eligibility-sweep task synced to scheduled_tasks on startup
+1. eligibility_sweep task synced to scheduled_tasks on startup
 2. Active butler exceeding TTL transitions to stale
 3. Stale butler exceeding 2x TTL transitions to quarantined
 4. Active butler within TTL is unchanged
@@ -53,12 +53,12 @@ _NOW = datetime(2026, 2, 19, 12, 0, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
-# 1. butler.toml — eligibility-sweep schedule entry
+# 1. butler.toml — eligibility_sweep schedule entry
 # ---------------------------------------------------------------------------
 
 
 def test_butler_toml_has_eligibility_sweep_schedule():
-    """Acceptance criterion 1: eligibility-sweep task defined in butler.toml."""
+    """Acceptance criterion 1: eligibility_sweep task defined in butler.toml."""
     import tomllib
     from pathlib import Path
 
@@ -68,9 +68,9 @@ def test_butler_toml_has_eligibility_sweep_schedule():
 
     schedules = config.get("butler", {}).get("schedule", [])
     names = [s["name"] for s in schedules]
-    assert "eligibility-sweep" in names, f"eligibility-sweep not in schedules: {names}"
+    assert "eligibility_sweep" in names, f"eligibility_sweep not in schedules: {names}"
 
-    sweep = next(s for s in schedules if s["name"] == "eligibility-sweep")
+    sweep = next(s for s in schedules if s["name"] == "eligibility_sweep")
     assert sweep["cron"] == "*/5 * * * *", f"Unexpected cron: {sweep['cron']}"
     if "prompt" in sweep:
         assert "run_eligibility_sweep" in sweep["prompt"], (

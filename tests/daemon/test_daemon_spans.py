@@ -404,7 +404,7 @@ class TestCoreToolSpans:
             "butlers.daemon._schedule_create", new_callable=AsyncMock, return_value=task_id
         ) as m:
             result = await tools["schedule_create"](
-                name="eligibility-sweep",
+                name="eligibility_sweep",
                 cron="*/5 * * * *",
                 dispatch_mode="job",
                 job_name="eligibility_sweep",
@@ -417,7 +417,7 @@ class TestCoreToolSpans:
         assert result["job_args"] == {"dry_run": True}
         m.assert_awaited_once_with(
             patches["mock_pool"],
-            "eligibility-sweep",
+            "eligibility_sweep",
             "*/5 * * * *",
             None,
             dispatch_mode="job",

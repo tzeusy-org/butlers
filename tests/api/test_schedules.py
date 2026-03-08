@@ -34,7 +34,7 @@ _SCHEDULE_ID = uuid4()
 def _make_schedule_record(
     *,
     schedule_id=None,
-    name="daily-digest",
+    name="daily_digest",
     cron="0 9 * * *",
     dispatch_mode="prompt",
     prompt="Send a daily digest",
@@ -204,7 +204,7 @@ class TestListSchedules:
         assert resp.status_code == 200
         schedule = resp.json()["data"][0]
         assert schedule["id"] == str(_SCHEDULE_ID)
-        assert schedule["name"] == "daily-digest"
+        assert schedule["name"] == "daily_digest"
         assert schedule["cron"] == "0 9 * * *"
         assert schedule["dispatch_mode"] == "prompt"
         assert schedule["prompt"] == "Send a daily digest"
@@ -225,7 +225,7 @@ class TestListSchedules:
         """Job-mode schedules include deterministic dispatch metadata."""
         row = _make_schedule_record(
             schedule_id=uuid4(),
-            name="eligibility-sweep",
+            name="eligibility_sweep",
             dispatch_mode="job",
             prompt=None,
             job_name="eligibility_sweep",
@@ -365,7 +365,7 @@ class TestCreateSchedule:
             resp = await client.post(
                 "/api/butlers/atlas/schedules",
                 json={
-                    "name": "eligibility-sweep",
+                    "name": "eligibility_sweep",
                     "cron": "*/5 * * * *",
                     "dispatch_mode": "job",
                     "job_name": "eligibility_sweep",
@@ -382,7 +382,7 @@ class TestCreateSchedule:
         mock_client.call_tool.assert_called_once_with(
             "schedule_create",
             {
-                "name": "eligibility-sweep",
+                "name": "eligibility_sweep",
                 "cron": "*/5 * * * *",
                 "dispatch_mode": "job",
                 "job_name": "eligibility_sweep",

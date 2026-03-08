@@ -395,31 +395,13 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     },
 }
 
-# Backward compatibility for legacy prompt-mode schedule names that now map
-# to deterministic jobs.
-_MEMORY_SCHEDULE_LEGACY_ALIASES: dict[str, str] = {
-    "memory-consolidation": "memory_consolidation",
-    "memory-episode-cleanup": "memory_episode_cleanup",
-}
-
-_DETERMINISTIC_SCHEDULE_LEGACY_ALIASES: dict[str, dict[str, str]] = {
-    "general": dict(_MEMORY_SCHEDULE_LEGACY_ALIASES),
-    "health": dict(_MEMORY_SCHEDULE_LEGACY_ALIASES),
-    "relationship": dict(_MEMORY_SCHEDULE_LEGACY_ALIASES),
-    "switchboard": {
-        "eligibility-sweep": "eligibility_sweep",
-        **_MEMORY_SCHEDULE_LEGACY_ALIASES,
-    },
-}
-
-
 def _resolve_deterministic_schedule_job_name(
     *,
     butler_name: str,
     trigger_source: str,
     job_name: str | None,
 ) -> str | None:
-    """Resolve deterministic schedule job name from explicit job or legacy alias."""
+    """Resolve deterministic schedule job name from explicit job_name field."""
     if job_name is not None:
         normalized_job_name = job_name.strip()
         if not normalized_job_name:
@@ -429,15 +411,7 @@ def _resolve_deterministic_schedule_job_name(
             )
         return normalized_job_name
 
-    schedule_prefix = "schedule:"
-    if not trigger_source.startswith(schedule_prefix):
-        return None
-
-    schedule_name = trigger_source[len(schedule_prefix) :].strip()
-    if not schedule_name:
-        return None
-    aliases = _DETERMINISTIC_SCHEDULE_LEGACY_ALIASES.get(butler_name, {})
-    return aliases.get(schedule_name)
+    return None
 
 
 class _McpSseDisconnectGuard:

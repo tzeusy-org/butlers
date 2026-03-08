@@ -117,7 +117,7 @@ Calls a Python function directly without spawning an LLM:
 
 ```toml
 [[butler.schedule]]
-name = "memory-consolidation"
+name = "memory_consolidation"
 cron = "0 */6 * * *"
 dispatch_mode = "job"
 job_name = "memory_consolidation"
@@ -165,7 +165,7 @@ name = "butlers"
 schema = "health"
 
 [[butler.schedule]]
-name = "medication-reminder-morning"
+name = "medication_reminder_morning"
 cron = "0 8 * * *"
 prompt = """
 Check for active medications with scheduled times between 8:00 AM and 10:00 AM.
@@ -176,7 +176,7 @@ ONLY use tools available via your MCP server.
 """
 
 [[butler.schedule]]
-name = "weekly-health-summary"
+name = "weekly_health_summary"
 cron = "0 9 * * 0"
 prompt = """
 Generate a comprehensive weekly health summary including:
@@ -187,13 +187,13 @@ Generate a comprehensive weekly health summary including:
 """
 
 [[butler.schedule]]
-name = "memory-consolidation"
+name = "memory_consolidation"
 cron = "0 */6 * * *"
 dispatch_mode = "job"
 job_name = "memory_consolidation"
 
 [[butler.schedule]]
-name = "memory-episode-cleanup"
+name = "memory_episode_cleanup"
 cron = "0 4 * * *"
 dispatch_mode = "job"
 job_name = "memory_episode_cleanup"
@@ -299,13 +299,13 @@ interval_minutes = 15
 full_sync_interval_days = 6
 
 [[butler.schedule]]
-name = "memory-consolidation"
+name = "memory_consolidation"
 cron = "0 */6 * * *"
 dispatch_mode = "job"
 job_name = "memory_consolidation"
 
 [[butler.schedule]]
-name = "memory-episode-cleanup"
+name = "memory_episode_cleanup"
 cron = "0 4 * * *"
 dispatch_mode = "job"
 job_name = "memory_episode_cleanup"

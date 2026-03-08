@@ -45,12 +45,12 @@ required = ["OPENAI_API_KEY", "PG_DSN"]
 optional = ["SLACK_TOKEN"]
 
 [[butler.schedule]]
-name = "daily-digest"
+name = "daily_digest"
 cron = "0 8 * * *"
 prompt = "Summarise overnight emails"
 
 [[butler.schedule]]
-name = "weekly-report"
+name = "weekly_report"
 cron = "0 9 * * 1"
 prompt = "Generate weekly status report"
 
@@ -109,10 +109,10 @@ def test_load_full_config(tmp_path: Path):
     # Schedules
     assert len(cfg.schedules) == 2
     assert cfg.schedules[0] == ScheduleConfig(
-        name="daily-digest", cron="0 8 * * *", prompt="Summarise overnight emails"
+        name="daily_digest", cron="0 8 * * *", prompt="Summarise overnight emails"
     )
     assert cfg.schedules[1] == ScheduleConfig(
-        name="weekly-report", cron="0 9 * * 1", prompt="Generate weekly status report"
+        name="weekly_report", cron="0 9 * * 1", prompt="Generate weekly status report"
     )
 
     # Modules
@@ -258,7 +258,7 @@ name = "cronbot"
 port = 7001
 
 [[butler.schedule]]
-name = "eligibility-sweep"
+name = "eligibility_sweep"
 cron = "*/5 * * * *"
 dispatch_mode = "job"
 job_name = "eligibility_sweep"
@@ -269,7 +269,7 @@ job_args = {batch_size = 100}
 
     assert len(cfg.schedules) == 1
     sched = cfg.schedules[0]
-    assert sched.name == "eligibility-sweep"
+    assert sched.name == "eligibility_sweep"
     assert sched.cron == "*/5 * * * *"
     assert sched.dispatch_mode == ScheduleDispatchMode.JOB
     assert sched.prompt is None
