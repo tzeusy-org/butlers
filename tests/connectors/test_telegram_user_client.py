@@ -322,7 +322,7 @@ class TestTelegramUserClientConnector:
                 "normalized_text": "test",
             },
             "control": {
-                "idempotency_key": "telegram:telegram:user:123456:12345",
+                "idempotency_key": "tg:67890:12345",
                 "policy_tier": "default",
             },
         }
@@ -360,7 +360,7 @@ class TestTelegramUserClientConnector:
             "sender": {"identity": "11111"},
             "payload": {"raw": {}, "normalized_text": "test"},
             "control": {
-                "idempotency_key": "telegram:telegram:user:123456:12345",
+                "idempotency_key": "tg:67890:12345",
                 "policy_tier": "default",
             },
         }

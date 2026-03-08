@@ -201,6 +201,19 @@ def _generate_uuid7() -> UUID:
     return uuid.UUID(int=value)
 
 
+def _compute_content_hash_key(envelope: IngestEnvelopeV1) -> str:
+    """Compute content-hash dedup key independent of connector-specific identifiers.
+
+    Used as a secondary dedup check to catch the same logical message submitted
+    by different connectors (e.g. telegram_bot and telegram_user_client) that may
+    produce different primary idempotency keys.
+    """
+    content_repr = f"{envelope.payload.normalized_text}:{envelope.sender.identity}"
+    content_hash = hashlib.sha256(content_repr.encode()).hexdigest()[:16]
+    time_bucket = envelope.event.observed_at.strftime("%Y%m%d%H")  # hourly window
+    return f"hash:{envelope.source.channel}:{envelope.sender.identity}:{time_bucket}:{content_hash}"
+
+
 def _compute_dedupe_key(envelope: IngestEnvelopeV1) -> str:
     """Compute stable deduplication key from ingest envelope.
 
@@ -237,13 +250,7 @@ def _compute_dedupe_key(envelope: IngestEnvelopeV1) -> str:
 
     # Priority 3: content hash fallback (for sources without stable event IDs)
     # This is less stable but provides basic protection against immediate duplicates
-    content_repr = f"{envelope.payload.normalized_text}:{envelope.sender.identity}"
-    content_hash = hashlib.sha256(content_repr.encode()).hexdigest()[:16]
-    time_bucket = event.observed_at.strftime("%Y%m%d%H")  # hourly window
-    return (
-        f"hash:{source.channel}:{source.endpoint_identity}:"
-        f"{envelope.sender.identity}:{time_bucket}:{content_hash}"
-    )
+    return _compute_content_hash_key(envelope)
 
 
 async def _find_request_by_dedupe_key(pool: asyncpg.Pool, dedupe_key: str) -> asyncpg.Record | None:
@@ -261,6 +268,26 @@ async def _find_request_by_dedupe_key(pool: asyncpg.Pool, dedupe_key: str) -> as
         LIMIT 1
         """,
         dedupe_key,
+    )
+
+
+async def _find_request_by_content_hash(
+    pool: asyncpg.Pool, content_hash_key: str
+) -> asyncpg.Record | None:
+    """Find a request whose stored content_hash_key matches.
+
+    Used as a secondary dedup check to catch the same logical message submitted
+    by different connectors with different primary idempotency keys.
+    """
+    return await pool.fetchrow(
+        """
+        SELECT (request_context ->> 'request_id')::uuid AS request_id
+        FROM message_inbox
+        WHERE request_context ->> 'content_hash_key' = $1
+        ORDER BY received_at DESC
+        LIMIT 1
+        """,
+        content_hash_key,
     )
 
 
@@ -544,6 +571,22 @@ async def ingest_v1(
     # 3. Check for existing request (idempotent duplicate handling)
     existing = await _find_request_by_dedupe_key(pool, dedupe_key)
 
+    # 3a. Secondary content-hash check: catches cross-connector duplicates where
+    # different connectors produce different primary keys for the same message.
+    # Only runs when the primary key used a connector-specific strategy (not
+    # already a content hash).
+    if not existing and not dedupe_key.startswith("hash:"):
+        content_hash_key = _compute_content_hash_key(envelope)
+        existing = await _find_request_by_content_hash(pool, content_hash_key)
+        if existing:
+            logger.info(
+                "Cross-connector duplicate detected via content hash: "
+                "primary_key=%s, content_hash_key=%s, existing_request_id=%s",
+                dedupe_key,
+                content_hash_key,
+                existing["request_id"],
+            )
+
     if existing:
         # Duplicate submission — return existing request reference
         logger.info(
@@ -622,6 +665,10 @@ async def ingest_v1(
     )
     # Embed dedupe_key in request_context for lookup
     request_context["dedupe_key"] = dedupe_key
+    # Store content-hash key for cross-connector dedup (secondary lookup).
+    # When the primary key is already a content hash, no separate key is needed.
+    if not dedupe_key.startswith("hash:"):
+        request_context["content_hash_key"] = _compute_content_hash_key(envelope)
     request_context["dedupe_strategy"] = "connector_api"
 
     # 6. Build raw_payload and normalized_text
@@ -686,6 +733,18 @@ async def ingest_v1(
                 # Serialise concurrent inserts for the same dedupe_key
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedupe_key)
 
+                # Also lock on content-hash key to serialize cross-connector races
+                inner_content_hash_key = (
+                    request_context.get("content_hash_key")
+                    if not dedupe_key.startswith("hash:")
+                    else None
+                )
+                if inner_content_hash_key:
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        inner_content_hash_key,
+                    )
+
                 # Re-check inside lock — another insert may have committed
                 # between the optimistic check (step 3) and acquiring the lock
                 existing = await conn.fetchrow(
@@ -698,6 +757,18 @@ async def ingest_v1(
                     """,
                     dedupe_key,
                 )
+                # Cross-connector re-check inside lock
+                if not existing and inner_content_hash_key:
+                    existing = await conn.fetchrow(
+                        """
+                        SELECT (request_context ->> 'request_id')::uuid AS request_id
+                        FROM message_inbox
+                        WHERE request_context ->> 'content_hash_key' = $1
+                        ORDER BY received_at DESC
+                        LIMIT 1
+                        """,
+                        inner_content_hash_key,
+                    )
                 if existing:
                     logger.info(
                         "Duplicate detected inside advisory lock for dedupe_key=%s, "

@@ -130,7 +130,7 @@ def test_normalize_to_ingest_v1_basic_message(
     assert envelope["sender"]["identity"] == "987654321"
     assert envelope["payload"]["normalized_text"] == "Hello world"
     assert envelope["payload"]["raw"] == sample_telegram_update
-    assert envelope["control"]["idempotency_key"] == "telegram:test_bot:12345"
+    assert envelope["control"]["idempotency_key"] == "tg:987654321:1"
     assert envelope["control"]["policy_tier"] == "default"
 
     # Verify observed_at is RFC3339 with timezone

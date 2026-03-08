@@ -815,7 +815,7 @@ class TelegramBotConnector:
         - sender.identity: message.from.id
         - payload.raw: full Telegram update JSON
         - payload.normalized_text: extracted text
-        - control.idempotency_key: telegram:<endpoint_identity>:<update_id>
+        - control.idempotency_key: tg:<chat_id>:<message_id> (canonical across connectors)
         """
         update_id = str(update.get("update_id", "unknown"))
         chat_id = None
@@ -852,6 +852,15 @@ class TelegramBotConnector:
             f"{chat_id}:{message_id}" if chat_id and message_id is not None else chat_id
         )
 
+        # Canonical idempotency key: tg:<chat_id>:<message_id>
+        # Uses chat_id + message_id (unique per chat) so that bot and user-client
+        # connectors produce the same key for the same Telegram message.
+        idem_key = (
+            f"tg:{chat_id}:{message_id}"
+            if chat_id and message_id is not None
+            else f"telegram:{self._config.endpoint_identity}:{update_id}"
+        )
+
         # Build ingest.v1 envelope
         return {
             "schema_version": "ingest.v1",
@@ -873,7 +882,7 @@ class TelegramBotConnector:
                 "normalized_text": normalized_text,
             },
             "control": {
-                "idempotency_key": f"telegram:{self._config.endpoint_identity}:{update_id}",
+                "idempotency_key": idem_key,
                 "policy_tier": "default",
             },
         }

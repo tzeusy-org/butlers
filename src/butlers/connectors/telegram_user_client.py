@@ -459,7 +459,7 @@ class TelegramUserClientConnector:
         - sender.identity: sender user ID
         - payload.raw: full Telegram message object (as dict)
         - payload.normalized_text: extracted text
-        - control.idempotency_key: telegram:<endpoint_identity>:<message_id>
+        - control.idempotency_key: tg:<chat_id>:<message_id> (canonical across connectors)
         """
         message_id = str(getattr(message, "id", "unknown"))
         chat_id = None
@@ -495,6 +495,15 @@ class TelegramUserClientConnector:
         # Telethon objects have to_dict() method
         raw_payload = message.to_dict() if hasattr(message, "to_dict") else {}
 
+        # Canonical idempotency key: tg:<chat_id>:<message_id>
+        # Uses chat_id + message_id (unique per chat) so that bot and user-client
+        # connectors produce the same key for the same Telegram message.
+        idem_key = (
+            f"tg:{chat_id}:{message_id}"
+            if chat_id
+            else f"telegram:{self._config.endpoint_identity}:{message_id}"
+        )
+
         # Build ingest.v1 envelope
         envelope = {
             "schema_version": "ingest.v1",
@@ -516,7 +525,7 @@ class TelegramUserClientConnector:
                 "normalized_text": normalized_text,
             },
             "control": {
-                "idempotency_key": f"telegram:{self._config.endpoint_identity}:{message_id}",
+                "idempotency_key": idem_key,
                 "policy_tier": "default",
             },
         }
