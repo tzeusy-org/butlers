@@ -55,15 +55,18 @@ def _fact_to_meal(row: dict[str, Any]) -> dict[str, Any]:
     meta = row.get("metadata") or {}
     if isinstance(meta, str):
         meta = json.loads(meta)
-    estimated_calories = meta.get("estimated_calories") if isinstance(meta, dict) else None
-    macros = meta.get("macros") if isinstance(meta, dict) else None
-    meal_items = meta.get("meal_items") if isinstance(meta, dict) else None
-    logged_at = meta.get("logged_at") if isinstance(meta, dict) else None
-    notes = meta.get("notes") if isinstance(meta, dict) else None
-    mood_before = meta.get("mood_before") if isinstance(meta, dict) else None
-    satisfaction = meta.get("satisfaction") if isinstance(meta, dict) else None
-    symptom_notes = meta.get("symptom_notes") if isinstance(meta, dict) else None
-    tags = meta.get("tags") if isinstance(meta, dict) else None
+    if not isinstance(meta, dict):
+        meta = {}
+
+    estimated_calories = meta.get("estimated_calories")
+    macros = meta.get("macros")
+    meal_items = meta.get("meal_items")
+    logged_at = meta.get("logged_at")
+    notes = meta.get("notes")
+    mood_before = meta.get("mood_before")
+    satisfaction = meta.get("satisfaction")
+    symptom_notes = meta.get("symptom_notes")
+    tags = meta.get("tags")
     return {
         "id": str(row["id"]),
         "type": meal_type,
@@ -120,16 +123,20 @@ async def meal_log(
             "carbs_g": nutrition.get("carbs_g"),
             "fat_g": nutrition.get("fat_g"),
         }
-    if notes is not None:
-        metadata["notes"] = notes
-    if mood_before is not None:
-        metadata["mood_before"] = mood_before
-    if satisfaction is not None:
-        metadata["satisfaction"] = satisfaction
-    if symptom_notes is not None:
-        metadata["symptom_notes"] = symptom_notes
-    if tags is not None:
-        metadata["tags"] = tags
+    optional_metadata = {
+        "notes": notes,
+        "mood_before": mood_before,
+        "satisfaction": satisfaction,
+        "symptom_notes": symptom_notes,
+        "tags": tags,
+    }
+    metadata.update(
+        {
+            key: value
+            for key, value in optional_metadata.items()
+            if value is not None
+        }
+    )
 
     fact_id = await store_fact(
         pool,

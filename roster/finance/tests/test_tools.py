@@ -297,7 +297,8 @@ class TestTrackSubscription:
             next_renewal=date.today() + timedelta(days=30),
             account_id=account_id,
         )
-        assert result["account_id"] == account_id
+        # _deserialize_row serializes UUIDs to strings
+        assert result["account_id"] == str(account_id)
 
     async def test_metadata_merged_on_update(self, pool):
         """On upsert, metadata is merged (not replaced)."""

@@ -53,6 +53,7 @@ pgdata/
 .beads/.bv.lock
 .beads/issues.jsonl
 .bv/
+dolt/
 
 .worktrees
 # Frontend

@@ -33,6 +33,16 @@ from butlers.tools.messenger.reliability import (
     CircuitState,
 )
 
+# All async tests in this file must share the session event loop so that the
+# asyncpg pool (created in the session-scoped fixture loop per
+# asyncio_default_fixture_loop_scope="session") is never used from a different
+# loop.  Without this mark each test function gets a fresh function-scoped loop,
+# which causes "got Future attached to a different loop" / asyncpg
+# InterfaceError failures under pytest-xdist.
+pytestmark = [
+    pytest.mark.asyncio(loop_scope="session"),
+]
+
 # Skip DB tests if Docker is not available
 docker_available = shutil.which("docker") is not None
 db_tests_mark = [
