@@ -78,7 +78,12 @@ async def pool(provisioned_postgres_pool):
                 success BOOLEAN NOT NULL,
                 duration_ms INTEGER,
                 error TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                thread_id TEXT,
+                source_channel TEXT,
+                contact_id UUID,
+                entity_id UUID,
+                sender_roles TEXT[]
             )
         """)
         await p.execute("""
