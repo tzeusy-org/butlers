@@ -62,6 +62,8 @@ async def _get_butler_session_stats(
                         model_id,
                         stats.get("input_tokens", 0),
                         stats.get("output_tokens", 0),
+                        cached_input_tokens=stats.get("cached_input_tokens", 0),
+                        context_tokens=stats.get("context_tokens"),
                     )
                     total_cost += cost
                     by_model[model_id] = by_model.get(model_id, 0.0) + cost
@@ -177,6 +179,8 @@ async def _get_butler_daily_stats(
                             model_id,
                             stats.get("input_tokens", 0),
                             stats.get("output_tokens", 0),
+                            cached_input_tokens=stats.get("cached_input_tokens", 0),
+                            context_tokens=stats.get("context_tokens"),
                         )
                     days.append(
                         {
@@ -280,7 +284,14 @@ async def _get_butler_top_sessions(
                     model_id = s.get("model", "")
                     input_tokens = s.get("input_tokens", 0)
                     output_tokens = s.get("output_tokens", 0)
-                    cost = estimate_session_cost(pricing, model_id, input_tokens, output_tokens)
+                    cost = estimate_session_cost(
+                        pricing,
+                        model_id,
+                        input_tokens,
+                        output_tokens,
+                        cached_input_tokens=s.get("cached_input_tokens", 0),
+                        context_tokens=s.get("context_tokens"),
+                    )
                     sessions.append(
                         TopSession(
                             session_id=s.get("session_id", ""),
@@ -344,7 +355,12 @@ async def _get_butler_schedule_costs(
                     input_tokens = entry.get("total_input_tokens", 0)
                     output_tokens = entry.get("total_output_tokens", 0)
                     total_cost = estimate_session_cost(
-                        pricing, model_id, input_tokens, output_tokens
+                        pricing,
+                        model_id,
+                        input_tokens,
+                        output_tokens,
+                        cached_input_tokens=entry.get("total_cached_input_tokens", 0),
+                        context_tokens=entry.get("context_tokens"),
                     )
                     total_runs = entry.get("total_runs", 0)
                     avg_cost = total_cost / total_runs if total_runs > 0 else 0.0
