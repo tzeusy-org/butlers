@@ -750,7 +750,7 @@ async def test_run_telegram_user_client_connector_uses_db_credentials_when_env_m
 
 
 # ---------------------------------------------------------------------------
-# extract_telethon_filter_key tests
+# _build_ingestion_envelope tests
 # ---------------------------------------------------------------------------
 
 

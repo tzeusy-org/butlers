@@ -207,11 +207,11 @@ class TestMakeIngestionEnvelope:
 
 
 # ---------------------------------------------------------------------------
-# Triage decision embedded in context
+# Policy decision embedded in context
 # ---------------------------------------------------------------------------
 
 
-class TestTriageDecisionEmbedding:
+class TestPolicyDecisionEmbedding:
     def test_triage_decision_in_request_context(self) -> None:
         """route_to decision must appear in request_context for downstream pipeline."""
         from datetime import UTC, datetime
