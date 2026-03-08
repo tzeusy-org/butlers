@@ -40,7 +40,6 @@ from butlers.credential_store import CredentialStore
 from butlers.google_credentials import (
     KEY_CLIENT_ID,
     KEY_CLIENT_SECRET,
-    KEY_REFRESH_TOKEN,
     KEY_SCOPES,
     GoogleCredentials,
     MissingGoogleCredentialsError,
@@ -68,7 +67,6 @@ _SHARED_CREDS = {
 _OAUTH_BOOTSTRAP_ENV = {
     "GOOGLE_OAUTH_CLIENT_ID": _SHARED_CREDS["client_id"],
     "GOOGLE_OAUTH_CLIENT_SECRET": _SHARED_CREDS["client_secret"],
-    "GOOGLE_REFRESH_TOKEN": _SHARED_CREDS["refresh_token"],
 }
 
 # Legacy env vars are no longer accepted by runtime resolution paths.
@@ -128,7 +126,6 @@ def _make_store_with_creds(creds: dict) -> CredentialStore:
             {
                 KEY_CLIENT_ID: creds.get("client_id"),
                 KEY_CLIENT_SECRET: creds.get("client_secret"),
-                KEY_REFRESH_TOKEN: creds.get("refresh_token"),
                 KEY_SCOPES: creds.get("scope"),
             }
         )
@@ -297,7 +294,6 @@ class TestResolveGoogleCredentialsIsDbOnly:
         different_env = {
             "GOOGLE_OAUTH_CLIENT_ID": "different-id-from-env",
             "GOOGLE_OAUTH_CLIENT_SECRET": "different-secret-from-env",
-            "GOOGLE_REFRESH_TOKEN": "different-token-from-env",
         }
 
         with (

@@ -60,7 +60,7 @@ Credentials are resolved from the DB-backed credential store (`butler_secrets`),
 #### Scenario: Credentials resolved from credential store
 
 - **WHEN** on_startup is called with a credential store
-- **THEN** `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` are resolved from DB
+- **THEN** `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` are resolved from `butler_secrets` and the refresh token from `shared.entity_info`
 - **AND** if any are missing, a `RuntimeError` is raised directing the user to the dashboard OAuth flow
 
 #### Scenario: No credential store provided

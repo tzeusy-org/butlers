@@ -221,23 +221,6 @@ class TestOAuthStatusNotConfigured:
         remediation = body["google"]["remediation"].lower()
         assert "connect" in remediation or "authorize" in remediation or "oauth" in remediation
 
-    async def test_google_refresh_token_env_var_not_used(self, app):
-        """Env refresh token does not bypass missing DB refresh token."""
-        app = _make_app(app, db_refresh_token=None)
-        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": "1//fallback"}
-
-        mock_probe = AsyncMock(return_value=_connected_status())
-        with patch.dict("os.environ", env, clear=False), patch(_PROBE_PATCH, mock_probe):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get(STATUS_URL)
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["google"]["state"] == OAuthCredentialState.not_configured
-        mock_probe.assert_not_awaited()
-
 
 # ---------------------------------------------------------------------------
 # Tests: connected
@@ -663,7 +646,7 @@ class TestOAuthStatusResponseShape:
     async def test_response_has_google_key(self, app):
         """Top-level response always has a 'google' key."""
         app = _make_app(app)
-        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
+        env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -677,7 +660,7 @@ class TestOAuthStatusResponseShape:
     async def test_credential_status_has_required_fields(self, app):
         """OAuthCredentialStatus payload has required fields: state, connected, provider."""
         app = _make_app(app)
-        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
+        env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -692,7 +675,7 @@ class TestOAuthStatusResponseShape:
     async def test_connected_false_always_has_remediation(self, app):
         """When connected=False, remediation must be a non-empty string."""
         app = _make_app(app)
-        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
+        env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -711,7 +694,6 @@ class TestOAuthStatusResponseShape:
         env = {
             "GOOGLE_OAUTH_CLIENT_ID": "",
             "GOOGLE_OAUTH_CLIENT_SECRET": "",
-            "GOOGLE_REFRESH_TOKEN": "",
         }
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(

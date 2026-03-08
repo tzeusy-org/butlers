@@ -395,7 +395,6 @@ class TestPreStartEnforcement:
         good_creds = {
             "GOOGLE_OAUTH_CLIENT_ID": "client-id-123",
             "GOOGLE_OAUTH_CLIENT_SECRET": "client-secret-abc",
-            "GOOGLE_REFRESH_TOKEN": "1//refresh-token-xyz",
         }
         with mock.patch.dict("os.environ", good_creds, clear=True):
             with pytest.raises(SystemExit):

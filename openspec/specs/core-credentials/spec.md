@@ -49,11 +49,11 @@ The `CredentialStore` class provides async CRUD operations on the `butler_secret
 - **THEN** the `butler_secrets` table and `ix_butler_secrets_category` index are created
 
 ### Requirement: Google OAuth Credential Lifecycle
-Google credentials (client_id, client_secret, refresh_token, scope) are stored as individual rows in `butler_secrets` under the `google` category. The `GoogleCredentials` Pydantic model validates non-empty fields. Secret values (client_secret, refresh_token) are redacted in `__repr__` and `__str__`.
+Google credentials are split across two stores: app credentials (client_id, client_secret, scope) in `butler_secrets` under the `google` category, and the refresh token in `shared.entity_info` on the owner entity. The `GoogleCredentials` Pydantic model validates non-empty fields. Secret values (client_secret, refresh_token) are redacted in `__repr__` and `__str__`.
 
 #### Scenario: Store full Google credentials
 - **WHEN** `store_google_credentials(store, client_id, client_secret, refresh_token, scope)` is called
-- **THEN** four individual rows are upserted in `butler_secrets` with keys `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_OAUTH_SCOPES`
+- **THEN** app credentials are upserted in `butler_secrets` with keys `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_SCOPES` and the refresh token is upserted in `shared.entity_info`
 
 #### Scenario: Load Google credentials
 - **WHEN** `load_google_credentials(store)` is called and all three required keys exist

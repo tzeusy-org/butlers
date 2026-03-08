@@ -8,7 +8,7 @@ consumed by both the Gmail connector and the Calendar module.
 - ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``,
   ``GOOGLE_OAUTH_SCOPES`` → ``butler_secrets`` table via
   :class:`~butlers.credential_store.CredentialStore` (app config).
-- ``GOOGLE_REFRESH_TOKEN`` → ``shared.entity_info`` on the owner entity
+- Refresh token → ``shared.entity_info`` on the owner entity
   (type ``google_oauth_refresh``, ``secured=true``).
 
 Secret material (client_secret, refresh_token) is never logged in plaintext.
@@ -61,7 +61,6 @@ logger = logging.getLogger(__name__)
 
 KEY_CLIENT_ID = "GOOGLE_OAUTH_CLIENT_ID"
 KEY_CLIENT_SECRET = "GOOGLE_OAUTH_CLIENT_SECRET"
-KEY_REFRESH_TOKEN = "GOOGLE_REFRESH_TOKEN"  # legacy key; delete() still cleans it up
 KEY_SCOPES = "GOOGLE_OAUTH_SCOPES"
 
 _GOOGLE_CATEGORY = "google"
@@ -392,7 +391,6 @@ async def delete_google_credentials(
     results = [
         await store.delete(KEY_CLIENT_ID),
         await store.delete(KEY_CLIENT_SECRET),
-        await store.delete(KEY_REFRESH_TOKEN),  # legacy cleanup
         await store.delete(KEY_SCOPES),
     ]
 

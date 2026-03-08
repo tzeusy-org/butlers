@@ -21,7 +21,6 @@ from butlers.google_credentials import (
     CONTACT_INFO_REFRESH_TOKEN,
     KEY_CLIENT_ID,
     KEY_CLIENT_SECRET,
-    KEY_REFRESH_TOKEN,
     KEY_SCOPES,
     InvalidGoogleCredentialsError,
     MissingGoogleCredentialsError,
@@ -95,9 +94,6 @@ class TestKeyConstants:
     def test_key_client_secret(self):
         assert KEY_CLIENT_SECRET == "GOOGLE_OAUTH_CLIENT_SECRET"
 
-    def test_key_refresh_token(self):
-        assert KEY_REFRESH_TOKEN == "GOOGLE_REFRESH_TOKEN"
-
     def test_key_scopes(self):
         assert KEY_SCOPES == "GOOGLE_OAUTH_SCOPES"
 
@@ -137,9 +133,7 @@ class TestStoreGoogleCredentialsWithCredentialStore:
         assert KEY_CLIENT_ID in keys_stored
         assert KEY_CLIENT_SECRET in keys_stored
         assert KEY_SCOPES in keys_stored
-        # Refresh token should NOT be in butler_secrets
-        assert KEY_REFRESH_TOKEN not in keys_stored
-        # Refresh token should go to contact_info
+        # Refresh token should go to contact_info, not butler_secrets
         mock_upsert.assert_awaited_once_with(ci_pool, "google_oauth_refresh", "rtoken")
 
     async def test_client_id_stored_as_not_sensitive(self) -> None:
@@ -397,7 +391,7 @@ class TestStoreAppCredentialsWithCredentialStore:
             await store_app_credentials(store, client_id="cid", client_secret="csecret")
 
         keys_stored = [c[0][0] for c in mock_store.call_args_list]
-        assert KEY_REFRESH_TOKEN not in keys_stored
+        assert "GOOGLE_REFRESH_TOKEN" not in keys_stored
 
     async def test_empty_client_id_raises(self) -> None:
         pool = _make_empty_pool()
@@ -506,7 +500,6 @@ class TestDeleteGoogleCredentialsWithCredentialStore:
         keys_deleted = [c[0][0] for c in mock_del.call_args_list]
         assert KEY_CLIENT_ID in keys_deleted
         assert KEY_CLIENT_SECRET in keys_deleted
-        assert KEY_REFRESH_TOKEN in keys_deleted
         assert KEY_SCOPES in keys_deleted
         mock_ci_del.assert_awaited_once_with(ci_pool, "google_oauth_refresh")
         assert result is True

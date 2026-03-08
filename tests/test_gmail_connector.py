@@ -1871,7 +1871,6 @@ class TestGmailConnectorConfigCredentialInjection:
         monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "legacy-token")
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "env-client-id")
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "env-client-secret")
-        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "env-refresh-token")
 
         config = GmailConnectorConfig.from_env(
             gmail_client_id="db-client-id",
