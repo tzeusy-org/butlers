@@ -199,11 +199,17 @@ class TelegramUserClientConnector:
         # Heartbeat (started in start(), stopped in stop())
         self._switchboard_heartbeat: ConnectorHeartbeat | None = None
 
-        # Ingestion policy evaluator (replaces SourceFilterEvaluator).
-        # Scope: connector:telegram-user-client:<endpoint_identity>
+        # Ingestion policy evaluators (replaces SourceFilterEvaluator).
+        # Two scopes evaluated in order:
+        #   1. connector:telegram-user-client:<endpoint> — pre-ingest block/pass_through
+        #   2. global — post-ingest skip/metadata_only/route_to/low_priority_queue
         # DB-backed with TTL refresh; fail-open on DB error.
         self._ingestion_policy = IngestionPolicyEvaluator(
             scope=f"connector:telegram-user-client:{config.endpoint_identity}",
+            db_pool=db_pool,
+        )
+        self._global_ingestion_policy = IngestionPolicyEvaluator(
+            scope="global",
             db_pool=db_pool,
         )
 
@@ -233,6 +239,7 @@ class TelegramUserClientConnector:
 
         # Load ingestion policy rules before entering the ingestion loop.
         await self._ingestion_policy.ensure_loaded()
+        await self._global_ingestion_policy.ensure_loaded()
 
         # Start switchboard heartbeat (runs in background)
         self._start_heartbeat()
@@ -370,6 +377,8 @@ class TelegramUserClientConnector:
                 # Ingestion policy gate: evaluate before Switchboard submission.
                 # Blocked messages are intentionally dropped — not an error condition.
                 _ip_envelope = self._build_ingestion_envelope(message)
+
+                # 1. Connector-scope rules (block/pass_through)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
                 if not _ip_decision.allowed:
                     logger.debug(
@@ -378,6 +387,17 @@ class TelegramUserClientConnector:
                         message_id,
                         _ip_decision.action,
                         _ip_decision.reason,
+                    )
+                    return
+
+                # 2. Global-scope rules (skip/metadata_only/route_to/low_priority_queue)
+                _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
+                if _gp_decision.action == "skip":
+                    logger.debug(
+                        "Global ingestion policy skipped Telegram user-client message %s: "
+                        "reason=%s",
+                        message_id,
+                        _gp_decision.reason,
                     )
                     return
 

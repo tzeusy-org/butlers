@@ -496,11 +496,17 @@ class GmailConnectorRuntime:
             known_contacts=known_contacts,
         )
 
-        # Ingestion policy evaluator (replaces SourceFilterEvaluator).
-        # Scope: connector:gmail:<endpoint_identity>
+        # Ingestion policy evaluators (replaces SourceFilterEvaluator).
+        # Two scopes evaluated in order:
+        #   1. connector:gmail:<endpoint> — pre-ingest block/pass_through
+        #   2. global — post-ingest skip/metadata_only/route_to/low_priority_queue
         # DB-backed with TTL refresh; fail-open on DB error.
         self._ingestion_policy = IngestionPolicyEvaluator(
             scope=f"connector:gmail:{config.connector_endpoint_identity}",
+            db_pool=db_pool,
+        )
+        self._global_ingestion_policy = IngestionPolicyEvaluator(
+            scope="global",
             db_pool=db_pool,
         )
 
@@ -734,6 +740,7 @@ class GmailConnectorRuntime:
 
         # Load ingestion policy rules before starting ingestion loop
         await self._ingestion_policy.ensure_loaded()
+        await self._global_ingestion_policy.ensure_loaded()
 
         # Start backfill polling loop in background (does not block live ingestion)
         if self._config.connector_backfill_enabled:
@@ -1117,13 +1124,27 @@ class GmailConnectorRuntime:
                             else:
                                 # Ingestion policy gate (backfill path)
                                 _bf_envelope = self._build_ingestion_envelope(message_data)
+
+                                # 1. Connector-scope rules
                                 _bf_decision = self._ingestion_policy.evaluate(_bf_envelope)
                                 if not _bf_decision.allowed:
                                     rows_skipped += 1
                                     logger.info(
-                                        "[Gmail] '%s' filtered out by rule: %s",
+                                        "[Gmail] '%s' filtered out by connector rule: %s",
                                         self._get_subject(message_data),
                                         _bf_decision.reason,
+                                    )
+                                # 2. Global-scope rules
+                                elif (
+                                    _bf_global := self._global_ingestion_policy.evaluate(
+                                        _bf_envelope
+                                    )
+                                ).action == "skip":
+                                    rows_skipped += 1
+                                    logger.info(
+                                        "[Gmail] '%s' filtered out by global rule: %s",
+                                        self._get_subject(message_data),
+                                        _bf_global.reason,
                                     )
                                 else:
                                     envelope = await self._build_ingest_envelope(
@@ -1718,12 +1739,24 @@ class GmailConnectorRuntime:
 
                 # Ingestion policy gate (runs after label filter, before envelope build)
                 _ip_envelope = self._build_ingestion_envelope(message_data)
+
+                # 1. Connector-scope rules (block/pass_through)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
                 if not _ip_decision.allowed:
                     logger.info(
-                        "[Gmail] '%s' filtered out by rule: %s",
+                        "[Gmail] '%s' filtered out by connector rule: %s",
                         self._get_subject(message_data),
                         _ip_decision.reason,
+                    )
+                    return
+
+                # 2. Global-scope rules (skip/metadata_only/route_to/low_priority_queue)
+                _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
+                if _gp_decision.action == "skip":
+                    logger.info(
+                        "[Gmail] '%s' filtered out by global rule: %s",
+                        self._get_subject(message_data),
+                        _gp_decision.reason,
                     )
                     return
 

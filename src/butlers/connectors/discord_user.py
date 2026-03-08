@@ -290,11 +290,17 @@ class DiscordUserConnector:
         # Heartbeat
         self._switchboard_heartbeat: ConnectorHeartbeat | None = None
 
-        # Ingestion policy evaluator (replaces SourceFilterEvaluator).
-        # Scope: connector:discord:<endpoint_identity>
+        # Ingestion policy evaluators (replaces SourceFilterEvaluator).
+        # Two scopes evaluated in order:
+        #   1. connector:discord:<endpoint> — pre-ingest block/pass_through
+        #   2. global — post-ingest skip/metadata_only/route_to/low_priority_queue
         # DB-backed with TTL refresh; fail-open when db_pool is None.
         self._ingestion_policy = IngestionPolicyEvaluator(
             scope=f"connector:discord:{config.endpoint_identity}",
+            db_pool=db_pool,
+        )
+        self._global_ingestion_policy = IngestionPolicyEvaluator(
+            scope="global",
             db_pool=db_pool,
         )
 
@@ -450,6 +456,7 @@ class DiscordUserConnector:
 
         # Load ingestion policy rules before entering the Gateway ingestion loop.
         await self._ingestion_policy.ensure_loaded()
+        await self._global_ingestion_policy.ensure_loaded()
 
         self._running = True
         logger.info(
@@ -794,6 +801,8 @@ class DiscordUserConnector:
                     source_channel="discord",
                     raw_key=str(event_data.get("channel_id", "")),
                 )
+
+                # 1. Connector-scope rules (block/pass_through)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
                 if not _ip_decision.allowed:
                     logger.debug(
@@ -802,6 +811,16 @@ class DiscordUserConnector:
                         event_data.get("channel_id"),
                         _ip_decision.action,
                         _ip_decision.reason,
+                    )
+                    return
+
+                # 2. Global-scope rules (skip/metadata_only/route_to/low_priority_queue)
+                _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
+                if _gp_decision.action == "skip":
+                    logger.debug(
+                        "Global ingestion policy skipped Discord event for channel %s: reason=%s",
+                        event_data.get("channel_id"),
+                        _gp_decision.reason,
                     )
                     return
 

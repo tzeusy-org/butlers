@@ -251,11 +251,17 @@ class TelegramBotConnector:
         # Backoff tracking for polling loop
         self._consecutive_failures: int = 0
 
-        # Ingestion policy evaluator (replaces SourceFilterEvaluator).
-        # Scope: connector:telegram-bot:<endpoint_identity>
+        # Ingestion policy evaluators (replaces SourceFilterEvaluator).
+        # Two scopes evaluated in order:
+        #   1. connector:telegram-bot:<endpoint> — pre-ingest block/pass_through
+        #   2. global — post-ingest skip/metadata_only/route_to/low_priority_queue
         # DB-backed with TTL refresh; fail-open on DB error.
         self._ingestion_policy = IngestionPolicyEvaluator(
             scope=f"connector:telegram-bot:{config.endpoint_identity}",
+            db_pool=db_pool,
+        )
+        self._global_ingestion_policy = IngestionPolicyEvaluator(
+            scope="global",
             db_pool=db_pool,
         )
 
@@ -408,6 +414,7 @@ class TelegramBotConnector:
 
         # Load ingestion policy rules before entering the ingestion loop.
         await self._ingestion_policy.ensure_loaded()
+        await self._global_ingestion_policy.ensure_loaded()
 
         # Wait for Switchboard to be ready before entering the poll loop.
         # Telegram advances the update offset as soon as getUpdates returns —
@@ -492,6 +499,7 @@ class TelegramBotConnector:
 
         # Load ingestion policy rules before registering the webhook.
         await self._ingestion_policy.ensure_loaded()
+        await self._global_ingestion_policy.ensure_loaded()
 
         await self._set_webhook(self._config.webhook_url)
         logger.info(
@@ -735,6 +743,8 @@ class TelegramBotConnector:
                 # update_id is already advanced by _get_updates, so blocked updates
                 # are intentionally dropped — this is not an error condition.
                 _ip_envelope = self._build_ingestion_envelope(update)
+
+                # 1. Connector-scope rules (block/pass_through)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
                 if not _ip_decision.allowed:
                     logger.debug(
@@ -742,6 +752,16 @@ class TelegramBotConnector:
                         update.get("update_id"),
                         _ip_decision.action,
                         _ip_decision.reason,
+                    )
+                    return
+
+                # 2. Global-scope rules (skip/metadata_only/route_to/low_priority_queue)
+                _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
+                if _gp_decision.action == "skip":
+                    logger.debug(
+                        "Global ingestion policy skipped Telegram update %s: reason=%s",
+                        update.get("update_id"),
+                        _gp_decision.reason,
                     )
                     return
 
