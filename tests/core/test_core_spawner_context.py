@@ -8,7 +8,8 @@ from typing import Any
 import pytest
 
 from butlers.config import ButlerConfig
-from butlers.core.spawner import CCSpawner
+from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
+from butlers.core.spawner import Spawner
 
 pytestmark = pytest.mark.unit
 
@@ -53,10 +54,10 @@ class TestContextParameter:
                 result="Done",
             )
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=capturing_sdk,
+            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
         )
 
         await spawner.trigger(prompt="do task", trigger_source="trigger_tool")
@@ -87,10 +88,10 @@ class TestContextParameter:
                 result="Done",
             )
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=capturing_sdk,
+            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
         )
 
         await spawner.trigger(
@@ -125,10 +126,10 @@ class TestContextParameter:
                 result="Done",
             )
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=capturing_sdk,
+            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
         )
 
         await spawner.trigger(

@@ -11,6 +11,7 @@ import asyncpg
 import pytest
 
 from butlers.config import ButlerConfig
+from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 from butlers.core.spawner import Spawner, fetch_memory_context
 
 pytestmark = pytest.mark.unit
@@ -132,7 +133,7 @@ class TestSpawnerMemoryContextInjection:
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=capturing_sdk,
+            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
         )
 
         with patch(
@@ -173,7 +174,7 @@ class TestSpawnerMemoryContextInjection:
                 result="Done",
             )
 
-        spawner = Spawner(config=config, config_dir=config_dir, sdk_query=fake_sdk)
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk))
 
         with patch(
             "butlers.core.spawner.fetch_memory_context",

@@ -19,6 +19,7 @@ import pytest
 from pydantic import BaseModel
 
 from butlers.config import load_config
+from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 from butlers.core.spawner import Spawner
 from butlers.daemon import ButlerDaemon
 from butlers.modules.base import Module
@@ -283,11 +284,12 @@ class TestSpawnerDraining:
         from butlers.config import ButlerConfig
 
         config = ButlerConfig(name="test", port=9100)
+        runtime = ClaudeCodeAdapter(sdk_query=sdk_query) if sdk_query is not None else None
         return Spawner(
             config=config,
             config_dir=Path("/tmp/nonexistent"),
             pool=None,
-            sdk_query=sdk_query,
+            runtime=runtime,
         )
 
     async def test_stop_accepting_rejects_new_triggers(self) -> None:

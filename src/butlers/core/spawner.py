@@ -440,12 +440,8 @@ class Spawner:
     module_credentials_env:
         Dict mapping module name to list of env var names needed by that module.
     runtime:
-        A RuntimeAdapter instance to use for invocation. If provided, sdk_query
-        is ignored.
-    sdk_query:
-        DEPRECATED — Callable to use for the actual SDK invocation. Prefer
-        passing a RuntimeAdapter via ``runtime``. When neither ``runtime``
-        nor ``sdk_query`` is provided, a default ClaudeCodeAdapter is created.
+        A RuntimeAdapter instance to use for invocation. When not provided,
+        a default ClaudeCodeAdapter is created.
     audit_pool:
         Optional asyncpg pool pointed at the switchboard database for writing
         daemon-side audit log entries.
@@ -464,7 +460,6 @@ class Spawner:
         pool: asyncpg.Pool | None = None,
         module_credentials_env: dict[str, list[str]] | None = None,
         runtime: RuntimeAdapter | None = None,
-        sdk_query: Any = None,
         audit_pool: asyncpg.Pool | None = None,
         credential_store: CredentialStore | None = None,
     ) -> None:
@@ -485,11 +480,6 @@ class Spawner:
 
         if runtime is not None:
             self._runtime = runtime
-        elif sdk_query is not None:
-            # Legacy path: wrap sdk_query in a ClaudeCodeAdapter
-            from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
-
-            self._runtime = ClaudeCodeAdapter(sdk_query=sdk_query)
         else:
             # Default: create a ClaudeCodeAdapter with the real SDK query
             from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
@@ -932,6 +922,3 @@ class Spawner:
             span.end()
             trace.context_api.detach(token)
 
-
-# Backward-compatible alias
-CCSpawner = Spawner
