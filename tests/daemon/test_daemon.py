@@ -984,6 +984,7 @@ class TestMCPServerStartup:
         route_map = {(type(route).__name__, route.path): route for route in app._app.routes}
         assert ("Route", "/mcp") in route_map
         assert ("Route", "/sse") in route_map
+        assert ("Route", "/health") in route_map
         assert ("Mount", "/messages") in route_map
         assert route_map[("Route", "/mcp")].methods is None
         assert route_map[("Route", "/sse")].methods == {"GET", "HEAD"}
@@ -1000,6 +1001,17 @@ class TestMCPServerStartup:
 
         assert response.status_code == 400
         assert "Content-Type" in response.text
+
+    def test_build_mcp_http_app_health_endpoint_returns_200(self) -> None:
+        """GET /health on the combined MCP app returns 200 for readiness probes."""
+        mcp = RuntimeFastMCP("test-butler")
+        app = ButlerDaemon._build_mcp_http_app(mcp, butler_name="test-butler")
+
+        with TestClient(app) as client:
+            response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
 
 
 class TestSseDisconnectGuard:
