@@ -395,6 +395,7 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     },
 }
 
+
 def _resolve_deterministic_schedule_job_name(
     *,
     butler_name: str,
