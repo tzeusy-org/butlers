@@ -4,7 +4,7 @@ port = 40108
 description = "Smart home automation orchestrator for comfort, energy, and device management"
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]

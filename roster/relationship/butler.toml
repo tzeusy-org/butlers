@@ -4,7 +4,7 @@ port = 40102
 description = "Personal CRM. Manages contacts, relationships, important dates, interactions, gifts, and reminders."
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]

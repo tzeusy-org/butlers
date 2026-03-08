@@ -4,7 +4,7 @@ port = 40101
 description = "Flexible catch-all assistant for freeform data"
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]

@@ -91,7 +91,7 @@ port = <port-number>
 description = "<one-line description>"
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]
@@ -138,7 +138,7 @@ full_sync_interval_days = 6
 - **Schedule**: Two dispatch modes:
   - `prompt` (default): Sends the `prompt` text to a spawned runtime instance.
   - `job`: Calls a named Python function directly via `job_name`. No `prompt` field needed.
-- **Runtime**: `[butler.runtime]` sets model (default: `claude-haiku-4-5-20251001`) and concurrency (default: 1 serial). `[runtime]` sets the runtime adapter type (e.g., `"codex"`). All current butlers use `model = "gpt-5.3-codex-spark"` and `type = "codex"`.
+- **Runtime**: `[butler.runtime]` sets model (default: `claude-haiku-4-5-20251001`) and concurrency (default: 1 serial). `[runtime]` sets the runtime adapter type (e.g., `"codex"`). All current butlers use `model = "gpt-5.1"` and `type = "codex"`.
 - **Modules**: Most user-facing domain butlers enable `calendar`, `contacts`, and `memory`. Infrastructure butlers (switchboard, messenger) have different module profiles. Modules provide their own MCP tools, migrations, and lifecycle hooks.
 - **Advanced sections** (optional): `[butler.env]` declares required/optional env vars. `[butler.shutdown]` sets graceful shutdown timeout. `[butler.switchboard]` configures routing integration (URL, advertise, liveness TTL, route contract versions). See `docs/roles/base_butler.md` for full spec.
 

@@ -4,7 +4,7 @@ port = 40104
 description = "Outbound delivery execution plane for Telegram and Email"
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]

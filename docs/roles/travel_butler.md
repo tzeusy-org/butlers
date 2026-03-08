@@ -230,7 +230,7 @@ port = 40106
 description = "Travel itinerary and booking specialist for flights, hotels, car rentals, and trip logistics."
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]

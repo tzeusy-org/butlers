@@ -9,7 +9,7 @@ port = <port-number>            # Required. Unique across all butlers.
 description = "<description>"   # Required. One-line summary for registry/display.
 
 [butler.runtime]                # Optional. Runtime model and concurrency.
-model = "gpt-5.3-codex-spark"  # Model for runtime invocations.
+model = "gpt-5.1"  # Model for runtime invocations.
 max_concurrent_sessions = 3     # Default 1 (serial). Set higher for throughput.
 max_queued_sessions = 100       # Default 100.
 
@@ -154,7 +154,7 @@ port = 40103
 description = "Health tracking assistant for measurements, medications, diet, food preferences, nutrition, meals, and symptoms"
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]
@@ -227,7 +227,7 @@ port = 40104
 description = "Outbound delivery execution plane for Telegram and Email"
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]
@@ -271,7 +271,7 @@ port = 40101
 description = "Flexible catch-all assistant for freeform data"
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]

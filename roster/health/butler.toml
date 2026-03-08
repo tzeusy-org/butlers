@@ -4,7 +4,7 @@ port = 40103
 description = "Health tracking assistant for measurements, medications, diet, food preferences, nutrition, meals, and symptoms"
 
 [butler.runtime]
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.1"
 max_concurrent_sessions = 3
 
 [runtime]
