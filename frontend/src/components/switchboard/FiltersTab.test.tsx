@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { FiltersTab } from "@/components/switchboard/FiltersTab";
 import * as useIngestionRules from "@/hooks/use-ingestion-rules";
-import * as useTriage from "@/hooks/use-triage";
+import * as useThreadAffinity from "@/hooks/use-thread-affinity";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -101,13 +101,13 @@ function setupDefaultMocks() {
   vi.spyOn(useIngestionRules, "useTestIngestionRule").mockReturnValue(
     makeMutation() as unknown as ReturnType<typeof useIngestionRules.useTestIngestionRule>,
   );
-  vi.spyOn(useTriage, "useThreadAffinitySettings").mockReturnValue(
+  vi.spyOn(useThreadAffinity, "useThreadAffinitySettings").mockReturnValue(
     makeQuery(SAMPLE_THREAD_AFFINITY_SETTINGS) as ReturnType<
-      typeof useTriage.useThreadAffinitySettings
+      typeof useThreadAffinity.useThreadAffinitySettings
     >,
   );
-  vi.spyOn(useTriage, "useUpdateThreadAffinitySettings").mockReturnValue(
-    makeMutation() as unknown as ReturnType<typeof useTriage.useUpdateThreadAffinitySettings>,
+  vi.spyOn(useThreadAffinity, "useUpdateThreadAffinitySettings").mockReturnValue(
+    makeMutation() as unknown as ReturnType<typeof useThreadAffinity.useUpdateThreadAffinitySettings>,
   );
 }
 
@@ -584,8 +584,8 @@ describe("FiltersTab", () => {
   });
 
   it("shows loading skeleton when thread affinity settings are loading", () => {
-    vi.spyOn(useTriage, "useThreadAffinitySettings").mockReturnValue(
-      makeQuery(undefined, true) as ReturnType<typeof useTriage.useThreadAffinitySettings>,
+    vi.spyOn(useThreadAffinity, "useThreadAffinitySettings").mockReturnValue(
+      makeQuery(undefined, true) as ReturnType<typeof useThreadAffinity.useThreadAffinitySettings>,
     );
     render();
     const toggle = container.querySelector('[data-testid="thread-affinity-toggle"]');
@@ -594,11 +594,11 @@ describe("FiltersTab", () => {
 
   it("calls updateThreadAffinitySettings when toggle is clicked", () => {
     const mutateFn = vi.fn();
-    vi.spyOn(useTriage, "useUpdateThreadAffinitySettings").mockReturnValue({
+    vi.spyOn(useThreadAffinity, "useUpdateThreadAffinitySettings").mockReturnValue({
       mutate: mutateFn,
       mutateAsync: vi.fn().mockResolvedValue({}),
       isPending: false,
-    } as unknown as ReturnType<typeof useTriage.useUpdateThreadAffinitySettings>);
+    } as unknown as ReturnType<typeof useThreadAffinity.useUpdateThreadAffinitySettings>);
     render();
     act(() => {
       const toggle = container.querySelector(

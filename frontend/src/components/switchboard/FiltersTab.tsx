@@ -74,7 +74,7 @@ import {
 import {
   useThreadAffinitySettings,
   useUpdateThreadAffinitySettings,
-} from "@/hooks/use-triage";
+} from "@/hooks/use-thread-affinity";
 
 // ---------------------------------------------------------------------------
 // Types
