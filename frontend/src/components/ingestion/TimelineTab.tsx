@@ -8,9 +8,9 @@
  * - Rollup totals (total cost, total tokens, by_butler)
  *
  * Data is fetched from:
- * - GET /api/switchboard/ingestion/events          (event list)
- * - GET /api/switchboard/ingestion/events/{id}/sessions  (on expand)
- * - GET /api/switchboard/ingestion/events/{id}/rollup    (on expand)
+ * - GET /api/ingestion/events          (event list)
+ * - GET /api/ingestion/events/{id}/sessions  (on expand)
+ * - GET /api/ingestion/events/{id}/rollup    (on expand)
  */
 
 import { useState } from "react";
