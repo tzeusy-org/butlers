@@ -378,7 +378,7 @@ class IngestionPolicyEvaluator:
                 priority,
                 name,
                 created_at::text AS created_at
-            FROM ingestion_rules
+            FROM switchboard.ingestion_rules
             WHERE scope = $1
               AND enabled = TRUE
               AND deleted_at IS NULL

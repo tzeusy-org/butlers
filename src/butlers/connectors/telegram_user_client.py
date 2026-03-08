@@ -816,7 +816,7 @@ async def run_telegram_user_client_connector() -> None:
     cursor_pool = await create_cursor_pool_from_env()
     logger.info("Telegram user-client connector: cursor pool created for DB-backed checkpoints")
 
-    connector = TelegramUserClientConnector(config, db_pool=None, cursor_pool=cursor_pool)
+    connector = TelegramUserClientConnector(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
 
     try:
         await connector.start()

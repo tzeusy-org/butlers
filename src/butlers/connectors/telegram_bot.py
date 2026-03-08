@@ -1108,7 +1108,7 @@ async def run_telegram_bot_connector() -> None:
     cursor_pool = await create_cursor_pool_from_env()
     logger.info("Telegram bot connector: cursor pool created for DB-backed checkpoints")
 
-    connector = TelegramBotConnector(config, cursor_pool=cursor_pool)
+    connector = TelegramBotConnector(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
 
     # Determine mode based on config
     try:

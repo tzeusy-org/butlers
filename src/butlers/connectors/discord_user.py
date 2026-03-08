@@ -1073,7 +1073,7 @@ async def run_discord_user_connector() -> None:
     cursor_pool = await create_cursor_pool_from_env()
     logger.info("Discord user connector: cursor pool created for DB-backed checkpoints")
 
-    connector = DiscordUserConnector(config, cursor_pool=cursor_pool)
+    connector = DiscordUserConnector(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
 
     try:
         await connector.start()

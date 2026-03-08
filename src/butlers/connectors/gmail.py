@@ -2689,7 +2689,7 @@ async def run_gmail_connector() -> None:
     cursor_pool = await create_cursor_pool_from_env()
     logger.info("Gmail connector: cursor pool created for DB-backed checkpoints")
 
-    connector = GmailConnectorRuntime(config, cursor_pool=cursor_pool)
+    connector = GmailConnectorRuntime(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
     try:
         await connector.start()
     finally:
