@@ -466,50 +466,15 @@ class TestEvaluateMessagePolicy:
         assert result.should_ingest is True
         assert result.ingestion_tier == INGESTION_TIER_FULL
 
-    def test_triage_skip_action_produces_tier3(self) -> None:
-        msg = _make_message(labels=["INBOX"], from_addr="newsletter@bulk.example.com")
-        skip_rule = {
-            "id": "r1",
-            "rule_type": "sender_domain",
-            "condition": {"domain": "bulk.example.com", "match": "exact"},
-            "action": "skip",
-        }
-        result = evaluate_message_policy(
-            msg,
-            label_filter=_make_label_filter(),
-            tier_assigner=_make_tier_assigner(),
-            triage_rules=[skip_rule],
-        )
-        assert result.should_ingest is False
-        assert result.ingestion_tier == INGESTION_TIER_SKIP
-        assert result.triage_action == "skip"
-
-    def test_triage_metadata_only_action_produces_tier2(self) -> None:
-        msg = _make_message(labels=["INBOX"], from_addr="news@example.com")
-        meta_rule = {
-            "id": "r2",
-            "rule_type": "sender_domain",
-            "condition": {"domain": "example.com", "match": "exact"},
-            "action": "metadata_only",
-        }
-        result = evaluate_message_policy(
-            msg,
-            label_filter=_make_label_filter(),
-            tier_assigner=_make_tier_assigner(),
-            triage_rules=[meta_rule],
-        )
-        assert result.should_ingest is True
-        assert result.ingestion_tier == INGESTION_TIER_METADATA
-
-    def test_no_triage_rules_defaults_to_tier1(self) -> None:
+    def test_defaults_to_tier1(self) -> None:
         msg = _make_message(labels=["INBOX"])
         result = evaluate_message_policy(
             msg,
             label_filter=_make_label_filter(),
             tier_assigner=_make_tier_assigner(),
-            triage_rules=None,
         )
         assert result.ingestion_tier == INGESTION_TIER_FULL
+        assert result.triage_action == "pass_through"
 
     def test_known_contact_gets_high_priority_policy_tier(self) -> None:
         msg = _make_message(labels=["INBOX"], from_addr="alice@example.com")
@@ -537,94 +502,17 @@ class TestEvaluateMessagePolicy:
         )
         assert result.policy_tier == POLICY_TIER_INTERACTIVE
 
-    def test_label_excluded_overrides_triage_rules(self) -> None:
-        # Even if a rule would match, label exclude comes first
+    def test_label_excluded_skips(self) -> None:
         msg = _make_message(labels=["SPAM"], from_addr="alice@example.com")
-        route_rule = {
-            "id": "r3",
-            "rule_type": "sender_address",
-            "condition": {"address": "alice@example.com"},
-            "action": "route_to:vip",
-        }
         result = evaluate_message_policy(
             msg,
             label_filter=LabelFilterPolicy.default(),
             tier_assigner=_make_tier_assigner(
                 known_contacts=["alice@example.com"],
             ),
-            triage_rules=[route_rule],
         )
-        # Label filter must run first, so SPAM label causes skip regardless
+        # Label filter runs first, so SPAM label causes skip regardless
         assert result.should_ingest is False
-        assert result.ingestion_tier == INGESTION_TIER_SKIP
-
-    def test_header_condition_rule_triggers_metadata(self) -> None:
-        msg = _make_message(
-            labels=["INBOX"],
-            extra_headers=[{"name": "List-Unsubscribe", "value": "<https://x.com/unsub>"}],
-        )
-        meta_rule = {
-            "id": "r4",
-            "rule_type": "header_condition",
-            "condition": {"header": "List-Unsubscribe", "op": "present"},
-            "action": "metadata_only",
-        }
-        result = evaluate_message_policy(
-            msg,
-            label_filter=_make_label_filter(),
-            tier_assigner=_make_tier_assigner(),
-            triage_rules=[meta_rule],
-        )
-        assert result.ingestion_tier == INGESTION_TIER_METADATA
-
-    def test_label_match_rule_skips_promotions(self) -> None:
-        msg = _make_message(labels=["CATEGORY_PROMOTIONS", "INBOX"])
-        skip_rule = {
-            "id": "r5",
-            "rule_type": "label_match",
-            "condition": {"label": "CATEGORY_PROMOTIONS"},
-            "action": "skip",
-        }
-        result = evaluate_message_policy(
-            msg,
-            label_filter=_make_label_filter(),
-            tier_assigner=_make_tier_assigner(),
-            triage_rules=[skip_rule],
-        )
-        assert result.should_ingest is False
-        assert result.ingestion_tier == INGESTION_TIER_SKIP
-
-    def test_empty_triage_rules_allows_full_tier(self) -> None:
-        msg = _make_message(labels=["INBOX"])
-        result = evaluate_message_policy(
-            msg,
-            label_filter=_make_label_filter(),
-            tier_assigner=_make_tier_assigner(),
-            triage_rules=[],
-        )
-        assert result.ingestion_tier == INGESTION_TIER_FULL
-
-    def test_first_matching_rule_wins(self) -> None:
-        msg = _make_message(labels=["INBOX"], from_addr="news@bulk.example.com")
-        skip_rule = {
-            "id": "r1",
-            "rule_type": "sender_domain",
-            "condition": {"domain": "bulk.example.com", "match": "exact"},
-            "action": "skip",
-        }
-        meta_rule = {
-            "id": "r2",
-            "rule_type": "sender_domain",
-            "condition": {"domain": "bulk.example.com", "match": "exact"},
-            "action": "metadata_only",
-        }
-        result = evaluate_message_policy(
-            msg,
-            label_filter=_make_label_filter(),
-            tier_assigner=_make_tier_assigner(),
-            triage_rules=[skip_rule, meta_rule],
-        )
-        # First rule (skip) wins
         assert result.ingestion_tier == INGESTION_TIER_SKIP
 
 

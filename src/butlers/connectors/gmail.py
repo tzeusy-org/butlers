@@ -1097,7 +1097,6 @@ class GmailConnectorRuntime:
                                 message_data,
                                 label_filter=self._label_filter,
                                 tier_assigner=self._policy_tier_assigner,
-                                triage_rules=None,
                                 endpoint_identity=self._config.connector_endpoint_identity,
                             )
 
@@ -1688,7 +1687,6 @@ class GmailConnectorRuntime:
                     message_data,
                     label_filter=self._label_filter,
                     tier_assigner=self._policy_tier_assigner,
-                    triage_rules=None,  # Connector-side triage rules (future: load from config/DB)
                     endpoint_identity=self._config.connector_endpoint_identity,
                 )
 

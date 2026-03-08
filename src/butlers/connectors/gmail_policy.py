@@ -323,15 +323,14 @@ def evaluate_message_policy(
     *,
     label_filter: LabelFilterPolicy,
     tier_assigner: PolicyTierAssigner,
-    triage_rules: list[dict[str, Any]] | None = None,
     endpoint_identity: str = "",
 ) -> MessagePolicyResult:
     """Evaluate the full policy pipeline for a single Gmail message.
 
     Pipeline order per spec §8:
     1. Apply label include/exclude filters.
-    2. Evaluate triage rules to get ingestion tier.
-    3. Assign policy_tier for queue ordering.
+    2. Assign policy_tier for queue ordering.
+    3. Classify ingestion tier (pass_through -> Tier 1).
     4. Emit counters.
 
     Parameters
@@ -342,9 +341,6 @@ def evaluate_message_policy(
         Label include/exclude filter policy.
     tier_assigner:
         Policy tier assigner (known contacts, sent IDs, user email).
-    triage_rules:
-        Active triage rules (sorted, evaluated in order). If None or empty,
-        defaults to pass_through -> Tier 1.
     endpoint_identity:
         Connector endpoint identity for Prometheus label cardinality.
 
@@ -383,11 +379,8 @@ def evaluate_message_policy(
         reason=filter_reason,
     ).inc()
 
-    # --- Step 2: Triage rule evaluation -> ingestion tier ---
+    # --- Step 2: Ingestion tier (always pass_through -> Tier 1) ---
     triage_action = "pass_through"
-    if triage_rules:
-        triage_action = _evaluate_triage_rules(message_data, triage_rules)
-
     ingestion_tier = classify_ingestion_tier(triage_action)
 
     # --- Step 3: Policy tier assignment ---
@@ -430,111 +423,6 @@ def evaluate_message_policy(
         filter_reason=filter_reason,
         triage_action=triage_action,
     )
-
-
-def _evaluate_triage_rules(
-    message_data: dict[str, Any],
-    rules: list[dict[str, Any]],
-) -> str:
-    """Evaluate connector-side triage rules for a Gmail message.
-
-    Evaluates rules in order (priority ASC). First match wins.
-    Returns the action string of the matched rule, or "pass_through" if no match.
-
-    This is a simplified connector-side evaluation of the same rule format
-    used by the Switchboard triage evaluator (roster/switchboard/tools/triage/evaluator.py).
-    Supports: sender_domain, sender_address, header_condition, label_match.
-
-    The full Switchboard triage evaluator runs post-ingest for Tier 1 messages;
-    this connector-side evaluation is pre-ingest to gate Tier 2/3 decisions.
-    """
-    # Extract envelope fields for rule matching
-    headers_raw = message_data.get("payload", {}).get("headers", [])
-    headers: dict[str, str] = {}
-    for h in headers_raw:
-        if isinstance(h, dict):
-            headers[h.get("name", "")] = h.get("value", "")
-
-    from_address = _normalize_email(headers.get("From") or headers.get("from") or "")
-    message_labels_upper = {label.strip().upper() for label in (message_data.get("labelIds") or [])}
-
-    for rule in rules:
-        try:
-            matched = _match_connector_rule(
-                rule=rule,
-                from_address=from_address,
-                headers=headers,
-                message_labels=message_labels_upper,
-            )
-        except Exception:
-            logger.exception(
-                "Error evaluating triage rule id=%s type=%s; skipping",
-                rule.get("id"),
-                rule.get("rule_type"),
-            )
-            continue
-
-        if matched:
-            return str(rule.get("action", "pass_through"))
-
-    return "pass_through"
-
-
-def _match_connector_rule(
-    rule: dict[str, Any],
-    from_address: str,
-    headers: dict[str, str],
-    message_labels: set[str],
-) -> bool:
-    """Match a single triage rule against a Gmail message."""
-    rule_type = str(rule.get("rule_type", ""))
-    condition = rule.get("condition") or {}
-
-    if rule_type == "sender_domain":
-        domain_pattern = str(condition.get("domain", "")).strip().lower()
-        match_type = str(condition.get("match", "exact")).strip().lower()
-        if not domain_pattern or "@" not in from_address:
-            return False
-        sender_domain = from_address.split("@", 1)[1]
-        if match_type == "exact":
-            return sender_domain == domain_pattern
-        if match_type == "suffix":
-            return sender_domain == domain_pattern or sender_domain.endswith(f".{domain_pattern}")
-        return False
-
-    if rule_type == "sender_address":
-        target = str(condition.get("address", "")).strip().lower()
-        return bool(target) and from_address == target
-
-    if rule_type == "header_condition":
-        header_name = str(condition.get("header", "")).strip()
-        op = str(condition.get("op", "")).strip().lower()
-        value = condition.get("value")
-        if not header_name or not op:
-            return False
-        header_name_lower = header_name.lower()
-        matched_value: str | None = None
-        for k, v in headers.items():
-            if k.lower() == header_name_lower:
-                matched_value = v
-                break
-        if op == "present":
-            return matched_value is not None
-        if matched_value is None:
-            return False
-        if op == "equals":
-            return matched_value.strip() == str(value).strip() if value is not None else False
-        if op == "contains":
-            return str(value) in matched_value if value is not None else False
-        return False
-
-    if rule_type == "label_match":
-        # Gmail-specific rule type: match against message label IDs
-        label_pattern = str(condition.get("label", "")).strip().upper()
-        return bool(label_pattern) and label_pattern in message_labels
-
-    logger.warning("Unknown connector rule_type: %r", rule_type)
-    return False
 
 
 # ---------------------------------------------------------------------------

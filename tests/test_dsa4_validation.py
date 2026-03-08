@@ -725,8 +725,8 @@ class TestIngestionPageSmoke:
 class TestTriageToPolicyTierIntegration:
     """Validate end-to-end flow: triage decision -> policy tier -> buffer enqueue."""
 
-    def test_skip_action_should_not_ingest(self) -> None:
-        """Triage 'skip' decision means should_ingest=False from policy evaluator."""
+    def test_label_excluded_should_not_ingest(self) -> None:
+        """Label-excluded message means should_ingest=False from policy evaluator."""
         from butlers.connectors.gmail_policy import (
             LabelFilterPolicy,
             PolicyTierAssigner,
@@ -736,25 +736,14 @@ class TestTriageToPolicyTierIntegration:
         message = {
             "id": "msg-skip",
             "threadId": "thread-skip",
-            "labelIds": ["INBOX"],
+            "labelIds": ["SPAM"],
             "payload": {
                 "headers": [
                     {"name": "From", "value": "newsletter@bulk.com"},
                     {"name": "To", "value": "user@example.com"},
-                    {"name": "List-Unsubscribe", "value": "<mailto:unsub@bulk.com>"},
                 ],
             },
         }
-        triage_rules = [
-            {
-                "id": "rule-skip-bulk",
-                "rule_type": "header_condition",
-                "condition": {"header": "List-Unsubscribe", "op": "present"},
-                "action": "skip",
-                "priority": 10,
-                "created_at": "2026-01-01T00:00:00Z",
-            }
-        ]
         label_filter = LabelFilterPolicy.default()
         tier_assigner = PolicyTierAssigner(
             user_email="user@example.com",
@@ -765,7 +754,6 @@ class TestTriageToPolicyTierIntegration:
             message,
             label_filter=label_filter,
             tier_assigner=tier_assigner,
-            triage_rules=triage_rules,
         )
         assert result.should_ingest is False
         assert result.ingestion_tier == 3  # INGESTION_TIER_SKIP
