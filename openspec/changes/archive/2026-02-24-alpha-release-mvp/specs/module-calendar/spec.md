@@ -34,7 +34,6 @@ Configuration is declared under `[modules.calendar]` in `butler.toml` with field
 
 - **WHEN** `conflicts` is configured with a `default_policy`
 - **THEN** valid policies are `suggest`, `fail`, `allow_overlap`
-- **AND** legacy aliases `allow` -> `allow_overlap` and `reject` -> `fail` are normalized
 
 ### Requirement: Calendar Event CRUD Tools
 

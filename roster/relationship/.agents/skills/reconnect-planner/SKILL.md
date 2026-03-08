@@ -116,7 +116,7 @@ For each prioritized recommendation, offer to create a reminder:
 3. If yes, use `reminder_create` with:
    - `contact_id`: The stale contact's ID
    - `message`: The outreach suggestion text
-   - `reminder_type`: "one_time" (unless the user wants recurring)
+   - `type`: "one_time" (unless the user wants recurring)
    - `due_at`: User-specified time or default to "tomorrow at 10am"
 
 **Example reminder message:**

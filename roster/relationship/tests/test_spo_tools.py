@@ -499,7 +499,7 @@ async def test_reminder_create_one_time(pool):
     reminder = await reminder_create(
         pool, cid, message="Birthday call", reminder_type="one_time", next_trigger_at=due
     )
-    assert reminder["reminder_type"] == "one_time"
+    assert reminder["type"] == "one_time"
     assert reminder["last_triggered_at"] is None
 
 

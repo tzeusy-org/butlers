@@ -24,7 +24,7 @@ Covers:
 - Auth credential parsing edge cases (whitespace stripping, type errors, non-object JSON)
 - OAuth client token caching, force-refresh, and error paths
 - Event payload normalization unique cases (timezone precedence)
-- Conflict policy handling (legacy aliases, validation)
+- Conflict policy handling (validation)
 - Approval-required flow for overlap overrides
 - Recurring event validation and timezone requirements
 - Mixed date/datetime boundary type validation (PR #173 review feedback)
@@ -372,31 +372,12 @@ class TestRecurrenceValidation:
 #
 # Note: Default policy value and require_approval_for_overlap defaults are
 # already covered in test_module_calendar.py::TestCalendarConfig.test_defaults.
-# This class owns the legacy alias mappings, invalid policy rejection, and
-# explicit bool setter tests.
+# This class owns invalid policy rejection and explicit bool setter tests.
 # ============================================================================
 
 
 class TestConflictPolicyHandling:
-    """Test conflict policy enum aliases and validation (config layer)."""
-
-    def test_config_conflict_policy_legacy_alias_allow(self):
-        """Legacy 'allow' should map to 'allow_overlap'."""
-        config = CalendarConfig(
-            provider="google",
-            calendar_id="test@example.com",
-            conflicts={"policy": "allow"},
-        )
-        assert config.conflicts.policy == "allow_overlap"
-
-    def test_config_conflict_policy_legacy_alias_reject(self):
-        """Legacy 'reject' should map to 'fail'."""
-        config = CalendarConfig(
-            provider="google",
-            calendar_id="test@example.com",
-            conflicts={"policy": "reject"},
-        )
-        assert config.conflicts.policy == "fail"
+    """Test conflict policy validation (config layer)."""
 
     def test_config_conflict_policy_invalid_raises_error(self):
         with pytest.raises(ValidationError, match="Input should be"):

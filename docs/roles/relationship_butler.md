@@ -116,11 +116,11 @@ Features that increase data-entry burden without proportional relationship value
 Supported interaction types: `call`, `meeting`, `meal`, `coffee`, `message`, `email`, `video_call`, `event`, `other`.
 
 ### 5.7 Reminders
-- `reminder_create(contact_id?, label, reminder_type, next_trigger_at, recurrence_rule?)` — Create a one-time or recurring reminder. May be contact-scoped or general.
+- `reminder_create(contact_id?, label, type, next_trigger_at, recurrence_rule?)` — Create a one-time or recurring reminder. May be contact-scoped or general.
 - `reminder_list(contact_id?, active_only?)` — List reminders.
 - `reminder_dismiss(reminder_id)` — Dismiss/snooze a reminder.
 
-Supported reminder types: `one_time`, `recurring`, `stay_in_touch`.
+Supported reminder types: `one_time`, `recurring_monthly`, `recurring_yearly`.
 
 ### 5.8 Gifts
 - `gift_add(contact_id, description, status?, url?, price_estimate?, occasion?)` — Add a gift idea or record.

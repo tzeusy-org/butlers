@@ -272,7 +272,7 @@ All relationship facts use `entity_id = contact_entity_id` (resolved contact ent
 **reminder predicate metadata:**
 ```json
 {
-  "reminder_type": "<string — e.g. \"one_time\", \"recurring\">",
+  "type": "<string — e.g. \"one_time\", \"recurring_monthly\", \"recurring_yearly\">",
   "cron": "<string | null — cron expression for recurring>",
   "due_at": "<ISO 8601 datetime string | null>",
   "dismissed": "<boolean>"

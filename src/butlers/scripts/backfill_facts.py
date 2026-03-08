@@ -974,7 +974,7 @@ async def _backfill_rel_reminders(pool: asyncpg.Pool, stats: Stats, dry_run: boo
         if entity_id and isinstance(entity_id, str):
             entity_id = uuid.UUID(entity_id)
         label = row.get("message") or row.get("label") or "reminder"
-        rtype = row.get("type") or row.get("reminder_type") or "one_time"
+        rtype = row.get("type") or "one_time"
         content = f"Reminder for {row['contact_name']}: {label} (type: {rtype})"
         due = row.get("next_trigger_at") or row.get("due_at")
         if due:

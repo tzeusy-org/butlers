@@ -53,10 +53,6 @@ BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
 BUTLER_GENERATED_PRIVATE_KEY = "butler_generated"
 BUTLER_NAME_PRIVATE_KEY = "butler_name"
 DEFAULT_BUTLER_NAME = "butler"
-LEGACY_CONFLICT_POLICY_ALIASES = {
-    "allow": "allow_overlap",
-    "reject": "fail",
-}
 VALID_CONFLICT_POLICIES = {"suggest", "fail", "allow_overlap"}
 DEFAULT_CONFLICT_SUGGESTION_COUNT = 3
 
@@ -939,16 +935,6 @@ class CalendarConflictDefaults(BaseModel):
 
     policy: CalendarConflictPolicy = "suggest"
     require_approval_for_overlap: bool = True
-
-    @field_validator("policy", mode="before")
-    @classmethod
-    def _normalize_policy(cls, value: Any) -> Any:
-        if not isinstance(value, str):
-            return value
-        normalized = value.strip().lower()
-        if not normalized:
-            return value
-        return LEGACY_CONFLICT_POLICY_ALIASES.get(normalized, normalized)
 
 
 class CalendarNotificationDefaults(BaseModel):
@@ -5590,7 +5576,6 @@ class CalendarModule(Module):
                 "label": record.get("label"),
                 "message": record.get("message"),
                 "type": record.get("type"),
-                "reminder_type": record.get("reminder_type"),
                 "contact_id": record.get("contact_id"),
                 "until_at": record.get("until_at"),
                 "calendar_event_id": record.get("calendar_event_id"),
@@ -6639,20 +6624,18 @@ class CalendarModule(Module):
             insert_values.append(value)
 
         reminder_type = "one_time"
-        reminder_legacy_type = "one_time"
         normalized_rule = _normalize_recurrence_rule(recurrence_rule)
         if normalized_rule is not None or cron is not None:
-            reminder_type = "recurring"
-            reminder_legacy_type = "recurring_monthly"
+            reminder_type = "recurring_monthly"
             if normalized_rule and "FREQ=YEARLY" in normalized_rule.upper():
-                reminder_legacy_type = "recurring_yearly"
+                reminder_type = "recurring_yearly"
 
         if "label" in columns:
             add("label", title)
         if "message" in columns:
             add("message", action)
         if "type" in columns:
-            add("type", reminder_legacy_type)
+            add("type", reminder_type)
         if "reminder_type" in columns:
             add("reminder_type", reminder_type)
         if "next_trigger_at" in columns:
@@ -6845,7 +6828,6 @@ class CalendarModule(Module):
             return self._require_config().conflicts.policy
 
         normalized = policy_override.strip().lower()
-        normalized = LEGACY_CONFLICT_POLICY_ALIASES.get(normalized, normalized)
         if normalized not in VALID_CONFLICT_POLICIES:
             supported = ", ".join(sorted(VALID_CONFLICT_POLICIES))
             raise ValueError(f"conflict_policy must be one of: {supported}")

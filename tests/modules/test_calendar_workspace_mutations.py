@@ -347,7 +347,7 @@ class TestReminderBackedTypeMapping:
             )
 
         assert reminder["type"] == "recurring_yearly"
-        assert reminder["reminder_type"] == "recurring"
+        assert reminder["reminder_type"] == "recurring_yearly"
 
     async def test_update_reminder_event_keeps_until_at_when_omitted(self):
         mod = CalendarModule()

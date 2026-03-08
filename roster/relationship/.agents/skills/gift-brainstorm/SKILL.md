@@ -191,7 +191,7 @@ Once the user selects a gift idea:
 3. **Set reminders** (optional)
    If the occasion is far out, offer to create a reminder:
    ```
-   reminder_create(contact_id, message="Buy gift for [occasion]", reminder_type="once", due_at=[date before occasion])
+   reminder_create(contact_id, message="Buy gift for [occasion]", type="one_time", due_at=[date before occasion])
    ```
 
 ## Best Practices

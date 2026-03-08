@@ -4,7 +4,7 @@ Each reminder is a property fact in the facts table (supersession by subject key
   subject   = contact:{contact_id}:reminder:{reminder_uuid}
   predicate = 'reminder'
   content   = message/label
-  metadata  = {reminder_type, cron, due_at, dismissed, timezone, until_at,
+  metadata  = {type, cron, due_at, dismissed, timezone, until_at,
                calendar_event_id, last_triggered_at, next_trigger_at}
   valid_at  = NULL (property fact — dismiss updates supersede)
   scope     = 'relationship'
@@ -40,18 +40,6 @@ def _get_embedding_engine() -> Any:
 
         _embedding_engine = get_embedding_engine()
     return _embedding_engine
-
-
-def _legacy_from_new_type(reminder_type: str) -> str:
-    if reminder_type in {"recurring_yearly", "recurring_monthly"}:
-        return "recurring"
-    return reminder_type
-
-
-def _new_from_legacy_type(reminder_type: str) -> str:
-    if reminder_type == "recurring":
-        return "recurring_monthly"
-    return reminder_type
 
 
 def _fact_to_reminder(row: dict[str, Any]) -> dict[str, Any]:
@@ -102,7 +90,7 @@ def _fact_to_reminder(row: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, AttributeError):
             pass
 
-    reminder_type = meta.get("reminder_type", "one_time")
+    reminder_type = meta.get("type", "one_time")
     dismissed = meta.get("dismissed", False)
 
     return {
@@ -110,8 +98,7 @@ def _fact_to_reminder(row: dict[str, Any]) -> dict[str, Any]:
         "contact_id": contact_id,
         "message": row.get("content", ""),
         "label": row.get("content", ""),
-        "reminder_type": reminder_type,
-        "type": meta.get("type", _new_from_legacy_type(reminder_type)),
+        "type": reminder_type,
         "cron": meta.get("cron"),
         "due_at": next_at,
         "next_trigger_at": next_at,
@@ -143,9 +130,8 @@ async def reminder_create(
     from butlers.modules.memory.storage import store_fact
 
     effective_label = label or message or ""
-    effective_type = type or _new_from_legacy_type(reminder_type or "one_time")
+    effective_type = type or reminder_type or "one_time"
     effective_next_trigger_at = next_trigger_at if next_trigger_at is not None else due_at
-    effective_reminder_type = reminder_type or _legacy_from_new_type(effective_type)
     effective_timezone = (timezone or "UTC").strip() or "UTC"
     now = datetime.now(UTC)
 
@@ -161,7 +147,6 @@ async def reminder_create(
     )
 
     fact_metadata: dict[str, Any] = {
-        "reminder_type": effective_reminder_type,
         "type": effective_type,
         "dismissed": False,
         "timezone": effective_timezone,
@@ -194,7 +179,6 @@ async def reminder_create(
         "contact_id": contact_id,
         "message": effective_label,
         "label": effective_label,
-        "reminder_type": effective_reminder_type,
         "type": effective_type,
         "cron": cron,
         "due_at": effective_next_trigger_at,
@@ -352,7 +336,6 @@ async def reminder_dismiss(pool: asyncpg.Pool, reminder_id: uuid.UUID) -> dict[s
         "contact_id": contact_id,
         "message": row["content"],
         "label": row["content"],
-        "reminder_type": new_metadata.get("reminder_type", reminder_type),
         "type": reminder_type,
         "cron": new_metadata.get("cron"),
         "due_at": new_next,

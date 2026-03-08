@@ -98,7 +98,7 @@ _PROPERTY_PREDICATES = [
         "person",
         False,
         "Reminder for a contact. Content = message. "
-        "Metadata: {reminder_type, cron, due_at, dismissed}. "
+        "Metadata: {type, cron, due_at, dismissed}. "
         "Supersession per contact entity + subject key.",
     ),
 ]
