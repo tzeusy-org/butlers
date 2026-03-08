@@ -357,6 +357,7 @@ export {
   getConnectorStats,
   getIngestionOverview,
   listConnectorSummaries,
+  updateConnectorCursor,
   updateConnectorFilters,
 } from "./client.ts";
 

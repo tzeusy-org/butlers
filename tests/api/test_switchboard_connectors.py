@@ -935,3 +935,112 @@ class TestIngestionFanout:
 
         assert resp.status_code == 200
         assert resp.json()["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/switchboard/connectors/{type}/{identity}/cursor
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_UPDATED_ROW = {
+    **_SAMPLE_CONNECTOR_ROW,
+    "checkpoint_cursor": "new-cursor-value",
+    "checkpoint_updated_at": "2026-03-08T12:00:00+00:00",
+}
+
+
+class TestUpdateConnectorCursor:
+    async def test_returns_200_with_updated_connector(self, app):
+        """Valid cursor update returns 200 with updated connector entry."""
+        app = _app_with_mock_db(app, fetchrow_result=_SAMPLE_UPDATED_ROW)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/switchboard/connectors/telegram_bot/bot-123/cursor",
+                json={"cursor": "new-cursor-value"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["connector_type"] == "telegram_bot"
+        assert body["data"]["checkpoint_cursor"] == "new-cursor-value"
+        assert body["data"]["checkpoint_updated_at"] is not None
+
+    async def test_returns_422_for_empty_cursor(self, app):
+        """Empty cursor string returns 422 (Pydantic validation error)."""
+        app = _app_with_mock_db(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/switchboard/connectors/telegram_bot/bot-123/cursor",
+                json={"cursor": ""},
+            )
+
+        assert resp.status_code == 422
+
+    async def test_returns_422_for_whitespace_only_cursor(self, app):
+        """Whitespace-only cursor string returns 422 (validation error)."""
+        app = _app_with_mock_db(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/switchboard/connectors/telegram_bot/bot-123/cursor",
+                json={"cursor": "   "},
+            )
+
+        assert resp.status_code == 422
+
+    async def test_returns_422_for_missing_cursor(self, app):
+        """Missing cursor field returns 422 (validation error)."""
+        app = _app_with_mock_db(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/switchboard/connectors/telegram_bot/bot-123/cursor",
+                json={},
+            )
+
+        assert resp.status_code == 422
+
+    async def test_returns_404_when_connector_not_found(self, app):
+        """When connector is not in registry, 404 is returned."""
+        app = _app_with_mock_db(app, fetchrow_result=None)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/switchboard/connectors/telegram_bot/nonexistent/cursor",
+                json={"cursor": "some-value"},
+            )
+
+        assert resp.status_code == 404
+
+    async def test_returns_503_on_db_error(self, app):
+        """When DB errors on update, 503 is returned."""
+        app = _app_with_mock_db(app, fetchrow_side_effect=Exception("connection refused"))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/switchboard/connectors/telegram_bot/bot-123/cursor",
+                json={"cursor": "some-value"},
+            )
+
+        assert resp.status_code == 503
+
+    async def test_returns_503_when_db_pool_unavailable(self, app):
+        """When the DB pool itself is not available, returns 503."""
+        app = _app_with_mock_db(app, pool_available=False)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/switchboard/connectors/telegram_bot/bot-123/cursor",
+                json={"cursor": "some-value"},
+            )
+
+        assert resp.status_code == 503

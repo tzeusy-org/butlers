@@ -23,6 +23,7 @@ import {
   getConnectorStats,
   getIngestionOverview,
   listConnectorSummaries,
+  updateConnectorCursor,
   updateConnectorFilters,
 } from "@/api/index.ts";
 import type { ConnectorFilterAssignmentItem, IngestionPeriod } from "@/api/index.ts";
@@ -196,6 +197,26 @@ export function useUpdateConnectorFilters(
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.connectorFilters(connectorType, endpointIdentity),
+      });
+    },
+  });
+}
+
+/**
+ * Mutation to update a connector's checkpoint cursor.
+ * Invalidates the connector-detail query on success so the UI refreshes.
+ */
+export function useUpdateConnectorCursor(
+  connectorType: string,
+  endpointIdentity: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (cursor: string) =>
+      updateConnectorCursor(connectorType, endpointIdentity, cursor),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.connectorDetail(connectorType, endpointIdentity),
       });
     },
   });

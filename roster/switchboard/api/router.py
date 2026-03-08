@@ -78,6 +78,7 @@ if _spec is not None and _spec.loader is not None:
     RoutingInstructionUpdate = _models.RoutingInstructionUpdate
     ConnectorFilterAssignment = _models.ConnectorFilterAssignment
     ConnectorFilterAssignmentItem = _models.ConnectorFilterAssignmentItem
+    CursorUpdateRequest = _models.CursorUpdateRequest
     validate_condition = _models.validate_condition
     validate_action = _models.validate_action
 else:
@@ -939,6 +940,74 @@ async def delete_connector(
 
     logger.info("Deregistered connector: %s/%s", connector_type, endpoint_identity)
     return ApiResponse[dict](data={"deleted": f"{connector_type}/{endpoint_identity}"})
+
+
+# ---------------------------------------------------------------------------
+# PATCH /connectors/{connector_type}/{endpoint_identity}/cursor — update cursor
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/connectors/{connector_type}/{endpoint_identity}/cursor",
+    response_model=ApiResponse[ConnectorEntry],
+)
+async def update_connector_cursor(
+    connector_type: str,
+    endpoint_identity: str,
+    body: CursorUpdateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ConnectorEntry]:
+    """Update a connector's checkpoint cursor value.
+
+    Body must contain ``{"cursor": "<value>"}`` where value is a non-empty
+    string.  Writes directly to ``connector_registry.checkpoint_cursor`` and
+    sets ``checkpoint_updated_at = now()``.
+
+    Note: the cursor is only read on connector startup — changes take effect
+    on the next connector restart.
+    """
+    pool = _pool(db)
+
+    # Update cursor + timestamp, returning the full row for the response.
+    try:
+        row = await pool.fetchrow(
+            "UPDATE connector_registry"
+            " SET checkpoint_cursor = $3,"
+            "     checkpoint_updated_at = now()"
+            " WHERE connector_type = $1 AND endpoint_identity = $2"
+            " RETURNING *",
+            connector_type,
+            endpoint_identity,
+            body.cursor,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to update cursor for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    # The RETURNING * gives us the registry columns but not the today-stats
+    # join.  Fill the today-stats fields with zero so the model validates.
+    row_dict = dict(row)
+    row_dict.setdefault("today_messages_ingested", 0)
+    row_dict.setdefault("today_messages_failed", 0)
+
+    logger.info(
+        "Updated cursor for %s/%s to %r",
+        connector_type,
+        endpoint_identity,
+        body.cursor,
+    )
+    return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
 
 
 # ---------------------------------------------------------------------------

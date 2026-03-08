@@ -4,14 +4,25 @@
  * Shows:
  * - Full connector metadata (liveness, state, version, uptime, counters)
  * - Time-series statistics chart with period selector
- * - Checkpoint info
+ * - Checkpoint info with inline cursor editing
  * - Back navigation to /ingestion?tab=connectors
  */
 
+import { useState } from "react";
 import { useParams, useSearchParams, Link } from "react-router";
 import { formatDistanceToNow } from "date-fns";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Info, Pencil } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -21,6 +32,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -28,11 +40,21 @@ import {
   TableCell,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import { LivenessBadge } from "@/components/ingestion/LivenessBadge";
 import { VolumeTrendChart } from "@/components/ingestion/VolumeTrendChart";
 import { ConnectorFiltersDialog } from "@/components/ingestion/ConnectorFiltersDialog";
-import { useConnectorDetail, useConnectorStats } from "@/hooks/use-ingestion";
+import {
+  useConnectorDetail,
+  useConnectorStats,
+  useUpdateConnectorCursor,
+} from "@/hooks/use-ingestion";
 import type { IngestionPeriod } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +97,41 @@ export default function ConnectorDetailPage() {
   const connector = detailResp?.data;
   const stats = statsResp?.data;
 
+  // Cursor edit state
+  const [isEditingCursor, setIsEditingCursor] = useState(false);
+  const [cursorDraft, setCursorDraft] = useState("");
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+
+  const cursorMutation = useUpdateConnectorCursor(
+    connectorType ?? "",
+    endpointIdentity ?? "",
+  );
+
+  function handleEditClick() {
+    setCursorDraft(connector?.checkpoint?.cursor ?? "");
+    setIsEditingCursor(true);
+  }
+
+  function handleCancelEdit() {
+    setIsEditingCursor(false);
+    setCursorDraft("");
+  }
+
+  function handleSaveClick() {
+    if (!cursorDraft.trim()) return;
+    setShowConfirmDialog(true);
+  }
+
+  function handleConfirmSave() {
+    setShowConfirmDialog(false);
+    cursorMutation.mutate(cursorDraft.trim(), {
+      onSuccess: () => {
+        setIsEditingCursor(false);
+        setCursorDraft("");
+      },
+    });
+  }
+
   const lastSeen = connector?.last_heartbeat_at
     ? formatDistanceToNow(new Date(connector.last_heartbeat_at), {
         addSuffix: true,
@@ -87,7 +144,7 @@ export default function ConnectorDetailPage() {
         month: "short",
         day: "numeric",
       })
-    : "—";
+    : "\u2014";
 
   return (
     <div className="space-y-6">
@@ -183,16 +240,70 @@ export default function ConnectorDetailPage() {
                       </TableCell>
                     </TableRow>
                   )}
-                  {connector.checkpoint?.cursor && (
-                    <TableRow>
-                      <TableCell className="text-muted-foreground">
+                  <TableRow>
+                    <TableCell className="text-muted-foreground">
+                      <div className="flex items-center gap-1">
                         Checkpoint cursor
-                      </TableCell>
-                      <TableCell className="font-mono text-xs truncate max-w-xs">
-                        {connector.checkpoint.cursor}
-                      </TableCell>
-                    </TableRow>
-                  )}
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Info className="h-3.5 w-3.5 text-muted-foreground/60" />
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="max-w-xs">
+                              Takes effect on next connector restart
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {isEditingCursor ? (
+                        <div className="flex items-center gap-2">
+                          <Input
+                            value={cursorDraft}
+                            onChange={(e) => setCursorDraft(e.target.value)}
+                            className="font-mono text-xs h-8 max-w-sm"
+                            autoFocus
+                            data-testid="cursor-edit-input"
+                          />
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={handleSaveClick}
+                            disabled={!cursorDraft.trim() || cursorMutation.isPending}
+                            data-testid="cursor-save-btn"
+                          >
+                            {cursorMutation.isPending ? "Saving..." : "Save"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={handleCancelEdit}
+                            disabled={cursorMutation.isPending}
+                            data-testid="cursor-cancel-btn"
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs truncate max-w-xs">
+                            {connector.checkpoint?.cursor ?? "\u2014"}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0"
+                            onClick={handleEditClick}
+                            data-testid="cursor-edit-btn"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            <span className="sr-only">Edit cursor</span>
+                          </Button>
+                        </div>
+                      )}
+                    </TableCell>
+                  </TableRow>
                 </TableBody>
               </Table>
             </div>
@@ -288,6 +399,25 @@ export default function ConnectorDetailPage() {
         isLoading={statsLoading}
         title="Volume Trend"
       />
+
+      {/* Confirmation dialog for cursor change */}
+      <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Change checkpoint cursor?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Changing the cursor affects which messages are ingested on the
+              next connector restart. Continue?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmSave}>
+              Continue
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

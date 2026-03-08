@@ -768,3 +768,17 @@ class ConnectorFilterAssignmentItem(BaseModel):
     filter_id: Any  # UUID — typed as Any for asyncpg compat
     enabled: bool
     priority: int = 0
+
+
+class CursorUpdateRequest(BaseModel):
+    """Request body for PATCH /connectors/{type}/{identity}/cursor."""
+
+    cursor: str
+
+    @field_validator("cursor")
+    @classmethod
+    def cursor_non_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("cursor must be non-empty")
+        return v

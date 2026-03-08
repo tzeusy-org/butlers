@@ -2255,6 +2255,26 @@ export async function getConnectorFilters(
   );
 }
 
+/** Update a connector's checkpoint cursor (PATCH /connectors/{type}/{identity}/cursor). */
+export async function updateConnectorCursor(
+  connectorType: string,
+  endpointIdentity: string,
+  cursor: string,
+): Promise<ApiResponse<ConnectorDetail>> {
+  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
+    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/cursor`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cursor }),
+    },
+  );
+  return {
+    ...resp,
+    data: _toConnectorDetail(resp.data),
+  };
+}
+
 /** Replace all filter assignments for a connector (PUT /connectors/{type}/{identity}/filters). */
 export async function updateConnectorFilters(
   connectorType: string,
