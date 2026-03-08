@@ -204,8 +204,8 @@ sudo systemctl status telegram-user-client-connector
 # Check logs for errors
 sudo journalctl -u telegram-user-client-connector -f
 
-# Verify cursor advancement
-cat /var/lib/butlers/connectors/telegram-user-client/cursor.json
+# Verify cursor advancement (cursor is DB-backed in connector_registry)
+# Use the dashboard connector detail API or query switchboard.connector_registry directly
 
 # Check Switchboard ingest metrics
 curl http://localhost:40100/metrics

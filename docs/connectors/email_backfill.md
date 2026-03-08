@@ -199,8 +199,8 @@ Completion behavior:
 
 ### 6.3 Cursor and resume semantics
 - Backfill resume cursor MUST be persisted in `backfill_jobs.cursor` via `backfill.progress`.
-- Connector-local live checkpoint files remain for live ingestion only.
-- Backfill restarts must resume from server-side job cursor, not local ad hoc files.
+- Connector-local live checkpoint (DB-backed via `cursor_store`) is for live ingestion only.
+- Backfill restarts must resume from server-side job cursor, not the connector's live checkpoint.
 
 ## 7. Rate Limiting and Cost Controls
 

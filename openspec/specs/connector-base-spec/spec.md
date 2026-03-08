@@ -379,5 +379,5 @@ Architecture for scaling connectors beyond single-instance deployment.
 - **THEN** source-native partitioning (e.g., Gmail label sharding, Telegram chat ID ranges) allows multiple instances to process non-overlapping subsets
 
 #### Scenario: Checkpoint storage backends
-- **WHEN** scaling beyond file-based checkpoints
-- **THEN** supported backends include: file (v1 default), Redis, PostgreSQL, etcd, with CAS-based conflict resolution
+- **WHEN** scaling beyond single-instance DB-backed checkpoints
+- **THEN** supported backends include: PostgreSQL via `cursor_store` (v1 default), Redis, etcd, with CAS-based conflict resolution

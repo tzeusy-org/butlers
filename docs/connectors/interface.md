@@ -144,6 +144,30 @@ Recommended checkpoint pattern:
 2. Submit each event to ingest API.
 3. Only advance checkpoint after successful ingest acceptance (or accepted duplicate).
 
+### 7.1 Checkpoint Persistence: DB-Backed via `cursor_store`
+
+All connectors persist their resume cursor in the database via the `cursor_store` module. The canonical storage location is the `switchboard.connector_registry` table, specifically the `checkpoint_cursor` (TEXT) and `checkpoint_updated_at` (TIMESTAMPTZ) columns, keyed by `(connector_type, endpoint_identity)`.
+
+**Canonical API** (`butlers.connectors.cursor_store`):
+- `save_cursor(pool, connector_type, endpoint_identity, cursor_value)` — upserts checkpoint cursor into `switchboard.connector_registry`. Creates the row if it does not exist.
+- `load_cursor(pool, connector_type, endpoint_identity)` — reads checkpoint cursor. Returns `None` when the row is missing or the cursor column is NULL.
+- `create_cursor_pool_from_env()` — creates an asyncpg pool using standard DB env vars (`POSTGRES_HOST`, `POSTGRES_PORT`, etc.) suitable for cursor operations.
+
+**Startup cursor-load flow:**
+1. Connector creates an asyncpg pool via `create_cursor_pool_from_env()`.
+2. Connector calls `load_cursor(pool, connector_type, endpoint_identity)`.
+3. If a cursor value is returned, the connector resumes from that position.
+4. If `None` is returned (first run or no prior checkpoint), the connector initializes from the source API (e.g., Gmail `users.getProfile` for initial `historyId`, Telegram `getUpdates` with `offset=-1`).
+5. The connector writes the initialized cursor back to DB via `save_cursor()` to establish the baseline.
+
+**Dashboard cursor visibility and editing:**
+- The dashboard connector detail API exposes `checkpoint_cursor` and `checkpoint_updated_at` for each registered connector via `GET /api/switchboard/connectors/{connector_type}/{endpoint_identity}`.
+- [TARGET-STATE] A `PATCH /api/switchboard/connectors/{connector_type}/{endpoint_identity}/cursor` endpoint will allow operators to manually edit or reset a connector's cursor value through the dashboard (e.g., to replay from an earlier position or skip past a problematic batch).
+
+**No file-based cursor storage:**
+- Connectors do not use `CONNECTOR_CURSOR_PATH` or any file-based cursor persistence.
+- All checkpoint state lives in the database, surviving container restarts, pod rescheduling, and host migration without requiring persistent volume mounts for cursor files.
+
 ## 8. Rate Limiting and Backpressure
 Connectors MUST implement two independent controls:
 - Source API limit handling (provider quotas, 429 handling, jittered backoff).

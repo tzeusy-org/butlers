@@ -11,7 +11,7 @@ This document defines patterns for horizontally scaling connector deployments wh
 **Prerequisites:**
 - Familiarity with `docs/connectors/interface.md` (connector contract)
 - Understanding of `docs/runbooks/connector_operations.md` (single-instance operations)
-- Knowledge of the current checkpoint model (durable file-based cursors)
+- Knowledge of the current checkpoint model (DB-backed cursors via `cursor_store`)
 
 **When to Consider Horizontal Scaling:**
 - Ingest throughput exceeds single-instance capacity (>1000 events/sec sustained)
@@ -21,8 +21,8 @@ This document defines patterns for horizontally scaling connector deployments wh
 - Operational resilience requires zero-downtime deployments and rolling updates
 
 **Current State (v1):**
-Connectors use a simple single-process-per-endpoint-identity model with file-based checkpoints. This design trades simplicity for scalability and assumes:
-- One process owns the checkpoint file exclusively
+Connectors use a simple single-process-per-endpoint-identity model with DB-backed checkpoints (via `cursor_store` writing to `switchboard.connector_registry`). This design trades simplicity for scalability and assumes:
+- One process owns the checkpoint row exclusively
 - No concurrent writers to the same checkpoint
 - Process-local semaphores for in-flight concurrency control
 
@@ -49,7 +49,7 @@ Horizontal scaling introduces coordination requirements not present in the curre
 │  │ - Update checkpoint on success│  │
 │  └───────────────────────────────┘  │
 │                                     │
-│  Checkpoint: cursor.json            │
+│  Checkpoint: DB (connector_registry) │
 │  {"last_update_id": 12345}          │
 └───────────────┬─────────────────────┘
                 │ (ingest.v1 HTTP POST)
@@ -70,24 +70,25 @@ Horizontal scaling introduces coordination requirements not present in the curre
 
 ### 2.2 Checkpoint Model
 
-**Storage:** File-based JSON (e.g., `telegram_cursor.json`, `gmail_cursor.json`)
+**Storage:** DB-backed via `cursor_store` (writes to `switchboard.connector_registry.checkpoint_cursor`)
 
 **Write Pattern:**
 1. Fetch batch from source
 2. Submit each event to Switchboard ingest API
 3. On success (or duplicate): advance in-memory cursor
-4. Persist cursor atomically (write to `.tmp`, then rename)
+4. Persist cursor via `save_cursor()` (upsert to `connector_registry`)
 
 **Safety Properties:**
-- Atomic writes prevent partial checkpoint corruption
+- Transactional writes via asyncpg prevent partial checkpoint corruption
 - Checkpoint advancement only after confirmed ingest acceptance
 - Process-local synchronization (no external locks)
 - Restart-safe: replay from last checkpoint (duplicates are idempotent)
+- No persistent volume required for cursor state
 
 **Limitations:**
 - No support for multiple concurrent writers
 - No lease/lock mechanism for checkpoint ownership
-- File-based state doesn't scale beyond single instance
+- Single-row-per-connector model requires coordination for horizontal scaling
 
 ## 3. Horizontal Scaling Patterns
 
@@ -271,9 +272,8 @@ Horizontal scaling introduces coordination requirements not present in the curre
    - No dynamic rebalancing (operator-managed)
 
 2. **Independent Checkpoints:**
-   - Each partition has dedicated checkpoint file or key
+   - Each partition has a dedicated `connector_registry` row (distinct `endpoint_identity` per partition)
    - No coordination required between instances
-   - Checkpoint path: `{cursor_path}.partition-{id}`
 
 3. **Deployment:**
    - Deploy N instances with disjoint partition assignments
@@ -386,10 +386,10 @@ Horizontal scaling introduces coordination requirements not present in the curre
 
 ### 4.1 Checkpoint Storage Backends
 
-**File-Based (Current v1 Model):**
-- Pros: Simple, no dependencies, local atomicity
-- Cons: Single-instance only, no distributed coordination
-- Recommendation: v1 baseline, not suitable for horizontal scaling
+**PostgreSQL via `cursor_store` (Current v1 Model):**
+- Pros: Simple, transactional, no additional dependencies (uses existing PostgreSQL), visible in dashboard
+- Cons: Single-writer model, no distributed coordination
+- Recommendation: v1 baseline; sufficient for single-instance deployments, not suitable for active-active horizontal scaling without additional coordination
 
 **Redis:**
 - Pros: Low latency, built-in expiration/TTL, pub/sub for coordination
@@ -684,7 +684,7 @@ spec:
 ### 6.2 Phase 2: Active-Standby Deployment
 
 1. Deploy coordination store (Redis/etcd)
-2. Migrate checkpoint from file to coordination store (one-time copy)
+2. Migrate checkpoint from `connector_registry` to coordination store (one-time copy)
 3. Update connector code to use lease-based checkpoint reads/writes
 4. Deploy two instances with lease coordination enabled
 5. Verify automatic failover: kill active instance, standby should take over within TTL
@@ -703,8 +703,8 @@ spec:
 
 At any phase, rollback to single-instance:
 1. Stop all scaled instances
-2. Copy latest checkpoint from coordination store to file
-3. Start single v1 instance with file-based checkpoint
+2. Copy latest checkpoint from coordination store to `connector_registry` via `save_cursor()`
+3. Start single v1 instance with DB-backed checkpoint
 4. Verify ingestion resumes from correct offset
 5. Duplicates during rollback are safe (Switchboard dedupe)
 
