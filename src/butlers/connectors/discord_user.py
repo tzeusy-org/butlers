@@ -1027,9 +1027,7 @@ class DiscordUserConnector:
             )
         except Exception as exc:
             self._metrics.record_checkpoint_save(status="error")
-            self._metrics.record_error(
-                error_type=get_error_type(exc), operation="checkpoint_save"
-            )
+            self._metrics.record_error(error_type=get_error_type(exc), operation="checkpoint_save")
             logger.exception("Failed to save checkpoint to DB")
 
 

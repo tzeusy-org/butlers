@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -20,16 +20,14 @@ class TestTelegramBotConnectorHealth:
     """Tests for Telegram bot connector health endpoint."""
 
     @pytest.fixture
-    def telegram_config(self, tmp_path: Path) -> TelegramBotConnectorConfig:
+    def telegram_config(self) -> TelegramBotConnectorConfig:
         """Create test Telegram connector config."""
-        cursor_path = tmp_path / "telegram_cursor.json"
         return TelegramBotConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             provider="telegram",
             channel="telegram",
             endpoint_identity="telegram:bot:test_bot",
             telegram_token="test-telegram-token",
-            cursor_path=cursor_path,
             poll_interval_s=1.0,
             max_inflight=4,
             health_port=40081,
@@ -40,7 +38,7 @@ class TestTelegramBotConnectorHealth:
         self, telegram_config: TelegramBotConnectorConfig
     ) -> TelegramBotConnector:
         """Create Telegram connector instance."""
-        return TelegramBotConnector(telegram_config)
+        return TelegramBotConnector(telegram_config, cursor_pool=MagicMock())
 
     async def test_initial_health_status(self, telegram_connector: TelegramBotConnector) -> None:
         """Test health status immediately after initialization."""
@@ -118,15 +116,13 @@ class TestGmailConnectorHealth:
     """Tests for Gmail connector health endpoint."""
 
     @pytest.fixture
-    def gmail_config(self, tmp_path: Path) -> GmailConnectorConfig:
+    def gmail_config(self) -> GmailConnectorConfig:
         """Create test Gmail connector config."""
-        cursor_path = tmp_path / "gmail_cursor.json"
         return GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_provider="gmail",
             connector_channel="email",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=cursor_path,
             connector_max_inflight=4,
             connector_health_port=40082,
             gmail_client_id="test-client-id",

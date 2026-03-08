@@ -659,8 +659,6 @@ spec:
               fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
         - name: CONNECTOR_TOTAL_PARTITIONS
           value: "3"
-        - name: CONNECTOR_CURSOR_PATH
-          value: "/data/cursor-$(CONNECTOR_PARTITION_ID).json"
         volumeMounts:
         - name: data
           mountPath: /data

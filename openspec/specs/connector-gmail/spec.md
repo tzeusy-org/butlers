@@ -73,7 +73,7 @@ The connector tracks its position in Gmail's history stream via a persistent cur
 
 #### Scenario: Cursor model
 - **WHEN** the Gmail connector processes messages
-- **THEN** it persists a `GmailCursor` containing `history_id` (Gmail's sequential history ID) and `last_updated_at` (ISO 8601 timestamp) to `CONNECTOR_CURSOR_PATH`
+- **THEN** it persists a `GmailCursor` containing `history_id` (Gmail's sequential history ID) and `last_updated_at` (ISO 8601 timestamp) to the DB via `cursor_store`
 
 #### Scenario: Checkpoint-after-acceptance
 - **WHEN** messages are ingested
@@ -329,7 +329,7 @@ Multiple Gmail connector instances can run concurrently for different accounts o
 
 #### Scenario: Per-account isolation
 - **WHEN** multiple Gmail connectors run
-- **THEN** each has a unique `CONNECTOR_ENDPOINT_IDENTITY` and its own `CONNECTOR_CURSOR_PATH`
+- **THEN** each has a unique `CONNECTOR_ENDPOINT_IDENTITY` and its own DB-backed cursor (keyed by provider + endpoint identity)
 - **AND** each may use different label filters (e.g., one for INBOX, another for finance labels)
 
 #### Scenario: Uniqueness boundary
@@ -345,7 +345,7 @@ Multiple Gmail connector instances can run concurrently for different accounts o
 
 #### Scenario: Required variables
 - **WHEN** the Gmail connector starts
-- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=gmail`, `CONNECTOR_CHANNEL=email`, `CONNECTOR_ENDPOINT_IDENTITY`, `CONNECTOR_CURSOR_PATH` must be set
+- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=gmail`, `CONNECTOR_CHANNEL=email`, `CONNECTOR_ENDPOINT_IDENTITY` must be set
 - **AND** database connectivity (`DATABASE_URL` or `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_USER`/`POSTGRES_PASSWORD`) must be configured for OAuth credential resolution
 
 #### Scenario: Pub/Sub variables (optional)

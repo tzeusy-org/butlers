@@ -161,7 +161,6 @@ Reference connector runtime config (recommended naming):
 - `CONNECTOR_PROVIDER` (required): provider name (`telegram`, `gmail`, `imap`, etc.).
 - `CONNECTOR_CHANNEL` (required): canonical channel value (`telegram`, `email`, etc.).
 - `CONNECTOR_ENDPOINT_IDENTITY` (required): receiving identity (bot id, mailbox, client id).
-- `CONNECTOR_CURSOR_PATH` (required for polling sources): durable checkpoint file/path.
 - `CONNECTOR_POLL_INTERVAL_S` (required for polling sources): poll interval seconds.
 - `CONNECTOR_MAX_INFLIGHT` (optional, default recommended: `8`): ingest concurrency cap.
 

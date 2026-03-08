@@ -48,7 +48,6 @@ Base connector variables:
 - `CONNECTOR_CHANNEL=discord` (required)
 - `CONNECTOR_ENDPOINT_IDENTITY` (required)
 - `CONNECTOR_MAX_INFLIGHT` (optional, default `8`)
-- `CONNECTOR_CURSOR_PATH` (required for restart-safe checkpointing)
 
 Discord auth/config variables (candidate set, v2 WIP):
 - `DISCORD_CLIENT_ID`

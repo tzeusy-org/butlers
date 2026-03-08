@@ -6,7 +6,6 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,9 +32,8 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture
-def mock_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
+def mock_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Set up mock environment variables for connector config."""
-    cursor_path = tmp_path / "cursor.json"
     env_vars = {
         "SWITCHBOARD_MCP_URL": "http://localhost:40100/sse",
         "CONNECTOR_PROVIDER": "telegram",
@@ -44,7 +42,6 @@ def mock_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
         "TELEGRAM_API_ID": "12345",
         "TELEGRAM_API_HASH": "test-hash",
         "TELEGRAM_USER_SESSION": "test-session-string",
-        "CONNECTOR_CURSOR_PATH": str(cursor_path),
         "CONNECTOR_MAX_INFLIGHT": "8",
     }
     for key, value in env_vars.items():
@@ -53,9 +50,8 @@ def mock_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
 
 
 @pytest.fixture
-def config(tmp_path: Path) -> TelegramUserClientConnectorConfig:
+def config() -> TelegramUserClientConnectorConfig:
     """Create a test connector config."""
-    cursor_path = tmp_path / "cursor.json"
     return TelegramUserClientConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
@@ -64,9 +60,14 @@ def config(tmp_path: Path) -> TelegramUserClientConnectorConfig:
         telegram_api_id=12345,
         telegram_api_hash="test-hash",
         telegram_user_session="test-session-string",
-        cursor_path=cursor_path,
         max_inflight=8,
     )
+
+
+@pytest.fixture
+def mock_cursor_pool() -> MagicMock:
+    """Create a mock DB cursor pool."""
+    return MagicMock()
 
 
 class TestTelegramUserClientConnectorConfig:
@@ -243,16 +244,20 @@ class TestTelegramUserClientConnector:
         mock_heartbeat.stop.assert_awaited_once()
 
     async def test_save_checkpoint_records_save_time(
-        self, config: TelegramUserClientConnectorConfig
+        self, config: TelegramUserClientConnectorConfig, mock_cursor_pool: MagicMock
     ) -> None:
         """_save_checkpoint() records the timestamp of the successful save."""
-        connector = TelegramUserClientConnector(config)
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_cursor_pool)
         connector._last_message_id = 12345
 
         assert connector._last_checkpoint_save is None
 
         before = time.time()
-        await connector._save_checkpoint()
+        with patch(
+            "butlers.connectors.cursor_store.save_cursor",
+            new=AsyncMock(),
+        ):
+            await connector._save_checkpoint()
         after = time.time()
 
         assert connector._last_checkpoint_save is not None
@@ -399,60 +404,59 @@ class TestTelegramUserClientConnector:
             with pytest.raises(ConnectionError):
                 await connector._submit_to_ingest(envelope)
 
-    async def test_load_checkpoint_no_file(self, config: TelegramUserClientConnectorConfig) -> None:
-        """Test loading checkpoint when no file exists."""
-        connector = TelegramUserClientConnector(config)
-        await connector._load_checkpoint()
+    async def test_load_checkpoint_no_data(
+        self,
+        config: TelegramUserClientConnectorConfig,
+        mock_cursor_pool: MagicMock,
+    ) -> None:
+        """Test loading checkpoint when no DB row exists."""
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_cursor_pool)
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(return_value=None),
+        ):
+            await connector._load_checkpoint()
         assert connector._last_message_id is None
 
-    async def test_load_checkpoint_with_file(
-        self, config: TelegramUserClientConnectorConfig
+    async def test_load_checkpoint_from_db(
+        self,
+        config: TelegramUserClientConnectorConfig,
+        mock_cursor_pool: MagicMock,
     ) -> None:
-        """Test loading checkpoint from existing file."""
-        # Write checkpoint file
-        assert config.cursor_path is not None
-        config.cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        with config.cursor_path.open("w") as f:
-            json.dump({"last_message_id": 99999}, f)
-
-        connector = TelegramUserClientConnector(config)
-        await connector._load_checkpoint()
+        """Test loading checkpoint from DB."""
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_cursor_pool)
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(return_value=json.dumps({"last_message_id": 99999})),
+        ):
+            await connector._load_checkpoint()
         assert connector._last_message_id == 99999
 
-    async def test_save_checkpoint(self, config: TelegramUserClientConnectorConfig) -> None:
-        """Test saving checkpoint to disk."""
-        connector = TelegramUserClientConnector(config)
-        connector._last_message_id = 88888
-        await connector._save_checkpoint()
-
-        # Verify checkpoint file was written
-        assert config.cursor_path is not None
-        assert config.cursor_path.exists()
-        with config.cursor_path.open("r") as f:
-            data = json.load(f)
-            assert data["last_message_id"] == 88888
-
-    async def test_save_checkpoint_atomic_write(
-        self, config: TelegramUserClientConnectorConfig
+    async def test_save_checkpoint(
+        self,
+        config: TelegramUserClientConnectorConfig,
+        mock_cursor_pool: MagicMock,
     ) -> None:
-        """Test that checkpoint save uses atomic write."""
-        connector = TelegramUserClientConnector(config)
-        connector._last_message_id = 77777
+        """Test saving checkpoint to DB."""
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_cursor_pool)
+        connector._last_message_id = 88888
+        with patch(
+            "butlers.connectors.cursor_store.save_cursor",
+            new=AsyncMock(),
+        ) as mock_save:
+            await connector._save_checkpoint()
 
-        # Save checkpoint
-        await connector._save_checkpoint()
-
-        # Verify no .tmp file remains
-        assert config.cursor_path is not None
-        tmp_path = config.cursor_path.with_suffix(".tmp")
-        assert not tmp_path.exists()
-        assert config.cursor_path.exists()
+        mock_save.assert_awaited_once()
+        saved_data = json.loads(mock_save.call_args[0][3])
+        assert saved_data["last_message_id"] == 88888
 
     async def test_process_message_updates_checkpoint(
-        self, config: TelegramUserClientConnectorConfig
+        self,
+        config: TelegramUserClientConnectorConfig,
+        mock_cursor_pool: MagicMock,
     ) -> None:
         """Test that processing a message updates the checkpoint."""
-        connector = TelegramUserClientConnector(config)
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_cursor_pool)
 
         # Mock message
         mock_message = MagicMock()
@@ -702,13 +706,11 @@ class TestResolveTelegramUserCredentialsFromDb:
 
 @pytest.mark.asyncio
 async def test_run_telegram_user_client_connector_uses_db_credentials_when_env_missing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DB credentials should be sufficient even when TELEGRAM_* env vars are absent."""
-    cursor_path = tmp_path / "cursor.json"
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
     monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:user:test")
-    monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.delenv("TELEGRAM_API_ID", raising=False)
     monkeypatch.delenv("TELEGRAM_API_HASH", raising=False)
@@ -717,6 +719,9 @@ async def test_run_telegram_user_client_connector_uses_db_credentials_when_env_m
     mock_connector = MagicMock()
     mock_connector.start = AsyncMock()
     mock_connector.stop = AsyncMock()
+
+    mock_pool = MagicMock()
+    mock_pool.close = AsyncMock()
 
     with (
         patch(
@@ -734,6 +739,10 @@ async def test_run_telegram_user_client_connector_uses_db_credentials_when_env_m
             "butlers.connectors.telegram_user_client.TelegramUserClientConnector",
             return_value=mock_connector,
         ) as cls,
+        patch(
+            "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+            new=AsyncMock(return_value=mock_pool),
+        ),
     ):
         await run_telegram_user_client_connector()
 
@@ -973,10 +982,10 @@ class TestSourceFilterIntegration:
         mock_call.assert_awaited_once()
 
     async def test_ensure_loaded_called_before_ingestion_in_start(
-        self, config: TelegramUserClientConnectorConfig
+        self, config: TelegramUserClientConnectorConfig, mock_cursor_pool: MagicMock
     ) -> None:
         """start() calls ensure_loaded() on the source filter evaluator before connecting."""
-        connector = TelegramUserClientConnector(config)
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_cursor_pool)
 
         ensure_loaded_calls: list[str] = []
         connect_calls: list[str] = []
@@ -1008,6 +1017,10 @@ class TestSourceFilterIntegration:
                 return_value=MagicMock(),
             ),
             patch.object(connector, "_start_heartbeat"),
+            patch(
+                "butlers.connectors.cursor_store.load_cursor",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             with pytest.raises((asyncio.CancelledError, Exception)):
                 await connector.start()

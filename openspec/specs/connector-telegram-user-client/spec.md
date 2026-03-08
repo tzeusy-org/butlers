@@ -153,7 +153,7 @@ Because this connector reads a user's personal Telegram messages, strict privacy
 
 #### Scenario: Required variables
 - **WHEN** the Telegram user client connector starts
-- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram`, `CONNECTOR_ENDPOINT_IDENTITY` (user-client identity), `CONNECTOR_CURSOR_PATH` must be set
+- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram`, `CONNECTOR_ENDPOINT_IDENTITY` (user-client identity) must be set
 - **AND** `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_USER_SESSION` must be resolvable
 
 #### Scenario: Optional variables

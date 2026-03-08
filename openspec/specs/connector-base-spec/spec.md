@@ -179,12 +179,12 @@ Connectors are crash-safe and restart-safe via checkpoint-after-acceptance seman
 
 #### Scenario: Checkpoint persistence pattern
 - **WHEN** a connector processes a batch of events
-- **THEN** it persists a resume cursor/checkpoint to a file at `CONNECTOR_CURSOR_PATH`
+- **THEN** it persists a resume cursor/checkpoint to the DB via `cursor_store`
 - **AND** the checkpoint is advanced only after successful ingest acceptance (or accepted duplicate)
 
-#### Scenario: Atomic checkpoint writes
+#### Scenario: Checkpoint persistence
 - **WHEN** a connector saves a checkpoint
-- **THEN** it writes to a temporary file and atomically replaces the checkpoint file (rename)
+- **THEN** it writes the cursor to the DB (keyed by provider + endpoint identity)
 - **AND** on restart, it replays from the last safe checkpoint (replays are harmless due to ingest dedup)
 
 ### Requirement: Rate Limiting and Backpressure
@@ -230,7 +230,7 @@ All connectors share a common set of environment variables defining identity, tr
 #### Scenario: Required base environment variables
 - **WHEN** a connector starts
 - **THEN** `SWITCHBOARD_MCP_URL` (Switchboard SSE endpoint), `CONNECTOR_PROVIDER` (e.g., `gmail`, `telegram`), `CONNECTOR_CHANNEL` (e.g., `email`, `telegram`), and `CONNECTOR_ENDPOINT_IDENTITY` (unique instance identity) must be set
-- **AND** `CONNECTOR_CURSOR_PATH` is required for connectors with checkpoint persistence
+- **AND** checkpoint persistence is DB-backed via `cursor_store` (no file path env var needed)
 
 #### Scenario: Optional environment variables
 - **WHEN** a connector starts

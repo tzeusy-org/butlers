@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -623,7 +622,7 @@ class TestGmailConnectorIntegration:
     """Smoke tests for the GmailConnector source filter integration."""
 
     @pytest.fixture()
-    def gmail_config(self, tmp_path: Path):
+    def gmail_config(self):
         from butlers.connectors.gmail import GmailConnectorConfig
 
         return GmailConnectorConfig(
@@ -631,7 +630,6 @@ class TestGmailConnectorIntegration:
             connector_provider="gmail",
             connector_channel="email",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             connector_max_inflight=4,
             gmail_client_id="test-client-id",
             gmail_client_secret="test-client-secret",

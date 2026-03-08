@@ -12,8 +12,7 @@ Follows the contract defined in docs/connectors/interface.md.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -32,7 +31,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def telegram_config(tmp_path: Path) -> TelegramBotConnectorConfig:
+def telegram_config() -> TelegramBotConnectorConfig:
     """Create test Telegram connector config."""
     return TelegramBotConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
@@ -40,21 +39,19 @@ def telegram_config(tmp_path: Path) -> TelegramBotConnectorConfig:
         channel="telegram",
         endpoint_identity="test_bot",
         telegram_token="test-telegram-token",
-        cursor_path=tmp_path / "telegram_cursor.json",
         poll_interval_s=0.1,
         max_inflight=4,
     )
 
 
 @pytest.fixture
-def gmail_config(tmp_path: Path) -> GmailConnectorConfig:
+def gmail_config() -> GmailConnectorConfig:
     """Create test Gmail connector config."""
     return GmailConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:test@example.com",
-        connector_cursor_path=tmp_path / "gmail_cursor.json",
         connector_max_inflight=4,
         gmail_client_id="test-client-id",
         gmail_client_secret="test-client-secret",
@@ -64,15 +61,27 @@ def gmail_config(tmp_path: Path) -> GmailConnectorConfig:
 
 
 @pytest.fixture
-def telegram_connector(telegram_config: TelegramBotConnectorConfig) -> TelegramBotConnector:
-    """Create Telegram connector instance."""
-    return TelegramBotConnector(telegram_config)
+def mock_cursor_pool() -> MagicMock:
+    """Create a mock DB cursor pool."""
+    return MagicMock()
 
 
 @pytest.fixture
-def gmail_connector(gmail_config: GmailConnectorConfig) -> GmailConnectorRuntime:
+def telegram_connector(
+    telegram_config: TelegramBotConnectorConfig,
+    mock_cursor_pool: MagicMock,
+) -> TelegramBotConnector:
+    """Create Telegram connector instance."""
+    return TelegramBotConnector(telegram_config, cursor_pool=mock_cursor_pool)
+
+
+@pytest.fixture
+def gmail_connector(
+    gmail_config: GmailConnectorConfig,
+    mock_cursor_pool: MagicMock,
+) -> GmailConnectorRuntime:
     """Create Gmail connector instance."""
-    return GmailConnectorRuntime(gmail_config)
+    return GmailConnectorRuntime(gmail_config, cursor_pool=mock_cursor_pool)
 
 
 # -----------------------------------------------------------------------------
@@ -342,21 +351,42 @@ class TestGmailConnectorConformance:
         assert isinstance(envelope["payload"]["normalized_text"], str)
 
     async def test_gmail_checkpoint_recovery(
-        self, gmail_connector: GmailConnectorRuntime, gmail_config: GmailConnectorConfig
+        self,
+        gmail_connector: GmailConnectorRuntime,
+        gmail_config: GmailConnectorConfig,
+        mock_cursor_pool: MagicMock,
     ) -> None:
         """Test that Gmail connector can recover from checkpoint after crash."""
         from butlers.connectors.gmail import GmailCursor
 
-        # Save checkpoint
         cursor = GmailCursor(
             history_id="12345",
             last_updated_at=datetime.now(UTC).isoformat(),
         )
-        await gmail_connector._save_cursor(cursor)
+
+        # Save checkpoint and simulate recovery via DB mocks
+        saved_value: str | None = None
+
+        async def fake_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+            nonlocal saved_value
+            saved_value = val
+
+        async def fake_load(_pool: object, _prov: str, _eid: str) -> str | None:
+            return saved_value
+
+        with patch(
+            "butlers.connectors.cursor_store.save_cursor",
+            new=AsyncMock(side_effect=fake_save),
+        ):
+            await gmail_connector._save_cursor(cursor)
 
         # Create new connector instance (simulates restart)
-        new_connector = GmailConnectorRuntime(gmail_config)
-        loaded_cursor = await new_connector._load_cursor()
+        new_connector = GmailConnectorRuntime(gmail_config, cursor_pool=mock_cursor_pool)
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(side_effect=fake_load),
+        ):
+            loaded_cursor = await new_connector._load_cursor()
 
         # Verify checkpoint was restored
         assert loaded_cursor.history_id == "12345"

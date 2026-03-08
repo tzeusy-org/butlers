@@ -73,8 +73,7 @@ export CONNECTOR_ENDPOINT_IDENTITY="telegram:user:YOUR_USER_ID"
 # (types: telegram_api_id, telegram_api_hash, telegram_user_session).
 # Configure them through the dashboard, not environment variables.
 
-# Checkpoint/state
-export CONNECTOR_CURSOR_PATH="/var/lib/butlers/connectors/telegram-user-client/cursor.json"
+# Checkpoint/state (cursor is DB-backed, no file path needed)
 export CONNECTOR_MAX_INFLIGHT="8"
 ```
 
@@ -158,7 +157,6 @@ services:
       CONNECTOR_ENDPOINT_IDENTITY: telegram:user:${TELEGRAM_USER_ID}
       # Telegram user-client credentials come from owner contact_info (dashboard).
       # No secret files needed for TELEGRAM_API_ID/HASH/SESSION.
-      CONNECTOR_CURSOR_PATH: /data/cursor.json
       CONNECTOR_MAX_INFLIGHT: "8"
       CONNECTOR_BACKFILL_WINDOW_H: "24"
     volumes:

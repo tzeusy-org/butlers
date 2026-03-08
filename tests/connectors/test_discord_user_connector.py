@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,25 +41,32 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def mock_config(tmp_path: Path) -> DiscordUserConnectorConfig:
+def mock_config() -> DiscordUserConnectorConfig:
     """Create a mock connector configuration."""
-    cursor_path = tmp_path / "discord_cursor.json"
     return DiscordUserConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         provider="discord",
         channel="discord",
         endpoint_identity="discord:user:123456789",
         discord_bot_token="Bot test-token",
-        cursor_path=cursor_path,
         max_inflight=2,
         health_port=40084,
     )
 
 
 @pytest.fixture
-def connector(mock_config: DiscordUserConnectorConfig) -> DiscordUserConnector:
-    """Create a connector instance with mock config."""
-    return DiscordUserConnector(mock_config)
+def mock_cursor_pool() -> MagicMock:
+    """Create a mock DB cursor pool."""
+    return MagicMock()
+
+
+@pytest.fixture
+def connector(
+    mock_config: DiscordUserConnectorConfig,
+    mock_cursor_pool: MagicMock,
+) -> DiscordUserConnector:
+    """Create a connector instance with mock config and cursor pool."""
+    return DiscordUserConnector(mock_config, cursor_pool=mock_cursor_pool)
 
 
 @pytest.fixture
@@ -207,16 +213,13 @@ class TestExtractNormalizedText:
 class TestDiscordUserConnectorConfig:
     """Tests for DiscordUserConnectorConfig."""
 
-    def test_from_env_success(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_from_env_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test loading configuration from environment variables."""
-        cursor_path = tmp_path / "cursor.json"
-
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_PROVIDER", "discord")
         monkeypatch.setenv("CONNECTOR_CHANNEL", "discord")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "discord:user:123")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "my-bot-token")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "4")
         monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40090")
         monkeypatch.setenv("DISCORD_GUILD_ALLOWLIST", "111,222,333")
@@ -229,7 +232,6 @@ class TestDiscordUserConnectorConfig:
         assert config.channel == "discord"
         assert config.endpoint_identity == "discord:user:123"
         assert config.discord_bot_token == "my-bot-token"
-        assert config.cursor_path == cursor_path
         assert config.max_inflight == 4
         assert config.health_port == 40090
         assert config.guild_allowlist == frozenset({"111", "222", "333"})
@@ -407,7 +409,8 @@ class TestAllowlistFiltering:
         assert connector._is_allowed({"guild_id": "anything", "channel_id": "anything"})
 
     def test_guild_allowlist_permits_matching_guild(
-        self, mock_config: DiscordUserConnectorConfig, tmp_path: Path
+        self,
+        mock_config: DiscordUserConnectorConfig,
     ) -> None:
         """Event from allowed guild passes the filter."""
         from dataclasses import replace
@@ -509,25 +512,28 @@ class TestAllowlistFiltering:
 class TestCheckpoint:
     """Tests for checkpoint load/save/update."""
 
-    async def test_load_checkpoint_missing_file(self, connector: DiscordUserConnector) -> None:
-        """Missing checkpoint file starts fresh without error."""
-        await connector._load_checkpoint()
+    async def test_load_checkpoint_no_data(self, connector: DiscordUserConnector) -> None:
+        """No DB row starts fresh without error."""
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(return_value=None),
+        ):
+            await connector._load_checkpoint()
         assert connector._channel_checkpoints == {}
 
-    async def test_load_checkpoint_from_file(
-        self, connector: DiscordUserConnector, tmp_path: Path
-    ) -> None:
-        """Valid checkpoint file is loaded correctly."""
+    async def test_load_checkpoint_from_db(self, connector: DiscordUserConnector) -> None:
+        """Valid checkpoint in DB is loaded correctly."""
         checkpoint_data = {
             "channel_checkpoints": {
                 "111": "1234567890000000001",
                 "222": "9876543210000000001",
             }
         }
-        assert connector._config.cursor_path is not None
-        connector._config.cursor_path.write_text(json.dumps(checkpoint_data))
-
-        await connector._load_checkpoint()
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(return_value=json.dumps(checkpoint_data)),
+        ):
+            await connector._load_checkpoint()
 
         assert connector._channel_checkpoints == {
             "111": "1234567890000000001",
@@ -535,18 +541,21 @@ class TestCheckpoint:
         }
 
     async def test_save_checkpoint(self, connector: DiscordUserConnector) -> None:
-        """Checkpoint is saved correctly to file."""
+        """Checkpoint is saved correctly to DB."""
         connector._channel_checkpoints = {
             "aaa": "111",
             "bbb": "222",
         }
 
-        await connector._save_checkpoint()
+        with patch(
+            "butlers.connectors.cursor_store.save_cursor",
+            new=AsyncMock(),
+        ) as mock_save:
+            await connector._save_checkpoint()
 
-        assert connector._config.cursor_path is not None
-        assert connector._config.cursor_path.exists()
-        data = json.loads(connector._config.cursor_path.read_text())
-        assert data["channel_checkpoints"] == {"aaa": "111", "bbb": "222"}
+        mock_save.assert_awaited_once()
+        saved_data = json.loads(mock_save.call_args[0][3])
+        assert saved_data["channel_checkpoints"] == {"aaa": "111", "bbb": "222"}
 
     def test_update_checkpoint(self, connector: DiscordUserConnector) -> None:
         """_update_checkpoint updates in-memory state."""
@@ -557,24 +566,13 @@ class TestCheckpoint:
         connector._update_checkpoint("chan1", "msg1000")
         assert connector._channel_checkpoints["chan1"] == "msg1000"
 
-    async def test_save_checkpoint_atomic(self, connector: DiscordUserConnector) -> None:
-        """Checkpoint is written via temp file for atomicity."""
-        connector._channel_checkpoints = {"c1": "m1"}
-        assert connector._config.cursor_path is not None
-
-        await connector._save_checkpoint()
-
-        # Temp file should be gone (replaced)
-        tmp_path = connector._config.cursor_path.with_suffix(".tmp")
-        assert not tmp_path.exists()
-        assert connector._config.cursor_path.exists()
-
-    async def test_load_checkpoint_corrupt_file(self, connector: DiscordUserConnector) -> None:
-        """Corrupt checkpoint file starts fresh without crashing."""
-        assert connector._config.cursor_path is not None
-        connector._config.cursor_path.write_text("not-valid-json{{")
-
-        await connector._load_checkpoint()  # Should not raise
+    async def test_load_checkpoint_db_error(self, connector: DiscordUserConnector) -> None:
+        """DB error during load starts fresh without crashing."""
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(side_effect=RuntimeError("DB error")),
+        ):
+            await connector._load_checkpoint()  # Should not raise
 
         assert connector._channel_checkpoints == {}
 
@@ -1223,7 +1221,6 @@ async def test_source_filter_ensure_loaded_called_at_startup(
             side_effect=asyncio.CancelledError,
         ),
     ):
-        assert mock_config.cursor_path is not None
         connector._config = mock_config
         try:
             await connector.start()
@@ -1242,18 +1239,20 @@ class TestRunDiscordUserConnector:
     """Tests for the CLI entry point."""
 
     async def test_run_discord_user_connector_loads_config_and_runs(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """run_discord_user_connector loads config from env and starts connector."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "discord:user:999")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
 
         mock_connector = AsyncMock()
         mock_connector.start = AsyncMock(side_effect=KeyboardInterrupt)
         mock_connector.stop = AsyncMock()
+
+        mock_pool = MagicMock()
+        mock_pool.close = AsyncMock()
 
         with (
             patch(
@@ -1261,6 +1260,10 @@ class TestRunDiscordUserConnector:
                 return_value=mock_connector,
             ),
             patch("butlers.connectors.discord_user.configure_logging"),
+            patch(
+                "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+                new=AsyncMock(return_value=mock_pool),
+            ),
         ):
             await run_discord_user_connector()
 

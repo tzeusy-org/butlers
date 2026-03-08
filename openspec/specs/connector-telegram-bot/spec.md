@@ -24,7 +24,7 @@ The connector supports two modes: polling for development and webhook for produc
 #### Scenario: Polling mode (development)
 - **WHEN** no webhook URL is configured
 - **THEN** the connector calls Telegram `getUpdates` in a loop at `CONNECTOR_POLL_INTERVAL_S` (default 1.0 second for Telegram)
-- **AND** checkpoint (`last_update_id`) is loaded from and persisted to `CONNECTOR_CURSOR_PATH`
+- **AND** checkpoint (`last_update_id`) is loaded from and persisted to the DB via `cursor_store`
 - **AND** no public URL or HTTPS is required
 
 #### Scenario: Webhook mode (production)
@@ -147,7 +147,7 @@ Configuration via environment variables with base connector variables plus Teleg
 #### Scenario: Required variables
 - **WHEN** the Telegram bot connector starts
 - **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram`, `CONNECTOR_ENDPOINT_IDENTITY` must be set
-- **AND** `CONNECTOR_CURSOR_PATH` and `CONNECTOR_POLL_INTERVAL_S` are required for polling mode
+- **AND** `CONNECTOR_POLL_INTERVAL_S` is required for polling mode
 
 #### Scenario: Telegram credential variables
 - **WHEN** the bot scope is enabled
@@ -191,7 +191,7 @@ The connector guarantees at-least-once delivery with crash-safe resume.
 
 #### Scenario: Checkpoint semantics
 - **WHEN** the connector processes updates
-- **THEN** it persists the polling cursor/high-water mark to `CONNECTOR_CURSOR_PATH`
+- **THEN** it persists the polling cursor/high-water mark to the DB via `cursor_store`
 - **AND** the checkpoint advances only after ingest acceptance
 - **AND** messages blocked by source filters also have their `update_id` acknowledged (checkpoint advanced) so they are not re-delivered
 - **AND** on restart, it replays from the last safe checkpoint (harmless due to Switchboard dedup)

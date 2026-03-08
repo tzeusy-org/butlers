@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
 import pytest
@@ -28,25 +27,32 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def mock_config(tmp_path: Path) -> TelegramBotConnectorConfig:
+def mock_config() -> TelegramBotConnectorConfig:
     """Create a mock connector configuration."""
-    cursor_path = tmp_path / "cursor.json"
     return TelegramBotConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
         channel="telegram",
         endpoint_identity="test_bot",
         telegram_token="test-telegram-token",
-        cursor_path=cursor_path,
         poll_interval_s=0.1,
         max_inflight=2,
     )
 
 
 @pytest.fixture
-def connector(mock_config: TelegramBotConnectorConfig) -> TelegramBotConnector:
-    """Create a connector instance with mock config."""
-    return TelegramBotConnector(mock_config)
+def mock_cursor_pool() -> MagicMock:
+    """Create a mock DB cursor pool."""
+    return MagicMock()
+
+
+@pytest.fixture
+def connector(
+    mock_config: TelegramBotConnectorConfig,
+    mock_cursor_pool: MagicMock,
+) -> TelegramBotConnector:
+    """Create a connector instance with mock config and cursor pool."""
+    return TelegramBotConnector(mock_config, cursor_pool=mock_cursor_pool)
 
 
 @pytest.fixture
@@ -69,16 +75,13 @@ def sample_telegram_update() -> dict[str, Any]:
 # -----------------------------------------------------------------------------
 
 
-def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test loading configuration from environment variables."""
-    cursor_path = tmp_path / "cursor.json"
-
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
     monkeypatch.setenv("CONNECTOR_PROVIDER", "telegram")
     monkeypatch.setenv("CONNECTOR_CHANNEL", "telegram")
     monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "my_bot")
     monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "telegram-token")
-    monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
     monkeypatch.setenv("CONNECTOR_POLL_INTERVAL_S", "2.5")
     monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "4")
 
@@ -89,7 +92,6 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     assert config.channel == "telegram"
     assert config.endpoint_identity == "my_bot"
     assert config.telegram_token == "telegram-token"
-    assert config.cursor_path == cursor_path
     assert config.poll_interval_s == 2.5
     assert config.max_inflight == 4
 
@@ -423,71 +425,54 @@ async def test_submit_to_ingest_connection_error(
 
 
 @pytest.mark.asyncio
-async def test_load_checkpoint_file_exists(
-    connector: TelegramBotConnector,
-    mock_config: TelegramBotConnectorConfig,
-) -> None:
-    """Test loading checkpoint from existing file."""
-    assert mock_config.cursor_path is not None
-    mock_config.cursor_path.write_text(json.dumps({"last_update_id": 99999}))
-
-    await connector._load_checkpoint()
+async def test_load_checkpoint_from_db(connector: TelegramBotConnector) -> None:
+    """Test loading checkpoint from DB."""
+    with patch(
+        "butlers.connectors.cursor_store.load_cursor",
+        new=AsyncMock(return_value=json.dumps({"last_update_id": 99999})),
+    ):
+        await connector._load_checkpoint()
 
     assert connector._last_update_id == 99999
 
 
 @pytest.mark.asyncio
-async def test_load_checkpoint_file_missing(connector: TelegramBotConnector) -> None:
-    """Test loading checkpoint when file doesn't exist."""
-    await connector._load_checkpoint()
+async def test_load_checkpoint_db_missing(connector: TelegramBotConnector) -> None:
+    """Test loading checkpoint when no row in DB."""
+    with patch(
+        "butlers.connectors.cursor_store.load_cursor",
+        new=AsyncMock(return_value=None),
+    ):
+        await connector._load_checkpoint()
     assert connector._last_update_id is None
 
 
 @pytest.mark.asyncio
-async def test_load_checkpoint_corrupted_file(
-    connector: TelegramBotConnector,
-    mock_config: TelegramBotConnectorConfig,
-) -> None:
-    """Test loading checkpoint with corrupted JSON."""
-    assert mock_config.cursor_path is not None
-    mock_config.cursor_path.write_text("invalid json{")
-
-    await connector._load_checkpoint()
+async def test_load_checkpoint_db_error(connector: TelegramBotConnector) -> None:
+    """Test loading checkpoint when DB raises an error."""
+    with patch(
+        "butlers.connectors.cursor_store.load_cursor",
+        new=AsyncMock(side_effect=RuntimeError("DB error")),
+    ):
+        await connector._load_checkpoint()
     # Should fall back to None on error
     assert connector._last_update_id is None
 
 
 @pytest.mark.asyncio
-async def test_save_checkpoint_creates_file(
-    connector: TelegramBotConnector,
-    mock_config: TelegramBotConnectorConfig,
-) -> None:
-    """Test saving checkpoint creates file."""
+async def test_save_checkpoint_to_db(connector: TelegramBotConnector) -> None:
+    """Test saving checkpoint to DB."""
     connector._last_update_id = 54321
 
-    await connector._save_checkpoint()
+    with patch(
+        "butlers.connectors.cursor_store.save_cursor",
+        new=AsyncMock(),
+    ) as mock_save:
+        await connector._save_checkpoint()
 
-    assert mock_config.cursor_path is not None
-    assert mock_config.cursor_path.exists()
-    data = json.loads(mock_config.cursor_path.read_text())
-    assert data["last_update_id"] == 54321
-
-
-@pytest.mark.asyncio
-async def test_save_checkpoint_creates_parent_directory(
-    connector: TelegramBotConnector,
-    tmp_path: Path,
-) -> None:
-    """Test that save_checkpoint creates parent directories."""
-    nested_path = tmp_path / "nested" / "dirs" / "cursor.json"
-    connector._config.cursor_path = nested_path
-    connector._last_update_id = 11111
-
-    await connector._save_checkpoint()
-
-    assert nested_path.exists()
-    data = json.loads(nested_path.read_text())
-    assert data["last_update_id"] == 11111
+    mock_save.assert_awaited_once()
+    saved_data = json.loads(mock_save.call_args[0][3])
+    assert saved_data["last_update_id"] == 54321
 
 
 # -----------------------------------------------------------------------------
@@ -843,19 +828,20 @@ class TestResolveTelegramBotTokenFromDb:
 
 @pytest.mark.asyncio
 async def test_run_telegram_bot_connector_uses_db_token_when_env_missing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DB token should be sufficient even when BUTLER_TELEGRAM_TOKEN env var is absent."""
-    cursor_path = tmp_path / "cursor.json"
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
     monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:bot:test")
-    monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.delenv("BUTLER_TELEGRAM_TOKEN", raising=False)
 
     mock_connector = Mock()
     mock_connector.start_polling = AsyncMock()
     mock_connector.stop = AsyncMock()
+
+    mock_pool = MagicMock()
+    mock_pool.close = AsyncMock()
 
     with (
         patch(
@@ -867,6 +853,10 @@ async def test_run_telegram_bot_connector_uses_db_token_when_env_missing(
             "butlers.connectors.telegram_bot.TelegramBotConnector",
             return_value=mock_connector,
         ) as cls,
+        patch(
+            "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+            new=AsyncMock(return_value=mock_pool),
+        ),
     ):
         await run_telegram_bot_connector()
 

@@ -39,7 +39,6 @@ Base connector vars (from the interface contract):
 - `CONNECTOR_MAX_INFLIGHT` (optional, recommended default `8`)
 
 Polling-specific vars:
-- `CONNECTOR_CURSOR_PATH` (required for polling mode checkpointing)
 - `CONNECTOR_POLL_INTERVAL_S` (required for polling mode)
 
 Telegram credential vars (resolved from module config):

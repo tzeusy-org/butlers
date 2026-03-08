@@ -56,7 +56,7 @@ Base connector variables (shared contract):
 - `CONNECTOR_MAX_INFLIGHT` (optional, recommended default `8`)
 
 State/checkpoint variables:
-- `CONNECTOR_CURSOR_PATH` (required for restart-safe checkpointing)
+- Cursor is DB-backed (keyed by provider + endpoint identity), no file path needed.
 - `CONNECTOR_BACKFILL_WINDOW_H` (optional, bounded startup replay window)
 
 Telegram user-client credentials (MTProto):

@@ -637,13 +637,12 @@ class TestBuildIngestEnvelopeTiers:
     """Test _build_ingest_envelope produces correct tier-specific envelopes."""
 
     @pytest.fixture
-    def runtime(self, tmp_path: Path) -> Any:
+    def runtime(self) -> Any:
         from butlers.connectors.gmail import GmailConnectorConfig, GmailConnectorRuntime
 
         config = GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             gmail_client_id="x",
             gmail_client_secret="x",
             gmail_refresh_token="x",
@@ -732,13 +731,12 @@ class TestIngestSingleMessagePolicy:
     """Test _ingest_single_message applies policy gating correctly."""
 
     @pytest.fixture
-    def runtime(self, tmp_path: Path) -> Any:
+    def runtime(self) -> Any:
         from butlers.connectors.gmail import GmailConnectorConfig, GmailConnectorRuntime
 
         config = GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             gmail_client_id="x",
             gmail_client_secret="x",
             gmail_refresh_token="x",
@@ -810,13 +808,12 @@ class TestIngestSingleMessagePolicy:
 
 
 class TestGmailConnectorConfigLabelPolicy:
-    def test_default_excludes_spam_trash(self, tmp_path: Path) -> None:
+    def test_default_excludes_spam_trash(self) -> None:
         from butlers.connectors.gmail import GmailConnectorConfig
 
         config = GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             gmail_client_id="x",
             gmail_client_secret="x",
             gmail_refresh_token="x",
@@ -824,13 +821,12 @@ class TestGmailConnectorConfigLabelPolicy:
         assert "SPAM" in config.gmail_label_exclude
         assert "TRASH" in config.gmail_label_exclude
 
-    def test_custom_exclude_labels(self, tmp_path: Path) -> None:
+    def test_custom_exclude_labels(self) -> None:
         from butlers.connectors.gmail import GmailConnectorConfig
 
         config = GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             gmail_client_id="x",
             gmail_client_secret="x",
             gmail_refresh_token="x",
@@ -838,12 +834,9 @@ class TestGmailConnectorConfigLabelPolicy:
         )
         assert "CATEGORY_PROMOTIONS" in config.gmail_label_exclude
 
-    def test_env_label_include_parsed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_label_include_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(tmp_path / "cursor.json"))
         monkeypatch.setenv("GMAIL_LABEL_INCLUDE", "INBOX,IMPORTANT")
         monkeypatch.setenv("GMAIL_LABEL_EXCLUDE", "SPAM,TRASH")
 
@@ -859,10 +852,9 @@ class TestGmailConnectorConfigLabelPolicy:
         assert "SPAM" in config.gmail_label_exclude
         assert "TRASH" in config.gmail_label_exclude
 
-    def test_env_user_email_parsed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_env_user_email_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(tmp_path / "cursor.json"))
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         from butlers.connectors.gmail import GmailConnectorConfig

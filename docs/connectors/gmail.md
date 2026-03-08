@@ -72,7 +72,6 @@ Base connector variables:
 - `CONNECTOR_CHANNEL=email` (required)
 - `CONNECTOR_ENDPOINT_IDENTITY` (required)
 - `CONNECTOR_MAX_INFLIGHT` (optional, recommended default `8`)
-- `CONNECTOR_CURSOR_PATH` (required; stores last processed Gmail `historyId`)
 
 Gmail API auth variables (OAuth-based, DB-managed):
 
@@ -117,7 +116,7 @@ Multiple Gmail connectors can run concurrently and are expected to be isolated p
 
 Concurrency model:
 - Each running connector instance MUST have a unique `CONNECTOR_ENDPOINT_IDENTITY`.
-- Each instance MUST use its own checkpoint file/path (`CONNECTOR_CURSOR_PATH`).
+- Each instance has its own DB-backed cursor (keyed by provider + endpoint identity).
 - Each instance MAY use different label filters (for example one connector for `INBOX`, another for `finance` labels).
 
 Required uniqueness boundary:

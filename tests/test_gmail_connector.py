@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -23,20 +23,13 @@ from butlers.connectors.gmail import (
 
 
 @pytest.fixture
-def temp_cursor_path(tmp_path: Path) -> Path:
-    """Create temporary cursor file path."""
-    return tmp_path / "cursor.json"
-
-
-@pytest.fixture
-def gmail_config(temp_cursor_path: Path) -> GmailConnectorConfig:
+def gmail_config() -> GmailConnectorConfig:
     """Create test Gmail connector config."""
     return GmailConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:test@example.com",
-        connector_cursor_path=temp_cursor_path,
         connector_max_inflight=4,
         gmail_client_id="test-client-id",
         gmail_client_secret="test-client-secret",
@@ -47,22 +40,30 @@ def gmail_config(temp_cursor_path: Path) -> GmailConnectorConfig:
 
 
 @pytest.fixture
-def gmail_runtime(gmail_config: GmailConnectorConfig) -> GmailConnectorRuntime:
+def mock_cursor_pool() -> MagicMock:
+    """Create a mock DB cursor pool."""
+    return MagicMock()
+
+
+@pytest.fixture
+def gmail_runtime(
+    gmail_config: GmailConnectorConfig,
+    mock_cursor_pool: MagicMock,
+) -> GmailConnectorRuntime:
     """Create Gmail connector runtime instance."""
-    return GmailConnectorRuntime(gmail_config)
+    return GmailConnectorRuntime(gmail_config, cursor_pool=mock_cursor_pool)
 
 
 class TestGmailConnectorConfig:
     """Tests for GmailConnectorConfig."""
 
-    def test_from_env_success(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_from_env_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test successful config loading from environment."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_PROVIDER", "gmail")
         monkeypatch.setenv("CONNECTOR_CHANNEL", "email")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "8")
 
         config = GmailConnectorConfig.from_env(
@@ -75,7 +76,6 @@ class TestGmailConnectorConfig:
         assert config.connector_provider == "gmail"
         assert config.connector_channel == "email"
         assert config.connector_endpoint_identity == "gmail:user:test@example.com"
-        assert config.connector_cursor_path == cursor_path
         assert config.connector_max_inflight == 8
         assert config.gmail_client_id == "client-id"
         assert config.gmail_client_secret == "client-secret"
@@ -94,14 +94,11 @@ class TestGmailConnectorConfig:
                 gmail_refresh_token="refresh-token",
             )
 
-    def test_from_env_invalid_integer(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_from_env_invalid_integer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test config loading fails with invalid integer values."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "invalid")
 
         with pytest.raises(ValueError, match="CONNECTOR_MAX_INFLIGHT must be an integer"):
@@ -111,14 +108,10 @@ class TestGmailConnectorConfig:
                 gmail_refresh_token="refresh-token",
             )
 
-    def test_from_env_requires_explicit_credentials(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_from_env_requires_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Config loading fails when DB-injected credentials are empty."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
 
         with pytest.raises(ValueError, match="DB-resolved Gmail credentials missing"):
             GmailConnectorConfig.from_env(
@@ -132,13 +125,11 @@ class TestRunGmailConnectorStartup:
     """Tests for run_gmail_connector() startup credential resolution flow."""
 
     async def test_db_credentials_path_builds_runtime_from_db_credentials(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """DB-resolved credentials should be injected into config."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
 
         db_creds = {
             "client_id": "db-client-id",
@@ -156,6 +147,10 @@ class TestRunGmailConnectorStartup:
                 new=AsyncMock(return_value=db_creds),
             ),
             patch("butlers.connectors.gmail.GmailConnectorRuntime", return_value=runtime) as ctor,
+            patch(
+                "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+                new=AsyncMock(return_value=AsyncMock()),
+            ),
         ):
             await run_gmail_connector()
 
@@ -167,13 +162,11 @@ class TestRunGmailConnectorStartup:
         runtime.start.assert_awaited_once()
 
     async def test_startup_fails_when_db_has_no_credentials(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """DB-only startup should fail when credentials are not found in DB."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
 
         with (
             patch("butlers.connectors.gmail.configure_logging"),
@@ -207,61 +200,79 @@ class TestGmailConnectorRuntime:
     """Tests for GmailConnectorRuntime."""
 
     async def test_ensure_cursor_creates_initial(
-        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
+        self, gmail_runtime: GmailConnectorRuntime
     ) -> None:
-        """Test cursor file is created with initial historyId if missing."""
+        """Test cursor is initialized in DB with initial historyId if missing."""
         mock_response = MagicMock()
         mock_response.json.return_value = {"historyId": "999"}
         mock_response.raise_for_status = MagicMock()
 
+        saved_values: list[str] = []
+
+        async def fake_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+            saved_values.append(val)
+
         with (
             patch.object(gmail_runtime, "_http_client", new=AsyncMock()) as mock_client,
             patch.object(gmail_runtime, "_get_access_token", new=AsyncMock(return_value="token")),
+            patch(
+                "butlers.connectors.cursor_store.load_cursor",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.connectors.cursor_store.save_cursor",
+                new=AsyncMock(side_effect=fake_save),
+            ),
         ):
             mock_client.get = AsyncMock(return_value=mock_response)
 
             await gmail_runtime._ensure_cursor()
 
-            assert temp_cursor_path.exists()
-            cursor_data = json.loads(temp_cursor_path.read_text())
+            assert len(saved_values) == 1
+            cursor_data = json.loads(saved_values[0])
             assert cursor_data["history_id"] == "999"
 
-    async def test_load_cursor_success(
-        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
-    ) -> None:
-        """Test loading cursor from existing file."""
+    async def test_load_cursor_success(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Test loading cursor from DB."""
         cursor = GmailCursor(
             history_id="12345",
             last_updated_at="2026-02-15T10:00:00Z",
         )
-        temp_cursor_path.write_text(cursor.model_dump_json())
 
-        loaded = await gmail_runtime._load_cursor()
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(return_value=cursor.model_dump_json()),
+        ):
+            loaded = await gmail_runtime._load_cursor()
 
         assert loaded.history_id == "12345"
         assert loaded.last_updated_at == "2026-02-15T10:00:00Z"
 
-    async def test_load_cursor_missing_file(
-        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
-    ) -> None:
-        """Test loading cursor fails when file doesn't exist."""
-        with pytest.raises(RuntimeError, match="Cursor file not found"):
-            await gmail_runtime._load_cursor()
+    async def test_load_cursor_missing(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Test loading cursor fails when not in DB."""
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(return_value=None),
+        ):
+            with pytest.raises(RuntimeError, match="Cursor not found in DB"):
+                await gmail_runtime._load_cursor()
 
-    async def test_save_cursor(
-        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
-    ) -> None:
-        """Test saving cursor to disk."""
+    async def test_save_cursor(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Test saving cursor to DB."""
         cursor = GmailCursor(
             history_id="67890",
             last_updated_at="2026-02-15T11:00:00Z",
         )
 
-        await gmail_runtime._save_cursor(cursor)
+        with patch(
+            "butlers.connectors.cursor_store.save_cursor",
+            new=AsyncMock(),
+        ) as mock_save:
+            await gmail_runtime._save_cursor(cursor)
 
-        assert temp_cursor_path.exists()
-        loaded = GmailCursor.model_validate_json(temp_cursor_path.read_text())
-        assert loaded.history_id == "67890"
+        mock_save.assert_awaited_once()
+        saved = GmailCursor.model_validate_json(mock_save.call_args[0][3])
+        assert saved.history_id == "67890"
 
     async def test_get_access_token_refresh(self, gmail_runtime: GmailConnectorRuntime) -> None:
         """Test OAuth token refresh when expired."""
@@ -312,7 +323,6 @@ class TestGmailConnectorRuntime:
     async def test_fetch_history_changes_404_resets_cursor(
         self,
         gmail_runtime: GmailConnectorRuntime,
-        temp_cursor_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test history fetch handles 404 (history too old) by resetting cursor."""
@@ -331,18 +341,27 @@ class TestGmailConnectorRuntime:
         mock_profile_response.json.return_value = {"historyId": "200"}
         mock_profile_response.raise_for_status = MagicMock()
 
+        saved_values: list[str] = []
+
+        async def fake_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+            saved_values.append(val)
+
         with (
             patch.object(gmail_runtime, "_http_client", new=AsyncMock()) as mock_client,
             patch.object(gmail_runtime, "_get_access_token", new=AsyncMock(return_value="token")),
+            patch(
+                "butlers.connectors.cursor_store.save_cursor",
+                new=AsyncMock(side_effect=fake_save),
+            ),
         ):
             mock_client.get = AsyncMock(side_effect=[mock_404_response, mock_profile_response])
             with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
                 history = await gmail_runtime._fetch_history_changes("1")
 
             assert history == []
-            # Verify cursor was updated
-            assert temp_cursor_path.exists()
-            cursor_data = json.loads(temp_cursor_path.read_text())
+            # Verify cursor was saved to DB
+            assert len(saved_values) == 1
+            cursor_data = json.loads(saved_values[0])
             assert cursor_data["history_id"] == "200"
             assert "Gmail history.list 404 details" in caplog.text
             assert "reason=notFound" in caplog.text
@@ -671,20 +690,23 @@ class TestGmailConnectorRuntime:
             await gmail_runtime._ingest_messages(["msg1", "msg2"])  # Should not raise
 
     async def test_polling_loop_does_not_advance_cursor_on_connection_error(
-        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
+        self, gmail_runtime: GmailConnectorRuntime
     ) -> None:
         """Polling loop cursor is NOT advanced when Switchboard is down mid-session."""
         initial_cursor = GmailCursor(history_id="100", last_updated_at="2026-01-01T00:00:00Z")
-        temp_cursor_path.write_text(initial_cursor.model_dump_json())
         gmail_runtime._running = True
 
         call_count = 0
+        saved_history_ids: list[str] = []
 
         async def fake_ingest_messages(message_ids: list[str]) -> None:
             nonlocal call_count
             call_count += 1
             gmail_runtime._running = False  # Stop the loop after first iteration
             raise ConnectionError("Switchboard down mid-session")
+
+        async def fake_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+            saved_history_ids.append(json.loads(val).get("history_id", ""))
 
         mock_history = [{"id": "200", "messagesAdded": [{"message": {"id": "msgX"}}]}]
 
@@ -700,33 +722,44 @@ class TestGmailConnectorRuntime:
                 side_effect=fake_ingest_messages,
             ),
             patch("butlers.connectors.gmail.asyncio.sleep", new=AsyncMock()),
+            patch(
+                "butlers.connectors.cursor_store.load_cursor",
+                new=AsyncMock(return_value=initial_cursor.model_dump_json()),
+            ),
+            patch(
+                "butlers.connectors.cursor_store.save_cursor",
+                new=AsyncMock(side_effect=fake_save),
+            ),
         ):
             await gmail_runtime._run_polling_ingestion_loop()
 
-        # Cursor must remain at initial value — not advanced to "200"
-        loaded = GmailCursor.model_validate_json(temp_cursor_path.read_text())
-        assert loaded.history_id == "100", (
-            f"Cursor was incorrectly advanced to {loaded.history_id!r}; "
-            "messages may have been permanently lost"
-        )
+        # Cursor must NOT have been advanced to "200"
+        for hid in saved_history_ids:
+            assert hid != "200", (
+                f"Cursor was incorrectly advanced to {hid!r}; "
+                "messages may have been permanently lost"
+            )
         assert call_count == 1  # Exactly one ingestion attempt was made
 
     async def test_pubsub_loop_does_not_advance_cursor_on_connection_error(
-        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
+        self, gmail_runtime: GmailConnectorRuntime
     ) -> None:
         """Pub/Sub loop cursor is NOT advanced when Switchboard is down mid-session."""
         initial_cursor = GmailCursor(history_id="200", last_updated_at="2026-01-01T00:00:00Z")
-        temp_cursor_path.write_text(initial_cursor.model_dump_json())
         gmail_runtime._running = True
+        saved_history_ids: list[str] = []
 
         async def fake_ingest_messages(message_ids: list[str]) -> None:
             gmail_runtime._running = False  # Stop the loop after first batch
             raise ConnectionError("Switchboard down in pubsub path")
 
+        async def fake_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+            saved_history_ids.append(json.loads(val).get("history_id", ""))
+
         mock_history = [{"id": "300", "messagesAdded": [{"message": {"id": "msgY"}}]}]
 
         # Use a real asyncio.Queue with one item so the loop gets a notification
-        notification_queue: asyncio.Queue[dict] = asyncio.Queue()
+        notification_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         await notification_queue.put({"historyId": "300"})
         gmail_runtime._notification_queue = notification_queue
 
@@ -743,28 +776,33 @@ class TestGmailConnectorRuntime:
                 side_effect=fake_ingest_messages,
             ),
             patch("butlers.connectors.gmail.asyncio.sleep", new=AsyncMock()),
+            patch(
+                "butlers.connectors.cursor_store.load_cursor",
+                new=AsyncMock(return_value=initial_cursor.model_dump_json()),
+            ),
+            patch(
+                "butlers.connectors.cursor_store.save_cursor",
+                new=AsyncMock(side_effect=fake_save),
+            ),
         ):
             await gmail_runtime._run_pubsub_ingestion_loop()
 
-        # Cursor must remain at initial value — not advanced to "300"
-        loaded = GmailCursor.model_validate_json(temp_cursor_path.read_text())
-        assert loaded.history_id == "200", (
-            f"Cursor was incorrectly advanced to {loaded.history_id!r}; "
-            "messages may have been permanently lost"
-        )
+        # Cursor must NOT have been advanced to "300"
+        for hid in saved_history_ids:
+            assert hid != "300", (
+                f"Cursor was incorrectly advanced to {hid!r}; "
+                "messages may have been permanently lost"
+            )
 
 
 class TestGmailPubSubConfig:
     """Tests for Gmail Pub/Sub configuration."""
 
-    def test_pubsub_config_enabled_with_topic(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pubsub_config_enabled_with_topic(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub config when enabled with topic."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/my-project/topics/gmail-push")
 
@@ -780,13 +818,12 @@ class TestGmailPubSubConfig:
         assert config.gmail_pubsub_webhook_path == "/gmail/webhook"
 
     def test_pubsub_config_enabled_without_topic_fails(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test Pub/Sub config fails when enabled without topic."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
 
         with pytest.raises(ValueError, match="GMAIL_PUBSUB_TOPIC is required"):
@@ -796,14 +833,11 @@ class TestGmailPubSubConfig:
                 gmail_refresh_token="refresh-token",
             )
 
-    def test_pubsub_config_custom_webhook_settings(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pubsub_config_custom_webhook_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub config with custom webhook settings."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/my-project/topics/gmail-push")
         monkeypatch.setenv("GMAIL_PUBSUB_WEBHOOK_PORT", "9000")
@@ -818,14 +852,10 @@ class TestGmailPubSubConfig:
         assert config.gmail_pubsub_webhook_port == 9000
         assert config.gmail_pubsub_webhook_path == "/custom/path"
 
-    def test_pubsub_disabled_by_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pubsub_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub is disabled by default."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
 
         config = GmailConnectorConfig.from_env(
             gmail_client_id="client-id",
@@ -836,14 +866,11 @@ class TestGmailPubSubConfig:
         assert config.gmail_pubsub_enabled is False
         assert config.gmail_pubsub_topic is None
 
-    def test_pubsub_webhook_token_configuration(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pubsub_webhook_token_configuration(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test webhook token is loaded from environment."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/test/topics/gmail")
         monkeypatch.setenv("GMAIL_PUBSUB_WEBHOOK_TOKEN", "secret-token-123")
@@ -968,7 +995,9 @@ class TestGmailPubSubIngestion:
     """Tests for Pub/Sub-based ingestion flow."""
 
     async def test_pubsub_notification_triggers_history_fetch(
-        self, gmail_config: GmailConnectorConfig, temp_cursor_path: Path
+        self,
+        gmail_config: GmailConnectorConfig,
+        mock_cursor_pool: MagicMock,
     ) -> None:
         """Test that Pub/Sub notification triggers immediate history fetch."""
         pubsub_config = gmail_config.model_copy(
@@ -978,7 +1007,7 @@ class TestGmailPubSubIngestion:
                 "gmail_poll_interval_s": 1,
             }
         )
-        runtime = GmailConnectorRuntime(pubsub_config)
+        runtime = GmailConnectorRuntime(pubsub_config, cursor_pool=mock_cursor_pool)
 
         # Initialize notification queue
         runtime._notification_queue = asyncio.Queue()
@@ -990,7 +1019,6 @@ class TestGmailPubSubIngestion:
             history_id="100",
             last_updated_at=datetime.now(UTC).isoformat(),
         )
-        temp_cursor_path.write_text(initial_cursor.model_dump_json())
 
         # Mock history response
         mock_history_response = MagicMock()
@@ -1013,6 +1041,14 @@ class TestGmailPubSubIngestion:
             patch.object(
                 runtime, "_ingest_messages", new=AsyncMock(side_effect=ingest_and_stop)
             ) as mock_ingest,
+            patch(
+                "butlers.connectors.cursor_store.load_cursor",
+                new=AsyncMock(return_value=initial_cursor.model_dump_json()),
+            ),
+            patch(
+                "butlers.connectors.cursor_store.save_cursor",
+                new=AsyncMock(),
+            ),
         ):
             mock_client.get = AsyncMock(return_value=mock_history_response)
 
@@ -1027,7 +1063,9 @@ class TestGmailPubSubIngestion:
             mock_ingest.assert_called_once_with(["msg1"])
 
     async def test_pubsub_fallback_poll_when_no_notifications(
-        self, gmail_config: GmailConnectorConfig, temp_cursor_path: Path
+        self,
+        gmail_config: GmailConnectorConfig,
+        mock_cursor_pool: MagicMock,
     ) -> None:
         """Test fallback polling when no Pub/Sub notifications received."""
         pubsub_config = gmail_config.model_copy(
@@ -1037,19 +1075,12 @@ class TestGmailPubSubIngestion:
                 "gmail_poll_interval_s": 1,
             }
         )
-        runtime = GmailConnectorRuntime(pubsub_config)
+        runtime = GmailConnectorRuntime(pubsub_config, cursor_pool=mock_cursor_pool)
 
         # Initialize notification queue
         runtime._notification_queue = asyncio.Queue()
         runtime._running = True
         runtime._watch_expiration = datetime.now(UTC) + timedelta(hours=2)
-
-        # Set up initial cursor
-        initial_cursor = GmailCursor(
-            history_id="100",
-            last_updated_at=datetime.now(UTC).isoformat(),
-        )
-        temp_cursor_path.write_text(initial_cursor.model_dump_json())
 
         # Mock history response
         mock_history_response = MagicMock()
@@ -1068,6 +1099,11 @@ class TestGmailPubSubIngestion:
             runtime._running = False
             return mock_history_response
 
+        cursor_json = GmailCursor(
+            history_id="100",
+            last_updated_at=datetime.now(UTC).isoformat(),
+        ).model_dump_json()
+
         with (
             patch.object(runtime, "_http_client", new=AsyncMock()) as mock_client,
             patch.object(runtime, "_get_access_token", new=AsyncMock(return_value="token")),
@@ -1076,10 +1112,18 @@ class TestGmailPubSubIngestion:
                 side_effect=[0, 301] + [302 + i for i in range(100)],
             ),  # last_poll_time=0, current_time=301 (triggers fallback), then continuous time
             patch("butlers.connectors.gmail.asyncio.wait_for", side_effect=instant_timeout),
+            patch(
+                "butlers.connectors.cursor_store.load_cursor",
+                new=AsyncMock(return_value=cursor_json),
+            ),
+            patch(
+                "butlers.connectors.cursor_store.save_cursor",
+                new=AsyncMock(),
+            ),
         ):
             mock_client.get = AsyncMock(side_effect=get_and_stop)
 
-            # Run the loop — instant_timeout short-circuits queue.get(), triggering fallback.
+            # Run the loop -- instant_timeout short-circuits queue.get(), triggering fallback.
             # get_and_stop sets _running=False after the first history fetch.
             await runtime._run_pubsub_ingestion_loop()
 
@@ -1859,13 +1903,12 @@ class TestGmailConnectorConfigCredentialInjection:
     """Verify connector credentials are injected explicitly (DB-only)."""
 
     def test_env_credential_vars_are_ignored_when_explicit_credentials_are_provided(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Config uses injected values even when env credential vars are present."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("GMAIL_CLIENT_ID", "legacy-client-id")
         monkeypatch.setenv("GMAIL_CLIENT_SECRET", "legacy-secret")
         monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "legacy-token")
@@ -1881,14 +1924,10 @@ class TestGmailConnectorConfigCredentialInjection:
         assert config.gmail_client_secret == "db-client-secret"
         assert config.gmail_refresh_token == "db-refresh-token"
 
-    def test_explicit_credentials_must_be_non_empty(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_explicit_credentials_must_be_non_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Injected credentials are required and validated as non-empty."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
 
         with pytest.raises(ValueError, match="DB-resolved Gmail credentials missing"):
             GmailConnectorConfig.from_env(
@@ -2260,11 +2299,10 @@ class TestAttachmentRefsWrite:
     """Tests for _write_attachment_ref and DB pool interaction."""
 
     @pytest.fixture
-    def gmail_config(self, tmp_path: Path) -> GmailConnectorConfig:
+    def gmail_config(self) -> GmailConnectorConfig:
         return GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             gmail_client_id="cid",
             gmail_client_secret="csec",
             gmail_refresh_token="rtoken",
@@ -2344,11 +2382,10 @@ class TestOnDemandFetch:
         return store
 
     @pytest.fixture
-    def gmail_config(self, tmp_path: Path) -> GmailConnectorConfig:
+    def gmail_config(self) -> GmailConnectorConfig:
         return GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             gmail_client_id="cid",
             gmail_client_secret="csec",
             gmail_refresh_token="rtoken",
@@ -2562,11 +2599,10 @@ class TestExtractAttachmentsExpanded:
     """Tests for _extract_attachments with expanded MIME types."""
 
     @pytest.fixture
-    def runtime(self, tmp_path: Path) -> GmailConnectorRuntime:
+    def runtime(self) -> GmailConnectorRuntime:
         config = GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             gmail_client_id="cid",
             gmail_client_secret="csec",
             gmail_refresh_token="rtoken",
@@ -2683,7 +2719,7 @@ class TestExtractAttachmentsExpanded:
 
 
 @pytest.fixture
-def backfill_runtime(tmp_path: Path) -> GmailConnectorRuntime:
+def backfill_runtime() -> GmailConnectorRuntime:
     """Create a Gmail connector runtime with backfill enabled."""
     from butlers.connectors.gmail import BackfillJob  # noqa: F401 (imported for use in tests)
 
@@ -2692,7 +2728,6 @@ def backfill_runtime(tmp_path: Path) -> GmailConnectorRuntime:
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:backfill@example.com",
-        connector_cursor_path=tmp_path / "cursor.json",
         connector_max_inflight=4,
         gmail_client_id="test-client-id",
         gmail_client_secret="test-client-secret",
@@ -2714,14 +2749,11 @@ class TestBackfillConfig:
         assert gmail_config.connector_backfill_poll_interval_s == 60
         assert gmail_config.connector_backfill_progress_interval == 50
 
-    def test_backfill_disabled_via_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_backfill_disabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_ENABLED=false disables backfill."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("CONNECTOR_BACKFILL_ENABLED", "false")
 
         config = GmailConnectorConfig.from_env(
@@ -2731,14 +2763,11 @@ class TestBackfillConfig:
         )
         assert config.connector_backfill_enabled is False
 
-    def test_backfill_poll_interval_from_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_backfill_poll_interval_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_POLL_INTERVAL_S is parsed from env."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "120")
 
         config = GmailConnectorConfig.from_env(
@@ -2748,14 +2777,11 @@ class TestBackfillConfig:
         )
         assert config.connector_backfill_poll_interval_s == 120
 
-    def test_backfill_progress_interval_from_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_backfill_progress_interval_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_PROGRESS_INTERVAL is parsed from env."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "25")
 
         config = GmailConnectorConfig.from_env(
@@ -2765,14 +2791,11 @@ class TestBackfillConfig:
         )
         assert config.connector_backfill_progress_interval == 25
 
-    def test_backfill_poll_interval_invalid_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_backfill_poll_interval_invalid_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-integer CONNECTOR_BACKFILL_POLL_INTERVAL_S raises ValueError."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "notanint")
 
         with pytest.raises(  # noqa: E501
@@ -2785,13 +2808,12 @@ class TestBackfillConfig:
             )
 
     def test_backfill_progress_interval_invalid_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Non-integer CONNECTOR_BACKFILL_PROGRESS_INTERVAL raises ValueError."""
-        cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
-        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+
         monkeypatch.setenv("CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "bad")
 
         with pytest.raises(  # noqa: E501
@@ -3486,16 +3508,14 @@ class TestExecuteBackfillJob:
     async def test_does_not_advance_live_cursor(
         self, backfill_runtime: GmailConnectorRuntime
     ) -> None:
-        """Backfill execution must not modify the live ingestion cursor file."""
+        """Backfill execution must not modify the live ingestion cursor in DB."""
         job = self._make_job()
 
-        # Write a known live cursor
-        live_cursor = GmailCursor(
-            history_id="live-history-999",
-            last_updated_at="2026-02-01T00:00:00+00:00",
-        )
-        cursor_path = backfill_runtime._config.connector_cursor_path
-        cursor_path.write_text(live_cursor.model_dump_json())
+        # Track save_cursor calls to verify live cursor is never overwritten
+        save_calls: list[dict[str, Any]] = []
+
+        async def track_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+            save_calls.append(json.loads(val))
 
         with (
             patch.object(
@@ -3508,12 +3528,15 @@ class TestExecuteBackfillJob:
                 "_report_backfill_progress",
                 new=AsyncMock(return_value="ack"),
             ),
+            patch(
+                "butlers.connectors.cursor_store.save_cursor",
+                new=AsyncMock(side_effect=track_save),
+            ),
         ):
             await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
 
-        # Live cursor file should be unchanged
-        loaded = GmailCursor.model_validate_json(cursor_path.read_text())
-        assert loaded.history_id == "live-history-999"
+        # Backfill should not write to the live cursor store
+        assert len(save_calls) == 0
 
     async def test_ingest_failure_increments_skipped(
         self, backfill_runtime: GmailConnectorRuntime
@@ -3570,14 +3593,13 @@ class TestCapabilityAdvertisement:
         caps = backfill_runtime._get_capabilities()
         assert caps.get("backfill") is True
 
-    def test_get_capabilities_returns_backfill_false_when_disabled(self, tmp_path: Path) -> None:
+    def test_get_capabilities_returns_backfill_false_when_disabled(self) -> None:
         """_get_capabilities returns {backfill: False} when backfill disabled."""
         config = GmailConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             connector_provider="gmail",
             connector_channel="email",
             connector_endpoint_identity="gmail:user:test@example.com",
-            connector_cursor_path=tmp_path / "cursor.json",
             connector_max_inflight=4,
             gmail_client_id="test-client-id",
             gmail_client_secret="test-client-secret",
