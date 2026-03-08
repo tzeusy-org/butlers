@@ -447,7 +447,7 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
         <CardHeader>
           <CardTitle>Ingestion Events</CardTitle>
         </CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="px-4 pb-4 pt-0">
           {isError ? (
             <p className="px-6 py-4 text-sm text-destructive">
               Failed to load ingestion events.
