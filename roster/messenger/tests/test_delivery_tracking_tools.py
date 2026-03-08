@@ -7,7 +7,6 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import asyncpg
 import pytest
 
 from butlers.tools.messenger import (
@@ -17,37 +16,24 @@ from butlers.tools.messenger import (
     messenger_delivery_trace,
 )
 
-# Skip all tests if Docker is not available
+# All async tests in this file must share the session event loop so that the
+# asyncpg pool (created in the session-scoped fixture loop per
+# asyncio_default_fixture_loop_scope="session") is never used from a different
+# loop.  Without this mark each test function gets a fresh function-scoped loop,
+# which causes "got Future attached to a different loop" / asyncpg
+# InterfaceError failures under pytest-xdist.
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
 
 @pytest.fixture
-async def delivery_pool():
+async def delivery_pool(provisioned_postgres_pool):
     """Create a PostgreSQL pool with delivery tables."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as postgres:
-        host = postgres.get_container_host_ip()
-        port = postgres.get_exposed_port(5432)
-        user = postgres.username
-        password = postgres.password
-        database = postgres.dbname
-
-        # Create tables from migration
-        pool = await asyncpg.create_pool(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
-            min_size=1,
-            max_size=5,
-        )
-
+    async with provisioned_postgres_pool() as pool:
         # Create delivery tables
         await pool.execute(
             """
@@ -139,7 +125,6 @@ async def delivery_pool():
         )
 
         yield pool
-        await pool.close()
 
 
 async def test_messenger_delivery_status_success(delivery_pool):

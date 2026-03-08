@@ -61,11 +61,17 @@ async def switchboard_pool(provisioned_postgres_pool):
             """
         )
 
-        # Create default partition
+        # Create partitions covering test date range
         await pool.execute(
             """
             CREATE TABLE message_inbox_p202602 PARTITION OF message_inbox
             FOR VALUES FROM ('2026-02-01') TO ('2026-03-01')
+            """
+        )
+        await pool.execute(
+            """
+            CREATE TABLE message_inbox_p202603 PARTITION OF message_inbox
+            FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')
             """
         )
 

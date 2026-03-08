@@ -56,7 +56,7 @@ async def pool(provisioned_postgres_pool):
     schema, you must manually update this fixture to keep it synchronized.
     """
     async with provisioned_postgres_pool() as p:
-        # Create message_inbox table (partitioned, from sw_008, sw_015, sw_016, and sw_019 migrations)
+        # Create message_inbox table (partitioned, from sw_008 thru sw_019)
         await p.execute(
             """
             CREATE TABLE message_inbox (
