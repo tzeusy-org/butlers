@@ -17,7 +17,6 @@ import json
 import logging
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 
 from butlers.api.db import DatabaseManager
@@ -44,13 +43,6 @@ _SCHEDULE_COLUMNS = (
     "id, name, cron, dispatch_mode, prompt, job_name, job_args, "
     "timezone, start_at, end_at, until_at, display_title, calendar_event_id, "
     "source, enabled, next_run_at, last_run_at, created_at, updated_at"
-)
-_SCHEDULE_COLUMNS_WITHOUT_LINKAGE = (
-    "id, name, cron, dispatch_mode, prompt, job_name, job_args, "
-    "source, enabled, next_run_at, last_run_at, created_at, updated_at"
-)
-_SCHEDULE_COLUMNS_LEGACY = (
-    "id, name, cron, prompt, source, enabled, next_run_at, last_run_at, created_at, updated_at"
 )
 _DISPATCH_MODE_PROMPT = "prompt"
 _DISPATCH_MODE_JOB = "job"
@@ -171,20 +163,7 @@ async def list_schedules(
             detail=f"Butler '{name}' database is not available",
         )
 
-    try:
-        rows = await pool.fetch(
-            f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at"
-        )
-    except asyncpg.UndefinedColumnError:
-        try:
-            rows = await pool.fetch(
-                f"SELECT {_SCHEDULE_COLUMNS_WITHOUT_LINKAGE} "
-                "FROM scheduled_tasks ORDER BY created_at"
-            )
-        except asyncpg.UndefinedColumnError:
-            rows = await pool.fetch(
-                f"SELECT {_SCHEDULE_COLUMNS_LEGACY} FROM scheduled_tasks ORDER BY created_at"
-            )
+    rows = await pool.fetch(f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at")
     schedules = [_row_to_schedule(row) for row in rows]
     return ApiResponse[list[Schedule]](data=schedules)
 
