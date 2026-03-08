@@ -537,6 +537,7 @@ class ModuleStartupStatus:
 
 _MODULE_ENABLED_KEY_PREFIX = "module::"
 _MODULE_ENABLED_KEY_SUFFIX = "::enabled"
+_MODULE_DISABLED_BY_KEY_SUFFIX = "::disabled_by"
 
 
 @dataclass
@@ -1080,6 +1081,11 @@ class ButlerDaemon:
         - enabled is read from the state store (key ``module::{name}::enabled``).
           If no stored value exists, healthy modules default to ``True``.
           Failed/cascade_failed modules default to ``False`` and cannot be enabled.
+
+        **Self-healing:** If a module was disabled by a previous startup failure
+        (``disabled_by == "failure"``) but is now healthy, it is automatically
+        re-enabled.  User-intentional disables (``disabled_by == "user"``) are
+        always respected.
         """
         for mod in self._modules:
             startup = self._module_statuses.get(mod.name)
@@ -1088,19 +1094,34 @@ class ButlerDaemon:
 
             # Look up sticky state from previous runs
             key = f"{_MODULE_ENABLED_KEY_PREFIX}{mod.name}{_MODULE_ENABLED_KEY_SUFFIX}"
+            disabled_by_key = (
+                f"{_MODULE_ENABLED_KEY_PREFIX}{mod.name}{_MODULE_DISABLED_BY_KEY_SUFFIX}"
+            )
             stored_value = await _state_get(pool, key)
 
             if is_unavailable:
                 # Failed modules are always disabled; persist that to store
                 enabled = False
                 await _state_set(pool, key, False)
+                await _state_set(pool, disabled_by_key, "failure")
             elif stored_value is None:
                 # First boot — healthy modules start enabled
                 enabled = True
                 await _state_set(pool, key, True)
             else:
-                # Honor the sticky toggle from a previous run
                 enabled = bool(stored_value)
+                # Self-healing: module was disabled by a failure but is now
+                # healthy — automatically re-enable it.
+                if not enabled:
+                    disabled_by = await _state_get(pool, disabled_by_key)
+                    if disabled_by != "user":
+                        logger.info(
+                            "Module %r was disabled by a previous failure but is now "
+                            "healthy — auto-re-enabling",
+                            mod.name,
+                        )
+                        enabled = True
+                        await _state_set(pool, key, True)
 
             self._module_runtime_states[mod.name] = ModuleRuntimeState(
                 health=health,
@@ -1141,7 +1162,16 @@ class ButlerDaemon:
             raise RuntimeError("Cannot set module state: database not connected.")
         pool = self.db.pool
         key = f"{_MODULE_ENABLED_KEY_PREFIX}{name}{_MODULE_ENABLED_KEY_SUFFIX}"
+        disabled_by_key = (
+            f"{_MODULE_ENABLED_KEY_PREFIX}{name}{_MODULE_DISABLED_BY_KEY_SUFFIX}"
+        )
         await _state_set(pool, key, enabled)
+        # Mark user-intentional disables so self-healing doesn't override them.
+        if not enabled:
+            await _state_set(pool, disabled_by_key, "user")
+        else:
+            # Clear the disabled_by marker on re-enable.
+            await _state_set(pool, disabled_by_key, None)
         logger.info("Module %r enabled=%s (persisted to state store)", name, enabled)
         return True
 

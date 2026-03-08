@@ -21,6 +21,7 @@ import pytest
 from pydantic import BaseModel
 
 from butlers.daemon import (
+    _MODULE_DISABLED_BY_KEY_SUFFIX,
     _MODULE_ENABLED_KEY_PREFIX,
     _MODULE_ENABLED_KEY_SUFFIX,
     ButlerDaemon,
@@ -134,15 +135,21 @@ def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
 
 
 def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
-    """Return a mock pool whose fetchval respects a simple in-memory state store."""
+    """Return a mock pool whose fetchval respects a simple in-memory state store.
+
+    Values are stored as Python objects for convenient test assertions but
+    returned as JSON text on SELECT (like real asyncpg with JSONB columns)
+    so that ``decode_jsonb`` works correctly for all types.
+    """
     store = state_store if state_store is not None else {}
     versions: dict[str, int] = {}
     pool = AsyncMock()
 
     async def _fetchval(sql, key, *args):
         if "SELECT value FROM state" in sql:
-            val = store.get(key)
-            return val  # None if not present
+            if key not in store:
+                return None
+            return json.dumps(store[key])  # JSON text, like real DB
         if "INSERT INTO state" in sql:
             # state_set() upserts via fetchval(... RETURNING version)
             value_str = args[0] if args else None
@@ -327,9 +334,12 @@ class TestInitModuleRuntimeStates:
         assert states["stub_a"].enabled is False
         assert states["stub_a"].failure_phase == "startup"
 
-    async def test_sticky_toggle_honored_on_restart(self, tmp_path: Path) -> None:
-        """When state store has enabled=False for a healthy module, it stays disabled."""
-        store = {"module::stub_a::enabled": False}
+    async def test_user_disable_honored_on_restart(self, tmp_path: Path) -> None:
+        """When a user disabled a module, it stays disabled even if healthy."""
+        store = {
+            "module::stub_a::enabled": False,
+            "module::stub_a::disabled_by": "user",
+        }
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
         registry = _make_registry(StubModuleA)
         daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
@@ -372,6 +382,79 @@ class TestInitModuleRuntimeStates:
         await _start_daemon(butler_dir, registry=registry, state_store=store)
 
         assert store.get("module::stub_a::enabled") is False
+        assert store.get("module::stub_a::disabled_by") == "failure"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: self-healing on restart
+# ---------------------------------------------------------------------------
+
+
+class TestSelfHealing:
+    """Modules disabled by a previous failure auto-re-enable when healthy."""
+
+    async def test_failure_disabled_module_auto_heals_on_healthy_restart(
+        self, tmp_path: Path
+    ) -> None:
+        """A module disabled by failure should re-enable when it starts healthy."""
+        store = {
+            "module::stub_a::enabled": False,
+            "module::stub_a::disabled_by": "failure",
+        }
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
+        registry = _make_registry(StubModuleA)
+        daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
+
+        states = daemon.get_module_states()
+        assert states["stub_a"].health == "active"
+        assert states["stub_a"].enabled is True
+        # State store should be updated
+        assert store.get("module::stub_a::enabled") is True
+
+    async def test_user_disabled_module_does_not_auto_heal(self, tmp_path: Path) -> None:
+        """A module disabled by user remains disabled even when healthy."""
+        store = {
+            "module::stub_a::enabled": False,
+            "module::stub_a::disabled_by": "user",
+        }
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
+        registry = _make_registry(StubModuleA)
+        daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
+
+        states = daemon.get_module_states()
+        assert states["stub_a"].health == "active"
+        assert states["stub_a"].enabled is False
+
+    async def test_legacy_disabled_without_reason_auto_heals(self, tmp_path: Path) -> None:
+        """Pre-existing disabled entries with no disabled_by key auto-heal (backwards compat)."""
+        store = {"module::stub_a::enabled": False}
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
+        registry = _make_registry(StubModuleA)
+        daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
+
+        states = daemon.get_module_states()
+        assert states["stub_a"].health == "active"
+        assert states["stub_a"].enabled is True
+
+    async def test_repeated_failure_stays_disabled(self, tmp_path: Path) -> None:
+        """A module that fails again on restart stays disabled."""
+        store = {
+            "module::stub_a::enabled": False,
+            "module::stub_a::disabled_by": "failure",
+        }
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
+
+        class FailingModuleA(StubModuleA):
+            async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+                raise RuntimeError("still broken")
+
+        registry = _make_registry(FailingModuleA)
+        daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
+
+        states = daemon.get_module_states()
+        assert states["stub_a"].health == "failed"
+        assert states["stub_a"].enabled is False
+        assert store.get("module::stub_a::disabled_by") == "failure"
 
 
 # ---------------------------------------------------------------------------
@@ -450,9 +533,11 @@ class TestSetModuleEnabled:
 
         await daemon.set_module_enabled("stub_a", False)
         assert store.get("module::stub_a::enabled") is False
+        assert store.get("module::stub_a::disabled_by") == "user"
 
         await daemon.set_module_enabled("stub_a", True)
         assert store.get("module::stub_a::enabled") is True
+        assert store.get("module::stub_a::disabled_by") is None
 
     async def test_raises_for_unknown_module(self, tmp_path: Path) -> None:
         """set_module_enabled() raises ValueError for an unknown module name."""
@@ -491,7 +576,10 @@ class TestSetModuleEnabled:
 
     async def test_disable_already_disabled_module_is_idempotent(self, tmp_path: Path) -> None:
         """set_module_enabled(False) on an already-disabled module succeeds."""
-        store = {"module::stub_a::enabled": False}
+        store = {
+            "module::stub_a::enabled": False,
+            "module::stub_a::disabled_by": "user",
+        }
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
         registry = _make_registry(StubModuleA)
         daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
@@ -501,13 +589,16 @@ class TestSetModuleEnabled:
         assert daemon.get_module_states()["stub_a"].enabled is False
 
     async def test_state_store_key_format(self, tmp_path: Path) -> None:
-        """The state store key follows the module::{name}::enabled convention."""
+        """The state store keys follow the module::{name}::* convention."""
         store: dict = {}
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
         registry = _make_registry(StubModuleA)
         daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
 
         await daemon.set_module_enabled("stub_a", False)
-        expected_key = f"{_MODULE_ENABLED_KEY_PREFIX}stub_a{_MODULE_ENABLED_KEY_SUFFIX}"
-        assert expected_key in store
-        assert store[expected_key] is False
+        enabled_key = f"{_MODULE_ENABLED_KEY_PREFIX}stub_a{_MODULE_ENABLED_KEY_SUFFIX}"
+        disabled_by_key = f"{_MODULE_ENABLED_KEY_PREFIX}stub_a{_MODULE_DISABLED_BY_KEY_SUFFIX}"
+        assert enabled_key in store
+        assert store[enabled_key] is False
+        assert disabled_by_key in store
+        assert store[disabled_by_key] == "user"
