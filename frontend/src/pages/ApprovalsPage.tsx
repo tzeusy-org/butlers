@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import type { ApprovalAction, ApprovalActionParams } from "@/api/types";
 import { ActionTable } from "@/components/approvals/action-table";
 import { ActionDetailDialog } from "@/components/approvals/action-detail-dialog";
@@ -99,11 +100,16 @@ export default function ApprovalsPage() {
   return (
     <div className="space-y-6">
       {/* Page heading */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Approvals</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage approval-gated actions and standing rules.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Approvals</h1>
+          <p className="text-muted-foreground mt-1">
+            Manage approval-gated actions and standing rules.
+          </p>
+        </div>
+        <Button variant="outline" asChild>
+          <Link to="/approvals/rules">Standing Rules</Link>
+        </Button>
       </div>
 
       {/* Metrics */}

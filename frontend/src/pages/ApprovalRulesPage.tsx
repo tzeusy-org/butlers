@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import type { ApprovalRule, ApprovalRuleParams } from "@/api/types";
 import { RulesTable } from "@/components/approvals/rules-table";
 import { RuleDetailDialog } from "@/components/approvals/rule-detail-dialog";
@@ -79,11 +80,16 @@ export default function ApprovalRulesPage() {
   return (
     <div className="space-y-6">
       {/* Page heading */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Approval Rules</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage standing approval rules for automatic action approval.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Approval Rules</h1>
+          <p className="text-muted-foreground mt-1">
+            Manage standing approval rules for automatic action approval.
+          </p>
+        </div>
+        <Button variant="outline" asChild>
+          <Link to="/approvals">Back to Actions</Link>
+        </Button>
       </div>
 
       {/* Filters */}
