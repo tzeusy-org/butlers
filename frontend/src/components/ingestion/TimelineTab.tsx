@@ -229,7 +229,7 @@ function LineageView({ requestId }: LineageViewProps) {
   }
 
   return (
-    <div className="space-y-4 px-4 pb-4">
+    <div className="space-y-4 px-4 pt-3 pb-4">
       {/* Flamegraph */}
       <SessionFlamegraph sessions={sessionList} />
 
