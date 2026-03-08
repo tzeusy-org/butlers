@@ -132,7 +132,7 @@ function ScheduleFormFields({
           id="schedule-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. daily-digest"
+          placeholder="e.g. daily_digest"
           disabled={isSubmitting}
         />
       </div>

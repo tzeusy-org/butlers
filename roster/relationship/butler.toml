@@ -41,13 +41,13 @@ Deliver the suggestions via notify(channel="telegram", intent="send", message=<s
 """
 
 [[butler.schedule]]
-name = "memory-consolidation"
+name = "memory_consolidation"
 cron = "0 */6 * * *"
 dispatch_mode = "job"
 job_name = "memory_consolidation"
 
 [[butler.schedule]]
-name = "memory-episode-cleanup"
+name = "memory_episode_cleanup"
 cron = "0 4 * * *"
 dispatch_mode = "job"
 job_name = "memory_episode_cleanup"

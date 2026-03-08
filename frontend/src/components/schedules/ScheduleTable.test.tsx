@@ -45,7 +45,7 @@ describe("ScheduleTable dual-mode rendering", () => {
       }),
       makeSchedule({
         id: "sched-job",
-        name: "eligibility-sweep",
+        name: "eligibility_sweep",
         dispatch_mode: "job",
         prompt: null,
         job_name: "switchboard.eligibility_sweep",

@@ -72,50 +72,13 @@ class TestNativeScheduleDispatch:
             clear=True,
         ):
             result = await daemon._dispatch_scheduled_task(
-                trigger_source="schedule:eligibility-sweep",
+                trigger_source="schedule:eligibility_sweep",
                 job_name="eligibility_sweep",
                 job_args={"dry_run": True},
             )
 
         assert result == native_result
         mock_handler.assert_awaited_once_with(mock_pool, {"dry_run": True})
-        mock_spawner.trigger.assert_not_awaited()
-
-    async def test_switchboard_legacy_schedule_name_alias_uses_registry(self, tmp_path):
-        """Legacy schedule names should map to deterministic registry entries."""
-        daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
-
-        native_result = {"evaluated": 4, "skipped": 1, "transitioned": 2, "transitions": []}
-        mock_handler = AsyncMock(return_value=native_result)
-        with (
-            patch.dict(
-                "butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
-                {"switchboard": {"eligibility_sweep": mock_handler}},
-                clear=True,
-            ),
-            patch.dict(
-                "butlers.daemon._DETERMINISTIC_SCHEDULE_LEGACY_ALIASES",
-                {"switchboard": {"eligibility-sweep": "eligibility_sweep"}},
-                clear=True,
-            ),
-        ):
-            result = await daemon._dispatch_scheduled_task(
-                prompt="ignored",
-                trigger_source="schedule:eligibility-sweep",
-            )
-
-        assert result == native_result
-        mock_handler.assert_awaited_once_with(mock_pool, None)
         mock_spawner.trigger.assert_not_awaited()
 
     async def test_non_native_schedule_falls_back_to_spawner(self, tmp_path):
@@ -181,7 +144,7 @@ class TestNativeScheduleDispatch:
 
         with pytest.raises(RuntimeError, match="must be a non-empty string"):
             await daemon._dispatch_scheduled_task(
-                trigger_source="schedule:eligibility-sweep",
+                trigger_source="schedule:eligibility_sweep",
                 job_name="  ",
             )
         mock_spawner.trigger.assert_not_awaited()

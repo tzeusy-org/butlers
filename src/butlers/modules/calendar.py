@@ -4335,7 +4335,7 @@ class CalendarModule(Module):
 
         # --- Push scheduled_tasks ---
         # Only push user-facing (prompt) tasks. Job tasks are internal
-        # automation (e.g. eligibility-sweep) and shouldn't appear on the
+        # automation (e.g. eligibility_sweep) and shouldn't appear on the
         # user's Google Calendar.
         if await self._table_exists("scheduled_tasks"):
             # Clean up any job tasks that were previously pushed to Google

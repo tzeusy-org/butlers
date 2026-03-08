@@ -118,7 +118,7 @@ describe("ScheduleForm dual-mode behavior", () => {
     expect(jobArgsInput).toBeInstanceOf(HTMLTextAreaElement);
 
     await act(async () => {
-      setInputValue(nameInput as HTMLInputElement, "eligibility-sweep");
+      setInputValue(nameInput as HTMLInputElement, "eligibility_sweep");
       setInputValue(cronInput as HTMLInputElement, "*/5 * * * *");
       setInputValue(jobNameInput as HTMLInputElement, "switchboard.eligibility_sweep");
       setInputValue(jobArgsInput as HTMLTextAreaElement, '{"policy_tier":"default"}');
@@ -135,7 +135,7 @@ describe("ScheduleForm dual-mode behavior", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith({
-      name: "eligibility-sweep",
+      name: "eligibility_sweep",
       cron: "*/5 * * * *",
       dispatch_mode: "job",
       job_name: "switchboard.eligibility_sweep",

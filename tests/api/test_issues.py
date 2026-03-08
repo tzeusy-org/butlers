@@ -346,7 +346,7 @@ class TestListIssuesEndpoint:
                     "occurrences": 3,
                     "butlers": ["switchboard"],
                     "has_schedule": True,
-                    "schedule_names": ["eligibility-sweep"],
+                    "schedule_names": ["eligibility_sweep"],
                 }
             ]
         )
@@ -364,12 +364,12 @@ class TestListIssuesEndpoint:
         issues = response.json()["data"]
         assert len(issues) == 1
         assert issues[0]["severity"] == "critical"
-        assert issues[0]["type"] == "scheduled_task_failure:eligibility-sweep"
+        assert issues[0]["type"] == "scheduled_task_failure:eligibility_sweep"
         assert issues[0]["butler"] == "switchboard"
         assert issues[0]["occurrences"] == 3
         assert issues[0]["first_seen_at"] == "2026-02-19T23:55:00Z"
         assert issues[0]["last_seen_at"] == "2026-02-20T00:00:00Z"
-        assert "eligibility-sweep" in issues[0]["description"]
+        assert "eligibility_sweep" in issues[0]["description"]
 
     async def test_audit_non_schedule_error_surfaces_as_warning(self, app):
         """Non-schedule audit failures should surface as warning issues."""

@@ -52,20 +52,20 @@ enable_ingress_dedupe = true
 [modules.switchboard]
 
 [[butler.schedule]]
-name = "memory-consolidation"
+name = "memory_consolidation"
 cron = "0 */6 * * *"
 dispatch_mode = "job"
 job_name = "memory_consolidation"
 
 [[butler.schedule]]
-name = "memory-episode-cleanup"
+name = "memory_episode_cleanup"
 cron = "0 4 * * *"
 dispatch_mode = "job"
 job_name = "memory_episode_cleanup"
 
 # Butler registry liveness sweep
 [[butler.schedule]]
-name = "eligibility-sweep"
+name = "eligibility_sweep"
 cron = "*/5 * * * *"
 dispatch_mode = "job"
 job_name = "eligibility_sweep"

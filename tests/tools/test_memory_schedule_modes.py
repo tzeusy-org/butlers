@@ -15,20 +15,20 @@ def test_memory_maintenance_schedules_use_job_mode_for_memory_enabled_butlers() 
 
     expected = {
         "general": {
-            "memory-consolidation": "memory_consolidation",
-            "memory-episode-cleanup": "memory_episode_cleanup",
+            "memory_consolidation": "memory_consolidation",
+            "memory_episode_cleanup": "memory_episode_cleanup",
         },
         "health": {
-            "memory-consolidation": "memory_consolidation",
-            "memory-episode-cleanup": "memory_episode_cleanup",
+            "memory_consolidation": "memory_consolidation",
+            "memory_episode_cleanup": "memory_episode_cleanup",
         },
         "relationship": {
-            "memory-consolidation": "memory_consolidation",
-            "memory-episode-cleanup": "memory_episode_cleanup",
+            "memory_consolidation": "memory_consolidation",
+            "memory_episode_cleanup": "memory_episode_cleanup",
         },
         "switchboard": {
-            "memory-consolidation": "memory_consolidation",
-            "memory-episode-cleanup": "memory_episode_cleanup",
+            "memory_consolidation": "memory_consolidation",
+            "memory_episode_cleanup": "memory_episode_cleanup",
         },
     }
 

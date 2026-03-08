@@ -203,7 +203,7 @@ class TestGetButlerDetail:
             description="Relationship butler",
             extra_toml=(
                 "[[butler.schedule]]\n"
-                'name = "eligibility-sweep"\n'
+                'name = "eligibility_sweep"\n'
                 'cron = "*/5 * * * *"\n'
                 'dispatch_mode = "job"\n'
                 'job_name = "eligibility_sweep"\n'
@@ -221,7 +221,7 @@ class TestGetButlerDetail:
         assert response.status_code == 200
         data = response.json()["data"]
         assert len(data["schedules"]) == 1
-        assert data["schedules"][0]["name"] == "eligibility-sweep"
+        assert data["schedules"][0]["name"] == "eligibility_sweep"
         assert data["schedules"][0]["prompt"] is None
 
     async def test_handles_unreachable_butler(self, roster_dir):
