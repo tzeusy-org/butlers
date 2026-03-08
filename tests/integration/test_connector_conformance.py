@@ -204,18 +204,38 @@ class TestTelegramConnectorConformance:
         assert isinstance(envelope["payload"]["normalized_text"], str)
 
     async def test_telegram_checkpoint_recovery(
-        self, telegram_connector: TelegramBotConnector, telegram_config: TelegramBotConnectorConfig
+        self,
+        telegram_connector: TelegramBotConnector,
+        telegram_config: TelegramBotConnectorConfig,
+        mock_cursor_pool: MagicMock,
     ) -> None:
         """Test that Telegram connector can recover from checkpoint after crash."""
+        saved_value: str | None = None
+
+        async def fake_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+            nonlocal saved_value
+            saved_value = val
+
+        async def fake_load(_pool: object, _prov: str, _eid: str) -> str | None:
+            return saved_value
+
         # Simulate processing some updates
         telegram_connector._last_update_id = 50000
 
         # Save checkpoint
-        await telegram_connector._save_checkpoint()
+        with patch(
+            "butlers.connectors.cursor_store.save_cursor",
+            new=AsyncMock(side_effect=fake_save),
+        ):
+            await telegram_connector._save_checkpoint()
 
         # Create new connector instance (simulates restart)
-        new_connector = TelegramBotConnector(telegram_config)
-        await new_connector._load_checkpoint()
+        new_connector = TelegramBotConnector(telegram_config, cursor_pool=mock_cursor_pool)
+        with patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(side_effect=fake_load),
+        ):
+            await new_connector._load_checkpoint()
 
         # Verify checkpoint was restored
         assert new_connector._last_update_id == 50000
