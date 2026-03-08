@@ -33,7 +33,7 @@ import {
   useIngestionEventLineage,
   useIngestionEventRollup,
 } from "@/hooks/use-ingestion-events";
-import type { IngestionEventSummary } from "@/api/index.ts";
+import type { IngestionEventSummary, IngestionEventSession } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,6 +89,103 @@ function fmtNum(n: number | null | undefined): string {
 }
 
 // ---------------------------------------------------------------------------
+// Session flamegraph
+// ---------------------------------------------------------------------------
+
+/** Distinct hues for butler names — assigned in encounter order. */
+const BUTLER_COLORS = [
+  "bg-blue-500",
+  "bg-amber-500",
+  "bg-emerald-500",
+  "bg-violet-500",
+  "bg-rose-500",
+  "bg-cyan-500",
+  "bg-orange-500",
+  "bg-teal-500",
+];
+
+function butlerColorMap(sessions: IngestionEventSession[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const s of sessions) {
+    if (!map.has(s.butler_name)) {
+      map.set(s.butler_name, BUTLER_COLORS[map.size % BUTLER_COLORS.length]);
+    }
+  }
+  return map;
+}
+
+function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) {
+  const withTimes = sessions.filter((s) => s.started_at);
+  if (withTimes.length === 0) return null;
+
+  const starts = withTimes.map((s) => new Date(s.started_at!).getTime());
+  const ends = withTimes.map((s) =>
+    s.completed_at ? new Date(s.completed_at).getTime() : Date.now(),
+  );
+  const minTime = Math.min(...starts);
+  const maxTime = Math.max(...ends);
+  const span = maxTime - minTime || 1;
+
+  const colors = butlerColorMap(sessions);
+
+  // Group sessions into swim lanes by butler
+  const butlers = [...colors.keys()];
+  const laneMap = new Map(butlers.map((b, i) => [b, i]));
+
+  return (
+    <div className="space-y-1.5">
+      {/* Legend */}
+      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+        {butlers.map((b) => (
+          <span key={b} className="flex items-center gap-1">
+            <span className={`inline-block size-2.5 rounded-sm ${colors.get(b)}`} />
+            {b}
+          </span>
+        ))}
+      </div>
+
+      {/* Lanes */}
+      <div className="relative rounded-md border bg-muted/20 overflow-hidden">
+        {butlers.map((butler, laneIdx) => {
+          const laneSessions = withTimes.filter((s) => s.butler_name === butler);
+          return (
+            <div
+              key={butler}
+              className="relative h-7 border-b last:border-0"
+            >
+              {laneSessions.map((s) => {
+                const sStart = new Date(s.started_at!).getTime();
+                const sEnd = s.completed_at
+                  ? new Date(s.completed_at).getTime()
+                  : Date.now();
+                const left = ((sStart - minTime) / span) * 100;
+                const width = Math.max(((sEnd - sStart) / span) * 100, 1);
+                const dur = formatDuration(s.started_at, s.completed_at ?? new Date().toISOString());
+                const color = colors.get(s.butler_name) ?? BUTLER_COLORS[0];
+
+                return (
+                  <Link
+                    key={s.id}
+                    to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
+                    title={`${s.butler_name} — ${dur}${s.model ? ` (${s.model})` : ""}`}
+                    className={`absolute top-0.5 bottom-0.5 rounded-sm ${color} opacity-80 hover:opacity-100 transition-opacity cursor-pointer`}
+                    style={{ left: `${left}%`, width: `${width}%` }}
+                  >
+                    <span className="px-1 text-[10px] font-medium text-white truncate block leading-6">
+                      {dur}
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // LineageView — shows sessions and rollup for one expanded event
 // ---------------------------------------------------------------------------
 
@@ -133,6 +230,9 @@ function LineageView({ requestId }: LineageViewProps) {
 
   return (
     <div className="space-y-4 px-4 pb-4">
+      {/* Flamegraph */}
+      <SessionFlamegraph sessions={sessionList} />
+
       {/* Session list */}
       <div className="rounded-md border">
         <Table>
