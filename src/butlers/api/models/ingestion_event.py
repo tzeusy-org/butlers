@@ -44,6 +44,7 @@ class IngestionEventSession(BaseModel):
     output_tokens: int | None = None
     cost: dict[str, Any] | None = None
     trace_id: str | None = None
+    model: str | None = None
 
 
 class ButlerRollupEntry(BaseModel):

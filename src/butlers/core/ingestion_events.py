@@ -35,7 +35,7 @@ _EVENT_COLUMNS = (
 # Columns fetched from each butler's sessions table during fan-out
 _SESSION_COLUMNS = (
     "id, trigger_source, started_at, completed_at, success, "
-    "input_tokens, output_tokens, cost, trace_id"
+    "input_tokens, output_tokens, cost, trace_id, model"
 )
 
 

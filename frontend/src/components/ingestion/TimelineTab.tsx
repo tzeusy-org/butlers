@@ -30,6 +30,7 @@ import {
 import {
   useIngestionEvents,
   useIngestionEventLineage,
+  useIngestionEventRollup,
 } from "@/hooks/use-ingestion-events";
 import type { IngestionEventSummary } from "@/api/index.ts";
 
@@ -78,6 +79,12 @@ function formatCost(usd: number | undefined | null): string {
   if (usd === 0) return "$0.00";
   if (usd < 0.001) return `<$0.001`;
   return `$${usd.toFixed(4)}`;
+}
+
+/** Format a number with comma separators (e.g. 1,234,567). */
+function fmtNum(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  return n.toLocaleString();
 }
 
 // ---------------------------------------------------------------------------
@@ -131,18 +138,31 @@ function LineageView({ requestId }: LineageViewProps) {
           <TableHeader>
             <TableRow>
               <TableHead>Butler</TableHead>
+              <TableHead>Session</TableHead>
+              <TableHead>Model</TableHead>
               <TableHead>Started At</TableHead>
               <TableHead>Duration</TableHead>
               <TableHead>In Tokens</TableHead>
               <TableHead>Out Tokens</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>Trace</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {sessionList.map((s) => (
               <TableRow key={s.id}>
                 <TableCell className="font-medium">{s.butler_name}</TableCell>
+                <TableCell className="text-sm">
+                  <a
+                    href={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
+                    className="font-mono text-xs text-primary underline-offset-4 hover:underline"
+                    title={s.id}
+                  >
+                    {truncateId(s.id)}
+                  </a>
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {s.model ?? "—"}
+                </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {formatDatetime(s.started_at)}
                 </TableCell>
@@ -150,10 +170,10 @@ function LineageView({ requestId }: LineageViewProps) {
                   {formatDuration(s.started_at, s.completed_at)}
                 </TableCell>
                 <TableCell className="text-sm tabular-nums">
-                  {s.input_tokens ?? "—"}
+                  {fmtNum(s.input_tokens)}
                 </TableCell>
                 <TableCell className="text-sm tabular-nums">
-                  {s.output_tokens ?? "—"}
+                  {fmtNum(s.output_tokens)}
                 </TableCell>
                 <TableCell>
                   {s.success === true ? (
@@ -162,21 +182,6 @@ function LineageView({ requestId }: LineageViewProps) {
                     <Badge variant="destructive">fail</Badge>
                   ) : (
                     <Badge variant="outline">unknown</Badge>
-                  )}
-                </TableCell>
-                <TableCell className="text-sm">
-                  {s.trace_id ? (
-                    <a
-                      href={`/traces/${s.trace_id}`}
-                      className="font-mono text-xs text-primary underline-offset-4 hover:underline"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={s.trace_id}
-                    >
-                      {truncateId(s.trace_id)}
-                    </a>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
                   )}
                 </TableCell>
               </TableRow>
@@ -242,6 +247,9 @@ interface EventRowProps {
 }
 
 function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
+  const { data: rollupResp } = useIngestionEventRollup(event.id);
+  const r = rollupResp?.data;
+
   return (
     <>
       <TableRow
@@ -264,6 +272,12 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
         <TableCell className="text-sm">
           {event.policy_tier ?? event.ingestion_tier ?? "—"}
         </TableCell>
+        <TableCell className="text-sm tabular-nums">
+          {r ? fmtNum(r.total_input_tokens) : "—"}
+        </TableCell>
+        <TableCell className="text-sm tabular-nums">
+          {r ? fmtNum(r.total_output_tokens) : "—"}
+        </TableCell>
         <TableCell className="text-sm text-muted-foreground">
           <span
             className="text-xs select-none"
@@ -276,7 +290,7 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
 
       {isExpanded && (
         <TableRow>
-          <TableCell colSpan={6} className="p-0">
+          <TableCell colSpan={8} className="p-0">
             <LineageView requestId={event.id} />
           </TableCell>
         </TableRow>
@@ -292,7 +306,7 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
 function EventRowSkeleton() {
   return (
     <TableRow>
-      {Array.from({ length: 6 }).map((_, i) => (
+      {Array.from({ length: 8 }).map((_, i) => (
         <TableCell key={i}>
           <Skeleton className="h-4 w-full" />
         </TableCell>
@@ -343,6 +357,8 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                   <TableHead>Channel</TableHead>
                   <TableHead>Sender</TableHead>
                   <TableHead>Tier</TableHead>
+                  <TableHead>Tokens In</TableHead>
+                  <TableHead>Tokens Out</TableHead>
                   <TableHead className="w-8" />
                 </TableRow>
               </TableHeader>
@@ -353,7 +369,7 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                   ))
                 ) : events.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={8}>
                       <EmptyState
                         title="No ingestion events"
                         description="Events will appear here once the system receives incoming messages."

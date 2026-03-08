@@ -1828,6 +1828,7 @@ export interface IngestionEventSession {
   output_tokens: number | null;
   cost: Record<string, unknown> | null;
   trace_id: string | null;
+  model: string | null;
 }
 
 /** Per-butler breakdown within an IngestionEventRollup. */
