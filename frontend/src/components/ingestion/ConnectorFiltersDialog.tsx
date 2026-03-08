@@ -149,7 +149,6 @@ export function ConnectorFiltersDialog({
         asChild
         onClick={(e) => {
           e.stopPropagation();
-          e.preventDefault();
         }}
       >
         {triggerButton}
