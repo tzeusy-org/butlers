@@ -667,12 +667,6 @@ class TestContactsSyncStateStore:
         loaded = await store.load(provider="  GOOGLE  ", account_id="  acct-1  ")
         assert loaded.sync_cursor == "tok-norm"
 
-    async def test_key_helper_returns_legacy_format(self) -> None:
-        """key() returns the legacy KV key string for backward-compatibility."""
-        store = ContactsSyncStateStore(None)  # type: ignore[arg-type]
-        key = store.key(provider="Google", account_id="  my-acct  ")
-        assert key == "contacts::sync::google::my-acct"
-
     async def test_save_issues_upsert_query(self) -> None:
         """save() calls pool.execute with an INSERT ... ON CONFLICT query."""
         pool = _FakePool()

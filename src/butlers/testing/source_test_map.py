@@ -75,8 +75,8 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
         [
             "tests/modules/",
             "tests/test_identity.py",
-            "tests/test_resolve_owner_contact_info.py",
-            "tests/test_upsert_delete_owner_contact_info.py",
+            "tests/test_resolve_owner_entity_info.py",
+            "tests/test_upsert_delete_owner_entity_info.py",
         ],
     ),
     # --- Modules: mailbox ---

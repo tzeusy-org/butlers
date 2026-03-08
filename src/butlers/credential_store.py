@@ -689,12 +689,6 @@ async def delete_owner_entity_info(
         raise
 
 
-# Backward-compat aliases during transition
-resolve_owner_contact_info = resolve_owner_entity_info
-upsert_owner_contact_info = upsert_owner_entity_info
-delete_owner_contact_info = delete_owner_entity_info
-
-
 def _is_missing_column_or_schema_error(exc: Exception) -> bool:
     """Return True when an exception indicates a missing column or schema.
 

@@ -26,8 +26,8 @@ import pytest
 
 from butlers.config import ButlerConfig, RuntimeConfig
 from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 from butlers.core.spawner import (
-    CCSpawner,
     Spawner,
     SpawnerResult,
     _append_runtime_session_query,
@@ -1266,11 +1266,11 @@ class TestSessionLogging:
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000003")
             mock_create.return_value = fake_session_id
 
-            spawner = CCSpawner(
+            spawner = Spawner(
                 config=config,
                 config_dir=config_dir,
                 pool=mock_pool,
-                sdk_query=_result_sdk_query,
+                runtime=ClaudeCodeAdapter(sdk_query=_result_sdk_query),
             )
 
             await spawner.trigger("model test", "schedule")
@@ -1333,10 +1333,10 @@ class TestModelPassthrough:
             return
             yield
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=capturing_sdk,
+            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
         )
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-key"}, clear=False):
@@ -1358,10 +1358,10 @@ class TestModelPassthrough:
             return
             yield
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=capturing_sdk,
+            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
         )
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-key"}, clear=False):
@@ -1376,10 +1376,10 @@ class TestModelPassthrough:
         config_dir.mkdir()
         config = _make_config(model="claude-opus-4-20250514")
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=_result_sdk_query,
+            runtime=ClaudeCodeAdapter(sdk_query=_result_sdk_query),
         )
 
         result = await spawner.trigger("test", "tick")
@@ -1391,10 +1391,10 @@ class TestModelPassthrough:
         config_dir.mkdir()
         config = _make_config(model="claude-opus-4-20250514")
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=_error_sdk_query,
+            runtime=ClaudeCodeAdapter(sdk_query=_error_sdk_query),
         )
 
         result = await spawner.trigger("fail", "tick")
@@ -1407,10 +1407,10 @@ class TestModelPassthrough:
         config_dir.mkdir()
         config = _make_config()
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=_result_sdk_query,
+            runtime=ClaudeCodeAdapter(sdk_query=_result_sdk_query),
         )
 
         result = await spawner.trigger("test", "tick")
@@ -1702,91 +1702,6 @@ class TestToolOutcomePersistence:
 
 
 # ---------------------------------------------------------------------------
-# Legacy sdk_query compat test
-# ---------------------------------------------------------------------------
-
-
-class TestLegacySdkQueryCompat:
-    """Verify backward compatibility with sdk_query parameter."""
-
-    async def test_sdk_query_still_works(self, tmp_path: Path):
-        """Spawner(sdk_query=...) wraps the callable in a ClaudeCodeAdapter."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        from claude_agent_sdk import ResultMessage
-
-        async def mock_sdk(*, prompt: str, options: Any):
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="compat-test",
-                total_cost_usd=0.0,
-                usage={},
-                result="Hello from legacy!",
-            )
-
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            sdk_query=mock_sdk,
-        )
-
-        result = await spawner.trigger("hello", "tick")
-        assert result.output == "Hello from legacy!"
-        assert result.error is None
-
-    async def test_full_flow_with_model(self, tmp_path: Path):
-        """Full flow with a model configured passes it through to SDK options."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        claude_md = config_dir / "CLAUDE.md"
-        claude_md.write_text("You are the test butler with a model.")
-
-        config = _make_config(
-            name="model-butler",
-            port=9201,
-            model="claude-sonnet-4-20250514",
-        )
-
-        captured: dict[str, Any] = {}
-
-        async def capturing_sdk(*, prompt: str, options: Any):
-            captured["prompt"] = prompt
-            captured["options"] = options
-            from claude_agent_sdk import ResultMessage
-
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="model-flow",
-                total_cost_usd=0.005,
-                usage={},
-                result="Model test done!",
-            )
-
-        spawner = CCSpawner(
-            config=config,
-            config_dir=config_dir,
-            sdk_query=capturing_sdk,
-        )
-
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-flow"}, clear=False):
-            result = await spawner.trigger("model test", "tick")
-
-        assert result.output == "Model test done!"
-        assert result.model == "claude-sonnet-4-20250514"
-        assert captured["options"].model == "claude-sonnet-4-20250514"
-
-
-# ---------------------------------------------------------------------------
 # Token usage capture from adapter
 # ---------------------------------------------------------------------------
 
@@ -1937,10 +1852,10 @@ class TestTokenUsageCapture:
                 result="Done with tokens!",
             )
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=sdk_with_usage,
+            runtime=ClaudeCodeAdapter(sdk_query=sdk_with_usage),
         )
 
         result = await spawner.trigger("test sdk tokens", "tick")
@@ -1969,10 +1884,10 @@ class TestTokenUsageCapture:
                 result="Empty usage",
             )
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=sdk_empty_usage,
+            runtime=ClaudeCodeAdapter(sdk_query=sdk_empty_usage),
         )
 
         result = await spawner.trigger("test empty usage", "tick")
@@ -2000,10 +1915,10 @@ class TestTokenUsageCapture:
                 result="None usage",
             )
 
-        spawner = CCSpawner(
+        spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            sdk_query=sdk_none_usage,
+            runtime=ClaudeCodeAdapter(sdk_query=sdk_none_usage),
         )
 
         result = await spawner.trigger("test none usage", "tick")

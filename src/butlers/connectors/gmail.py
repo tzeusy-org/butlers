@@ -130,10 +130,6 @@ SUPPORTED_ATTACHMENT_TYPES: frozenset[str] = frozenset(ATTACHMENT_POLICY.keys())
 # Any attachment exceeding this cap is skipped regardless of per-type limit.
 GLOBAL_MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
 
-# Kept for backward compatibility; callers that reference MAX_ATTACHMENT_SIZE_BYTES
-# directly will continue to compile.  New code should use ATTACHMENT_POLICY.
-MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024
-
 
 def _format_google_error(response: httpx.Response) -> str | None:
     """Extract a compact Google API/OAuth error summary from response JSON."""

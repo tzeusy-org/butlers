@@ -21,7 +21,7 @@ from butlers.modules.memory.prompt_template import build_consolidation_prompt
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-    from butlers.core.spawner import CCSpawner
+    from butlers.core.spawner import Spawner
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 async def run_consolidation(
     pool: Pool,
     embedding_engine: Any,
-    cc_spawner: CCSpawner | None = None,
+    cc_spawner: Spawner | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full consolidation pipeline for unconsolidated episodes.
 
@@ -50,7 +50,7 @@ async def run_consolidation(
     Args:
         pool: asyncpg connection pool for the memory database.
         embedding_engine: EmbeddingEngine instance for storing new facts/rules.
-        cc_spawner: Optional CCSpawner instance for invoking the LLM CLI. If None,
+        cc_spawner: Optional Spawner instance for invoking the LLM CLI. If None,
             only episode grouping is performed (no actual consolidation).
 
     Returns:

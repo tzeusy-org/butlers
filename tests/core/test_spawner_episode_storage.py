@@ -12,6 +12,7 @@ import asyncpg
 import pytest
 
 from butlers.config import ButlerConfig
+from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 from butlers.core.spawner import Spawner, store_session_episode
 
 pytestmark = pytest.mark.unit
@@ -121,7 +122,9 @@ class TestSpawnerEpisodeStorageIntegration:
                 result="Task completed",
             )
 
-        spawner = Spawner(config=config, config_dir=config_dir, sdk_query=fake_sdk)
+        spawner = Spawner(
+            config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk)
+        )
 
         with (
             patch(
@@ -165,7 +168,9 @@ class TestSpawnerEpisodeStorageIntegration:
                 result="Task completed",
             )
 
-        spawner = Spawner(config=config, config_dir=config_dir, sdk_query=fake_sdk)
+        spawner = Spawner(
+            config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk)
+        )
 
         with patch(
             "butlers.core.spawner.store_session_episode",
@@ -186,7 +191,9 @@ class TestSpawnerEpisodeStorageIntegration:
             raise RuntimeError("SDK failure")
             yield  # pragma: no cover
 
-        spawner = Spawner(config=config, config_dir=config_dir, sdk_query=failing_sdk)
+        spawner = Spawner(
+            config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=failing_sdk)
+        )
 
         with patch(
             "butlers.core.spawner.store_session_episode",
