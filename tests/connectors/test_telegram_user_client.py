@@ -296,7 +296,7 @@ class TestTelegramUserClientConnector:
         assert envelope["sender"]["identity"] == "11111"
         assert envelope["payload"]["normalized_text"] == "Hello, world!"
         assert envelope["payload"]["raw"]["id"] == 12345
-        assert envelope["control"]["idempotency_key"] == "telegram:telegram:user:123456:12345"
+        assert envelope["control"]["idempotency_key"] == "tg:67890:12345"
 
     async def test_submit_to_ingest_success(
         self, config: TelegramUserClientConnectorConfig
