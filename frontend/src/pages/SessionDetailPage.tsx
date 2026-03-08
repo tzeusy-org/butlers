@@ -14,6 +14,7 @@ import { useSessionDetail } from "@/hooks/use-sessions";
 import { useQuery } from "@tanstack/react-query";
 import { getSession } from "@/api/index.ts";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
+import { CollapsibleJson, ToolCallTimeline } from "@/components/sessions/ToolCallTimeline";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -203,13 +204,6 @@ export default function SessionDetailPage() {
               </>
             )}
 
-            {session.tool_calls != null && (
-              <>
-                <dt className="text-muted-foreground font-medium">Tool Calls</dt>
-                <dd>{Array.isArray(session.tool_calls) ? session.tool_calls.length : String(session.tool_calls)}</dd>
-              </>
-            )}
-
             {(session.input_tokens != null || session.output_tokens != null) && (
               <>
                 <dt className="text-muted-foreground font-medium">Tokens (in/out)</dt>
@@ -219,6 +213,21 @@ export default function SessionDetailPage() {
               </>
             )}
           </dl>
+        </CardContent>
+      </Card>
+
+      {/* Tool calls */}
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            Tool Calls ({Array.isArray(session.tool_calls) ? session.tool_calls.length : 0})
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ToolCallTimeline
+            toolCalls={Array.isArray(session.tool_calls) ? session.tool_calls : []}
+            resultText={session.result}
+          />
         </CardContent>
       </Card>
 
@@ -258,6 +267,18 @@ export default function SessionDetailPage() {
             <pre className="overflow-auto rounded-md bg-destructive/10 p-4 text-sm font-mono whitespace-pre-wrap text-destructive">
               {session.error}
             </pre>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Cost */}
+      {session.cost != null && Object.keys(session.cost).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Cost</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CollapsibleJson label="Cost breakdown" data={session.cost} />
           </CardContent>
         </Card>
       )}
