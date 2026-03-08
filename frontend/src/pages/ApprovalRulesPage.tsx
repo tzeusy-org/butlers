@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import type { ApprovalRule, ApprovalRuleParams } from "@/api/types";
+import { CreateRuleDialog } from "@/components/approvals/create-rule-dialog";
 import { RulesTable } from "@/components/approvals/rules-table";
 import { RuleDetailDialog } from "@/components/approvals/rule-detail-dialog";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,7 @@ export default function ApprovalRulesPage() {
   const [page, setPage] = useState(0);
   const [selectedRule, setSelectedRule] = useState<ApprovalRule | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const params: ApprovalRuleParams = {
     offset: page * PAGE_SIZE,
@@ -87,9 +89,12 @@ export default function ApprovalRulesPage() {
             Manage standing approval rules for automatic action approval.
           </p>
         </div>
-        <Button variant="outline" asChild>
-          <Link to="/approvals">Back to Actions</Link>
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={() => setCreateOpen(true)}>Create Rule</Button>
+          <Button variant="outline" asChild>
+            <Link to="/approvals">Back to Actions</Link>
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -196,6 +201,7 @@ export default function ApprovalRulesPage() {
 
       {/* Rule detail dialog */}
       <RuleDetailDialog rule={selectedRule} open={dialogOpen} onOpenChange={setDialogOpen} />
+      <CreateRuleDialog open={createOpen} onOpenChange={setCreateOpen} />
     </div>
   );
 }
