@@ -39,6 +39,16 @@ def _make_user(
     return user
 
 
+def _make_contacts_result(users: list[MagicMock]) -> MagicMock:
+    """Create a mock Telethon Contacts result with a .users attribute.
+
+    Mimics the response from ``client(GetContactsRequest(hash=0))``.
+    """
+    result = MagicMock()
+    result.users = users
+    return result
+
+
 class TestUserToCanonical:
     def test_basic_conversion(self) -> None:
         user = _make_user()
@@ -178,7 +188,7 @@ class TestTelegramContactsProvider:
         mock_client = AsyncMock()
         mock_client.is_connected.return_value = True
         mock_client.is_user_authorized = AsyncMock(return_value=True)
-        mock_client.get_contacts = AsyncMock(return_value=users)
+        mock_client.return_value = _make_contacts_result(users)
         provider._client = mock_client
 
         batch = await provider.full_sync(account_id="default")
@@ -198,7 +208,7 @@ class TestTelegramContactsProvider:
         mock_client = AsyncMock()
         mock_client.is_connected.return_value = True
         mock_client.is_user_authorized = AsyncMock(return_value=True)
-        mock_client.get_contacts = AsyncMock(return_value=users)
+        mock_client.return_value = _make_contacts_result(users)
         provider._client = mock_client
 
         batch = await provider.incremental_sync(account_id="default", cursor="telegram:old")
@@ -215,7 +225,7 @@ class TestTelegramContactsProvider:
         mock_client = AsyncMock()
         mock_client.is_connected.return_value = True
         mock_client.is_user_authorized = AsyncMock(return_value=True)
-        mock_client.get_contacts = AsyncMock(return_value=users)
+        mock_client.return_value = _make_contacts_result(users)
         provider._client = mock_client
 
         # First do a full sync to get the hash cursor
@@ -241,7 +251,7 @@ class TestTelegramContactsProvider:
         mock_client = AsyncMock()
         mock_client.is_connected.return_value = True
         mock_client.is_user_authorized = AsyncMock(return_value=True)
-        mock_client.get_contacts = AsyncMock(return_value=users)
+        mock_client.return_value = _make_contacts_result(users)
         provider._client = mock_client
 
         batch = await provider.full_sync(account_id="default")

@@ -28,6 +28,7 @@ from .sync import (
 try:
     from telethon import TelegramClient
     from telethon.sessions import StringSession
+    from telethon.tl.functions.contacts import GetContactsRequest
     from telethon.tl.types import User
 
     TELETHON_AVAILABLE = True
@@ -35,6 +36,7 @@ except ImportError:
     TELETHON_AVAILABLE = False
     TelegramClient = None  # type: ignore[assignment,misc]
     StringSession = None  # type: ignore[assignment,misc]
+    GetContactsRequest = None  # type: ignore[assignment,misc]
     User = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
@@ -95,7 +97,10 @@ def _user_to_canonical(user: Any) -> CanonicalContact | None:
 class TelegramContactsProvider(ContactsProvider):
     """Telegram contacts provider using Telethon user-client API.
 
-    Fetches the user's Telegram contact list via ``client.get_contacts()``.
+    Fetches the user's Telegram contact list via the raw Telethon request
+    ``GetContactsRequest(hash=0)``, which returns a ``Contacts`` object
+    whose ``.users`` list contains the actual ``User`` objects.
+
     Uses hash-based cursor: full_sync computes a hash of the contact list and
     returns it as the cursor; incremental_sync compares the current hash against
     the cursor and returns an empty batch when unchanged.
@@ -148,10 +153,10 @@ class TelegramContactsProvider(ContactsProvider):
         del page_token  # Telegram doesn't paginate contacts
 
         client = await self._ensure_client()
-        result = await client.get_contacts()
+        result = await client(GetContactsRequest(hash=0))
 
         contacts: list[CanonicalContact] = []
-        for user in result:
+        for user in result.users:
             canonical = _user_to_canonical(user)
             if canonical is not None:
                 contacts.append(canonical)
@@ -186,10 +191,10 @@ class TelegramContactsProvider(ContactsProvider):
         del page_token  # Telegram doesn't paginate contacts
 
         client = await self._ensure_client()
-        result = await client.get_contacts()
+        result = await client(GetContactsRequest(hash=0))
 
         contacts: list[CanonicalContact] = []
-        for user in result:
+        for user in result.users:
             canonical = _user_to_canonical(user)
             if canonical is not None:
                 contacts.append(canonical)
