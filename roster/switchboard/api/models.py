@@ -348,11 +348,76 @@ class MimeTypeCondition(BaseModel):
         return v
 
 
-# Supported rule types
+# Supported rule types (triage-only, subset of INGESTION_RULE_TYPES)
 RULE_TYPES = frozenset({"sender_domain", "sender_address", "header_condition", "mime_type"})
+
+# All 7 rule types supported by the unified ingestion_rules table (design.md D7)
+INGESTION_RULE_TYPES = frozenset(
+    {
+        "sender_domain",
+        "sender_address",
+        "header_condition",
+        "mime_type",
+        "substring",
+        "chat_id",
+        "channel_id",
+    }
+)
+
+# Rule types valid per connector type (design.md D8 scope-aware validation)
+_CONNECTOR_RULE_TYPES: dict[str, frozenset[str]] = {
+    "gmail": frozenset({"sender_domain", "sender_address", "substring"}),
+    "telegram-bot": frozenset({"chat_id", "substring"}),
+    "discord": frozenset({"channel_id", "substring"}),
+}
 
 # Supported simple actions (route_to:<butler> is validated separately)
 SIMPLE_ACTIONS = frozenset({"skip", "metadata_only", "low_priority_queue", "pass_through"})
+
+# Valid actions for global scope (all actions)
+GLOBAL_ACTIONS = SIMPLE_ACTIONS  # route_to:<butler> validated separately
+
+# Valid actions for connector scope (design.md D3)
+CONNECTOR_ACTIONS = frozenset({"block"})
+
+
+class SubstringCondition(BaseModel):
+    """Condition schema for rule_type='substring'."""
+
+    pattern: str
+
+    @field_validator("pattern")
+    @classmethod
+    def pattern_nonempty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("pattern must be non-empty")
+        return v
+
+
+class ChatIdCondition(BaseModel):
+    """Condition schema for rule_type='chat_id'."""
+
+    chat_id: str
+
+    @field_validator("chat_id")
+    @classmethod
+    def chat_id_nonempty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("chat_id must be non-empty")
+        return v
+
+
+class ChannelIdCondition(BaseModel):
+    """Condition schema for rule_type='channel_id'."""
+
+    channel_id: str
+
+    @field_validator("channel_id")
+    @classmethod
+    def channel_id_nonempty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("channel_id must be non-empty")
+        return v
 
 
 def validate_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, Any]:
@@ -373,6 +438,12 @@ def validate_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, A
         return d
     elif rule_type == "mime_type":
         return MimeTypeCondition(**condition).model_dump()
+    elif rule_type == "substring":
+        return SubstringCondition(**condition).model_dump()
+    elif rule_type == "chat_id":
+        return ChatIdCondition(**condition).model_dump()
+    elif rule_type == "channel_id":
+        return ChannelIdCondition(**condition).model_dump()
     else:
         raise ValueError(f"Unknown rule_type: {rule_type!r}")
 
@@ -390,6 +461,79 @@ def validate_action(action: str) -> str:
     raise ValueError(
         f"Invalid action {action!r}. Must be one of {sorted(SIMPLE_ACTIONS)} or 'route_to:<butler>'"
     )
+
+
+def validate_ingestion_action(action: str, scope: str) -> str:
+    """Validate action for the unified ingestion_rules table, scope-aware.
+
+    - scope='global': action must be one of SIMPLE_ACTIONS or 'route_to:<butler>'
+    - scope='connector:*': action must be 'block'
+    Raises ValueError on invalid scope/action combination.
+    """
+    if scope == "global":
+        if action in GLOBAL_ACTIONS:
+            return action
+        if action.startswith("route_to:") and len(action) > len("route_to:"):
+            return action
+        raise ValueError(
+            f"Invalid action {action!r} for global scope. "
+            f"Must be one of {sorted(GLOBAL_ACTIONS)} or 'route_to:<butler>'"
+        )
+    elif scope.startswith("connector:"):
+        if action not in CONNECTOR_ACTIONS:
+            raise ValueError(
+                f"Invalid action {action!r} for connector scope. "
+                f"Must be one of {sorted(CONNECTOR_ACTIONS)}"
+            )
+        return action
+    else:
+        raise ValueError(
+            f"Invalid scope {scope!r}. Must be 'global' or 'connector:<type>:<identity>'"
+        )
+
+
+def validate_scope(scope: str) -> str:
+    """Validate scope value per design.md D2.
+
+    Returns the scope string unchanged if valid.
+    Raises ValueError otherwise.
+    """
+    if scope == "global":
+        return scope
+    if scope.startswith("connector:"):
+        parts = scope.split(":", 2)
+        if len(parts) < 3 or not parts[1] or not parts[2]:
+            raise ValueError(
+                f"Invalid connector scope {scope!r}. "
+                "Must be 'connector:<connector_type>:<endpoint_identity>'"
+            )
+        return scope
+    raise ValueError(f"Invalid scope {scope!r}. Must be 'global' or 'connector:<type>:<identity>'")
+
+
+def validate_rule_type_for_scope(rule_type: str, scope: str) -> str:
+    """Validate rule_type is compatible with the scope's connector type.
+
+    For global scope, all rule types are valid.
+    For connector scope, rule_type must be compatible with the connector type
+    extracted from the scope string.
+    Raises ValueError on incompatible rule_type/scope combination.
+    """
+    if scope == "global":
+        return rule_type
+
+    if scope.startswith("connector:"):
+        parts = scope.split(":", 2)
+        if len(parts) < 3:
+            return rule_type  # scope validation handles this
+        connector_type = parts[1]
+        allowed = _CONNECTOR_RULE_TYPES.get(connector_type)
+        if allowed is not None and rule_type not in allowed:
+            raise ValueError(
+                f"rule_type {rule_type!r} is not compatible with connector type "
+                f"{connector_type!r}. Must be one of {sorted(allowed)}"
+            )
+    return rule_type
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +664,148 @@ class TriageRuleTestResponse(BaseModel):
     """Response envelope for POST /api/switchboard/triage-rules/test."""
 
     data: TriageRuleTestResult
+
+
+# ---------------------------------------------------------------------------
+# Ingestion rule API models (unified, design.md D8)
+# ---------------------------------------------------------------------------
+
+
+class IngestionRule(BaseModel):
+    """A persisted ingestion rule returned from the API."""
+
+    id: str
+    scope: str
+    rule_type: str
+    condition: dict[str, Any]
+    action: str
+    priority: int
+    enabled: bool
+    name: str | None = None
+    description: str | None = None
+    created_by: str
+    created_at: str
+    updated_at: str
+    deleted_at: str | None = None
+
+
+class IngestionRuleCreate(BaseModel):
+    """Request body for POST /api/switchboard/ingestion-rules."""
+
+    scope: str
+    rule_type: str
+    condition: dict[str, Any]
+    action: str
+    priority: int
+    enabled: bool = True
+    name: str | None = None
+    description: str | None = None
+
+    @field_validator("scope")
+    @classmethod
+    def scope_valid(cls, v: str) -> str:
+        return validate_scope(v)
+
+    @field_validator("rule_type")
+    @classmethod
+    def rule_type_valid(cls, v: str) -> str:
+        if v not in INGESTION_RULE_TYPES:
+            raise ValueError(f"rule_type must be one of {sorted(INGESTION_RULE_TYPES)}")
+        return v
+
+    @field_validator("priority")
+    @classmethod
+    def priority_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("priority must be >= 0")
+        return v
+
+    @model_validator(mode="after")
+    def cross_field_validation(self) -> IngestionRuleCreate:
+        # Validate action for scope
+        try:
+            validate_ingestion_action(self.action, self.scope)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        # Validate condition schema
+        try:
+            validate_condition(self.rule_type, self.condition)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"condition invalid for rule_type={self.rule_type!r}: {exc}") from exc
+        # Validate rule_type is compatible with scope
+        try:
+            validate_rule_type_for_scope(self.rule_type, self.scope)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+
+class IngestionRuleUpdate(BaseModel):
+    """Request body for PATCH /api/switchboard/ingestion-rules/:id.
+
+    All fields are optional (partial update).
+    """
+
+    scope: str | None = None
+    condition: dict[str, Any] | None = None
+    action: str | None = None
+    priority: int | None = None
+    enabled: bool | None = None
+    name: str | None = None
+    description: str | None = None
+
+    @field_validator("scope")
+    @classmethod
+    def scope_valid(cls, v: str | None) -> str | None:
+        if v is not None:
+            return validate_scope(v)
+        return v
+
+    @field_validator("priority")
+    @classmethod
+    def priority_non_negative(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError("priority must be >= 0")
+        return v
+
+
+class IngestionRuleTestEnvelope(BaseModel):
+    """Sample envelope for dry-run ingestion rule testing."""
+
+    sender_address: str = ""
+    source_channel: str = ""
+    headers: dict[str, str] = {}
+    mime_parts: list[str] = []
+    raw_key: str = ""
+
+
+class IngestionRuleTestRequest(BaseModel):
+    """Request body for POST /api/switchboard/ingestion-rules/test."""
+
+    envelope: IngestionRuleTestEnvelope
+    scope: str = "global"
+
+    @field_validator("scope")
+    @classmethod
+    def scope_valid(cls, v: str) -> str:
+        return validate_scope(v)
+
+
+class IngestionRuleTestResult(BaseModel):
+    """Result of a dry-run ingestion rule test."""
+
+    matched: bool
+    decision: str | None = None
+    target_butler: str | None = None
+    matched_rule_id: str | None = None
+    matched_rule_type: str | None = None
+    reason: str
+
+
+class IngestionRuleTestResponse(BaseModel):
+    """Response envelope for POST /api/switchboard/ingestion-rules/test."""
+
+    data: IngestionRuleTestResult
 
 
 # Backfill job models
