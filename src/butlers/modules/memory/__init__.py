@@ -8,12 +8,29 @@ module state at call time.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.modules.base import Module
+
+
+def _coerce_json_list(v: Any) -> Any:
+    """Coerce a JSON-encoded string array into a Python list.
+
+    LLMs sometimes send list parameters as JSON strings (e.g. '["a","b"]')
+    instead of actual arrays.  This validator transparently handles both forms.
+    """
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return v
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +162,7 @@ class MemoryModule(Module):
             ] = "global",
             tags: Annotated[
                 list[str] | None,
+                BeforeValidator(_coerce_json_list),
                 Field(
                     description=(
                         "Optional tags as a JSON array of strings (a list), "
@@ -265,7 +283,7 @@ class MemoryModule(Module):
         async def memory_store_rule(
             content: str,
             scope: str = "global",
-            tags: list[str] | None = None,
+            tags: Annotated[list[str] | None, BeforeValidator(_coerce_json_list)] = None,
         ) -> dict[str, Any]:
             """Store a new behavioral rule as a candidate."""
             return await _writing.memory_store_rule(
@@ -283,6 +301,7 @@ class MemoryModule(Module):
             query: Annotated[str, Field(description="Search query text.")],
             types: Annotated[
                 list[Literal["episode", "fact", "rule"]] | None,
+                BeforeValidator(_coerce_json_list),
                 Field(
                     description=(
                         "Optional memory types as a JSON array/list. Allowed values: "
@@ -473,6 +492,7 @@ class MemoryModule(Module):
             tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
             aliases: Annotated[
                 list[str] | None,
+                BeforeValidator(_coerce_json_list),
                 Field(description="Optional list of alternative names for the entity."),
             ] = None,
             metadata: Annotated[
@@ -523,6 +543,7 @@ class MemoryModule(Module):
             ] = None,
             aliases: Annotated[
                 list[str] | None,
+                BeforeValidator(_coerce_json_list),
                 Field(
                     description=("Full replacement aliases list (replace-all semantics). Optional.")
                 ),
@@ -605,6 +626,7 @@ class MemoryModule(Module):
             ] = 2,
             predicate_filter: Annotated[
                 list[str] | None,
+                BeforeValidator(_coerce_json_list),
                 Field(description="Optional list of predicates to restrict traversal."),
             ] = None,
             direction: Annotated[
