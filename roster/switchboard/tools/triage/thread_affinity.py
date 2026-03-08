@@ -1,11 +1,11 @@
-"""Thread-affinity lookup module for the Switchboard triage pipeline.
+"""Thread-affinity lookup module for the Switchboard ingestion pipeline.
 
 Implements the lookup algorithm from docs/switchboard/thread_affinity_routing.md §4.
 
 Pipeline position (per spec §2):
-  1. Sender/header triage rules (TriageRuleCache)
-  2. Thread-affinity global/thread override checks  ← this module
-  3. Thread-affinity lookup in routing history       ← this module
+  1. Unified ingestion policy evaluation (IngestionPolicyEvaluator)
+  2. Thread-affinity global/thread override checks  <- this module
+  3. Thread-affinity lookup in routing history       <- this module
   4. LLM classification fallback
 
 Only applies when:
@@ -13,10 +13,10 @@ Only applies when:
   - thread_id is present and non-empty
 
 The caller (ingest pipeline) is responsible for integrating the lookup result
-into the triage evaluation (via evaluate_triage's thread_affinity_target param).
+into the policy evaluation (via thread_affinity_target param).
 
 Thread-affinity settings are fetched once per call. Callers that need high
-throughput should maintain a short-lived cache (TTL ≪ affinity TTL) at the
+throughput should maintain a short-lived cache (TTL << affinity TTL) at the
 integration layer.
 """
 
@@ -27,10 +27,112 @@ from dataclasses import dataclass
 from enum import Enum
 
 import asyncpg
-
-from butlers.tools.switchboard.triage.telemetry import get_thread_affinity_telemetry
+from opentelemetry import metrics
 
 logger = logging.getLogger(__name__)
+
+_METER_NAME = "butlers.switchboard"
+
+# Allowed miss reason values for thread affinity
+_ALLOWED_AFFINITY_MISS_REASONS = frozenset(
+    {"no_thread_id", "no_history", "conflict", "disabled", "error", "stale"}
+)
+
+
+class ThreadAffinityTelemetry:
+    """OpenTelemetry metrics for thread-affinity routing lookups.
+
+    Implements the metric contract from docs/switchboard/thread_affinity_routing.md S7.
+
+    Metrics:
+      - butlers.switchboard.thread_affinity.hit (counter)
+      - butlers.switchboard.thread_affinity.miss (counter, with reason attribute)
+      - butlers.switchboard.thread_affinity.stale (counter)
+    """
+
+    def __init__(self) -> None:
+        meter = metrics.get_meter(_METER_NAME)
+
+        self.hit = meter.create_counter(
+            "butlers.switchboard.thread_affinity.hit",
+            unit="1",
+            description=(
+                "Number of email thread affinity lookups that produced a routing decision "
+                "without LLM classification."
+            ),
+        )
+
+        self.miss = meter.create_counter(
+            "butlers.switchboard.thread_affinity.miss",
+            unit="1",
+            description=(
+                "Number of email thread affinity lookups that did not produce a route "
+                "and fell through to LLM classification."
+            ),
+        )
+
+        self.stale = meter.create_counter(
+            "butlers.switchboard.thread_affinity.stale",
+            unit="1",
+            description=(
+                "Number of email threads where historical routing exists but is "
+                "outside the configured TTL window."
+            ),
+        )
+
+    def record_hit(self, *, destination_butler: str) -> None:
+        """Record a successful affinity hit."""
+        self.hit.add(
+            1,
+            {
+                "source": "email",
+                "destination_butler": (
+                    str(destination_butler)[:64] if destination_butler else "unknown"
+                ),
+                "policy_tier": "affinity",
+                "schema_version": "thread_affinity.v1",
+            },
+        )
+
+    def record_miss(self, *, reason: str) -> None:
+        """Record an affinity miss."""
+        safe_reason = reason if reason in _ALLOWED_AFFINITY_MISS_REASONS else "no_history"
+        self.miss.add(
+            1,
+            {
+                "source": "email",
+                "reason": safe_reason,
+                "schema_version": "thread_affinity.v1",
+            },
+        )
+
+    def record_stale(self) -> None:
+        """Record a stale affinity match (history exists but outside TTL)."""
+        self.stale.add(
+            1,
+            {
+                "source": "email",
+                "schema_version": "thread_affinity.v1",
+            },
+        )
+
+
+_THREAD_AFFINITY_TELEMETRY: ThreadAffinityTelemetry | None = None
+
+
+def get_thread_affinity_telemetry() -> ThreadAffinityTelemetry:
+    """Return the process-level thread affinity telemetry singleton."""
+    global _THREAD_AFFINITY_TELEMETRY
+    if _THREAD_AFFINITY_TELEMETRY is None:
+        _THREAD_AFFINITY_TELEMETRY = ThreadAffinityTelemetry()
+    return _THREAD_AFFINITY_TELEMETRY
+
+
+def reset_thread_affinity_telemetry_for_tests() -> None:
+    """Test helper to reset the thread affinity telemetry singleton."""
+    global _THREAD_AFFINITY_TELEMETRY
+    _THREAD_AFFINITY_TELEMETRY = None
+
 
 # Override value prefix for forced butler routing
 _FORCE_PREFIX = "force:"
@@ -365,6 +467,9 @@ __all__ = [
     "AffinityOutcome",
     "AffinityResult",
     "ThreadAffinitySettings",
+    "ThreadAffinityTelemetry",
+    "get_thread_affinity_telemetry",
     "load_settings",
     "lookup_thread_affinity",
+    "reset_thread_affinity_telemetry_for_tests",
 ]

@@ -15,16 +15,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.tools.switchboard.triage.telemetry import (
-    reset_thread_affinity_telemetry_for_tests,
-    reset_triage_telemetry_for_tests,
-)
 from butlers.tools.switchboard.triage.thread_affinity import (
     AffinityOutcome,
     AffinityResult,
     ThreadAffinitySettings,
     _check_override,
     lookup_thread_affinity,
+    reset_thread_affinity_telemetry_for_tests,
 )
 
 pytestmark = pytest.mark.unit
@@ -38,7 +35,6 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(autouse=True)
 def reset_telemetry() -> None:
     """Reset telemetry singletons between tests."""
-    reset_triage_telemetry_for_tests()
     reset_thread_affinity_telemetry_for_tests()
 
 

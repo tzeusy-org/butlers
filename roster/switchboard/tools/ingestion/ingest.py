@@ -27,8 +27,7 @@ Design notes:
 - Lifecycle persistence uses partitioned `message_inbox` from `butlers-9aq.9`
 - Unique index on dedupe_key (migration sw_010) prevents race conditions
 - Ingestion policy evaluation via IngestionPolicyEvaluator(scope='global')
-  replaces legacy TriageRuleCache + evaluate_triage() per unified-ingestion-policy
-  design (D5-D7).
+  per unified-ingestion-policy design (D5-D7).
 """
 
 from __future__ import annotations
@@ -45,6 +44,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from opentelemetry import metrics as otel_metrics
 from pydantic import BaseModel, ConfigDict
 
 from butlers.core.metrics import ButlerMetrics
@@ -57,7 +57,6 @@ from butlers.tools.switchboard.routing.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
 )
-from butlers.tools.switchboard.triage.telemetry import get_triage_telemetry
 from butlers.tools.switchboard.triage.thread_affinity import (
     ThreadAffinitySettings,
     lookup_thread_affinity,
@@ -69,6 +68,101 @@ logger = logging.getLogger(__name__)
 # Safe to construct before init_metrics() is called; recordings are no-ops
 # until a real MeterProvider is installed.
 _ingest_metrics = ButlerMetrics("switchboard")
+
+# ---------------------------------------------------------------------------
+# Ingestion policy telemetry (replaces legacy TriageTelemetry)
+# ---------------------------------------------------------------------------
+
+_INGESTION_METER_NAME = "butlers.switchboard"
+
+_ALLOWED_RULE_TYPES = frozenset(
+    {
+        "sender_domain",
+        "sender_address",
+        "header_condition",
+        "mime_type",
+        "thread_affinity",
+        "substring",
+        "chat_id",
+        "channel_id",
+    }
+)
+_ALLOWED_ACTIONS = frozenset(
+    {"skip", "metadata_only", "low_priority_queue", "pass_through", "route_to", "block"}
+)
+_ALLOWED_PASS_THROUGH_REASONS = frozenset({"no_match", "cache_unavailable", "rules_disabled"})
+_ALLOWED_RESULTS = frozenset({"matched", "pass_through", "error"})
+
+
+def _safe_action(action: str) -> str:
+    if action.startswith("route_to:"):
+        return "route_to"
+    if action in _ALLOWED_ACTIONS:
+        return action
+    return "unknown"
+
+
+class _IngestionPolicyTelemetry:
+    """Lightweight telemetry for ingestion policy evaluation metrics."""
+
+    def __init__(self) -> None:
+        meter = otel_metrics.get_meter(_INGESTION_METER_NAME)
+        self.rule_matched = meter.create_counter(
+            "butlers.switchboard.triage.rule_matched",
+            unit="1",
+            description="Messages matched by a deterministic ingestion policy rule.",
+        )
+        self.pass_through = meter.create_counter(
+            "butlers.switchboard.triage.pass_through",
+            unit="1",
+            description="Messages that passed through to LLM classification.",
+        )
+        self.evaluation_latency_ms = meter.create_histogram(
+            "butlers.switchboard.triage.evaluation_latency_ms",
+            unit="ms",
+            description="End-to-end ingestion policy evaluation latency in milliseconds.",
+        )
+
+    def record_rule_matched(
+        self,
+        *,
+        rule_type: str,
+        action: str,
+        source_channel: str,
+    ) -> None:
+        safe_rt = rule_type if rule_type in _ALLOWED_RULE_TYPES else "unknown"
+        self.rule_matched.add(
+            1,
+            {
+                "rule_type": safe_rt,
+                "action": _safe_action(action),
+                "source_channel": str(source_channel)[:32] if source_channel else "unknown",
+            },
+        )
+
+    def record_pass_through(self, *, source_channel: str, reason: str) -> None:
+        safe_reason = reason if reason in _ALLOWED_PASS_THROUGH_REASONS else "no_match"
+        self.pass_through.add(
+            1,
+            {
+                "source_channel": str(source_channel)[:32] if source_channel else "unknown",
+                "reason": safe_reason,
+            },
+        )
+
+    def record_evaluation_latency(self, *, latency_ms: float, result: str) -> None:
+        safe_result = result if result in _ALLOWED_RESULTS else "unknown"
+        self.evaluation_latency_ms.record(latency_ms, {"result": safe_result})
+
+
+_POLICY_TELEMETRY: _IngestionPolicyTelemetry | None = None
+
+
+def _get_policy_telemetry() -> _IngestionPolicyTelemetry:
+    global _POLICY_TELEMETRY
+    if _POLICY_TELEMETRY is None:
+        _POLICY_TELEMETRY = _IngestionPolicyTelemetry()
+    return _POLICY_TELEMETRY
 
 
 class IngestAcceptedResponse(BaseModel):
@@ -297,7 +391,7 @@ def _run_policy_evaluation(
 ) -> PolicyDecision:
     """Run unified ingestion policy evaluation with telemetry.
 
-    Replaces the legacy ``_run_triage()`` function. Uses
+    Uses
     ``IngestionPolicyEvaluator.evaluate()`` for rule matching and wraps
     the call with triage telemetry for backward-compatible metrics.
 
@@ -319,7 +413,7 @@ def _run_policy_evaluation(
         Pre-resolved thread affinity butler name (from lookup_thread_affinity).
         When set, bypasses rule evaluation with a route_to decision.
     """
-    telemetry = get_triage_telemetry()
+    telemetry = _get_policy_telemetry()
     t0 = time.monotonic()
     result_label = "pass_through"
 

@@ -1,16 +1,14 @@
 """Pydantic models for the switchboard API.
 
-Provides models for routing log, registry entries, connector ingestion, and
-triage rules (switchboard butler).
+Provides models for routing log, registry entries, connector ingestion,
+and unified ingestion rules (switchboard butler).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
-from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class RoutingEntry(BaseModel):
@@ -204,89 +202,7 @@ class IngestionOverviewStats(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Source filter API models
-# ---------------------------------------------------------------------------
-
-
-class SourceFilter(BaseModel):
-    """A persisted source filter returned from the API."""
-
-    id: UUID
-    name: str
-    description: str | None = None
-    filter_mode: Literal["blacklist", "whitelist"]
-    source_key_type: str
-    patterns: list[str]
-    created_at: datetime
-    updated_at: datetime
-
-
-class SourceFilterCreate(BaseModel):
-    """Request body for POST /api/switchboard/source-filters."""
-
-    name: str
-    description: str | None = None
-    filter_mode: Literal["blacklist", "whitelist"]
-    source_key_type: str
-    patterns: list[str]
-
-    @field_validator("name")
-    @classmethod
-    def name_non_empty(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("name must be non-empty")
-        return value
-
-    @field_validator("source_key_type")
-    @classmethod
-    def source_key_type_non_empty(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("source_key_type must be non-empty")
-        return value
-
-    @field_validator("patterns")
-    @classmethod
-    def patterns_non_empty(cls, value: list[str]) -> list[str]:
-        cleaned = [pattern.strip() for pattern in value if pattern.strip()]
-        if not cleaned:
-            raise ValueError("patterns must contain at least one non-empty value")
-        return cleaned
-
-
-class SourceFilterUpdate(BaseModel):
-    """Request body for PATCH /api/switchboard/source-filters/{filter_id}."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str | None = None
-    description: str | None = None
-    patterns: list[str] | None = None
-
-    @field_validator("name")
-    @classmethod
-    def name_non_empty(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not value:
-            raise ValueError("name must be non-empty")
-        return value
-
-    @field_validator("patterns")
-    @classmethod
-    def patterns_non_empty(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            return None
-        cleaned = [pattern.strip() for pattern in value if pattern.strip()]
-        if not cleaned:
-            raise ValueError("patterns must contain at least one non-empty value")
-        return cleaned
-
-
-# ---------------------------------------------------------------------------
-# Triage rule condition schemas (per spec §4.2)
+# Ingestion rule condition schemas
 # ---------------------------------------------------------------------------
 
 
@@ -347,9 +263,6 @@ class MimeTypeCondition(BaseModel):
             raise ValueError("type must be lowercase and non-empty")
         return v
 
-
-# Supported rule types (triage-only, subset of INGESTION_RULE_TYPES)
-RULE_TYPES = frozenset({"sender_domain", "sender_address", "header_condition", "mime_type"})
 
 # All 7 rule types supported by the unified ingestion_rules table (design.md D7)
 INGESTION_RULE_TYPES = frozenset(
@@ -448,21 +361,6 @@ def validate_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, A
         raise ValueError(f"Unknown rule_type: {rule_type!r}")
 
 
-def validate_action(action: str) -> str:
-    """Validate action value per spec §4.1 constraints.
-
-    Returns the action string unchanged if valid.
-    Raises ValueError otherwise.
-    """
-    if action in SIMPLE_ACTIONS:
-        return action
-    if action.startswith("route_to:") and len(action) > len("route_to:"):
-        return action
-    raise ValueError(
-        f"Invalid action {action!r}. Must be one of {sorted(SIMPLE_ACTIONS)} or 'route_to:<butler>'"
-    )
-
-
 def validate_ingestion_action(action: str, scope: str) -> str:
     """Validate action for the unified ingestion_rules table, scope-aware.
 
@@ -534,136 +432,6 @@ def validate_rule_type_for_scope(rule_type: str, scope: str) -> str:
                 f"{connector_type!r}. Must be one of {sorted(allowed)}"
             )
     return rule_type
-
-
-# ---------------------------------------------------------------------------
-# Triage rule API models
-# ---------------------------------------------------------------------------
-
-
-class TriageRule(BaseModel):
-    """A persisted triage rule returned from the API."""
-
-    id: str
-    rule_type: str
-    condition: dict[str, Any]
-    action: str
-    priority: int
-    enabled: bool
-    created_by: str
-    created_at: str
-    updated_at: str
-
-
-class TriageRuleCreate(BaseModel):
-    """Request body for POST /api/switchboard/triage-rules."""
-
-    rule_type: str
-    condition: dict[str, Any]
-    action: str
-    priority: int
-    enabled: bool = True
-
-    @field_validator("rule_type")
-    @classmethod
-    def rule_type_valid(cls, v: str) -> str:
-        if v not in RULE_TYPES:
-            raise ValueError(f"rule_type must be one of {sorted(RULE_TYPES)}")
-        return v
-
-    @field_validator("action")
-    @classmethod
-    def action_valid(cls, v: str) -> str:
-        return validate_action(v)
-
-    @field_validator("priority")
-    @classmethod
-    def priority_non_negative(cls, v: int) -> int:
-        if v < 0:
-            raise ValueError("priority must be >= 0")
-        return v
-
-    @model_validator(mode="after")
-    def condition_matches_rule_type(self) -> TriageRuleCreate:
-        try:
-            validate_condition(self.rule_type, self.condition)
-        except (ValueError, TypeError) as exc:
-            raise ValueError(f"condition invalid for rule_type={self.rule_type!r}: {exc}") from exc
-        return self
-
-
-class TriageRuleUpdate(BaseModel):
-    """Request body for PATCH /api/switchboard/triage-rules/:id.
-
-    All fields are optional (partial update).
-    """
-
-    condition: dict[str, Any] | None = None
-    action: str | None = None
-    priority: int | None = None
-    enabled: bool | None = None
-
-    @field_validator("action")
-    @classmethod
-    def action_valid(cls, v: str | None) -> str | None:
-        if v is not None:
-            return validate_action(v)
-        return v
-
-    @field_validator("priority")
-    @classmethod
-    def priority_non_negative(cls, v: int | None) -> int | None:
-        if v is not None and v < 0:
-            raise ValueError("priority must be >= 0")
-        return v
-
-
-# ---------------------------------------------------------------------------
-# Triage rule test (dry-run) models
-# ---------------------------------------------------------------------------
-
-
-class EnvelopeSender(BaseModel):
-    """Sender identity in the test envelope."""
-
-    identity: str
-
-
-class EnvelopePayload(BaseModel):
-    """Payload section of the test envelope."""
-
-    headers: dict[str, str] = {}
-    mime_parts: list[dict[str, Any]] = []
-
-
-class TestEnvelope(BaseModel):
-    """Sample envelope for dry-run rule testing."""
-
-    sender: EnvelopeSender
-    payload: EnvelopePayload = EnvelopePayload()
-
-
-class TriageRuleTestRequest(BaseModel):
-    """Request body for POST /api/switchboard/triage-rules/test."""
-
-    envelope: TestEnvelope
-    rule: TriageRuleCreate
-
-
-class TriageRuleTestResult(BaseModel):
-    """Result of a dry-run triage rule test."""
-
-    matched: bool
-    decision: str | None = None
-    target_butler: str | None = None
-    matched_rule_type: str | None = None
-    reason: str
-
-
-class TriageRuleTestResponse(BaseModel):
-    """Response envelope for POST /api/switchboard/triage-rules/test."""
-
-    data: TriageRuleTestResult
 
 
 # ---------------------------------------------------------------------------
@@ -1023,37 +791,6 @@ class RoutingInstructionUpdate(BaseModel):
         if v is not None and v < 0:
             raise ValueError("priority must be >= 0")
         return v
-
-
-# ---------------------------------------------------------------------------
-# Connector filter assignment models
-# ---------------------------------------------------------------------------
-
-
-class ConnectorFilterAssignment(BaseModel):
-    """One named source filter with its assignment state for a specific connector.
-
-    Returned by GET /connectors/{type}/{identity}/filters.
-    ALL named filters are returned regardless of whether they are attached.
-    Unattached filters have enabled=False and priority=0.
-    """
-
-    filter_id: Any  # UUID — typed as Any for asyncpg compat
-    name: str
-    filter_mode: str
-    source_key_type: str
-    pattern_count: int
-    enabled: bool
-    priority: int
-    incompatible: bool
-
-
-class ConnectorFilterAssignmentItem(BaseModel):
-    """One item in the PUT /connectors/{type}/{identity}/filters request body."""
-
-    filter_id: Any  # UUID — typed as Any for asyncpg compat
-    enabled: bool
-    priority: int = 0
 
 
 class CursorUpdateRequest(BaseModel):

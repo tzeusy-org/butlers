@@ -94,24 +94,4 @@ describe("ingestionKeys", () => {
     expect(ingestionKeys.connectorsList()).toEqual(key);
   });
 
-  it("connectorFilters includes type and identity", () => {
-    expect(ingestionKeys.connectorFilters("gmail", "user@example.com")).toEqual([
-      "ingestion",
-      "connector-filters",
-      "gmail",
-      "user@example.com",
-    ]);
-  });
-
-  it("different identities produce different connectorFilters keys", () => {
-    const k1 = ingestionKeys.connectorFilters("gmail", "a@x.com");
-    const k2 = ingestionKeys.connectorFilters("gmail", "b@x.com");
-    expect(k1).not.toEqual(k2);
-  });
-
-  it("connectorFilters and connectorDetail are distinct keys (cache isolation)", () => {
-    const kFilters = ingestionKeys.connectorFilters("gmail", "a@x.com");
-    const kDetail = ingestionKeys.connectorDetail("gmail", "a@x.com");
-    expect(kFilters).not.toEqual(kDetail);
-  });
 });

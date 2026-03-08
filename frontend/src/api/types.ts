@@ -1643,98 +1643,6 @@ export interface ConnectorEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Triage rule types (switchboard ingestion filters)
-// ---------------------------------------------------------------------------
-
-/** Valid rule_type values for triage rules. */
-export type TriageRuleType =
-  | "sender_domain"
-  | "sender_address"
-  | "header_condition"
-  | "mime_type";
-
-/** Valid action values for triage rules. */
-export type TriageRuleAction =
-  | "skip"
-  | "metadata_only"
-  | "low_priority_queue"
-  | "pass_through"
-  | string; // route_to:<butler>
-
-/** A persisted triage rule returned from the API. */
-export interface TriageRule {
-  id: string;
-  rule_type: TriageRuleType;
-  condition: Record<string, unknown>;
-  action: TriageRuleAction;
-  priority: number;
-  enabled: boolean;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
-
-/** Request body for POST /api/switchboard/triage-rules. */
-export interface TriageRuleCreate {
-  rule_type: TriageRuleType;
-  condition: Record<string, unknown>;
-  action: TriageRuleAction;
-  priority: number;
-  enabled?: boolean;
-}
-
-/** Request body for PATCH /api/switchboard/triage-rules/:id. */
-export interface TriageRuleUpdate {
-  condition?: Record<string, unknown>;
-  action?: TriageRuleAction;
-  priority?: number;
-  enabled?: boolean;
-}
-
-/** Envelope sender for dry-run test. */
-export interface TestEnvelopeSender {
-  identity: string;
-}
-
-/** Envelope payload for dry-run test. */
-export interface TestEnvelopePayload {
-  headers?: Record<string, string>;
-  mime_parts?: Array<Record<string, unknown>>;
-}
-
-/** Sample envelope for dry-run test. */
-export interface TestEnvelope {
-  sender: TestEnvelopeSender;
-  payload?: TestEnvelopePayload;
-}
-
-/** Request body for POST /api/switchboard/triage-rules/test. */
-export interface TriageRuleTestRequest {
-  envelope: TestEnvelope;
-  rule: TriageRuleCreate;
-}
-
-/** Result of a dry-run triage rule test. */
-export interface TriageRuleTestResult {
-  matched: boolean;
-  decision: string | null;
-  target_butler: string | null;
-  matched_rule_type: string | null;
-  reason: string;
-}
-
-/** Response for POST /api/switchboard/triage-rules/test. */
-export interface TriageRuleTestResponse {
-  data: TriageRuleTestResult;
-}
-
-/** List params for GET /api/switchboard/triage-rules. */
-export interface TriageRuleListParams {
-  rule_type?: TriageRuleType;
-  enabled?: boolean;
-}
-
-// ---------------------------------------------------------------------------
 // Thread affinity types
 // ---------------------------------------------------------------------------
 
@@ -1761,42 +1669,6 @@ export interface ThreadOverrideEntry {
 /** Request body for PUT /api/switchboard/thread-affinity/overrides/:thread_id. */
 export interface ThreadOverrideUpsert {
   mode: string;
-}
-
-// ---------------------------------------------------------------------------
-// Source filter types
-// ---------------------------------------------------------------------------
-
-/** Filter mode — blacklist rejects matched sources; whitelist allows only matched. */
-export type SourceFilterMode = "blacklist" | "whitelist";
-
-/** A persisted source filter returned from the API. */
-export interface SourceFilter {
-  id: string;
-  name: string;
-  description: string | null;
-  filter_mode: SourceFilterMode;
-  /** Open-text type discriminator e.g. "domain", "sender_address", "substring". */
-  source_key_type: string;
-  patterns: string[];
-  created_at: string;
-  updated_at: string;
-}
-
-/** Request body for POST /api/switchboard/source-filters. */
-export interface SourceFilterCreate {
-  name: string;
-  description?: string | null;
-  filter_mode: SourceFilterMode;
-  source_key_type: string;
-  patterns: string[];
-}
-
-/** Request body for PATCH /api/switchboard/source-filters/:id. */
-export interface SourceFilterUpdate {
-  name?: string;
-  description?: string | null;
-  patterns?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -2074,34 +1946,6 @@ export interface QuizResponseParams {
   node_id?: string;
   offset?: number;
   limit?: number;
-}
-
-// ---------------------------------------------------------------------------
-// Connector source filter assignment types
-// ---------------------------------------------------------------------------
-
-/** One named source filter with its assignment state for a specific connector.
- *
- * Returned by GET /connectors/{type}/{identity}/filters.
- * ALL named filters are returned regardless of whether they are attached.
- * Unattached filters have enabled=false and priority=0.
- */
-export interface ConnectorFilterAssignment {
-  filter_id: string;
-  name: string;
-  filter_mode: "blacklist" | "whitelist";
-  source_key_type: string;
-  pattern_count: number;
-  enabled: boolean;
-  priority: number;
-  incompatible: boolean;
-}
-
-/** One item in the PUT /connectors/{type}/{identity}/filters request body. */
-export interface ConnectorFilterAssignmentItem {
-  filter_id: string;
-  enabled: boolean;
-  priority?: number;
 }
 
 // ---------------------------------------------------------------------------

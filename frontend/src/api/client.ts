@@ -107,12 +107,6 @@ import type {
   MemoryRule,
   MemoryStats,
   RuleParams,
-  TriageRule,
-  TriageRuleCreate,
-  TriageRuleUpdate,
-  TriageRuleListParams,
-  TriageRuleTestRequest,
-  TriageRuleTestResponse,
   ThreadAffinitySettings,
   ThreadAffinitySettingsUpdate,
   ThreadOverrideEntry,
@@ -1635,65 +1629,6 @@ export function listConnectors(): Promise<ApiResponse<ConnectorEntry[]>> {
 }
 
 // ---------------------------------------------------------------------------
-// Triage rules API
-// ---------------------------------------------------------------------------
-
-/** List triage rules with optional filters. */
-export function listTriageRules(
-  params?: TriageRuleListParams,
-): Promise<ApiResponse<TriageRule[]>> {
-  const qs = params
-    ? Object.entries(params)
-        .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-        .join("&")
-    : "";
-  return apiFetch<ApiResponse<TriageRule[]>>(
-    qs ? `/switchboard/triage-rules?${qs}` : "/switchboard/triage-rules",
-  );
-}
-
-/** Create a new triage rule. */
-export function createTriageRule(body: TriageRuleCreate): Promise<ApiResponse<TriageRule>> {
-  return apiFetch<ApiResponse<TriageRule>>("/switchboard/triage-rules", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-/** Partially update a triage rule. */
-export function updateTriageRule(
-  ruleId: string,
-  body: TriageRuleUpdate,
-): Promise<ApiResponse<TriageRule>> {
-  return apiFetch<ApiResponse<TriageRule>>(
-    `/switchboard/triage-rules/${encodeURIComponent(ruleId)}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
-}
-
-/** Soft-delete a triage rule. */
-export function deleteTriageRule(ruleId: string): Promise<void> {
-  return apiFetch<void>(`/switchboard/triage-rules/${encodeURIComponent(ruleId)}`, {
-    method: "DELETE",
-  });
-}
-
-/** Dry-run a triage rule against a sample envelope. */
-export function testTriageRule(body: TriageRuleTestRequest): Promise<TriageRuleTestResponse> {
-  return apiFetch<TriageRuleTestResponse>("/switchboard/triage-rules/test", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Thread affinity API
 // ---------------------------------------------------------------------------
 
@@ -1737,55 +1672,6 @@ export function upsertThreadAffinityOverride(
 export function deleteThreadAffinityOverride(threadId: string): Promise<void> {
   return apiFetch<void>(
     `/switchboard/thread-affinity/overrides/${encodeURIComponent(threadId)}`,
-    { method: "DELETE" },
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Source filters API
-// ---------------------------------------------------------------------------
-
-import type {
-  SourceFilter,
-  SourceFilterCreate,
-  SourceFilterUpdate,
-} from "./types.ts";
-
-/** List all persisted source filters. */
-export function listSourceFilters(): Promise<ApiResponse<SourceFilter[]>> {
-  return apiFetch<ApiResponse<SourceFilter[]>>("/switchboard/source-filters");
-}
-
-/** Create a new source filter. */
-export function createSourceFilter(
-  body: SourceFilterCreate,
-): Promise<ApiResponse<SourceFilter>> {
-  return apiFetch<ApiResponse<SourceFilter>>("/switchboard/source-filters", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-/** Partially update a source filter (name, description, patterns). */
-export function updateSourceFilter(
-  filterId: string,
-  body: SourceFilterUpdate,
-): Promise<ApiResponse<SourceFilter>> {
-  return apiFetch<ApiResponse<SourceFilter>>(
-    `/switchboard/source-filters/${encodeURIComponent(filterId)}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
-}
-
-/** Delete a source filter (assignments cascade via FK). */
-export function deleteSourceFilter(filterId: string): Promise<void> {
-  return apiFetch<void>(
-    `/switchboard/source-filters/${encodeURIComponent(filterId)}`,
     { method: "DELETE" },
   );
 }
@@ -1934,8 +1820,6 @@ import type {
   ConnectorDetail,
   ConnectorFanout,
   ConnectorFanoutEntry,
-  ConnectorFilterAssignment,
-  ConnectorFilterAssignmentItem,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
@@ -1954,8 +1838,6 @@ export type {
   ConnectorDetail,
   ConnectorFanout,
   ConnectorFanoutEntry,
-  ConnectorFilterAssignment,
-  ConnectorFilterAssignmentItem,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
@@ -2251,16 +2133,6 @@ export async function getConnectorFanout(
   };
 }
 
-/** Get all source filter assignments for a connector (GET /connectors/{type}/{identity}/filters). */
-export async function getConnectorFilters(
-  connectorType: string,
-  endpointIdentity: string,
-): Promise<ApiResponse<ConnectorFilterAssignment[]>> {
-  return apiFetch<ApiResponse<ConnectorFilterAssignment[]>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/filters`,
-  );
-}
-
 /** Update a connector's checkpoint cursor (PATCH /connectors/{type}/{identity}/cursor). */
 export async function updateConnectorCursor(
   connectorType: string,
@@ -2279,22 +2151,6 @@ export async function updateConnectorCursor(
     ...resp,
     data: _toConnectorDetail(resp.data),
   };
-}
-
-/** Replace all filter assignments for a connector (PUT /connectors/{type}/{identity}/filters). */
-export async function updateConnectorFilters(
-  connectorType: string,
-  endpointIdentity: string,
-  assignments: ConnectorFilterAssignmentItem[],
-): Promise<ApiResponse<ConnectorFilterAssignment[]>> {
-  return apiFetch<ApiResponse<ConnectorFilterAssignment[]>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/filters`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(assignments),
-    },
-  );
 }
 
 // ---------------------------------------------------------------------------

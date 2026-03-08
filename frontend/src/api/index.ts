@@ -307,15 +307,10 @@ export type {
 } from "./types.ts";
 
 export {
-  createTriageRule,
-  deleteTriageRule,
   deleteThreadAffinityOverride,
   getThreadAffinitySettings,
   listThreadAffinityOverrides,
-  listTriageRules,
-  testTriageRule,
   updateThreadAffinitySettings,
-  updateTriageRule,
   upsertThreadAffinityOverride,
 } from "./client.ts";
 
@@ -324,41 +319,16 @@ export type {
   ThreadAffinitySettingsUpdate,
   ThreadOverrideEntry,
   ThreadOverrideUpsert,
-  TriageRule,
-  TriageRuleAction,
-  TriageRuleCreate,
-  TriageRuleListParams,
-  TriageRuleTestRequest,
-  TriageRuleTestResponse,
-  TriageRuleTestResult,
-  TriageRuleType,
-  TriageRuleUpdate,
-} from "./types.ts";
-
-export {
-  listSourceFilters,
-  createSourceFilter,
-  updateSourceFilter,
-  deleteSourceFilter,
-} from "./client.ts";
-
-export type {
-  SourceFilter,
-  SourceFilterCreate,
-  SourceFilterMode,
-  SourceFilterUpdate,
 } from "./types.ts";
 
 export {
   getCrossConnectorSummary,
   getConnectorDetail,
   getConnectorFanout,
-  getConnectorFilters,
   getConnectorStats,
   getIngestionOverview,
   listConnectorSummaries,
   updateConnectorCursor,
-  updateConnectorFilters,
 } from "./client.ts";
 
 export type {
@@ -368,8 +338,6 @@ export type {
   ConnectorDetail,
   ConnectorFanout,
   ConnectorFanoutEntry,
-  ConnectorFilterAssignment,
-  ConnectorFilterAssignmentItem,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
