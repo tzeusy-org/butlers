@@ -19,6 +19,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.ingestion_event import (
     IngestionEventDetail,
@@ -26,6 +27,7 @@ from butlers.api.models.ingestion_event import (
     IngestionEventSession,
     IngestionEventSummary,
 )
+from butlers.api.pricing import PricingConfig
 from butlers.core.ingestion_events import (
     ingestion_event_get,
     ingestion_event_rollup,
@@ -147,12 +149,14 @@ async def get_ingestion_event_sessions(
 async def get_ingestion_event_rollup(
     request_id: str,
     db: DatabaseManager = Depends(_get_db_manager),
+    pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[IngestionEventRollup]:
     """Return aggregated token and cost totals for this ingestion event.
 
     Fetches the cross-butler session lineage, then aggregates input/output
-    token counts and USD costs broken down by butler.
+    token counts and USD costs broken down by butler.  Costs are estimated
+    from token counts and model via the pricing config.
     """
     sessions_data = await ingestion_event_sessions(db, request_id)
-    rollup_data = ingestion_event_rollup(request_id, sessions_data)
+    rollup_data = ingestion_event_rollup(request_id, sessions_data, pricing=pricing)
     return ApiResponse[IngestionEventRollup](data=IngestionEventRollup(**rollup_data))

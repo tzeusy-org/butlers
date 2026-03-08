@@ -22,6 +22,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.api.pricing import PricingConfig, estimate_session_cost
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,7 @@ async def ingestion_event_sessions(
 def ingestion_event_rollup(
     request_id: str,
     sessions: list[dict[str, Any]],
+    pricing: PricingConfig | None = None,
 ) -> dict[str, Any]:
     """Aggregate cost and token totals from a list of fan-out session dicts.
 
@@ -166,6 +168,9 @@ def ingestion_event_rollup(
         request_id: The request_id these sessions belong to.
         sessions: List of session dicts as returned by
             :func:`ingestion_event_sessions`.
+        pricing: Optional pricing config for computing costs from tokens + model.
+            When provided, costs are estimated via ``estimate_session_cost()``.
+            Falls back to reading the ``cost`` JSONB column (legacy path).
 
     Returns:
         A rollup dict with:
@@ -173,7 +178,7 @@ def ingestion_event_rollup(
         - ``total_sessions`` — number of sessions
         - ``total_input_tokens`` — sum of ``input_tokens`` (NULL treated as 0)
         - ``total_output_tokens`` — sum of ``output_tokens`` (NULL treated as 0)
-        - ``total_cost`` — sum of ``cost->>'total_usd'`` across all sessions
+        - ``total_cost`` — sum of estimated or stored costs across all sessions
         - ``by_butler`` — dict mapping butler_name to per-butler breakdown
     """
     total_sessions = len(sessions)
@@ -202,16 +207,24 @@ def ingestion_event_rollup(
         entry["input_tokens"] += in_tok
         entry["output_tokens"] += out_tok
 
-        cost = session.get("cost")
-        if isinstance(cost, dict):
-            usd = cost.get("total_usd")
-            if usd is not None:
-                try:
-                    usd_float = float(usd)
-                    total_cost += usd_float
-                    entry["cost"] += usd_float
-                except (TypeError, ValueError):
-                    pass
+        # Compute cost: prefer pricing-based estimation, fall back to stored cost
+        session_cost = 0.0
+        if pricing is not None:
+            model = session.get("model") or ""
+            if model and (in_tok or out_tok):
+                session_cost = estimate_session_cost(pricing, model, in_tok, out_tok)
+        if session_cost == 0.0:
+            # Legacy fallback: read from cost JSONB column
+            cost = session.get("cost")
+            if isinstance(cost, dict):
+                usd = cost.get("total_usd")
+                if usd is not None:
+                    try:
+                        session_cost = float(usd)
+                    except (TypeError, ValueError):
+                        pass
+        total_cost += session_cost
+        entry["cost"] += session_cost
 
     return {
         "request_id": request_id,

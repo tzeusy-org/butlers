@@ -22,6 +22,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_pricing
+from butlers.api.pricing import PricingConfig
 from butlers.api.routers.ingestion_events import _get_db_manager
 
 pytestmark = pytest.mark.unit
@@ -72,6 +74,7 @@ def _make_session_row(
     output_tokens: int = 200,
     cost: dict | None = None,
     trace_id: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """Create a dict mimicking a session fan-out row with butler_name."""
     return {
@@ -85,6 +88,7 @@ def _make_session_row(
         "output_tokens": output_tokens,
         "cost": cost or {"total_usd": 0.005},
         "trace_id": trace_id,
+        "model": model,
     }
 
 
@@ -126,6 +130,7 @@ def _app_with_mock_db(
         mock_db.fan_out = AsyncMock(return_value={})
 
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
     return app
 
 
