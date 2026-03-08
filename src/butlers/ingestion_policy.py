@@ -20,6 +20,7 @@ Evaluation:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -393,6 +394,14 @@ class IngestionPolicyEvaluator:
             for row in rows:
                 raw: dict[str, Any] = dict(row)
                 condition = raw.get("condition")
+                # asyncpg returns JSONB as dict when codec is registered,
+                # but as a string when using a plain pool (e.g. cursor_pool).
+                if isinstance(condition, str):
+                    try:
+                        condition = json.loads(condition)
+                        raw["condition"] = condition
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 if not isinstance(condition, dict):
                     logger.warning(
                         "ingestion_policy: rule id=%s has non-dict condition (%r); skipping",
