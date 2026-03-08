@@ -1218,7 +1218,9 @@ class MessagePipeline:
                     # Spawn CC — it calls route_to_butler tool(s) directly
                     with tracer.start_as_current_span("butlers.switchboard.routing.llm_decision"):
                         spawn_result = await self._dispatch_fn(
-                            prompt=routing_prompt, trigger_source="tick"
+                            prompt=routing_prompt,
+                            trigger_source="tick",
+                            request_id=request_id,
                         )
 
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
