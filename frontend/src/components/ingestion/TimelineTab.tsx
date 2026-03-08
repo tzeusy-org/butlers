@@ -13,8 +13,8 @@
  * - GET /api/ingestion/events/{id}/rollup    (on expand)
  */
 
-import { useState } from "react";
-import { Link } from "react-router";
+import { useCallback } from "react";
+import { Link, useSearchParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -428,7 +428,8 @@ interface TimelineTabProps {
 }
 
 export function TimelineTab({ isActive }: TimelineTabProps) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const expandedId = searchParams.get("expanded");
 
   const { data: eventsResp, isLoading, isError } = useIngestionEvents(
     {},
@@ -437,9 +438,20 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
 
   const events = eventsResp?.data ?? [];
 
-  function handleToggle(id: string) {
-    setExpandedId((prev) => (prev === id ? null : id));
-  }
+  const handleToggle = useCallback(
+    (id: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (next.get("expanded") === id) {
+          next.delete("expanded");
+        } else {
+          next.set("expanded", id);
+        }
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
 
   return (
     <div className="space-y-4">
