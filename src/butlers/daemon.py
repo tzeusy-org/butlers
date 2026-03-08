@@ -1756,6 +1756,19 @@ class ButlerDaemon:
         if sse_router is not None:
             streamable_app.include_router(sse_router)
 
+        # Add a /health readiness probe endpoint.  Connectors (telegram, gmail)
+        # poll this before starting their ingestion loops to avoid delivering
+        # messages into a ConnectionError while the MCP server is still starting.
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
+        async def _health_endpoint(request: Request) -> JSONResponse:
+            return JSONResponse({"status": "ok"})
+
+        health_route = Route("/health", _health_endpoint, methods=["GET"])
+        if not cls._attach_route_via_public_api(streamable_app, health_route):
+            streamable_app.routes.append(health_route)
+
         guarded_app = _McpRuntimeSessionGuard(streamable_app)
         return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
