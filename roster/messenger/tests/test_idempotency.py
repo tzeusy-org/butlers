@@ -10,7 +10,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from testcontainers.postgres import PostgresContainer
 
 # Add roster to path for importing messenger tools
 roster_path = Path(__file__).parent.parent.parent
@@ -22,31 +21,24 @@ from messenger.tools.idempotency import (  # noqa: E402
     IdempotencyKey,
 )
 
+# All async tests in this file must share the session event loop so that the
+# asyncpg pool (created in the session-scoped fixture loop per
+# asyncio_default_fixture_loop_scope="session") is never used from a different
+# loop.  Without this mark each test function gets a fresh function-scoped loop,
+# which causes "got Future attached to a different loop" / asyncpg
+# InterfaceError failures under pytest-xdist.
+pytestmark = [
+    pytest.mark.asyncio(loop_scope="session"),
+]
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for tests."""
-    with PostgresContainer("postgres:16") as postgres:
-        yield postgres
 
-
-@pytest.fixture(scope="function")
-async def db_pool(postgres_container):
+@pytest.fixture
+async def db_pool(provisioned_postgres_pool):
     """Create a database pool with delivery tables."""
-    import asyncpg
-
-    pool = await asyncpg.create_pool(
-        host=postgres_container.get_container_host_ip(),
-        port=postgres_container.get_exposed_port(5432),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database=postgres_container.dbname,
-    )
-
-    # Create tables directly (extracted from msg_001 migration)
-    async with pool.acquire() as conn:
+    async with provisioned_postgres_pool() as pool:
+        # Create tables directly (extracted from msg_001 migration)
         # delivery_requests table
-        await conn.execute("""
+        await pool.execute("""
             CREATE TABLE IF NOT EXISTS delivery_requests (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 idempotency_key TEXT NOT NULL UNIQUE,
@@ -70,24 +62,24 @@ async def db_pool(postgres_container):
             )
         """)
 
-        await conn.execute("""
+        await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_delivery_requests_request_id
                 ON delivery_requests (request_id)
                 WHERE request_id IS NOT NULL
         """)
 
-        await conn.execute("""
+        await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_delivery_requests_origin_butler
                 ON delivery_requests (origin_butler, created_at DESC)
         """)
 
-        await conn.execute("""
+        await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_delivery_requests_channel_status
                 ON delivery_requests (channel, status, created_at DESC)
         """)
 
         # delivery_attempts table
-        await conn.execute("""
+        await pool.execute("""
             CREATE TABLE IF NOT EXISTS delivery_attempts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 delivery_request_id UUID NOT NULL
@@ -107,13 +99,13 @@ async def db_pool(postgres_container):
             )
         """)
 
-        await conn.execute("""
+        await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_delivery_attempts_request_started
                 ON delivery_attempts (delivery_request_id, started_at)
         """)
 
         # delivery_receipts table
-        await conn.execute("""
+        await pool.execute("""
             CREATE TABLE IF NOT EXISTS delivery_receipts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 delivery_request_id UUID NOT NULL
@@ -127,19 +119,19 @@ async def db_pool(postgres_container):
             )
         """)
 
-        await conn.execute("""
+        await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_delivery_receipts_request
                 ON delivery_receipts (delivery_request_id, received_at)
         """)
 
-        await conn.execute("""
+        await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_delivery_receipts_provider_id
                 ON delivery_receipts (provider_delivery_id)
                 WHERE provider_delivery_id IS NOT NULL
         """)
 
         # delivery_dead_letter table
-        await conn.execute("""
+        await pool.execute("""
             CREATE TABLE IF NOT EXISTS delivery_dead_letter (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 delivery_request_id UUID NOT NULL
@@ -161,21 +153,18 @@ async def db_pool(postgres_container):
             )
         """)
 
-        await conn.execute("""
+        await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_delivery_dead_letter_replay
                 ON delivery_dead_letter (replay_eligible, created_at)
                 WHERE replay_eligible = true AND discarded_at IS NULL
         """)
 
-        await conn.execute("""
+        await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_delivery_dead_letter_error_class
                 ON delivery_dead_letter (error_class, created_at DESC)
         """)
 
-    try:
         yield pool
-    finally:
-        await pool.close()
 
 
 class TestIdempotencyKeyDerivation:
