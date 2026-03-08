@@ -204,12 +204,12 @@ class TestConstraints:
         """Connector action CHECK constraint is named."""
         assert "ingestion_rules_connector_action_check" in self._src()
 
-    def test_connector_scoped_rules_must_be_block(self) -> None:
-        """Connector-scoped rules constrained to action = 'block'."""
+    def test_connector_scoped_rules_must_be_block_or_pass_through(self) -> None:
+        """Connector-scoped rules constrained to action IN ('block', 'pass_through')."""
         src = self._src()
-        # The CHECK: scope = 'global' OR action = 'block'
-        # This means: if scope != 'global' (i.e. connector), action must be 'block'
-        assert "action = 'block'" in src
+        # The CHECK: scope = 'global' OR action IN ('block', 'pass_through')
+        # This means: if scope != 'global' (i.e. connector), action must be block or pass_through
+        assert "action IN ('block', 'pass_through')" in src
 
     def test_priority_check_constraint(self) -> None:
         """Priority CHECK constraint enforces priority >= 0."""

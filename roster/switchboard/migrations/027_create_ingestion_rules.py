@@ -8,7 +8,8 @@ Migration notes:
 - Creates unified ingestion_rules table per unified-ingestion-policy design.md D9.
 - scope column: 'global' for post-ingest/pre-LLM rules, 'connector:<type>:<identity>'
   for pre-ingest connector-scoped rules.
-- Connector-scoped rules constrained to action='block' via CHECK.
+- Connector-scoped rules constrained to action IN ('block','pass_through') via CHECK
+  (amended from D3 to support whitelist migration per D4).
 - Migrates triage_rules → ingestion_rules (scope='global'), preserving IDs.
 - Migrates source_filters × connector_source_filters → ingestion_rules:
   * Blacklist patterns → individual block rules per pattern per connector assignment.
@@ -21,6 +22,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+
+from sqlalchemy import text as sa_text
 
 from alembic import op
 
@@ -61,7 +64,7 @@ def upgrade() -> None:
                 CHECK (scope = 'global' OR scope LIKE 'connector:%'),
 
             CONSTRAINT ingestion_rules_connector_action_check
-                CHECK (scope = 'global' OR action = 'block'),
+                CHECK (scope = 'global' OR action IN ('block', 'pass_through')),
 
             CONSTRAINT ingestion_rules_priority_check
                 CHECK (priority >= 0)
@@ -117,7 +120,7 @@ def _migrate_source_filters() -> None:
     """
     conn = op.get_bind()
     rows = conn.execute(
-        __import__("sqlalchemy").text(
+        sa_text(
             """
             SELECT
                 sf.id::text          AS filter_id,
@@ -213,22 +216,20 @@ def _migrate_source_filters() -> None:
         logger.info("sw_027: no source_filter patterns to expand")
         return
 
-    # Bulk insert via parameterised multi-row INSERT
-    sa_text = __import__("sqlalchemy").text
-    for ins in inserts:
-        conn.execute(
-            sa_text(
-                """
-                INSERT INTO ingestion_rules
-                    (id, scope, rule_type, condition, action, priority, enabled,
-                     name, description, created_by)
-                VALUES
-                    (:id, :scope, :rule_type, :condition::jsonb, :action, :priority,
-                     :enabled, :name, :description, :created_by)
-                """
-            ),
-            ins,
-        )
+    # Bulk insert via executemany
+    conn.execute(
+        sa_text(
+            """
+            INSERT INTO ingestion_rules
+                (id, scope, rule_type, condition, action, priority, enabled,
+                 name, description, created_by)
+            VALUES
+                (:id, :scope, :rule_type, :condition::jsonb, :action, :priority,
+                 :enabled, :name, :description, :created_by)
+            """
+        ),
+        inserts,
+    )
 
     logger.info("sw_027: migrated %d source_filter pattern(s) into ingestion_rules", len(inserts))
 
