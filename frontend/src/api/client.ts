@@ -132,6 +132,12 @@ import type {
   CreateAndLinkEntityRequest,
   CreateAndLinkEntityResponse,
   MergeEntityResponse,
+  IngestionRule,
+  IngestionRuleCreate,
+  IngestionRuleUpdate,
+  IngestionRuleListParams,
+  IngestionRuleTestRequest,
+  IngestionRuleTestResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2289,4 +2295,68 @@ export async function updateConnectorFilters(
       body: JSON.stringify(assignments),
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Unified ingestion rules (design.md D8)
+// ---------------------------------------------------------------------------
+
+/** List active ingestion rules with optional filters. */
+export function getIngestionRules(
+  params?: IngestionRuleListParams,
+): Promise<ApiResponse<IngestionRule[]>> {
+  const qs = params
+    ? Object.entries(params)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+        .join("&")
+    : "";
+  return apiFetch<ApiResponse<IngestionRule[]>>(
+    qs ? `/switchboard/ingestion-rules?${qs}` : "/switchboard/ingestion-rules",
+  );
+}
+
+/** Create a new ingestion rule. */
+export function createIngestionRule(
+  body: IngestionRuleCreate,
+): Promise<ApiResponse<IngestionRule>> {
+  return apiFetch<ApiResponse<IngestionRule>>("/switchboard/ingestion-rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Partially update an ingestion rule. */
+export function updateIngestionRule(
+  ruleId: string,
+  body: IngestionRuleUpdate,
+): Promise<ApiResponse<IngestionRule>> {
+  return apiFetch<ApiResponse<IngestionRule>>(
+    `/switchboard/ingestion-rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** Soft-delete an ingestion rule. */
+export function deleteIngestionRule(ruleId: string): Promise<void> {
+  return apiFetch<void>(
+    `/switchboard/ingestion-rules/${encodeURIComponent(ruleId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Dry-run: evaluate a test envelope against active ingestion rules. */
+export function testIngestionRule(
+  body: IngestionRuleTestRequest,
+): Promise<IngestionRuleTestResponse> {
+  return apiFetch<IngestionRuleTestResponse>("/switchboard/ingestion-rules/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
