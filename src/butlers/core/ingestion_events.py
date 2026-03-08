@@ -51,6 +51,10 @@ def _decode_event_row(row: asyncpg.Record) -> dict[str, Any]:
 def _decode_session_row(row: asyncpg.Record, butler_name: str) -> dict[str, Any]:
     """Convert an asyncpg Record for a session row to a plain dict, adding butler_name."""
     d = dict(row)
+    # asyncpg returns UUID columns as uuid.UUID; stringify for Pydantic
+    for key in ("id", "trace_id"):
+        if key in d and isinstance(d[key], UUID):
+            d[key] = str(d[key])
     # Deserialise cost JSONB if returned as a string
     if "cost" in d and isinstance(d["cost"], str):
         d["cost"] = json.loads(d["cost"])
