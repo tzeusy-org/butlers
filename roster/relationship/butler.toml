@@ -59,7 +59,7 @@ provider = "google"
 policy = "suggest"
 
 [modules.contacts]
-provider = "google"
+providers = [{type = "google"}, {type = "telegram"}]
 include_other_contacts = false
 
 [modules.contacts.sync]

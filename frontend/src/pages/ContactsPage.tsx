@@ -30,7 +30,8 @@ export default function ContactsPage() {
   const [search, setSearch] = useState("");
   const [activeLabel, setActiveLabel] = useState("");
   const [page, setPage] = useState(0);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [isSyncingGoogle, setIsSyncingGoogle] = useState(false);
+  const [isSyncingTelegram, setIsSyncingTelegram] = useState(false);
 
   const params: ContactParams = {
     q: search || undefined,
@@ -59,11 +60,12 @@ export default function ContactsPage() {
     setPage(0);
   }
 
-  async function handleSyncFromGoogle() {
-    if (isSyncing) return;
+  async function handleSyncFrom(provider: "google" | "telegram") {
+    const setIsSyncing = provider === "google" ? setIsSyncingGoogle : setIsSyncingTelegram;
+    if (provider === "google" ? isSyncingGoogle : isSyncingTelegram) return;
     setIsSyncing(true);
     try {
-      const result = await triggerContactsSync("incremental");
+      const result = await triggerContactsSync("incremental", provider);
       await refetch();
       const stats = [
         result.fetched != null ? `${result.fetched} fetched` : null,
@@ -73,14 +75,14 @@ export default function ContactsPage() {
       ]
         .filter(Boolean)
         .join(", ");
-
+      const label = provider === "google" ? "Google" : "Telegram";
       toast.success(
-        result.message ?? (stats ? `Google sync complete: ${stats}` : "Google sync complete"),
+        result.message ?? (stats ? `${label} sync complete: ${stats}` : `${label} sync complete`),
       );
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Google sync failed: ${message}`);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      const label = provider === "google" ? "Google" : "Telegram";
+      toast.error(`${label} sync failed: ${message}`);
     } finally {
       setIsSyncing(false);
     }
@@ -96,13 +98,23 @@ export default function ContactsPage() {
             Manage your personal and professional contacts.
           </p>
         </div>
-        <Button
-          onClick={handleSyncFromGoogle}
-          disabled={isSyncing}
-          aria-label="Sync From Google"
-        >
-          {isSyncing ? "Syncing..." : "Sync From Google"}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            onClick={() => handleSyncFrom("telegram")}
+            disabled={isSyncingTelegram}
+            variant="outline"
+            aria-label="Sync From Telegram"
+          >
+            {isSyncingTelegram ? "Syncing..." : "Sync From Telegram"}
+          </Button>
+          <Button
+            onClick={() => handleSyncFrom("google")}
+            disabled={isSyncingGoogle}
+            aria-label="Sync From Google"
+          >
+            {isSyncingGoogle ? "Syncing..." : "Sync From Google"}
+          </Button>
+        </div>
       </div>
 
       {/* Pending identities — shown when temp contacts exist */}

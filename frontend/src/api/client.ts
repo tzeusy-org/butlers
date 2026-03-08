@@ -706,11 +706,12 @@ export function getContacts(params?: ContactParams): Promise<ContactListResponse
   return apiFetch<ContactListResponse>(path);
 }
 
-/** Trigger a manual Google contacts sync. */
+/** Trigger a manual contacts sync for a specific provider. */
 export function triggerContactsSync(
   mode: "incremental" | "full" = "incremental",
+  provider: "google" | "telegram" = "google",
 ): Promise<ContactsSyncTriggerResponse> {
-  const sp = new URLSearchParams({ mode });
+  const sp = new URLSearchParams({ mode, provider });
   return apiFetch<ContactsSyncTriggerResponse>(
     `/relationship/contacts/sync?${sp.toString()}`,
     { method: "POST" },

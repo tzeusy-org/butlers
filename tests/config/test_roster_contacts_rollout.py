@@ -31,7 +31,9 @@ def test_contacts_enabled_butlers_have_valid_contacts_config() -> None:
         assert isinstance(contacts, dict), f"{butler_name} is missing [modules.contacts]"
 
         validated = ContactsConfig.model_validate(contacts)
-        assert validated.provider == "google"
+        assert "google" in validated.provider_types, (
+            f"{butler_name} must include 'google' in its contacts providers"
+        )
         assert validated.include_other_contacts is False
         assert validated.sync.enabled is True
         assert validated.sync.run_on_startup is True

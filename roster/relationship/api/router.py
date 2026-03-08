@@ -311,8 +311,15 @@ async def list_contacts(
 # ---------------------------------------------------------------------------
 
 
+_SUPPORTED_SYNC_PROVIDERS = {"google", "telegram"}
+
+
 @router.post("/contacts/sync", response_model=ContactsSyncTriggerResponse)
 async def trigger_contacts_sync(
+    provider: str = Query(
+        "google",
+        description="Provider to sync: 'google' or 'telegram'",
+    ),
     mode: Literal["incremental", "full"] = Query(
         "incremental",
         description="Sync mode: incremental for routine refresh, full for backfill",
@@ -321,6 +328,12 @@ async def trigger_contacts_sync(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
 ) -> ContactsSyncTriggerResponse:
     """Trigger contacts sync via the relationship butler's MCP tool."""
+    if provider not in _SUPPORTED_SYNC_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported provider '{provider}'. Must be one of: {sorted(_SUPPORTED_SYNC_PROVIDERS)}",  # noqa: E501
+        )
+
     if not any(cfg.name == BUTLER_DB for cfg in configs):
         raise HTTPException(status_code=404, detail="Relationship butler is not configured")
 
@@ -332,7 +345,7 @@ async def trigger_contacts_sync(
         result = await asyncio.wait_for(
             client.call_tool(
                 "contacts_sync_now",
-                {"provider": "google", "mode": mode},
+                {"provider": provider, "mode": mode},
             ),
             timeout=_CONTACTS_SYNC_TIMEOUT_S,
         )
@@ -355,7 +368,7 @@ async def trigger_contacts_sync(
     is_error = bool(getattr(result, "is_error", False))
 
     if is_error:
-        if _is_credential_error(payload, raw_text):
+        if provider == "google" and _is_credential_error(payload, raw_text):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -384,7 +397,7 @@ async def trigger_contacts_sync(
         message = None
 
     return ContactsSyncTriggerResponse(
-        provider="google",
+        provider=provider,
         mode=mode,
         fetched=fetched,
         applied=applied,
