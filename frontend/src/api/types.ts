@@ -2103,3 +2103,85 @@ export interface ConnectorFilterAssignmentItem {
   enabled: boolean;
   priority?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Unified ingestion rules (design.md D8)
+// ---------------------------------------------------------------------------
+
+/** A persisted ingestion rule returned from the API. */
+export interface IngestionRule {
+  id: string;
+  scope: string;
+  rule_type: string;
+  condition: Record<string, unknown>;
+  action: string;
+  priority: number;
+  enabled: boolean;
+  name: string | null;
+  description: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** Request body for POST /api/switchboard/ingestion-rules. */
+export interface IngestionRuleCreate {
+  scope: string;
+  rule_type: string;
+  condition: Record<string, unknown>;
+  action: string;
+  priority: number;
+  enabled?: boolean;
+  name?: string | null;
+  description?: string | null;
+}
+
+/** Request body for PATCH /api/switchboard/ingestion-rules/:id. All fields optional. */
+export interface IngestionRuleUpdate {
+  scope?: string | null;
+  condition?: Record<string, unknown> | null;
+  action?: string | null;
+  priority?: number | null;
+  enabled?: boolean | null;
+  name?: string | null;
+  description?: string | null;
+}
+
+/** Sample envelope for dry-run ingestion rule testing. */
+export interface IngestionRuleTestEnvelope {
+  sender_address?: string;
+  source_channel?: string;
+  headers?: Record<string, string>;
+  mime_parts?: string[];
+  raw_key?: string;
+}
+
+/** Request body for POST /api/switchboard/ingestion-rules/test. */
+export interface IngestionRuleTestRequest {
+  envelope: IngestionRuleTestEnvelope;
+  scope?: string;
+}
+
+/** Result of a dry-run ingestion rule test. */
+export interface IngestionRuleTestResult {
+  matched: boolean;
+  decision: string | null;
+  target_butler: string | null;
+  matched_rule_id: string | null;
+  matched_rule_type: string | null;
+  reason: string;
+}
+
+/** Response envelope for POST /api/switchboard/ingestion-rules/test. */
+export interface IngestionRuleTestResponse {
+  data: IngestionRuleTestResult;
+}
+
+/** Query params for GET /api/switchboard/ingestion-rules. */
+export interface IngestionRuleListParams {
+  scope?: string;
+  rule_type?: string;
+  action?: string;
+  enabled?: boolean;
+}

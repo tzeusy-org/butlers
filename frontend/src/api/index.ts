@@ -381,6 +381,25 @@ export type {
 } from "./types.ts";
 
 export {
+  createIngestionRule,
+  deleteIngestionRule,
+  getIngestionRules,
+  testIngestionRule,
+  updateIngestionRule,
+} from "./client.ts";
+
+export type {
+  IngestionRule,
+  IngestionRuleCreate,
+  IngestionRuleListParams,
+  IngestionRuleTestEnvelope,
+  IngestionRuleTestRequest,
+  IngestionRuleTestResponse,
+  IngestionRuleTestResult,
+  IngestionRuleUpdate,
+} from "./types.ts";
+
+export {
   getEducationCrossTopicAnalytics,
   getEducationFlows,
   getEducationMasterySummary,
