@@ -435,11 +435,10 @@ class IngestionPolicyEvaluator:
                 self._scope,
                 skipped,
             )
-            if is_initial and len(new_rules) == 0:
+            if is_initial and len(new_rules) == 0 and self._scope == "global":
                 logger.warning(
-                    "ingestion_policy: zero rules loaded for scope=%s — "
-                    "no ingestion filtering will be applied for this scope",
-                    self._scope,
+                    "ingestion_policy: zero global rules loaded — "
+                    "no ingestion filtering will be applied",
                 )
         except Exception as exc:
             logger.warning(
