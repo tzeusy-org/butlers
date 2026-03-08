@@ -1132,6 +1132,182 @@ class MessagePipeline:
                     ),
                 )
 
+                # --- Pre-resolved triage bypass ---
+                # If the ingest tool already resolved a triage decision via
+                # ingestion_rules (global scope), honour it and skip LLM.
+                _triage_decision = (
+                    request_context.get("triage_decision") if request_context else None
+                )
+                _triage_target = request_context.get("triage_target") if request_context else None
+
+                if _triage_decision == "route_to" and _triage_target:
+                    bypass_start = time.perf_counter()
+                    with tracer.start_as_current_span(
+                        "butlers.switchboard.routing.policy_bypass"
+                    ) as bypass_span:
+                        bypass_span.set_attribute("triage_decision", _triage_decision)
+                        bypass_span.set_attribute("triage_target", _triage_target)
+                        bypass_span.set_attribute(
+                            "triage_rule_id",
+                            str(request_context.get("triage_rule_id", "")),
+                        )
+
+                        # Build route envelope and dispatch directly
+                        bypass_envelope: dict[str, Any] = {
+                            "schema_version": "route.v1",
+                            "request_context": {
+                                "request_id": request_id,
+                                "received_at": received_at.isoformat(),
+                                "source_channel": source,
+                                "source_endpoint_identity": source_metadata.get(
+                                    "identity", "unknown"
+                                ),
+                                "source_sender_identity": source_metadata.get(
+                                    "identity", "unknown"
+                                ),
+                                "source_thread_identity": (
+                                    request_context.get("source_thread_identity")
+                                    if request_context
+                                    else None
+                                ),
+                                "trace_context": {},
+                            },
+                            "input": {"prompt": message_text},
+                            "target": {
+                                "butler": _triage_target,
+                                "tool": "route.execute",
+                            },
+                            "source_metadata": source_metadata,
+                            "__switchboard_route_context": {
+                                "request_id": request_id,
+                                "fanout_mode": "policy_bypass",
+                                "segment_id": f"policy-{_triage_target}",
+                                "attempt": 1,
+                            },
+                        }
+
+                        routed = [_triage_target]
+                        acked: list[str] = []
+                        failed: list[str] = []
+                        failed_details: list[str] = []
+                        try:
+                            bypass_result = await _fallback_route(
+                                self._pool,
+                                target_butler=_triage_target,
+                                tool_name="route.execute",
+                                args=bypass_envelope,
+                                source_butler="switchboard",
+                            )
+                            if isinstance(bypass_result, dict) and bypass_result.get("error"):
+                                failed = [_triage_target]
+                                failed_details = [f"{_triage_target}: {bypass_result['error']}"]
+                            else:
+                                acked = [_triage_target]
+                        except Exception as bypass_exc:
+                            logger.exception("Policy bypass route failed for %s", _triage_target)
+                            failed = [_triage_target]
+                            failed_details = [
+                                f"{_triage_target}: {type(bypass_exc).__name__}: {bypass_exc}"
+                            ]
+
+                        bypass_latency_ms = (time.perf_counter() - bypass_start) * 1000
+                        lifecycle_state = "errored" if failed_details else "parsed"
+                        outcome = "failure" if failed_details else "success"
+
+                        telemetry.end_to_end_latency_ms.record(
+                            bypass_latency_ms,
+                            {**request_attrs, "outcome": outcome},
+                        )
+                        telemetry.lifecycle_transition.add(
+                            1,
+                            {
+                                **request_attrs,
+                                "lifecycle_state": lifecycle_state,
+                                "outcome": outcome,
+                            },
+                        )
+
+                        logger.info(
+                            "Pipeline routed message via policy bypass (no LLM)",
+                            extra=self._log_fields(
+                                source=source,
+                                chat_id=chat_id,
+                                target_butler=_triage_target,
+                                latency_ms=bypass_latency_ms,
+                                request_id=request_id,
+                                lifecycle_state=lifecycle_state,
+                                triage_decision=_triage_decision,
+                                triage_target=_triage_target,
+                            ),
+                        )
+
+                        if message_inbox_id:
+                            completed_at = datetime.now(UTC)
+                            await self._update_message_inbox_lifecycle(
+                                message_inbox_id=message_inbox_id,
+                                decomposition_output={
+                                    "request_id": request_id,
+                                    "routed": routed,
+                                    "policy_bypass": True,
+                                    "triage_rule_id": request_context.get("triage_rule_id"),
+                                },
+                                dispatch_outcomes={
+                                    "request_id": request_id,
+                                    "acked": acked,
+                                    "failed": failed,
+                                },
+                                response_summary=(
+                                    f"Policy bypass: {_triage_decision} -> {_triage_target}"
+                                ),
+                                lifecycle_state=lifecycle_state,
+                                classified_at=completed_at,
+                                classification_duration_ms=bypass_latency_ms,
+                                final_state_at=completed_at,
+                            )
+
+                        return RoutingResult(
+                            target_butler=_triage_target,
+                            route_result={"policy_bypass": True},
+                            routing_error="; ".join(failed_details) if failed_details else None,
+                            routed_targets=routed,
+                            acked_targets=acked,
+                            failed_targets=failed,
+                        )
+
+                if _triage_decision == "skip":
+                    logger.info(
+                        "Pipeline skipping message (global policy: skip)",
+                        extra=self._log_fields(
+                            source=source,
+                            chat_id=chat_id,
+                            target_butler="skipped",
+                            latency_ms=0.0,
+                            request_id=request_id,
+                            lifecycle_state="skipped",
+                        ),
+                    )
+                    return RoutingResult(
+                        target_butler="skipped",
+                        route_result={"policy_bypass": True, "triage_decision": "skip"},
+                    )
+
+                if _triage_decision == "metadata_only":
+                    logger.info(
+                        "Pipeline metadata-only (global policy: metadata_only, no LLM)",
+                        extra=self._log_fields(
+                            source=source,
+                            chat_id=chat_id,
+                            target_butler="metadata_only",
+                            latency_ms=0.0,
+                            request_id=request_id,
+                            lifecycle_state="metadata_only",
+                        ),
+                    )
+                    return RoutingResult(
+                        target_butler="metadata_only",
+                        route_result={"policy_bypass": True, "triage_decision": "metadata_only"},
+                    )
+
                 # Build routing prompt and spawn CC
                 start = time.perf_counter()
                 spawn_start = time.perf_counter()

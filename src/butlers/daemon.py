@@ -1162,9 +1162,7 @@ class ButlerDaemon:
             raise RuntimeError("Cannot set module state: database not connected.")
         pool = self.db.pool
         key = f"{_MODULE_ENABLED_KEY_PREFIX}{name}{_MODULE_ENABLED_KEY_SUFFIX}"
-        disabled_by_key = (
-            f"{_MODULE_ENABLED_KEY_PREFIX}{name}{_MODULE_DISABLED_BY_KEY_SUFFIX}"
-        )
+        disabled_by_key = f"{_MODULE_ENABLED_KEY_PREFIX}{name}{_MODULE_DISABLED_BY_KEY_SUFFIX}"
         await _state_set(pool, key, enabled)
         # Mark user-intentional disables so self-healing doesn't override them.
         if not enabled:
@@ -1490,7 +1488,7 @@ class ButlerDaemon:
             channel = ref.source.get("channel", "unknown")
             endpoint_identity = ref.source.get("endpoint_identity", "unknown")
             external_thread_id = ref.event.get("external_thread_id")
-            request_context = {
+            request_context: dict[str, Any] = {
                 "request_id": ref.request_id,
                 "received_at": ref.event.get("observed_at", ""),
                 "source_channel": channel,
@@ -1499,6 +1497,10 @@ class ButlerDaemon:
                 "source_thread_identity": external_thread_id,
                 "trace_context": {},
             }
+            if ref.triage_decision is not None:
+                request_context["triage_decision"] = ref.triage_decision
+            if ref.triage_target is not None:
+                request_context["triage_target"] = ref.triage_target
 
             # Fire 👀 reaction before pipeline processing (telegram only).
             if channel == "telegram" and telegram_mod is not None:
@@ -2990,6 +2992,12 @@ class ButlerDaemon:
             # pipeline wiring was skipped, e.g. in tests).
             buffer = daemon._buffer
 
+            # Global-scope ingestion policy evaluator for ingest_v1.
+            from butlers.ingestion_policy import IngestionPolicyEvaluator as _IPE
+
+            _global_policy_evaluator = _IPE(scope="global", db_pool=pool)
+            asyncio.ensure_future(_global_policy_evaluator.ensure_loaded())
+
             async def _process_ingested_message(
                 pipeline: MessagePipeline,
                 request_id: str,
@@ -2998,6 +3006,8 @@ class ButlerDaemon:
                 event: dict[str, Any],
                 sender: dict[str, Any],
                 message_inbox_id: Any,
+                triage_decision: str | None = None,
+                triage_target: str | None = None,
             ) -> None:
                 """Background task: classify and route an ingested message."""
                 from butlers.modules.telegram import (
@@ -3009,7 +3019,7 @@ class ButlerDaemon:
                 channel = source.get("channel", "unknown")
                 endpoint_identity = source.get("endpoint_identity", "unknown")
                 external_thread_id = event.get("external_thread_id")
-                request_context = {
+                request_context: dict[str, Any] = {
                     "request_id": request_id,
                     "received_at": event.get("observed_at", ""),
                     "source_channel": channel,
@@ -3018,6 +3028,10 @@ class ButlerDaemon:
                     "source_thread_identity": external_thread_id,
                     "trace_context": {},
                 }
+                if triage_decision is not None:
+                    request_context["triage_decision"] = triage_decision
+                if triage_target is not None:
+                    request_context["triage_target"] = triage_target
 
                 # Resolve TelegramModule for reaction lifecycle (telegram-only).
                 _telegram_mod = (
@@ -3106,7 +3120,9 @@ class ButlerDaemon:
                 if control is not None:
                     envelope["control"] = control
                 try:
-                    result = await ingest_v1(pool, envelope)
+                    result = await ingest_v1(
+                        pool, envelope, policy_evaluator=_global_policy_evaluator
+                    )
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
@@ -3123,6 +3139,8 @@ class ButlerDaemon:
                                 source=source,
                                 event=event,
                                 sender=sender,
+                                triage_decision=result.triage_decision,
+                                triage_target=result.triage_target,
                             )
                         else:
                             # Fallback: unbounded create_task (buffer not wired)
@@ -3135,6 +3153,8 @@ class ButlerDaemon:
                                     event=event,
                                     sender=sender,
                                     message_inbox_id=result.request_id,
+                                    triage_decision=result.triage_decision,
+                                    triage_target=result.triage_target,
                                 ),
                                 name=f"ingest-route-{result.request_id}",
                             )

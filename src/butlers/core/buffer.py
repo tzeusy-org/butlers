@@ -85,6 +85,8 @@ class _MessageRef:
     sender: dict[str, Any]
     enqueued_at: datetime
     policy_tier: str = field(default=POLICY_TIER_DEFAULT)
+    triage_decision: str | None = field(default=None)
+    triage_target: str | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +286,8 @@ class DurableBuffer:
         event: dict[str, Any],
         sender: dict[str, Any],
         policy_tier: str = POLICY_TIER_DEFAULT,
+        triage_decision: str | None = None,
+        triage_target: str | None = None,
     ) -> bool:
         """Attempt to enqueue a message reference (non-blocking, hot path).
 
@@ -311,6 +315,8 @@ class DurableBuffer:
             sender=sender,
             enqueued_at=datetime.now(UTC),
             policy_tier=policy_tier,
+            triage_decision=triage_decision,
+            triage_target=triage_target,
         )
 
         queue = self._tier_queues[policy_tier]
@@ -582,6 +588,10 @@ class DurableBuffer:
 
             request_id = str(request_context.get("request_id", str(row["id"])))
 
+            # Recover triage decision from stored request_context
+            triage_decision = request_context.get("triage_decision")
+            triage_target = request_context.get("triage_target")
+
             ref = _MessageRef(
                 request_id=request_id,
                 message_inbox_id=row["id"],
@@ -591,6 +601,8 @@ class DurableBuffer:
                 sender=sender,
                 enqueued_at=datetime.now(UTC),
                 policy_tier=policy_tier,
+                triage_decision=triage_decision,
+                triage_target=triage_target,
             )
 
             tier_queue = self._tier_queues[policy_tier]
