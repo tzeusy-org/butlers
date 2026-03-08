@@ -158,7 +158,7 @@ class TestLifecycle:
 class TestRegisterTools:
     """Verify that register_tools creates the expected MCP tools."""
 
-    async def test_registers_five_tools(self):
+    async def test_registers_four_tools(self):
         mod = EmailModule()
         mcp = MagicMock()
         # mcp.tool() returns a decorator that returns the function unchanged
@@ -166,8 +166,8 @@ class TestRegisterTools:
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        # 5 tools: send, reply, search, read, check_and_route
-        assert mcp.tool.call_count == 5
+        # 4 tools: send, reply, search, read
+        assert mcp.tool.call_count == 4
 
     async def test_tool_decorator_called(self):
         mod = EmailModule()
@@ -190,7 +190,6 @@ class TestRegisterTools:
             "email_reply_to_thread",
             "email_search_inbox",
             "email_read_message",
-            "email_check_and_route_inbox",
         }
         assert set(registered_tools) == expected_tools
 

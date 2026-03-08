@@ -30,7 +30,6 @@ from butlers.daemon import (
 )
 from butlers.modules.base import Module
 from butlers.modules.email import EmailModule
-from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry
 from butlers.modules.telegram import TelegramModule
 
@@ -2169,14 +2168,9 @@ class TestMessagePipelineWiring:
 
         assert isinstance(telegram_module, TelegramModule)
         assert isinstance(email_module, EmailModule)
-        # TelegramModule no longer has set_pipeline (ingestion moved to connector).
+        # Both modules no longer have _pipeline (ingestion moved to connectors).
         assert not hasattr(telegram_module, "_pipeline")
-        # EmailModule still wires a pipeline.
-        assert isinstance(email_module._pipeline, MessagePipeline)
-        assert email_module._pipeline._pool is patches["mock_pool"]
-        assert email_module._pipeline._source_butler == "switchboard"
-        assert email_module._pipeline._dispatch_fn is daemon.spawner.trigger
-        assert email_module._pipeline._dispatch_fn is patches["mock_spawner"].trigger
+        assert not hasattr(email_module, "_pipeline")
 
     async def test_non_switchboard_does_not_wire_pipeline(self, tmp_path: Path) -> None:
         """Non-switchboard butlers should not attach a MessagePipeline to channel modules."""
@@ -2212,9 +2206,9 @@ class TestMessagePipelineWiring:
 
         assert isinstance(telegram_module, TelegramModule)
         assert isinstance(email_module, EmailModule)
-        # TelegramModule no longer has _pipeline attribute (ingestion moved to connector).
+        # Both modules no longer have _pipeline attribute (ingestion moved to connectors).
         assert not hasattr(telegram_module, "_pipeline")
-        assert email_module._pipeline is None
+        assert not hasattr(email_module, "_pipeline")
 
 
 class TestRuntimeBinaryCheck:

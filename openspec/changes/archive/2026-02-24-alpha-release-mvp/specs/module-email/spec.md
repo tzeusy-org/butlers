@@ -95,18 +95,7 @@ Email sending uses SMTP via stdlib `smtplib`.
 - **THEN** the email is sent with a subject defaulting to `Re: {thread_id}` if not provided
 - **AND** the `thread_id` is included in the response
 
-### Requirement: Classification Pipeline Integration (Deprecated)
+### Requirement: Classification Pipeline Integration (Removed)
 
-The `email_check_and_route_inbox` tool is deprecated in favor of GmailConnector.
-
-#### Scenario: Check and route inbox
-
-- **WHEN** `email_check_and_route_inbox` is called
-- **THEN** a deprecation warning is emitted
-- **AND** unseen emails are fetched, classified via the attached `MessagePipeline`, and routed
-- **AND** each email's routing result includes `target_butler` and status
-
-#### Scenario: Pipeline not configured
-
-- **WHEN** `email_check_and_route_inbox` is called without a pipeline
-- **THEN** `{"status": "no_pipeline", "message": "No classification pipeline configured"}` is returned
+The `email_check_and_route_inbox` tool has been removed. Email ingestion is
+handled by `GmailConnector` via the connector-based pipeline.

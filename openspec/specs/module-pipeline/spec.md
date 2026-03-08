@@ -101,4 +101,4 @@ The legacy pattern where input modules (Email, Telegram) call `set_pipeline()` t
 - **WHEN** a module calls `set_pipeline()` on the pipeline instance
 - **THEN** the call is accepted for backward compatibility but the path is deprecated
 - **AND** new ingestion must use the connector → Switchboard → pipeline flow
-- **AND** the email module's `email_check_and_route_inbox` tool is deprecated in favor of the Gmail connector
+- **AND** the email module's `email_check_and_route_inbox` tool has been removed; email ingestion uses the Gmail connector
