@@ -100,8 +100,6 @@ const GLOBAL_ACTIONS = [
   { value: "pass_through", label: "Pass through to LLM" },
 ];
 
-const CONNECTOR_ACTIONS = [{ value: "block", label: "Block (drop before ingest)" }];
-
 const AVAILABLE_BUTLERS = ["finance", "relationship", "health", "general", "travel", "calendar"];
 
 const HEADER_OPS = [
