@@ -14,6 +14,7 @@
  */
 
 import { useState } from "react";
+import { Link } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -152,13 +153,13 @@ function LineageView({ requestId }: LineageViewProps) {
               <TableRow key={s.id}>
                 <TableCell className="font-medium">{s.butler_name}</TableCell>
                 <TableCell className="text-sm">
-                  <a
-                    href={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
+                  <Link
+                    to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
                     className="font-mono text-xs text-primary underline-offset-4 hover:underline"
                     title={s.id}
                   >
                     {truncateId(s.id)}
-                  </a>
+                  </Link>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {s.model ?? "—"}
