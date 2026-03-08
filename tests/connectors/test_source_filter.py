@@ -619,7 +619,7 @@ class TestFailOpen:
 
 
 class TestGmailConnectorIntegration:
-    """Smoke tests for the GmailConnector source filter integration."""
+    """Smoke tests for the GmailConnector ingestion policy integration."""
 
     @pytest.fixture()
     def gmail_config(self):
@@ -637,19 +637,20 @@ class TestGmailConnectorIntegration:
         )
 
     def test_evaluator_instantiated(self, gmail_config) -> None:
-        """GmailConnectorRuntime creates a SourceFilterEvaluator on __init__."""
+        """GmailConnectorRuntime creates an IngestionPolicyEvaluator on __init__."""
+        from butlers.connectors.gmail import GmailConnectorRuntime
+        from butlers.ingestion_policy import IngestionPolicyEvaluator
+
+        runtime = GmailConnectorRuntime(gmail_config)
+        assert hasattr(runtime, "_ingestion_policy")
+        assert isinstance(runtime._ingestion_policy, IngestionPolicyEvaluator)
+
+    def test_evaluator_uses_connector_scope(self, gmail_config) -> None:
+        """Evaluator scope matches connector:gmail:<endpoint_identity>."""
         from butlers.connectors.gmail import GmailConnectorRuntime
 
         runtime = GmailConnectorRuntime(gmail_config)
-        assert hasattr(runtime, "_source_filter_evaluator")
-        assert isinstance(runtime._source_filter_evaluator, SourceFilterEvaluator)
-
-    def test_evaluator_uses_connector_identity(self, gmail_config) -> None:
-        """Evaluator endpoint_identity matches connector config."""
-        from butlers.connectors.gmail import GmailConnectorRuntime
-
-        runtime = GmailConnectorRuntime(gmail_config)
-        assert runtime._source_filter_evaluator._endpoint_identity == "gmail:user:test@example.com"
+        assert runtime._ingestion_policy.scope == "connector:gmail:gmail:user:test@example.com"
 
     async def test_ensure_loaded_called_before_ingestion(self, gmail_config) -> None:
         """start() calls ensure_loaded() before the ingestion loop begins."""
@@ -669,7 +670,7 @@ class TestGmailConnectorIntegration:
 
         with (
             patch.object(
-                runtime._source_filter_evaluator,
+                runtime._ingestion_policy,
                 "ensure_loaded",
                 side_effect=_mock_ensure_loaded,
             ),
@@ -693,21 +694,25 @@ class TestGmailConnectorIntegration:
 
         assert ensure_loaded_called, "ensure_loaded() was not called"
 
-    async def test_source_filter_blocks_message_before_submission(self, gmail_config) -> None:
-        """When source filter blocks, message is not submitted to Switchboard."""
+    async def test_ingestion_policy_blocks_message_before_submission(self, gmail_config) -> None:
+        """When ingestion policy blocks, message is not submitted to Switchboard."""
         from butlers.connectors.gmail import GmailConnectorRuntime
 
         runtime = GmailConnectorRuntime(gmail_config)
         runtime._http_client = AsyncMock()
 
-        # Seed blocked filter
-        blocked_filter = _spec(
-            filter_mode="blacklist",
-            source_key_type="sender_address",
-            patterns=["blocked@spam.com"],
-        )
-        runtime._source_filter_evaluator._filters = [blocked_filter]
-        runtime._source_filter_evaluator._last_loaded_at = time.monotonic()
+        # Seed a blocking rule in the evaluator cache
+        runtime._ingestion_policy._rules = [
+            {
+                "id": "rule-001",
+                "rule_type": "sender_address",
+                "condition": {"address": "blocked@spam.com"},
+                "action": "block",
+                "priority": 0,
+                "name": "block-spam",
+            }
+        ]
+        runtime._ingestion_policy._last_loaded_at = time.monotonic()
 
         # Message data with a blocked sender
         message_data = {
@@ -736,18 +741,20 @@ class TestGmailConnectorIntegration:
         ):
             await runtime._ingest_single_message("msg001")
 
-        assert not submit_called, "message should not be submitted when source filter blocks"
+        assert not submit_called, "message should not be submitted when ingestion policy blocks"
 
-    async def test_source_filter_allows_message_proceeds_to_submission(self, gmail_config) -> None:
-        """When source filter allows, message proceeds to Switchboard submission."""
+    async def test_ingestion_policy_allows_message_proceeds_to_submission(
+        self, gmail_config
+    ) -> None:
+        """When ingestion policy allows, message proceeds to Switchboard submission."""
         from butlers.connectors.gmail import GmailConnectorRuntime
 
         runtime = GmailConnectorRuntime(gmail_config)
         runtime._http_client = AsyncMock()
 
-        # No filters → allow all
-        runtime._source_filter_evaluator._filters = []
-        runtime._source_filter_evaluator._last_loaded_at = time.monotonic()
+        # No rules → pass_through (allow)
+        runtime._ingestion_policy._rules = []
+        runtime._ingestion_policy._last_loaded_at = time.monotonic()
 
         message_data = {
             "id": "msg002",
@@ -782,4 +789,4 @@ class TestGmailConnectorIntegration:
         ):
             await runtime._ingest_single_message("msg002")
 
-        assert submit_called, "message should be submitted when source filter allows"
+        assert submit_called, "message should be submitted when ingestion policy allows"

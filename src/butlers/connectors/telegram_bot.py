@@ -47,13 +47,13 @@ from pydantic import BaseModel
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
-from butlers.connectors.source_filter import SourceFilterEvaluator, extract_telegram_filter_key
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -251,11 +251,11 @@ class TelegramBotConnector:
         # Backoff tracking for polling loop
         self._consecutive_failures: int = 0
 
-        # Source filter evaluator (chat_id blacklist/whitelist)
+        # Ingestion policy evaluator (replaces SourceFilterEvaluator).
+        # Scope: connector:telegram-bot:<endpoint_identity>
         # DB-backed with TTL refresh; fail-open on DB error.
-        self._source_filter_evaluator = SourceFilterEvaluator(
-            connector_type="telegram-bot",
-            endpoint_identity=config.endpoint_identity,
+        self._ingestion_policy = IngestionPolicyEvaluator(
+            scope=f"connector:telegram-bot:{config.endpoint_identity}",
             db_pool=db_pool,
         )
 
@@ -402,8 +402,8 @@ class TelegramBotConnector:
         # Load checkpoint
         await self._load_checkpoint()
 
-        # Load source filters before entering the ingestion loop.
-        await self._source_filter_evaluator.ensure_loaded()
+        # Load ingestion policy rules before entering the ingestion loop.
+        await self._ingestion_policy.ensure_loaded()
 
         # Wait for Switchboard to be ready before entering the poll loop.
         # Telegram advances the update offset as soon as getUpdates returns —
@@ -486,8 +486,8 @@ class TelegramBotConnector:
         # Start heartbeat
         self._start_heartbeat()
 
-        # Load source filters before registering the webhook.
-        await self._source_filter_evaluator.ensure_loaded()
+        # Load ingestion policy rules before registering the webhook.
+        await self._ingestion_policy.ensure_loaded()
 
         await self._set_webhook(self._config.webhook_url)
         logger.info(
@@ -727,17 +727,17 @@ class TelegramBotConnector:
                 if envelope is None:
                     return  # Nothing to ingest
 
-                # Source filter gate: evaluate chat_id before Switchboard submission.
+                # Ingestion policy gate: evaluate before Switchboard submission.
                 # update_id is already advanced by _get_updates, so blocked updates
                 # are intentionally dropped — this is not an error condition.
-                chat_id_key = extract_telegram_filter_key(update, "chat_id")
-                sf_result = self._source_filter_evaluator.evaluate(chat_id_key)
-                if not sf_result.allowed:
+                _ip_envelope = self._build_ingestion_envelope(update)
+                _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
+                if not _ip_decision.allowed:
                     logger.debug(
-                        "Source filter blocked Telegram update %s: reason=%s filter=%s",
+                        "Ingestion policy blocked Telegram update %s: action=%s reason=%s",
                         update.get("update_id"),
-                        sf_result.reason,
-                        sf_result.filter_name,
+                        _ip_decision.action,
+                        _ip_decision.reason,
                     )
                     return
 
@@ -754,6 +754,26 @@ class TelegramBotConnector:
                         "endpoint_identity": self._config.endpoint_identity,
                     },
                 )
+
+    @staticmethod
+    def _build_ingestion_envelope(update: dict[str, Any]) -> IngestionEnvelope:
+        """Build an IngestionEnvelope from a Telegram bot update.
+
+        Extracts the chat_id from the update and sets it as raw_key
+        for ingestion policy evaluation.
+        """
+        chat_id = ""
+        for msg_key in ("message", "edited_message", "channel_post"):
+            msg = update.get(msg_key)
+            if isinstance(msg, dict):
+                chat = msg.get("chat")
+                if isinstance(chat, dict) and "id" in chat:
+                    chat_id = str(chat["id"])
+                    break
+        return IngestionEnvelope(
+            source_channel="telegram",
+            raw_key=chat_id,
+        )
 
     def _normalize_to_ingest_v1(self, update: dict[str, Any]) -> dict[str, Any] | None:
         """Normalize Telegram update to canonical ingest.v1 format.

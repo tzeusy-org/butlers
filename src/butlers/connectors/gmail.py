@@ -72,7 +72,6 @@ from butlers.connectors.gmail_policy import (
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
-from butlers.connectors.source_filter import SourceFilterEvaluator
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
@@ -80,6 +79,7 @@ from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
     load_google_credentials,
 )
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -500,11 +500,11 @@ class GmailConnectorRuntime:
             known_contacts=known_contacts,
         )
 
-        # Source filter evaluator (sender domain/address blacklist/whitelist)
+        # Ingestion policy evaluator (replaces SourceFilterEvaluator).
+        # Scope: connector:gmail:<endpoint_identity>
         # DB-backed with TTL refresh; fail-open on DB error.
-        self._source_filter_evaluator = SourceFilterEvaluator(
-            connector_type="gmail",
-            endpoint_identity=config.connector_endpoint_identity,
+        self._ingestion_policy = IngestionPolicyEvaluator(
+            scope=f"connector:gmail:{config.connector_endpoint_identity}",
             db_pool=db_pool,
         )
 
@@ -729,8 +729,8 @@ class GmailConnectorRuntime:
         # Ensure cursor exists (DB or file)
         await self._ensure_cursor()
 
-        # Load source filters before starting ingestion loop
-        await self._source_filter_evaluator.ensure_loaded()
+        # Load ingestion policy rules before starting ingestion loop
+        await self._ingestion_policy.ensure_loaded()
 
         # Start backfill polling loop in background (does not block live ingestion)
         if self._config.connector_backfill_enabled:
@@ -1114,17 +1114,17 @@ class GmailConnectorRuntime:
                                     policy_result.filter_reason,
                                 )
                             else:
-                                # Source filter gate (backfill path)
-                                _bf_from = self._get_from_header(message_data)
-                                _bf_sf = self._source_filter_evaluator.evaluate(_bf_from)
-                                if not _bf_sf.allowed:
+                                # Ingestion policy gate (backfill path)
+                                _bf_envelope = self._build_ingestion_envelope(message_data)
+                                _bf_decision = self._ingestion_policy.evaluate(_bf_envelope)
+                                if not _bf_decision.allowed:
                                     rows_skipped += 1
                                     logger.debug(
-                                        "Backfill: source filter blocked message %s: "
-                                        "reason=%s filter=%s",
+                                        "Backfill: ingestion policy blocked message %s: "
+                                        "action=%s reason=%s",
                                         message_id,
-                                        _bf_sf.reason,
-                                        _bf_sf.filter_name,
+                                        _bf_decision.action,
+                                        _bf_decision.reason,
                                     )
                                 else:
                                     envelope = await self._build_ingest_envelope(
@@ -1706,16 +1706,15 @@ class GmailConnectorRuntime:
                     )
                     return
 
-                # Source filter gate (runs after label filter, before triage/envelope build)
-                _sf_result = self._source_filter_evaluator.evaluate(
-                    self._get_from_header(message_data)
-                )
-                if not _sf_result.allowed:
+                # Ingestion policy gate (runs after label filter, before envelope build)
+                _ip_envelope = self._build_ingestion_envelope(message_data)
+                _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
+                if not _ip_decision.allowed:
                     logger.debug(
-                        "Source filter blocked message %s: reason=%s filter=%s",
+                        "Ingestion policy blocked message %s: action=%s reason=%s",
                         message_id,
-                        _sf_result.reason,
-                        _sf_result.filter_name,
+                        _ip_decision.action,
+                        _ip_decision.reason,
                     )
                     return
 
@@ -1756,6 +1755,36 @@ class GmailConnectorRuntime:
             if isinstance(header, dict) and header.get("name", "").lower() == "from":
                 return header.get("value", "")
         return ""
+
+    @staticmethod
+    def _build_ingestion_envelope(message_data: dict[str, Any]) -> IngestionEnvelope:
+        """Build an IngestionEnvelope from a Gmail message payload.
+
+        Populates sender_address (normalized From header), headers dict,
+        and raw_key (raw From header value) for policy evaluation.
+        """
+        raw_headers = message_data.get("payload", {}).get("headers", [])
+        headers_dict: dict[str, str] = {}
+        from_value = ""
+        for h in raw_headers:
+            if isinstance(h, dict):
+                name = h.get("name", "")
+                value = h.get("value", "")
+                headers_dict[name] = value
+                if name.lower() == "from":
+                    from_value = value
+
+        # Normalize sender address: strip display name, lowercase
+        sender = from_value.strip().lower()
+        if "<" in sender and ">" in sender:
+            sender = sender.split("<", 1)[1].split(">", 1)[0].strip()
+
+        return IngestionEnvelope(
+            sender_address=sender,
+            source_channel="email",
+            headers=headers_dict,
+            raw_key=from_value,
+        )
 
     async def _fetch_message(self, message_id: str) -> dict[str, Any]:
         """Fetch full message metadata and payload from Gmail API."""

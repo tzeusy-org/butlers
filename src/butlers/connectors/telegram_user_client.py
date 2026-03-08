@@ -53,13 +53,13 @@ from typing import Any
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
-from butlers.connectors.source_filter import SourceFilterEvaluator, extract_telethon_filter_key
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     resolve_owner_entity_info,
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -199,11 +199,11 @@ class TelegramUserClientConnector:
         # Heartbeat (started in start(), stopped in stop())
         self._switchboard_heartbeat: ConnectorHeartbeat | None = None
 
-        # Source filter evaluator (chat_id blacklist/whitelist)
+        # Ingestion policy evaluator (replaces SourceFilterEvaluator).
+        # Scope: connector:telegram-user-client:<endpoint_identity>
         # DB-backed with TTL refresh; fail-open on DB error.
-        self._source_filter_evaluator = SourceFilterEvaluator(
-            connector_type="telegram-user-client",
-            endpoint_identity=config.endpoint_identity,
+        self._ingestion_policy = IngestionPolicyEvaluator(
+            scope=f"connector:telegram-user-client:{config.endpoint_identity}",
             db_pool=db_pool,
         )
 
@@ -231,8 +231,8 @@ class TelegramUserClientConnector:
             self._config.telegram_api_hash,
         )
 
-        # Load source filters before entering the ingestion loop.
-        await self._source_filter_evaluator.ensure_loaded()
+        # Load ingestion policy rules before entering the ingestion loop.
+        await self._ingestion_policy.ensure_loaded()
 
         # Start switchboard heartbeat (runs in background)
         self._start_heartbeat()
@@ -365,17 +365,17 @@ class TelegramUserClientConnector:
                     )
                     return
 
-                # Source filter gate: evaluate chat_id before Switchboard submission.
+                # Ingestion policy gate: evaluate before Switchboard submission.
                 # Blocked messages are intentionally dropped — not an error condition.
-                chat_id_key = extract_telethon_filter_key(message, "chat_id")
-                sf_result = self._source_filter_evaluator.evaluate(chat_id_key)
-                if not sf_result.allowed:
+                _ip_envelope = self._build_ingestion_envelope(message)
+                _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
+                if not _ip_decision.allowed:
                     logger.debug(
-                        "Source filter blocked Telegram user-client message %s: "
-                        "reason=%s filter=%s",
+                        "Ingestion policy blocked Telegram user-client message %s: "
+                        "action=%s reason=%s",
                         message_id,
-                        sf_result.reason,
-                        sf_result.filter_name,
+                        _ip_decision.action,
+                        _ip_decision.reason,
                     )
                     return
 
@@ -398,6 +398,31 @@ class TelegramUserClientConnector:
                         "endpoint_identity": self._config.endpoint_identity,
                     },
                 )
+
+    @staticmethod
+    def _build_ingestion_envelope(message: object) -> IngestionEnvelope:
+        """Build an IngestionEnvelope from a Telethon message object.
+
+        Extracts the chat_id from the message and sets it as raw_key
+        for ingestion policy evaluation.
+        """
+        chat_id = ""
+        cid = getattr(message, "chat_id", None)
+        if cid is not None:
+            chat_id = str(cid)
+        else:
+            # Fallback: try peer_id (various Telethon peer types)
+            peer_id = getattr(message, "peer_id", None)
+            if peer_id is not None:
+                for attr in ("channel_id", "chat_id", "user_id"):
+                    val = getattr(peer_id, attr, None)
+                    if val is not None:
+                        chat_id = str(val)
+                        break
+        return IngestionEnvelope(
+            source_channel="telegram",
+            raw_key=chat_id,
+        )
 
     async def _normalize_to_ingest_v1(self, message: Any) -> dict[str, Any]:
         """Normalize Telegram user-client message to canonical ingest.v1 format.

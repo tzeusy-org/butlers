@@ -26,11 +26,7 @@ from butlers.connectors.discord_user import (
     _extract_normalized_text,
     run_discord_user_connector,
 )
-from butlers.connectors.source_filter import (
-    SourceFilterEvaluator,
-    SourceFilterSpec,
-    extract_discord_filter_key,
-)
+from butlers.ingestion_policy import IngestionPolicyEvaluator
 
 pytestmark = pytest.mark.unit
 
@@ -958,91 +954,42 @@ class TestProcessDispatchEvent:
 # ---------------------------------------------------------------------------
 
 
-def _make_discord_filter_spec(
-    *,
-    id: str = "aaaaaaaa-0000-0000-0000-000000000001",
-    name: str = "test-discord-filter",
-    filter_mode: str = "blacklist",
-    source_key_type: str = "channel_id",
-    patterns: list[str] | None = None,
-    priority: int = 0,
-) -> SourceFilterSpec:
-    return SourceFilterSpec(
-        id=id,
-        name=name,
-        filter_mode=filter_mode,
-        source_key_type=source_key_type,
-        patterns=patterns or [],
-        priority=priority,
-    )
-
-
-def _discord_evaluator_with_filters(
-    filters: list[SourceFilterSpec],
-    endpoint_identity: str = "discord:user:123456789",
-) -> SourceFilterEvaluator:
-    """Create a SourceFilterEvaluator with a pre-loaded filter cache (no DB needed)."""
-    ev = SourceFilterEvaluator(
-        connector_type="discord",
-        endpoint_identity=endpoint_identity,
+def _discord_policy_evaluator_with_rules(
+    rules: list[dict[str, Any]],
+    scope: str = "connector:discord:discord:user:123456789",
+) -> IngestionPolicyEvaluator:
+    """Create an IngestionPolicyEvaluator with pre-loaded rules (no DB needed)."""
+    ev = IngestionPolicyEvaluator(
+        scope=scope,
         db_pool=None,
         refresh_interval_s=300,
     )
-    ev._filters = filters
+    ev._rules = rules
     ev._last_loaded_at = time.monotonic()
     return ev
 
 
-# -- extract_discord_filter_key helper tests --
+# -- IngestionPolicyEvaluator integration: channel_id block --
 
 
-def test_extract_discord_filter_key_returns_channel_id() -> None:
-    """channel_id key type returns str(channel_id) from Discord event_data."""
-    event_data: dict[str, Any] = {
-        "id": "1234567890123456789",
-        "channel_id": "987654321098765432",
-        "guild_id": "111222333444555666",
-        "content": "Hello",
-    }
-    assert extract_discord_filter_key(event_data, "channel_id") == "987654321098765432"
-
-
-def test_extract_discord_filter_key_non_channel_id_returns_empty() -> None:
-    """Non-channel_id key types return empty string (filter will be skipped by evaluator)."""
-    event_data: dict[str, Any] = {
-        "id": "1234567890123456789",
-        "channel_id": "987654321098765432",
-        "content": "Hello",
-    }
-    assert extract_discord_filter_key(event_data, "chat_id") == ""
-    assert extract_discord_filter_key(event_data, "domain") == ""
-    assert extract_discord_filter_key(event_data, "sender_address") == ""
-
-
-def test_extract_discord_filter_key_missing_channel_id_returns_empty() -> None:
-    """Missing channel_id in event_data returns empty string."""
-    event_data: dict[str, Any] = {"id": "1234567890123456789", "content": "Hello"}
-    assert extract_discord_filter_key(event_data, "channel_id") == ""
-
-
-# -- SourceFilterEvaluator integration: channel_id blacklist --
-
-
-async def test_source_filter_blacklist_blocks_specific_channel(
+async def test_ingestion_policy_blocks_specific_channel(
     connector: DiscordUserConnector,
 ) -> None:
-    """A blacklisted channel_id is blocked; Switchboard is never called."""
+    """A blocking channel_id rule blocks; Switchboard is never called."""
     blocked_channel_id = "987654321098765432"
-    evaluator = _discord_evaluator_with_filters(
+    evaluator = _discord_policy_evaluator_with_rules(
         [
-            _make_discord_filter_spec(
-                filter_mode="blacklist",
-                source_key_type="channel_id",
-                patterns=[blocked_channel_id],
-            )
+            {
+                "id": "rule-001",
+                "rule_type": "channel_id",
+                "condition": {"channel_id": blocked_channel_id},
+                "action": "block",
+                "priority": 0,
+                "name": "block-channel",
+            }
         ]
     )
-    connector._source_filter_evaluator = evaluator
+    connector._ingestion_policy = evaluator
 
     event_data: dict[str, Any] = {
         "id": "1111111111111111111",
@@ -1057,25 +1004,28 @@ async def test_source_filter_blacklist_blocks_specific_channel(
         mock_call.assert_not_called()
 
 
-async def test_source_filter_blacklist_allows_other_channels(
+async def test_ingestion_policy_allows_other_channels(
     connector: DiscordUserConnector,
 ) -> None:
-    """A blacklisted channel_id does not block other channels."""
+    """A blocking channel_id rule does not block other channels."""
     blocked_channel_id = "987654321098765432"
-    evaluator = _discord_evaluator_with_filters(
+    evaluator = _discord_policy_evaluator_with_rules(
         [
-            _make_discord_filter_spec(
-                filter_mode="blacklist",
-                source_key_type="channel_id",
-                patterns=[blocked_channel_id],
-            )
+            {
+                "id": "rule-002",
+                "rule_type": "channel_id",
+                "condition": {"channel_id": blocked_channel_id},
+                "action": "block",
+                "priority": 0,
+                "name": "block-other",
+            }
         ]
     )
-    connector._source_filter_evaluator = evaluator
+    connector._ingestion_policy = evaluator
 
     allowed_event_data: dict[str, Any] = {
         "id": "2222222222222222222",
-        "channel_id": "111111111111111111",  # Different channel — not blacklisted
+        "channel_id": "111111111111111111",  # Different channel — not blocked
         "guild_id": "111222333444555666",
         "author": {"id": "777888999000111222"},
         "content": "Hello — should be allowed",
@@ -1089,29 +1039,19 @@ async def test_source_filter_blacklist_allows_other_channels(
         mock_call.assert_called_once()
 
 
-# -- SourceFilterEvaluator integration: channel_id whitelist --
+# -- IngestionPolicyEvaluator integration: no rules = pass_through --
 
 
-async def test_source_filter_whitelist_allows_only_listed_channels(
+async def test_ingestion_policy_no_rules_allows(
     connector: DiscordUserConnector,
 ) -> None:
-    """A whitelist allows only specified channel_ids; all others are blocked."""
-    allowed_channel_id = "987654321098765432"
-    evaluator = _discord_evaluator_with_filters(
-        [
-            _make_discord_filter_spec(
-                filter_mode="whitelist",
-                source_key_type="channel_id",
-                patterns=[allowed_channel_id],
-            )
-        ]
-    )
-    connector._source_filter_evaluator = evaluator
+    """No rules means pass_through; event proceeds to Switchboard."""
+    evaluator = _discord_policy_evaluator_with_rules([])
+    connector._ingestion_policy = evaluator
 
-    # Allowed update — whitelisted channel
-    allowed_event: dict[str, Any] = {
+    event_data: dict[str, Any] = {
         "id": "3333333333333333333",
-        "channel_id": allowed_channel_id,
+        "channel_id": "987654321098765432",
         "guild_id": "111222333444555666",
         "author": {"id": "777888999000111222"},
         "content": "Allowed message",
@@ -1121,80 +1061,27 @@ async def test_source_filter_whitelist_allows_only_listed_channels(
     with patch.object(
         connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
     ) as mock_call:
-        await connector._process_dispatch_event("MESSAGE_CREATE", allowed_event)
+        await connector._process_dispatch_event("MESSAGE_CREATE", event_data)
         mock_call.assert_called_once()
 
-    # Blocked update — not whitelisted
-    blocked_event: dict[str, Any] = {
-        "id": "4444444444444444444",
-        "channel_id": "000000000000000000",  # Not in whitelist
-        "guild_id": "111222333444555666",
-        "author": {"id": "777888999000111222"},
-        "content": "Blocked message",
-    }
 
-    with patch.object(connector._mcp_client, "call_tool", new_callable=AsyncMock) as mock_call:
-        await connector._process_dispatch_event("MESSAGE_CREATE", blocked_event)
-        mock_call.assert_not_called()
+# -- connector instantiates IngestionPolicyEvaluator with correct scope --
 
 
-# -- non-channel_id key types are skipped --
-
-
-async def test_source_filter_unknown_key_type_skipped_and_warns(
-    connector: DiscordUserConnector,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Filters with an unknown source_key_type do not block events and emit a WARNING."""
-    evaluator = _discord_evaluator_with_filters(
-        [
-            _make_discord_filter_spec(
-                filter_mode="blacklist",
-                source_key_type="unknown_type",  # Not a known key type
-                patterns=["987654321098765432"],
-            )
-        ]
-    )
-    connector._source_filter_evaluator = evaluator
-
-    event_data: dict[str, Any] = {
-        "id": "5555555555555555555",
-        "channel_id": "987654321098765432",
-        "guild_id": "111222333444555666",
-        "author": {"id": "777888999000111222"},
-        "content": "Should still be allowed despite blacklist with unknown key type",
-    }
-
-    mock_result = {"request_id": "req-ok", "status": "accepted", "duplicate": False}
-    with caplog.at_level("WARNING", logger="butlers.connectors.source_filter"):
-        with patch.object(
-            connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
-        ) as mock_call:
-            await connector._process_dispatch_event("MESSAGE_CREATE", event_data)
-            mock_call.assert_called_once()
-
-    assert any("unknown source_key_type" in r.message for r in caplog.records)
-
-
-# -- connector instantiates SourceFilterEvaluator with correct connector_type --
-
-
-def test_connector_instantiates_source_filter_evaluator(
+def test_connector_instantiates_ingestion_policy_evaluator(
     connector: DiscordUserConnector,
 ) -> None:
-    """DiscordUserConnector must have a SourceFilterEvaluator with connector_type='discord'."""
-    assert hasattr(connector, "_source_filter_evaluator")
-    assert isinstance(connector._source_filter_evaluator, SourceFilterEvaluator)
-    assert connector._source_filter_evaluator._connector_type == "discord"
-    assert (
-        connector._source_filter_evaluator._endpoint_identity == connector._config.endpoint_identity
-    )
+    """DiscordUserConnector must have an IngestionPolicyEvaluator."""
+    assert hasattr(connector, "_ingestion_policy")
+    assert isinstance(connector._ingestion_policy, IngestionPolicyEvaluator)
+    expected_scope = f"connector:discord:{connector._config.endpoint_identity}"
+    assert connector._ingestion_policy.scope == expected_scope
 
 
 # -- ensure_loaded called at startup --
 
 
-async def test_source_filter_ensure_loaded_called_at_startup(
+async def test_ingestion_policy_ensure_loaded_called_at_startup(
     connector: DiscordUserConnector,
     mock_config: DiscordUserConnectorConfig,
 ) -> None:
@@ -1207,7 +1094,7 @@ async def test_source_filter_ensure_loaded_called_at_startup(
     # Patch out the heavy gateway operations
     with (
         patch.object(
-            connector._source_filter_evaluator,
+            connector._ingestion_policy,
             "ensure_loaded",
             side_effect=track_ensure_loaded,
         ),

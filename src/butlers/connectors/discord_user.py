@@ -68,8 +68,8 @@ from pydantic import BaseModel
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
-from butlers.connectors.source_filter import SourceFilterEvaluator, extract_discord_filter_key
 from butlers.core.logging import configure_logging
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -290,11 +290,11 @@ class DiscordUserConnector:
         # Heartbeat
         self._switchboard_heartbeat: ConnectorHeartbeat | None = None
 
-        # Source filter evaluator (channel_id blacklist/whitelist).
+        # Ingestion policy evaluator (replaces SourceFilterEvaluator).
+        # Scope: connector:discord:<endpoint_identity>
         # DB-backed with TTL refresh; fail-open when db_pool is None.
-        self._source_filter_evaluator = SourceFilterEvaluator(
-            connector_type="discord",
-            endpoint_identity=config.endpoint_identity,
+        self._ingestion_policy = IngestionPolicyEvaluator(
+            scope=f"connector:discord:{config.endpoint_identity}",
             db_pool=db_pool,
         )
 
@@ -445,8 +445,8 @@ class DiscordUserConnector:
         # Start switchboard heartbeat (runs in background)
         self._start_switchboard_heartbeat()
 
-        # Load source filters before entering the Gateway ingestion loop.
-        await self._source_filter_evaluator.ensure_loaded()
+        # Load ingestion policy rules before entering the Gateway ingestion loop.
+        await self._ingestion_policy.ensure_loaded()
 
         self._running = True
         logger.info(
@@ -786,15 +786,19 @@ class DiscordUserConnector:
                     )
                     return
 
-                # Source filter gate: evaluate channel_id against DB-backed filters.
-                channel_id_key = extract_discord_filter_key(event_data, "channel_id")
-                sf_result = self._source_filter_evaluator.evaluate(channel_id_key)
-                if not sf_result.allowed:
+                # Ingestion policy gate: evaluate before Switchboard submission.
+                _ip_envelope = IngestionEnvelope(
+                    source_channel="discord",
+                    raw_key=str(event_data.get("channel_id", "")),
+                )
+                _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
+                if not _ip_decision.allowed:
                     logger.debug(
-                        "Source filter blocked Discord event for channel %s: reason=%s filter=%s",
+                        "Ingestion policy blocked Discord event for channel %s: "
+                        "action=%s reason=%s",
                         event_data.get("channel_id"),
-                        sf_result.reason,
-                        sf_result.filter_name,
+                        _ip_decision.action,
+                        _ip_decision.reason,
                     )
                     return
 
