@@ -5,6 +5,7 @@
  * - Full connector metadata (liveness, state, version, uptime, counters)
  * - Time-series statistics chart with period selector
  * - Checkpoint info with inline cursor editing
+ * - Connector-scoped ingestion rules (block rules)
  * - Back navigation to /ingestion?tab=connectors
  */
 
@@ -49,7 +50,7 @@ import {
 
 import { LivenessBadge } from "@/components/ingestion/LivenessBadge";
 import { VolumeTrendChart } from "@/components/ingestion/VolumeTrendChart";
-import { ConnectorFiltersDialog } from "@/components/ingestion/ConnectorFiltersDialog";
+import { ConnectorRulesSection } from "@/components/ingestion/ConnectorRulesSection";
 import {
   useConnectorDetail,
   useConnectorStats,
@@ -177,15 +178,6 @@ export default function ConnectorDetailPage() {
             </>
           )}
         </div>
-        {connectorType && endpointIdentity && (
-          <div className="flex-shrink-0 pt-1">
-            <ConnectorFiltersDialog
-              connectorType={connectorType}
-              endpointIdentity={endpointIdentity}
-              triggerVariant="page"
-            />
-          </div>
-        )}
       </div>
 
       {/* Metadata card */}
@@ -399,6 +391,14 @@ export default function ConnectorDetailPage() {
         isLoading={statsLoading}
         title="Volume Trend"
       />
+
+      {/* Connector-scoped ingestion rules */}
+      {connectorType && endpointIdentity && (
+        <ConnectorRulesSection
+          connectorType={connectorType}
+          endpointIdentity={endpointIdentity}
+        />
+      )}
 
       {/* Confirmation dialog for cursor change */}
       <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
