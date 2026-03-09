@@ -25,7 +25,7 @@ from butlers.api.models import (
     PaginationMeta,
     SessionSummary,
 )
-from butlers.api.models.session import SessionDetail
+from butlers.api.models.session import ProcessLog, SessionDetail
 
 logger = logging.getLogger(__name__)
 
@@ -302,4 +302,21 @@ async def get_butler_session(
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    return ApiResponse[SessionDetail](data=_row_to_detail(row, butler=name))
+    detail = _row_to_detail(row, butler=name)
+
+    # Attach process log if available (best-effort — table may not exist yet)
+    try:
+        plog_row = await pool.fetchrow(
+            """
+            SELECT pid, exit_code, command, stderr, runtime_type, created_at, expires_at
+            FROM session_process_logs
+            WHERE session_id = $1 AND expires_at >= now()
+            """,
+            session_id,
+        )
+        if plog_row is not None:
+            detail.process_log = ProcessLog(**dict(plog_row))
+    except Exception:
+        logger.debug("Could not fetch process log for session %s", session_id, exc_info=True)
+
+    return ApiResponse[SessionDetail](data=detail)

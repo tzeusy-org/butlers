@@ -553,6 +553,12 @@ class OpenCodeAdapter(RuntimeAdapter):
 
     def __init__(self, opencode_binary: str | None = None) -> None:
         self._opencode_binary = opencode_binary
+        self._last_process_info: dict[str, Any] | None = None
+
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        """Process-level metadata from the most recent invoke() call."""
+        return self._last_process_info
 
     def create_worker(self) -> RuntimeAdapter:
         """Create an independent adapter for a pooled spawner worker."""
@@ -707,7 +713,8 @@ class OpenCodeAdapter(RuntimeAdapter):
             subprocess_env = dict(env) if env else {}
             subprocess_env["OPENCODE_CONFIG"] = str(config_path)
 
-            logger.debug("Invoking OpenCode CLI: %s", " ".join(cmd[:4]) + " ...")
+            cmd_for_log = " ".join(cmd[:4]) + " ..."
+            logger.debug("Invoking OpenCode CLI: %s", cmd_for_log)
 
             proc: asyncio.subprocess.Process | None = None
             try:
@@ -731,6 +738,15 @@ class OpenCodeAdapter(RuntimeAdapter):
                     logger.debug("OpenCode stderr: %s", stderr[:500])
 
                 returncode = proc.returncode if proc.returncode is not None else 0
+
+                self._last_process_info = {
+                    "pid": proc.pid,
+                    "exit_code": returncode,
+                    "command": cmd_for_log,
+                    "stderr": stderr,
+                    "runtime_type": "opencode",
+                }
+
                 if returncode != 0:
                     error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                     logger.error("OpenCode CLI exited with code %d: %s", returncode, error_detail)
@@ -743,6 +759,13 @@ class OpenCodeAdapter(RuntimeAdapter):
 
             except TimeoutError:
                 logger.error("OpenCode CLI timed out after %ds", effective_timeout)
+                self._last_process_info = {
+                    "pid": proc.pid if proc is not None else None,
+                    "exit_code": -1,
+                    "command": cmd_for_log,
+                    "stderr": "(timeout — process killed)",
+                    "runtime_type": "opencode",
+                }
                 if proc is not None:
                     proc.kill()
                     await proc.wait()

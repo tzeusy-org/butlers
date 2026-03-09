@@ -114,6 +114,16 @@ class RuntimeAdapter(abc.ABC):
         """
         ...
 
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        """Process-level metadata from the most recent invoke() call.
+
+        Returns a dict with keys: pid, exit_code, command, stderr, runtime_type.
+        Available after invoke() completes for subprocess-based adapters.
+        SDK-based adapters may return None or partial info.
+        """
+        return None
+
     def create_worker(self) -> RuntimeAdapter:
         """Return a worker-scoped adapter instance for pooled spawner workers.
 

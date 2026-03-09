@@ -13,6 +13,18 @@ from uuid import UUID
 from pydantic import BaseModel
 
 
+class ProcessLog(BaseModel):
+    """Process-level diagnostics from a runtime adapter invocation."""
+
+    pid: int | None = None
+    exit_code: int | None = None
+    command: str | None = None
+    stderr: str | None = None
+    runtime_type: str | None = None
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
 class SessionDetail(BaseModel):
     """Full session record with all fields from the sessions table."""
 
@@ -34,3 +46,4 @@ class SessionDetail(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     parent_session_id: UUID | None = None
+    process_log: ProcessLog | None = None

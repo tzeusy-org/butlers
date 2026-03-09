@@ -33,6 +33,7 @@ from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt
 from butlers.core.telemetry import (
@@ -814,6 +815,26 @@ class Spawner:
                     output_tokens=output_tokens,
                 )
 
+                # Write process-level diagnostics (best-effort, never blocks result)
+                proc_info = runtime.last_process_info
+                if proc_info is not None:
+                    try:
+                        await session_process_log_write(
+                            self._pool,
+                            session_id,
+                            pid=proc_info.get("pid"),
+                            exit_code=proc_info.get("exit_code"),
+                            command=proc_info.get("command"),
+                            stderr=proc_info.get("stderr"),
+                            runtime_type=proc_info.get("runtime_type"),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to write process log for session %s",
+                            session_id,
+                            exc_info=True,
+                        )
+
             # Write daemon-side audit log entry
             await write_audit_entry(
                 self._audit_pool,
@@ -872,6 +893,26 @@ class Spawner:
                     success=False,
                     error=error_msg,
                 )
+
+                # Write process-level diagnostics (best-effort)
+                proc_info = runtime.last_process_info
+                if proc_info is not None:
+                    try:
+                        await session_process_log_write(
+                            self._pool,
+                            session_id,
+                            pid=proc_info.get("pid"),
+                            exit_code=proc_info.get("exit_code"),
+                            command=proc_info.get("command"),
+                            stderr=proc_info.get("stderr"),
+                            runtime_type=proc_info.get("runtime_type"),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to write process log for session %s",
+                            session_id,
+                            exc_info=True,
+                        )
 
             # Runtime failures can leave provider/client context dirty.
             # Best-effort reset keeps subsequent sessions isolated.

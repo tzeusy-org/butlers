@@ -229,6 +229,12 @@ class GeminiAdapter(RuntimeAdapter):
 
     def __init__(self, gemini_binary: str | None = None) -> None:
         self._gemini_binary = gemini_binary
+        self._last_process_info: dict[str, Any] | None = None
+
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        """Process-level metadata from the most recent invoke() call."""
+        return self._last_process_info
 
     def create_worker(self) -> RuntimeAdapter:
         """Create an independent adapter for a pooled spawner worker."""
@@ -314,6 +320,9 @@ class GeminiAdapter(RuntimeAdapter):
 
         logger.debug("Invoking Gemini CLI: %s", " ".join(cmd[:3]) + " ...")
 
+        cmd_for_log = " ".join(cmd[:3]) + " ..."
+        proc = None
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -334,11 +343,27 @@ class GeminiAdapter(RuntimeAdapter):
             if stderr:
                 logger.debug("Gemini stderr: %s", stderr[:500])
 
-            result_text, tool_calls = _parse_gemini_output(stdout, stderr, proc.returncode or 0)
+            returncode = proc.returncode or 0
+            self._last_process_info = {
+                "pid": proc.pid,
+                "exit_code": returncode,
+                "command": cmd_for_log,
+                "stderr": stderr,
+                "runtime_type": "gemini",
+            }
+
+            result_text, tool_calls = _parse_gemini_output(stdout, stderr, returncode)
             return result_text, tool_calls, None
 
         except TimeoutError:
             logger.error("Gemini CLI timed out after %ds", effective_timeout)
+            self._last_process_info = {
+                "pid": proc.pid if proc else None,
+                "exit_code": -1,
+                "command": cmd_for_log,
+                "stderr": "(timeout — process killed)",
+                "runtime_type": "gemini",
+            }
             if proc:
                 proc.kill()
                 await proc.wait()

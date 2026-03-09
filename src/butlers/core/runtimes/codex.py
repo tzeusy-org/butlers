@@ -450,6 +450,17 @@ class CodexAdapter(RuntimeAdapter):
 
     def __init__(self, codex_binary: str | None = None) -> None:
         self._codex_binary = codex_binary
+        self._last_process_info: dict[str, Any] | None = None
+
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        """Process-level metadata from the most recent invoke() call.
+
+        Returns a dict with keys: pid, exit_code, command, stderr, runtime_type.
+        Available after invoke() completes (success or failure). None before
+        first invocation.
+        """
+        return self._last_process_info
 
     def create_worker(self) -> RuntimeAdapter:
         """Create an independent adapter for a pooled spawner worker."""
@@ -578,6 +589,10 @@ class CodexAdapter(RuntimeAdapter):
 
         logger.debug("Invoking Codex CLI: %s", " ".join(cmd[:4]) + " ...")
 
+        # Sanitise command for logging — drop the final prompt arg which can be huge
+        cmd_for_log = " ".join(cmd[:-1]) + " --  ..."
+        proc = None
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -599,6 +614,16 @@ class CodexAdapter(RuntimeAdapter):
                 logger.debug("Codex stderr: %s", stderr[:500])
 
             returncode = proc.returncode or 0
+
+            # Capture process info for session diagnostics
+            self._last_process_info = {
+                "pid": proc.pid,
+                "exit_code": returncode,
+                "command": cmd_for_log,
+                "stderr": stderr,
+                "runtime_type": "codex",
+            }
+
             if returncode != 0:
                 error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                 error_detail = _augment_transport_error_detail(error_detail, mcp_servers)
@@ -623,6 +648,14 @@ class CodexAdapter(RuntimeAdapter):
 
         except TimeoutError:
             logger.error("Codex CLI timed out after %ds", effective_timeout)
+            # Capture process info even on timeout
+            self._last_process_info = {
+                "pid": proc.pid if proc else None,
+                "exit_code": -1,
+                "command": cmd_for_log,
+                "stderr": "(timeout — process killed)",
+                "runtime_type": "codex",
+            }
             if proc:
                 proc.kill()
                 await proc.wait()
