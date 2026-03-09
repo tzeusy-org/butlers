@@ -191,11 +191,11 @@ Route to general when:
 
 ## Routing via `route_to_butler` Tool
 
-For each target butler, call the `route_to_butler` tool with:
+For each target butler, call the `route_to_butler` tool with exactly these parameters (no others):
 
 - `butler`: the target butler name (e.g. "finance", "health", "relationship", "travel", "education", "general")
 - `prompt`: a self-contained sub-prompt for that butler
-- `context` (optional): additional context
+- `context` (optional): key details and context the target butler needs to act on this request
 
 After routing, respond with a brief text summary of what you did.
 

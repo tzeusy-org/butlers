@@ -3181,7 +3181,7 @@ class ButlerDaemon:
                 Args:
                     butler: Target butler name (e.g. "health", "relationship").
                     prompt: Self-contained prompt for the target butler.
-                    context: Optional prior conversation context for continuity.
+                    context: Optional — key details and context the target butler needs to act on this request.
                 """
                 _routing_ctx = _routing_ctx_var.get() or {}
                 if not isinstance(_routing_ctx, dict):
