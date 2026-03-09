@@ -179,6 +179,10 @@ class DurableBuffer:
         self._scanner_task: asyncio.Task | None = None
         self._running = False
 
+        # Track request_ids currently being processed by workers so the
+        # scanner does not re-enqueue messages that are already in-flight.
+        self._in_flight_request_ids: set[str] = set()
+
         # Counters for observability (incremented in-process; exported via OTEL)
         self._enqueue_hot_total: int = 0
         self._enqueue_cold_total: int = 0
@@ -454,6 +458,7 @@ class DurableBuffer:
             except asyncio.CancelledError:
                 break
 
+            self._in_flight_request_ids.add(ref.request_id)
             try:
                 process_latency_ms = (datetime.now(UTC) - ref.enqueued_at).total_seconds() * 1000
 
@@ -485,6 +490,7 @@ class DurableBuffer:
                     ref.request_id,
                 )
             finally:
+                self._in_flight_request_ids.discard(ref.request_id)
                 try:
                     self._tier_queues[ref.policy_tier].task_done()
                 except (ValueError, KeyError):
@@ -587,6 +593,14 @@ class DurableBuffer:
                 policy_tier = POLICY_TIER_DEFAULT
 
             request_id = str(request_context.get("request_id", str(row["id"])))
+
+            # Skip messages already being processed by a worker
+            if request_id in self._in_flight_request_ids:
+                logger.debug(
+                    "Buffer scanner: skipping request_id=%s (already in-flight)",
+                    request_id,
+                )
+                continue
 
             # Recover triage decision from stored request_context
             triage_decision = request_context.get("triage_decision")

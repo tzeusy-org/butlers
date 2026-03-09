@@ -1136,6 +1136,23 @@ class MessagePipeline:
                     ),
                 )
 
+                # --- Mark as processing so the scanner does not re-enqueue ---
+                if message_inbox_id is not None:
+                    try:
+                        async with self._pool.acquire() as conn:
+                            await conn.execute(
+                                "UPDATE message_inbox "
+                                "SET lifecycle_state = 'processing', updated_at = now() "
+                                "WHERE id = $1 AND lifecycle_state = 'accepted'",
+                                message_inbox_id,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Failed to mark message_inbox as processing; "
+                            "scanner may re-enqueue",
+                            exc_info=True,
+                        )
+
                 # --- Pre-resolved triage bypass ---
                 # If the ingest tool already resolved a triage decision via
                 # ingestion_rules (global scope), honour it and skip LLM.
