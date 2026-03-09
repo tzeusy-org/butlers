@@ -443,24 +443,12 @@ class TestRoutingContextLifecycle:
         # Should not raise
         pipeline._clear_routing_context()
 
-    def test_set_stores_conversation_history(self):
-        pipeline = MessagePipeline(
-            switchboard_pool=MagicMock(),
-            dispatch_fn=AsyncMock(),
-        )
-        history = "**user** (2026-02-16T10:00:00Z):\nHello"
-        pipeline._set_routing_context(
-            source_metadata={"channel": "telegram"},
-            request_id="req-1",
-            conversation_history=history,
-        )
-        ctx = _routing_ctx_var.get()
-        assert ctx is not None
-        assert ctx["conversation_history"] == history
-        # Cleanup
-        _routing_ctx_var.set(None)
+    def test_set_does_not_store_conversation_history(self):
+        """conversation_history is intentionally excluded from routing context.
 
-    def test_set_stores_none_conversation_history_when_absent(self):
+        The triage LLM embeds relevant context into each sub-prompt;
+        forwarding raw history would bypass that filtering.
+        """
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -471,7 +459,7 @@ class TestRoutingContextLifecycle:
         )
         ctx = _routing_ctx_var.get()
         assert ctx is not None
-        assert ctx["conversation_history"] is None
+        assert "conversation_history" not in ctx
         # Cleanup
         _routing_ctx_var.set(None)
 

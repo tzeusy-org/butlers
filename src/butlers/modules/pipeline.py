@@ -608,7 +608,6 @@ class MessagePipeline:
         source_metadata: dict[str, str],
         request_context: dict[str, Any] | None = None,
         request_id: str = "unknown",
-        conversation_history: str | None = None,
         identity_preamble: str | None = None,
         source_contact_id: str | None = None,
         source_entity_id: str | None = None,
@@ -617,13 +616,17 @@ class MessagePipeline:
 
         Each asyncio task gets its own isolated context, preventing
         cross-contamination between concurrent pipeline.process() calls.
+
+        Note: conversation_history is intentionally NOT forwarded here.
+        The triage LLM embeds relevant context into the sub-prompt it
+        constructs for each route_to_butler call; forwarding the raw
+        unfiltered history would bypass that filtering.
         """
         _routing_ctx_var.set(
             {
                 "source_metadata": source_metadata,
                 "request_context": request_context,
                 "request_id": request_id,
-                "conversation_history": conversation_history,
                 "identity_preamble": identity_preamble,
                 "source_contact_id": source_contact_id,
                 "source_entity_id": source_entity_id,
@@ -1414,7 +1417,6 @@ class MessagePipeline:
                         source_metadata=source_metadata,
                         request_context=request_context,
                         request_id=request_id,
-                        conversation_history=conversation_history or None,
                         identity_preamble=identity_preamble,
                         source_contact_id=source_contact_id,
                         source_entity_id=source_entity_id,

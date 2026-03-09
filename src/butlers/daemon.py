@@ -3190,7 +3190,6 @@ class ButlerDaemon:
                             "source_metadata",
                             "request_context",
                             "request_id",
-                            "conversation_history",
                         ):
                             if _routing_ctx.get(key) in (None, "", {}):
                                 _routing_ctx[key] = runtime_routing_ctx.get(key)
@@ -3211,7 +3210,6 @@ class ButlerDaemon:
                 if raw_request_id in (None, "") and isinstance(request_context, dict):
                     raw_request_id = request_context.get("request_id")
                 request_id = MessagePipeline._coerce_request_id(raw_request_id)
-                conversation_history = _routing_ctx.get("conversation_history")
                 source_channel = str(
                     request_context.get("source_channel")
                     if isinstance(request_context, dict)
@@ -3235,8 +3233,6 @@ class ButlerDaemon:
                 effective_prompt = f"{identity_preamble}\n{prompt}" if identity_preamble else prompt
 
                 _input: dict[str, Any] = {"prompt": effective_prompt, "context": context}
-                if conversation_history:
-                    _input["conversation_history"] = conversation_history
 
                 # Structured sender identity from resolution (contact_id, entity_id).
                 rc: dict[str, Any] = {
