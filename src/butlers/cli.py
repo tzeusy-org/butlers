@@ -451,8 +451,8 @@ def _check_port_conflicts(configs: dict[str, Path]) -> dict[int, list[str]]:
     return {port: names for port, names in port_to_butlers.items() if len(names) > 1}
 
 
-_PORT_RETRY_MAX = 5
 _PORT_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt
+_PORT_RETRY_MAX_DELAY = 300.0  # cap at 5 minutes
 
 
 def _is_port_conflict(exc: Exception) -> bool:
@@ -479,30 +479,30 @@ async def _start_all(configs: dict[str, Path]) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Start all daemons, retrying on port conflicts
+    # Start all daemons, retrying indefinitely on port conflicts
     for name, config_dir in sorted(configs.items()):
         started = False
-        for attempt in range(_PORT_RETRY_MAX):
+        attempt = 0
+        while not started:
             daemon = ButlerDaemon(config_dir)
             try:
                 await daemon.start()
                 daemons.append(daemon)
                 click.echo(f"  started: {name}")
                 started = True
-                break
             except Exception as exc:
-                if _is_port_conflict(exc) and attempt < _PORT_RETRY_MAX - 1:
-                    delay = _PORT_RETRY_BASE_DELAY * (2**attempt)
+                if _is_port_conflict(exc):
+                    delay = min(_PORT_RETRY_BASE_DELAY * (2**attempt), _PORT_RETRY_MAX_DELAY)
+                    attempt += 1
                     click.echo(
-                        f"  {name}: port in use, retrying in {delay:.0f}s "
-                        f"(attempt {attempt + 1}/{_PORT_RETRY_MAX})..."
+                        f"  {name}: port in use, retrying in {delay:.0f}s (attempt {attempt})..."
                     )
                     await asyncio.sleep(delay)
                 else:
                     click.echo(f"  failed: {name}: {exc}")
                     break
         if not started:
-            logger.warning("Butler %s failed to start after all attempts", name)
+            logger.warning("Butler %s failed to start", name)
 
     if not daemons:
         click.echo("No butlers started successfully")

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.cli import _PORT_RETRY_MAX, _is_port_conflict, _start_all
+from butlers.cli import _is_port_conflict, _start_all
 
 pytestmark = pytest.mark.unit
 
@@ -69,23 +69,26 @@ class TestStartAllPortRetry:
             assert call_count == 3  # failed twice, succeeded on third
 
     @pytest.mark.asyncio
-    async def test_gives_up_after_max_retries(self, configs):
-        """Butler that never frees port is reported as failed after all attempts."""
+    async def test_retries_indefinitely_on_port_conflict(self, configs):
+        """Butler retries indefinitely on port conflict (verify 10+ attempts)."""
         call_count = 0
+        max_failures = 10
 
-        async def _always_fail(self):
+        async def _fail_then_succeed(self):
             nonlocal call_count
             call_count += 1
-            raise OSError(errno.EADDRINUSE, "Address already in use")
+            if call_count <= max_failures:
+                raise OSError(errno.EADDRINUSE, "Address already in use")
 
         loop = asyncio.get_event_loop()
 
         with (
             patch("butlers.daemon.ButlerDaemon") as MockDaemon,
-            patch("butlers.cli._PORT_RETRY_BASE_DELAY", 0.01),
+            patch("butlers.cli._PORT_RETRY_BASE_DELAY", 0.001),
+            patch("butlers.cli._PORT_RETRY_MAX_DELAY", 0.01),
         ):
             instance = AsyncMock()
-            instance.start = AsyncMock(side_effect=_always_fail.__get__(instance))
+            instance.start = AsyncMock(side_effect=_fail_then_succeed.__get__(instance))
             instance.shutdown = AsyncMock()
             MockDaemon.return_value = instance
 
@@ -97,7 +100,7 @@ class TestStartAllPortRetry:
                 with patch.object(loop, "add_signal_handler"):
                     await _start_all(configs)
 
-            assert call_count == _PORT_RETRY_MAX
+            assert call_count == max_failures + 1  # retried past old limit
 
     @pytest.mark.asyncio
     async def test_non_port_error_fails_immediately(self, configs):
