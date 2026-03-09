@@ -45,7 +45,6 @@ Route to finance when the message involves:
 - **Billing language**: due date, payment due, minimum payment, late fee, overdue
 - **Subscription lifecycle**: renewal, auto-renew, subscription cancelled, price change, subscription paused
 - **Financial alerts**: transaction alert, payment alert, statement ready, balance notification
-- **Sender domain signals**: `@chase.com`, `@paypal.com`, `@amazon.com`, `@venmo.com`, `@wise.com`, `@stripe.com`, `@amex.com`, `@bill.com`
 - **Subject line patterns**: "Your receipt", "Payment confirmed", "Statement ready", "Your invoice", "Payment due", "Subscription renewed", "Price change notice", "Auto-renewal reminder", "Transaction alert"
 - **Spending queries**: "What did I spend?", "How much did I spend?", "Show my expenses", "What bills are due?"
 
