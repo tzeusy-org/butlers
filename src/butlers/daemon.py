@@ -965,6 +965,7 @@ class ButlerDaemon:
         self._mcp_socket: socket.socket | None = None
         self._switchboard_heartbeat_task: asyncio.Task | None = None
         self._scheduler_loop_task: asyncio.Task | None = None
+        self._route_inbox_recovery_task: asyncio.Task | None = None
         self._liveness_reporter_task: asyncio.Task | None = None
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
@@ -1401,9 +1402,13 @@ class ButlerDaemon:
             await self._buffer.start()
 
         # 14c. Recover unprocessed route_inbox rows (non-switchboard, non-messenger butlers)
-        # Rows that were accepted but never processed due to a crash are re-dispatched here.
+        # Rows that were accepted but never processed due to a crash are re-dispatched
+        # as a background task so that long-running LLM sessions don't block startup
+        # (and therefore don't prevent other butlers from starting in `butlers up`).
         if self.config.name not in ("switchboard", "messenger") and self.spawner is not None:
-            await self._recover_route_inbox(pool)
+            self._route_inbox_recovery_task = asyncio.create_task(
+                self._recover_route_inbox(pool)
+            )
 
         # 15. Launch switchboard heartbeat (non-switchboard butlers only)
         if self.config.switchboard_url is not None:
@@ -3170,13 +3175,13 @@ class ButlerDaemon:
             ) -> dict[str, Any]:
                 """Route a message to a specific butler.
 
-                Called by the runtime instance during message classification to
-                directly route a sub-message to the target butler.
+                IMPORTANT: This tool accepts exactly three parameters: butler,
+                prompt, and context. Do NOT pass any other keyword arguments.
 
                 Args:
-                    butler: Name of the target butler (e.g. "health", "relationship").
+                    butler: Target butler name (e.g. "health", "relationship").
                     prompt: Self-contained prompt for the target butler.
-                    context: Optional additional context for the target butler.
+                    context: Optional prior conversation context for continuity.
                 """
                 _routing_ctx = _routing_ctx_var.get() or {}
                 if not isinstance(_routing_ctx, dict):
@@ -4684,7 +4689,16 @@ class ButlerDaemon:
                 pass
             self._scheduler_loop_task = None
 
-        # 5c. Cancel liveness reporter loop
+        # 5c. Cancel route_inbox recovery task
+        if self._route_inbox_recovery_task is not None:
+            self._route_inbox_recovery_task.cancel()
+            try:
+                await self._route_inbox_recovery_task
+            except asyncio.CancelledError:
+                pass
+            self._route_inbox_recovery_task = None
+
+        # 5d. Cancel liveness reporter loop
         if self._liveness_reporter_task is not None:
             self._liveness_reporter_task.cancel()
             try:
