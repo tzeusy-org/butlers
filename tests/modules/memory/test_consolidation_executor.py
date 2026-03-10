@@ -313,7 +313,7 @@ class TestEpisodeConsolidation:
     """Tests for marking episodes as consolidated."""
 
     async def test_episodes_marked_consolidated(self) -> None:
-        """All source episodes are marked consolidated after successful execution."""
+        """All source episodes are marked as consolidated (terminal state) after execution."""
         pool = _mock_pool()
         engine = _mock_embedding_engine()
         episode_ids = _make_episode_ids(3)
@@ -330,16 +330,17 @@ class TestEpisodeConsolidation:
 
         assert result["episodes_consolidated"] == 3
 
-        # Verify the UPDATE query
-        pool.execute.assert_awaited_once()
-        call_args = pool.execute.call_args
-        sql = call_args[0][0]
-        # Current behavior uses the consolidated boolean
-        # When source code is updated, this should also check:
-        # assert "consolidation_status = 'consolidated'" in sql
-        assert "consolidated = true" in sql
-        assert "ANY($1)" in sql
-        assert call_args[0][1] == episode_ids
+        # Two pool.execute calls: 1) terminal state UPDATE, 2) memory_events INSERT (best-effort)
+        assert pool.execute.await_count >= 1
+        first_sql = pool.execute.call_args_list[0][0][0]
+        # SQL is multi-line with extra spaces; normalise for matching
+        norm_sql = " ".join(first_sql.split())
+        assert "consolidated = true" in norm_sql
+        assert "consolidation_status = 'consolidated'" in norm_sql
+        assert "leased_until" in norm_sql  # lease is cleared on success
+        assert "leased_by" in norm_sql
+        assert "ANY($1)" in norm_sql
+        assert pool.execute.call_args_list[0][0][1] == episode_ids
 
 
 # ---------------------------------------------------------------------------
@@ -513,10 +514,24 @@ class TestEmptyResult:
 
 
 class TestRetryAndFailureHandling:
-    """Tests for retry and failure state machine."""
+    """Tests for executor behavior when individual actions fail.
 
-    async def test_episodes_marked_failed_on_error(self) -> None:
-        """Episodes are marked as failed with retry count incremented on error."""
+    Note: Full retry/dead-letter state transitions are handled by
+    consolidation.py (_mark_group_failed) for group-level failures.
+    The executor always marks episodes 'consolidated' when it runs —
+    partial action failures (individual facts) still result in
+    'consolidated' because the LLM produced output.
+    """
+
+    async def test_episodes_still_marked_consolidated_after_partial_action_failure(
+        self,
+    ) -> None:
+        """Episodes are marked consolidated even when individual fact storage fails.
+
+        The executor marks the episode as consolidated because the LLM ran
+        successfully. Partial action errors are surfaced in the errors list
+        for observability.
+        """
         pool = _mock_pool()
         engine = _mock_embedding_engine()
         episode_ids = _make_episode_ids(2)
@@ -540,25 +555,18 @@ class TestRetryAndFailureHandling:
         ):
             result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
-        # Current behavior: Episodes are marked consolidated even with errors
-        # When source code is updated, this should change to:
-        # assert result["episodes_consolidated"] == 0
-        assert result["episodes_consolidated"] == 2  # Current behavior
+        # Episodes still get consolidated — the LLM ran, partial result is expected
+        assert result["episodes_consolidated"] == 2
         assert len(result["errors"]) > 0
 
-        # Verify the UPDATE query was called
-        pool.execute.assert_awaited_once()
-        # When source code is updated, verify the UPDATE query marks as failed:
-        # call_args = pool.execute.call_args
-        # sql = call_args[0][0]
-        # assert "consolidation_status" in sql
-        # assert "retry_count = retry_count + 1" in sql
-        # assert "last_error" in sql
-        # assert "CASE" in sql
-        # assert "dead_letter" in sql
+        # Verify the terminal UPDATE was called (consolidated state + lease clear)
+        assert pool.execute.await_count >= 1
+        first_sql = " ".join(pool.execute.call_args_list[0][0][0].split())
+        assert "consolidation_status = 'consolidated'" in first_sql
+        assert "leased_until" in first_sql
 
-    async def test_episodes_marked_dead_letter_after_max_retries(self) -> None:
-        """Episodes transition to dead_letter after max retries."""
+    async def test_episodes_consolidated_terminal_state_is_correct(self) -> None:
+        """The terminal state UPDATE sets the correct columns."""
         pool = _mock_pool()
         engine = _mock_embedding_engine()
         episode_ids = _make_episode_ids(1)
@@ -580,17 +588,17 @@ class TestRetryAndFailureHandling:
             patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
             patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
         ):
-            # Current implementation doesn't support max_retries parameter yet
             result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
-        # Current behavior: episodes marked consolidated even with errors
-        # When source code is updated to support max_retries:
-        # await execute_consolidation(
-        #     pool, engine, parsed, episode_ids, "test-butler", max_retries=2
-        # )
-        # call_args = pool.execute.call_args
-        # assert call_args[0][2] == 2  # max_retries parameter
-        assert result["episodes_consolidated"] == 1  # Current behavior
+        assert result["episodes_consolidated"] == 1
+        # Verify terminal state columns (SQL is multiline — normalise before matching)
+        raw_sql = pool.execute.call_args_list[0][0][0]
+        first_sql = " ".join(raw_sql.split())
+        assert "consolidated = true" in first_sql
+        assert "consolidation_status = 'consolidated'" in first_sql
+        assert "leased_until" in first_sql
+        assert "leased_by" in first_sql
+        assert "NULL" in first_sql
 
 
 class TestScopeDefault:

@@ -4,6 +4,21 @@ Takes a parsed ``ConsolidationResult`` (from ``consolidation_parser.py``) and
 applies each action to the database via ``storage.py``.  Each action is wrapped
 in its own try/except so that one failure does not prevent the remaining actions
 from executing.
+
+Terminal state handling
+-----------------------
+When consolidation actions succeed, all source episodes are moved to the
+``'consolidated'`` terminal state and their leases are cleared.
+
+When consolidation actions partially fail (some facts/rules could not be
+stored), episodes are still marked ``'consolidated'`` because the LLM
+produced output and partial results were saved — the episode itself was
+processed.  Errors are surfaced in the returned ``errors`` list.
+
+Full group-level failures (spawner down, parse failure, etc.) are handled by
+the caller (``consolidation.py``) which calls ``_mark_group_failed`` to
+transition episodes to ``'failed'`` or ``'dead_letter'`` with exponential
+backoff.
 """
 
 from __future__ import annotations
@@ -42,7 +57,7 @@ async def execute_consolidation(
     2. Updated facts: store via store_fact() (auto-supersedes), create derived_from links
     3. New rules: store via store_rule(), create derived_from links to source episodes
     4. Confirmations: call confirm_memory() for each referenced fact UUID
-    5. Mark all source episodes as consolidated=true
+    5. Mark all source episodes as consolidated (terminal state), clearing leases
 
     Args:
         pool: asyncpg connection pool
@@ -146,12 +161,21 @@ async def execute_consolidation(
             # Sanitize error message in return value
             errors.append(f"Failed to confirm fact {confirmation_id}")
 
-    # --- Mark source episodes as consolidated ---
+    # --- Mark source episodes as consolidated (terminal state) ---
+    # Clear lease columns and set terminal consolidation_status.
+    # Also set consolidated=true for backward compatibility with cleanup queries.
     episodes_consolidated = 0
     if source_episode_ids:
         try:
             await pool.execute(
-                "UPDATE episodes SET consolidated = true WHERE id = ANY($1)",
+                """
+                UPDATE episodes
+                SET consolidated         = true,
+                    consolidation_status = 'consolidated',
+                    leased_until         = NULL,
+                    leased_by            = NULL
+                WHERE id = ANY($1)
+                """,
                 source_episode_ids,
             )
             episodes_consolidated = len(source_episode_ids)
@@ -160,6 +184,27 @@ async def execute_consolidation(
             logger.error("Failed to mark episodes as consolidated: %s", exc, exc_info=True)
             # Sanitize error message in return value
             errors.append("Failed to mark episodes as consolidated")
+
+    # Emit memory_events for successful consolidation (best-effort)
+    if episodes_consolidated > 0:
+        try:
+            await pool.execute(
+                """
+                INSERT INTO memory_events (event_type, actor, payload)
+                SELECT
+                    'episode_consolidated',
+                    'consolidation_worker',
+                    jsonb_build_object(
+                        'episode_id', id::text,
+                        'butler',     butler
+                    )
+                FROM episodes
+                WHERE id = ANY($1)
+                """,
+                source_episode_ids,
+            )
+        except Exception as exc:
+            logger.warning("Failed to emit episode_consolidated events: %s", exc)
 
     return {
         "facts_created": facts_created,
