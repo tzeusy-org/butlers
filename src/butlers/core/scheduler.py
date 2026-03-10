@@ -318,15 +318,30 @@ async def sync_schedules(
 
     toml_names = {s["name"] for s in normalized_schedules}
 
-    # Fetch existing TOML-sourced tasks
+    # Fetch existing tasks whose names match any TOML schedule (regardless of source).
+    # A runtime-created task (source='db') may share a name with a TOML schedule;
+    # TOML takes ownership on next startup to avoid unique-constraint violations.
     rows = await pool.fetch(
+        """
+        SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args, enabled
+        FROM scheduled_tasks
+        WHERE name = ANY($1::text[])
+        """,
+        list(toml_names),
+    )
+    # Also fetch all remaining toml-sourced tasks (for the disable-removed-tasks pass below).
+    toml_only_rows = await pool.fetch(
         """
         SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args, enabled
         FROM scheduled_tasks
-        WHERE source = 'toml'
-        """
+        WHERE source = 'toml' AND name != ALL($1::text[])
+        """,
+        list(toml_names),
     )
     db_by_name: dict[str, asyncpg.Record] = {row["name"]: row for row in rows}
+    # Include leftover toml-sourced tasks so the disable pass can find them.
+    for row in toml_only_rows:
+        db_by_name.setdefault(row["name"], row)
 
     for entry in normalized_schedules:
         name = entry["name"]
@@ -347,15 +362,17 @@ async def sync_schedules(
                 existing["job_args"],
                 context=f"scheduled_tasks[{name}]",
             )
-            # Update if schedule payload changed, or if task was disabled.
-            if (
-                existing["cron"] != cron
+            # Reclaim from 'db' source, or update if schedule payload changed / disabled.
+            needs_update = (
+                existing.get("source", "toml") != "toml"
+                or existing["cron"] != cron
                 or existing["dispatch_mode"] != dispatch_mode
                 or existing["prompt"] != prompt
                 or existing["job_name"] != job_name
                 or existing_job_args != job_args
                 or not existing["enabled"]
-            ):
+            )
+            if needs_update:
                 await pool.execute(
                     """
                     UPDATE scheduled_tasks
@@ -365,6 +382,7 @@ async def sync_schedules(
                         job_name = $5,
                         job_args = $6,
                         next_run_at = $7,
+                        source = 'toml',
                         enabled = true,
                         updated_at = now()
                     WHERE id = $1

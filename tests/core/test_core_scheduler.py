@@ -1430,3 +1430,44 @@ async def test_tick_span_counts_only_successful_dispatches(pool, otel_provider):
     span = spans[0]
     assert span.attributes["tasks_due"] == 2
     assert span.attributes["tasks_run"] == 1  # Only the successful one
+
+
+# ---------------------------------------------------------------------------
+# Regression: TOML sync with pre-existing db-sourced tasks
+# ---------------------------------------------------------------------------
+
+
+async def test_sync_toml_reclaims_db_sourced_task(pool):
+    """sync_toml_schedules must update (not collide with) a db-sourced task sharing the name."""
+    from butlers.core.scheduler import sync_schedules
+
+    # Pre-insert a runtime-created task with source='db'
+    await pool.execute(
+        """
+        INSERT INTO scheduled_tasks (name, cron, dispatch_mode, prompt, source, enabled, next_run_at)
+        VALUES ('daily-nudge', '0 12 * * *', 'prompt', 'old prompt', 'db', true, now())
+        """
+    )
+
+    # Sync TOML schedules that include the same name but updated payload
+    toml_schedules = [
+        {
+            "name": "daily-nudge",
+            "cron": "0 17 * * *",
+            "dispatch_mode": "prompt",
+            "prompt": "new prompt from toml",
+        }
+    ]
+
+    await sync_schedules(pool, toml_schedules)
+
+    row = await pool.fetchrow("SELECT * FROM scheduled_tasks WHERE name = 'daily-nudge'")
+    assert row is not None
+    assert row["source"] == "toml", "TOML should reclaim the task"
+    assert row["cron"] == "0 17 * * *"
+    assert row["prompt"] == "new prompt from toml"
+    assert row["enabled"] is True
+
+    # Only one row — no duplicate
+    count = await pool.fetchval("SELECT count(*) FROM scheduled_tasks WHERE name = 'daily-nudge'")
+    assert count == 1
