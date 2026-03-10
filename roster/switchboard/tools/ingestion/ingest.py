@@ -64,6 +64,22 @@ from butlers.tools.switchboard.triage.thread_affinity import (
 
 logger = logging.getLogger(__name__)
 
+
+def _strip_null_bytes(value: Any) -> Any:
+    """Recursively strip \\x00 from strings, dicts, and lists.
+
+    PostgreSQL text/jsonb columns reject null bytes (\\u0000).  External
+    payloads (e.g. email bodies, webhook data) may contain them, so we
+    sanitize at the ingestion boundary.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {k: _strip_null_bytes(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_strip_null_bytes(v) for v in value)
+    return value
+
 # Module-level metrics instance for the switchboard ingest boundary.
 # Safe to construct before init_metrics() is called; recordings are no-ops
 # until a real MeterProvider is installed.
@@ -720,6 +736,13 @@ async def ingest_v1(
             ]
         )
 
+    # 6b. Strip null bytes — PostgreSQL rejects \u0000 in text/jsonb columns
+    normalized_text = _strip_null_bytes(normalized_text)
+    request_context = _strip_null_bytes(request_context)
+    raw_payload = _strip_null_bytes(raw_payload)
+    if attachments_json is not None:
+        attachments_json = _strip_null_bytes(attachments_json)
+
     # 7–8. Dedup-safe insert: acquire a dedicated connection and serialise on
     # the dedupe_key via pg_advisory_xact_lock so that concurrent submissions
     # for the same logical event cannot both pass the duplicate check.
@@ -849,13 +872,13 @@ async def ingest_v1(
                     """,
                     request_id,
                     received_at,
-                    envelope.source.channel,
-                    envelope.source.provider,
-                    envelope.source.endpoint_identity,
-                    envelope.sender.identity,
-                    envelope.event.external_thread_id,
-                    envelope.event.external_event_id,
-                    dedupe_key,
+                    _strip_null_bytes(envelope.source.channel),
+                    _strip_null_bytes(envelope.source.provider),
+                    _strip_null_bytes(envelope.source.endpoint_identity),
+                    _strip_null_bytes(envelope.sender.identity),
+                    _strip_null_bytes(envelope.event.external_thread_id),
+                    _strip_null_bytes(envelope.event.external_event_id),
+                    _strip_null_bytes(dedupe_key),
                     "connector_api",
                     ingestion_tier,
                     envelope.control.policy_tier,

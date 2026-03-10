@@ -84,29 +84,46 @@ async def entity_create(
     roles_list = roles or []
     metadata_json = json.dumps(metadata or {})
 
+    insert_sql = """
+        INSERT INTO shared.entities
+            (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+        RETURNING id
+    """
+    insert_args = (tenant_id, canonical_name, entity_type, aliases_list, metadata_json, roles_list)
+
     try:
-        entity_id = await pool.fetchval(
+        entity_id = await pool.fetchval(insert_sql, *insert_args)
+    except Exception as exc:
+        exc_str = str(exc)
+        if "uq_entities_tenant_canonical_type" not in exc_str and "unique" not in exc_str.lower():
+            raise
+
+        # The name slot may be occupied by a tombstoned (merged) entity.
+        # Rename the tombstone to free the slot, then retry the insert.
+        renamed = await pool.fetchval(
             """
-            INSERT INTO shared.entities
-                (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+            UPDATE shared.entities
+            SET canonical_name = canonical_name || ' [merged:' || id::text || ']',
+                updated_at = now()
+            WHERE tenant_id = $1
+              AND LOWER(canonical_name) = LOWER($2)
+              AND entity_type = $3
+              AND (metadata->>'merged_into') IS NOT NULL
             RETURNING id
             """,
             tenant_id,
             canonical_name,
             entity_type,
-            aliases_list,
-            metadata_json,
-            roles_list,
         )
-    except Exception as exc:
-        exc_str = str(exc)
-        if "uq_entities_tenant_canonical_type" in exc_str or "unique" in exc_str.lower():
+        if renamed is None:
+            # Conflict is with a live (non-merged) entity — genuine duplicate
             raise ValueError(
                 f"Entity with canonical_name='{canonical_name}' and "
                 f"entity_type='{entity_type}' already exists for this tenant."
             ) from exc
-        raise
+
+        entity_id = await pool.fetchval(insert_sql, *insert_args)
 
     return {"entity_id": str(entity_id)}
 

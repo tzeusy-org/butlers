@@ -130,11 +130,16 @@ class TestEntityCreate:
     async def test_raises_value_error_on_unique_constraint_violation(
         self, mock_pool: AsyncMock
     ) -> None:
-        """Unique constraint violation is re-raised as ValueError."""
+        """Unique constraint with no tombstone is re-raised as ValueError."""
+        # First call (INSERT) raises; second (tombstone rename) returns None
         mock_pool.fetchval = AsyncMock(
-            side_effect=Exception(
-                'duplicate key value violates unique constraint "uq_entities_tenant_canonical_type"'
-            )
+            side_effect=[
+                Exception(
+                    "duplicate key value violates unique constraint"
+                    ' "uq_entities_tenant_canonical_type"'
+                ),
+                None,  # no tombstoned entity found — genuine duplicate
+            ]
         )
         with pytest.raises(ValueError, match="already exists"):
             await entity_create(mock_pool, "Alice", "person", tenant_id=TENANT_ID)
@@ -142,12 +147,36 @@ class TestEntityCreate:
     async def test_raises_value_error_on_generic_unique_violation(
         self, mock_pool: AsyncMock
     ) -> None:
-        """Any unique constraint violation is detected and re-raised as ValueError."""
+        """Any unique constraint with no tombstone is re-raised as ValueError."""
         mock_pool.fetchval = AsyncMock(
-            side_effect=Exception("ERROR: duplicate key value violates unique constraint")
+            side_effect=[
+                Exception("ERROR: duplicate key value violates unique constraint"),
+                None,  # no tombstoned entity found
+            ]
         )
         with pytest.raises(ValueError, match="already exists"):
             await entity_create(mock_pool, "Alice", "person", tenant_id=TENANT_ID)
+
+    async def test_create_succeeds_when_tombstoned_entity_holds_name(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """If the conflicting entity is tombstoned (merged), rename it and retry."""
+        import uuid
+
+        tombstone_id = uuid.uuid4()
+        new_id = uuid.uuid4()
+        mock_pool.fetchval = AsyncMock(
+            side_effect=[
+                Exception(
+                    "duplicate key value violates unique constraint"
+                    ' "uq_entities_tenant_canonical_type"'
+                ),
+                tombstone_id,  # tombstone rename succeeded
+                new_id,  # retry INSERT succeeds
+            ]
+        )
+        result = await entity_create(mock_pool, "Alice", "person", tenant_id=TENANT_ID)
+        assert result == {"entity_id": str(new_id)}
 
     async def test_reraises_other_db_errors(self, mock_pool: AsyncMock) -> None:
         """Non-constraint DB errors propagate unchanged."""
