@@ -908,7 +908,7 @@ export default function EntityDetailPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b text-left text-muted-foreground">
-                        <th className="pb-2 pr-4 font-medium">Subject</th>
+                        <th className="pb-2 pr-4 font-medium">Scope</th>
                         <th className="pb-2 pr-4 font-medium">Predicate</th>
                         <th className="pb-2 pr-4 font-medium">Content</th>
                         <th className="pb-2 pr-4 font-medium text-right">
@@ -924,7 +924,7 @@ export default function EntityDetailPage() {
                           className="border-b last:border-0 hover:bg-muted/50"
                         >
                           <td className="py-2 pr-4 font-medium">
-                            {fact.subject}
+                            {fact.scope}
                           </td>
                           <td className="py-2 pr-4 text-muted-foreground">
                             {fact.predicate}
