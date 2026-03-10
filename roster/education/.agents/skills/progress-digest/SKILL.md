@@ -134,9 +134,11 @@ memory_store_fact(
 )
 ```
 
-Note: `map_entity_id` is the `entity_id` of the mind map's root concept node (available from
-`analytics_get_snapshot()` or `mind_map_get()`). For topic-level study pattern facts, use the
-map-level entity rather than a specific node's entity.
+Note: `map_entity_id` is the `entity_id` of the mind map's root concept node. Neither
+`analytics_get_snapshot()` nor `mind_map_get()` return a map-level `entity_id` directly —
+call `mind_map_node_list(mind_map_id=<id>)` and use the `entity_id` of the root node
+(lowest `depth`, or the node with no incoming prerequisite edges). If no clear root can be
+determined, omit `entity_id` — it is not required for user/topic-level study pattern facts.
 
 ## Exit Criteria
 

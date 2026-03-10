@@ -127,8 +127,9 @@ memory_store_fact(
 )
 ```
 
-Note: `node_entity_id` is available in the node dict from `spaced_repetition_pending_reviews()`
-(each entry includes the node's `entity_id` field from `shared.entities`).
+Note: `spaced_repetition_pending_reviews()` does not include `entity_id` in its response.
+To get `node_entity_id`, call `mind_map_node_get(node_id=<node_id>)` for the node being reviewed
+and read the `entity_id` field from the returned dict.
 
 Then suggest revisiting the teaching session:
 ```python

@@ -253,7 +253,8 @@ For example, a node labelled "list comprehensions" in the "Python" map has canon
 - `mind_map_node_create()` — returned in the response dict as `entity_id`
 - `mind_map_node_get()` — included in the node dict
 - `curriculum_next_node()` — included in the node dict
-- `spaced_repetition_pending_reviews()` — each entry includes the node's `entity_id`
+- `spaced_repetition_pending_reviews()` — does NOT return `entity_id`; call
+  `mind_map_node_get(node_id=<id>)` for each due node to retrieve its `entity_id`
 
 **Always pass `entity_id` to `memory_store_fact()`** for concept-level facts
 (`learning_outcome`, `struggle_area`, `prerequisite_mastered`). This ensures facts are linked
