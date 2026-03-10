@@ -489,7 +489,9 @@ class MemoryModule(Module):
                 Literal["person", "organization", "place", "other"],
                 Field(description="Entity type: person | organization | place | other."),
             ],
-            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+            tenant_id: Annotated[
+                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+            ] = "shared",
             aliases: Annotated[
                 list[str] | None,
                 BeforeValidator(_coerce_json_list),
@@ -520,7 +522,9 @@ class MemoryModule(Module):
         @mcp.tool()
         async def memory_entity_get(
             entity_id: Annotated[str, Field(description="UUID string of the entity.")],
-            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+            tenant_id: Annotated[
+                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+            ] = "shared",
         ) -> dict[str, Any] | None:
             """Retrieve a named entity from the memory entity graph by ID.
 
@@ -536,7 +540,9 @@ class MemoryModule(Module):
         @mcp.tool()
         async def memory_entity_update(
             entity_id: Annotated[str, Field(description="UUID string of the entity to update.")],
-            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+            tenant_id: Annotated[
+                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+            ] = "shared",
             canonical_name: Annotated[
                 str | None,
                 Field(description="New canonical name (optional)."),
@@ -619,7 +625,9 @@ class MemoryModule(Module):
         @mcp.tool()
         async def memory_entity_neighbors(
             entity_id: Annotated[str, Field(description="UUID string of the starting entity.")],
-            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+            tenant_id: Annotated[
+                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+            ] = "shared",
             max_depth: Annotated[
                 int,
                 Field(description="Maximum traversal depth (1–5, default 2)."),
@@ -689,7 +697,9 @@ class MemoryModule(Module):
             target_entity_id: Annotated[
                 str, Field(description="UUID string of the surviving entity.")
             ],
-            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+            tenant_id: Annotated[
+                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+            ] = "shared",
         ) -> dict[str, Any] | None:
             """Merge source entity into target entity in the memory entity graph.
 

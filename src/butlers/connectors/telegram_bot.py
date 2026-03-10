@@ -945,7 +945,7 @@ class TelegramBotConnector:
         try:
             raw = await load_cursor(
                 self._cursor_pool,
-                self._config.provider,
+                "telegram_bot",
                 self._config.endpoint_identity,
             )
             if raw is not None:
@@ -967,7 +967,7 @@ class TelegramBotConnector:
 
             await save_cursor(
                 self._cursor_pool,
-                self._config.provider,
+                "telegram_bot",
                 self._config.endpoint_identity,
                 json.dumps({"last_update_id": self._last_update_id}),
             )

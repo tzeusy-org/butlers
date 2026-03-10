@@ -646,7 +646,7 @@ class TelegramUserClientConnector:
         try:
             raw = await load_cursor(
                 self._cursor_pool,
-                self._config.provider,
+                "telegram_user_client",
                 self._config.endpoint_identity,
             )
             if raw is not None:
@@ -668,7 +668,7 @@ class TelegramUserClientConnector:
 
             await save_cursor(
                 self._cursor_pool,
-                self._config.provider,
+                "telegram_user_client",
                 self._config.endpoint_identity,
                 json.dumps({"last_message_id": self._last_message_id}),
             )

@@ -64,7 +64,7 @@ def init_telemetry(service_name: str) -> trace.Tracer:
         return trace.get_tracer(service_name)
 
     # Import exporter only when needed
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     from butlers.core.metrics import _build_resource

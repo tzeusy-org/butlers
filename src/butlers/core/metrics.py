@@ -147,7 +147,7 @@ def init_metrics(service_name: str) -> metrics.Meter:
         return metrics.get_meter(_METER_NAME)
 
     # Import SDK/exporter only when needed to avoid hard dependency at import time
-    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 

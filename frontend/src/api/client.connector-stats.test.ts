@@ -215,7 +215,7 @@ describe("getConnectorFanout matrix grouping", () => {
       data: [
         { connector_type: "gmail", endpoint_identity: "u@x.com", target_butler: "finance", message_count: 100 },
         { connector_type: "gmail", endpoint_identity: "u@x.com", target_butler: "general", message_count: 50 },
-        { connector_type: "telegram", endpoint_identity: "bot-1", target_butler: "health", message_count: 200 },
+        { connector_type: "telegram_bot", endpoint_identity: "bot-1", target_butler: "health", message_count: 200 },
       ],
     });
     const resp = await getConnectorFanout("7d");
@@ -230,7 +230,7 @@ describe("getConnectorFanout matrix grouping", () => {
     expect(gmailEntry!.targets).toEqual({ finance: 100, general: 50 });
 
     const tgEntry = fanout.matrix.find(
-      (e) => e.connector_type === "telegram" && e.endpoint_identity === "bot-1",
+      (e) => e.connector_type === "telegram_bot" && e.endpoint_identity === "bot-1",
     );
     expect(tgEntry).toBeDefined();
     expect(tgEntry!.targets).toEqual({ health: 200 });

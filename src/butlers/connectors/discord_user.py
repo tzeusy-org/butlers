@@ -1016,7 +1016,7 @@ class DiscordUserConnector:
         try:
             raw = await load_cursor(
                 self._cursor_pool,
-                self._config.provider,
+                "discord_user",
                 self._config.endpoint_identity,
             )
             if raw is not None:
@@ -1041,7 +1041,7 @@ class DiscordUserConnector:
             checkpoints_snapshot = dict(self._channel_checkpoints)
             await save_cursor(
                 self._cursor_pool,
-                self._config.provider,
+                "discord_user",
                 self._config.endpoint_identity,
                 json.dumps({"channel_checkpoints": checkpoints_snapshot}),
             )

@@ -611,6 +611,83 @@ class TestGmailConnectorRuntime:
 
         assert body == "(no body)"
 
+    def test_extract_body_from_payload_html_only(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """HTML-only emails (no text/plain) are extracted and tags stripped. [bu-nwn]"""
+        import base64
+
+        html_content = b"<p>Hello from HTML!</p>"
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": base64.urlsafe_b64encode(html_content).decode()},
+                },
+            ],
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "Hello from HTML!"
+
+    def test_extract_body_from_payload_html_fallback_strips_tags(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """HTML tags, style blocks, and script blocks are stripped from HTML-only emails. [bu-nwn]"""
+        import base64
+
+        html_content = (
+            b"<html><head>"
+            b"<style>body { color: red; }</style>"
+            b"</head><body>"
+            b"<script>alert('xss')</script>"
+            b"<h1>Account Statement</h1>"
+            b"<p>Your balance is <strong>1,234</strong> miles.</p>"
+            b"</body></html>"
+        )
+        payload = {
+            "mimeType": "text/html",
+            "body": {"data": base64.urlsafe_b64encode(html_content).decode()},
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert "Account Statement" in body
+        assert "1,234" in body
+        assert "miles" in body
+        # Style/script content must not appear
+        assert "color: red" not in body
+        assert "alert" not in body
+        # No raw HTML tags
+        assert "<" not in body
+        assert ">" not in body
+
+    def test_extract_body_from_payload_prefers_plain_over_html(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """text/plain is still preferred even when html comes first in parts. [bu-nwn]"""
+        import base64
+
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": base64.urlsafe_b64encode(b"<p>HTML version</p>").decode()},
+                },
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": base64.urlsafe_b64encode(b"Plain version").decode()},
+                },
+            ],
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "Plain version"
+
     # ------------------------------------------------------------------
     # Mid-session Switchboard ConnectionError tests (butlers-tt60)
     # ------------------------------------------------------------------

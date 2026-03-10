@@ -19,7 +19,7 @@ const MOCK_FANOUT: ConnectorFanout = {
       targets: { finance: 100, health: 50 },
     },
     {
-      connector_type: "telegram",
+      connector_type: "telegram_bot",
       endpoint_identity: "bot-123",
       targets: { health: 200, finance: 30 },
     },
