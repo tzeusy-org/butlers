@@ -818,10 +818,12 @@ export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
 export function getUnlinkedContacts(params?: {
   offset?: number;
   limit?: number;
+  q?: string;
 }): Promise<UnlinkedContactsResponse> {
   const qs = new URLSearchParams();
   if (params?.offset != null) qs.set("offset", String(params.offset));
   if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.q) qs.set("q", params.q);
   const suffix = qs.toString() ? `?${qs}` : "";
   return apiFetch<UnlinkedContactsResponse>(
     `/relationship/contacts/unlinked${suffix}`,

@@ -9,6 +9,8 @@
 
 import { useState } from "react";
 
+import { useDebounce } from "@/hooks/use-debounce";
+
 import type { EntityLinkSuggestion, UnlinkedContactSummary } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -180,9 +182,12 @@ function EntitySearchDialog({ contact, open, onOpenChange }: EntitySearchDialogP
 
 export function UnlinkedEntitiesSection() {
   const [page, setPage] = useState(0);
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 300);
   const { data, isLoading } = useUnlinkedContacts({
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
+    q: debouncedSearch || undefined,
   });
   const createMutation = useCreateAndLinkEntity();
   const [linkTarget, setLinkTarget] = useState<UnlinkedContactSummary | null>(null);
@@ -205,7 +210,7 @@ export function UnlinkedEntitiesSection() {
     );
   }
 
-  if (total === 0) return null;
+  if (total === 0 && !search) return null;
 
   function handleCreateNew(contact: UnlinkedContactSummary) {
     createMutation.mutate({
@@ -230,6 +235,17 @@ export function UnlinkedEntitiesSection() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="mb-4">
+            <Input
+              placeholder="Filter by name..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(0);
+              }}
+              className="max-w-sm"
+            />
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
@@ -239,6 +255,13 @@ export function UnlinkedEntitiesSection() {
               </TableRow>
             </TableHeader>
             <TableBody>
+              {contacts.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={3} className="text-center text-muted-foreground py-6">
+                    No contacts match &ldquo;{search}&rdquo;
+                  </TableCell>
+                </TableRow>
+              )}
               {contacts.map((contact) => {
                 const bestMatch = contact.suggestions[0] ?? null;
                 return (

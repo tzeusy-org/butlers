@@ -632,26 +632,43 @@ async def _suggest_entities(
 async def list_unlinked_contacts(
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    q: str | None = Query(None, min_length=1, max_length=200),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> UnlinkedContactsResponse:
     """Return contacts that have no entity_id, excluding pending/archived ones."""
     pool = _pool(db)
 
+    name_filter = ""
+    params_count: list[Any] = []
+    if q:
+        name_filter = " AND c.name ILIKE $1"
+        params_count = [f"%{q}%"]
+
     total = (
         await pool.fetchval(
-            """
+            f"""
         SELECT count(*)
-        FROM contacts
-        WHERE entity_id IS NULL
-          AND archived_at IS NULL
-          AND (metadata->>'needs_disambiguation')::boolean IS NOT TRUE
+        FROM contacts c
+        WHERE c.entity_id IS NULL
+          AND c.archived_at IS NULL
+          AND (c.metadata->>'needs_disambiguation')::boolean IS NOT TRUE
+          {name_filter}
         """,
+            *params_count,
         )
         or 0
     )
 
+    # Build positional params: optional $1 for q, then offset/limit
+    params_rows: list[Any] = []
+    if q:
+        params_rows.append(f"%{q}%")
+    offset_idx = len(params_rows) + 1
+    limit_idx = offset_idx + 1
+    params_rows.extend([offset, limit])
+
     rows = await pool.fetch(
-        """
+        f"""
         SELECT c.id, c.name AS full_name, c.first_name, c.last_name, c.company,
                (SELECT ci.value FROM shared.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
@@ -663,11 +680,11 @@ async def list_unlinked_contacts(
         WHERE c.entity_id IS NULL
           AND c.archived_at IS NULL
           AND (c.metadata->>'needs_disambiguation')::boolean IS NOT TRUE
+          {name_filter}
         ORDER BY c.name
-        OFFSET $1 LIMIT $2
+        OFFSET ${offset_idx} LIMIT ${limit_idx}
         """,
-        offset,
-        limit,
+        *params_rows,
     )
 
     memory_pool = await _get_memory_pool(db)

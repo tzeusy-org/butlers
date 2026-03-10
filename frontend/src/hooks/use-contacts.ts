@@ -257,7 +257,7 @@ export function usePatchContactInfo() {
 // ---------------------------------------------------------------------------
 
 /** Fetch paginated unlinked contacts with entity suggestions. */
-export function useUnlinkedContacts(params?: { offset?: number; limit?: number }) {
+export function useUnlinkedContacts(params?: { offset?: number; limit?: number; q?: string }) {
   return useQuery({
     queryKey: ["unlinked-contacts", params],
     queryFn: () => getUnlinkedContacts(params),
