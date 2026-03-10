@@ -111,9 +111,9 @@ async def run_consolidation(
                 existing_facts = [dict(row) for row in facts_rows]
 
                 rules_rows = await pool.fetch(
-                    "SELECT id, content, status "
+                    "SELECT id, content, maturity "
                     "FROM rules "
-                    "WHERE status = 'active' AND source_butler = $1 "
+                    "WHERE maturity = 'active' AND source_butler = $1 "
                     "ORDER BY created_at DESC "
                     "LIMIT 50",
                     butler_name,

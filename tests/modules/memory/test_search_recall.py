@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -433,3 +433,119 @@ class TestRecall:
 
         assert len(results) == 1
         assert results[0]["composite_score"] > 0.0
+
+    async def test_decayed_fact_below_threshold_excluded(self) -> None:
+        """A fact with high decay_rate and no recent confirmation is excluded."""
+        pool = AsyncMock()
+        engine = _make_engine()
+
+        # Fact with high confidence but confirmed long ago and high decay_rate
+        decayed_fact = _make_fact(
+            confidence=1.0,
+            last_referenced_at=datetime.now(UTC) - timedelta(days=1),
+            decay_rate=10.0,  # Very fast decay
+            last_confirmed_at=datetime.now(UTC) - timedelta(days=365),
+        )
+
+        async def hs_side_effect(pool, text, emb, table, **kw):
+            if table == "facts":
+                return [decayed_fact]
+            return []
+
+        with patch.object(_mod, "hybrid_search", AsyncMock(side_effect=hs_side_effect)):
+            results = await recall(pool, "topic", engine, min_confidence=0.2)
+
+        # Effective confidence should be near zero after 365 days with decay_rate=10
+        assert len(results) == 0
+
+    async def test_permanent_fact_passes_regardless_of_age(self) -> None:
+        """A permanent fact (decay_rate=0) always passes the confidence filter."""
+        pool = AsyncMock()
+        engine = _make_engine()
+
+        # Permanent fact with no last_confirmed_at (decay_rate=0)
+        permanent_fact = _make_fact(
+            confidence=0.9,
+            decay_rate=0.0,
+            last_confirmed_at=None,
+        )
+
+        async def hs_side_effect(pool, text, emb, table, **kw):
+            if table == "facts":
+                return [permanent_fact]
+            return []
+
+        with patch.object(_mod, "hybrid_search", AsyncMock(side_effect=hs_side_effect)):
+            results = await recall(pool, "topic", engine, min_confidence=0.2)
+
+        # Permanent facts pass through regardless of confirmation timestamp
+        assert len(results) == 1
+        assert results[0]["composite_score"] > 0.0
+
+    async def test_recall_uses_effective_confidence_for_composite_scoring(self) -> None:
+        """recall() uses effective_confidence (decayed) not raw confidence for scoring."""
+        pool = AsyncMock()
+        engine = _make_engine()
+
+        recently_confirmed = datetime.now(UTC) - timedelta(seconds=10)
+
+        # Two facts with same raw confidence but different decay states
+        # Fresh fact: confirmed very recently, low decay
+        fresh_fact = _make_fact(
+            id_=uuid.uuid4(),
+            confidence=0.8,
+            decay_rate=0.01,
+            last_confirmed_at=recently_confirmed,
+        )
+        # Stale fact: confirmed long ago, high decay (but within threshold)
+        stale_fact = _make_fact(
+            id_=uuid.uuid4(),
+            confidence=0.8,
+            decay_rate=0.1,
+            last_confirmed_at=datetime.now(UTC) - timedelta(days=5),
+        )
+
+        async def hs_side_effect(pool, text, emb, table, **kw):
+            if table == "facts":
+                return [fresh_fact, stale_fact]
+            return []
+
+        with patch.object(_mod, "hybrid_search", AsyncMock(side_effect=hs_side_effect)):
+            results = await recall(pool, "topic", engine, min_confidence=0.0)
+
+        # Both facts should be returned (above min_confidence=0)
+        assert len(results) == 2
+        ids = [r["id"] for r in results]
+        assert fresh_fact["id"] in ids
+        assert stale_fact["id"] in ids
+
+        # Fresh fact should score higher since it has higher effective confidence
+        fresh_score = next(r["composite_score"] for r in results if r["id"] == fresh_fact["id"])
+        stale_score = next(r["composite_score"] for r in results if r["id"] == stale_fact["id"])
+        assert fresh_score > stale_score
+
+    async def test_no_decay_rate_defaults_to_permanent(self) -> None:
+        """Facts without decay_rate field default to permanent (decay_rate=0)."""
+        pool = AsyncMock()
+        engine = _make_engine()
+
+        # Fact with no decay_rate — should behave like permanent
+        fact_no_decay = {
+            "id": uuid.uuid4(),
+            "content": "no decay field",
+            "rrf_score": 0.02,
+            "importance": 5.0,
+            "confidence": 0.8,
+            # No decay_rate, no last_confirmed_at
+        }
+
+        async def hs_side_effect(pool, text, emb, table, **kw):
+            if table == "facts":
+                return [fact_no_decay]
+            return []
+
+        with patch.object(_mod, "hybrid_search", AsyncMock(side_effect=hs_side_effect)):
+            results = await recall(pool, "topic", engine, min_confidence=0.2)
+
+        # Should pass since missing decay_rate defaults to 0 (permanent)
+        assert len(results) == 1

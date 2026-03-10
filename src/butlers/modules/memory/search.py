@@ -404,11 +404,11 @@ def effective_confidence(
     Returns:
         Float in [0.0, confidence], the decayed confidence value.
     """
-    if last_confirmed_at is None:
-        return 0.0
-
     if decay_rate == 0.0:
         return confidence
+
+    if last_confirmed_at is None:
+        return 0.0
 
     now = datetime.now(UTC)
     elapsed_seconds = (now - last_confirmed_at).total_seconds()
@@ -493,13 +493,16 @@ async def recall(
 
         importance = r.get("importance", 5.0)
         recency = compute_recency_score(r.get("last_referenced_at"))
-        confidence = r.get("confidence", 1.0)
+        conf = r.get("confidence", 1.0)
+        decay_rate = r.get("decay_rate", 0.0)
+        last_confirmed_at = r.get("last_confirmed_at")
+        eff_conf = effective_confidence(conf, decay_rate, last_confirmed_at)
 
         # Filter by effective confidence threshold
-        if confidence < min_confidence:
+        if eff_conf < min_confidence:
             continue
 
-        composite = compute_composite_score(relevance, importance, recency, confidence, weights)
+        composite = compute_composite_score(relevance, importance, recency, eff_conf, weights)
         r["composite_score"] = composite
         scored.append(r)
 
@@ -597,9 +600,18 @@ async def search(
         for r in results:
             r["memory_type"] = mem_type
 
-        # Filter by confidence if applicable
+        # Filter by effective confidence if applicable
         if min_confidence > 0:
-            results = [r for r in results if r.get("confidence", 1.0) >= min_confidence]
+            filtered = []
+            for r in results:
+                eff = effective_confidence(
+                    r.get("confidence", 1.0),
+                    r.get("decay_rate", 0.0),
+                    r.get("last_confirmed_at"),
+                )
+                if eff >= min_confidence:
+                    filtered.append(r)
+            results = filtered
 
         all_results.extend(results)
 
