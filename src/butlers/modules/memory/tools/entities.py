@@ -100,7 +100,10 @@ async def entity_create(
         )
     except Exception as exc:
         exc_str = str(exc)
-        if "uq_entities_tenant_canonical_type" in exc_str or "unique" in exc_str.lower():
+        if (
+            "uq_entities_tenant_canonical_type" in exc_str
+            or "unique" in exc_str.lower()
+        ):
             raise ValueError(
                 f"Entity with canonical_name='{canonical_name}' and "
                 f"entity_type='{entity_type}' already exists for this tenant."
