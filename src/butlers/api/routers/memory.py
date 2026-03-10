@@ -1058,7 +1058,11 @@ async def merge_entity(
 
     try:
         result = await entity_merge(
-            pool, source_id, target_id, tenant_id="shared", extra_pools=extra_pools,
+            pool,
+            source_id,
+            target_id,
+            tenant_id="shared",
+            extra_pools=extra_pools,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

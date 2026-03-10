@@ -25,7 +25,7 @@ pytestmark = [
 def postgres_container():
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("postgres:16") as postgres:
+    with PostgresContainer("pgvector/pgvector:pg17") as postgres:
         yield postgres
 
 

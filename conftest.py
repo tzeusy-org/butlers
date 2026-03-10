@@ -289,7 +289,7 @@ def postgres_container() -> Iterator[PostgresContainer]:
     """
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("postgres:16") as pg:
+    with PostgresContainer("pgvector/pgvector:pg17") as pg:
         yield pg
 
 

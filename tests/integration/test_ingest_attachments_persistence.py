@@ -27,7 +27,7 @@ def postgres_container():
     """Start a PostgreSQL container for the test module."""
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("postgres:16") as pg:
+    with PostgresContainer("pgvector/pgvector:pg17") as pg:
         yield pg
 
 

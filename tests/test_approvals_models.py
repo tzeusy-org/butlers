@@ -226,7 +226,7 @@ def postgres_container():
     """Start a PostgreSQL container for approvals migration tests."""
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("postgres:16") as postgres:
+    with PostgresContainer("pgvector/pgvector:pg17") as postgres:
         yield postgres
 
 

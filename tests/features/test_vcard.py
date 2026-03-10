@@ -57,7 +57,7 @@ def postgres_container():
     """Start a PostgreSQL container for the test module."""
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("postgres:16") as pg:
+    with PostgresContainer("pgvector/pgvector:pg17") as pg:
         yield pg
 
 
@@ -235,6 +235,8 @@ async def pool(postgres_container):
             valid_at TIMESTAMPTZ DEFAULT NULL,
             tenant_id TEXT NOT NULL DEFAULT 'owner',
             request_id TEXT,
+            retention_class TEXT NOT NULL DEFAULT 'operational',
+            sensitivity TEXT NOT NULL DEFAULT 'normal',
             idempotency_key TEXT,
             observed_at TIMESTAMPTZ DEFAULT now(),
             invalid_at TIMESTAMPTZ

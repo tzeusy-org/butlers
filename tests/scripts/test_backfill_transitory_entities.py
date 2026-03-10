@@ -203,13 +203,30 @@ class TestRunDiagnostic:
 # ---------------------------------------------------------------------------
 
 
+class _FakeTransactionForResolve:
+    """Minimal async context manager standing in for asyncpg conn.transaction()."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+def _mock_conn_with_transaction(**kwargs):
+    """Create an AsyncMock connection whose .transaction() returns an async CM."""
+    mock_conn = AsyncMock(**kwargs)
+    mock_conn.transaction = lambda: _FakeTransactionForResolve()
+    return mock_conn
+
+
 class TestResolveOrCreateEntity:
     """Tests for the INSERT-then-resolve logic."""
 
     async def test_creates_entity_on_success(self):
         """Returns (entity_id, True) when INSERT succeeds."""
         expected_uuid = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-        mock_conn = AsyncMock()
+        mock_conn = _mock_conn_with_transaction()
         mock_conn.fetchval = AsyncMock(return_value=expected_uuid)
 
         entity_id_str, was_created = await resolve_or_create_entity(
@@ -227,7 +244,7 @@ class TestResolveOrCreateEntity:
         import asyncpg
 
         expected_uuid = uuid.UUID("bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee")
-        mock_conn = AsyncMock()
+        mock_conn = _mock_conn_with_transaction()
 
         # First call (INSERT) raises UniqueViolationError; second call (SELECT) returns UUID
         mock_conn.fetchval = AsyncMock(
@@ -246,7 +263,7 @@ class TestResolveOrCreateEntity:
     async def test_metadata_contains_unidentified_flag(self):
         """Created entity metadata must include unidentified=True and provenance."""
         expected_uuid = uuid.UUID("cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee")
-        mock_conn = AsyncMock()
+        mock_conn = _mock_conn_with_transaction()
         mock_conn.fetchval = AsyncMock(return_value=expected_uuid)
 
         await resolve_or_create_entity(
@@ -268,7 +285,7 @@ class TestResolveOrCreateEntity:
         """If entity exists but is tombstoned and no fallback found, raises RuntimeError."""
         import asyncpg
 
-        mock_conn = AsyncMock()
+        mock_conn = _mock_conn_with_transaction()
         # INSERT fails, first SELECT returns None (tombstoned), second SELECT also returns None
         mock_conn.fetchval = AsyncMock(
             side_effect=[asyncpg.UniqueViolationError("dup"), None, None]
