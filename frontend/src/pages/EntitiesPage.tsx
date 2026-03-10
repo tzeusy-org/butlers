@@ -224,28 +224,91 @@ function UnidentifiedEntitiesSection({
 }) {
   const navigate = useNavigate();
   const deleteMutation = useDeleteEntity();
+  const promoteMutation = usePromoteEntity();
+  const mergeMutation = useMergeEntity();
   const [mergeTarget, setMergeTarget] = useState<EntitySummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EntitySummary | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkMergeOpen, setBulkMergeOpen] = useState(false);
+  const [bulkMerging, setBulkMerging] = useState(false);
 
   if (entities.length === 0) return null;
+
+  const allSelected = selected.size === entities.length && entities.length > 0;
+
+  function toggleOne(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(entities.map((e) => e.id)));
+    }
+  }
+
+  async function handleBulkMerge(targetId: string) {
+    setBulkMerging(true);
+    const sources = [...selected].filter((id) => id !== targetId);
+    let merged = 0;
+    for (const sourceId of sources) {
+      try {
+        await mergeMutation.mutateAsync({
+          targetEntityId: targetId,
+          sourceEntityId: sourceId,
+        });
+        merged++;
+      } catch (err) {
+        toast.error(
+          `Merge failed for ${sourceId}: ${err instanceof Error ? err.message : "Unknown error"}`,
+        );
+      }
+    }
+    if (merged > 0) {
+      toast.success(`Merged ${merged} entit${merged !== 1 ? "ies" : "y"} into target`);
+    }
+    setSelected(new Set());
+    setBulkMergeOpen(false);
+    setBulkMerging(false);
+  }
 
   return (
     <>
       <Card className="border-orange-200 dark:border-orange-800">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            Unidentified Entities
-            <Badge
-              style={{ backgroundColor: "#ea580c", color: "#fff" }}
-              className="text-xs"
-            >
-              {entities.length}
-            </Badge>
-          </CardTitle>
-          <CardDescription>
-            Auto-created entities pending identification. Click into details to add names, or merge
-            into an existing entity.
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                Unidentified Entities
+                <Badge
+                  style={{ backgroundColor: "#ea580c", color: "#fff" }}
+                  className="text-xs"
+                >
+                  {entities.length}
+                </Badge>
+              </CardTitle>
+              <CardDescription>
+                Auto-created entities pending identification. Promote to confirm, or merge into an
+                existing entity.
+              </CardDescription>
+            </div>
+            {selected.size >= 2 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBulkMergeOpen(true)}
+              >
+                <GitMergeIcon className="mr-1 h-4 w-4" />
+                Merge {selected.size} selected
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <TooltipProvider>
@@ -253,17 +316,31 @@ function UnidentifiedEntitiesSection({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
+                    <th className="pb-2 pr-2 w-8">
+                      <Checkbox
+                        checked={allSelected}
+                        onCheckedChange={toggleAll}
+                        aria-label="Select all"
+                      />
+                    </th>
                     <th className="pb-2 pr-4 font-medium">Name</th>
                     <th className="pb-2 pr-4 font-medium text-right">Facts</th>
                     <th className="pb-2 pr-4 font-medium">Source Butler</th>
                     <th className="pb-2 pr-4 font-medium">Source Scope</th>
                     <th className="pb-2 pr-4 font-medium">Created</th>
-                    <th className="pb-2 font-medium w-[100px]">Actions</th>
+                    <th className="pb-2 font-medium w-[140px]">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {entities.map((entity) => (
                     <tr key={entity.id} className="border-b last:border-0 hover:bg-muted/50">
+                      <td className="py-2 pr-2">
+                        <Checkbox
+                          checked={selected.has(entity.id)}
+                          onCheckedChange={() => toggleOne(entity.id)}
+                          aria-label={`Select ${entity.canonical_name}`}
+                        />
+                      </td>
                       <td className="py-2 pr-4">
                         <Link
                           to={`/entities/${entity.id}`}
@@ -284,6 +361,32 @@ function UnidentifiedEntitiesSection({
                       </td>
                       <td className="py-2">
                         <div className="flex items-center gap-1">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                disabled={promoteMutation.isPending}
+                                onClick={async () => {
+                                  try {
+                                    await promoteMutation.mutateAsync(entity.id);
+                                    toast.success(`Promoted ${entity.canonical_name}`);
+                                  } catch (err) {
+                                    toast.error(
+                                      `Promote failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+                                    );
+                                  }
+                                }}
+                              >
+                                {promoteMutation.isPending ? (
+                                  <Loader2Icon className="animate-spin" />
+                                ) : (
+                                  <CheckCircleIcon />
+                                )}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Promote</TooltipContent>
+                          </Tooltip>
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button
@@ -341,9 +444,48 @@ function UnidentifiedEntitiesSection({
         />
       )}
 
+      {/* Bulk merge target picker */}
+      <Dialog open={bulkMergeOpen} onOpenChange={setBulkMergeOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Merge {selected.size} entities</DialogTitle>
+            <DialogDescription>
+              Select the target entity. All other selected entities will be merged into it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-64 overflow-y-auto space-y-1">
+            {entities
+              .filter((e) => selected.has(e.id))
+              .map((e) => (
+                <Button
+                  key={e.id}
+                  variant="ghost"
+                  className="w-full justify-start"
+                  disabled={bulkMerging}
+                  onClick={() => handleBulkMerge(e.id)}
+                >
+                  {bulkMerging ? (
+                    <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <GitMergeIcon className="mr-2 h-4 w-4" />
+                  )}
+                  Merge into {e.canonical_name}
+                </Button>
+              ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkMergeOpen(false)}>
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog
         open={!!deleteTarget}
-        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
