@@ -186,8 +186,9 @@ class TestMarkHelpfulEffectivenessRecalc:
 
         await mark_helpful(pool, _RULE_ID)
 
-        # Second UPDATE should set effectiveness_score
-        args = conn.execute.call_args[0]
+        # First execute() call is UPDATE rules SET effectiveness_score …
+        # (second execute() is the rule_applications INSERT)
+        args = conn.execute.call_args_list[0][0]
         sql = args[0]
         assert "effectiveness_score" in sql
         # $1 is effectiveness = 8/10 = 0.8
@@ -247,7 +248,8 @@ class TestMarkHelpfulPromoteCandidateToEstablished:
 
         await mark_helpful(pool, _RULE_ID)
 
-        args = conn.execute.call_args[0]
+        # First execute() is the UPDATE rules SET effectiveness_score/maturity call
+        args = conn.execute.call_args_list[0][0]
         # $2 is the maturity value
         assert args[2] == "established"
 

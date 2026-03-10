@@ -189,7 +189,8 @@ class TestMarkHarmfulEffectivenessRecalc:
 
         await mark_harmful(pool, _RULE_ID)
 
-        args = conn.execute.call_args[0]
+        # First execute() is UPDATE rules SET effectiveness_score/maturity/metadata
+        args = conn.execute.call_args_list[0][0]
         sql = args[0]
         assert "effectiveness_score" in sql
         expected = 5 / (5 + 4 * 1 + 0.01)
@@ -254,7 +255,8 @@ class TestMarkHarmfulDemoteEstablishedToCandidate:
 
         await mark_harmful(pool, _RULE_ID)
 
-        args = conn.execute.call_args[0]
+        # First execute() is UPDATE rules SET effectiveness_score/maturity/metadata
+        args = conn.execute.call_args_list[0][0]
         # $2 is maturity
         assert args[2] == "candidate"
 
@@ -321,7 +323,8 @@ class TestMarkHarmfulReasonStorage:
 
         await mark_harmful(pool, _RULE_ID, reason="bad advice")
 
-        args = conn.execute.call_args[0]
+        # First execute() is UPDATE rules SET effectiveness_score/maturity/metadata
+        args = conn.execute.call_args_list[0][0]
         # $3 is the metadata JSON string
         metadata_json = args[3]
         parsed = json.loads(metadata_json)
@@ -367,7 +370,8 @@ class TestMarkHarmfulAntiPatternInversion:
 
         await mark_harmful(pool, _RULE_ID)
 
-        args = conn.execute.call_args[0]
+        # First execute() is UPDATE rules SET effectiveness_score/maturity/metadata
+        args = conn.execute.call_args_list[0][0]
         metadata_json = args[3]
         parsed = json.loads(metadata_json)
         assert parsed["needs_inversion"] is True
