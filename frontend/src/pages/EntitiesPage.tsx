@@ -537,9 +537,11 @@ export default function EntitiesPage() {
   const [deleteTarget, setDeleteTarget] = useState<EntitySummary | null>(null);
   const deleteMutation = useDeleteEntity();
 
+  // Fetch confirmed entities (excluding unidentified) for the main table
   const params: EntityParams = {
     q: search || undefined,
     entity_type: typeFilter || undefined,
+    unidentified: false,
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
   };
@@ -553,8 +555,9 @@ export default function EntitiesPage() {
   const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const rangeEnd = Math.min((page + 1) * PAGE_SIZE, total);
 
-  // Split out unidentified entities for the disambiguation section
-  const unidentifiedEntities = entities.filter((e) => e.unidentified);
+  // Separate call for ALL unidentified entities (not paginated with main table)
+  const { data: unidentifiedData } = useEntities({ unidentified: true, limit: 200 });
+  const unidentifiedEntities = unidentifiedData?.data ?? [];
 
   function handleSearchChange(value: string) {
     setSearch(value);
