@@ -13,9 +13,11 @@ async def table_columns(pool: asyncpg.Pool, table: str) -> set[str]:
     """Return the set of column names for a table, resolved via the connection's search_path."""
     rows = await pool.fetch(
         """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name = $1
+        SELECT a.attname AS column_name
+        FROM pg_attribute a
+        WHERE a.attrelid = to_regclass($1)
+          AND a.attnum > 0
+          AND NOT a.attisdropped
         """,
         table,
     )
@@ -28,15 +30,9 @@ async def has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
 
 
 async def has_table(pool: asyncpg.Pool, table: str) -> bool:
-    """Return True if a table exists in the connection's current schema."""
+    """Return True if a table exists in the connection's search_path."""
     return await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.tables
-            WHERE table_schema = current_schema() AND table_name = $1
-        )
-        """,
+        "SELECT to_regclass($1) IS NOT NULL",
         table,
     )
 

@@ -105,9 +105,11 @@ async def _table_columns(pool, table_name: str) -> set[str]:
     """Return column names for a table, resolved via the connection's search_path."""
     rows = await pool.fetch(
         """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name = $1
+        SELECT a.attname AS column_name
+        FROM pg_attribute a
+        WHERE a.attrelid = to_regclass($1)
+          AND a.attnum > 0
+          AND NOT a.attisdropped
         """,
         table_name,
     )

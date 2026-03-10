@@ -757,7 +757,7 @@ def test_list_groups_legacy_schema_without_optional_group_columns(app):
 
     schema_sql = mock_pool.fetch.await_args_list[0].args[0]
     groups_sql = mock_pool.fetch.await_args_list[1].args[0]
-    assert "information_schema.columns" in schema_sql
+    assert "pg_attribute" in schema_sql
     assert "g.description" not in groups_sql
     assert "g.updated_at" not in groups_sql
     assert "NULL::text AS description" in groups_sql
@@ -835,7 +835,7 @@ def test_get_group_legacy_schema_without_optional_group_columns(app):
 
     schema_sql = mock_pool.fetch.await_args_list[0].args[0]
     groups_sql = mock_pool.fetchrow.await_args_list[0].args[0]
-    assert "information_schema.columns" in schema_sql
+    assert "pg_attribute" in schema_sql
     assert "g.description" not in groups_sql
     assert "g.updated_at" not in groups_sql
     assert "NULL::text AS description" in groups_sql
