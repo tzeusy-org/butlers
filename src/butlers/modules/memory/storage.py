@@ -323,6 +323,8 @@ async def store_fact(
     tenant_id: str = "owner",
     request_id: str | None = None,
     idempotency_key: str | None = None,
+    retention_class: str = "operational",
+    sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
 ) -> uuid.UUID:
@@ -374,6 +376,10 @@ async def store_fact(
             ``(tenant_id, idempotency_key)`` is a no-op; the existing fact's ID
             is returned instead.  Property facts (``valid_at IS NULL``) always
             have ``idempotency_key = NULL`` and use supersession instead.
+        retention_class: Retention policy class for the fact (default
+            'operational').  Controls lifecycle management behaviour.
+        sensitivity: Data sensitivity classification (default 'normal').
+            Use 'pii' for personally-identifiable information, etc.
         enable_shared_catalog: When True, write a summary row to
             ``shared.memory_catalog`` after the canonical fact is stored.
             Catalog write failure is logged as a warning and does NOT block
@@ -527,7 +533,7 @@ async def store_fact(
                     source_episode_id, supersedes_id, validity, scope,
                     created_at, last_confirmed_at, tags, metadata, entity_id,
                     object_entity_id, valid_at, tenant_id, request_id,
-                    idempotency_key, observed_at
+                    idempotency_key, observed_at, retention_class, sensitivity
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, {tsvector_sql("$6")},
@@ -535,7 +541,7 @@ async def store_fact(
                     $12, $13, 'active', $14,
                     $15, $15, $16, $17, $18,
                     $19, $20, $21, $22,
-                    $23, $24
+                    $23, $24, $25, $26
                 )
             """
             await conn.execute(
@@ -564,6 +570,8 @@ async def store_fact(
                 request_id,
                 effective_idempotency_key,
                 now,  # observed_at = insertion time
+                retention_class,
+                sensitivity,
             )
 
             # Create supersedes link if applicable
@@ -619,6 +627,8 @@ async def store_rule(
     metadata: dict | None = None,
     tenant_id: str = "owner",
     request_id: str | None = None,
+    retention_class: str = "rule",
+    sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
 ) -> uuid.UUID:
@@ -639,6 +649,10 @@ async def store_rule(
         metadata: Optional JSONB metadata dict.
         tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
         request_id: Optional request trace ID for correlation.
+        retention_class: Retention policy class for the rule (default 'rule').
+            Controls lifecycle management behaviour.
+        sensitivity: Data sensitivity classification (default 'normal').
+            Use 'pii' for personally-identifiable information, etc.
         enable_shared_catalog: When True, write a summary row to
             ``shared.memory_catalog`` after the canonical rule is stored.
             Catalog write failure is logged as a warning and does NOT block
@@ -662,11 +676,11 @@ async def store_rule(
                            confidence, decay_rate, effectiveness_score,
                            applied_count, success_count, harmful_count,
                            source_episode_id, source_butler, created_at, tags, metadata,
-                           tenant_id, request_id)
+                           tenant_id, request_id, retention_class, sensitivity)
         VALUES ($1, $2, $3, {tsvector_sql("$4")}, $5, 'candidate',
                 0.5, 0.01, 0.0,
                 0, 0, 0,
-                $6, $7, $8, $9, $10, $11, $12)
+                $6, $7, $8, $9, $10, $11, $12, $13, $14)
     """
 
     await pool.execute(
@@ -683,6 +697,8 @@ async def store_rule(
         meta_json,
         tenant_id,
         request_id,
+        retention_class,
+        sensitivity,
     )
 
     # -------------------------------------------------------------------------

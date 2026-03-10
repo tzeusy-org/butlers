@@ -107,6 +107,8 @@ async def memory_store_fact(
     valid_at: str | None = None,
     idempotency_key: str | None = None,
     request_context: dict[str, Any] | None = None,
+    retention_class: str = "operational",
+    sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
 ) -> dict[str, Any]:
@@ -132,6 +134,10 @@ async def memory_store_fact(
 
     Accepts an optional ``request_context`` dict with 'tenant_id' and 'request_id'
     for multi-tenant isolation and request trace correlation.
+
+    Accepts optional ``retention_class`` (default 'operational') and
+    ``sensitivity`` (default 'normal') to classify the stored fact for
+    lifecycle management and data governance purposes.
 
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new fact's ID and the superseded fact's ID (if any).
@@ -164,6 +170,8 @@ async def memory_store_fact(
         idempotency_key=idempotency_key,
         tenant_id=tenant_id,
         request_id=request_id,
+        retention_class=retention_class,
+        sensitivity=sensitivity,
         enable_shared_catalog=enable_shared_catalog,
         source_schema=source_schema,
     )
@@ -193,6 +201,8 @@ async def memory_store_rule(
     scope: str = "global",
     tags: list[str] | None = None,
     request_context: dict[str, Any] | None = None,
+    retention_class: str = "rule",
+    sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
 ) -> dict[str, Any]:
@@ -209,6 +219,10 @@ async def memory_store_rule(
         tags: Optional list of string tags.
         request_context: Optional dict with 'tenant_id' and 'request_id' for
             multi-tenant isolation and request trace correlation.
+        retention_class: Retention policy class for the rule (default 'rule').
+            Controls lifecycle management behaviour.
+        sensitivity: Data sensitivity classification (default 'normal').
+            Use 'pii' for personally-identifiable information, etc.
         enable_shared_catalog: When True, write a catalog entry to
             ``shared.memory_catalog`` after the rule is stored.
         source_schema: Butler schema name for the catalog row (e.g. 'health').
@@ -222,6 +236,8 @@ async def memory_store_rule(
         tags=tags,
         tenant_id=tenant_id,
         request_id=request_id,
+        retention_class=retention_class,
+        sensitivity=sensitivity,
         enable_shared_catalog=enable_shared_catalog,
         source_schema=source_schema,
     )

@@ -198,11 +198,11 @@ class TestEntityIdStoredInFact:
         sql = insert_call.args[0]
         assert "entity_id" in sql
         # entity_id=$18, object_entity_id=$19, valid_at=$20, tenant_id=$21, request_id=$22,
-        # idempotency_key=$23, observed_at=$24
-        assert insert_call.args[-7] == eid
-        assert insert_call.args[-6] is None  # object_entity_id not set
+        # idempotency_key=$23, observed_at=$24, retention_class=$25, sensitivity=$26
+        assert insert_call.args[-9] == eid
+        assert insert_call.args[-8] is None  # object_entity_id not set
         # valid_at is NULL (property fact — omitted valid_at)
-        assert insert_call.args[-5] is None
+        assert insert_call.args[-7] is None
 
     async def test_entity_id_null_in_insert_when_omitted(self, embedding_engine):
         """When entity_id is not provided, NULL is stored."""
@@ -213,10 +213,10 @@ class TestEntityIdStoredInFact:
 
         insert_call = conn.execute.call_args_list[0]
         assert "entity_id" in insert_call.args[0]
-        assert insert_call.args[-7] is None  # entity_id
-        assert insert_call.args[-6] is None  # object_entity_id
+        assert insert_call.args[-9] is None  # entity_id
+        assert insert_call.args[-8] is None  # object_entity_id
         # valid_at is NULL (property fact — omitted valid_at)
-        assert insert_call.args[-5] is None
+        assert insert_call.args[-7] is None
 
 
 # ---------------------------------------------------------------------------
@@ -396,11 +396,11 @@ class TestSubjectKeyedSupersessionUnchanged:
             c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
         )
         # entity_id=$18, object_entity_id=$19, valid_at=$20, tenant_id=$21, request_id=$22,
-        # idempotency_key=$23, observed_at=$24
-        assert insert_call.args[-7] is None  # entity_id = None
-        assert insert_call.args[-6] is None  # object_entity_id = None
+        # idempotency_key=$23, observed_at=$24, retention_class=$25, sensitivity=$26
+        assert insert_call.args[-9] is None  # entity_id = None
+        assert insert_call.args[-8] is None  # object_entity_id = None
         # valid_at = NULL (property fact — omitted valid_at)
-        assert insert_call.args[-5] is None
+        assert insert_call.args[-7] is None
 
 
 # ---------------------------------------------------------------------------
@@ -619,11 +619,11 @@ class TestObjectEntityIdStoredInFact:
         sql = insert_call.args[0]
         assert "object_entity_id" in sql
         # entity_id=$18, object_entity_id=$19, valid_at=$20, tenant_id=$21, request_id=$22,
-        # idempotency_key=$23, observed_at=$24
-        assert insert_call.args[-6] == obj_eid
-        assert insert_call.args[-7] == eid
+        # idempotency_key=$23, observed_at=$24, retention_class=$25, sensitivity=$26
+        assert insert_call.args[-8] == obj_eid
+        assert insert_call.args[-9] == eid
         # valid_at = NULL (property fact — omitted valid_at)
-        assert insert_call.args[-5] is None
+        assert insert_call.args[-7] is None
 
     async def test_object_entity_id_null_when_omitted(self, embedding_engine):
         """When object_entity_id is not provided, NULL is stored."""
@@ -635,8 +635,8 @@ class TestObjectEntityIdStoredInFact:
         insert_call = conn.execute.call_args_list[0]
         assert "object_entity_id" in insert_call.args[0]
         # entity_id=$18, object_entity_id=$19, valid_at=$20, tenant_id=$21, request_id=$22,
-        # idempotency_key=$23, observed_at=$24
-        assert insert_call.args[-6] is None  # object_entity_id
+        # idempotency_key=$23, observed_at=$24, retention_class=$25, sensitivity=$26
+        assert insert_call.args[-8] is None  # object_entity_id
 
 
 # ---------------------------------------------------------------------------

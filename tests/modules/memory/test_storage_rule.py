@@ -195,11 +195,12 @@ class TestStoreRuleSqlParameters:
         assert "to_tsvector('english', $4)" in sql
 
     async def test_ten_positional_args(self, mock_pool, mock_engine):
-        """pool.execute should receive exactly 12 positional arguments after the SQL."""
+        """pool.execute should receive exactly 14 positional arguments after the SQL."""
         await store_rule(mock_pool, "Test rule", mock_engine)
         args = mock_pool.execute.call_args[0]
-        # args[0] is SQL, args[1..12] are the 12 parameters (added tenant_id and request_id)
-        assert len(args) == 13
+        # args[0] is SQL, args[1..14] are the 14 parameters
+        # (tenant_id, request_id, retention_class, sensitivity added)
+        assert len(args) == 15
 
     async def test_rule_id_is_first_param(self, mock_pool, mock_engine):
         """The first positional parameter should be a UUID (the rule ID)."""

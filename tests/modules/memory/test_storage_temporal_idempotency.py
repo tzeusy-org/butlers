@@ -167,8 +167,9 @@ class TestStoreFactIdempotency:
         await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts)
 
         insert_call = conn.execute.call_args_list[0]
-        # idempotency_key is $23 (args[-2], before observed_at at args[-1])
-        idem_key = insert_call.args[-2]
+        # idempotency_key is $23 (args[-4], before observed_at=$24, retention_class=$25,
+        # sensitivity=$26 at the end)
+        idem_key = insert_call.args[-4]
         assert idem_key is not None
         assert isinstance(idem_key, str)
         assert len(idem_key) == 32
@@ -180,7 +181,7 @@ class TestStoreFactIdempotency:
         await store_fact(pool, "user", "favorite_color", "blue", embedding_engine)
 
         insert_call = conn.execute.call_args_list[0]
-        idem_key = insert_call.args[-2]
+        idem_key = insert_call.args[-4]
         # Property facts must not get an idempotency key
         assert idem_key is None
 
@@ -201,7 +202,7 @@ class TestStoreFactIdempotency:
         )
 
         insert_call = conn.execute.call_args_list[0]
-        idem_key = insert_call.args[-2]
+        idem_key = insert_call.args[-4]
         assert idem_key == explicit_key
 
     async def test_duplicate_temporal_fact_returns_existing_id(self, mock_pool, embedding_engine):
@@ -253,13 +254,14 @@ class TestStoreFactIdempotency:
         conn.fetchval.assert_not_awaited()
 
     async def test_observed_at_set_on_insert(self, mock_pool, embedding_engine):
-        """observed_at (args[-1]) is always set to a datetime on insert."""
+        """observed_at (args[-3]) is always set to a datetime on insert."""
         pool, conn = mock_pool
 
         await store_fact(pool, "user", "favorite_color", "blue", embedding_engine)
 
         insert_call = conn.execute.call_args_list[0]
-        observed_at = insert_call.args[-1]
+        # observed_at is $24; retention_class=$25 and sensitivity=$26 follow.
+        observed_at = insert_call.args[-3]
         assert isinstance(observed_at, datetime)
         assert observed_at.tzinfo is not None
 

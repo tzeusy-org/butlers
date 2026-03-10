@@ -250,6 +250,26 @@ class MemoryModule(Module):
                     )
                 ),
             ] = None,
+            retention_class: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional retention policy class for lifecycle management "
+                        "(e.g. 'operational', 'health_log', 'archive'). "
+                        "When omitted, defaults to 'operational'."
+                    )
+                ),
+            ] = None,
+            sensitivity: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional data sensitivity classification "
+                        "(e.g. 'normal', 'pii', 'confidential'). "
+                        "When omitted, defaults to 'normal'."
+                    )
+                ),
+            ] = None,
         ) -> dict[str, Any]:
             """Store a fact and supersede any active match.
 
@@ -335,6 +355,8 @@ class MemoryModule(Module):
                 valid_at=valid_at,
                 idempotency_key=idempotency_key,
                 request_context=request_context,
+                retention_class=retention_class or "operational",
+                sensitivity=sensitivity or "normal",
                 enable_shared_catalog=module._config.enable_shared_catalog,
                 source_schema=module._config.catalog_source_schema or None,
             )
@@ -354,6 +376,15 @@ class MemoryModule(Module):
                     )
                 ),
             ] = None,
+            retention_class: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional retention policy class for lifecycle management "
+                        "(e.g. 'rule', 'archive'). When omitted, defaults to 'rule'."
+                    )
+                ),
+            ] = None,
         ) -> dict[str, Any]:
             """Store a new behavioral rule as a candidate."""
             return await _writing.memory_store_rule(
@@ -363,6 +394,7 @@ class MemoryModule(Module):
                 scope=scope,
                 tags=tags,
                 request_context=request_context,
+                retention_class=retention_class or "rule",
                 enable_shared_catalog=module._config.enable_shared_catalog,
                 source_schema=module._config.catalog_source_schema or None,
             )

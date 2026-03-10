@@ -359,6 +359,8 @@ class TestToolDelegation:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            retention_class="operational",
+            sensitivity="normal",
             enable_shared_catalog=False,
             source_schema=None,
         )
@@ -388,6 +390,8 @@ class TestToolDelegation:
             valid_at="2026-03-06T08:00:00Z",
             idempotency_key=None,
             request_context=None,
+            retention_class="operational",
+            sensitivity="normal",
             enable_shared_catalog=False,
             source_schema=None,
         )
@@ -441,6 +445,78 @@ class TestToolDelegation:
         management.memory_stats = AsyncMock(return_value={})
         await tools["memory_stats"]()
         management.memory_stats.assert_called_once_with(pool, scope=None)
+
+    async def test_memory_store_fact_custom_retention_and_sensitivity(self):
+        """Custom retention_class and sensitivity are passed through to writing layer."""
+        mod, tools, pool, writing, *_ = await self._setup_and_register()
+        mod._embedding_engine = MagicMock(name="embedding")
+        writing.memory_store_fact = AsyncMock(return_value={"id": "abc"})
+        await tools["memory_store_fact"](
+            subject="owner",
+            predicate="weight",
+            content="72kg",
+            retention_class="health_log",
+            sensitivity="pii",
+        )
+        writing.memory_store_fact.assert_called_once_with(
+            pool,
+            mod._embedding_engine,
+            "owner",
+            "weight",
+            "72kg",
+            importance=5.0,
+            permanence="standard",
+            scope="global",
+            tags=None,
+            entity_id=None,
+            object_entity_id=None,
+            valid_at=None,
+            idempotency_key=None,
+            request_context=None,
+            retention_class="health_log",
+            sensitivity="pii",
+            enable_shared_catalog=False,
+            source_schema=None,
+        )
+
+    async def test_memory_store_rule_delegates_with_default_retention(self):
+        """memory_store_rule passes retention_class='rule' by default."""
+        mod, tools, pool, writing, *_ = await self._setup_and_register()
+        mod._embedding_engine = MagicMock(name="embedding")
+        writing.memory_store_rule = AsyncMock(return_value={"id": "rule-abc"})
+        await tools["memory_store_rule"](content="Always be polite")
+        writing.memory_store_rule.assert_called_once_with(
+            pool,
+            mod._embedding_engine,
+            "Always be polite",
+            scope="global",
+            tags=None,
+            request_context=None,
+            retention_class="rule",
+            enable_shared_catalog=False,
+            source_schema=None,
+        )
+
+    async def test_memory_store_rule_delegates_with_custom_retention(self):
+        """Custom retention_class is forwarded when provided."""
+        mod, tools, pool, writing, *_ = await self._setup_and_register()
+        mod._embedding_engine = MagicMock(name="embedding")
+        writing.memory_store_rule = AsyncMock(return_value={"id": "rule-xyz"})
+        await tools["memory_store_rule"](
+            content="Escalate budget queries",
+            retention_class="archive",
+        )
+        writing.memory_store_rule.assert_called_once_with(
+            pool,
+            mod._embedding_engine,
+            "Escalate budget queries",
+            scope="global",
+            tags=None,
+            request_context=None,
+            retention_class="archive",
+            enable_shared_catalog=False,
+            source_schema=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +594,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            retention_class="operational",
+            sensitivity="normal",
             enable_shared_catalog=False,
             source_schema=None,
         )
@@ -550,6 +628,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            retention_class="operational",
+            sensitivity="normal",
             enable_shared_catalog=False,
             source_schema=None,
         )
@@ -588,6 +668,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            retention_class="operational",
+            sensitivity="normal",
             enable_shared_catalog=False,
             source_schema=None,
         )
@@ -619,6 +701,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            retention_class="operational",
+            sensitivity="normal",
             enable_shared_catalog=False,
             source_schema=None,
         )
