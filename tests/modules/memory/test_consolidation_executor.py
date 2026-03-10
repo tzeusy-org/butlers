@@ -111,7 +111,7 @@ class TestNewFacts:
         assert result["facts_created"] == 1
         assert result["errors"] == []
 
-        # Verify store_fact was called with correct args
+        # Verify store_fact was called with correct args (including tenant_id/request_id)
         mock_sf.assert_awaited_once_with(
             pool,
             "user",
@@ -123,6 +123,8 @@ class TestNewFacts:
             scope="test-butler",
             tags=["preference"],
             source_butler="test-butler",
+            tenant_id="owner",
+            request_id=None,
         )
 
         # Verify derived_from links created for each episode
@@ -210,6 +212,8 @@ class TestUpdatedFacts:
             permanence="standard",
             scope="test-butler",
             source_butler="test-butler",
+            tenant_id="owner",
+            request_id=None,
         )
 
         # derived_from links created
@@ -259,6 +263,8 @@ class TestNewRules:
             scope="test-butler",
             tags=["etiquette"],
             source_butler="test-butler",
+            tenant_id="owner",
+            request_id=None,
         )
 
         # derived_from links for each episode
@@ -657,3 +663,144 @@ class TestScopeDefault:
 
         sf_kwargs = mock_sf.call_args
         assert sf_kwargs.kwargs.get("scope") == "global"
+
+
+# ---------------------------------------------------------------------------
+# Tests — tenant_id and request_id threaded through store calls
+# ---------------------------------------------------------------------------
+
+
+class TestTenantIsolation:
+    """Tests that tenant_id and request_id are correctly threaded to store calls."""
+
+    async def test_tenant_id_threaded_to_store_fact(self) -> None:
+        """tenant_id is passed to store_fact for new and updated facts."""
+        pool = _mock_pool()
+        engine = _mock_embedding_engine()
+        episode_ids = _make_episode_ids(1)
+
+        parsed = ConsolidationResult(
+            new_facts=[NewFact(subject="user", predicate="locale", content="en-GB")],
+            updated_facts=[
+                UpdatedFact(
+                    target_id=str(uuid.uuid4()),
+                    subject="user",
+                    predicate="timezone",
+                    content="Europe/London",
+                    permanence="standard",
+                )
+            ],
+        )
+
+        with (
+            patch.object(_exec_mod, "store_fact", new_callable=AsyncMock) as mock_sf,
+            patch.object(_exec_mod, "create_link", new_callable=AsyncMock),
+            patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
+            patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
+        ):
+            mock_sf.return_value = uuid.uuid4()
+
+            await execute_consolidation(
+                pool,
+                engine,
+                parsed,
+                episode_ids,
+                "test-butler",
+                tenant_id="acme",
+                request_id="req-123",
+            )
+
+        assert mock_sf.await_count == 2
+        for call in mock_sf.await_args_list:
+            assert call.kwargs.get("tenant_id") == "acme"
+            assert call.kwargs.get("request_id") == "req-123"
+
+    async def test_tenant_id_threaded_to_store_rule(self) -> None:
+        """tenant_id is passed to store_rule."""
+        pool = _mock_pool()
+        engine = _mock_embedding_engine()
+        episode_ids = _make_episode_ids(1)
+
+        parsed = ConsolidationResult(
+            new_rules=[NewRule(content="Speak formally")],
+        )
+
+        with (
+            patch.object(_exec_mod, "store_fact", new_callable=AsyncMock),
+            patch.object(_exec_mod, "create_link", new_callable=AsyncMock),
+            patch.object(_exec_mod, "store_rule", new_callable=AsyncMock) as mock_sr,
+            patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
+        ):
+            mock_sr.return_value = uuid.uuid4()
+
+            await execute_consolidation(
+                pool,
+                engine,
+                parsed,
+                episode_ids,
+                "test-butler",
+                tenant_id="acme",
+                request_id="req-456",
+            )
+
+        mock_sr.assert_awaited_once()
+        sr_kwargs = mock_sr.call_args.kwargs
+        assert sr_kwargs.get("tenant_id") == "acme"
+        assert sr_kwargs.get("request_id") == "req-456"
+
+    async def test_tenant_id_included_in_memory_events(self) -> None:
+        """memory_events INSERT includes the correct tenant_id."""
+        pool = _mock_pool()
+        engine = _mock_embedding_engine()
+        episode_ids = _make_episode_ids(2)
+
+        parsed = ConsolidationResult()  # No actions — just episode marking
+
+        with (
+            patch.object(_exec_mod, "store_fact", new_callable=AsyncMock),
+            patch.object(_exec_mod, "create_link", new_callable=AsyncMock),
+            patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
+            patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
+        ):
+            await execute_consolidation(
+                pool,
+                engine,
+                parsed,
+                episode_ids,
+                "test-butler",
+                tenant_id="acme",
+            )
+
+        # Two pool.execute calls: 1) terminal state UPDATE, 2) memory_events INSERT
+        assert pool.execute.await_count >= 2
+        # The memory_events INSERT is the second call
+        events_sql_call = pool.execute.call_args_list[1]
+        events_sql = events_sql_call[0][0]
+        assert "memory_events" in events_sql
+        assert "tenant_id" in events_sql
+        # The tenant_id parameter is passed as second positional arg ($2)
+        assert events_sql_call[0][2] == "acme"
+
+    async def test_default_tenant_id_is_owner(self) -> None:
+        """When tenant_id is not specified, it defaults to 'owner'."""
+        pool = _mock_pool()
+        engine = _mock_embedding_engine()
+        episode_ids = _make_episode_ids(1)
+
+        parsed = ConsolidationResult(
+            new_facts=[NewFact(subject="u", predicate="p", content="c")],
+        )
+
+        with (
+            patch.object(_exec_mod, "store_fact", new_callable=AsyncMock) as mock_sf,
+            patch.object(_exec_mod, "create_link", new_callable=AsyncMock),
+            patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
+            patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
+        ):
+            mock_sf.return_value = uuid.uuid4()
+
+            await execute_consolidation(pool, engine, parsed, episode_ids, "my-butler")
+
+        sf_kwargs = mock_sf.call_args.kwargs
+        assert sf_kwargs.get("tenant_id") == "owner"
+        assert sf_kwargs.get("request_id") is None

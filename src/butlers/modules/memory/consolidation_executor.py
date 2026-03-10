@@ -56,6 +56,8 @@ async def execute_consolidation(
     *,
     scope: str | None = None,
     retention_class: str = "transient",
+    tenant_id: str = "owner",
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
 
@@ -75,6 +77,10 @@ async def execute_consolidation(
         scope: Scope for new facts/rules (defaults to butler_name)
         retention_class: Retention class to look up episode TTL from
             memory_policies (default 'transient').
+        tenant_id: Tenant scope for all derived knowledge and audit events
+            (default 'owner').  Must match the tenant of the source episodes.
+        request_id: Optional request trace ID threaded through store calls
+            for correlation.
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
@@ -104,6 +110,8 @@ async def execute_consolidation(
                 scope=effective_scope,
                 tags=fact.tags,
                 source_butler=butler_name,
+                tenant_id=tenant_id,
+                request_id=request_id,
             )
             for episode_id in source_episode_ids:
                 await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
@@ -132,6 +140,8 @@ async def execute_consolidation(
                 permanence=fact.permanence,
                 scope=effective_scope,
                 source_butler=butler_name,
+                tenant_id=tenant_id,
+                request_id=request_id,
             )
             for episode_id in source_episode_ids:
                 await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
@@ -152,6 +162,8 @@ async def execute_consolidation(
                 scope=effective_scope,
                 tags=rule.tags,
                 source_butler=butler_name,
+                tenant_id=tenant_id,
+                request_id=request_id,
             )
             for episode_id in source_episode_ids:
                 await create_link(pool, "rule", new_rule_id, "episode", episode_id, "derived_from")
@@ -198,14 +210,16 @@ async def execute_consolidation(
             errors.append("Failed to mark episodes as consolidated")
 
     # Emit memory_events for successful consolidation (best-effort)
+    # Include tenant_id so the audit trail preserves tenant lineage.
     if episodes_consolidated > 0:
         try:
             await pool.execute(
                 """
-                INSERT INTO memory_events (event_type, actor, payload)
+                INSERT INTO memory_events (event_type, actor, tenant_id, payload)
                 SELECT
                     'episode_consolidated',
                     'consolidation_worker',
+                    $2,
                     jsonb_build_object(
                         'episode_id', id::text,
                         'butler',     butler
@@ -214,6 +228,7 @@ async def execute_consolidation(
                 WHERE id = ANY($1)
                 """,
                 source_episode_ids,
+                tenant_id,
             )
         except Exception as exc:
             logger.warning("Failed to emit episode_consolidated events: %s", exc)
