@@ -727,6 +727,163 @@ class TestGmailConnectorRuntime:
         assert body == "hello"
 
     # ------------------------------------------------------------------
+    # S/MIME body extraction tests [bu-3np]
+    # ------------------------------------------------------------------
+
+    def test_extract_body_multipart_signed_detached_smime(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """multipart/signed with detached S/MIME: body extracted, signature skipped. [bu-3np]"""
+        import base64
+
+        payload = {
+            "mimeType": "multipart/signed",
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "body": {
+                                "data": base64.urlsafe_b64encode(b"Signed plain text body").decode()
+                            },
+                        },
+                        {
+                            "mimeType": "text/html",
+                            "body": {
+                                "data": base64.urlsafe_b64encode(
+                                    b"<p>Signed HTML body</p>"
+                                ).decode()
+                            },
+                        },
+                    ],
+                },
+                {
+                    # Detached S/MIME signature — must be skipped
+                    "mimeType": "application/pkcs7-signature",
+                    "body": {"data": base64.urlsafe_b64encode(b"\xde\xad\xbe\xef").decode()},
+                },
+            ],
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "Signed plain text body"
+
+    def test_extract_body_multipart_signed_signature_comes_first(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """multipart/signed with signature first: body still extracted. [bu-3np]"""
+        import base64
+
+        payload = {
+            "mimeType": "multipart/signed",
+            "parts": [
+                {
+                    # Signature listed first — must be skipped
+                    "mimeType": "application/pkcs7-signature",
+                    "body": {"data": base64.urlsafe_b64encode(b"\xde\xad\xbe\xef").decode()},
+                },
+                {
+                    "mimeType": "text/plain",
+                    "body": {
+                        "data": base64.urlsafe_b64encode(b"Body after signature part").decode()
+                    },
+                },
+            ],
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "Body after signature part"
+
+    def test_extract_body_multipart_signed_pgp_signature_skipped(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """multipart/signed with PGP detached signature: signature part is skipped. [bu-3np]"""
+        import base64
+
+        payload = {
+            "mimeType": "multipart/signed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": base64.urlsafe_b64encode(b"PGP signed message body").decode()},
+                },
+                {
+                    # PGP detached signature — must be skipped
+                    "mimeType": "application/pgp-signature",
+                    "body": {
+                        "data": base64.urlsafe_b64encode(b"-----BEGIN PGP SIGNATURE-----").decode()
+                    },
+                },
+            ],
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "PGP signed message body"
+
+    def test_extract_body_pkcs7_mime_opaque_smime(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """application/pkcs7-mime (opaque S/MIME): descriptive fallback returned. [bu-3np]"""
+        import base64
+
+        payload = {
+            "mimeType": "application/pkcs7-mime",
+            "body": {"data": base64.urlsafe_b64encode(b"\x30\x82\xde\xad").decode()},
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "(S/MIME encrypted body — cannot extract)"
+
+    def test_extract_body_pkcs7_mime_opaque_smime_warning_logged(
+        self, gmail_runtime: GmailConnectorRuntime, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """application/pkcs7-mime: warning is emitted to the logger. [bu-3np]"""
+        import base64
+        import logging
+
+        payload = {
+            "mimeType": "application/pkcs7-mime",
+            "body": {"data": base64.urlsafe_b64encode(b"\x30\x82\xde\xad").decode()},
+        }
+
+        with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+            body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "(S/MIME encrypted body — cannot extract)"
+        assert any(
+            "pkcs7" in r.message.lower() or "s/mime" in r.message.lower() for r in caplog.records
+        )
+
+    def test_extract_body_multipart_signed_only_signatures_no_body(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """multipart/signed with only signature parts (malformed): returns '(no body)'. [bu-3np]"""
+        import base64
+
+        payload = {
+            "mimeType": "multipart/signed",
+            "parts": [
+                {
+                    "mimeType": "application/pkcs7-signature",
+                    "body": {"data": base64.urlsafe_b64encode(b"\xde\xad").decode()},
+                },
+                {
+                    "mimeType": "application/pgp-signature",
+                    "body": {"data": base64.urlsafe_b64encode(b"\xbe\xef").decode()},
+                },
+            ],
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "(no body)"
+
+    # ------------------------------------------------------------------
     # Mid-session Switchboard ConnectionError tests (butlers-tt60)
     # ------------------------------------------------------------------
 
