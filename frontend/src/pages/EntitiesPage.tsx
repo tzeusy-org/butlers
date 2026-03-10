@@ -328,9 +328,10 @@ function UnidentifiedEntitiesSection({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete entity?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will delete <strong>{deleteTarget?.canonical_name}</strong> and
-              unlink any associated contacts. Facts linked to this entity will be
-              orphaned.
+              This will soft-delete <strong>{deleteTarget?.canonical_name}</strong> and
+              unlink any associated contacts. The entity will be hidden from all
+              views but can be recovered from the database. Entities with active
+              facts cannot be deleted — retire or reassign those facts first.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -638,9 +639,10 @@ export default function EntitiesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete entity?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will delete <strong>{deleteTarget?.canonical_name}</strong> and
-              unlink any associated contacts. Facts linked to this entity will be
-              orphaned.
+              This will soft-delete <strong>{deleteTarget?.canonical_name}</strong> and
+              unlink any associated contacts. The entity will be hidden from all
+              views but can be recovered from the database. Entities with active
+              facts cannot be deleted — retire or reassign those facts first.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

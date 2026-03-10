@@ -1048,7 +1048,8 @@ async def delete_entity(
     """Soft-delete an entity by setting metadata.deleted_at.
 
     Unlinks any contacts pointing to this entity.  Owner entities cannot be
-    deleted (returns 403).
+    deleted (returns 403).  Entities with active facts cannot be deleted
+    (returns 409) — reassign or retire the facts first.
     """
     import uuid as _uuid
     from datetime import datetime
@@ -1066,6 +1067,32 @@ async def delete_entity(
     roles = list(row["roles"]) if row["roles"] else []
     if "owner" in roles:
         raise HTTPException(status_code=403, detail="Cannot delete owner entity")
+
+    # Block soft-delete when active facts reference this entity.
+    # Fan out across all memory pools to get a global count.
+    async def _count_active_facts(_: str, fpool: object) -> int:
+        return (
+            await fpool.fetchval(
+                "SELECT count(*) FROM facts WHERE entity_id = $1 AND validity = 'active'",
+                eid,
+            )
+            or 0
+        )
+
+    per_pool_counts = await _fan_out_memory_queries(
+        db,
+        query_name="delete_entity_fact_check",
+        query_fn=_count_active_facts,
+    )
+    total_active_facts = sum(per_pool_counts)
+    if total_active_facts > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Entity has {total_active_facts} active fact(s). "
+                "Reassign or retire all active facts before deleting this entity."
+            ),
+        )
 
     deleted_at = datetime.now(UTC).isoformat()
     await pool.execute(

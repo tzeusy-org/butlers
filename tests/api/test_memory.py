@@ -1265,3 +1265,41 @@ class TestDeleteEntity:
             assert "tenant_id IN" not in sql, (
                 f"Unexpected tenant_id filter in delete_entity query: {sql!r}"
             )
+
+    async def test_entity_with_active_facts_returns_409(self, app):
+        """DELETE on an entity with active facts must return 409 Conflict."""
+        row = {"id": "12345678-1234-5678-1234-567812345678", "roles": []}
+        # fetchrow returns the entity; fetchval returns fact count > 0
+        pool = _make_pool(fetchrow_result=row, fetchval_result=3)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.delete("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "active fact" in body["detail"].lower()
+
+    async def test_entity_with_no_active_facts_deletes_successfully(self, app):
+        """DELETE on an entity with zero active facts must still return 204."""
+        row = {"id": "12345678-1234-5678-1234-567812345678", "roles": []}
+        # fetchval returns 0 (no active facts)
+        pool = _make_pool(fetchrow_result=row, fetchval_result=0)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.delete("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 204
