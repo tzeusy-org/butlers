@@ -192,9 +192,11 @@ async def run_consolidation(
                     "SELECT id, subject, predicate, content, permanence "
                     "FROM facts "
                     "WHERE validity = 'active' AND source_butler = $1 "
+                    "  AND tenant_id = $2 "
                     "ORDER BY created_at DESC "
                     "LIMIT 100",
                     butler_name,
+                    tenant_id,
                 )
                 existing_facts = [dict(row) for row in facts_rows]
 
@@ -204,9 +206,11 @@ async def run_consolidation(
                     "WHERE maturity NOT IN ('anti_pattern') "
                     "  AND (metadata->>'forgotten')::boolean IS NOT TRUE "
                     "  AND source_butler = $1 "
+                    "  AND tenant_id = $2 "
                     "ORDER BY created_at DESC "
                     "LIMIT 50",
                     butler_name,
+                    tenant_id,
                 )
                 existing_rules = [dict(row) for row in rules_rows]
 
