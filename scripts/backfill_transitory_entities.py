@@ -28,10 +28,38 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 
 import asyncpg
+
+# ---------------------------------------------------------------------------
+# Schema name validation
+# ---------------------------------------------------------------------------
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _validate_schema_name(schema: str) -> str:
+    """Validate that a schema name is a safe PostgreSQL identifier.
+
+    Raises ValueError if the name contains characters that could be used for
+    SQL injection (anything other than letters, digits, and underscores, or
+    names that do not start with a letter or underscore).
+
+    Args:
+        schema: The schema name to validate.
+
+    Returns:
+        The schema name unchanged if valid.
+
+    Raises:
+        ValueError: If the schema name is not a safe identifier.
+    """
+    if not _SAFE_IDENTIFIER_RE.match(schema):
+        raise ValueError(f"Invalid schema name {schema!r}: must match [a-zA-Z_][a-zA-Z0-9_]*")
+    return schema
+
 
 # ---------------------------------------------------------------------------
 # Generic labels that must NOT be given transitory entities.
@@ -146,8 +174,7 @@ def infer_entity_type(subject: str, scope: str) -> str:
     # Scope-based override takes priority for well-known butler scopes
     if scope in _SCOPE_TYPE_MAP:
         scope_type = _SCOPE_TYPE_MAP[scope]
-        # But override back to person if scope says "relationship" and the subject
-        # looks like a person's first name (single word, title-cased, no org signals).
+        # For "relationship" scope, always infer "person".
         if scope_type == "person":
             return "person"
         # For finance/health/education, default to organization — but allow
@@ -350,10 +377,12 @@ async def backfill_schema(
     Returns:
         BackfillResult summarising what happened (or what would happen).
     """
+    _validate_schema_name(schema)
     result = BackfillResult(schema=schema)
 
     async with pool.acquire() as conn:
         # Set search_path so unqualified table references resolve to this schema.
+        # schema has already been validated as a safe identifier above.
         await conn.execute(f"SET search_path TO {schema}, shared, public")
 
         # Run diagnostic
@@ -513,6 +542,11 @@ async def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.schema:
+            try:
+                _validate_schema_name(args.schema)
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
             schemas = [args.schema]
         else:
             schemas = await discover_memory_schemas(pool)

@@ -55,6 +55,7 @@ run_diagnostic = _mod.run_diagnostic
 resolve_or_create_entity = _mod.resolve_or_create_entity
 backfill_schema = _mod.backfill_schema
 discover_memory_schemas = _mod.discover_memory_schemas
+_validate_schema_name = _mod._validate_schema_name
 DiagnosticRow = _mod.DiagnosticRow
 BackfillResult = _mod.BackfillResult
 GENERIC_LABELS = _mod.GENERIC_LABELS
@@ -512,3 +513,57 @@ class TestBackfillResultDataclass:
         assert r.entities_resolved == 0
         assert r.facts_updated == 0
         assert r.errors == []
+
+
+# ---------------------------------------------------------------------------
+# _validate_schema_name tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateSchemaName:
+    """Unit tests for schema name validation (SQL injection guard)."""
+
+    def test_valid_simple_name(self):
+        assert _validate_schema_name("finance") == "finance"
+
+    def test_valid_name_with_underscore(self):
+        assert _validate_schema_name("my_schema") == "my_schema"
+
+    def test_valid_name_starting_with_underscore(self):
+        assert _validate_schema_name("_private") == "_private"
+
+    def test_valid_name_with_numbers(self):
+        assert _validate_schema_name("schema2") == "schema2"
+
+    def test_rejects_semicolon_injection(self):
+        with pytest.raises(ValueError, match="Invalid schema name"):
+            _validate_schema_name("public; DROP TABLE facts; --")
+
+    def test_rejects_spaces(self):
+        with pytest.raises(ValueError, match="Invalid schema name"):
+            _validate_schema_name("my schema")
+
+    def test_rejects_hyphen(self):
+        with pytest.raises(ValueError, match="Invalid schema name"):
+            _validate_schema_name("my-schema")
+
+    def test_rejects_leading_digit(self):
+        with pytest.raises(ValueError, match="Invalid schema name"):
+            _validate_schema_name("1schema")
+
+    def test_rejects_dot(self):
+        with pytest.raises(ValueError, match="Invalid schema name"):
+            _validate_schema_name("public.facts")
+
+    def test_rejects_empty_string(self):
+        with pytest.raises(ValueError, match="Invalid schema name"):
+            _validate_schema_name("")
+
+
+class TestBackfillSchemaValidation:
+    """backfill_schema must reject unsafe schema names before touching the DB."""
+
+    async def test_rejects_invalid_schema_name(self):
+        pool = _FakePool(_FakeConn())
+        with pytest.raises(ValueError, match="Invalid schema name"):
+            await backfill_schema(pool, "bad; DROP TABLE facts; --", apply=False)
