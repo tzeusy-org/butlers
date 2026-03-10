@@ -1,4 +1,4 @@
-"""events_enrichment — mem_021
+"""events_enrichment — mem_022
 
 Enrich the memory_events table with structured provenance columns and create
 the embedding_versions catalogue.
@@ -38,9 +38,12 @@ when a model is replaced.
 
 Seed row: all-MiniLM-L6-v2, dimension 384, currently active.
 
-Revision ID: mem_021
-Revises: mem_020
+Revision ID: mem_022
+Revises: mem_021
 Create Date: 2026-03-10 00:00:00.000000
+
+Note: Renumbered from mem_021 to mem_022 to resolve a duplicate revision
+collision with 021_fix_partial_unique_deleted_at.py (also mem_021).
 """
 
 from __future__ import annotations
@@ -48,8 +51,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_021"
-down_revision = "mem_020"
+revision = "mem_022"
+down_revision = "mem_021"
 branch_labels = None
 depends_on = None
 
