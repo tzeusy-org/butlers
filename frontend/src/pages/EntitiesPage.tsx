@@ -531,7 +531,7 @@ function UnidentifiedEntitiesSection({
 export default function EntitiesPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("person");
   const [page, setPage] = useState(0);
   const [mergeTarget, setMergeTarget] = useState<EntitySummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EntitySummary | null>(null);
