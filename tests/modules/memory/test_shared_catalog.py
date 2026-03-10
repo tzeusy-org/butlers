@@ -311,6 +311,301 @@ class TestStoreRuleCatalog:
 
 
 # ---------------------------------------------------------------------------
+# Tests: fact catalog enrichment fields (core_024 spec columns)
+# ---------------------------------------------------------------------------
+
+
+class TestFactCatalogEnrichmentFields:
+    """store_fact() passes spec-required enrichment columns to _upsert_catalog."""
+
+    async def _capture_catalog_args(self, pool, **store_kwargs) -> tuple:
+        """Run store_fact and return the positional args passed to the catalog INSERT."""
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+        return captured
+
+    async def test_fact_title_is_subject_predicate(self, mock_pool, embedding_engine):
+        """title must be '{subject} {predicate}' per spec."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        await store_fact(
+            pool,
+            "Alice",
+            "works_at",
+            "Acme Corp",
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="health",
+        )
+
+        assert len(captured) == 1
+        _sql, args = captured[0]
+        # args order: source_schema[0], source_table[1], source_id[2], source_butler[3],
+        # tenant_id[4], entity_id[5], summary[6], embedding[7], search_text[8],
+        # memory_type[9], title[10], predicate[11], scope[12], valid_at[13],
+        # confidence[14], importance[15], retention_class[16], sensitivity[17],
+        # object_entity_id[18]
+        assert args[10] == "Alice works_at", f"title mismatch: {args[10]!r}"
+
+    async def test_fact_predicate_column_populated(self, mock_pool, embedding_engine):
+        """predicate column must contain the fact's predicate."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        await store_fact(
+            pool,
+            "Alice",
+            "works_at",
+            "Acme Corp",
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="health",
+        )
+
+        _sql, args = captured[0]
+        assert args[11] == "works_at", f"predicate mismatch: {args[11]!r}"
+
+    async def test_fact_scope_column_populated(self, mock_pool, embedding_engine):
+        """scope column must reflect the fact's scope."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        await store_fact(
+            pool,
+            "Alice",
+            "works_at",
+            "Acme Corp",
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="health",
+            scope="professional",
+        )
+
+        _sql, args = captured[0]
+        assert args[12] == "professional", f"scope mismatch: {args[12]!r}"
+
+    async def test_fact_importance_column_populated(self, mock_pool, embedding_engine):
+        """importance column must reflect the fact's importance value."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        await store_fact(
+            pool,
+            "Alice",
+            "works_at",
+            "Acme Corp",
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="health",
+            importance=8.5,
+        )
+
+        _sql, args = captured[0]
+        assert args[15] == 8.5, f"importance mismatch: {args[15]!r}"
+
+    async def test_fact_confidence_is_one(self, mock_pool, embedding_engine):
+        """confidence must be 1.0 for newly stored facts."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        await store_fact(
+            pool,
+            "Alice",
+            "works_at",
+            "Acme Corp",
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="health",
+        )
+
+        _sql, args = captured[0]
+        assert args[14] == 1.0, f"confidence mismatch: {args[14]!r}"
+
+    async def test_fact_object_entity_id_propagated(self, mock_pool, embedding_engine):
+        """object_entity_id must be forwarded to the catalog upsert."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        entity_id = uuid.uuid4()
+        obj_entity_id = uuid.uuid4()
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        # validate entity existence checks happen on the conn, not pool
+        pool.execute.side_effect = _capture_execute
+        conn = _conn
+        conn.fetchval.return_value = 1  # both entities "exist"
+        conn.execute = AsyncMock(return_value=None)
+
+        await store_fact(
+            pool,
+            "Alice",
+            "knows",
+            "Bob",
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="health",
+            entity_id=entity_id,
+            object_entity_id=obj_entity_id,
+        )
+
+        _sql, args = captured[0]
+        assert args[18] == obj_entity_id, f"object_entity_id mismatch: {args[18]!r}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: rule catalog enrichment fields (core_024 spec columns)
+# ---------------------------------------------------------------------------
+
+
+class TestRuleCatalogEnrichmentFields:
+    """store_rule() passes spec-required enrichment columns to _upsert_catalog."""
+
+    async def test_rule_title_is_first_100_chars(self, mock_pool, embedding_engine):
+        """title must be content[:100] for rules per spec."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        content = "Always greet users warmly"
+        await store_rule(
+            pool,
+            content,
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="general",
+        )
+
+        assert len(captured) == 1
+        _sql, args = captured[0]
+        # args[10] is title
+        assert args[10] == content[:100], f"title mismatch: {args[10]!r}"
+
+    async def test_rule_title_truncated_to_100_chars(self, mock_pool, embedding_engine):
+        """title must be truncated to 100 characters for long rule content."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        long_content = "A" * 200
+        await store_rule(
+            pool,
+            long_content,
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="general",
+        )
+
+        _sql, args = captured[0]
+        assert args[10] == "A" * 100, "title must be truncated to 100 chars"
+        assert len(args[10]) == 100
+
+    async def test_rule_scope_column_populated(self, mock_pool, embedding_engine):
+        """scope column must reflect the rule's scope."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        await store_rule(
+            pool,
+            "Always greet users warmly",
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="general",
+            scope="communication",
+        )
+
+        _sql, args = captured[0]
+        assert args[12] == "communication", f"scope mismatch: {args[12]!r}"
+
+    async def test_rule_predicate_is_none(self, mock_pool, embedding_engine):
+        """predicate must be None for rules (rules have no subject/predicate structure)."""
+        pool, _conn = mock_pool
+        captured: list[tuple] = []
+
+        async def _capture_execute(sql, *args, **kwargs):
+            if "shared.memory_catalog" in sql:
+                captured.append((sql, args))
+            return None
+
+        pool.execute.side_effect = _capture_execute
+
+        await store_rule(
+            pool,
+            "Always greet users warmly",
+            embedding_engine,
+            enable_shared_catalog=True,
+            source_schema="general",
+        )
+
+        _sql, args = captured[0]
+        assert args[11] is None, f"predicate should be None for rules, got: {args[11]!r}"
+
+
+# ---------------------------------------------------------------------------
 # Tests: search_catalog()
 # ---------------------------------------------------------------------------
 

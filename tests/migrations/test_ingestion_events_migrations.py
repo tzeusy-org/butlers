@@ -247,3 +247,118 @@ class TestCore021Downgrade:
 
     def test_targets_request_id(self) -> None:
         assert "request_id" in self._src()
+
+
+# ---------------------------------------------------------------------------
+# core_024 — memory_catalog spec columns
+# ---------------------------------------------------------------------------
+
+
+class TestCore024RevisionMetadata:
+    def test_revision(self) -> None:
+        mod = _load_migration("core_024_memory_catalog_spec_columns.py", "core_024")
+        assert mod.revision == "core_024"
+
+    def test_down_revision(self) -> None:
+        mod = _load_migration("core_024_memory_catalog_spec_columns.py", "core_024")
+        assert mod.down_revision == "core_023"
+
+    def test_branch_labels_none(self) -> None:
+        mod = _load_migration("core_024_memory_catalog_spec_columns.py", "core_024")
+        assert mod.branch_labels is None
+
+    def test_depends_on_none(self) -> None:
+        mod = _load_migration("core_024_memory_catalog_spec_columns.py", "core_024")
+        assert mod.depends_on is None
+
+    def test_upgrade_downgrade_callable(self) -> None:
+        mod = _load_migration("core_024_memory_catalog_spec_columns.py", "core_024")
+        assert callable(mod.upgrade)
+        assert callable(mod.downgrade)
+
+
+class TestCore024MemoryCatalogSpecColumns:
+    def _upgrade_src(self) -> str:
+        mod = _load_migration("core_024_memory_catalog_spec_columns.py", "core_024")
+        return inspect.getsource(mod.upgrade)
+
+    def _downgrade_src(self) -> str:
+        mod = _load_migration("core_024_memory_catalog_spec_columns.py", "core_024")
+        return inspect.getsource(mod.downgrade)
+
+    def test_adds_title_column(self) -> None:
+        assert "title" in self._upgrade_src()
+        assert "ADD COLUMN IF NOT EXISTS" in self._upgrade_src()
+
+    def test_adds_predicate_column(self) -> None:
+        assert "predicate" in self._upgrade_src()
+
+    def test_adds_scope_column(self) -> None:
+        assert "scope" in self._upgrade_src()
+
+    def test_adds_valid_at_timestamptz(self) -> None:
+        src = self._upgrade_src()
+        assert "valid_at" in src
+        assert "TIMESTAMPTZ" in src
+
+    def test_adds_invalid_at_timestamptz(self) -> None:
+        src = self._upgrade_src()
+        assert "invalid_at" in src
+        assert "TIMESTAMPTZ" in src
+
+    def test_adds_confidence_double_precision(self) -> None:
+        src = self._upgrade_src()
+        assert "confidence" in src
+        assert "DOUBLE PRECISION" in src
+
+    def test_adds_importance_double_precision(self) -> None:
+        src = self._upgrade_src()
+        assert "importance" in src
+        assert "DOUBLE PRECISION" in src
+
+    def test_adds_retention_class_text(self) -> None:
+        assert "retention_class" in self._upgrade_src()
+
+    def test_adds_sensitivity_text(self) -> None:
+        assert "sensitivity" in self._upgrade_src()
+
+    def test_adds_object_entity_id_with_fk(self) -> None:
+        src = self._upgrade_src()
+        assert "object_entity_id" in src
+        assert "shared.entities" in src
+
+    def test_add_columns_uses_if_not_exists(self) -> None:
+        """Ensures migration is idempotent — uses ADD COLUMN IF NOT EXISTS."""
+        assert "ADD COLUMN IF NOT EXISTS" in self._upgrade_src()
+
+    def test_scope_predicate_index_created(self) -> None:
+        src = self._upgrade_src()
+        assert "idx_memory_catalog_tenant_scope_predicate" in src
+
+    def test_object_entity_id_index_created(self) -> None:
+        assert "idx_memory_catalog_object_entity_id" in self._upgrade_src()
+
+    def test_sensitivity_index_created(self) -> None:
+        assert "idx_memory_catalog_sensitivity" in self._upgrade_src()
+
+    def test_downgrade_drops_all_new_columns(self) -> None:
+        src = self._downgrade_src()
+        for col in (
+            "object_entity_id",
+            "sensitivity",
+            "retention_class",
+            "importance",
+            "confidence",
+            "invalid_at",
+            "valid_at",
+            "scope",
+            "predicate",
+            "title",
+        ):
+            assert col in src, f"Downgrade must drop column: {col}"
+
+    def test_downgrade_drops_indexes_before_columns(self) -> None:
+        src = self._downgrade_src()
+        idx_pos = src.find("DROP INDEX IF EXISTS")
+        col_pos = src.find("DROP COLUMN IF EXISTS")
+        assert idx_pos < col_pos, "Indexes should be dropped before columns"
