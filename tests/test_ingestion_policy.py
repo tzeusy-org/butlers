@@ -231,6 +231,27 @@ class TestMatchSenderAddress:
         env = _email_envelope(sender="anyone@anything.com")
         assert _match_sender_address(env, {"address": "*"})
 
+    def test_local_part_prefix_noreply(self) -> None:
+        env = _email_envelope(sender="noreply@grab.com")
+        assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
+
+    def test_local_part_prefix_no_reply_hyphen(self) -> None:
+        env = _email_envelope(sender="no-reply@uber.com")
+        assert _match_sender_address(env, {"address": "no-reply", "match": "local_part_prefix"})
+
+    def test_local_part_prefix_case_insensitive(self) -> None:
+        env = _email_envelope(sender="NoReply@Example.com")
+        assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
+
+    def test_local_part_prefix_no_match(self) -> None:
+        env = _email_envelope(sender="hello@example.com")
+        assert not _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
+
+    def test_local_part_prefix_partial(self) -> None:
+        """noreply-abc@x.com should match prefix 'noreply'."""
+        env = _email_envelope(sender="noreply-abc@x.com")
+        assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
+
 
 # ---------------------------------------------------------------------------
 # header_condition matcher

@@ -161,9 +161,11 @@ def _match_sender_domain(envelope: IngestionEnvelope, condition: dict[str, Any])
 
 
 def _match_sender_address(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
-    """Match sender_address: exact (case-insensitive).
+    """Match sender_address: exact or local-part prefix (case-insensitive).
 
-    Condition schema: {"address": "alerts@chase.com"}
+    Condition schema:
+      Exact:  {"address": "alerts@chase.com"}
+      Prefix: {"address": "noreply", "match": "local_part_prefix"}
     """
     target = str(condition.get("address", "")).strip().lower()
     if not target:
@@ -171,7 +173,12 @@ def _match_sender_address(envelope: IngestionEnvelope, condition: dict[str, Any]
     # Catch-all wildcard
     if target == "*":
         return True
-    return envelope.sender_address.strip().lower() == target
+    sender = envelope.sender_address.strip().lower()
+    match_mode = str(condition.get("match", "")).strip().lower()
+    if match_mode == "local_part_prefix":
+        local_part = sender.split("@", 1)[0] if "@" in sender else sender
+        return local_part.startswith(target)
+    return sender == target
 
 
 def _match_header_condition(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
