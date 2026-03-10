@@ -669,7 +669,6 @@ async def list_entities(
     conditions: list[str] = [
         "(e.metadata->>'merged_into') IS NULL",
         "(e.metadata->>'deleted_at') IS NULL",
-        "e.tenant_id IN ('default', 'shared')",
     ]
     args: list[object] = []
     idx = 1
@@ -787,7 +786,7 @@ async def get_entity(
         " ) AS linked_contact_name,"
         " e.roles AS linked_contact_roles"
         " FROM shared.entities e"
-        " WHERE e.id = $1 AND e.tenant_id IN ('default', 'shared')",
+        " WHERE e.id = $1",
         eid,
     )
     if row is None:
@@ -905,7 +904,7 @@ async def update_entity(
 
     row = await pool.fetchrow(
         f"UPDATE shared.entities SET {', '.join(sets)}"
-        f" WHERE id = $1 AND tenant_id IN ('default', 'shared')"
+        f" WHERE id = $1"
         f" RETURNING id, canonical_name, entity_type, aliases, roles,"
         f" created_at, updated_at",
         *args,
@@ -1058,8 +1057,7 @@ async def delete_entity(
     eid = _uuid.UUID(entity_id)
 
     row = await pool.fetchrow(
-        "SELECT id, roles FROM shared.entities"
-        " WHERE id = $1 AND tenant_id IN ('default', 'shared')",
+        "SELECT id, roles FROM shared.entities WHERE id = $1",
         eid,
     )
     if row is None:

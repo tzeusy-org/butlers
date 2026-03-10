@@ -815,3 +815,453 @@ class TestMemoryActivity:
 
         assert resp.status_code == 200
         assert resp.json()["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# Entity row helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_entity_list_row(
+    *,
+    id: str = "ent-001",
+    canonical_name: str = "Alice",
+    entity_type: str = "person",
+    aliases: list | None = None,
+    linked_contact_roles: list | None = None,
+    linked_contact_id: str | None = None,
+    unidentified: bool = False,
+    created_at: str = "2025-06-01T12:00:00",
+    updated_at: str = "2025-06-01T12:00:00",
+) -> dict:
+    """Build a dict mimicking a row returned by list_entities."""
+    return {
+        "id": id,
+        "canonical_name": canonical_name,
+        "entity_type": entity_type,
+        "aliases": aliases or [],
+        "linked_contact_roles": linked_contact_roles or [],
+        "linked_contact_id": linked_contact_id,
+        "unidentified": unidentified,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
+def _make_entity_detail_row(
+    *,
+    id: str = "ent-001",
+    canonical_name: str = "Alice",
+    entity_type: str = "person",
+    aliases: list | None = None,
+    metadata: dict | None = None,
+    linked_contact_id: str | None = None,
+    linked_contact_name: str | None = None,
+    linked_contact_roles: list | None = None,
+    created_at: str = "2025-06-01T12:00:00",
+    updated_at: str = "2025-06-01T12:00:00",
+) -> dict:
+    """Build a dict mimicking a row returned by get_entity."""
+    return {
+        "id": id,
+        "canonical_name": canonical_name,
+        "entity_type": entity_type,
+        "aliases": aliases or [],
+        "metadata": metadata or {},
+        "linked_contact_id": linked_contact_id,
+        "linked_contact_name": linked_contact_name,
+        "linked_contact_roles": linked_contact_roles or [],
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/entities
+# ---------------------------------------------------------------------------
+
+
+class TestListEntities:
+    async def test_returns_paginated_response_structure(self, app):
+        """Response must have 'data' array and 'meta' with pagination."""
+        # list_entities queries shared.entities; pool.fetchval for count, pool.fetch
+        # for rows, then fans out to memory pools for fact counts.
+        _app_with_mock_db(app, fetchval_result=0)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "data" in body
+        assert "meta" in body
+        assert isinstance(body["data"], list)
+
+    async def test_returns_entity_data(self, app):
+        """Entity list should include expected fields for each entity."""
+        row = _make_entity_list_row(canonical_name="Bob", entity_type="person")
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["canonical_name"] == "Bob"
+        assert data[0]["entity_type"] == "person"
+
+    async def test_entities_with_any_tenant_id_are_returned(self, app):
+        """Entities with tenant_id='owner' (or any other value) must now be visible.
+
+        The query no longer filters by tenant_id so all entities in shared.entities
+        are returned regardless of their tenant_id value.
+        """
+        owner_entity = _make_entity_list_row(id="ent-owner", canonical_name="Owner Person")
+        default_entity = _make_entity_list_row(id="ent-default", canonical_name="Default Person")
+        _app_with_mock_db(app, fetch_rows=[owner_entity, default_entity], fetchval_result=2)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        data = resp.json()["data"]
+        ids = [e["id"] for e in data]
+        assert "ent-owner" in ids
+        assert "ent-default" in ids
+
+    async def test_search_filter_accepted(self, app):
+        """Text search via ?q= should be accepted without error."""
+        _app_with_mock_db(app, fetchval_result=0)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities", params={"q": "alice"})
+
+        assert resp.status_code == 200
+
+    async def test_entity_type_filter_accepted(self, app):
+        """Entity type filter via ?entity_type= should be accepted without error."""
+        _app_with_mock_db(app, fetchval_result=0)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities", params={"entity_type": "person"})
+
+        assert resp.status_code == 200
+
+    async def test_pool_unavailable_returns_503(self, app):
+        """When no memory pools are available, list_entities raises 503.
+
+        Unlike facts/rules/episodes (which fan out across pools and gracefully
+        return empty results), list_entities requires at least one pool to reach
+        shared.entities.  _any_pool() raises HTTPException(503) if none exist.
+        """
+        _app_with_mock_db(app, pool_available=False)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        assert resp.status_code == 503
+
+    async def test_no_tenant_id_filter_in_list_query(self, app):
+        """The list_entities handler must NOT restrict results by tenant_id.
+
+        Verify by inspecting the SQL passed to pool.fetchval and pool.fetch:
+        neither should contain a tenant_id IN clause.
+        """
+        pool = _make_pool(fetchval_result=0)
+        pools_by_name = {"general": pool}
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get("/api/memory/entities")
+
+        # pool.fetchval is the COUNT query; pool.fetch is the SELECT query
+        for call in list(pool.fetchval.call_args_list) + list(pool.fetch.call_args_list):
+            sql = call.args[0] if call.args else ""
+            assert "tenant_id IN" not in sql, (
+                f"Unexpected tenant_id filter in entity list query: {sql!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/entities/{entity_id}
+# ---------------------------------------------------------------------------
+
+
+class TestGetEntity:
+    async def test_returns_entity_detail(self, app):
+        """Response should wrap EntityDetail in ApiResponse envelope."""
+        row = _make_entity_detail_row(canonical_name="Carol")
+        # fetchrow for entity, fetch for entity_info (info_rows), and two fan-out
+        # calls for facts (fetchval + fetch per pool).
+        pool = _make_pool(
+            fetchrow_result=row,
+            fetchval_result=0,
+            fetch_rows=[],
+        )
+        pools_by_name = {"general": pool}
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "data" in body
+        assert body["data"]["canonical_name"] == "Carol"
+        assert body["data"]["entity_type"] == "person"
+
+    async def test_entity_with_owner_tenant_id_is_visible(self, app):
+        """get_entity must return entities regardless of tenant_id value.
+
+        The query no longer filters on tenant_id so an entity that was created
+        with tenant_id='owner' (historical hallucination) is still retrievable.
+        """
+        row = _make_entity_detail_row(id="ent-owner", canonical_name="The Owner")
+        pool = _make_pool(fetchrow_result=row, fetchval_result=0, fetch_rows=[])
+        pools_by_name = {"general": pool}
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["canonical_name"] == "The Owner"
+
+    async def test_missing_entity_returns_404(self, app):
+        """A non-existent entity should return 404."""
+        pool = _make_pool(fetchrow_result=None)
+        pools_by_name = {"general": pool}
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 404
+
+    async def test_no_tenant_id_filter_in_get_query(self, app):
+        """The get_entity handler must NOT restrict results by tenant_id.
+
+        Verify by inspecting the SQL passed to pool.fetchrow: it must not
+        contain a tenant_id IN clause.
+        """
+        row = _make_entity_detail_row()
+        pool = _make_pool(fetchrow_result=row, fetchval_result=0, fetch_rows=[])
+        pools_by_name = {"general": pool}
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        for call in pool.fetchrow.call_args_list:
+            sql = call.args[0] if call.args else ""
+            assert "tenant_id IN" not in sql, (
+                f"Unexpected tenant_id filter in get_entity query: {sql!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/memory/entities/{entity_id}
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateEntity:
+    async def test_updates_entity_successfully(self, app):
+        """PATCH /entities/{id} should return updated entity summary."""
+        row = {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "canonical_name": "Updated Name",
+            "entity_type": "person",
+            "aliases": [],
+            "roles": [],
+            "created_at": "2025-06-01T12:00:00",
+            "updated_at": "2025-06-01T13:00:00",
+        }
+        pool = _make_pool(fetchrow_result=row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678",
+                json={"canonical_name": "Updated Name"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["canonical_name"] == "Updated Name"
+
+    async def test_missing_entity_returns_404(self, app):
+        """PATCH on non-existent entity should return 404."""
+        pool = _make_pool(fetchrow_result=None)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678",
+                json={"canonical_name": "Whatever"},
+            )
+
+        assert resp.status_code == 404
+
+    async def test_no_tenant_id_filter_in_update_query(self, app):
+        """The update_entity handler must NOT restrict results by tenant_id.
+
+        Verify by inspecting the SQL passed to pool.fetchrow: it must not
+        contain a tenant_id IN clause.
+        """
+        row = {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "canonical_name": "Alice",
+            "entity_type": "person",
+            "aliases": [],
+            "roles": [],
+            "created_at": "2025-06-01T12:00:00",
+            "updated_at": "2025-06-01T12:00:00",
+        }
+        pool = _make_pool(fetchrow_result=row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.patch(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678",
+                json={"canonical_name": "Alice"},
+            )
+
+        for call in pool.fetchrow.call_args_list:
+            sql = call.args[0] if call.args else ""
+            assert "tenant_id IN" not in sql, (
+                f"Unexpected tenant_id filter in update_entity query: {sql!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/memory/entities/{entity_id}
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteEntity:
+    async def test_deletes_entity_successfully(self, app):
+        """DELETE /entities/{id} should return 204 for a valid entity."""
+        row = {"id": "12345678-1234-5678-1234-567812345678", "roles": []}
+        pool = _make_pool(fetchrow_result=row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.delete("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 204
+
+    async def test_owner_entity_cannot_be_deleted(self, app):
+        """DELETE on an entity with 'owner' role must return 403."""
+        row = {"id": "12345678-1234-5678-1234-567812345678", "roles": ["owner"]}
+        pool = _make_pool(fetchrow_result=row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.delete("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 403
+
+    async def test_missing_entity_returns_404(self, app):
+        """DELETE on non-existent entity should return 404."""
+        pool = _make_pool(fetchrow_result=None)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.delete("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 404
+
+    async def test_no_tenant_id_filter_in_delete_query(self, app):
+        """The delete_entity handler must NOT restrict results by tenant_id.
+
+        Verify by inspecting the SQL passed to pool.fetchrow: it must not
+        contain a tenant_id IN clause.
+        """
+        row = {"id": "12345678-1234-5678-1234-567812345678", "roles": []}
+        pool = _make_pool(fetchrow_result=row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.delete("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        for call in pool.fetchrow.call_args_list:
+            sql = call.args[0] if call.args else ""
+            assert "tenant_id IN" not in sql, (
+                f"Unexpected tenant_id filter in delete_entity query: {sql!r}"
+            )
