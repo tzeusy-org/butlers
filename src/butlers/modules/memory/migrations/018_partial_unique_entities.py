@@ -9,15 +9,26 @@ of an entity with the same (tenant_id, canonical_name, entity_type).
 
 The new partial index allows recreating entities whose predecessor was merged
 away, while still preventing true duplicates among live entities.
+
+Revision ID: mem_018
+Revises: mem_017
+Create Date: 2026-03-10 00:00:00.000000
 """
 
-MODULE = "memory"
-VERSION = 18
-DEPENDS_ON = 17
+from __future__ import annotations
+
+from alembic import op
+
+# revision identifiers, used by Alembic.
+revision = "mem_018"
+down_revision = "mem_017"
+branch_labels = None
+depends_on = None
 
 
-def upgrade(op):  # noqa: ANN001, ANN201
-    # Drop the old absolute unique constraint
+def upgrade() -> None:
+    # Drop the old absolute unique constraint (may not exist if table was
+    # recreated by migration 006 without it — DROP IF EXISTS is safe).
     op.execute("""
         ALTER TABLE shared.entities
         DROP CONSTRAINT IF EXISTS uq_entities_tenant_canonical_type
@@ -31,7 +42,7 @@ def upgrade(op):  # noqa: ANN001, ANN201
     """)
 
 
-def downgrade(op):  # noqa: ANN001, ANN201
+def downgrade() -> None:
     op.execute("""
         DROP INDEX IF EXISTS shared.uq_entities_tenant_canonical_type_live
     """)
