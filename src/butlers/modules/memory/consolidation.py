@@ -2,16 +2,52 @@
 
 Provides two main entry points:
 
-* ``run_consolidation`` — fetches unconsolidated episodes, groups by source
-  butler, orchestrates the full consolidation pipeline (prompt building, CC
-  spawning, parsing, and execution), and marks episodes as consolidated.
+* ``run_consolidation`` — fetches unconsolidated episodes via a lease-based
+  ``FOR UPDATE SKIP LOCKED`` claim ordered by ``(tenant_id, butler, created_at,
+  id)``, groups by source butler, orchestrates the full consolidation pipeline
+  (prompt building, CC spawning, parsing, and execution), and marks episodes as
+  consolidated or failed.
 * ``run_episode_cleanup`` — deletes expired episodes and enforces a capacity
   limit on the episodes table.
+
+State machine
+-------------
+Episodes progress through the following states:
+
+  pending  →  consolidated   (success)
+           →  failed         (error, attempts < MAX_CONSOLIDATION_ATTEMPTS)
+           →  dead_letter    (error, attempts >= MAX_CONSOLIDATION_ATTEMPTS)
+
+Lease-based claiming prevents concurrent workers from processing the same
+episode.  When a worker claims episodes it sets ``leased_until`` and
+``leased_by``.  If a worker crashes mid-lease the lease expires and the episode
+becomes claimable again on the next run.
+
+Retry scheduling
+----------------
+Failed episodes are retried with exponential backoff:
+
+    next_consolidation_retry_at = now() + 2^attempts * BASE_RETRY_SECONDS
+
+Constants
+---------
+MAX_CONSOLIDATION_ATTEMPTS : int
+    Maximum number of consolidation attempts before an episode is dead-lettered.
+    Default: 5.
+LEASE_DURATION_SECONDS : int
+    How many seconds to hold a lease before it expires.  Default: 300 (5 min).
+BASE_RETRY_SECONDS : int
+    Base interval in seconds for exponential backoff.  Default: 60 (1 min).
+DEFAULT_BATCH_SIZE : int
+    Maximum episodes claimed per consolidation run.  Default: 100.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import socket
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from butlers.modules.memory.consolidation_executor import execute_consolidation
@@ -25,6 +61,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MAX_CONSOLIDATION_ATTEMPTS: int = 5
+LEASE_DURATION_SECONDS: int = 300  # 5 minutes
+BASE_RETRY_SECONDS: int = 60  # 1 minute base for exponential backoff
+DEFAULT_BATCH_SIZE: int = 100
+
+
+def _worker_id() -> str:
+    """Generate a stable-ish worker identifier from hostname + PID."""
+    return f"{socket.gethostname()}:{os.getpid()}"
+
 
 # ---------------------------------------------------------------------------
 # Consolidation runner
@@ -35,10 +85,16 @@ async def run_consolidation(
     pool: Pool,
     embedding_engine: Any,
     cc_spawner: Spawner | None = None,
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict[str, Any]:
     """Orchestrate the full consolidation pipeline for unconsolidated episodes.
 
-    For each butler group with unconsolidated episodes:
+    Uses ``FOR UPDATE SKIP LOCKED`` to claim pending episodes, preventing
+    concurrent workers from processing the same episode.  Episodes are ordered
+    by ``(tenant_id, butler, created_at, id)`` for deterministic processing.
+
+    For each butler group with pending episodes:
     1. Fetch existing facts and rules for dedup context
     2. Build consolidation prompt via ``build_consolidation_prompt``
     3. Spawn a runtime instance with the consolidate skill
@@ -52,10 +108,11 @@ async def run_consolidation(
         embedding_engine: EmbeddingEngine instance for storing new facts/rules.
         cc_spawner: Optional Spawner instance for invoking the LLM CLI. If None,
             only episode grouping is performed (no actual consolidation).
+        batch_size: Maximum number of episodes to claim per run.
 
     Returns:
         A stats dict with keys:
-        - ``episodes_processed``: total unconsolidated episodes found.
+        - ``episodes_processed``: total episodes claimed (pending episodes found).
         - ``butlers_processed``: number of distinct butler groups.
         - ``groups``: mapping of butler name to episode count.
         - ``groups_consolidated``: number of groups successfully processed.
@@ -66,12 +123,43 @@ async def run_consolidation(
         - ``episodes_consolidated``: total episodes marked as consolidated.
         - ``errors``: list of error messages from failed groups.
     """
-    rows = await pool.fetch(
-        "SELECT id, butler, content, importance, metadata, created_at "
-        "FROM episodes "
-        "WHERE consolidated = false "
-        "ORDER BY created_at ASC"
-    )
+    worker = _worker_id()
+
+    # -------------------------------------------------------------------------
+    # Claim pending episodes via FOR UPDATE SKIP LOCKED
+    # -------------------------------------------------------------------------
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                SELECT id, butler, content, importance, metadata, created_at,
+                       tenant_id, consolidation_attempts
+                FROM episodes
+                WHERE consolidation_status = 'pending'
+                  AND (leased_until IS NULL OR leased_until < now())
+                  AND (next_consolidation_retry_at IS NULL
+                       OR next_consolidation_retry_at <= now())
+                ORDER BY tenant_id, butler, created_at, id
+                FOR UPDATE SKIP LOCKED
+                LIMIT $1
+                """,
+                batch_size,
+            )
+
+            if rows:
+                episode_ids_to_lease = [row["id"] for row in rows]
+                # Set lease: prevent other workers from claiming the same episodes
+                await conn.execute(
+                    """
+                    UPDATE episodes
+                    SET leased_until = now() + ($1 * interval '1 second'),
+                        leased_by    = $2
+                    WHERE id = ANY($3)
+                    """,
+                    LEASE_DURATION_SECONDS,
+                    worker,
+                    episode_ids_to_lease,
+                )
 
     # Group episodes by source butler
     groups: dict[str, list[dict]] = {}
@@ -113,7 +201,9 @@ async def run_consolidation(
                 rules_rows = await pool.fetch(
                     "SELECT id, content, maturity "
                     "FROM rules "
-                    "WHERE maturity = 'active' AND source_butler = $1 "
+                    "WHERE maturity NOT IN ('anti_pattern') "
+                    "  AND (metadata->>'forgotten')::boolean IS NOT TRUE "
+                    "  AND source_butler = $1 "
                     "ORDER BY created_at DESC "
                     "LIMIT 50",
                     butler_name,
@@ -143,6 +233,13 @@ async def run_consolidation(
                     error_msg = f"runtime session failed for {butler_name}"
                     logger.error("%s: %s", error_msg, result.error)
                     all_errors.append(error_msg)
+                    # Clear leases so episodes can be retried / dead-lettered
+                    group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
+                    await _mark_group_failed(
+                        pool,
+                        group_episode_ids,
+                        f"runtime session failed: {result.error}",
+                    )
                     continue
 
                 # 4. Parse runtime output
@@ -152,12 +249,12 @@ async def run_consolidation(
                     all_errors.extend(parsed.parse_errors)
 
                 # 5. Execute consolidation actions
-                episode_ids = [row["id"] for row in episodes]
+                group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
                 exec_result = await execute_consolidation(
                     pool=pool,
                     embedding_engine=embedding_engine,
                     parsed=parsed,
-                    source_episode_ids=episode_ids,
+                    source_episode_ids=group_episode_ids,
                     butler_name=butler_name,
                 )
 
@@ -184,6 +281,14 @@ async def run_consolidation(
                 error_msg = f"Failed to consolidate {butler_name}"
                 logger.error("%s: %s", error_msg, exc, exc_info=True)
                 all_errors.append(error_msg)
+                # Clear leases so episodes can be retried / dead-lettered
+                try:
+                    group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
+                    await _mark_group_failed(pool, group_episode_ids, str(exc))
+                except Exception as clear_exc:
+                    logger.error(
+                        "Failed to update failure state for %s: %s", butler_name, clear_exc
+                    )
 
     return {
         "episodes_processed": len(rows),
@@ -197,6 +302,80 @@ async def run_consolidation(
         "episodes_consolidated": total_episodes_consolidated,
         "errors": all_errors,
     }
+
+
+async def _mark_group_failed(
+    pool: Pool,
+    episode_ids: list[uuid.UUID],
+    error_message: str,
+) -> None:
+    """Mark a batch of episodes as failed (or dead-lettered) after a group error.
+
+    Called when a butler group's CC spawner call fails entirely.  Each episode
+    is evaluated individually: if it has already hit MAX_CONSOLIDATION_ATTEMPTS
+    it is dead-lettered, otherwise it is moved to 'failed' with exponential
+    backoff and the lease is cleared.
+
+    Also emits a ``episode_consolidation_failed`` or
+    ``episode_consolidation_dead_letter`` event to memory_events.
+    """
+    if not episode_ids:
+        return
+
+    await pool.execute(
+        """
+        UPDATE episodes
+        SET consolidation_attempts    = consolidation_attempts + 1,
+            last_consolidation_error  = $1,
+            leased_until              = NULL,
+            leased_by                 = NULL,
+            consolidation_status      = CASE
+                WHEN consolidation_attempts + 1 >= $2 THEN 'dead_letter'
+                ELSE 'failed'
+            END,
+            dead_letter_reason        = CASE
+                WHEN consolidation_attempts + 1 >= $2 THEN $1
+                ELSE dead_letter_reason
+            END,
+            next_consolidation_retry_at = CASE
+                WHEN consolidation_attempts + 1 >= $2 THEN NULL
+                ELSE now() + (power(2, consolidation_attempts + 1) * $3
+                              * interval '1 second')
+            END
+        WHERE id = ANY($4)
+        """,
+        error_message,
+        MAX_CONSOLIDATION_ATTEMPTS,
+        BASE_RETRY_SECONDS,
+        episode_ids,
+    )
+
+    # Emit memory_events for the transitions (best-effort)
+    try:
+        await pool.execute(
+            """
+            INSERT INTO memory_events (event_type, actor, payload)
+            SELECT
+                CASE
+                    WHEN consolidation_attempts >= $1
+                         THEN 'episode_consolidation_dead_letter'
+                    ELSE 'episode_consolidation_failed'
+                END,
+                'consolidation_worker',
+                jsonb_build_object(
+                    'episode_id', id::text,
+                    'attempts',   consolidation_attempts,
+                    'error',      $2
+                )
+            FROM episodes
+            WHERE id = ANY($3)
+            """,
+            MAX_CONSOLIDATION_ATTEMPTS,
+            error_message,
+            episode_ids,
+        )
+    except Exception as exc:
+        logger.warning("Failed to emit consolidation events: %s", exc)
 
 
 # ---------------------------------------------------------------------------
