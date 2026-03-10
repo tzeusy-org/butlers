@@ -1,7 +1,7 @@
 ---
 name: fact-extraction
 description: 7-step Conversational Fact Extraction Pipeline — resolve person mentions to entities, apply disambiguation policy, extract and store facts, log interactions, and update domain records. Includes question answering flow and 8 complete examples.
-version: 1.0.0
+version: 2.0.0
 tags: [relationship, memory, extraction, entity-resolution]
 ---
 
@@ -47,14 +47,62 @@ Use the resolution thresholds from the spec (§10.4):
 When `memory_entity_resolve` returns zero candidates:
 
 - **If sufficient identifying info (full name or enough context):**
-  1. Call `memory_entity_create(canonical_name="<full name>", entity_type="person", aliases=["<first name>", "<nickname if known>"])`
+  1. Call `memory_entity_create(canonical_name="<full name>", entity_type="person", aliases=["<first name>", "<nickname if known>"], metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})`
   2. Optionally call `contact_create(...)` and store the returned `entity_id` if the person seems like a recurring contact
   3. Proceed with the new `entity_id`
 
 - **If only a first name or minimal info:**
-  1. Call `memory_entity_create(canonical_name="<first name>", entity_type="person")` to establish a minimal entity
+  1. Call `memory_entity_create(canonical_name="<first name>", entity_type="person", metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` to establish a minimal entity
   2. Defer contact creation until more information is available
   3. Proceed with the new `entity_id`
+
+The entity appears in the dashboard "Unidentified Entities" section for the owner to confirm,
+merge, or delete — especially useful for one-off mentions where full identity is unknown.
+
+## Step 4b: Handle New Organizations (for Edge-Facts)
+
+When storing an edge-fact where the object is an organization (employer, club, school, etc.)
+and that organization is not yet in the entity graph, apply the resolve-or-create transitory
+pattern before storing the fact:
+
+```python
+# "Sarah just started at Figma"
+# Step 1: resolve the organization
+candidates = memory_entity_resolve(name="Figma", entity_type="organization")
+# → zero candidates: create transitory entity with unidentified metadata
+try:
+    result = memory_entity_create(
+        canonical_name="Figma",
+        entity_type="organization",
+        metadata={
+            "unidentified": True,
+            "source": "fact_storage",
+            "source_butler": "relationship",
+            "source_scope": "relationship"
+        }
+    )
+    org_entity_id = result["entity_id"]
+except ValueError:
+    # Already exists (idempotency) — resolve to get entity_id
+    candidates = memory_entity_resolve(name="Figma", entity_type="organization")
+    org_entity_id = candidates[0]["entity_id"]
+
+# Step 2: store the edge-fact
+memory_store_fact(
+    subject="Sarah",
+    predicate="works_at",
+    content="just started",
+    entity_id="<uuid-sarah>",
+    object_entity_id=org_entity_id,
+    permanence="stable",
+    importance=7.0,
+    tags=["work"]
+)
+```
+
+**Never store an edge-fact referencing an organization without first resolving or creating its
+entity.** A fact stored with only a raw string subject is invisible in `/entities` and cannot
+be merged, linked, or promoted.
 
 ## Step 5: Extract and Store Facts with entity_id
 
@@ -362,10 +410,11 @@ User: "What does Alice like?"
 
 **Actions**:
 1. `memory_entity_resolve("Marcus Webb", entity_type="person")` → zero candidates
-2. Enough info (full name) → `memory_entity_create(canonical_name="Marcus Webb", entity_type="person", aliases=["Marcus"])` → `entity_id="<uuid-marcus>"`
+2. Enough info (full name) → `memory_entity_create(canonical_name="Marcus Webb", entity_type="person", aliases=["Marcus"], metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` → `entity_id="<uuid-marcus>"`
 3. `contact_create(first_name="Marcus", last_name="Webb", job_title="Product Designer", company="Figma")` → store returned `entity_id` on contact
-4. `memory_store_fact(subject="Marcus Webb", predicate="workplace", content="Product designer at Figma", entity_id="<uuid-marcus>", permanence="stable", importance=6.0, tags=["work"])`
-5. `notify(channel="telegram", message="Added Marcus Webb to your contacts — product designer at Figma.", intent="reply", request_context=...)`
+4. Resolve Figma: `memory_entity_resolve("Figma", entity_type="organization")` → zero candidates → `memory_entity_create(canonical_name="Figma", entity_type="organization", metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` → `entity_id="<uuid-figma>"`
+5. `memory_store_fact(subject="Marcus Webb", predicate="works_at", content="Product designer at Figma", entity_id="<uuid-marcus>", object_entity_id="<uuid-figma>", permanence="stable", importance=6.0, tags=["work"])`
+6. `notify(channel="telegram", message="Added Marcus Webb to your contacts — product designer at Figma.", intent="reply", request_context=...)`
 
 ### Example 9: Edge-Facts — Relationship Between People
 
@@ -374,7 +423,7 @@ User: "What does Alice like?"
 **Actions**:
 1. `memory_entity_resolve("Jake", entity_type="person", context_hints={"topic": "brother, Stripe, hired"})` → `entity_id="<uuid-jake>"`, single match
 2. `memory_entity_resolve("Sarah", entity_type="person", context_hints={"topic": "Stripe", "mentioned_with": ["Jake"]})` → `entity_id="<uuid-sarah>"`, single match
-3. `memory_entity_resolve("Stripe", entity_type="organization")` → `entity_id="<uuid-stripe>"` (create if new: `memory_entity_create(canonical_name="Stripe", entity_type="organization")`)
+3. `memory_entity_resolve("Stripe", entity_type="organization")` → `entity_id="<uuid-stripe>"` (create if new: `memory_entity_create(canonical_name="Stripe", entity_type="organization", metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})`)
 4. `memory_store_fact(subject="Jake", predicate="sibling_of", content="brother", entity_id="<uuid-jake>", object_entity_id="<uuid-user>", permanence="permanent", importance=9.0, tags=["family"])` — edge-fact: Jake → user
 5. `memory_store_fact(subject="Jake", predicate="works_at", content="recently hired", entity_id="<uuid-jake>", object_entity_id="<uuid-stripe>", permanence="stable", importance=7.0, tags=["work"])` — edge-fact: Jake → Stripe
 6. `memory_store_fact(subject="Sarah", predicate="works_at", content="currently employed", entity_id="<uuid-sarah>", object_entity_id="<uuid-stripe>", permanence="stable", importance=7.0, tags=["work"])` — edge-fact: Sarah → Stripe

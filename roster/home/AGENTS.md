@@ -153,13 +153,71 @@ engage interactive response mode.
 
 ## Memory Classification
 
+For the full entity resolution protocol — including the resolve-or-create transitory pattern,
+disambiguation policy, and idempotency handling — see the `butler-memory` shared skill.
+
+### Service Providers — Resolve Before Storing
+
+When the user mentions a home service provider (plumber, electrician, HVAC technician, cleaning
+company, etc.), **resolve or create a transitory entity before storing facts about them.** Never
+store facts with only a raw string subject for external organizations or people.
+
+**Entity type inference for home domain:**
+
+| Home entity | `entity_type` |
+|-------------|---------------|
+| Plumber, electrician, HVAC tech, contractor | `person` or `organization` (use `organization` if a company name; `person` if an individual) |
+| Cleaning service, pest control, landscaping company | `organization` |
+| Appliance manufacturer or brand | `organization` |
+| Individual tradesperson (e.g., "Mike the plumber") | `person` |
+
+**Resolve-or-create pattern for service providers:**
+
+```python
+# "Called Mike's Plumbing to fix the leaking pipe under the kitchen sink"
+candidates = memory_entity_resolve(name="Mike's Plumbing", entity_type="organization")
+# → zero candidates: create transitory entity
+try:
+    result = memory_entity_create(
+        canonical_name="Mike's Plumbing",
+        entity_type="organization",
+        metadata={
+            "unidentified": True,
+            "source": "fact_storage",
+            "source_butler": "home",
+            "source_scope": "home"
+        }
+    )
+    provider_entity_id = result["entity_id"]
+except ValueError:
+    candidates = memory_entity_resolve(name="Mike's Plumbing", entity_type="organization")
+    provider_entity_id = candidates[0]["entity_id"]
+
+memory_store_fact(
+    subject="Mike's Plumbing",
+    predicate="service_provider",
+    content="plumbing — fixed kitchen sink leak; reliable, called for emergencies",
+    entity_id=provider_entity_id,
+    permanence="stable",
+    importance=6.0,
+    tags=["service-provider", "plumbing", "maintenance"]
+)
+```
+
+The entity appears in the dashboard "Unidentified Entities" section for the owner to confirm.
+**Never fall back to a bare string subject for a service provider.**
+
+Room, device, and scene subjects (e.g., `"bedroom"`, `"thermostat"`, `"movie-night"`) are
+internal identifiers — they do not require entity resolution.
+
 ### Home Domain Taxonomy
 
 **Subject**:
-- For room-specific knowledge: room name (e.g., `"bedroom"`, `"living-room"`, `"kitchen"`)
-- For device-specific knowledge: device identifier (e.g., `"thermostat"`, `"front-door-lock"`)
-- For scene knowledge: scene name (e.g., `"movie-night"`, `"bedtime"`)
-- For user preferences: `"comfort_preference"`, `"energy_preference"`
+- For room-specific knowledge: room name (e.g., `"bedroom"`, `"living-room"`, `"kitchen"`) — no entity required
+- For device-specific knowledge: device identifier (e.g., `"thermostat"`, `"front-door-lock"`) — no entity required
+- For scene knowledge: scene name (e.g., `"movie-night"`, `"bedtime"`) — no entity required
+- For user preferences: `"comfort_preference"`, `"energy_preference"` — no entity required
+- For service providers: company/person name — MUST be resolved to entity (see above)
 
 **Predicates**:
 - `comfort_preference`: User's temperature, humidity, lighting, or air quality preferences
@@ -172,13 +230,14 @@ engage interactive response mode.
 - `energy_spike`: Anomalous energy consumption detected above baseline (volatile)
 - `energy_pattern`: Observed patterns in energy consumption over time (standard)
 - `usage_pattern`: Observed patterns in how user interacts with devices or scenes
+- `service_provider`: Known home service providers — plumbers, electricians, cleaners, contractors (fact anchored to service provider entity)
 
 **Permanence levels**:
 - `stable`: Long-term preferences that persist across seasons and living patterns (e.g., "user prefers bedroom at 68°F at night")
 - `standard`: Current preferences and typical patterns (e.g., "user usually activates movie night at 7pm on weekends")
 - `volatile`: Temporary states, immediate issues, or time-sensitive alerts (e.g., "basement sensor battery at 15%", "HVAC firmware update available")
 
-**Tags**: Use tags like `temperature`, `humidity`, `lighting`, `energy`, `comfort`, `scene`, `device`, `maintenance`, `urgent`, `seasonal`
+**Tags**: Use tags like `temperature`, `humidity`, `lighting`, `energy`, `comfort`, `scene`, `device`, `maintenance`, `urgent`, `seasonal`, `service-provider`
 
 ### Example Facts
 
