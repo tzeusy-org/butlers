@@ -1406,9 +1406,7 @@ class ButlerDaemon:
         # as a background task so that long-running LLM sessions don't block startup
         # (and therefore don't prevent other butlers from starting in `butlers up`).
         if self.config.name not in ("switchboard", "messenger") and self.spawner is not None:
-            self._route_inbox_recovery_task = asyncio.create_task(
-                self._recover_route_inbox(pool)
-            )
+            self._route_inbox_recovery_task = asyncio.create_task(self._recover_route_inbox(pool))
 
         # 15. Launch switchboard heartbeat (non-switchboard butlers only)
         if self.config.switchboard_url is not None:
@@ -3181,7 +3179,8 @@ class ButlerDaemon:
                 Args:
                     butler: Target butler name (e.g. "health", "relationship").
                     prompt: Self-contained prompt for the target butler.
-                    context: Optional — key details and context the target butler needs to act on this request.
+                    context: Optional — key details and context the target butler needs to act on
+                        this request.
                 """
                 _routing_ctx = _routing_ctx_var.get() or {}
                 if not isinstance(_routing_ctx, dict):

@@ -45,8 +45,10 @@ import base64
 import html
 import logging
 import os
+import re
 import time
 from datetime import UTC, datetime, timedelta
+from html.parser import HTMLParser
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1979,27 +1981,98 @@ class GmailConnectorRuntime:
         }
 
     def _extract_body_from_payload(self, payload: dict[str, Any], depth: int = 0) -> str:
-        """Recursively extract body text from Gmail message payload."""
+        """Recursively extract body text from Gmail message payload.
+
+        Preference order: text/plain > text/html (stripped) > "(no body)".
+        HTML is stripped using stdlib html.parser — no third-party deps.
+        """
         # Prevent stack overflow from malicious deeply nested messages
         if depth > 20:
             logger.warning("Maximum recursion depth reached in email parsing")
             return "(body too deeply nested)"
-        # Try to extract text/plain part
+
         mime_type = payload.get("mimeType", "")
+
+        # Leaf node: text/plain — return immediately (highest priority)
         if mime_type == "text/plain":
             body_data = payload.get("body", {}).get("data", "")
             if body_data:
                 return base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
 
-        # If multipart, recurse into parts
+        # Leaf node: text/html — decode and strip tags (fallback candidate)
+        if mime_type == "text/html":
+            body_data = payload.get("body", {}).get("data", "")
+            if body_data:
+                raw_html = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
+                return self._strip_html(raw_html)
+
+        # Multipart: collect plain and html candidates separately so we can
+        # prefer plain regardless of part ordering in the MIME tree.
         parts = payload.get("parts", [])
         if parts:
+            plain_candidate: str | None = None
+            html_candidate: str | None = None
             for part in parts:
                 body = self._extract_body_from_payload(part, depth + 1)
-                if body and body != "(no body)":
-                    return body
+                if body in ("(no body)", "(body too deeply nested)"):
+                    continue
+                # Classify by the child's own MIME type to preserve preference.
+                child_mime = part.get("mimeType", "")
+                if child_mime == "text/plain" and plain_candidate is None:
+                    plain_candidate = body
+                elif child_mime == "text/html" and html_candidate is None:
+                    html_candidate = body
+                elif plain_candidate is None and html_candidate is None:
+                    # Nested multipart returned a resolved body — treat as plain.
+                    plain_candidate = body
+            if plain_candidate is not None:
+                return plain_candidate
+            if html_candidate is not None:
+                return html_candidate
 
         return "(no body)"
+
+    @staticmethod
+    def _strip_html(raw_html: str) -> str:
+        """Strip HTML tags from *raw_html*, returning readable plain text.
+
+        Uses stdlib ``html.parser.HTMLParser`` to skip ``<style>`` and
+        ``<script>`` blocks entirely and collect visible text nodes.
+        Collapses runs of whitespace into single spaces / newlines.
+        """
+
+        class _TextExtractor(HTMLParser):
+            """Collect visible text, skipping style/script content."""
+
+            _SKIP_TAGS = frozenset({"style", "script", "head", "meta", "link"})
+
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=True)
+                self._skip_depth = 0
+                self._parts: list[str] = []
+
+            def handle_starttag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
+                if tag in self._SKIP_TAGS:
+                    self._skip_depth += 1
+
+            def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
+                if tag in self._SKIP_TAGS and self._skip_depth > 0:
+                    self._skip_depth -= 1
+
+            def handle_data(self, data: str) -> None:
+                if self._skip_depth == 0:
+                    self._parts.append(data)
+
+            def get_text(self) -> str:
+                text = "".join(self._parts)
+                # Normalise whitespace: collapse blanks, preserve paragraph breaks
+                text = re.sub(r"[ \t]+", " ", text)
+                text = re.sub(r"\n{3,}", "\n\n", text)
+                return text.strip()
+
+        extractor = _TextExtractor()
+        extractor.feed(raw_html)
+        return extractor.get_text() or "(no body)"
 
     def _extract_attachments(self, payload: dict[str, Any], depth: int = 0) -> list[dict[str, Any]]:
         """Walk MIME parts tree, identify supported attachments.

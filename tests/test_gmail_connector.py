@@ -635,7 +635,7 @@ class TestGmailConnectorRuntime:
     def test_extract_body_from_payload_html_fallback_strips_tags(
         self, gmail_runtime: GmailConnectorRuntime
     ) -> None:
-        """HTML tags, style blocks, and script blocks are stripped from HTML-only emails. [bu-nwn]"""
+        """HTML tags, style/script blocks are stripped from HTML-only emails. [bu-nwn]"""
         import base64
 
         html_content = (
