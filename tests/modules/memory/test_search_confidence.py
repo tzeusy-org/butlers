@@ -114,3 +114,17 @@ class TestEffectiveConfidence:
         ts = datetime.now(UTC) + timedelta(hours=1)
         result = effective_confidence(0.7, 0.05, ts)
         assert result == pytest.approx(0.7, abs=0.001)
+
+    def test_permanent_fact_no_confirmation_returns_confidence(self):
+        """Permanent facts (decay_rate=0) pass through even with no last_confirmed_at.
+
+        decay_rate=0 check must precede the last_confirmed_at=None check so that
+        permanent facts are never filtered out for lack of a confirmation timestamp.
+        """
+        result = effective_confidence(0.9, 0.0, None)
+        assert result == 0.9
+
+    def test_non_permanent_fact_none_confirmation_returns_zero(self):
+        """Non-permanent facts with no confirmation timestamp return 0.0."""
+        result = effective_confidence(0.9, 0.01, None)
+        assert result == 0.0

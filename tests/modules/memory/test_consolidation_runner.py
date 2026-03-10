@@ -297,6 +297,33 @@ class TestRunConsolidation:
         ]
         assert len(update_calls) > 0
 
+    async def test_fetches_rules_using_maturity_column(self) -> None:
+        """Consolidation queries rules using 'maturity' not 'status' column."""
+        episodes = [_episode_row(butler="test-butler")]
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=[episodes, [], []])
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        engine = MagicMock()
+
+        spawner = AsyncMock()
+        spawner.trigger = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                output='{"new_facts": [], "updated_facts": [], "new_rules": [], '
+                '"confirmations": []}',
+            )
+        )
+
+        await run_consolidation(pool, engine, cc_spawner=spawner)
+
+        # The third fetch call is the rules query (after episodes + facts).
+        all_fetches = pool.fetch.await_args_list
+        assert len(all_fetches) >= 3
+        rules_sql = all_fetches[2][0][0]  # Third fetch = rules query
+        # Must use 'maturity' column, NOT 'status'
+        assert "maturity" in rules_sql
+        assert "status" not in rules_sql
+
 
 # ---------------------------------------------------------------------------
 # Tests — run_episode_cleanup
