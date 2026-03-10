@@ -224,6 +224,7 @@ engage interactive response mode.
 - `education.mind_maps.root_node_id` is created as `NULL` and is not currently set by `mind_map_node_create()`; any UI/logic should rely on node/edge presence (or add a write path to set the root).
 - `curriculum_generate()` validates `diagnostic_results` as a dict (not a string); pass the probe summary mapping `{node_id: {quality, inferred_mastery}}`.
 - Scheduler cron evaluation is UTC-only (task `timezone` does not affect `next_run_at`); when a user specifies a local time (e.g. 20:00 SGT), convert it to the equivalent UTC cron (12:00 UTC), and expect a deterministic per-task stagger (up to ~15 minutes) that can shift actual fire time slightly later.
+- If `uv run` is unavailable (or blocked by cache permissions), quick config sanity checks can be done with `PYTHONPATH=src python3 -c "from butlers.config import load_config; load_config(Path('roster/education'))"`.
 
 #### Example 6: Abandoning a Topic
 

@@ -53,6 +53,27 @@ If any flows were abandoned, notify the user via notify(channel="telegram", inte
 message=<cleanup_summary>).
 """
 
+[[butler.schedule]]
+name = "daily-spaced-repetition-nudge"
+cron = "0 17 * * *"
+dispatch_mode = "prompt"
+prompt = """
+Daily spaced-repetition nudge (do not spam).
+
+1) List active mind maps via mind_map_list(status="active").
+2) For each map, call spaced_repetition_pending_reviews(mind_map_id).
+3) If there are ZERO pending reviews across all maps: do nothing (do not notify).
+4) If there are any pending reviews: send ONE Telegram message summarizing:
+   - total pending count
+   - per-curriculum topic list (mind map title → node labels)
+   - for each item, include how overdue it is in whole days:
+     overdue_days = max(0, floor((now_utc - parse_iso(next_review_at)).total_seconds / 86400))
+
+Delivery:
+- notify(channel="telegram", intent="send", message=<summary>)
+- Keep it short and actionable; end with: "Reply 'review' and I’ll start the next one."
+"""
+
 [modules.education]
 
 [modules.memory]
