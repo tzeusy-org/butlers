@@ -188,6 +188,8 @@ class TestMemoryStoreFact:
                 idempotency_key=None,
                 tenant_id="owner",
                 request_id=None,
+                retention_class="operational",
+                sensitivity="normal",
                 enable_shared_catalog=False,
                 source_schema=None,
             )
@@ -299,6 +301,8 @@ class TestMemoryStoreRule:
                 tags=None,
                 tenant_id="owner",
                 request_id=None,
+                retention_class="rule",
+                sensitivity="normal",
                 enable_shared_catalog=False,
                 source_schema=None,
             )
