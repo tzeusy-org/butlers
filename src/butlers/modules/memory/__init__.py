@@ -335,6 +335,8 @@ class MemoryModule(Module):
                 valid_at=valid_at,
                 idempotency_key=idempotency_key,
                 request_context=request_context,
+                enable_shared_catalog=module._config.enable_shared_catalog,
+                source_schema=module._config.catalog_source_schema or None,
             )
 
         @mcp.tool()
@@ -361,6 +363,8 @@ class MemoryModule(Module):
                 scope=scope,
                 tags=tags,
                 request_context=request_context,
+                enable_shared_catalog=module._config.enable_shared_catalog,
+                source_schema=module._config.catalog_source_schema or None,
             )
 
         # --- Reading tools ---

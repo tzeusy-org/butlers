@@ -359,6 +359,8 @@ class TestToolDelegation:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_memory_store_fact_delegates_with_valid_at(self):
@@ -386,6 +388,8 @@ class TestToolDelegation:
             valid_at="2026-03-06T08:00:00Z",
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_memory_context_delegates(self):
@@ -514,6 +518,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_no_entity_id_with_routing_ctx_uses_sender_entity(self):
@@ -544,6 +550,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_explicit_entity_id_takes_precedence_over_routing_ctx(self):
@@ -580,6 +588,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_routing_ctx_missing_source_entity_id_key_passes_none(self):
@@ -609,6 +619,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
 

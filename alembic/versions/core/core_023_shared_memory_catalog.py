@@ -65,12 +65,14 @@ def _quote_ident(identifier: str) -> str:
 
 def _grant_if_table_exists(table_fqn: str, privilege: str, role: str) -> None:
     """GRANT privilege ON table TO role only when table and role exist."""
+    safe_table_fqn = table_fqn.replace("'", "''")
+    safe_role = role.replace("'", "''")
     op.execute(
         f"""
         DO $$
         BEGIN
-            IF to_regclass('{table_fqn}') IS NOT NULL
-               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}')
+            IF to_regclass('{safe_table_fqn}') IS NOT NULL
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{safe_role}')
             THEN
                 EXECUTE 'GRANT {privilege} ON TABLE {table_fqn} TO {_quote_ident(role)}';
             END IF;
@@ -87,14 +89,16 @@ def _grant_if_table_exists(table_fqn: str, privilege: str, role: str) -> None:
 
 def _grant_schema_usage_if_exists(schema: str, role: str) -> None:
     """GRANT USAGE ON SCHEMA only when schema and role exist."""
+    safe_schema = schema.replace("'", "''")
+    safe_role = role.replace("'", "''")
     op.execute(
         f"""
         DO $$
         BEGIN
             IF EXISTS (
                 SELECT 1 FROM information_schema.schemata
-                WHERE schema_name = '{schema}'
-            ) AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}')
+                WHERE schema_name = '{safe_schema}'
+            ) AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{safe_role}')
             THEN
                 EXECUTE 'GRANT USAGE ON SCHEMA {_quote_ident(schema)} TO {_quote_ident(role)}';
             END IF;
