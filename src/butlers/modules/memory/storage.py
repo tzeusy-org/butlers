@@ -254,7 +254,7 @@ async def _lookup_episode_ttl_days(pool: Pool, retention_class: str) -> int:
     """Look up the TTL (in days) for an episode's retention_class from memory_policies.
 
     Falls back to ``_DEFAULT_EPISODE_TTL_DAYS`` if the table does not yet exist
-    (e.g. before migration mem_017 is applied) or the class is not found.
+    (e.g. before migration mem_019 is applied) or the class is not found.
 
     Args:
         pool: asyncpg connection pool.
@@ -265,7 +265,7 @@ async def _lookup_episode_ttl_days(pool: Pool, retention_class: str) -> int:
     """
     try:
         ttl = await pool.fetchval(
-            "SELECT default_ttl_days FROM memory_policies WHERE retention_class = $1",
+            "SELECT ttl_days FROM memory_policies WHERE retention_class = $1",
             retention_class,
         )
         if ttl is not None and isinstance(ttl, int) and ttl > 0:
@@ -1299,15 +1299,27 @@ async def run_decay_sweep(pool: Pool) -> dict:
     For each active fact and rule (excluding permanent ones with decay_rate=0.0):
     1. Compute effective_confidence = confidence * exp(-decay_rate * days_elapsed)
        where days_elapsed = (now - last_confirmed_at).total_seconds() / 86400
-    2. If effective_confidence < 0.05: set validity='expired' (facts) or
-       metadata.forgotten=true (rules)
-    3. If 0.05 <= effective_confidence < 0.2: set metadata.status='fading'
-    4. Otherwise: clear metadata.status if it was 'fading'
+    2. Thresholds are read per-class from memory_policies:
+         - fading_threshold  = min_retrieval_confidence
+         - expiry_threshold  = min_retrieval_confidence * 0.25
+       If the retention_class is not found in memory_policies, fall back to
+       the hardcoded defaults (fading=0.2, expiry=0.05) and log a warning.
+    3. If effective_confidence < expiry_threshold:
+         - For facts with archive_before_delete=true: archive first, then expire.
+           If archival fails, skip expiry (fail-closed).
+         - Otherwise: set validity='expired' (facts) or metadata.forgotten=true (rules)
+    4. If expiry_threshold <= effective_confidence < fading_threshold:
+         set metadata.status='fading'
+    5. Otherwise: clear metadata.status if it was 'fading'
 
     Returns:
         dict with keys: facts_checked, rules_checked, facts_fading, rules_fading,
         facts_expired, rules_expired
     """
+    # Hardcoded fallback defaults (used when policy is missing for a class)
+    _DEFAULT_FADING_THRESHOLD = 0.2
+    _DEFAULT_EXPIRY_THRESHOLD = 0.05
+
     now = datetime.now(UTC)
     stats = {
         "facts_checked": 0,
@@ -1319,9 +1331,38 @@ async def run_decay_sweep(pool: Pool) -> dict:
     }
 
     async with pool.acquire() as conn:
+        # Load all retention policies upfront to avoid per-row queries
+        policy_rows = await conn.fetch(
+            "SELECT retention_class, min_retrieval_confidence, archive_before_delete "
+            "FROM memory_policies"
+        )
+        policies: dict[str, dict] = {}
+        for row in policy_rows:
+            rc = row["retention_class"]
+            policies[rc] = {
+                "min_conf": row["min_retrieval_confidence"],
+                "archive_before_delete": row["archive_before_delete"],
+            }
+
+        def _get_thresholds(retention_class: str | None) -> tuple[float, float, bool]:
+            """Return (fading_threshold, expiry_threshold, archive_before_delete)."""
+            rc = retention_class or ""
+            if rc in policies:
+                min_conf = policies[rc]["min_conf"]
+                return min_conf, min_conf * 0.25, policies[rc]["archive_before_delete"]
+            logger.warning(
+                "run_decay_sweep: retention_class %r not found in memory_policies; "
+                "using hardcoded defaults (fading=%.2f, expiry=%.2f)",
+                rc,
+                _DEFAULT_FADING_THRESHOLD,
+                _DEFAULT_EXPIRY_THRESHOLD,
+            )
+            return _DEFAULT_FADING_THRESHOLD, _DEFAULT_EXPIRY_THRESHOLD, False
+
         # ----- Process facts -----
         facts = await conn.fetch(
-            "SELECT id, confidence, decay_rate, last_confirmed_at, created_at, metadata "
+            "SELECT id, confidence, decay_rate, last_confirmed_at, created_at, "
+            "metadata, retention_class "
             "FROM facts WHERE validity = 'active' AND decay_rate > 0.0"
         )
 
@@ -1335,13 +1376,34 @@ async def run_decay_sweep(pool: Pool) -> dict:
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
 
-            if eff < 0.05:
-                await conn.execute(
-                    "UPDATE facts SET validity = 'expired' WHERE id = $1",
-                    fact["id"],
-                )
+            fading_thresh, expiry_thresh, archive_first = _get_thresholds(
+                fact.get("retention_class")
+            )
+
+            if eff < expiry_thresh:
+                if archive_first:
+                    try:
+                        metadata["archived_at"] = now.isoformat()
+                        metadata["archived_content"] = True
+                        await conn.execute(
+                            "UPDATE facts SET validity = 'expired', metadata = $1 WHERE id = $2",
+                            json.dumps(metadata),
+                            fact["id"],
+                        )
+                    except Exception:
+                        logger.error(
+                            "run_decay_sweep: archival failed for fact %s; skipping expiry "
+                            "(fail-closed for archive_before_delete class)",
+                            fact["id"],
+                        )
+                        continue
+                else:
+                    await conn.execute(
+                        "UPDATE facts SET validity = 'expired' WHERE id = $1",
+                        fact["id"],
+                    )
                 stats["facts_expired"] += 1
-            elif eff < 0.2:
+            elif eff < fading_thresh:
                 metadata["status"] = "fading"
                 await conn.execute(
                     "UPDATE facts SET metadata = $1 WHERE id = $2",
@@ -1360,7 +1422,8 @@ async def run_decay_sweep(pool: Pool) -> dict:
 
         # ----- Process rules -----
         rules = await conn.fetch(
-            "SELECT id, confidence, decay_rate, last_confirmed_at, created_at, metadata "
+            "SELECT id, confidence, decay_rate, last_confirmed_at, created_at, "
+            "metadata, retention_class "
             "FROM rules WHERE maturity != 'anti_pattern' AND decay_rate > 0.0 "
             "AND (metadata->>'forgotten')::boolean IS NOT TRUE"
         )
@@ -1375,7 +1438,11 @@ async def run_decay_sweep(pool: Pool) -> dict:
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
 
-            if eff < 0.05:
+            fading_thresh, expiry_thresh, _archive_first = _get_thresholds(
+                rule.get("retention_class")
+            )
+
+            if eff < expiry_thresh:
                 metadata["forgotten"] = True
                 await conn.execute(
                     "UPDATE rules SET metadata = $1 WHERE id = $2",
@@ -1383,7 +1450,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     rule["id"],
                 )
                 stats["rules_expired"] += 1
-            elif eff < 0.2:
+            elif eff < fading_thresh:
                 metadata["status"] = "fading"
                 await conn.execute(
                     "UPDATE rules SET metadata = $1 WHERE id = $2",
