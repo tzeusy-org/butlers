@@ -290,40 +290,136 @@ class TestMindMapUpdateStatus:
 # ---------------------------------------------------------------------------
 
 
-class TestMindMapNodeCreate:
-    """mind_map_node_create inserts a node and returns its UUID."""
+def _make_node_create_pool(
+    node_id: str,
+    map_id: str,
+    entity_id: str,
+    *,
+    map_title: str = "Test Map",
+) -> AsyncMock:
+    """Build a mock pool that satisfies all calls in mind_map_node_create.
 
-    async def test_returns_node_uuid(self) -> None:
+    Call order:
+      1. fetchrow → INSERT node RETURNING id
+      2. fetchrow → SELECT title FROM education.mind_maps
+      3. execute  → INSERT INTO shared.entities … ON CONFLICT DO NOTHING
+      4. fetchval → SELECT id FROM shared.entities
+      5. execute  → UPDATE education.mind_map_nodes SET entity_id
+    """
+    return _make_pool(
+        fetchrow_returns=[
+            _make_row({"id": node_id}),
+            _make_row({"title": map_title, "id": map_id}),
+        ],
+        fetchval_returns=[entity_id],
+        execute_returns=["INSERT 0 1", "UPDATE 1"],
+    )
+
+
+class TestMindMapNodeCreate:
+    """mind_map_node_create inserts a node, creates a shared entity, and returns a dict."""
+
+    async def test_returns_dict_with_node_id_and_entity_id(self) -> None:
         from butlers.tools.education import mind_map_node_create
 
-        new_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": new_id})])
-        result = await mind_map_node_create(
-            pool,
-            mind_map_id=str(uuid.uuid4()),
-            label="Variables",
-        )
-        assert result == new_id
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id)
+        result = await mind_map_node_create(pool, mind_map_id=map_id, label="Variables")
+        assert isinstance(result, dict)
+        assert result["node_id"] == node_id
+        assert result["entity_id"] == entity_id
 
     async def test_defaults_depth_to_zero(self) -> None:
         from butlers.tools.education import mind_map_node_create
 
-        new_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": new_id})])
-        await mind_map_node_create(pool, mind_map_id=str(uuid.uuid4()), label="Loops")
-        # depth=None should be sent as 0 to the DB
-        sql_args = pool.fetchrow.call_args.args
-        # depth 0 should be passed (4th positional param after map_id, label, desc)
-        assert 0 in sql_args
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id)
+        await mind_map_node_create(pool, mind_map_id=map_id, label="Loops")
+        # depth=None should be sent as 0 to the DB (1st fetchrow is INSERT node)
+        first_fetchrow_args = pool.fetchrow.call_args_list[0].args
+        assert 0 in first_fetchrow_args
 
     async def test_accepts_explicit_depth(self) -> None:
         from butlers.tools.education import mind_map_node_create
 
-        new_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": new_id})])
-        await mind_map_node_create(pool, mind_map_id=str(uuid.uuid4()), label="Advanced", depth=3)
-        sql_args = pool.fetchrow.call_args.args
-        assert 3 in sql_args
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id)
+        await mind_map_node_create(pool, mind_map_id=map_id, label="Advanced", depth=3)
+        first_fetchrow_args = pool.fetchrow.call_args_list[0].args
+        assert 3 in first_fetchrow_args
+
+    async def test_entity_created_with_correct_canonical_name(self) -> None:
+        from butlers.tools.education import mind_map_node_create
+
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id, map_title="Python Basics")
+        await mind_map_node_create(pool, mind_map_id=map_id, label="Variables")
+        # The INSERT into shared.entities should use canonical_name "Python Basics > Variables"
+        entity_insert_call = pool.execute.call_args_list[0]
+        assert "Python Basics > Variables" in str(entity_insert_call)
+
+    async def test_entity_insert_uses_on_conflict_do_nothing(self) -> None:
+        from butlers.tools.education import mind_map_node_create
+
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id)
+        await mind_map_node_create(pool, mind_map_id=map_id, label="Loops")
+        # Verify ON CONFLICT DO NOTHING in the shared.entities INSERT
+        entity_insert_sql = pool.execute.call_args_list[0].args[0]
+        assert "ON CONFLICT DO NOTHING" in entity_insert_sql.upper()
+
+    async def test_duplicate_entity_resolved_gracefully(self) -> None:
+        """When the entity already exists, fetchval returns the existing entity_id."""
+        from butlers.tools.education import mind_map_node_create
+
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        existing_entity_id = str(uuid.uuid4())
+        # INSERT … ON CONFLICT DO NOTHING succeeds (no rows inserted) — still "INSERT 0 0"
+        pool = _make_pool(
+            fetchrow_returns=[
+                _make_row({"id": node_id}),
+                _make_row({"title": "Python", "id": map_id}),
+            ],
+            fetchval_returns=[existing_entity_id],
+            execute_returns=["INSERT 0 0", "UPDATE 1"],
+        )
+        result = await mind_map_node_create(pool, mind_map_id=map_id, label="Functions")
+        assert result == {"node_id": node_id, "entity_id": existing_entity_id}
+
+    async def test_entity_metadata_contains_source_butler_and_scope(self) -> None:
+        from butlers.tools.education import mind_map_node_create
+
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id)
+        await mind_map_node_create(pool, mind_map_id=map_id, label="Loops")
+        entity_insert_call = str(pool.execute.call_args_list[0])
+        assert "education" in entity_insert_call
+
+    async def test_node_entity_id_is_updated_after_entity_creation(self) -> None:
+        from butlers.tools.education import mind_map_node_create
+
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id)
+        await mind_map_node_create(pool, mind_map_id=map_id, label="Classes")
+        # The second execute call should UPDATE the node with entity_id
+        update_call = pool.execute.call_args_list[1]
+        assert entity_id in str(update_call)
+        assert node_id in str(update_call)
 
 
 # ---------------------------------------------------------------------------

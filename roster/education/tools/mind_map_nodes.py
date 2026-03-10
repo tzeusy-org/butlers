@@ -44,8 +44,8 @@ async def mind_map_node_create(
     depth: int | None = None,
     effort_minutes: int | None = None,
     metadata: dict[str, Any] | None = None,
-) -> str:
-    """Create a new node in a mind map.
+) -> dict[str, str]:
+    """Create a new node in a mind map and auto-create a shared entity for it.
 
     Parameters
     ----------
@@ -66,8 +66,8 @@ async def mind_map_node_create(
 
     Returns
     -------
-    str
-        The UUID of the newly created node.
+    dict
+        A dict with keys ``node_id`` (UUID str) and ``entity_id`` (UUID str).
     """
     effective_depth = depth if depth is not None else 0
     effective_metadata = json.dumps(metadata or {})
@@ -85,7 +85,58 @@ async def mind_map_node_create(
         effort_minutes,
         effective_metadata,
     )
-    return str(row["id"])
+    node_id = str(row["id"])
+
+    # Fetch the mind map title to construct a canonical_name for the shared entity.
+    map_row = await pool.fetchrow(
+        "SELECT title FROM education.mind_maps WHERE id = $1",
+        mind_map_id,
+    )
+    map_title = map_row["title"] if map_row is not None else mind_map_id
+    canonical_name = f"{map_title} > {label}"
+
+    entity_metadata = json.dumps(
+        {
+            "source_butler": "education",
+            "source_scope": "education",
+            "mind_map_id": mind_map_id,
+        }
+    )
+
+    # Attempt to create the entity; ON CONFLICT DO NOTHING handles duplicates gracefully.
+    # We then SELECT the canonical live row to get the ID in all cases.
+    await pool.execute(
+        """
+        INSERT INTO shared.entities
+            (tenant_id, canonical_name, entity_type, aliases, metadata)
+        VALUES ('shared', $1, 'other', '{}', $2::jsonb)
+        ON CONFLICT DO NOTHING
+        """,
+        canonical_name,
+        entity_metadata,
+    )
+
+    entity_id: str = str(
+        await pool.fetchval(
+            """
+            SELECT id FROM shared.entities
+            WHERE tenant_id = 'shared'
+              AND canonical_name = $1
+              AND entity_type = 'other'
+              AND (metadata->>'merged_into') IS NULL
+            """,
+            canonical_name,
+        )
+    )
+
+    # Link the node to the entity.
+    await pool.execute(
+        "UPDATE education.mind_map_nodes SET entity_id = $1 WHERE id = $2",
+        entity_id,
+        node_id,
+    )
+
+    return {"node_id": node_id, "entity_id": entity_id}
 
 
 async def mind_map_node_get(

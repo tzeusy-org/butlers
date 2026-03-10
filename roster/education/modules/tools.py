@@ -96,8 +96,11 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         depth: int | None = None,
         effort_minutes: int | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> str:
-        """Create a new node in a mind map."""
+    ) -> dict[str, str]:
+        """Create a new node in a mind map and auto-create a shared entity for it.
+
+        Returns a dict with ``node_id`` and ``entity_id``.
+        """
         return await _nodes.mind_map_node_create(
             module._get_pool(),
             mind_map_id,
