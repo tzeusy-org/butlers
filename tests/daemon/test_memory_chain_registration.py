@@ -76,6 +76,7 @@ class TestMemoryChainRegistration:
             "010_finance_predicates.py",
             "011_relationship_predicates.py",
             "012_facts_gin_indexes.py",
+            "013_fix_owner_tenant_id.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:
@@ -118,6 +119,7 @@ class TestBaselineRevisionChain:
         ("010_finance_predicates.py", "mem_010", "mem_009"),
         ("011_relationship_predicates.py", "mem_011", "mem_010"),
         ("012_facts_gin_indexes.py", "mem_012", "mem_011"),
+        ("013_fix_owner_tenant_id.py", "mem_013", "mem_012"),
     ]
 
     @staticmethod
@@ -182,7 +184,7 @@ class TestBaselineRevisionChain:
             chain_map[mod.revision] = mod.down_revision
 
         # Walk from head to root
-        current = "mem_012"
+        current = "mem_013"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -202,4 +204,5 @@ class TestBaselineRevisionChain:
             "mem_010",
             "mem_011",
             "mem_012",
-        ], f"Expected linear chain [mem_001 -> ... -> mem_012], got {path}"
+            "mem_013",
+        ], f"Expected linear chain [mem_001 -> ... -> mem_013], got {path}"
