@@ -1,4 +1,4 @@
-"""rule_applications — mem_018
+"""rule_applications — mem_019
 
 Create the rule_applications audit table per the memory-retention-policy spec.
 
@@ -20,8 +20,8 @@ Indexes:
   idx_rule_applications_tenant_rule  (tenant_id, rule_id, created_at DESC)
   idx_rule_applications_outcome      (tenant_id, outcome, created_at DESC)
 
-Revision ID: mem_018
-Revises: mem_017
+Revision ID: mem_019
+Revises: mem_018
 Create Date: 2026-03-10 00:00:00.000000
 """
 
@@ -30,8 +30,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_018"
-down_revision = "mem_017"
+revision = "mem_019"
+down_revision = "mem_018"
 branch_labels = None
 depends_on = None
 
