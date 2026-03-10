@@ -1981,6 +1981,17 @@ class GmailConnectorRuntime:
             },
         }
 
+    # MIME types that carry cryptographic signatures rather than body content.
+    # These parts must be skipped during body extraction so signatures are never
+    # mistaken for readable text.
+    _SIGNATURE_MIME_TYPES: frozenset[str] = frozenset(
+        {
+            "application/pkcs7-signature",  # S/MIME detached signature
+            "application/pgp-signature",  # PGP/MIME detached signature
+            "application/x-pkcs7-signature",  # Legacy S/MIME variant
+        }
+    )
+
     @staticmethod
     def _charset_from_headers(headers: list[dict[str, str]]) -> str:
         """Extract charset from the Content-Type header in a MIME part's headers list.
@@ -2017,6 +2028,12 @@ class GmailConnectorRuntime:
 
         Preference order: text/plain > text/html (stripped) > "(no body)".
         HTML is stripped using stdlib html.parser — no third-party deps.
+
+        S/MIME handling:
+        - multipart/signed: recurse into content parts, skip signature parts.
+        - application/pkcs7-mime (opaque S/MIME): body is inside the PKCS
+          envelope and cannot be extracted without the recipient's private key.
+          Returns a descriptive fallback string and logs a warning.
         """
         # Prevent stack overflow from malicious deeply nested messages
         if depth > 20:
@@ -2024,6 +2041,14 @@ class GmailConnectorRuntime:
             return "(body too deeply nested)"
 
         mime_type = payload.get("mimeType", "")
+
+        # Opaque S/MIME: body is encrypted inside the PKCS envelope — cannot
+        # extract without the recipient's private key.
+        if mime_type in ("application/pkcs7-mime", "application/x-pkcs7-mime"):
+            logger.warning(
+                "S/MIME encrypted email (application/pkcs7-mime): body cannot be extracted"
+            )
+            return "(S/MIME encrypted body — cannot extract)"
 
         # Leaf node: text/plain — return immediately (highest priority)
         if mime_type == "text/plain":
@@ -2042,16 +2067,21 @@ class GmailConnectorRuntime:
 
         # Multipart: collect plain and html candidates separately so we can
         # prefer plain regardless of part ordering in the MIME tree.
+        # For multipart/signed emails, skip detached-signature parts so only the
+        # content part(s) contribute to the extracted body.
         parts = payload.get("parts", [])
         if parts:
             plain_candidate: str | None = None
             html_candidate: str | None = None
             for part in parts:
+                child_mime = part.get("mimeType", "")
+                # Skip cryptographic signature parts — they carry no readable body.
+                if child_mime in self._SIGNATURE_MIME_TYPES:
+                    continue
                 body = self._extract_body_from_payload(part, depth + 1)
                 if body in ("(no body)", "(body too deeply nested)"):
                     continue
                 # Classify by the child's own MIME type to preserve preference.
-                child_mime = part.get("mimeType", "")
                 if child_mime == "text/plain" and plain_candidate is None:
                     plain_candidate = body
                 elif child_mime == "text/html" and html_candidate is None:
