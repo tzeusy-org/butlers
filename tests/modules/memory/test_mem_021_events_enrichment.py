@@ -1,4 +1,8 @@
-"""Tests for mem_021: memory_events enrichment and embedding_versions migration."""
+"""Tests for mem_022: memory_events enrichment and embedding_versions migration.
+
+Note: Originally named mem_021; renumbered to mem_022 to resolve a duplicate
+revision collision with 021_fix_partial_unique_deleted_at.py.
+"""
 
 from __future__ import annotations
 
@@ -12,11 +16,11 @@ from ._test_helpers import MEMORY_MODULE_PATH
 pytestmark = pytest.mark.unit
 
 MIGRATION_DIR = MEMORY_MODULE_PATH / "migrations"
-MIGRATION_FILE = MIGRATION_DIR / "021_events_enrichment.py"
+MIGRATION_FILE = MIGRATION_DIR / "022_events_enrichment.py"
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("mem_021_events_enrichment", MIGRATION_FILE)
+    spec = importlib.util.spec_from_file_location("mem_022_events_enrichment", MIGRATION_FILE)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -31,8 +35,8 @@ class TestMem021FileAndRevision:
 
     def test_revision_identifiers(self) -> None:
         mod = _load_migration()
-        assert mod.revision == "mem_021"
-        assert mod.down_revision == "mem_020"
+        assert mod.revision == "mem_022"
+        assert mod.down_revision == "mem_021"
         assert mod.branch_labels is None
         assert mod.depends_on is None
 
@@ -141,10 +145,12 @@ class TestMem021EmbeddingVersions:
 
 
 class TestMem021MigrationChainContains021:
-    """Verify migration chain includes mem_021."""
+    """Verify migration chain includes mem_022 (events_enrichment)."""
 
-    def test_migration_chain_includes_021(self) -> None:
+    def test_migration_chain_includes_022(self) -> None:
         migration_files = sorted(
             p.name for p in MIGRATION_DIR.iterdir() if p.suffix == ".py" and p.name != "__init__.py"
         )
-        assert "021_events_enrichment.py" in migration_files
+        assert "022_events_enrichment.py" in migration_files
+        # Ensure the old name is no longer present to prevent duplicate revision ID.
+        assert "021_events_enrichment.py" not in migration_files
