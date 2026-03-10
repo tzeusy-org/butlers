@@ -288,6 +288,7 @@ async def entity_resolve(
             WHERE tenant_id = $1
               AND LOWER(canonical_name) = $2
               AND (metadata->>'merged_into') IS NULL
+              AND (metadata->>'deleted_at') IS NULL
               {type_filter}
 
             UNION ALL
@@ -298,6 +299,7 @@ async def entity_resolve(
             WHERE tenant_id = $1
               AND $2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
               AND (metadata->>'merged_into') IS NULL
+              AND (metadata->>'deleted_at') IS NULL
               {type_filter}
 
             UNION ALL
@@ -319,6 +321,7 @@ async def entity_resolve(
               AND LOWER(canonical_name) != $2
               AND NOT ($2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
               AND (metadata->>'merged_into') IS NULL
+              AND (metadata->>'deleted_at') IS NULL
               {type_filter}
         ) candidates
         ORDER BY id, tier ASC
@@ -456,6 +459,7 @@ async def _fetch_fuzzy_candidates(
               AND LOWER(canonical_name) != LOWER($2)
               AND NOT (LOWER($2) = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
               AND (metadata->>'merged_into') IS NULL
+              AND (metadata->>'deleted_at') IS NULL
               {fuzzy_type_filter}
             LIMIT 20
             """,

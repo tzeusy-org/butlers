@@ -1,14 +1,17 @@
 """partial_unique_entities — mem_018
 
 Replace the absolute unique constraint on (tenant_id, canonical_name, entity_type)
-with a partial unique index that excludes tombstoned (merged) entities.
+with a partial unique index that excludes tombstoned entities.
 
-Previously, merging entity A into entity B tombstoned A by setting
-metadata->>'merged_into', but the unique constraint still blocked recreation
-of an entity with the same (tenant_id, canonical_name, entity_type).
+Entities can be tombstoned in two ways:
+- Merged: metadata->>'merged_into' is set (via entity_merge)
+- Soft-deleted: metadata->>'deleted_at' is set (via delete_entity API)
+
+Previously, the unique constraint blocked recreation of an entity with the same
+(tenant_id, canonical_name, entity_type) even when the original was tombstoned.
 
 The new partial index allows recreating entities whose predecessor was merged
-away, while still preventing true duplicates among live entities.
+or deleted, while still preventing true duplicates among live entities.
 
 Revision ID: mem_018
 Revises: mem_017
@@ -35,10 +38,12 @@ def upgrade() -> None:
     """)
 
     # Create a partial unique index excluding tombstoned entities
+    # (both merged and soft-deleted)
     op.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_tenant_canonical_type_live
         ON shared.entities (tenant_id, canonical_name, entity_type)
         WHERE (metadata->>'merged_into') IS NULL
+          AND (metadata->>'deleted_at') IS NULL
     """)
 
 

@@ -589,7 +589,10 @@ class TestEntityResolveTombstoneExclusion:
             source = f.read()
 
         assert "(metadata->>'merged_into') IS NULL" in source, (
-            "Tombstone filter missing from entity_resolve SQL"
+            "merged_into tombstone filter missing from entity_resolve SQL"
+        )
+        assert "(metadata->>'deleted_at') IS NULL" in source, (
+            "deleted_at tombstone filter missing from entity_resolve SQL"
         )
 
     async def test_fuzzy_tombstone_filter_present(self) -> None:
@@ -598,8 +601,14 @@ class TestEntityResolveTombstoneExclusion:
             source = f.read()
 
         # Count occurrences — should be at least 4 (3 tiers + fuzzy)
-        count = source.count("(metadata->>'merged_into') IS NULL")
-        assert count >= 4, f"Expected at least 4 tombstone filters, found {count}"
+        merged_count = source.count("(metadata->>'merged_into') IS NULL")
+        assert merged_count >= 4, (
+            f"Expected at least 4 merged_into tombstone filters, found {merged_count}"
+        )
+        deleted_count = source.count("(metadata->>'deleted_at') IS NULL")
+        assert deleted_count >= 4, (
+            f"Expected at least 4 deleted_at tombstone filters, found {deleted_count}"
+        )
 
     async def test_resolve_excludes_tombstoned_mock(self) -> None:
         """entity_resolve SQL includes tombstone exclusion clause — verified via mock pool."""
@@ -611,11 +620,12 @@ class TestEntityResolveTombstoneExclusion:
         result = await entity_resolve(pool, "Alice", tenant_id=TENANT_ID)
         assert result == []
 
-        # Verify fetch was called with SQL containing tombstone filter
+        # Verify fetch was called with SQL containing both tombstone filters
         call_args = pool.fetch.call_args_list
         assert len(call_args) >= 1
         sql = call_args[0][0][0]
         assert "(metadata->>'merged_into') IS NULL" in sql
+        assert "(metadata->>'deleted_at') IS NULL" in sql
 
 
 # ---------------------------------------------------------------------------
