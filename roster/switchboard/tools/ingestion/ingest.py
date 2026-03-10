@@ -211,7 +211,10 @@ def _compute_content_hash_key(envelope: IngestEnvelopeV1) -> str:
     content_repr = f"{envelope.payload.normalized_text}:{envelope.sender.identity}"
     content_hash = hashlib.sha256(content_repr.encode()).hexdigest()[:16]
     time_bucket = envelope.event.observed_at.strftime("%Y%m%d%H")  # hourly window
-    return f"hash:{envelope.source.channel}:{envelope.sender.identity}:{time_bucket}:{content_hash}"
+    return (
+        f"hash:{envelope.source.channel}:{envelope.source.endpoint_identity}"
+        f":{envelope.sender.identity}:{time_bucket}:{content_hash}"
+    )
 
 
 def _compute_dedupe_key(envelope: IngestEnvelopeV1) -> str:
