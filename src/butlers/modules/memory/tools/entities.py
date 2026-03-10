@@ -27,6 +27,7 @@ def _parse_metadata(raw: Any) -> dict[str, Any]:
         return json.loads(raw)
     return dict(raw)
 
+
 # Minimum composite score to include a candidate in resolution results.
 _MIN_SCORE: float = 0.0
 
@@ -100,10 +101,7 @@ async def entity_create(
         )
     except Exception as exc:
         exc_str = str(exc)
-        if (
-            "uq_entities_tenant_canonical_type" in exc_str
-            or "unique" in exc_str.lower()
-        ):
+        if "uq_entities_tenant_canonical_type" in exc_str or "unique" in exc_str.lower():
             raise ValueError(
                 f"Entity with canonical_name='{canonical_name}' and "
                 f"entity_type='{entity_type}' already exists for this tenant."
@@ -941,9 +939,15 @@ async def entity_merge(
                     merged_roles.append(role)
                     tgt_role_set.add(role)
 
-            # Merge metadata (target wins on conflict)
+            # Merge metadata (target wins on conflict).
+            # Strip system keys from source so flags like "unidentified" don't
+            # propagate to a confirmed target entity.
+            _SYSTEM_METADATA_KEYS = {"deleted_at", "merged_into", "unidentified"}
             tgt_metadata: dict[str, Any] = _parse_metadata(tgt_row["metadata"])
-            merged_metadata = {**src_metadata, **tgt_metadata}
+            src_metadata_clean = {
+                k: v for k, v in src_metadata.items() if k not in _SYSTEM_METADATA_KEYS
+            }
+            merged_metadata = {**src_metadata_clean, **tgt_metadata}
 
             await conn.execute(
                 "UPDATE shared.entities SET aliases = $1, metadata = $2::jsonb, roles = $3, "

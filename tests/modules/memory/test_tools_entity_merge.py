@@ -293,6 +293,37 @@ class TestEntityMergeBasic:
         # Source-only key is included
         assert merged["team"] == "backend"
 
+    async def test_unidentified_not_propagated_to_target(self, mock_pool: MagicMock) -> None:
+        """Source's 'unidentified' system flag must NOT propagate to a confirmed target."""
+        conn = _get_conn(mock_pool)
+        src_row = _make_entity_row(
+            SOURCE_UUID,
+            metadata={"unidentified": True, "source": "telegram"},
+        )
+        tgt_row = _make_entity_row(TARGET_UUID, metadata={"role": "friend"})
+
+        conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row])
+        conn.fetch = AsyncMock(return_value=[])
+        conn.execute = AsyncMock()
+
+        await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
+
+        execute_calls = conn.execute.call_args_list
+        update_entity_calls = [
+            c
+            for c in execute_calls
+            if "UPDATE shared.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
+        ]
+        assert len(update_entity_calls) == 1
+        metadata_json_arg = update_entity_calls[0][0][2]
+        merged = json.loads(metadata_json_arg)
+        # System key must NOT be propagated
+        assert "unidentified" not in merged
+        # Non-system source keys are still included
+        assert merged["source"] == "telegram"
+        # Target keys preserved
+        assert merged["role"] == "friend"
+
     async def test_source_tombstoned_with_merged_into(self, mock_pool: MagicMock) -> None:
         """Source entity is tombstoned with merged_into=target_entity_id."""
         conn = _get_conn(mock_pool)
