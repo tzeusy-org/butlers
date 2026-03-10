@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import logging
 import math
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from asyncpg import Pool
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Load sibling modules from disk (roster/ is not a Python package).
@@ -143,6 +146,67 @@ def _generate_temporal_idempotency_key(
 
 
 # ---------------------------------------------------------------------------
+# Shared discovery catalog helpers
+# ---------------------------------------------------------------------------
+
+
+async def _upsert_catalog(
+    pool: Pool,
+    *,
+    source_schema: str,
+    source_table: str,
+    source_id: uuid.UUID,
+    source_butler: str | None,
+    tenant_id: str,
+    entity_id: uuid.UUID | None,
+    summary: str,
+    embedding: list[float],
+    search_text: str,
+    memory_type: str,
+) -> None:
+    """Upsert a row into shared.memory_catalog (best-effort, fire-and-forget).
+
+    On any error the exception is caught and logged as a warning so that
+    catalog write failure NEVER blocks the canonical memory write.
+    """
+    sql = f"""
+        INSERT INTO shared.memory_catalog (
+            source_schema, source_table, source_id,
+            source_butler, tenant_id, entity_id,
+            summary, embedding, search_vector, memory_type,
+            updated_at
+        )
+        VALUES (
+            $1, $2, $3,
+            $4, $5, $6,
+            $7, $8, {tsvector_sql("$9")}, $10,
+            now()
+        )
+        ON CONFLICT (source_schema, source_table, source_id)
+        DO UPDATE SET
+            summary       = EXCLUDED.summary,
+            embedding     = EXCLUDED.embedding,
+            search_vector = EXCLUDED.search_vector,
+            entity_id     = EXCLUDED.entity_id,
+            tenant_id     = EXCLUDED.tenant_id,
+            updated_at    = now()
+    """
+    await pool.execute(
+        sql,
+        source_schema,
+        source_table,
+        source_id,
+        source_butler,
+        tenant_id,
+        entity_id,
+        summary,
+        str(embedding),
+        search_text,
+        memory_type,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API — Storage
 # ---------------------------------------------------------------------------
 
@@ -259,6 +323,8 @@ async def store_fact(
     tenant_id: str = "owner",
     request_id: str | None = None,
     idempotency_key: str | None = None,
+    enable_shared_catalog: bool = False,
+    source_schema: str | None = None,
 ) -> uuid.UUID:
     """Store a distilled fact with optional supersession.
 
@@ -308,6 +374,13 @@ async def store_fact(
             ``(tenant_id, idempotency_key)`` is a no-op; the existing fact's ID
             is returned instead.  Property facts (``valid_at IS NULL``) always
             have ``idempotency_key = NULL`` and use supersession instead.
+        enable_shared_catalog: When True, write a summary row to
+            ``shared.memory_catalog`` after the canonical fact is stored.
+            Catalog write failure is logged as a warning and does NOT block
+            the canonical write.  Defaults to False.
+        source_schema: The butler schema name used as ``source_schema`` in the
+            catalog row (e.g. ``'health'``).  Required when
+            ``enable_shared_catalog=True``; ignored otherwise.
 
     Returns:
         The UUID of the newly created (or pre-existing, idempotent) fact.
@@ -503,6 +576,34 @@ async def store_fact(
                     supersedes_id,
                 )
 
+    # -------------------------------------------------------------------------
+    # Write-behind to shared.memory_catalog (best-effort, non-blocking).
+    # The canonical fact is already committed above.  Any failure here is
+    # logged as a warning and does NOT raise — catalog is eventually consistent.
+    # -------------------------------------------------------------------------
+    if enable_shared_catalog and source_schema:
+        try:
+            await _upsert_catalog(
+                pool,
+                source_schema=source_schema,
+                source_table="facts",
+                source_id=fact_id,
+                source_butler=source_butler,
+                tenant_id=tenant_id,
+                entity_id=entity_id,
+                summary=f"{subject} {predicate}: {content}",
+                embedding=embedding,
+                search_text=search_text,
+                memory_type="fact",
+            )
+        except Exception:
+            logger.warning(
+                "memory_catalog: failed to upsert catalog entry for fact %s (schema=%r)",
+                fact_id,
+                source_schema,
+                exc_info=True,
+            )
+
     return fact_id
 
 
@@ -518,6 +619,8 @@ async def store_rule(
     metadata: dict | None = None,
     tenant_id: str = "owner",
     request_id: str | None = None,
+    enable_shared_catalog: bool = False,
+    source_schema: str | None = None,
 ) -> uuid.UUID:
     """Store a new behavioral rule as a candidate.
 
@@ -536,6 +639,13 @@ async def store_rule(
         metadata: Optional JSONB metadata dict.
         tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
         request_id: Optional request trace ID for correlation.
+        enable_shared_catalog: When True, write a summary row to
+            ``shared.memory_catalog`` after the canonical rule is stored.
+            Catalog write failure is logged as a warning and does NOT block
+            the canonical write.  Defaults to False.
+        source_schema: The butler schema name used as ``source_schema`` in the
+            catalog row (e.g. ``'health'``).  Required when
+            ``enable_shared_catalog=True``; ignored otherwise.
 
     Returns:
         The UUID of the newly created rule.
@@ -574,6 +684,32 @@ async def store_rule(
         tenant_id,
         request_id,
     )
+
+    # -------------------------------------------------------------------------
+    # Write-behind to shared.memory_catalog (best-effort, non-blocking).
+    # -------------------------------------------------------------------------
+    if enable_shared_catalog and source_schema:
+        try:
+            await _upsert_catalog(
+                pool,
+                source_schema=source_schema,
+                source_table="rules",
+                source_id=rule_id,
+                source_butler=source_butler,
+                tenant_id=tenant_id,
+                entity_id=None,
+                summary=content,
+                embedding=embedding,
+                search_text=search_text,
+                memory_type="rule",
+            )
+        except Exception:
+            logger.warning(
+                "memory_catalog: failed to upsert catalog entry for rule %s (schema=%r)",
+                rule_id,
+                source_schema,
+                exc_info=True,
+            )
 
     return rule_id
 
