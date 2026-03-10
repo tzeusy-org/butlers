@@ -439,12 +439,13 @@ class TestDefaultPath:
         cfg = load_pricing()  # uses default path
         assert len(cfg.model_ids) >= 1
 
-    def test_repo_toml_includes_tiered_model(self):
-        """Verify the actual pricing.toml includes the tiered GPT-5.4 entry."""
+    def test_repo_toml_includes_gpt54(self):
+        """Verify the actual pricing.toml includes the GPT-5.4 entry."""
         cfg = load_pricing()
         pricing = cfg.get_model_pricing("gpt-5.4")
-        assert isinstance(pricing, TieredModelPricing)
-        assert len(pricing.tiers) == 2
+        assert isinstance(pricing, ModelPricing)
+        assert pricing.input_price_per_token == 2.5e-06
+        assert pricing.output_price_per_token == 1.5e-05
 
 
 # ---------------------------------------------------------------------------

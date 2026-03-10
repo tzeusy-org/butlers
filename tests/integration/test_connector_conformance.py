@@ -127,7 +127,7 @@ class TestTelegramConnectorConformance:
             assert envelope["event"]["external_thread_id"] == "987654321:1"
             assert envelope["sender"]["identity"] == "987654321"
             assert envelope["payload"]["normalized_text"] == "Test message"
-            assert envelope["control"]["idempotency_key"] == "telegram:test_bot:12345"
+            assert envelope["control"]["idempotency_key"] == "tg:987654321:1"
 
     async def test_telegram_dedupe_replay_behavior(
         self, telegram_connector: TelegramBotConnector

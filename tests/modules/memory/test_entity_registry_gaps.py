@@ -511,7 +511,7 @@ class TestEntityMergeGaps:
 
         # Each conflict check returns None (no conflict) for all three facts
         conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, None, None, None])
-        conn.fetch = AsyncMock(return_value=src_facts)
+        conn.fetch = AsyncMock(side_effect=[src_facts, []])
         conn.execute = AsyncMock()
 
         acquire_cm = MagicMock()
@@ -527,6 +527,8 @@ class TestEntityMergeGaps:
 
         assert result["facts_repointed"] == 3
         assert result["facts_superseded"] == 0
+        assert isinstance(result["edge_facts_repointed"], int)
+        assert isinstance(result["edge_facts_superseded"], int)
 
         # All 3 re-point execute calls should use target UUID
         repoint_calls = [
@@ -543,6 +545,8 @@ class TestEntityMergeGaps:
 
         assert isinstance(result["facts_repointed"], int)
         assert isinstance(result["facts_superseded"], int)
+        assert isinstance(result["edge_facts_repointed"], int)
+        assert isinstance(result["edge_facts_superseded"], int)
         assert isinstance(result["aliases_added"], int)
 
     async def test_source_canonical_name_added_as_alias_on_target(self) -> None:

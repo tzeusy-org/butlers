@@ -617,6 +617,7 @@ class TestCrashRecovery:
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
+            await asyncio.sleep(0)  # yield to let background task execute
 
         assert recovery_called, "_recover_route_inbox was not called on startup"
 
