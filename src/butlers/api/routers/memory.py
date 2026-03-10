@@ -778,6 +778,7 @@ async def get_entity(
         "SELECT e.id, e.canonical_name, e.entity_type,"
         " e.aliases, e.metadata,"
         " e.created_at, e.updated_at,"
+        " COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified,"
         " (SELECT c.id FROM shared.contacts c"
         "  WHERE c.entity_id = e.id LIMIT 1"
         " ) AS linked_contact_id,"
@@ -853,6 +854,7 @@ async def get_entity(
         aliases=list(row["aliases"]) if row["aliases"] else [],
         roles=list(row["linked_contact_roles"]) if row["linked_contact_roles"] else [],
         metadata=_parse_jsonb(row["metadata"]),
+        unidentified=row["unidentified"],
         fact_count=fact_count,
         linked_contact_id=str(row["linked_contact_id"]) if row["linked_contact_id"] else None,
         linked_contact_name=row["linked_contact_name"],
@@ -876,7 +878,7 @@ async def update_entity(
     body: UpdateEntityRequest,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[EntitySummary]:
-    """Update entity core fields (canonical_name, aliases)."""
+    """Update entity core fields (canonical_name, aliases, metadata merge)."""
     import uuid as _uuid
 
     pool = _any_pool(db)
@@ -897,6 +899,20 @@ async def update_entity(
         args.append(body.aliases)
         idx += 1
 
+    if body.metadata is not None:
+        # Filter out system-managed keys to prevent unauthorized state manipulation.
+        # deleted_at/merged_into are managed by delete_entity/merge_entity endpoints.
+        # unidentified is managed by the promote_entity endpoint.
+        _SYSTEM_METADATA_KEYS = {"deleted_at", "merged_into", "unidentified"}
+        allowed_metadata = {
+            k: v for k, v in body.metadata.items() if k not in _SYSTEM_METADATA_KEYS
+        }
+        if allowed_metadata:
+            # Merge patch into existing metadata (JSONB || operator)
+            sets.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${idx}::jsonb")
+            args.append(json.dumps(allowed_metadata))
+            idx += 1
+
     if not sets:
         raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -906,7 +922,7 @@ async def update_entity(
         f"UPDATE shared.entities SET {', '.join(sets)}"
         f" WHERE id = $1"
         f" RETURNING id, canonical_name, entity_type, aliases, roles,"
-        f" created_at, updated_at",
+        f" metadata, created_at, updated_at",
         *args,
     )
     if row is None:
@@ -920,6 +936,7 @@ async def update_entity(
             aliases=list(row["aliases"]) if row["aliases"] else [],
             roles=list(row["roles"]) if row["roles"] else [],
             fact_count=0,
+            unidentified=bool(_parse_jsonb(row["metadata"]).get("unidentified", False)),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
@@ -1130,6 +1147,61 @@ async def unlink_contact(
     await pool.execute(
         "UPDATE shared.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
         eid,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/entities/{entity_id}/promote
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/{entity_id}/promote", response_model=ApiResponse[EntitySummary])
+async def promote_entity(
+    entity_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[EntitySummary]:
+    """Promote a transitory (unidentified) entity by clearing the unidentified flag.
+
+    Sets metadata.unidentified to null (removes the key) so the entity is no
+    longer shown as needing review.  Returns 409 if the entity is not currently
+    unidentified.
+    """
+    import uuid as _uuid
+
+    pool = _any_pool(db)
+    eid = _uuid.UUID(entity_id)
+
+    # Atomically promote: only update if the entity is currently unidentified.
+    # A single conditional UPDATE avoids the TOCTOU race between SELECT and UPDATE.
+    updated_row = await pool.fetchrow(
+        "UPDATE shared.entities"
+        " SET metadata = metadata - 'unidentified',"
+        " updated_at = now()"
+        " WHERE id = $1 AND (metadata->>'unidentified')::boolean IS TRUE"
+        " RETURNING id, canonical_name, entity_type, aliases, roles,"
+        " metadata, created_at, updated_at",
+        eid,
+    )
+
+    if updated_row is None:
+        # No rows updated — either the entity doesn't exist or it isn't unidentified.
+        exists = await pool.fetchval("SELECT 1 FROM shared.entities WHERE id = $1", eid)
+        if not exists:
+            raise HTTPException(status_code=404, detail="Entity not found")
+        raise HTTPException(status_code=409, detail="Entity is not unidentified")
+
+    return ApiResponse[EntitySummary](
+        data=EntitySummary(
+            id=str(updated_row["id"]),
+            canonical_name=updated_row["canonical_name"],
+            entity_type=updated_row["entity_type"],
+            aliases=list(updated_row["aliases"]) if updated_row["aliases"] else [],
+            roles=list(updated_row["roles"]) if updated_row["roles"] else [],
+            fact_count=0,
+            unidentified=False,
+            created_at=str(updated_row["created_at"]),
+            updated_at=str(updated_row["updated_at"]),
+        )
     )
 
 

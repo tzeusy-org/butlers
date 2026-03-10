@@ -129,6 +129,7 @@ class UpdateEntityRequest(BaseModel):
 
     canonical_name: str | None = None
     aliases: list[str] | None = None
+    metadata: dict | None = None
 
 
 class MemoryActivity(BaseModel):

@@ -1233,6 +1233,16 @@ export function deleteEntity(entityId: string): Promise<void> {
   );
 }
 
+/** Promote a transitory (unidentified) entity by clearing the unidentified flag. */
+export function promoteEntity(
+  entityId: string,
+): Promise<ApiResponse<EntitySummary>> {
+  return apiFetch<ApiResponse<EntitySummary>>(
+    `/memory/entities/${encodeURIComponent(entityId)}/promote`,
+    { method: "POST" },
+  );
+}
+
 /** Create an entity_info entry for an entity. */
 export function createEntityInfo(
   entityId: string,

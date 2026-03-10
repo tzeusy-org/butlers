@@ -19,6 +19,7 @@ import {
   getRule,
   getRules,
   mergeEntity,
+  promoteEntity,
   revealEntitySecret,
   setEntityLinkedContact,
   unlinkEntityContact,
@@ -171,6 +172,18 @@ export function useDeleteEntity() {
   return useMutation({
     mutationFn: (entityId: string) => deleteEntity(entityId),
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Promote a transitory (unidentified) entity by clearing the unidentified flag. */
+export function usePromoteEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => promoteEntity(entityId),
+    onSuccess: (_, entityId) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
     },
   });

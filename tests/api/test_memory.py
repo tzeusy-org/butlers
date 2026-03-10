@@ -855,6 +855,7 @@ def _make_entity_detail_row(
     entity_type: str = "person",
     aliases: list | None = None,
     metadata: dict | None = None,
+    unidentified: bool = False,
     linked_contact_id: str | None = None,
     linked_contact_name: str | None = None,
     linked_contact_roles: list | None = None,
@@ -868,6 +869,7 @@ def _make_entity_detail_row(
         "entity_type": entity_type,
         "aliases": aliases or [],
         "metadata": metadata or {},
+        "unidentified": unidentified,
         "linked_contact_id": linked_contact_id,
         "linked_contact_name": linked_contact_name,
         "linked_contact_roles": linked_contact_roles or [],
@@ -1108,6 +1110,7 @@ class TestUpdateEntity:
             "entity_type": "person",
             "aliases": [],
             "roles": [],
+            "metadata": {},
             "created_at": "2025-06-01T12:00:00",
             "updated_at": "2025-06-01T13:00:00",
         }
@@ -1160,6 +1163,7 @@ class TestUpdateEntity:
             "entity_type": "person",
             "aliases": [],
             "roles": [],
+            "metadata": {},
             "created_at": "2025-06-01T12:00:00",
             "updated_at": "2025-06-01T12:00:00",
         }
@@ -1303,3 +1307,264 @@ class TestDeleteEntity:
             resp = await client.delete("/api/memory/entities/12345678-1234-5678-1234-567812345678")
 
         assert resp.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/entities/{entity_id} — unidentified field
+# ---------------------------------------------------------------------------
+
+
+class TestGetEntityUnidentified:
+    async def test_get_entity_exposes_unidentified_field(self, app):
+        """GET /entities/{id} must include 'unidentified' in the response."""
+        row = _make_entity_detail_row(
+            canonical_name="Mystery Person",
+            metadata={"unidentified": True, "source_butler": "switchboard"},
+        )
+        # Simulate the SQL-computed unidentified column being present
+        row["unidentified"] = True
+        pool = _make_pool(fetchrow_result=row, fetchval_result=0, fetch_rows=[])
+        pools_by_name = {"general": pool}
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "unidentified" in body["data"]
+        assert body["data"]["unidentified"] is True
+
+    async def test_get_entity_unidentified_false_by_default(self, app):
+        """GET /entities/{id} must return unidentified=false for normal entities."""
+        row = _make_entity_detail_row(canonical_name="Known Person")
+        row["unidentified"] = False
+        pool = _make_pool(fetchrow_result=row, fetchval_result=0, fetch_rows=[])
+        pools_by_name = {"general": pool}
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["unidentified"] is False
+
+    async def test_get_entity_sql_selects_unidentified_column(self, app):
+        """get_entity SQL must include the unidentified computed column."""
+        row = _make_entity_detail_row()
+        row["unidentified"] = False
+        pool = _make_pool(fetchrow_result=row, fetchval_result=0, fetch_rows=[])
+        pools_by_name = {"general": pool}
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get("/api/memory/entities/12345678-1234-5678-1234-567812345678")
+
+        # The fetchrow call (entity SELECT) must reference the unidentified column
+        for call in pool.fetchrow.call_args_list:
+            sql = call.args[0] if call.args else ""
+            if "shared.entities" in sql:
+                assert "unidentified" in sql, (
+                    f"get_entity SQL must select the unidentified column: {sql!r}"
+                )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/memory/entities/{entity_id} — metadata merge
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateEntityMetadata:
+    async def test_metadata_patch_is_accepted(self, app):
+        """PATCH /entities/{id} with metadata should merge the metadata."""
+        row = {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "canonical_name": "Alice",
+            "entity_type": "person",
+            "aliases": [],
+            "roles": [],
+            "metadata": {},
+            "created_at": "2025-06-01T12:00:00",
+            "updated_at": "2025-06-01T13:00:00",
+        }
+        pool = _make_pool(fetchrow_result=row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678",
+                json={"metadata": {"custom_key": "custom_value"}},
+            )
+
+        assert resp.status_code == 200
+
+    async def test_metadata_patch_sql_uses_merge_operator(self, app):
+        """PATCH with metadata must use JSONB merge (||) not overwrite."""
+        row = {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "canonical_name": "Alice",
+            "entity_type": "person",
+            "aliases": [],
+            "roles": [],
+            "metadata": {},
+            "created_at": "2025-06-01T12:00:00",
+            "updated_at": "2025-06-01T12:00:00",
+        }
+        pool = _make_pool(fetchrow_result=row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.patch(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678",
+                json={"metadata": {"custom_tag": "value"}},
+            )
+
+        # Verify the SQL uses the JSONB merge operator (||)
+        for call in pool.fetchrow.call_args_list:
+            sql = call.args[0] if call.args else ""
+            if "UPDATE shared.entities" in sql:
+                assert "||" in sql, f"PATCH metadata should use JSONB merge (||), got: {sql!r}"
+
+    async def test_metadata_patch_filters_system_keys(self, app):
+        """PATCH metadata must silently drop system-managed keys."""
+        row = {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "canonical_name": "Alice",
+            "entity_type": "person",
+            "aliases": [],
+            "roles": [],
+            "metadata": {},
+            "created_at": "2025-06-01T12:00:00",
+            "updated_at": "2025-06-01T12:00:00",
+        }
+        pool = _make_pool(fetchrow_result=row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.patch(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678",
+                json={"metadata": {"deleted_at": "2025-01-01", "merged_into": "other-id"}},
+            )
+
+        # All supplied keys are system-managed; no metadata SQL update should occur.
+        for call in pool.fetchrow.call_args_list:
+            sql = call.args[0] if call.args else ""
+            assert "merged_into" not in sql, (
+                f"System metadata key 'merged_into' must not appear in SQL: {sql!r}"
+            )
+            assert "deleted_at" not in sql, (
+                f"System metadata key 'deleted_at' must not appear in SQL: {sql!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/entities/{entity_id}/promote
+# ---------------------------------------------------------------------------
+
+
+class TestPromoteEntity:
+    async def test_promotes_unidentified_entity(self, app):
+        """POST /entities/{id}/promote should return 200 for an unidentified entity."""
+        import json as _json
+
+        # Atomic promote: a single conditional UPDATE RETURNING is issued.
+        promoted_row = {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "canonical_name": "Mystery Person",
+            "entity_type": "person",
+            "aliases": [],
+            "roles": [],
+            "metadata": _json.dumps({}),
+            "created_at": "2025-06-01T12:00:00",
+            "updated_at": "2025-06-01T13:00:00",
+        }
+        pool = _make_pool(fetchrow_result=promoted_row)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678/promote"
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["unidentified"] is False
+
+    async def test_promote_already_identified_entity_returns_409(self, app):
+        """POST /entities/{id}/promote on a non-unidentified entity should return 409."""
+        # Atomic promote: UPDATE returns None (entity not unidentified), fetchval
+        # returns 1 to indicate the entity exists → 409 Conflict.
+        pool = _make_pool(fetchrow_result=None, fetchval_result=1)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678/promote"
+            )
+
+        assert resp.status_code == 409
+
+    async def test_promote_missing_entity_returns_404(self, app):
+        """POST /entities/{id}/promote on non-existent entity should return 404."""
+        pool = _make_pool(fetchrow_result=None)
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/memory/entities/12345678-1234-5678-1234-567812345678/promote"
+            )
+
+        assert resp.status_code == 404

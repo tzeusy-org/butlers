@@ -1348,6 +1348,7 @@ export interface UpdateEntityInfoRequest {
 export interface UpdateEntityRequest {
   canonical_name?: string;
   aliases?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 /** Full entity detail including recent facts and linked contact info. */

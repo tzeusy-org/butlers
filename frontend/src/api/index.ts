@@ -37,6 +37,7 @@ export {
   getEntity,
   deleteEntity,
   mergeEntity,
+  promoteEntity,
   revealEntitySecret,
   setEntityLinkedContact,
   unlinkEntityContact,
