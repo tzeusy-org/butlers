@@ -277,6 +277,9 @@ export function useUnlinkContact() {
     onSuccess: (_, entityId) => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      void queryClient.invalidateQueries({ queryKey: ["contact"] });
+      void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
     },
   });
 }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { format, formatDistanceToNow } from "date-fns";
-import { Pencil, Plus, Trash2, X, Check } from "lucide-react";
+import { Pencil, Plus, Trash2, Unlink, X, Check } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -54,6 +54,7 @@ import {
   usePatchContactInfo,
   useRevealContactSecret,
 } from "@/hooks/use-contacts";
+import { useUnlinkContact } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -1039,6 +1040,16 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
   const [editing, setEditing] = useState(false);
   const [addingInfo, setAddingInfo] = useState(false);
   const deleteContactMutation = useDeleteContact();
+  const unlinkContactMutation = useUnlinkContact();
+
+  function handleUnlinkEntity() {
+    if (!contact.entity_id) return;
+    unlinkContactMutation.mutate(contact.entity_id, {
+      onSuccess: () => toast.success("Entity unlinked."),
+      onError: (err) =>
+        toast.error(`Failed to unlink: ${err instanceof Error ? err.message : "Unknown error"}`),
+    });
+  }
 
   function handleDeleteContact() {
     if (!window.confirm(`Delete "${contact.full_name}"? This cannot be undone.`)) return;
@@ -1147,6 +1158,16 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
               >
                 View entity
               </Link>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground"
+                onClick={handleUnlinkEntity}
+                disabled={unlinkContactMutation.isPending}
+              >
+                <Unlink className="mr-1 h-3 w-3" />
+                Unlink
+              </Button>
             </div>
           )}
           {addingInfo ? (
