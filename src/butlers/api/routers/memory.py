@@ -705,7 +705,9 @@ async def list_entities(
         f"  WHERE c.entity_id = e.id LIMIT 1"
         f" ) AS linked_contact_id,"
         f" e.roles AS linked_contact_roles,"
-        f" COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified"
+        f" COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified,"
+        f" e.metadata->>'source_butler' AS source_butler,"
+        f" e.metadata->>'source_scope' AS source_scope"
         f" FROM shared.entities e{where}"
         f" ORDER BY {_ENTITY_ROLE_ORDER_SQL} ASC, e.canonical_name ASC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -745,6 +747,8 @@ async def list_entities(
             fact_count=fact_counts.get(str(r["id"]), 0),
             linked_contact_id=str(r["linked_contact_id"]) if r["linked_contact_id"] else None,
             unidentified=r["unidentified"],
+            source_butler=r["source_butler"],
+            source_scope=r["source_scope"],
             created_at=str(r["created_at"]),
             updated_at=str(r["updated_at"]),
         )
@@ -1021,14 +1025,18 @@ async def merge_entity(
     if target_id == source_id:
         raise HTTPException(status_code=400, detail="Cannot merge entity into itself")
 
-    # Count facts on source before merge for the response
-    facts_count = (
-        await pool.fetchval(
-            "SELECT count(*) FROM facts WHERE entity_id = $1 AND validity = 'active'",
-            _uuid.UUID(source_id),
+    # Prevent merging owner entities — merge tombstones the source, which would
+    # bypass the deletion restriction on owner entities (mirrors delete_entity guard).
+    for eid, label in [(source_id, "source"), (target_id, "target")]:
+        row = await pool.fetchrow(
+            "SELECT roles FROM shared.entities WHERE id = $1",
+            _uuid.UUID(eid),
         )
-        or 0
-    )
+        if row and "owner" in (list(row["roles"]) if row["roles"] else []):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot merge owner entity ({label})",
+            )
 
     try:
         result = await entity_merge(pool, source_id, target_id, tenant_id="shared")
@@ -1048,7 +1056,7 @@ async def merge_entity(
     return _MergeEntityResponse(
         target_entity_id=target_id,
         source_entity_id=source_id,
-        facts_repointed=facts_count,
+        facts_repointed=result["facts_repointed"],
     )
 
 

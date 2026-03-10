@@ -100,6 +100,8 @@ class EntitySummary(BaseModel):
     fact_count: int = 0
     linked_contact_id: str | None = None
     unidentified: bool = False
+    source_butler: str | None = None
+    source_scope: str | None = None
     created_at: str
     updated_at: str
 

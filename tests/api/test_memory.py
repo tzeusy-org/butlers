@@ -831,6 +831,8 @@ def _make_entity_list_row(
     linked_contact_roles: list | None = None,
     linked_contact_id: str | None = None,
     unidentified: bool = False,
+    source_butler: str | None = None,
+    source_scope: str | None = None,
     created_at: str = "2025-06-01T12:00:00",
     updated_at: str = "2025-06-01T12:00:00",
 ) -> dict:
@@ -843,6 +845,8 @@ def _make_entity_list_row(
         "linked_contact_roles": linked_contact_roles or [],
         "linked_contact_id": linked_contact_id,
         "unidentified": unidentified,
+        "source_butler": source_butler,
+        "source_scope": source_scope,
         "created_at": created_at,
         "updated_at": updated_at,
     }
@@ -1307,6 +1311,121 @@ class TestDeleteEntity:
             resp = await client.delete("/api/memory/entities/12345678-1234-5678-1234-567812345678")
 
         assert resp.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/entities/{entity_id}/merge
+# ---------------------------------------------------------------------------
+
+
+class TestMergeEntity:
+    async def test_facts_repointed_uses_merge_return_value(self, app):
+        """facts_repointed in merge response must use entity_merge's return value.
+
+        Previously the handler counted facts before the merge and returned that
+        pre-merge count — which is wrong when conflicts cause facts to be
+        superseded rather than re-pointed.  The fix uses result['facts_repointed']
+        from entity_merge() itself.
+        """
+        from unittest.mock import patch
+
+        pool = _make_pool()
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        merge_result = {
+            "target_entity_id": "22222222-2222-2222-2222-222222222222",
+            "source_entity_id": "11111111-1111-1111-1111-111111111111",
+            "facts_repointed": 7,
+            "facts_superseded": 2,
+            "edge_facts_repointed": 1,
+            "edge_facts_superseded": 0,
+            "aliases_added": 1,
+        }
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_merge",
+            new=AsyncMock(return_value=merge_result),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/memory/entities/22222222-2222-2222-2222-222222222222/merge",
+                    json={"source_entity_id": "11111111-1111-1111-1111-111111111111"},
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        # Must use the actual count from entity_merge, not a pre-merge count
+        assert body["facts_repointed"] == 7
+
+    async def test_merge_same_entity_returns_400(self, app):
+        """Merging an entity into itself must return 400."""
+        pool = _make_pool()
+        pools_by_name = {"general": pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+        mock_db.pool.side_effect = lambda name: pools_by_name[name]
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        same_id = "11111111-1111-1111-1111-111111111111"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                f"/api/memory/entities/{same_id}/merge",
+                json={"source_entity_id": same_id},
+            )
+
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# EntitySummary provenance fields
+# ---------------------------------------------------------------------------
+
+
+class TestEntitySummaryProvenance:
+    async def test_source_butler_and_scope_returned_when_present(self, app):
+        """Entity list response should expose source_butler and source_scope from metadata."""
+        row = _make_entity_list_row(
+            canonical_name="Unknown Entity",
+            unidentified=True,
+            source_butler="general",
+            source_scope="email",
+        )
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["source_butler"] == "general"
+        assert data[0]["source_scope"] == "email"
+
+    async def test_source_butler_and_scope_null_when_absent(self, app):
+        """Entities without provenance metadata should return null for source fields."""
+        row = _make_entity_list_row(canonical_name="Known Entity")
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["source_butler"] is None
+        assert data[0]["source_scope"] is None
 
 
 # ---------------------------------------------------------------------------

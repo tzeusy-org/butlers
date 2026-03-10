@@ -230,7 +230,7 @@ function UnidentifiedEntitiesSection({
             </Badge>
           </CardTitle>
           <CardDescription>
-            Auto-created entities from unknown senders. Click into details to add names, or merge
+            Auto-created entities pending identification. Click into details to add names, or merge
             into an existing entity.
           </CardDescription>
         </CardHeader>
@@ -242,6 +242,8 @@ function UnidentifiedEntitiesSection({
                   <tr className="border-b text-left text-muted-foreground">
                     <th className="pb-2 pr-4 font-medium">Name</th>
                     <th className="pb-2 pr-4 font-medium text-right">Facts</th>
+                    <th className="pb-2 pr-4 font-medium">Source Butler</th>
+                    <th className="pb-2 pr-4 font-medium">Source Scope</th>
                     <th className="pb-2 pr-4 font-medium">Created</th>
                     <th className="pb-2 font-medium w-[100px]">Actions</th>
                   </tr>
@@ -258,6 +260,12 @@ function UnidentifiedEntitiesSection({
                         </Link>
                       </td>
                       <td className="py-2 pr-4 text-right tabular-nums">{entity.fact_count}</td>
+                      <td className="py-2 pr-4 text-muted-foreground font-mono text-xs">
+                        {entity.source_butler ?? <span className="italic">—</span>}
+                      </td>
+                      <td className="py-2 pr-4 text-muted-foreground font-mono text-xs">
+                        {entity.source_scope ?? <span className="italic">—</span>}
+                      </td>
                       <td className="py-2 pr-4 text-muted-foreground">
                         {new Date(entity.created_at).toISOString().slice(0, 10)}
                       </td>

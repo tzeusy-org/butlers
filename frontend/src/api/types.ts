@@ -1295,6 +1295,8 @@ export interface EntitySummary {
   fact_count: number;
   linked_contact_id: string | null;
   unidentified: boolean;
+  source_butler: string | null;
+  source_scope: string | null;
   created_at: string;
   updated_at: string;
 }
