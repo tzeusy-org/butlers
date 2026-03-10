@@ -57,6 +57,16 @@ class MemoryModuleConfig(BaseModel):
 
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
 
+    # Feature flag: write summary entries to shared.memory_catalog on every
+    # fact/rule store.  Defaults to False for backward compatibility.
+    # Set to True only after the core_023 migration has been applied.
+    enable_shared_catalog: bool = False
+
+    # Butler schema name written as source_schema in catalog rows.
+    # When empty, the butler's own schema name is used.  Most deployments
+    # leave this unset and let the module infer it from context.
+    catalog_source_schema: str = ""
+
 
 class MemoryModule(Module):
     """Memory module providing 18 MCP tools for memory CRUD and retrieval."""
@@ -325,6 +335,8 @@ class MemoryModule(Module):
                 valid_at=valid_at,
                 idempotency_key=idempotency_key,
                 request_context=request_context,
+                enable_shared_catalog=module._config.enable_shared_catalog,
+                source_schema=module._config.catalog_source_schema or None,
             )
 
         @mcp.tool()
@@ -351,6 +363,8 @@ class MemoryModule(Module):
                 scope=scope,
                 tags=tags,
                 request_context=request_context,
+                enable_shared_catalog=module._config.enable_shared_catalog,
+                source_schema=module._config.catalog_source_schema or None,
             )
 
         # --- Reading tools ---
@@ -844,4 +858,51 @@ class MemoryModule(Module):
                 source_entity_id,
                 target_entity_id,
                 tenant_id=tenant_id,
+            )
+
+        # --- Cross-butler catalog search tool ---
+
+        @mcp.tool()
+        async def memory_catalog_search(
+            query: Annotated[str, Field(description="Search query text.")],
+            memory_type: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional memory type filter: 'fact' or 'rule'. "
+                        "When omitted, both types are searched."
+                    )
+                ),
+            ] = None,
+            limit: Annotated[int, Field(description="Max results to return (default 10).")] = 10,
+            mode: Annotated[
+                str,
+                Field(description="Search mode: 'hybrid' (default), 'semantic', or 'keyword'."),
+            ] = "hybrid",
+        ) -> list[dict[str, Any]]:
+            """Search the shared memory catalog for cross-butler memory discovery.
+
+            Queries ``shared.memory_catalog`` — a discovery index aggregating
+            summary entries from all butler schemas.  Returns provenance pointers
+            (source_schema, source_table, source_id) so the full canonical memory
+            can be retrieved from the owning butler.
+
+            This tool is only useful when the ``enable_shared_catalog`` feature
+            flag is True and the core_023 migration has been applied.
+
+            Required fields:
+            - ``query`` (string)
+
+            Optional fields:
+            - ``memory_type``: 'fact' | 'rule' (omit to search both)
+            - ``limit`` (int)
+            - ``mode``: 'hybrid' | 'semantic' | 'keyword'
+            """
+            return await _reading.memory_catalog_search(
+                module._get_pool(),
+                module._get_embedding_engine(),
+                query,
+                memory_type=memory_type,
+                limit=limit,
+                mode=mode,
             )

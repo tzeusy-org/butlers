@@ -107,6 +107,8 @@ async def memory_store_fact(
     valid_at: str | None = None,
     idempotency_key: str | None = None,
     request_context: dict[str, Any] | None = None,
+    enable_shared_catalog: bool = False,
+    source_schema: str | None = None,
 ) -> dict[str, Any]:
     """Store a distilled fact, automatically superseding any existing match.
 
@@ -162,6 +164,8 @@ async def memory_store_fact(
         idempotency_key=idempotency_key,
         tenant_id=tenant_id,
         request_id=request_id,
+        enable_shared_catalog=enable_shared_catalog,
+        source_schema=source_schema,
     )
 
     # Backward-compatible: older storage variants may return a mapping.
@@ -189,6 +193,8 @@ async def memory_store_rule(
     scope: str = "global",
     tags: list[str] | None = None,
     request_context: dict[str, Any] | None = None,
+    enable_shared_catalog: bool = False,
+    source_schema: str | None = None,
 ) -> dict[str, Any]:
     """Store a new behavioral rule as a candidate.
 
@@ -203,6 +209,9 @@ async def memory_store_rule(
         tags: Optional list of string tags.
         request_context: Optional dict with 'tenant_id' and 'request_id' for
             multi-tenant isolation and request trace correlation.
+        enable_shared_catalog: When True, write a catalog entry to
+            ``shared.memory_catalog`` after the rule is stored.
+        source_schema: Butler schema name for the catalog row (e.g. 'health').
     """
     tenant_id, request_id = _extract_request_context(request_context)
     result = await _storage.store_rule(
@@ -213,6 +222,8 @@ async def memory_store_rule(
         tags=tags,
         tenant_id=tenant_id,
         request_id=request_id,
+        enable_shared_catalog=enable_shared_catalog,
+        source_schema=source_schema,
     )
 
     # Backward-compatible: older storage variants may return a mapping.

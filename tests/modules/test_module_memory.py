@@ -111,6 +111,7 @@ EXPECTED_TOOL_NAMES = {
     "memory_entity_resolve",
     "memory_entity_merge",
     "memory_predicate_list",
+    "memory_catalog_search",
 }
 
 
@@ -152,7 +153,7 @@ class TestRegisterTools:
 
     async def test_registers_expected_tool_count(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 21
+        assert len(registered) == 22
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
@@ -184,7 +185,7 @@ class TestRegisterTools:
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
-        assert mcp.tool.call_count == 21
+        assert mcp.tool.call_count == 22
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""
@@ -358,6 +359,8 @@ class TestToolDelegation:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_memory_store_fact_delegates_with_valid_at(self):
@@ -385,6 +388,8 @@ class TestToolDelegation:
             valid_at="2026-03-06T08:00:00Z",
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_memory_context_delegates(self):
@@ -513,6 +518,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_no_entity_id_with_routing_ctx_uses_sender_entity(self):
@@ -543,6 +550,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_explicit_entity_id_takes_precedence_over_routing_ctx(self):
@@ -579,6 +588,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
     async def test_routing_ctx_missing_source_entity_id_key_passes_none(self):
@@ -608,6 +619,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             valid_at=None,
             idempotency_key=None,
             request_context=None,
+            enable_shared_catalog=False,
+            source_schema=None,
         )
 
 

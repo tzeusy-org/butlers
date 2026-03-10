@@ -768,3 +768,180 @@ async def search(
         all_results.sort(key=lambda r: -r.get("rrf_score", 0))
 
     return all_results[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Cross-butler catalog search
+# ---------------------------------------------------------------------------
+
+_CATALOG_TS_CONFIG = "english"
+_CATALOG_RRF_K = 60
+
+
+async def _catalog_semantic_search(
+    pool: Pool,
+    query_embedding: list[float],
+    *,
+    tenant_id: str,
+    memory_type: str | None,
+    limit: int,
+) -> list[dict]:
+    """Semantic search on shared.memory_catalog via pgvector."""
+    embedding_str = str(query_embedding)
+    params: list = [embedding_str, tenant_id]
+    conditions = ["tenant_id = $2"]
+    if memory_type is not None:
+        params.append(memory_type)
+        conditions.append(f"memory_type = ${len(params)}")
+    params.append(limit)
+    limit_idx = len(params)
+
+    where = "WHERE " + " AND ".join(conditions)
+    sql = f"""
+        SELECT *, 1 - (embedding <=> $1) AS similarity
+        FROM shared.memory_catalog
+        {where}
+        ORDER BY embedding <=> $1
+        LIMIT ${limit_idx}
+    """
+    rows = await pool.fetch(sql, *params)
+    return [dict(r) for r in rows]
+
+
+async def _catalog_keyword_search(
+    pool: Pool,
+    query_text: str,
+    *,
+    tenant_id: str,
+    memory_type: str | None,
+    limit: int,
+) -> list[dict]:
+    """Full-text search on shared.memory_catalog via tsvector."""
+    cleaned_query = preprocess_search_query(query_text)
+    if not cleaned_query:
+        return []
+    params: list = [cleaned_query, tenant_id]
+    conditions = [
+        f"search_vector @@ plainto_tsquery('{_CATALOG_TS_CONFIG}', $1)",
+        "tenant_id = $2",
+    ]
+    if memory_type is not None:
+        params.append(memory_type)
+        conditions.append(f"memory_type = ${len(params)}")
+    params.append(limit)
+    limit_idx = len(params)
+
+    where = "WHERE " + " AND ".join(conditions)
+    sql = f"""
+        SELECT *,
+               ts_rank(search_vector,
+                       plainto_tsquery('{_CATALOG_TS_CONFIG}', $1)) AS rank
+        FROM shared.memory_catalog
+        {where}
+        ORDER BY rank DESC
+        LIMIT ${limit_idx}
+    """
+    rows = await pool.fetch(sql, *params)
+    return [dict(r) for r in rows]
+
+
+async def search_catalog(
+    pool: Pool,
+    query: str,
+    embedding_engine,  # EmbeddingEngine instance
+    *,
+    tenant_id: str = "owner",
+    memory_type: str | None = None,
+    limit: int = 10,
+    mode: str = "hybrid",
+) -> list[dict]:
+    """Search ``shared.memory_catalog`` for cross-butler memory discovery.
+
+    Reads from the shared catalog table which aggregates summary entries from
+    all butler schemas.  Returns provenance pointers (source_schema,
+    source_table, source_id) so callers can fetch the full canonical memory
+    from the owning butler's schema.
+
+    Args:
+        pool: asyncpg connection pool with access to the ``shared`` schema.
+        query: Natural language search query.
+        embedding_engine: EmbeddingEngine for computing query embeddings.
+        tenant_id: Tenant scope for isolation (default 'owner').
+        memory_type: Optional filter — 'fact' or 'rule'.  When None, searches
+            both types.
+        limit: Maximum results to return (default 10).
+        mode: Search mode — 'semantic', 'keyword', or 'hybrid' (default).
+
+    Returns:
+        List of dicts with catalog row fields plus ``similarity`` (semantic),
+        ``rank`` (keyword), or ``rrf_score`` (hybrid).  Ordered by relevance
+        descending.
+
+    Raises:
+        ValueError: If ``mode`` is not one of the valid search modes.
+    """
+    if mode not in _VALID_SEARCH_MODES:
+        raise ValueError(f"Invalid mode: {mode!r}. Must be one of {sorted(_VALID_SEARCH_MODES)}")
+
+    semantic_results: list[dict] = []
+    keyword_results: list[dict] = []
+
+    if mode in ("semantic", "hybrid"):
+        query_embedding = embedding_engine.embed(query)
+        semantic_results = await _catalog_semantic_search(
+            pool,
+            query_embedding,
+            tenant_id=tenant_id,
+            memory_type=memory_type,
+            limit=limit,
+        )
+
+    if mode in ("keyword", "hybrid"):
+        keyword_results = await _catalog_keyword_search(
+            pool,
+            query,
+            tenant_id=tenant_id,
+            memory_type=memory_type,
+            limit=limit,
+        )
+
+    if mode == "semantic":
+        return semantic_results[:limit]
+
+    if mode == "keyword":
+        return keyword_results[:limit]
+
+    # Hybrid: RRF fusion
+    default_rank = limit + 1
+
+    semantic_ranks: dict[uuid.UUID, int] = {}
+    semantic_data: dict[uuid.UUID, dict] = {}
+    for rank, row in enumerate(semantic_results, start=1):
+        rid = row["id"]
+        semantic_ranks[rid] = rank
+        semantic_data[rid] = row
+
+    keyword_ranks: dict[uuid.UUID, int] = {}
+    keyword_data: dict[uuid.UUID, dict] = {}
+    for rank, row in enumerate(keyword_results, start=1):
+        rid = row["id"]
+        keyword_ranks[rid] = rank
+        keyword_data[rid] = row
+
+    all_ids = set(semantic_ranks.keys()) | set(keyword_ranks.keys())
+
+    fused: list[dict] = []
+    for rid in all_ids:
+        s_rank = semantic_ranks.get(rid, default_rank)
+        k_rank = keyword_ranks.get(rid, default_rank)
+        rrf_score = 1.0 / (_CATALOG_RRF_K + s_rank) + 1.0 / (_CATALOG_RRF_K + k_rank)
+
+        row = semantic_data.get(rid) or keyword_data[rid]
+        result = dict(row)
+        result["rrf_score"] = rrf_score
+        result["semantic_rank"] = s_rank
+        result["keyword_rank"] = k_rank
+        fused.append(result)
+
+    fused.sort(key=lambda r: (-r["rrf_score"], r.get("semantic_rank", default_rank)))
+    return fused[:limit]

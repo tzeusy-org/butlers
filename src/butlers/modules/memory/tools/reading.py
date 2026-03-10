@@ -102,3 +102,27 @@ async def memory_get(
     if result is None:
         return None
     return _serialize_row(result)
+
+
+async def memory_catalog_search(
+    pool: Pool,
+    embedding_engine,
+    query: str,
+    *,
+    memory_type: str | None = None,
+    limit: int = 10,
+    mode: str = "hybrid",
+) -> list[dict[str, Any]]:
+    """Search the shared memory catalog for cross-butler memory discovery.
+
+    Delegates to _search.search_catalog() and serializes results for JSON output.
+    """
+    results = await _search.search_catalog(
+        pool,
+        query,
+        embedding_engine,
+        memory_type=memory_type,
+        limit=limit,
+        mode=mode,
+    )
+    return [_serialize_row(r) for r in results]

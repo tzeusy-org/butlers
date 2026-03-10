@@ -188,6 +188,8 @@ class TestMemoryStoreFact:
                 idempotency_key=None,
                 tenant_id="owner",
                 request_id=None,
+                enable_shared_catalog=False,
+                source_schema=None,
             )
 
     async def test_returns_id_as_string(
@@ -297,6 +299,8 @@ class TestMemoryStoreRule:
                 tags=None,
                 tenant_id="owner",
                 request_id=None,
+                enable_shared_catalog=False,
+                source_schema=None,
             )
 
     async def test_returns_id_as_string(
