@@ -163,33 +163,63 @@ async def _upsert_catalog(
     embedding: list[float],
     search_text: str,
     memory_type: str,
+    # Spec-required enrichment columns (all nullable / optional).
+    title: str | None = None,
+    predicate: str | None = None,
+    scope: str | None = None,
+    valid_at: datetime | None = None,
+    confidence: float | None = None,
+    importance: float | None = None,
+    retention_class: str | None = None,
+    sensitivity: str | None = None,
+    object_entity_id: uuid.UUID | None = None,
 ) -> None:
     """Upsert a row into shared.memory_catalog (best-effort, fire-and-forget).
 
     On any error the exception is caught and logged as a warning so that
     catalog write failure NEVER blocks the canonical memory write.
+
+    The enrichment columns (title, predicate, scope, valid_at, confidence,
+    importance, retention_class, sensitivity, object_entity_id) map directly
+    to the spec-required columns added in core_024.  They are all nullable so
+    the call remains backward-compatible before that migration is applied.
     """
     sql = f"""
         INSERT INTO shared.memory_catalog (
             source_schema, source_table, source_id,
             source_butler, tenant_id, entity_id,
             summary, embedding, search_vector, memory_type,
+            title, predicate, scope, valid_at,
+            confidence, importance, retention_class, sensitivity,
+            object_entity_id,
             updated_at
         )
         VALUES (
             $1, $2, $3,
             $4, $5, $6,
             $7, $8, {tsvector_sql("$9")}, $10,
+            $11, $12, $13, $14,
+            $15, $16, $17, $18,
+            $19,
             now()
         )
         ON CONFLICT (source_schema, source_table, source_id)
         DO UPDATE SET
-            summary       = EXCLUDED.summary,
-            embedding     = EXCLUDED.embedding,
-            search_vector = EXCLUDED.search_vector,
-            entity_id     = EXCLUDED.entity_id,
-            tenant_id     = EXCLUDED.tenant_id,
-            updated_at    = now()
+            summary          = EXCLUDED.summary,
+            embedding        = EXCLUDED.embedding,
+            search_vector    = EXCLUDED.search_vector,
+            entity_id        = EXCLUDED.entity_id,
+            tenant_id        = EXCLUDED.tenant_id,
+            title            = EXCLUDED.title,
+            predicate        = EXCLUDED.predicate,
+            scope            = EXCLUDED.scope,
+            valid_at         = EXCLUDED.valid_at,
+            confidence       = EXCLUDED.confidence,
+            importance       = EXCLUDED.importance,
+            retention_class  = EXCLUDED.retention_class,
+            sensitivity      = EXCLUDED.sensitivity,
+            object_entity_id = EXCLUDED.object_entity_id,
+            updated_at       = now()
     """
     await pool.execute(
         sql,
@@ -203,6 +233,15 @@ async def _upsert_catalog(
         str(embedding),
         search_text,
         memory_type,
+        title,
+        predicate,
+        scope,
+        valid_at,
+        confidence,
+        importance,
+        retention_class,
+        sensitivity,
+        object_entity_id,
     )
 
 
@@ -595,6 +634,14 @@ async def store_fact(
                 embedding=embedding,
                 search_text=search_text,
                 memory_type="fact",
+                # Spec-required enrichment fields from the source fact row.
+                title=f"{subject} {predicate}",
+                predicate=predicate,
+                scope=scope,
+                valid_at=valid_at,
+                confidence=1.0,
+                importance=importance,
+                object_entity_id=object_entity_id,
             )
         except Exception:
             logger.warning(
@@ -702,6 +749,9 @@ async def store_rule(
                 embedding=embedding,
                 search_text=search_text,
                 memory_type="rule",
+                # Spec-required enrichment fields from the source rule row.
+                title=content[:100],
+                scope=scope,
             )
         except Exception:
             logger.warning(
