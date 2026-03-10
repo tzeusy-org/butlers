@@ -369,7 +369,8 @@ async def _mark_group_failed(
     try:
         await pool.execute(
             """
-            INSERT INTO memory_events (event_type, actor, tenant_id, payload)
+            INSERT INTO memory_events (event_type, actor, tenant_id, actor_butler,
+                                       memory_type, memory_id, payload)
             SELECT
                 CASE
                     WHEN consolidation_attempts >= $1
@@ -378,6 +379,9 @@ async def _mark_group_failed(
                 END,
                 'consolidation_worker',
                 COALESCE($4, tenant_id),
+                butler,
+                'episode',
+                id,
                 jsonb_build_object(
                     'episode_id', id::text,
                     'attempts',   consolidation_attempts,

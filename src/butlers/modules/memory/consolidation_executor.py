@@ -215,11 +215,15 @@ async def execute_consolidation(
         try:
             await pool.execute(
                 """
-                INSERT INTO memory_events (event_type, actor, tenant_id, payload)
+                INSERT INTO memory_events (event_type, actor, tenant_id, actor_butler,
+                                           memory_type, memory_id, payload)
                 SELECT
                     'episode_consolidated',
                     'consolidation_worker',
                     $2,
+                    butler,
+                    'episode',
+                    id,
                     jsonb_build_object(
                         'episode_id', id::text,
                         'butler',     butler
