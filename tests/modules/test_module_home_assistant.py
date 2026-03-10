@@ -3457,35 +3457,19 @@ class TestSnapshotLoop:
 
 
 class TestShutdownFinalSnapshot:
-    """Verify on_shutdown writes a final entity snapshot."""
+    """Verify on_shutdown tears down cleanly (snapshot persistence disabled)."""
 
-    async def test_shutdown_writes_final_snapshot(self, ha_module: HomeAssistantModule) -> None:
-        """on_shutdown calls _persist_entity_snapshot before tearing down."""
+    async def test_shutdown_does_not_call_persist_snapshot(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """on_shutdown no longer calls _persist_entity_snapshot (disabled)."""
         ha_module._client = AsyncMock()
         ha_module._config = HomeAssistantConfig(url="http://ha.local")
 
         with patch.object(ha_module, "_persist_entity_snapshot", new=AsyncMock()) as mock_persist:
             await ha_module.on_shutdown()
 
-        mock_persist.assert_awaited_once()
-
-    async def test_shutdown_snapshot_failure_does_not_abort_shutdown(
-        self, ha_module: HomeAssistantModule
-    ) -> None:
-        """on_shutdown continues teardown even if the final snapshot fails."""
-        mock_client = AsyncMock()
-        ha_module._client = mock_client
-        ha_module._config = HomeAssistantConfig(url="http://ha.local")
-
-        with patch.object(
-            ha_module,
-            "_persist_entity_snapshot",
-            new=AsyncMock(side_effect=RuntimeError("DB offline")),
-        ):
-            # Should not raise
-            await ha_module.on_shutdown()
-
-        mock_client.aclose.assert_awaited_once()
+        mock_persist.assert_not_awaited()
 
     async def test_shutdown_cancels_snapshot_task(self, ha_module: HomeAssistantModule) -> None:
         """on_shutdown cancels the snapshot background task."""

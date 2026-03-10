@@ -363,9 +363,26 @@ async def _run_memory_episode_cleanup_job(
     return await run_episode_cleanup(pool=pool, max_entries=max_entries)
 
 
+async def _run_memory_purge_superseded_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Purge superseded facts older than a threshold."""
+    from butlers.modules.memory.storage import purge_superseded_facts
+
+    older_than_days = 7
+    if job_args is not None and "older_than_days" in job_args:
+        raw = job_args["older_than_days"]
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+            older_than_days = raw
+
+    return await purge_superseded_facts(pool, older_than_days=older_than_days)
+
+
 _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "memory_consolidation": _run_memory_consolidation_job,
     "memory_episode_cleanup": _run_memory_episode_cleanup_job,
+    "memory_purge_superseded": _run_memory_purge_superseded_job,
 }
 
 

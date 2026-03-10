@@ -46,6 +46,12 @@ cron = "0 4 * * *"
 dispatch_mode = "job"
 job_name = "memory_episode_cleanup"
 
+[[butler.schedule]]
+name = "memory_purge_superseded"
+cron = "10 4 * * *"
+dispatch_mode = "job"
+job_name = "memory_purge_superseded"
+
 [modules.calendar]
 provider = "google"
 

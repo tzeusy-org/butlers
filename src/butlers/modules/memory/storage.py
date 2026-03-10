@@ -1532,3 +1532,29 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     )
 
     return stats
+
+
+async def purge_superseded_facts(pool: Pool, *, older_than_days: int = 7) -> dict:
+    """Delete superseded facts older than a threshold.
+
+    Superseded facts are dead weight — they are never queried. This function
+    removes them to reclaim disk space and keep index sizes manageable.
+
+    Args:
+        pool: asyncpg connection pool.
+        older_than_days: Only delete superseded facts created more than this
+            many days ago (default 7). Keeps recent superseded facts for
+            short-term forensics.
+
+    Returns:
+        dict with key ``deleted`` (number of rows removed).
+    """
+    result = await pool.execute(
+        "DELETE FROM facts "
+        "WHERE validity = 'superseded' "
+        "AND created_at < now() - make_interval(days => $1)",
+        older_than_days,
+    )
+    # asyncpg execute returns status string like "DELETE 42"
+    deleted = int(result.split()[-1]) if result else 0
+    return {"deleted": deleted}

@@ -332,8 +332,9 @@ class HomeAssistantModule(Module):
         # --- Connect WebSocket and seed entity cache ---
         await self._ws_connect_and_seed()
 
-        # --- Start periodic snapshot task ---
-        self._start_snapshot_task()
+        # Snapshot persistence disabled — HA state is always available in
+        # real-time via ha_get_entity_state / ha_list_entities.  Storing it
+        # as facts created ~210k superseded rows in 3 days.
 
     async def on_shutdown(self) -> None:
         """Clean up: close WebSocket, stop background tasks, close HTTP client.
@@ -343,11 +344,7 @@ class HomeAssistantModule(Module):
         """
         self._shutdown = True
 
-        # Write final snapshot before tearing down the DB connection
-        try:
-            await self._persist_entity_snapshot()
-        except Exception as exc:
-            logger.warning("HomeAssistantModule: final snapshot failed: %s", exc)
+        # Snapshot persistence disabled — HA state queried live, not cached.
 
         # Cancel background tasks and await them with a short timeout to avoid
         # hanging shutdown if a task ignores CancelledError.
