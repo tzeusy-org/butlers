@@ -39,6 +39,11 @@ TARGET_ID = str(TARGET_UUID)
 FACT_UUID_1 = uuid.UUID("cccccccc-1111-1111-1111-cccccccccccc")
 FACT_UUID_2 = uuid.UUID("dddddddd-1111-1111-1111-dddddddddddd")
 
+# Extra entity for edge-fact tests (a third entity that has edges pointing at source)
+THIRD_UUID = uuid.UUID("33333333-3333-3333-3333-333333333333")
+EDGE_FACT_UUID_1 = uuid.UUID("eeee0001-0001-0001-0001-eeee00000001")
+EDGE_FACT_UUID_2 = uuid.UUID("eeee0002-0002-0002-0002-eeee00000002")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -73,6 +78,25 @@ def _make_fact_row(
     row = MagicMock()
     row.__getitem__ = lambda self, key: {
         "id": fact_id,
+        "scope": scope,
+        "predicate": predicate,
+        "confidence": confidence,
+    }[key]
+    return row
+
+
+def _make_edge_fact_row(
+    fact_id: uuid.UUID,
+    entity_id: uuid.UUID,
+    scope: str = "global",
+    predicate: str = "works_at",
+    confidence: float = 1.0,
+) -> MagicMock:
+    """Return a mock asyncpg Record-like edge fact row (includes entity_id)."""
+    row = MagicMock()
+    row.__getitem__ = lambda self, key: {
+        "id": fact_id,
+        "entity_id": entity_id,
         "scope": scope,
         "predicate": predicate,
         "confidence": confidence,
@@ -131,6 +155,8 @@ class TestEntityMergeBasic:
             "source_entity_id",
             "facts_repointed",
             "facts_superseded",
+            "edge_facts_repointed",
+            "edge_facts_superseded",
             "aliases_added",
         }
 
@@ -174,7 +200,8 @@ class TestEntityMergeBasic:
 
         # fetchrow calls: src entity, tgt entity, conflict check (None = no conflict)
         conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, None])
-        conn.fetch = AsyncMock(return_value=[fact])
+        # fetch calls: subject facts [fact], then object facts []
+        conn.fetch = AsyncMock(side_effect=[[fact], []])
         conn.execute = AsyncMock()
 
         result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
@@ -396,7 +423,7 @@ class TestEntityMergeConflictResolution:
         )
 
         conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, tgt_conflict])
-        conn.fetch = AsyncMock(return_value=[src_fact])
+        conn.fetch = AsyncMock(side_effect=[[src_fact], []])
         conn.execute = AsyncMock()
 
         result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
@@ -425,7 +452,7 @@ class TestEntityMergeConflictResolution:
         )
 
         conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, tgt_conflict])
-        conn.fetch = AsyncMock(return_value=[src_fact])
+        conn.fetch = AsyncMock(side_effect=[[src_fact], []])
         conn.execute = AsyncMock()
 
         result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
@@ -454,7 +481,7 @@ class TestEntityMergeConflictResolution:
         )
 
         conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, tgt_conflict])
-        conn.fetch = AsyncMock(return_value=[src_fact])
+        conn.fetch = AsyncMock(side_effect=[[src_fact], []])
         conn.execute = AsyncMock()
 
         result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
@@ -502,7 +529,7 @@ class TestEntityMergeConflictResolution:
         # then for fact1: conflict check (returns tgt_conflict)
         # then for fact2: conflict check (returns None = no conflict)
         conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, tgt_conflict, None])
-        conn.fetch = AsyncMock(return_value=[src_fact1, src_fact2])
+        conn.fetch = AsyncMock(side_effect=[[src_fact1, src_fact2], []])
         conn.execute = AsyncMock()
 
         result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
@@ -558,3 +585,148 @@ class TestEntityResolveTombstoneExclusion:
         assert len(call_args) >= 1
         sql = call_args[0][0][0]
         assert "(metadata->>'merged_into') IS NULL" in sql
+
+
+# ---------------------------------------------------------------------------
+# Edge fact (object_entity_id) re-pointing tests
+# ---------------------------------------------------------------------------
+
+
+class TestEntityMergeEdgeFacts:
+    """Tests for re-pointing edge facts where source is the object_entity_id."""
+
+    async def test_edge_fact_repointed_no_conflict(self, mock_pool: MagicMock) -> None:
+        """Edge fact pointing at source is re-pointed to target when no conflict."""
+        conn = _get_conn(mock_pool)
+        src_row = _make_entity_row(SOURCE_UUID)
+        tgt_row = _make_entity_row(TARGET_UUID)
+
+        edge_fact = _make_edge_fact_row(
+            EDGE_FACT_UUID_1, entity_id=THIRD_UUID, predicate="works_at"
+        )
+
+        # fetchrow: src entity, tgt entity, then edge conflict check (None)
+        conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, None])
+        # fetch: no subject facts, one edge fact
+        conn.fetch = AsyncMock(side_effect=[[], [edge_fact]])
+        conn.execute = AsyncMock()
+
+        result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
+
+        assert result["edge_facts_repointed"] == 1
+        assert result["edge_facts_superseded"] == 0
+
+        execute_calls = conn.execute.call_args_list
+        repoint_calls = [
+            c
+            for c in execute_calls
+            if "UPDATE facts SET object_entity_id" in c[0][0] and TARGET_UUID in c[0]
+        ]
+        assert len(repoint_calls) == 1
+
+    async def test_edge_fact_conflict_existing_wins(self, mock_pool: MagicMock) -> None:
+        """When an edge to target already exists with >= confidence, source edge is superseded."""
+        conn = _get_conn(mock_pool)
+        src_row = _make_entity_row(SOURCE_UUID)
+        tgt_row = _make_entity_row(TARGET_UUID)
+
+        # Edge from THIRD → SOURCE (will be source in conflict)
+        edge_fact = _make_edge_fact_row(
+            EDGE_FACT_UUID_1, entity_id=THIRD_UUID, predicate="works_at", confidence=0.5
+        )
+        # Existing edge from THIRD → TARGET (the conflict)
+        existing_edge = _make_fact_row(EDGE_FACT_UUID_2, confidence=0.8)
+
+        # fetchrow: src entity, tgt entity, then edge conflict check (returns existing)
+        conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, existing_edge])
+        conn.fetch = AsyncMock(side_effect=[[], [edge_fact]])
+        conn.execute = AsyncMock()
+
+        result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
+
+        assert result["edge_facts_repointed"] == 0
+        assert result["edge_facts_superseded"] == 1
+
+        # Source edge fact should be superseded
+        execute_calls = conn.execute.call_args_list
+        supersede_calls = [
+            c
+            for c in execute_calls
+            if "UPDATE facts SET validity = 'superseded'" in c[0][0]
+            and EDGE_FACT_UUID_1 in c[0]
+        ]
+        assert len(supersede_calls) == 1
+
+    async def test_edge_fact_conflict_source_wins(self, mock_pool: MagicMock) -> None:
+        """When source edge has higher confidence, existing edge is superseded."""
+        conn = _get_conn(mock_pool)
+        src_row = _make_entity_row(SOURCE_UUID)
+        tgt_row = _make_entity_row(TARGET_UUID)
+
+        edge_fact = _make_edge_fact_row(
+            EDGE_FACT_UUID_1, entity_id=THIRD_UUID, predicate="works_at", confidence=0.95
+        )
+        existing_edge = _make_fact_row(EDGE_FACT_UUID_2, confidence=0.3)
+
+        conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, existing_edge])
+        conn.fetch = AsyncMock(side_effect=[[], [edge_fact]])
+        conn.execute = AsyncMock()
+
+        result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
+
+        assert result["edge_facts_superseded"] == 1
+
+        execute_calls = conn.execute.call_args_list
+        # Existing edge should be superseded
+        supersede_existing = [
+            c
+            for c in execute_calls
+            if "UPDATE facts SET validity = 'superseded'" in c[0][0]
+            and EDGE_FACT_UUID_2 in c[0]
+        ]
+        assert len(supersede_existing) == 1
+        # Source edge should be re-pointed
+        repoint_calls = [
+            c
+            for c in execute_calls
+            if "UPDATE facts SET object_entity_id" in c[0][0] and TARGET_UUID in c[0]
+        ]
+        assert len(repoint_calls) == 1
+
+    async def test_edge_counts_in_audit_event(self, mock_pool: MagicMock) -> None:
+        """Audit event payload includes edge_facts_repointed and edge_facts_superseded."""
+        conn = _get_conn(mock_pool)
+        src_row = _make_entity_row(SOURCE_UUID)
+        tgt_row = _make_entity_row(TARGET_UUID)
+
+        edge_fact = _make_edge_fact_row(
+            EDGE_FACT_UUID_1, entity_id=THIRD_UUID, predicate="works_at"
+        )
+
+        conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, None])
+        conn.fetch = AsyncMock(side_effect=[[], [edge_fact]])
+        conn.execute = AsyncMock()
+
+        await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
+
+        execute_calls = conn.execute.call_args_list
+        audit_calls = [c for c in execute_calls if "INSERT INTO memory_events" in c[0][0]]
+        assert len(audit_calls) == 1
+        payload = json.loads(audit_calls[0][0][2])
+        assert payload["edge_facts_repointed"] == 1
+        assert payload["edge_facts_superseded"] == 0
+
+    async def test_no_edge_facts_zero_counts(self, mock_pool: MagicMock) -> None:
+        """When no edge facts reference source, edge counts are 0."""
+        conn = _get_conn(mock_pool)
+        src_row = _make_entity_row(SOURCE_UUID)
+        tgt_row = _make_entity_row(TARGET_UUID)
+
+        conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row])
+        conn.fetch = AsyncMock(return_value=[])
+        conn.execute = AsyncMock()
+
+        result = await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
+
+        assert result["edge_facts_repointed"] == 0
+        assert result["edge_facts_superseded"] == 0

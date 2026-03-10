@@ -706,6 +706,10 @@ async def entity_merge(
        - If a conflict exists (target already has an active fact with same
          scope+predicate), keep the higher-confidence fact as active and
          supersede the lower-confidence one.
+    1b. Re-point all facts referencing source as object_entity_id to target.
+       - Same conflict resolution: if re-pointing would duplicate an existing
+         active edge (same entity_id, scope, predicate, object_entity_id=target),
+         the higher-confidence fact survives.
     2. Append source's aliases to target's alias list (deduplicated).
     3. Merge source's metadata into target's metadata (target wins on conflict).
     4. Tombstone source entity (mark as merged_into=target_entity_id, retained
@@ -722,8 +726,10 @@ async def entity_merge(
         Dict with keys:
           - target_entity_id: UUID string of the surviving entity.
           - source_entity_id: UUID string of the tombstoned entity.
-          - facts_repointed: number of facts moved from source to target.
-          - facts_superseded: number of facts superseded due to conflicts.
+          - facts_repointed: number of subject-side facts moved from source to target.
+          - facts_superseded: number of subject-side facts superseded due to conflicts.
+          - edge_facts_repointed: number of object-side edge facts re-pointed.
+          - edge_facts_superseded: number of object-side edge facts superseded.
           - aliases_added: number of new aliases added to target.
 
     Raises:
@@ -832,6 +838,68 @@ async def entity_merge(
                     facts_superseded += 1
 
             # ---------------------------------------------------------------
+            # 2b. Re-point edge facts where source is the object_entity_id
+            # ---------------------------------------------------------------
+            obj_facts = await conn.fetch(
+                "SELECT id, entity_id, scope, predicate, confidence FROM facts "
+                "WHERE object_entity_id = $1 AND validity = 'active'",
+                src_uuid,
+            )
+
+            edge_facts_repointed = 0
+            edge_facts_superseded = 0
+
+            for obj_fact in obj_facts:
+                # Check if an active edge already exists with the same
+                # (entity_id, scope, predicate) pointing at the target
+                edge_conflict = await conn.fetchrow(
+                    "SELECT id, confidence FROM facts "
+                    "WHERE entity_id = $1 AND object_entity_id = $2 "
+                    "AND scope = $3 AND predicate = $4 "
+                    "AND validity = 'active'",
+                    obj_fact["entity_id"],
+                    tgt_uuid,
+                    obj_fact["scope"],
+                    obj_fact["predicate"],
+                )
+
+                if edge_conflict is None:
+                    # No conflict: re-point object_entity_id to target
+                    await conn.execute(
+                        "UPDATE facts SET object_entity_id = $1 WHERE id = $2",
+                        tgt_uuid,
+                        obj_fact["id"],
+                    )
+                    edge_facts_repointed += 1
+                else:
+                    # Conflict: keep higher-confidence fact, supersede the other
+                    src_conf = obj_fact["confidence"]
+                    tgt_conf = edge_conflict["confidence"]
+
+                    if src_conf > tgt_conf:
+                        # Source edge wins: supersede existing, re-point source
+                        await conn.execute(
+                            "UPDATE facts SET validity = 'superseded', supersedes_id = $1 "
+                            "WHERE id = $2",
+                            obj_fact["id"],
+                            edge_conflict["id"],
+                        )
+                        await conn.execute(
+                            "UPDATE facts SET object_entity_id = $1 WHERE id = $2",
+                            tgt_uuid,
+                            obj_fact["id"],
+                        )
+                    else:
+                        # Existing edge wins (or equal): supersede source edge
+                        await conn.execute(
+                            "UPDATE facts SET validity = 'superseded', supersedes_id = $1 "
+                            "WHERE id = $2",
+                            edge_conflict["id"],
+                            obj_fact["id"],
+                        )
+                    edge_facts_superseded += 1
+
+            # ---------------------------------------------------------------
             # 3. Merge aliases (append source aliases to target, deduplicated)
             # ---------------------------------------------------------------
             src_aliases: list[str] = list(src_row["aliases"]) if src_row["aliases"] else []
@@ -898,6 +966,8 @@ async def entity_merge(
                         "target_entity_id": target_entity_id,
                         "facts_repointed": facts_repointed,
                         "facts_superseded": facts_superseded,
+                        "edge_facts_repointed": edge_facts_repointed,
+                        "edge_facts_superseded": edge_facts_superseded,
                         "aliases_added": aliases_added,
                     }
                 ),
@@ -908,5 +978,7 @@ async def entity_merge(
         "source_entity_id": source_entity_id,
         "facts_repointed": facts_repointed,
         "facts_superseded": facts_superseded,
+        "edge_facts_repointed": edge_facts_repointed,
+        "edge_facts_superseded": edge_facts_superseded,
         "aliases_added": aliases_added,
     }
