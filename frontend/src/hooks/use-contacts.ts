@@ -6,6 +6,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import {
+  archiveContact,
+  unarchiveContact,
   confirmContact,
   createAndLinkEntity,
   createContactInfo,
@@ -213,6 +215,28 @@ export function useDeleteContact() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (contactId: string) => deleteContact(contactId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}
+
+/** Archive a contact (soft-delete, sync won't re-create). */
+export function useArchiveContact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (contactId: string) => archiveContact(contactId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}
+
+/** Restore an archived contact. */
+export function useUnarchiveContact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (contactId: string) => unarchiveContact(contactId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
     },

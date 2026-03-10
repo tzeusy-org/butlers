@@ -951,6 +951,7 @@ export interface ActivityFeedItem {
 export interface ContactParams {
   q?: string;
   label?: string;
+  archived?: boolean;
   offset?: number;
   limit?: number;
 }

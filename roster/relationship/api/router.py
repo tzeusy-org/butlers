@@ -204,6 +204,7 @@ def _is_credential_error(payload: object, raw_text: str | None) -> bool:
 async def list_contacts(
     q: str | None = Query(None, description="Search contacts by name"),
     label: str | None = Query(None, description="Filter by label name"),
+    archived: bool = Query(False, description="Include only archived contacts"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -211,7 +212,9 @@ async def list_contacts(
     """List contacts with optional search and label filter, paginated."""
     pool = _pool(db)
 
-    conditions: list[str] = ["c.archived_at IS NULL"]
+    conditions: list[str] = [
+        "c.archived_at IS NOT NULL" if archived else "c.archived_at IS NULL"
+    ]
     args: list[object] = []
     idx = 1
 
@@ -1244,6 +1247,62 @@ async def delete_contact(
         )
 
     await pool.execute("DELETE FROM contacts WHERE id = $1", contact_id)
+
+
+# ---------------------------------------------------------------------------
+# POST /contacts/{contact_id}/archive
+# ---------------------------------------------------------------------------
+
+
+@router.post("/contacts/{contact_id}/archive", status_code=204)
+async def archive_contact(
+    contact_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-archive a contact.
+
+    Sets archived_at to now(). Source links are preserved so that future
+    syncs recognise the contact and skip re-creation.
+    """
+    pool = _pool(db)
+
+    existing = await pool.fetchrow(
+        "SELECT id FROM contacts WHERE id = $1 AND archived_at IS NULL",
+        contact_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    await pool.execute(
+        "UPDATE contacts SET archived_at = now(), updated_at = now() WHERE id = $1",
+        contact_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /contacts/{contact_id}/unarchive
+# ---------------------------------------------------------------------------
+
+
+@router.post("/contacts/{contact_id}/unarchive", status_code=204)
+async def unarchive_contact(
+    contact_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Restore an archived contact."""
+    pool = _pool(db)
+
+    existing = await pool.fetchrow(
+        "SELECT id FROM contacts WHERE id = $1 AND archived_at IS NOT NULL",
+        contact_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Archived contact not found")
+
+    await pool.execute(
+        "UPDATE contacts SET archived_at = NULL, updated_at = now() WHERE id = $1",
+        contact_id,
+    )
 
 
 # ---------------------------------------------------------------------------

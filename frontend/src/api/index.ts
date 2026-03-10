@@ -84,6 +84,8 @@ export {
   mergeContact,
   confirmContact,
   createContactInfo,
+  archiveContact,
+  unarchiveContact,
   deleteContact,
   deleteContactInfo,
   patchContactInfo,

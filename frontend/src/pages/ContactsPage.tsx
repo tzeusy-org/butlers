@@ -29,6 +29,7 @@ const PAGE_SIZE = 50;
 export default function ContactsPage() {
   const [search, setSearch] = useState("");
   const [activeLabel, setActiveLabel] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const [page, setPage] = useState(0);
   const [isSyncingGoogle, setIsSyncingGoogle] = useState(false);
   const [isSyncingTelegram, setIsSyncingTelegram] = useState(false);
@@ -36,6 +37,7 @@ export default function ContactsPage() {
   const params: ContactParams = {
     q: search || undefined,
     label: activeLabel || undefined,
+    archived: showArchived || undefined,
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
   };
@@ -123,10 +125,26 @@ export default function ContactsPage() {
       {/* Contact table */}
       <Card>
         <CardHeader>
-          <CardTitle>All Contacts</CardTitle>
-          <CardDescription>
-            {total > 0 ? `${total.toLocaleString()} contact${total !== 1 ? "s" : ""}` : ""}
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>{showArchived ? "Archived Contacts" : "All Contacts"}</CardTitle>
+              <CardDescription>
+                {total > 0 ? `${total.toLocaleString()} contact${total !== 1 ? "s" : ""}` : ""}
+              </CardDescription>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => {
+                  setShowArchived(e.target.checked);
+                  setPage(0);
+                }}
+                className="accent-primary"
+              />
+              Show archived
+            </label>
+          </div>
         </CardHeader>
         <CardContent>
           <ContactTable
@@ -137,6 +155,7 @@ export default function ContactsPage() {
             allLabels={labels ?? []}
             activeLabel={activeLabel}
             onLabelFilter={handleLabelFilter}
+            showArchived={showArchived}
           />
         </CardContent>
       </Card>

@@ -698,6 +698,7 @@ function contactSearchParams(params?: ContactParams): URLSearchParams {
   const sp = new URLSearchParams();
   if (params?.q != null && params.q !== "") sp.set("q", params.q);
   if (params?.label != null && params.label !== "") sp.set("label", params.label);
+  if (params?.archived) sp.set("archived", "true");
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   return sp;
@@ -879,6 +880,22 @@ export function deleteContact(contactId: string): Promise<void> {
   return apiFetch<void>(
     `/relationship/contacts/${encodeURIComponent(contactId)}`,
     { method: "DELETE" },
+  );
+}
+
+/** Archive a contact (soft-delete, preserves source links so sync won't re-create). */
+export function archiveContact(contactId: string): Promise<void> {
+  return apiFetch<void>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/archive`,
+    { method: "POST" },
+  );
+}
+
+/** Unarchive a previously archived contact. */
+export function unarchiveContact(contactId: string): Promise<void> {
+  return apiFetch<void>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/unarchive`,
+    { method: "POST" },
   );
 }
 

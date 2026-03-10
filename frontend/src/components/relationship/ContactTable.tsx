@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback } from "react";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { formatDistanceToNow } from "date-fns";
 import { useNavigate } from "react-router";
-import { EditIcon, GitMergeIcon, TrashIcon } from "lucide-react";
+import { ArchiveIcon, ArchiveRestoreIcon, EditIcon, GitMergeIcon, TrashIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { getContacts } from "@/api/client";
 import type { ContactSummary, Label } from "@/api/types";
-import { useDeleteContact, useMergeContact } from "@/hooks/use-contacts";
+import { useArchiveContact, useDeleteContact, useMergeContact, useUnarchiveContact } from "@/hooks/use-contacts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -60,6 +60,8 @@ export interface ContactTableProps {
   /** Currently selected label filter (name), or empty for no filter. */
   activeLabel: string;
   onLabelFilter: (label: string) => void;
+  /** When true, showing archived contacts (changes action buttons). */
+  showArchived?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,9 +262,12 @@ export default function ContactTable({
   allLabels,
   activeLabel,
   onLabelFilter,
+  showArchived = false,
 }: ContactTableProps) {
   const navigate = useNavigate();
   const deleteMutation = useDeleteContact();
+  const archiveMutation = useArchiveContact();
+  const unarchiveMutation = useUnarchiveContact();
 
   const [mergeTarget, setMergeTarget] = useState<ContactSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ContactSummary | null>(null);
@@ -400,6 +405,53 @@ export default function ContactTable({
                           </TooltipTrigger>
                           <TooltipContent>Merge</TooltipContent>
                         </Tooltip>
+                        {showArchived ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                disabled={unarchiveMutation.isPending}
+                                onClick={async () => {
+                                  try {
+                                    await unarchiveMutation.mutateAsync(contact.id);
+                                    toast.success(`Restored ${contact.full_name}`);
+                                  } catch (err) {
+                                    toast.error(
+                                      `Restore failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+                                    );
+                                  }
+                                }}
+                              >
+                                <ArchiveRestoreIcon />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Restore</TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                disabled={archiveMutation.isPending}
+                                onClick={async () => {
+                                  try {
+                                    await archiveMutation.mutateAsync(contact.id);
+                                    toast.success(`Archived ${contact.full_name}`);
+                                  } catch (err) {
+                                    toast.error(
+                                      `Archive failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+                                    );
+                                  }
+                                }}
+                              >
+                                <ArchiveIcon />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Archive</TooltipContent>
+                          </Tooltip>
+                        )}
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
