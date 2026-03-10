@@ -206,6 +206,9 @@ async def contact_create(
     if "metadata" in cols:
         payload["metadata"] = merged_meta
 
+    if not payload:
+        raise ValueError("Cannot create contact: no writable columns found (schema mismatch?)")
+
     json_cols = {"details", "metadata"} & set(payload)
     insert_cols = list(payload.keys())
     placeholders = []
@@ -409,6 +412,9 @@ async def contact_search(
         active_filters.append("archived_at IS NULL")
     if "listed" in cols:
         active_filters.append("listed = true")
+
+    if not conditions:
+        return []
 
     where = " AND ".join(active_filters + [f"({' OR '.join(conditions)})"])
     if "name" in cols:

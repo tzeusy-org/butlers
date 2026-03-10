@@ -102,12 +102,12 @@ def _pool(db: DatabaseManager):
 
 
 async def _table_columns(pool, table_name: str) -> set[str]:
-    """Return column names for a table in public schema."""
+    """Return column names for a table, resolved via the connection's search_path."""
     rows = await pool.fetch(
         """
         SELECT column_name
         FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = $1
+        WHERE table_schema = current_schema() AND table_name = $1
         """,
         table_name,
     )
@@ -212,9 +212,7 @@ async def list_contacts(
     """List contacts with optional search and label filter, paginated."""
     pool = _pool(db)
 
-    conditions: list[str] = [
-        "c.archived_at IS NOT NULL" if archived else "c.archived_at IS NULL"
-    ]
+    conditions: list[str] = ["c.archived_at IS NOT NULL" if archived else "c.archived_at IS NULL"]
     args: list[object] = []
     idx = 1
 

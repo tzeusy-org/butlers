@@ -10,12 +10,12 @@ import asyncpg
 
 
 async def table_columns(pool: asyncpg.Pool, table: str) -> set[str]:
-    """Return the set of column names for a table in the public schema."""
+    """Return the set of column names for a table, resolved via the connection's search_path."""
     rows = await pool.fetch(
         """
         SELECT column_name
         FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = $1
+        WHERE table_schema = current_schema() AND table_name = $1
         """,
         table,
     )
@@ -28,13 +28,13 @@ async def has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
 
 
 async def has_table(pool: asyncpg.Pool, table: str) -> bool:
-    """Return True if a table exists in the public schema."""
+    """Return True if a table exists in the connection's current schema."""
     return await pool.fetchval(
         """
         SELECT EXISTS (
             SELECT 1
             FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = $1
+            WHERE table_schema = current_schema() AND table_name = $1
         )
         """,
         table,
