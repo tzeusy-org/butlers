@@ -2541,6 +2541,11 @@ class ButlerDaemon:
                     input_context=parsed_route.input.context,
                 )
                 prompt_text = _wrap_routed_message(parsed_route.input.prompt)
+                # Extract sender entity_id so spawner can propagate it to tool calls.
+                _route_sender_entity_id: str | None = None
+                _raw_entity_id = parsed_route.request_context.source_sender_entity_id
+                if isinstance(_raw_entity_id, str) and _raw_entity_id.strip():
+                    _route_sender_entity_id = _raw_entity_id.strip()
 
                 async def _process_route(
                     _inbox_id: uuid.UUID,
@@ -2552,6 +2557,7 @@ class ButlerDaemon:
                     _accepted_at: datetime,
                     _parent_ctx: OtelContext | None,
                     _accept_span_ctx: trace.SpanContext | None,
+                    _sender_entity_id: str | None,
                 ) -> None:
                     """Background task: call spawner.trigger() and update route_inbox.
 
@@ -2586,6 +2592,10 @@ class ButlerDaemon:
                             # Decrement after the DB mark so the gauge stays accurate if
                             # mark_processing fails (row would still be in accepted state).
                             _route_metrics.route_queue_depth_dec()
+                            # Inject sender entity_id into routing context so memory tools
+                            # can use it as a default for entity_id when not explicitly set.
+                            if _sender_entity_id is not None:
+                                _routing_ctx_var.set({"source_entity_id": _sender_entity_id})
                             result = await _spawner.trigger(
                                 prompt=_prompt,
                                 context=_context,
@@ -2622,6 +2632,7 @@ class ButlerDaemon:
                         inbox_accepted_at,
                         parent_ctx,
                         accept_span_ctx,
+                        _route_sender_entity_id,
                     ),
                     name=f"route-inbox-{inbox_id}",
                 )
