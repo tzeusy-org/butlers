@@ -122,6 +122,67 @@ The system SHALL provide a `mind_map_node_create(pool, mind_map_id, label, descr
 
 ---
 
+### Requirement: Entity-per-node anchoring
+
+Every mind map node SHALL have a corresponding `shared.entities` entry so that memory facts about the concept can be anchored to a stable entity rather than relying on free-text `subject` strings. The entity is auto-created during node creation and linked via `education.mind_map_nodes.entity_id`.
+
+The `entity_id` column on `mind_map_nodes` SHALL be a nullable UUID foreign key referencing `shared.entities(id)`. It is nullable to allow backward compatibility with existing nodes that predate this feature; a migration SHALL backfill existing nodes.
+
+#### Scenario: Node creation auto-creates a shared entity
+
+- **WHEN** `mind_map_node_create(pool, <map_id>, "List Comprehensions")` is called on a mind map titled "Python"
+- **THEN** a new row MUST exist in `shared.entities` with `canonical_name = 'Python > List Comprehensions'`, `entity_type = 'other'`, and `tenant_id = 'shared'`
+- **AND** the entity's `metadata` MUST include `{"source_butler": "education", "source_scope": "education"}`
+- **AND** the entity MUST NOT have `metadata.unidentified = true` (it is curriculum-derived, not transitory)
+- **AND** the created node's `entity_id` column MUST reference the new entity's UUID
+
+#### Scenario: Node creation returns both node_id and entity_id
+
+- **WHEN** `mind_map_node_create(pool, <map_id>, "Recursion")` is called
+- **THEN** the function MUST return a dict `{"node_id": "<uuid>", "entity_id": "<uuid>"}` instead of a plain UUID string
+
+#### Scenario: Duplicate entity resolution on node creation
+
+- **WHEN** `mind_map_node_create(pool, <map_id>, "Recursion")` is called and a `shared.entities` row with `canonical_name = '<map_title> > Recursion'` and `entity_type = 'other'` already exists (e.g., from a previously abandoned mind map)
+- **THEN** the function MUST resolve the existing entity instead of failing
+- **AND** the created node's `entity_id` MUST reference the pre-existing entity
+
+#### Scenario: Entity survives node deletion
+
+- **WHEN** a mind map node with an `entity_id` is deleted (via CASCADE from mind map deletion)
+- **THEN** the corresponding `shared.entities` row MUST NOT be deleted
+- **AND** any facts anchored to that entity via `facts.entity_id` MUST remain intact
+
+#### Scenario: Entity_id is included in all node read operations
+
+- **WHEN** `mind_map_node_get`, `mind_map_node_list`, `mind_map_frontier`, `mind_map_subtree`, or `curriculum_next_node` returns node data
+- **THEN** the returned dict MUST include the `entity_id` field (which may be NULL for legacy nodes without entities)
+
+---
+
+### Requirement: Memory fact anchoring for education concepts
+
+All butler agents storing memory facts about education concepts (learning outcomes, struggle areas, prerequisites) MUST pass the node's `entity_id` to `memory_store_fact()` rather than relying solely on the free-text `subject` field. The `subject` field SHALL still contain the human-readable concept label for display purposes, but `entity_id` SHALL be the structural anchor for uniqueness and supersession.
+
+#### Scenario: Teaching session stores fact with entity_id
+
+- **WHEN** the education butler records a learning outcome after a teaching session for a concept node
+- **THEN** the `memory_store_fact` call MUST include `entity_id=<node_entity_id>` from the node's data
+- **AND** the `subject` field MUST contain the concept label (e.g., "List Comprehensions")
+
+#### Scenario: Review session stores struggle fact with entity_id
+
+- **WHEN** the education butler records a struggle area after a failed review
+- **THEN** the `memory_store_fact` call MUST include `entity_id=<node_entity_id>` from the reviewed node's data
+
+#### Scenario: Progress digest stores study_pattern fact with entity_id
+
+- **WHEN** the education butler records a study pattern observation during a progress digest
+- **THEN** the `memory_store_fact` call SHOULD include `entity_id` from the relevant mind map node when the pattern is concept-specific
+- **AND** MAY omit `entity_id` when the pattern is user-level (e.g., `subject="user"`)
+
+---
+
 ### Requirement: Node retrieval
 
 The system SHALL provide a `mind_map_node_get(pool, node_id)` function that returns a dict of the full node row for the given UUID, or `None` if no such row exists.

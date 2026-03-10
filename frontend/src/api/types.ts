@@ -1197,6 +1197,7 @@ export interface Fact {
   source_butler: string | null;
   source_episode_id: string | null;
   supersedes_id: string | null;
+  entity_id: string | null;
   validity: string;
   scope: string;
   reference_count: number;

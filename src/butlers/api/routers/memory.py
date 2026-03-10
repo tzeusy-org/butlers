@@ -383,7 +383,7 @@ async def list_facts(
         rows = await pool.fetch(
             f"SELECT id, subject, predicate, content, importance, confidence,"
             f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            f" validity, scope, reference_count, created_at, last_referenced_at,"
+            f" entity_id, validity, scope, reference_count, created_at, last_referenced_at,"
             f" last_confirmed_at, tags, metadata"
             f" FROM facts{where}"
             f" ORDER BY created_at DESC"
@@ -430,7 +430,7 @@ async def get_fact(
         return await pool.fetchrow(
             "SELECT id, subject, predicate, content, importance, confidence,"
             " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            " validity, scope, reference_count, created_at, last_referenced_at,"
+            " entity_id, validity, scope, reference_count, created_at, last_referenced_at,"
             " last_confirmed_at, tags, metadata"
             " FROM facts WHERE id = $1",
             fact_id,
@@ -1034,18 +1034,18 @@ async def merge_entity(
     if target_id == source_id:
         raise HTTPException(status_code=400, detail="Cannot merge entity into itself")
 
-    # Prevent merging owner entities — merge tombstones the source, which would
-    # bypass the deletion restriction on owner entities (mirrors delete_entity guard).
-    for eid, label in [(source_id, "source"), (target_id, "target")]:
-        row = await pool.fetchrow(
-            "SELECT roles FROM shared.entities WHERE id = $1",
-            _uuid.UUID(eid),
+    # Prevent merging owner entities as SOURCE — merge tombstones the source,
+    # which would bypass the deletion restriction on owner entities.
+    # Merging INTO the owner (as target) is allowed since the target survives.
+    row = await pool.fetchrow(
+        "SELECT roles FROM shared.entities WHERE id = $1",
+        _uuid.UUID(source_id),
+    )
+    if row and "owner" in (list(row["roles"]) if row["roles"] else []):
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot merge owner entity (source would be tombstoned)",
         )
-        if row and "owner" in (list(row["roles"]) if row["roles"] else []):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Cannot merge owner entity ({label})",
-            )
 
     try:
         result = await entity_merge(pool, source_id, target_id, tenant_id="shared")
@@ -1241,6 +1241,7 @@ def _row_to_fact(r) -> Fact:
         source_butler=r["source_butler"],
         source_episode_id=str(r["source_episode_id"]) if r["source_episode_id"] else None,
         supersedes_id=str(r["supersedes_id"]) if r["supersedes_id"] else None,
+        entity_id=str(r["entity_id"]) if r.get("entity_id") else None,
         validity=r["validity"],
         scope=r["scope"],
         reference_count=r["reference_count"],

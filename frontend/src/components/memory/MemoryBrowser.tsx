@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -251,7 +251,19 @@ function FactsTab({ butlerScope }: { butlerScope?: string }) {
                   className="cursor-pointer"
                   onClick={() => navigate(`/memory/facts/${f.id}`)}
                 >
-                  <TableCell className="font-medium">{f.subject}</TableCell>
+                  <TableCell className="font-medium">
+                    {f.entity_id ? (
+                      <Link
+                        to={`/entities/${f.entity_id}`}
+                        className="text-primary hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {f.subject}
+                      </Link>
+                    ) : (
+                      f.subject
+                    )}
+                  </TableCell>
                   <TableCell>{f.predicate}</TableCell>
                   <TableCell className="max-w-xs truncate">
                     {truncate(f.content)}

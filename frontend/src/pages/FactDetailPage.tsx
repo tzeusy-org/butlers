@@ -102,7 +102,18 @@ export default function FactDetailPage() {
           {/* Header */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-2xl">{fact.subject}</CardTitle>
+              <CardTitle className="text-2xl">
+                {fact.entity_id ? (
+                  <Link
+                    to={`/entities/${fact.entity_id}`}
+                    className="text-primary hover:underline"
+                  >
+                    {fact.subject}
+                  </Link>
+                ) : (
+                  fact.subject
+                )}
+              </CardTitle>
               <p className="text-muted-foreground text-sm">{fact.predicate}</p>
             </CardHeader>
             <CardContent className="space-y-4">
