@@ -28,7 +28,13 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from butlers.modules.memory.consolidation_parser import ConsolidationResult
-from butlers.modules.memory.storage import confirm_memory, create_link, store_fact, store_rule
+from butlers.modules.memory.storage import (
+    _lookup_episode_ttl_days,
+    confirm_memory,
+    create_link,
+    store_fact,
+    store_rule,
+)
 
 if TYPE_CHECKING:
     from asyncpg import Pool
@@ -49,6 +55,7 @@ async def execute_consolidation(
     butler_name: str,
     *,
     scope: str | None = None,
+    retention_class: str = "transient",
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
 
@@ -66,10 +73,12 @@ async def execute_consolidation(
         source_episode_ids: UUIDs of episodes that were consolidated
         butler_name: Name of the butler that sourced these episodes
         scope: Scope for new facts/rules (defaults to butler_name)
+        retention_class: Retention class to look up episode TTL from
+            memory_policies (default 'transient').
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
-        confirmations_made, episodes_consolidated, errors
+        confirmations_made, episodes_consolidated, episode_ttl_days, errors
     """
     effective_scope = scope if scope is not None else butler_name
     errors: list[str] = []
@@ -77,6 +86,9 @@ async def execute_consolidation(
     facts_updated = 0
     rules_created = 0
     confirmations_made = 0
+
+    # Resolve episode TTL from memory_policies for the given retention_class.
+    episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
 
     # --- New facts ---
     for fact in parsed.new_facts:
@@ -212,5 +224,6 @@ async def execute_consolidation(
         "rules_created": rules_created,
         "confirmations_made": confirmations_made,
         "episodes_consolidated": episodes_consolidated,
+        "episode_ttl_days": episode_ttl_days,
         "errors": errors,
     }

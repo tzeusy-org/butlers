@@ -105,6 +105,7 @@ async def memory_store_fact(
     entity_id: str | None = None,
     object_entity_id: str | None = None,
     valid_at: str | None = None,
+    idempotency_key: str | None = None,
     request_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Store a distilled fact, automatically superseding any existing match.
@@ -158,6 +159,7 @@ async def memory_store_fact(
         entity_id=parsed_entity_id,
         object_entity_id=parsed_object_entity_id,
         valid_at=parsed_valid_at,
+        idempotency_key=idempotency_key,
         tenant_id=tenant_id,
         request_id=request_id,
     )

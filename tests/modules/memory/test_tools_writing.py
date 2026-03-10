@@ -185,6 +185,7 @@ class TestMemoryStoreFact:
                 entity_id=None,
                 object_entity_id=None,
                 valid_at=None,
+                idempotency_key=None,
                 tenant_id="owner",
                 request_id=None,
             )

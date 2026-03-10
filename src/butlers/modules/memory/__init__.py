@@ -218,6 +218,18 @@ class MemoryModule(Module):
                     )
                 ),
             ] = None,
+            idempotency_key: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional dedup key for temporal facts (valid_at IS NOT NULL). "
+                        "When provided, duplicate writes with the same key are silently "
+                        "ignored and the existing fact's ID is returned. When omitted, "
+                        "a key is auto-generated from (entity_id, scope, predicate, "
+                        "valid_at, source). Property facts (valid_at omitted) are unaffected."
+                    )
+                ),
+            ] = None,
             request_context: Annotated[
                 dict[str, Any] | None,
                 Field(
@@ -311,6 +323,7 @@ class MemoryModule(Module):
                 entity_id=effective_entity_id,
                 object_entity_id=object_entity_id,
                 valid_at=valid_at,
+                idempotency_key=idempotency_key,
                 request_context=request_context,
             )
 

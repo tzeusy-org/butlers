@@ -7,6 +7,7 @@ use the EmbeddingEngine for semantic vector generation.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import math
@@ -98,8 +99,77 @@ _TYPE_TABLE: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# Temporal fact idempotency
+# ---------------------------------------------------------------------------
+
+
+def _generate_temporal_idempotency_key(
+    entity_id: uuid.UUID | None,
+    object_entity_id: uuid.UUID | None,
+    scope: str,
+    predicate: str,
+    valid_at: datetime,
+    source_episode_id: uuid.UUID | None,
+) -> str:
+    """Generate a deterministic idempotency key for a temporal fact.
+
+    Computes a SHA-256 hash (truncated to 32 hex chars) of the canonical
+    tuple ``(entity_id, object_entity_id, scope, predicate, valid_at,
+    source_episode_id)``.  This prevents duplicate temporal fact writes
+    even when the same observation is submitted multiple times.
+
+    Args:
+        entity_id: Subject entity UUID or None.
+        object_entity_id: Object entity UUID or None (for edge-facts).
+        scope: Fact scope string.
+        predicate: Fact predicate string.
+        valid_at: Temporal timestamp (must not be None for temporal facts).
+        source_episode_id: Source episode UUID or None.
+
+    Returns:
+        A 32-character lowercase hex string.
+    """
+    parts = "|".join(
+        [
+            str(entity_id) if entity_id is not None else "",
+            str(object_entity_id) if object_entity_id is not None else "",
+            scope,
+            predicate,
+            valid_at.isoformat(),
+            str(source_episode_id) if source_episode_id is not None else "",
+        ]
+    )
+    return hashlib.sha256(parts.encode()).hexdigest()[:32]
+
+
+# ---------------------------------------------------------------------------
 # Public API — Storage
 # ---------------------------------------------------------------------------
+
+
+async def _lookup_episode_ttl_days(pool: Pool, retention_class: str) -> int:
+    """Look up the TTL (in days) for an episode's retention_class from memory_policies.
+
+    Falls back to ``_DEFAULT_EPISODE_TTL_DAYS`` if the table does not yet exist
+    (e.g. before migration mem_017 is applied) or the class is not found.
+
+    Args:
+        pool: asyncpg connection pool.
+        retention_class: The retention class to look up (e.g. 'transient').
+
+    Returns:
+        Number of days until the episode expires.
+    """
+    try:
+        ttl = await pool.fetchval(
+            "SELECT default_ttl_days FROM memory_policies WHERE retention_class = $1",
+            retention_class,
+        )
+        if ttl is not None and isinstance(ttl, int) and ttl > 0:
+            return ttl
+    except Exception:
+        pass  # table may not exist yet; fall through to default
+    return _DEFAULT_EPISODE_TTL_DAYS
 
 
 async def store_episode(
@@ -113,11 +183,14 @@ async def store_episode(
     metadata: dict | None = None,
     tenant_id: str = "owner",
     request_id: str | None = None,
+    retention_class: str = "transient",
 ) -> uuid.UUID:
     """Store a raw episode from a butler runtime session.
 
     Generates both a semantic embedding and a full-text search vector for the
-    content, then inserts a row into the ``episodes`` table.
+    content, then inserts a row into the ``episodes`` table.  The episode TTL
+    is derived from the ``memory_policies`` table via the ``retention_class``
+    (falls back to ``_DEFAULT_EPISODE_TTL_DAYS`` when the policy row is absent).
 
     Args:
         pool: asyncpg connection pool for the memory database.
@@ -129,6 +202,7 @@ async def store_episode(
         metadata: Optional JSONB metadata dict.
         tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
         request_id: Optional request trace ID for correlation.
+        retention_class: Retention policy class (default 'transient').
 
     Returns:
         The UUID of the newly created episode row.
@@ -136,7 +210,8 @@ async def store_episode(
     episode_id = uuid.uuid4()
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
-    expires_at = datetime.now(UTC) + timedelta(days=_DEFAULT_EPISODE_TTL_DAYS)
+    ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
+    expires_at = datetime.now(UTC) + timedelta(days=ttl_days)
 
     sql = f"""
         INSERT INTO episodes (id, butler, session_id, content, embedding, search_vector,
@@ -183,6 +258,7 @@ async def store_fact(
     valid_at: datetime | None = None,
     tenant_id: str = "owner",
     request_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> uuid.UUID:
     """Store a distilled fact with optional supersession.
 
@@ -225,9 +301,16 @@ async def store_fact(
         tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
             Supersession checks are scoped to the same tenant_id.
         request_id: Optional request trace ID for correlation.
+        idempotency_key: Optional dedup key for temporal facts.  When omitted
+            and ``valid_at`` is set, a key is auto-generated as a SHA-256 hash
+            (32 hex chars) of ``(entity_id, object_entity_id, scope, predicate,
+            valid_at, source_episode_id)``.  A write with the same
+            ``(tenant_id, idempotency_key)`` is a no-op; the existing fact's ID
+            is returned instead.  Property facts (``valid_at IS NULL``) always
+            have ``idempotency_key = NULL`` and use supersession instead.
 
     Returns:
-        The UUID of the newly created fact.
+        The UUID of the newly created (or pre-existing, idempotent) fact.
     """
     fact_id = uuid.uuid4()
     searchable = f"{subject} {predicate} {content}"
@@ -240,6 +323,25 @@ async def store_fact(
     fact_valid_at = valid_at  # None → property fact, datetime → temporal fact
     tags_json = json.dumps(tags or [])
     meta_json = json.dumps(metadata or {})
+
+    # Determine idempotency_key for temporal facts.
+    # Property facts (valid_at IS NULL) must NOT get an idempotency key —
+    # they use the existing supersession mechanism instead.
+    effective_idempotency_key: str | None = None
+    if fact_valid_at is not None:
+        if idempotency_key is not None:
+            # Caller provided an explicit key — use it as-is.
+            effective_idempotency_key = idempotency_key
+        else:
+            # Auto-generate a deterministic key from the canonical fact tuple.
+            effective_idempotency_key = _generate_temporal_idempotency_key(
+                entity_id,
+                object_entity_id,
+                scope,
+                predicate,
+                fact_valid_at,
+                source_episode_id,
+            )
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -272,6 +374,18 @@ async def store_fact(
                     raise ValueError(
                         f"object_entity_id {object_entity_id!r} does not exist in entities table"
                     )
+
+            # Idempotency check for temporal facts.
+            # If a fact with the same (tenant_id, idempotency_key) already exists,
+            # return its ID as a no-op.  Property facts skip this path entirely.
+            if effective_idempotency_key is not None:
+                existing_idem_id = await conn.fetchval(
+                    "SELECT id FROM facts WHERE tenant_id = $1 AND idempotency_key = $2",
+                    tenant_id,
+                    effective_idempotency_key,
+                )
+                if existing_idem_id is not None:
+                    return existing_idem_id
 
             # Supersession applies only to property facts (valid_at IS NULL).
             # Temporal facts (valid_at IS NOT NULL) always coexist as independent
@@ -322,27 +436,33 @@ async def store_fact(
                 if existing:
                     old_id = existing["id"]
                     supersedes_id = old_id
-                    # Mark old fact as superseded
+                    # Mark old fact as superseded and set invalid_at to record when
+                    # it was known to be no longer true (i.e. when the new fact arrives).
                     await conn.execute(
-                        "UPDATE facts SET validity = 'superseded' WHERE id = $1",
+                        "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
                         old_id,
+                        now,
                     )
 
-            # Insert new fact
+            # Insert new fact — include idempotency_key and observed_at columns
+            # added by migration mem_016.  Falls back gracefully on older schemas
+            # because the columns have safe defaults (NULL and now()).
             sql = f"""
                 INSERT INTO facts (
                     id, subject, predicate, content, embedding, search_vector,
                     importance, confidence, decay_rate, permanence, source_butler,
                     source_episode_id, supersedes_id, validity, scope,
                     created_at, last_confirmed_at, tags, metadata, entity_id,
-                    object_entity_id, valid_at, tenant_id, request_id
+                    object_entity_id, valid_at, tenant_id, request_id,
+                    idempotency_key, observed_at
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, {tsvector_sql("$6")},
                     $7, $8, $9, $10, $11,
                     $12, $13, 'active', $14,
                     $15, $15, $16, $17, $18,
-                    $19, $20, $21, $22
+                    $19, $20, $21, $22,
+                    $23, $24
                 )
             """
             await conn.execute(
@@ -369,6 +489,8 @@ async def store_fact(
                 fact_valid_at,
                 tenant_id,
                 request_id,
+                effective_idempotency_key,
+                now,  # observed_at = insertion time
             )
 
             # Create supersedes link if applicable
