@@ -688,6 +688,44 @@ class TestGmailConnectorRuntime:
 
         assert body == "Plain version"
 
+    def test_extract_body_charset_iso8859(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """ISO-8859-1 encoded text/plain body is decoded correctly. [bu-791]"""
+        import base64
+
+        # "café" encoded in ISO-8859-1: 'é' is 0xe9
+        iso_bytes = "café résumé".encode("iso-8859-1")
+        payload = {
+            "mimeType": "text/plain",
+            "headers": [
+                {"name": "Content-Type", "value": "text/plain; charset=iso-8859-1"},
+            ],
+            "body": {"data": base64.urlsafe_b64encode(iso_bytes).decode()},
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert body == "café résumé"
+        # Ensure no replacement characters leaked in
+        assert "\ufffd" not in body
+
+    def test_extract_body_charset_fallback(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Unknown charset gracefully falls back to UTF-8 with replacement chars. [bu-791]"""
+        import base64
+
+        utf8_bytes = b"hello"
+        payload = {
+            "mimeType": "text/plain",
+            "headers": [
+                {"name": "Content-Type", "value": "text/plain; charset=x-not-a-real-charset"},
+            ],
+            "body": {"data": base64.urlsafe_b64encode(utf8_bytes).decode()},
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        # UTF-8 bytes of "hello" are valid UTF-8 so no replacement needed here
+        assert body == "hello"
+
     # ------------------------------------------------------------------
     # Mid-session Switchboard ConnectionError tests (butlers-tt60)
     # ------------------------------------------------------------------

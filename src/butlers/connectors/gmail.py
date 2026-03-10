@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import html
 import logging
 import os
@@ -1980,6 +1981,37 @@ class GmailConnectorRuntime:
             },
         }
 
+    @staticmethod
+    def _charset_from_headers(headers: list[dict[str, str]]) -> str:
+        """Extract charset from the Content-Type header in a MIME part's headers list.
+
+        Returns the charset string if present and recognised by :mod:`codecs`,
+        otherwise returns ``"utf-8"`` as a safe fallback.
+        """
+        for header in headers:
+            if header.get("name", "").lower() == "content-type":
+                match = re.search(r"charset=([^\s;\"']+)", header.get("value", ""), re.IGNORECASE)
+                if match:
+                    charset_name = match.group(1).strip()
+                    try:
+                        codecs.lookup(charset_name)
+                        return charset_name
+                    except LookupError:
+                        logger.debug(
+                            "Unknown charset %r in Content-Type; falling back to utf-8",
+                            charset_name,
+                        )
+        return "utf-8"
+
+    def _decode_part_bytes(self, raw_bytes: bytes, payload: dict[str, Any]) -> str:
+        """Decode *raw_bytes* using the charset declared in *payload*'s Content-Type header.
+
+        Falls back to UTF-8 with replacement characters when the declared
+        charset is absent or not recognised by :mod:`codecs`.
+        """
+        charset = self._charset_from_headers(payload.get("headers", []))
+        return raw_bytes.decode(charset, errors="replace")
+
     def _extract_body_from_payload(self, payload: dict[str, Any], depth: int = 0) -> str:
         """Recursively extract body text from Gmail message payload.
 
@@ -1997,13 +2029,15 @@ class GmailConnectorRuntime:
         if mime_type == "text/plain":
             body_data = payload.get("body", {}).get("data", "")
             if body_data:
-                return base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
+                raw_bytes = base64.urlsafe_b64decode(body_data)
+                return self._decode_part_bytes(raw_bytes, payload)
 
         # Leaf node: text/html — decode and strip tags (fallback candidate)
         if mime_type == "text/html":
             body_data = payload.get("body", {}).get("data", "")
             if body_data:
-                raw_html = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
+                raw_bytes = base64.urlsafe_b64decode(body_data)
+                raw_html = self._decode_part_bytes(raw_bytes, payload)
                 return self._strip_html(raw_html)
 
         # Multipart: collect plain and html candidates separately so we can
