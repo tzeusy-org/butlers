@@ -366,6 +366,17 @@ class MemoryModule(Module):
             ] = "hybrid",
             limit: int = 10,
             min_confidence: float = 0.2,
+            filters: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional structured filters applied as AND conditions. "
+                        "Supported keys: scope, entity_id, predicate, source_butler, "
+                        "time_from (ISO-8601), time_to (ISO-8601), retention_class, sensitivity. "
+                        "Unrecognized keys are silently ignored."
+                    )
+                ),
+            ] = None,
         ) -> list[dict[str, Any]]:
             """Search memory with strict type/mode inputs and deterministic ranking.
 
@@ -378,6 +389,8 @@ class MemoryModule(Module):
             - `mode` (string enum): `hybrid|semantic|keyword`
             - `limit` (int)
             - `min_confidence` (float)
+            - `filters` (dict): AND-conditions; keys: scope, entity_id, predicate,
+              source_butler, time_from, time_to, retention_class, sensitivity
 
             Input shape reminders:
             - `types` must be a JSON array/list, for example `["fact"]`
@@ -400,6 +413,7 @@ class MemoryModule(Module):
                 mode=mode,
                 limit=limit,
                 min_confidence=min_confidence,
+                filters=filters,
             )
 
         @mcp.tool()
@@ -407,6 +421,27 @@ class MemoryModule(Module):
             topic: str,
             scope: str | None = None,
             limit: int = 10,
+            filters: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional structured filters applied as AND conditions. "
+                        "Supported keys: scope, entity_id, predicate, source_butler, "
+                        "time_from (ISO-8601), time_to (ISO-8601), retention_class, sensitivity. "
+                        "Unrecognized keys are silently ignored."
+                    )
+                ),
+            ] = None,
+            request_context: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "and 'request_id' (optional trace ID). When omitted, defaults to "
+                        "tenant_id='owner' and no request_id."
+                    )
+                ),
+            ] = None,
         ) -> list[dict[str, Any]]:
             """High-level composite-scored retrieval of relevant facts and rules."""
             return await _reading.memory_recall(
@@ -415,6 +450,8 @@ class MemoryModule(Module):
                 topic,
                 scope=scope,
                 limit=limit,
+                filters=filters,
+                request_context=request_context,
             )
 
         @mcp.tool()
@@ -516,14 +553,44 @@ class MemoryModule(Module):
             trigger_prompt: str,
             butler: str,
             token_budget: int = default_context_budget,
+            include_recent_episodes: Annotated[
+                bool,
+                Field(
+                    description=(
+                        "If True, include a ## Recent Episodes section (15% of budget) "
+                        "with the most recent episodes for the butler. Default False."
+                    )
+                ),
+            ] = False,
+            request_context: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "and 'request_id' (optional trace ID). tenant_id scopes all retrieval. "
+                        "When omitted, defaults to tenant_id='owner' and no request_id."
+                    )
+                ),
+            ] = None,
         ) -> str:
-            """Build a memory context block for injection into a CC system prompt."""
+            """Build a deterministic, sectioned memory context block for CC system prompt injection.
+
+            Sections (in order, empty sections omitted):
+            - ## Profile Facts (30% of budget): owner entity facts sorted by importance
+            - ## Task-Relevant Facts (35% of budget): recall matches excluding profile facts
+            - ## Active Rules (20% of budget): sorted by maturity rank then effectiveness
+            - ## Recent Episodes (15% of budget): opt-in via include_recent_episodes=True
+
+            Same inputs always produce identical output (deterministic section compiler).
+            """
             return await _context.memory_context(
                 module._get_pool(),
                 module._get_embedding_engine(),
                 trigger_prompt,
                 butler,
                 token_budget=token_budget,
+                include_recent_episodes=include_recent_episodes,
+                request_context=request_context,
             )
 
         # --- Entity tools ---
