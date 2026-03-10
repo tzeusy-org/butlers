@@ -1010,6 +1010,10 @@ class _MergeEntityResponse(BaseModel):
     target_entity_id: str
     source_entity_id: str
     facts_repointed: int
+    facts_superseded: int = 0
+    edge_facts_repointed: int = 0
+    edge_facts_superseded: int = 0
+    aliases_added: int = 0
 
 
 @router.post("/entities/{entity_id}/merge", response_model=_MergeEntityResponse)
@@ -1027,7 +1031,12 @@ async def merge_entity(
 
     from butlers.modules.memory.tools.entities import entity_merge
 
-    pool = _any_pool(db)
+    all_pools = _memory_pools(db)
+    if not all_pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+    pool = all_pools[0][1]  # primary pool for entity operations
+    extra_pools = [p for _, p in all_pools[1:]]
+
     target_id = str(_uuid.UUID(entity_id))
     source_id = str(_uuid.UUID(body.source_entity_id))
 
@@ -1048,7 +1057,9 @@ async def merge_entity(
         )
 
     try:
-        result = await entity_merge(pool, source_id, target_id, tenant_id="shared")
+        result = await entity_merge(
+            pool, source_id, target_id, tenant_id="shared", extra_pools=extra_pools,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

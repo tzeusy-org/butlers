@@ -112,9 +112,12 @@ function EntityMergeDialog({
       },
       {
         onSuccess: (data) => {
-          toast.success(
-            `Merged into ${selectedEntity.canonical_name} (${data.facts_repointed} facts re-pointed)`,
-          );
+          const parts: string[] = [];
+          if (data.facts_repointed) parts.push(`${data.facts_repointed} re-pointed`);
+          if (data.facts_superseded) parts.push(`${data.facts_superseded} superseded`);
+          if (data.aliases_added) parts.push(`${data.aliases_added} aliases added`);
+          const summary = parts.length ? ` (${parts.join(", ")})` : "";
+          toast.success(`Merged into ${selectedEntity.canonical_name}${summary}`);
           onOpenChange(false);
           setSearch("");
           setSelectedEntity(null);

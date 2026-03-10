@@ -1308,6 +1308,10 @@ export interface MergeEntityResponse {
   target_entity_id: string;
   source_entity_id: string;
   facts_repointed: number;
+  facts_superseded: number;
+  edge_facts_repointed: number;
+  edge_facts_superseded: number;
+  aliases_added: number;
 }
 
 /** A single entity_info row (credentials, identifiers, etc.). */
