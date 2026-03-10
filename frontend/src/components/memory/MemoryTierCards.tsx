@@ -104,9 +104,12 @@ export default function MemoryTierCards() {
           <CardDescription>Mid-term tier — consolidated knowledge</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
-          {statRow("Total", stats.total_facts)}
-          {statRow("Active", stats.active_facts, stats.total_facts)}
-          {statRow("Fading", stats.fading_facts, stats.total_facts)}
+          {statRow("Active", stats.active_facts)}
+          {statRow("Fading", stats.fading_facts)}
+          {statRow(
+            "Superseded",
+            stats.total_facts - stats.active_facts - stats.fading_facts,
+          )}
         </CardContent>
       </Card>
 
