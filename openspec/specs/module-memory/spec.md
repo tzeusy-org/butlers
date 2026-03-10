@@ -1006,7 +1006,10 @@ This rule applies to all butlers with the memory module enabled: health, finance
 
 - **WHEN** a butler stores a fact referencing a place not yet in the entity graph (e.g., "Marina Bay Sands")
 - **AND** `memory_entity_resolve("Marina Bay Sands", entity_type="place")` returns an empty list
-- **THEN** the butler MUST create a transitory entity with `entity_type="place"` and `metadata.unidentified = true`
+- **THEN** the butler MUST call `memory_entity_create` with:
+  - `canonical_name="Marina Bay Sands"`
+  - `entity_type="place"`
+  - `metadata={"unidentified": true, "source": "fact_storage", "source_butler": "<butler_name>", "source_scope": "<scope>"}`
 - **AND** MUST use the returned `entity_id` for the fact
 
 #### Scenario: Idempotent entity creation on duplicate name

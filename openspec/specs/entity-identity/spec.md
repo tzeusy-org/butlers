@@ -433,8 +433,7 @@ Transitory entities are full `shared.entities` rows — they have a valid UUID, 
 #### Scenario: Deleting a transitory entity
 
 - **WHEN** the owner deletes a transitory entity via the dashboard
-- **THEN** all facts anchored to the entity MUST be handled per the `ON DELETE RESTRICT` FK constraint
-- **AND** the entity cannot be deleted while facts reference it — facts must be retracted or re-pointed first
+- **THEN** the entity cannot be deleted while facts reference it, as enforced by the `ON DELETE RESTRICT` foreign key constraint. Facts must be retracted or re-pointed first.
 
 #### Scenario: Dashboard query for unidentified entities
 
