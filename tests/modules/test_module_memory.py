@@ -432,6 +432,171 @@ class TestToolDelegation:
 
 
 # ---------------------------------------------------------------------------
+# Sender entity_id fallback in memory_store_fact
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryStoreFactSenderEntityIdFallback:
+    """Verify memory_store_fact uses sender entity_id from routing context as default."""
+
+    async def _setup_and_get_fact_tool(self):
+        """Register tools with mocked implementations and return memory_store_fact."""
+        mod = MemoryModule()
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock(name="fake_pool")
+        mock_writing = MagicMock()
+
+        parent_mock = MagicMock()
+        parent_mock.writing = mock_writing
+
+        mcp = MagicMock()
+        registered_tools: dict[str, Any] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool.side_effect = capture_tool
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "butlers.modules.memory.tools": parent_mock,
+                "butlers.modules.memory.tools.writing": mock_writing,
+                "butlers.modules.memory.tools.reading": MagicMock(),
+                "butlers.modules.memory.tools.feedback": MagicMock(),
+                "butlers.modules.memory.tools.management": MagicMock(),
+                "butlers.modules.memory.tools.context": MagicMock(),
+                "butlers.modules.memory.tools.entities": MagicMock(),
+            },
+        ):
+            await mod.register_tools(mcp=mcp, config=None, db=fake_db)
+
+        mod._embedding_engine = MagicMock(name="embedding")
+        mock_writing.memory_store_fact = AsyncMock(return_value={"id": "xyz"})
+        return mod, registered_tools["memory_store_fact"], fake_db.pool, mock_writing
+
+    async def test_no_entity_id_and_no_routing_ctx_passes_none(self):
+        """When no routing context exists, entity_id defaults to None."""
+        from unittest.mock import patch as _patch
+
+        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
+
+        with _patch(
+            "butlers.modules.memory.get_current_runtime_session_routing_context",
+            return_value=None,
+        ):
+            await fact_tool(subject="user", predicate="likes", content="coffee")
+
+        writing.memory_store_fact.assert_called_once_with(
+            pool,
+            mod._embedding_engine,
+            "user",
+            "likes",
+            "coffee",
+            importance=5.0,
+            permanence="standard",
+            scope="global",
+            tags=None,
+            entity_id=None,
+            object_entity_id=None,
+            valid_at=None,
+        )
+
+    async def test_no_entity_id_with_routing_ctx_uses_sender_entity(self):
+        """When routing context has source_entity_id, it is used as entity_id fallback."""
+        from unittest.mock import patch as _patch
+
+        sender_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
+
+        with _patch(
+            "butlers.modules.memory.get_current_runtime_session_routing_context",
+            return_value={"source_entity_id": sender_uuid},
+        ):
+            await fact_tool(subject="user", predicate="likes", content="coffee")
+
+        writing.memory_store_fact.assert_called_once_with(
+            pool,
+            mod._embedding_engine,
+            "user",
+            "likes",
+            "coffee",
+            importance=5.0,
+            permanence="standard",
+            scope="global",
+            tags=None,
+            entity_id=sender_uuid,
+            object_entity_id=None,
+            valid_at=None,
+        )
+
+    async def test_explicit_entity_id_takes_precedence_over_routing_ctx(self):
+        """When caller passes entity_id explicitly, routing context is not used."""
+        from unittest.mock import patch as _patch
+
+        sender_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        explicit_uuid = "660e8400-e29b-41d4-a716-446655440001"
+        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
+
+        with _patch(
+            "butlers.modules.memory.get_current_runtime_session_routing_context",
+            return_value={"source_entity_id": sender_uuid},
+        ):
+            await fact_tool(
+                subject="user",
+                predicate="likes",
+                content="coffee",
+                entity_id=explicit_uuid,
+            )
+
+        writing.memory_store_fact.assert_called_once_with(
+            pool,
+            mod._embedding_engine,
+            "user",
+            "likes",
+            "coffee",
+            importance=5.0,
+            permanence="standard",
+            scope="global",
+            tags=None,
+            entity_id=explicit_uuid,
+            object_entity_id=None,
+            valid_at=None,
+        )
+
+    async def test_routing_ctx_missing_source_entity_id_key_passes_none(self):
+        """When routing context exists but lacks source_entity_id, entity_id stays None."""
+        from unittest.mock import patch as _patch
+
+        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
+
+        with _patch(
+            "butlers.modules.memory.get_current_runtime_session_routing_context",
+            return_value={"source_contact_id": "contact-123"},
+        ):
+            await fact_tool(subject="user", predicate="likes", content="coffee")
+
+        writing.memory_store_fact.assert_called_once_with(
+            pool,
+            mod._embedding_engine,
+            "user",
+            "likes",
+            "coffee",
+            importance=5.0,
+            permanence="standard",
+            scope="global",
+            tags=None,
+            entity_id=None,
+            object_entity_id=None,
+            valid_at=None,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Registry discovery
 # ---------------------------------------------------------------------------
 

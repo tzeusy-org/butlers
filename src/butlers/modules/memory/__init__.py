@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
 
+from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
 from butlers.modules.base import Module
 
 
@@ -31,6 +32,7 @@ def _coerce_json_list(v: Any) -> Any:
         except (json.JSONDecodeError, TypeError):
             pass
     return v
+
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +266,17 @@ class MemoryModule(Module):
               "valid_at": "2026-03-06T08:00:00Z"
             }
             """
+            # If the caller did not supply entity_id, fall back to the sender
+            # entity resolved during identity resolution and stored in the
+            # runtime session routing context.  This prevents the LLM from
+            # having to extract source_sender_entity_id from the preamble text.
+            effective_entity_id = entity_id
+            if effective_entity_id is None:
+                _routing_ctx = get_current_runtime_session_routing_context()
+                if isinstance(_routing_ctx, dict):
+                    _ctx_entity_id = _routing_ctx.get("source_entity_id")
+                    if isinstance(_ctx_entity_id, str) and _ctx_entity_id.strip():
+                        effective_entity_id = _ctx_entity_id.strip()
             return await _writing.memory_store_fact(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -274,7 +287,7 @@ class MemoryModule(Module):
                 permanence=permanence,
                 scope=scope,
                 tags=tags,
-                entity_id=entity_id,
+                entity_id=effective_entity_id,
                 object_entity_id=object_entity_id,
                 valid_at=valid_at,
             )
