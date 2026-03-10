@@ -156,7 +156,10 @@ async def pool(provisioned_postgres_pool):
                 object_entity_id UUID REFERENCES shared.entities(id),
                 valid_at TIMESTAMPTZ DEFAULT NULL,
                 tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT
+                request_id TEXT,
+                idempotency_key TEXT,
+                observed_at TIMESTAMPTZ DEFAULT now(),
+                invalid_at TIMESTAMPTZ
             )
         """)
         await p.execute("""
