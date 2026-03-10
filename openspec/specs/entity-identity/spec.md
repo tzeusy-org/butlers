@@ -48,6 +48,34 @@ CREATE TABLE shared.entities (
 
 ---
 
+### Requirement: MCP entity tools default tenant_id to shared
+
+All MCP entity tools that accept a `tenant_id` parameter MUST default to `'shared'` when no `tenant_id` is provided by the caller. This ensures that runtime agents operating without explicit tenant context naturally create and resolve entities in the `shared` schema — the correct cross-butler entity namespace.
+
+Affected tools: `entity_create`, `entity_resolve`, `entity_get`, `entity_update`, `entity_merge`, `entity_neighbors`.
+
+**Rationale:** Before this requirement, `entity_resolve` defaulted to `'default'` (which no longer exists as a tenant after the `shared.entities` migration) and `entity_create` required `tenant_id` as a positional argument, causing agents to either omit it (error) or guess the wrong value. All runtime agents should operate in the `'shared'` tenant unless explicitly instructed otherwise.
+
+#### Scenario: entity_create with no tenant_id uses shared
+
+- **WHEN** a runtime agent calls `entity_create(canonical_name='Alice', entity_type='person')` without providing `tenant_id`
+- **THEN** the entity MUST be created with `tenant_id = 'shared'`
+- **AND** the entity MUST be stored in `shared.entities`
+
+#### Scenario: entity_resolve with no tenant_id searches shared
+
+- **WHEN** a runtime agent calls `entity_resolve(name='Alice')` without providing `tenant_id`
+- **THEN** the resolution MUST search within `tenant_id = 'shared'`
+- **AND** MUST NOT fall back to a `'default'` tenant that no longer exists
+
+#### Scenario: Explicit tenant_id overrides the default
+
+- **WHEN** a caller provides an explicit `tenant_id` (e.g., for a butler-local namespace)
+- **THEN** the tool MUST use the caller-provided value instead of the default
+- **AND** `tenant_id = 'shared'` remains the only cross-butler accessible tenant
+
+---
+
 ### Requirement: Roles column on entities
 
 The `shared.entities` table SHALL have a `roles TEXT[] NOT NULL DEFAULT '{}'` column. Each element in the array represents an identity role. The initial supported role value is `'owner'`. This column is the authoritative source of truth for identity roles, replacing `contacts.roles`.

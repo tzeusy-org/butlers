@@ -672,8 +672,8 @@ The Memory module SHALL register 21 MCP tools on the hosting butler's MCP server
 
 - **WHEN** the memory module registers tools
 - **THEN** tools `entity_create`, `entity_get`, `entity_update`, `entity_resolve`, `entity_merge`, and `entity_neighbors` MUST be available
-- **AND** `entity_create` MUST accept `canonical_name`, `entity_type`, `tenant_id` (all required), `aliases` (optional), `metadata` (optional)
-- **AND** `entity_resolve` MUST accept `name` (required), `tenant_id` (default 'default'), `entity_type` (optional), `context_hints` (optional), `enable_fuzzy` (default False)
+- **AND** `entity_create` MUST accept `canonical_name`, `entity_type` (required), `tenant_id` (default `'shared'`), `aliases` (optional), `metadata` (optional)
+- **AND** `entity_resolve` MUST accept `name` (required), `tenant_id` (default `'shared'`), `entity_type` (optional), `context_hints` (optional), `enable_fuzzy` (default False)
 - **AND** `entity_neighbors` MUST accept `entity_id` (required UUID), `max_depth` (default 1, max 5), `predicate_filter` (optional list of predicate strings), `direction` (default 'both', one of 'outgoing', 'incoming', 'both')
 
 #### Scenario: Consolidation and cleanup tools registered
@@ -988,6 +988,33 @@ This rule applies to all butlers with the memory module enabled, not just the re
 - **AND** `entity_id` is `None`
 - **THEN** this is a spec violation — facts about people MUST always be entity-anchored
 - **AND** the shared `butler-memory` skill instructs all runtime instances to follow this rule
+
+---
+
+### Requirement: Entity anchoring via request_context
+
+When a routed message arrives at a downstream butler via a `route.v1` envelope, the `request_context` carries resolved sender identity as `source_sender_entity_id` and `source_sender_contact_id`. Butlers MUST use `source_sender_entity_id` directly as the `entity_id` when storing facts about the message sender — they MUST NOT call `memory_entity_resolve` or `memory_entity_create` for the sender when this field is already populated.
+
+This short-circuits the resolve-or-create protocol for the sender specifically. The Switchboard has already resolved (or provisioned) the sender entity; downstream butlers consume it as-is.
+
+#### Scenario: Butler uses source_sender_entity_id for sender facts
+
+- **WHEN** a butler receives a `route.v1` message with `request_context.source_sender_entity_id = 'def-456'`
+- **AND** the message contains information about the sender (e.g., "I had lunch at 2pm today")
+- **THEN** the butler MUST call `memory_store_fact` with `entity_id='def-456'`
+- **AND** MUST NOT call `memory_entity_resolve` or `memory_entity_create` for the sender entity
+
+#### Scenario: request_context entity_id takes precedence over preamble parsing
+
+- **WHEN** `request_context.source_sender_entity_id` is present
+- **THEN** the butler MUST use this value as the authoritative sender entity anchor
+- **AND** MUST NOT attempt to extract entity identity from the text preamble string (which is a legacy display format)
+
+#### Scenario: Missing source_sender_entity_id falls back to resolve-or-create
+
+- **WHEN** a butler receives a message where `request_context.source_sender_entity_id` is absent or null
+- **THEN** the butler MUST fall back to the standard resolve-or-create-transitory protocol for the sender entity
+- **AND** MUST call `memory_entity_resolve` and, if empty, `memory_entity_create` with `metadata.unidentified = true`
 
 ---
 

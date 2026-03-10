@@ -98,3 +98,42 @@ The Switchboard MUST differentiate message handling based on whether the sender 
 - **THEN** the Switchboard MUST route this with Chloe's identity context
 - **AND** the downstream butler MUST create a reminder attributed to Chloe, NOT the owner
 - **AND** the reminder notification MUST be sent to Chloe's channel (subject to approval gating since Chloe is non-owner)
+
+---
+
+### Requirement: Resolved sender identity in route.v1 request_context
+
+After resolving the sender's identity, the Switchboard MUST include the resolved `entity_id` and `contact_id` as structured fields in the `route.v1` envelope's `request_context`. This provides downstream butlers with machine-readable identity anchors that they can use directly for fact storage — without needing to parse the text preamble.
+
+The `request_context` MUST be extended with two additional fields for every routed message:
+- `source_sender_entity_id` (UUID | null): the resolved entity UUID for the sender, or `null` if identity resolution failed entirely
+- `source_sender_contact_id` (UUID | null): the resolved contact UUID for the sender, or `null` if identity resolution failed entirely
+
+#### Scenario: Known sender populates both identity fields in request_context
+
+- **WHEN** the Switchboard resolves a known contact "Chloe" with `contact_id = 'abc-123'` and `entity_id = 'def-456'`
+- **AND** routes the message to a downstream butler via `route.v1`
+- **THEN** `request_context.source_sender_entity_id` MUST be `'def-456'`
+- **AND** `request_context.source_sender_contact_id` MUST be `'abc-123'`
+
+#### Scenario: Owner sender populates both identity fields in request_context
+
+- **WHEN** the Switchboard resolves the owner contact with `contact_id = 'abc-123'` and `entity_id = 'def-456'`
+- **AND** routes the message to a downstream butler via `route.v1`
+- **THEN** `request_context.source_sender_entity_id` MUST be `'def-456'`
+- **AND** `request_context.source_sender_contact_id` MUST be `'abc-123'`
+
+#### Scenario: Unknown sender populates identity fields from temporary contact
+
+- **WHEN** an unknown sender triggers temporary contact creation, yielding `contact_id = 'ghi-789'` and `entity_id = 'jkl-012'`
+- **AND** the Switchboard routes the message via `route.v1`
+- **THEN** `request_context.source_sender_entity_id` MUST be `'jkl-012'`
+- **AND** `request_context.source_sender_contact_id` MUST be `'ghi-789'`
+
+#### Scenario: Identity resolution failure leaves fields null
+
+- **WHEN** identity resolution fails (e.g., database error before temporary contact can be created)
+- **AND** the Switchboard still routes the message to allow fail-open processing
+- **THEN** `request_context.source_sender_entity_id` MUST be `null`
+- **AND** `request_context.source_sender_contact_id` MUST be `null`
+- **AND** the downstream butler MUST fall back to the resolve-or-create-transitory protocol for the sender
