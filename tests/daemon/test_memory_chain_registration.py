@@ -79,6 +79,8 @@ class TestMemoryChainRegistration:
             "013_fix_owner_tenant_id.py",
             "014_tenant_request_lineage.py",
             "015_consolidation_state_machine.py",
+            "016_temporal_fact_safety.py",
+            "017_memory_policies.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:

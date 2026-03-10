@@ -12,7 +12,7 @@ New index:
   (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL
 
 Revision ID: mem_016
-Revises: mem_014
+Revises: mem_015
 Create Date: 2026-03-10 00:00:00.000000
 """
 
@@ -22,7 +22,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "mem_016"
-down_revision = "mem_014"
+down_revision = "mem_015"
 branch_labels = None
 depends_on = None
 
