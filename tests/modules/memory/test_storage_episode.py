@@ -225,3 +225,69 @@ class TestStoreEpisode:
         await store_episode(mock_pool, "test content", "test-butler", mock_embedding_engine)
         sql = mock_pool.execute.call_args[0][0]
         assert "to_tsvector('english', $6)" in sql
+
+    async def test_retention_class_in_sql_columns(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """The SQL INSERT includes the retention_class column."""
+        await store_episode(mock_pool, "test content", "test-butler", mock_embedding_engine)
+        sql = mock_pool.execute.call_args[0][0]
+        assert "retention_class" in sql
+
+    async def test_sensitivity_in_sql_columns(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """The SQL INSERT includes the sensitivity column."""
+        await store_episode(mock_pool, "test content", "test-butler", mock_embedding_engine)
+        sql = mock_pool.execute.call_args[0][0]
+        assert "sensitivity" in sql
+
+    async def test_custom_retention_class_passed(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """A custom retention_class is passed through to the INSERT bind params."""
+        await store_episode(
+            mock_pool,
+            "test content",
+            "test-butler",
+            mock_embedding_engine,
+            retention_class="operational",
+        )
+        call_args = mock_pool.execute.call_args[0]
+        # $12 is retention_class (0-based index 12)
+        retention_class_arg = call_args[12]
+        assert retention_class_arg == "operational"
+
+    async def test_default_retention_class_is_transient(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """Default retention_class is 'transient' when not specified."""
+        await store_episode(mock_pool, "test content", "test-butler", mock_embedding_engine)
+        call_args = mock_pool.execute.call_args[0]
+        retention_class_arg = call_args[12]
+        assert retention_class_arg == "transient"
+
+    async def test_custom_sensitivity_passed(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """A custom sensitivity is passed through to the INSERT bind params."""
+        await store_episode(
+            mock_pool,
+            "test content",
+            "test-butler",
+            mock_embedding_engine,
+            sensitivity="confidential",
+        )
+        call_args = mock_pool.execute.call_args[0]
+        # $13 is sensitivity (0-based index 13)
+        sensitivity_arg = call_args[13]
+        assert sensitivity_arg == "confidential"
+
+    async def test_default_sensitivity_is_normal(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """Default sensitivity is 'normal' when not specified."""
+        await store_episode(mock_pool, "test content", "test-butler", mock_embedding_engine)
+        call_args = mock_pool.execute.call_args[0]
+        sensitivity_arg = call_args[13]
+        assert sensitivity_arg == "normal"

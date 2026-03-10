@@ -287,6 +287,7 @@ async def store_episode(
     tenant_id: str = "owner",
     request_id: str | None = None,
     retention_class: str = "transient",
+    sensitivity: str = "normal",
 ) -> uuid.UUID:
     """Store a raw episode from a butler runtime session.
 
@@ -306,6 +307,7 @@ async def store_episode(
         tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
         request_id: Optional request trace ID for correlation.
         retention_class: Retention policy class (default 'transient').
+        sensitivity: Data sensitivity classification (default 'normal').
 
     Returns:
         The UUID of the newly created episode row.
@@ -318,8 +320,9 @@ async def store_episode(
 
     sql = f"""
         INSERT INTO episodes (id, butler, session_id, content, embedding, search_vector,
-                              importance, expires_at, metadata, tenant_id, request_id)
-        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11)
+                              importance, expires_at, metadata, tenant_id, request_id,
+                              retention_class, sensitivity)
+        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13)
     """
 
     meta_json = json.dumps(metadata or {})
@@ -337,6 +340,8 @@ async def store_episode(
         meta_json,
         tenant_id,
         request_id,
+        retention_class,
+        sensitivity,
     )
 
     return episode_id
