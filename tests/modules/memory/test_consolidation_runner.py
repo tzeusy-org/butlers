@@ -127,7 +127,7 @@ class TestRunConsolidation:
         assert "leased_by" in sql
 
     async def test_groups_episodes_by_source_butler(self) -> None:
-        """Episodes from different butlers are grouped separately."""
+        """Episodes from different butlers are grouped separately (same tenant)."""
         rows = [
             _episode_row(butler="alpha", content="a1"),
             _episode_row(butler="alpha", content="a2"),
@@ -138,8 +138,25 @@ class TestRunConsolidation:
 
         result = await run_consolidation(pool, engine)
 
-        assert result["groups"]["alpha"] == 2
-        assert result["groups"]["beta"] == 1
+        assert result["groups"]["owner/alpha"] == 2
+        assert result["groups"]["owner/beta"] == 1
+
+    async def test_groups_episodes_by_tenant_and_butler(self) -> None:
+        """Episodes from different tenants with the same butler name are NOT mixed."""
+        rows = [
+            _episode_row(butler="alpha", tenant_id="tenant-a", content="a1"),
+            _episode_row(butler="alpha", tenant_id="tenant-a", content="a2"),
+            _episode_row(butler="alpha", tenant_id="tenant-b", content="b1"),
+        ]
+        pool, mock_conn = _mock_pool_with_acquire(rows=rows)
+        engine = MagicMock()
+
+        result = await run_consolidation(pool, engine)
+
+        # Same butler name but different tenants → two distinct groups
+        assert result["butlers_processed"] == 2
+        assert result["groups"]["tenant-a/alpha"] == 2
+        assert result["groups"]["tenant-b/alpha"] == 1
 
     async def test_returns_correct_stats(self) -> None:
         """Stats dict has the right shape and values."""
@@ -156,7 +173,7 @@ class TestRunConsolidation:
 
         assert result["episodes_processed"] == 4
         assert result["butlers_processed"] == 3
-        assert result["groups"] == {"alpha": 2, "beta": 1, "gamma": 1}
+        assert result["groups"] == {"owner/alpha": 2, "owner/beta": 1, "owner/gamma": 1}
 
     async def test_handles_no_pending_episodes(self) -> None:
         """When there are no pending episodes, return zeros."""
@@ -516,3 +533,68 @@ class TestFailureStateMachine:
 
         assert result["groups_consolidated"] == 0
         assert len(result["errors"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests — tenant isolation correctness
+# ---------------------------------------------------------------------------
+
+
+class TestTenantIsolation:
+    """Tests that consolidation groups correctly by (tenant_id, butler)."""
+
+    async def test_same_butler_different_tenants_are_separate_groups(self) -> None:
+        """Two tenants with the same butler name produce two distinct groups."""
+        rows = [
+            _episode_row(butler="news", tenant_id="alice", content="alice content"),
+            _episode_row(butler="news", tenant_id="bob", content="bob content"),
+        ]
+        pool, mock_conn = _mock_pool_with_acquire(rows=rows)
+        engine = MagicMock()
+
+        result = await run_consolidation(pool, engine)
+
+        assert result["butlers_processed"] == 2
+        assert "alice/news" in result["groups"]
+        assert "bob/news" in result["groups"]
+
+    async def test_execute_consolidation_receives_tenant_id(self) -> None:
+        """execute_consolidation is called with the episode's tenant_id."""
+        import unittest.mock
+
+        episodes = [_episode_row(butler="test-butler", tenant_id="acme")]
+        pool, mock_conn = _mock_pool_with_acquire(rows=episodes)
+        pool.fetch = AsyncMock(side_effect=[[], []])  # facts, rules
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        engine = MagicMock()
+
+        spawner = AsyncMock()
+        spawner.trigger = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                output='{"new_facts": [], "updated_facts": [], "new_rules": [], '
+                '"confirmations": []}',
+            )
+        )
+
+        captured_kwargs: dict = {}
+
+        async def _capture_execute(**kwargs):
+            captured_kwargs.update(kwargs)
+            return {
+                "facts_created": 0,
+                "facts_updated": 0,
+                "rules_created": 0,
+                "confirmations_made": 0,
+                "episodes_consolidated": 0,
+                "episode_ttl_days": 7,
+                "errors": [],
+            }
+
+        with unittest.mock.patch.object(
+            _mod, "execute_consolidation", side_effect=_capture_execute
+        ):
+            await run_consolidation(pool, engine, cc_spawner=spawner)
+
+        assert captured_kwargs.get("tenant_id") == "acme"
+        assert "request_id" in captured_kwargs  # auto-generated UUID string

@@ -94,7 +94,7 @@ async def run_consolidation(
     concurrent workers from processing the same episode.  Episodes are ordered
     by ``(tenant_id, butler, created_at, id)`` for deterministic processing.
 
-    For each butler group with pending episodes:
+    For each ``(tenant_id, butler)`` group with pending episodes:
     1. Fetch existing facts and rules for dedup context
     2. Build consolidation prompt via ``build_consolidation_prompt``
     3. Spawn a runtime instance with the consolidate skill
@@ -113,8 +113,8 @@ async def run_consolidation(
     Returns:
         A stats dict with keys:
         - ``episodes_processed``: total episodes claimed (pending episodes found).
-        - ``butlers_processed``: number of distinct butler groups.
-        - ``groups``: mapping of butler name to episode count.
+        - ``butlers_processed``: number of distinct (tenant_id, butler) groups.
+        - ``groups``: mapping of "tenant_id/butler_name" to episode count.
         - ``groups_consolidated``: number of groups successfully processed.
         - ``facts_created``: total new facts stored.
         - ``facts_updated``: total facts updated.
@@ -161,17 +161,17 @@ async def run_consolidation(
                     episode_ids_to_lease,
                 )
 
-    # Group episodes by source butler
-    groups: dict[str, list[dict]] = {}
+    # Group episodes by (tenant_id, butler_name) to prevent cross-tenant mixing
+    groups: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
-        butler_name = row["butler"]
-        if butler_name not in groups:
-            groups[butler_name] = []
-        groups[butler_name].append(dict(row))
+        group_key = (row["tenant_id"], row["butler"])
+        if group_key not in groups:
+            groups[group_key] = []
+        groups[group_key].append(dict(row))
 
-    # Build initial stats
+    # Build initial stats — key is "tenant_id/butler_name" for readability
     group_counts: dict[str, int] = {
-        butler_name: len(episodes) for butler_name, episodes in groups.items()
+        f"{tid}/{bn}": len(episodes) for (tid, bn), episodes in groups.items()
     }
 
     # Initialize aggregate stats
@@ -183,9 +183,9 @@ async def run_consolidation(
     groups_consolidated = 0
     all_errors: list[str] = []
 
-    # Process each butler group (only if spawner is provided)
+    # Process each (tenant_id, butler_name) group (only if spawner is provided)
     if cc_spawner is not None:
-        for butler_name, episodes in groups.items():
+        for (tenant_id, butler_name), episodes in groups.items():
             try:
                 # 1. Fetch existing facts and rules for dedup context
                 facts_rows = await pool.fetch(
@@ -220,7 +220,8 @@ async def run_consolidation(
 
                 # 3. Spawn runtime instance with consolidate skill
                 logger.info(
-                    "Spawning consolidation session for %s (%d episodes)",
+                    "Spawning consolidation session for %s/%s (%d episodes)",
+                    tenant_id,
                     butler_name,
                     len(episodes),
                 )
@@ -239,6 +240,7 @@ async def run_consolidation(
                         pool,
                         group_episode_ids,
                         f"runtime session failed: {result.error}",
+                        tenant_id=tenant_id,
                     )
                     continue
 
@@ -248,14 +250,19 @@ async def run_consolidation(
                     logger.warning("Parse errors for %s: %s", butler_name, parsed.parse_errors)
                     all_errors.extend(parsed.parse_errors)
 
-                # 5. Execute consolidation actions
+                # 5. Execute consolidation actions — thread tenant_id and a
+                #    per-group request_id through so derived knowledge is stored
+                #    under the correct tenant, not defaulting to 'owner'.
                 group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
+                group_request_id = str(uuid.uuid4())
                 exec_result = await execute_consolidation(
                     pool=pool,
                     embedding_engine=embedding_engine,
                     parsed=parsed,
                     source_episode_ids=group_episode_ids,
                     butler_name=butler_name,
+                    tenant_id=tenant_id,
+                    request_id=group_request_id,
                 )
 
                 # Aggregate stats
@@ -270,7 +277,8 @@ async def run_consolidation(
                     all_errors.extend(exec_result["errors"])
 
                 logger.info(
-                    "Consolidated %s: %d facts, %d rules, %d episodes",
+                    "Consolidated %s/%s: %d facts, %d rules, %d episodes",
+                    tenant_id,
                     butler_name,
                     exec_result["facts_created"] + exec_result["facts_updated"],
                     exec_result["rules_created"],
@@ -284,7 +292,12 @@ async def run_consolidation(
                 # Clear leases so episodes can be retried / dead-lettered
                 try:
                     group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
-                    await _mark_group_failed(pool, group_episode_ids, str(exc))
+                    await _mark_group_failed(
+                        pool,
+                        group_episode_ids,
+                        str(exc),
+                        tenant_id=tenant_id,
+                    )
                 except Exception as clear_exc:
                     logger.error(
                         "Failed to update failure state for %s: %s", butler_name, clear_exc
@@ -308,6 +321,8 @@ async def _mark_group_failed(
     pool: Pool,
     episode_ids: list[uuid.UUID],
     error_message: str,
+    *,
+    tenant_id: str | None = None,
 ) -> None:
     """Mark a batch of episodes as failed (or dead-lettered) after a group error.
 
@@ -354,7 +369,7 @@ async def _mark_group_failed(
     try:
         await pool.execute(
             """
-            INSERT INTO memory_events (event_type, actor, payload)
+            INSERT INTO memory_events (event_type, actor, tenant_id, payload)
             SELECT
                 CASE
                     WHEN consolidation_attempts >= $1
@@ -362,6 +377,7 @@ async def _mark_group_failed(
                     ELSE 'episode_consolidation_failed'
                 END,
                 'consolidation_worker',
+                COALESCE($4, tenant_id),
                 jsonb_build_object(
                     'episode_id', id::text,
                     'attempts',   consolidation_attempts,
@@ -373,6 +389,7 @@ async def _mark_group_failed(
             MAX_CONSOLIDATION_ATTEMPTS,
             error_message,
             episode_ids,
+            tenant_id,
         )
     except Exception as exc:
         logger.warning("Failed to emit consolidation events: %s", exc)
