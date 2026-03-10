@@ -215,7 +215,7 @@ async def _lookup_episode_ttl_days(pool: Pool, retention_class: str) -> int:
     """Look up the TTL (in days) for an episode's retention_class from memory_policies.
 
     Falls back to ``_DEFAULT_EPISODE_TTL_DAYS`` if the table does not yet exist
-    (e.g. before migration mem_018 is applied) or the class is not found.
+    (e.g. before migration mem_019 is applied) or the class is not found.
 
     Args:
         pool: asyncpg connection pool.

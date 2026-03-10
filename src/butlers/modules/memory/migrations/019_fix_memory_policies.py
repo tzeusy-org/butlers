@@ -1,4 +1,4 @@
-"""fix_memory_policies — mem_018
+"""fix_memory_policies — mem_019
 
 Correct the memory_policies table schema to match the retention-policy spec.
 
@@ -19,8 +19,8 @@ This migration:
        transient, episodic, operational, personal_profile,
        health_log, financial_log, rule, anti_pattern
 
-Revision ID: mem_018
-Revises: mem_017
+Revision ID: mem_019
+Revises: mem_018
 Create Date: 2026-03-10 00:00:00.000000
 """
 
@@ -29,8 +29,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_018"
-down_revision = "mem_017"
+revision = "mem_019"
+down_revision = "mem_018"
 branch_labels = None
 depends_on = None
 

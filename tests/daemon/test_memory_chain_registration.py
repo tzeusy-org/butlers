@@ -81,7 +81,8 @@ class TestMemoryChainRegistration:
             "015_consolidation_state_machine.py",
             "016_temporal_fact_safety.py",
             "017_memory_policies.py",
-            "018_fix_memory_policies.py",
+            "018_partial_unique_entities.py",
+            "019_fix_memory_policies.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:
