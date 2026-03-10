@@ -84,8 +84,8 @@ class TestMemoryChainRegistration:
             "018_partial_unique_entities.py",
             "019_rule_applications.py",
             "020_fix_memory_policies.py",
-            "021_events_enrichment.py",
             "021_fix_partial_unique_deleted_at.py",
+            "022_events_enrichment.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:

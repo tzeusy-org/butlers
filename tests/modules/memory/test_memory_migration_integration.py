@@ -1,6 +1,6 @@
 """Real-DB integration tests for the memory module migration chain.
 
-These tests apply the full mem_001 → mem_021 migration chain to a fresh
+These tests apply the full mem_001 → mem_022 migration chain to a fresh
 PostgreSQL schema and then exercise store_episode / store_fact / store_rule
 against that live schema to verify that tenant_id, retention_class, and
 sensitivity are persisted correctly.
@@ -16,13 +16,9 @@ import importlib.util
 import shutil
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
-
-if TYPE_CHECKING:
-    pass
 
 # ---------------------------------------------------------------------------
 # Docker gate — skip entire module when Docker is unavailable.
