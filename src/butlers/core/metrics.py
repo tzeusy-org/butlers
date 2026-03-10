@@ -131,6 +131,8 @@ def init_metrics(service_name: str) -> metrics.Meter:
     global _meter_provider_installed
 
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if endpoint:
+        endpoint = endpoint.strip("\"'")
 
     if not endpoint:
         logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set, using no-op meter")
