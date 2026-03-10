@@ -168,13 +168,17 @@ Ordered by `score DESC`, then `canonical_name ASC`.
 The memory module does NOT make the auto-resolve-vs-ask decision. It returns all candidates above a minimum score threshold. The hosting butler applies its own confidence thresholds and disambiguation policy.
 
 ### 6.5 Context assembly contract
-- `memory_context` output must be deterministic and sectioned:
-- Facts (highest priority first).
-- Rules (ordered by maturity and score).
-- Optional recent episodes.
-- Hard token budget enforcement is mandatory and must use a deterministic tokenizer.
-- Stable ordering tie-breakers: `score DESC`, then `created_at DESC`, then `id ASC`.
-- Section quotas must be deterministic and configurable.
+- `memory_context` output must be deterministic and sectioned.
+- Four fixed sections in order (empty sections are omitted):
+  1. `## Profile Facts` (30% of budget): owner entity facts, sorted by importance DESC, created_at DESC, id ASC.
+  2. `## Task-Relevant Facts` (35% of budget): composite-scored recall matches excluding profile facts, sorted by composite_score DESC, created_at DESC, id ASC.
+  3. `## Active Rules` (20% of budget): sorted by maturity rank (proven > established > candidate) DESC, effectiveness_score DESC, created_at DESC, id ASC.
+  4. `## Recent Episodes` (15% of budget): opt-in via `include_recent_episodes=True`, sorted by created_at DESC.
+- Hard token budget enforcement is mandatory (total_chars = token_budget * 4).
+- Each section respects its percentage quota of the total budget.
+- Stable ordering tie-breakers: `score/importance DESC`, then `created_at DESC`, then `id ASC`.
+- `request_context.tenant_id` scopes all retrieval queries (default: `'owner'`).
+- `request_context.request_id` is available for trace correlation.
 
 ## 7. Write, Consolidation, and Lifecycle Contract
 ### 7.1 Write semantics
@@ -228,6 +232,18 @@ Entity tool contracts:
 - `entity_get(entity_id)` — Retrieve entity record with its aliases and metadata.
 - `entity_update(entity_id, canonical_name?, aliases?, metadata?)` — Update entity fields. Alias updates are replace-all (pass the full alias list).
 - `entity_merge(source_entity_id, target_entity_id)` — Merge source into target. All facts referencing source are re-pointed to target. Source's aliases are appended to target's alias list. Source entity is tombstoned (retained for audit, excluded from resolution). Target survives.
+
+Read tool filter contract:
+- `memory_search` and `memory_recall` accept an optional `filters` dict of AND-conditions.
+- Supported filter keys: `scope`, `entity_id`, `predicate`, `source_butler`, `time_from` (ISO-8601), `time_to` (ISO-8601), `retention_class`, `sensitivity`.
+- Unrecognized filter keys are silently ignored (additive, backward-compatible).
+- `memory_recall` also accepts `request_context` for tenant scoping.
+
+`memory_context` tool contract:
+- Accepts `trigger_prompt` (required), `butler` (required), `token_budget` (default from config).
+- Accepts `include_recent_episodes` (default False) to opt into the Recent Episodes section.
+- Accepts `request_context` for tenant scoping and trace correlation.
+- Output is deterministic: same inputs always produce identical output.
 
 Lineage propagation rules:
 - Read/write tools should accept optional `request_context` metadata.

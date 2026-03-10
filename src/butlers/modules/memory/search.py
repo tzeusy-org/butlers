@@ -11,7 +11,7 @@ import math
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from asyncpg import Pool
@@ -450,6 +450,7 @@ async def recall(
     min_confidence: float = 0.2,
     weights: CompositeWeights | None = None,
     tenant_id: str = "owner",
+    filters: dict[str, Any] | None = None,
 ) -> list[dict]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
@@ -458,8 +459,9 @@ async def recall(
     2. Runs hybrid search on both facts and rules tables
     3. Computes composite scores (relevance, importance, recency, confidence)
     4. Filters by minimum effective confidence
-    5. Bumps reference counts on returned results
-    6. Returns results sorted by composite score descending
+    5. Applies optional structured filters as AND conditions
+    6. Bumps reference counts on returned results
+    7. Returns results sorted by composite score descending
 
     Args:
         pool: asyncpg connection pool.
@@ -470,6 +472,9 @@ async def recall(
         min_confidence: Minimum effective confidence threshold (default 0.2).
         weights: Optional custom composite weights.
         tenant_id: Tenant scope for isolation (default 'owner').
+        filters: Optional dict of AND-conditions (scope, entity_id, predicate,
+            source_butler, time_from, time_to, retention_class, sensitivity).
+            Unrecognized keys are silently ignored.
 
     Returns:
         List of dicts with ``composite_score`` and ``memory_type`` added.
@@ -530,6 +535,11 @@ async def recall(
 
     # Sort by composite score descending
     scored.sort(key=lambda x: -x["composite_score"])
+
+    # Apply structured filters as AND conditions (after scoring, before limit)
+    if filters:
+        scored = _apply_filters(scored, filters)
+
     scored = scored[:limit]
 
     # Bump reference counts for returned results
@@ -542,6 +552,104 @@ async def recall(
         )
 
     return scored
+
+
+# ---------------------------------------------------------------------------
+# Structured filters (post-fetch AND conditions)
+# ---------------------------------------------------------------------------
+
+# Keys that are recognized and applied as AND filters.
+# Unrecognized keys are silently ignored per spec.
+_KNOWN_FILTER_KEYS = frozenset(
+    {
+        "scope",
+        "entity_id",
+        "predicate",
+        "source_butler",
+        "time_from",
+        "time_to",
+        "retention_class",
+        "sensitivity",
+    }
+)
+
+
+def _apply_filters(results: list[dict], filters: dict[str, Any] | None) -> list[dict]:
+    """Apply structured filters as AND conditions to a result list.
+
+    Supported filter keys:
+        scope           — match row['scope'] == value
+        entity_id       — match str(row['entity_id']) == value
+        predicate       — match row['predicate'] == value
+        source_butler   — match row['source_butler'] == value
+        time_from       — match row['created_at'] >= datetime parsed from value
+        time_to         — match row['created_at'] <= datetime parsed from value
+        retention_class — match row['retention_class'] == value
+        sensitivity     — match row['sensitivity'] == value
+
+    Unrecognized filter keys are silently ignored.
+    """
+    if not filters:
+        return results
+
+    filtered = list(results)
+
+    scope_val = filters.get("scope")
+    if scope_val is not None:
+        filtered = [r for r in filtered if r.get("scope") == scope_val]
+
+    entity_id_val = filters.get("entity_id")
+    if entity_id_val is not None:
+        filtered = [r for r in filtered if str(r.get("entity_id") or "") == str(entity_id_val)]
+
+    predicate_val = filters.get("predicate")
+    if predicate_val is not None:
+        filtered = [r for r in filtered if r.get("predicate") == predicate_val]
+
+    source_butler_val = filters.get("source_butler")
+    if source_butler_val is not None:
+        filtered = [r for r in filtered if r.get("source_butler") == source_butler_val]
+
+    time_from_val = filters.get("time_from")
+    if time_from_val is not None:
+        try:
+            tf = datetime.fromisoformat(str(time_from_val).replace("Z", "+00:00"))
+            filtered = [
+                r
+                for r in filtered
+                if r.get("created_at") is not None and _ensure_tz(r["created_at"]) >= tf
+            ]
+        except (ValueError, TypeError):
+            pass
+
+    time_to_val = filters.get("time_to")
+    if time_to_val is not None:
+        try:
+            tt = datetime.fromisoformat(str(time_to_val).replace("Z", "+00:00"))
+            filtered = [
+                r
+                for r in filtered
+                if r.get("created_at") is not None and _ensure_tz(r["created_at"]) <= tt
+            ]
+        except (ValueError, TypeError):
+            pass
+
+    retention_class_val = filters.get("retention_class")
+    if retention_class_val is not None:
+        filtered = [r for r in filtered if r.get("retention_class") == retention_class_val]
+
+    sensitivity_val = filters.get("sensitivity")
+    if sensitivity_val is not None:
+        filtered = [r for r in filtered if r.get("sensitivity") == sensitivity_val]
+
+    return filtered
+
+
+def _ensure_tz(dt: datetime) -> datetime:
+    """Ensure a datetime has tzinfo (assume UTC if naive)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +672,7 @@ async def search(
     limit: int = 10,
     min_confidence: float = 0.0,
     tenant_id: str = "owner",
+    filters: dict[str, Any] | None = None,
 ) -> list[dict]:
     """General-purpose search across memory types.
 
@@ -582,6 +691,9 @@ async def search(
         limit: Max results per type (default 10).
         min_confidence: Minimum confidence filter (default 0.0).
         tenant_id: Tenant scope for isolation (default 'owner').
+        filters: Optional dict of AND-conditions (scope, entity_id, predicate,
+            source_butler, time_from, time_to, retention_class, sensitivity).
+            Unrecognized keys are silently ignored.
 
     Returns:
         List of dicts with 'memory_type' added, sorted by relevance.
@@ -642,6 +754,10 @@ async def search(
             results = filtered
 
         all_results.extend(results)
+
+    # Apply structured filters as AND conditions before final sort/limit
+    if filters:
+        all_results = _apply_filters(all_results, filters)
 
     # Sort by the relevant score field
     if mode == "semantic":

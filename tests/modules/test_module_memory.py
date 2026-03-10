@@ -396,6 +396,8 @@ class TestToolDelegation:
             "test prompt",
             "memory",
             token_budget=3000,
+            include_recent_episodes=False,
+            request_context=None,
         )
 
     async def test_memory_search_delegates(self):
@@ -412,6 +414,7 @@ class TestToolDelegation:
             mode="hybrid",
             limit=10,
             min_confidence=0.2,
+            filters=None,
         )
 
     async def test_memory_confirm_delegates(self):

@@ -21,6 +21,11 @@ class Episode(BaseModel):
     importance: float = 5.0
     reference_count: int = 0
     consolidated: bool = False
+    consolidation_status: str = "pending"
+    tenant_id: str = "owner"
+    request_id: str | None = None
+    retention_class: str = "transient"
+    sensitivity: str = "normal"
     created_at: str
     last_referenced_at: str | None = None
     expires_at: str | None = None
@@ -41,8 +46,17 @@ class Fact(BaseModel):
     source_butler: str | None = None
     source_episode_id: str | None = None
     supersedes_id: str | None = None
+    entity_id: str | None = None
+    object_entity_id: str | None = None
     validity: str = "active"
     scope: str = "global"
+    tenant_id: str = "owner"
+    request_id: str | None = None
+    retention_class: str = "operational"
+    sensitivity: str = "normal"
+    valid_at: str | None = None
+    invalid_at: str | None = None
+    idempotency_key: str | None = None
     reference_count: int = 0
     created_at: str
     last_referenced_at: str | None = None
@@ -67,9 +81,14 @@ class Rule(BaseModel):
     harmful_count: int = 0
     source_episode_id: str | None = None
     source_butler: str | None = None
+    tenant_id: str = "owner"
+    request_id: str | None = None
+    retention_class: str = "rule"
+    sensitivity: str = "normal"
     created_at: str
     last_applied_at: str | None = None
     last_evaluated_at: str | None = None
+    last_confirmed_at: str | None = None
     tags: list[str] = []
     metadata: dict = {}
 

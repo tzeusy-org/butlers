@@ -133,6 +133,7 @@ class TestMemorySearch:
             mode="hybrid",
             limit=10,
             min_confidence=0.2,
+            filters=None,
         )
         assert len(results) == 1
         assert results[0]["id"] == str(sample_uuid)
@@ -164,6 +165,7 @@ class TestMemorySearch:
             mode="semantic",
             limit=5,
             min_confidence=0.5,
+            filters=None,
         )
 
     async def test_serializes_results(
@@ -215,6 +217,8 @@ class TestMemoryRecall:
             mock_embedding_engine,
             scope=None,
             limit=10,
+            filters=None,
+            tenant_id="owner",
         )
         assert len(results) == 1
         assert results[0]["id"] == str(sample_uuid)
@@ -240,6 +244,8 @@ class TestMemoryRecall:
             mock_embedding_engine,
             scope="butler-b",
             limit=5,
+            filters=None,
+            tenant_id="owner",
         )
 
     async def test_serializes_results(

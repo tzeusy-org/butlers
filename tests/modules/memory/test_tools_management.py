@@ -262,7 +262,7 @@ class TestMemoryContext:
     async def test_formats_facts_section(
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
-        """memory_context includes a Key Facts section with formatted entries."""
+        """memory_context includes a Task-Relevant Facts section with formatted entries."""
         _helpers._search.recall = AsyncMock(
             return_value=[
                 _make_fact(
@@ -274,7 +274,7 @@ class TestMemoryContext:
             mock_pool, mock_embedding_engine, "user preferences", "butler-1"
         )
         assert "# Memory Context" in result
-        assert "## Key Facts" in result
+        assert "## Task-Relevant Facts" in result
         assert "[user] [prefers]: dark mode (confidence: 0.90)" in result
 
     async def test_formats_rules_section(
@@ -307,7 +307,7 @@ class TestMemoryContext:
             ]
         )
         result = await memory_context(mock_pool, mock_embedding_engine, "anything", "butler-1")
-        assert "## Key Facts" in result
+        assert "## Task-Relevant Facts" in result
         assert "## Active Rules" in result
 
     async def test_empty_results_returns_header_only(
@@ -317,7 +317,7 @@ class TestMemoryContext:
         _helpers._search.recall = AsyncMock(return_value=[])
         result = await memory_context(mock_pool, mock_embedding_engine, "anything", "butler-1")
         assert "# Memory Context" in result
-        assert "## Key Facts" not in result
+        assert "## Task-Relevant Facts" not in result
         assert "## Active Rules" not in result
 
     async def test_respects_token_budget(
@@ -369,20 +369,25 @@ class TestMemoryContext:
         _helpers._search.recall = AsyncMock(return_value=[])
         await memory_context(mock_pool, mock_embedding_engine, "my topic", "butler-x")
         _helpers._search.recall.assert_awaited_once_with(
-            mock_pool, "my topic", mock_embedding_engine, scope="butler-x", limit=20
+            mock_pool,
+            "my topic",
+            mock_embedding_engine,
+            scope="butler-x",
+            limit=30,
+            tenant_id="owner",
         )
 
     async def test_no_facts_only_rules(
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
-        """When recall returns only rules, the Key Facts section is absent."""
+        """When recall returns only rules, the Task-Relevant Facts section is absent."""
         _helpers._search.recall = AsyncMock(
             return_value=[
                 _make_rule(content="Be helpful"),
             ]
         )
         result = await memory_context(mock_pool, mock_embedding_engine, "test", "butler-1")
-        assert "## Key Facts" not in result
+        assert "## Task-Relevant Facts" not in result
         assert "## Active Rules" in result
         assert "Be helpful" in result
 
@@ -396,7 +401,7 @@ class TestMemoryContext:
             ]
         )
         result = await memory_context(mock_pool, mock_embedding_engine, "test", "butler-1")
-        assert "## Key Facts" in result
+        assert "## Task-Relevant Facts" in result
         assert "## Active Rules" not in result
         assert "likes coffee" in result
 
