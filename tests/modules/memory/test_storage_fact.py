@@ -257,9 +257,10 @@ class TestTemporalFacts:
         await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts)
 
         insert_call = conn.execute.call_args_list[0]
-        # valid_at is $20; tenant_id=$21, request_id=$22 follow after
-        # So valid_at is at args[-3]
-        assert insert_call.args[-3] == ts
+        # valid_at is $20; tenant_id=$21, request_id=$22,
+        # idempotency_key=$23, observed_at=$24 follow after.
+        # So valid_at is at args[-5] (5 args from the end).
+        assert insert_call.args[-5] == ts
 
     async def test_valid_at_defaults_to_null_when_omitted(self, mock_pool, embedding_engine):
         """When valid_at is omitted, NULL is stored (property fact semantics)."""
@@ -267,7 +268,8 @@ class TestTemporalFacts:
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
         insert_call = conn.execute.call_args_list[0]
-        stored_valid_at = insert_call.args[-1]
+        # valid_at is $20 in the INSERT; at args[-5] (last 4: request_id, idem_key, observed_at).
+        stored_valid_at = insert_call.args[-5]
         # Property facts must store NULL, not a timestamp
         assert stored_valid_at is None
 

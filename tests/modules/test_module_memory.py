@@ -356,6 +356,7 @@ class TestToolDelegation:
             entity_id=None,
             object_entity_id=None,
             valid_at=None,
+            idempotency_key=None,
             request_context=None,
         )
 
@@ -382,6 +383,7 @@ class TestToolDelegation:
             entity_id=None,
             object_entity_id=None,
             valid_at="2026-03-06T08:00:00Z",
+            idempotency_key=None,
             request_context=None,
         )
 
@@ -509,6 +511,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             entity_id=None,
             object_entity_id=None,
             valid_at=None,
+            idempotency_key=None,
             request_context=None,
         )
 
@@ -538,6 +541,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             entity_id=sender_uuid,
             object_entity_id=None,
             valid_at=None,
+            idempotency_key=None,
             request_context=None,
         )
 
@@ -573,6 +577,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             entity_id=explicit_uuid,
             object_entity_id=None,
             valid_at=None,
+            idempotency_key=None,
             request_context=None,
         )
 
@@ -601,6 +606,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             entity_id=None,
             object_entity_id=None,
             valid_at=None,
+            idempotency_key=None,
             request_context=None,
         )
 
