@@ -939,9 +939,11 @@ The `facts` table SHALL support an optional `object_entity_id` column (UUID, nul
 
 ### Requirement: Mandatory entity anchoring for person facts (no generic identities)
 
-All facts about a person MUST be anchored to a resolved `entity_id`. Storing facts with generic subject strings like `"user"`, `"owner"`, `"sender"`, or `"the person"` without an `entity_id` is a spec violation. The `subject` field is a human-readable label only when `entity_id` is provided; it MUST NOT serve as the primary identity key.
+All facts about an external entity — whether a person, organization, place, or other — MUST be anchored to a resolved `entity_id`. Storing facts with string-only subjects (no `entity_id`) is a spec violation. The `subject` field is a human-readable label only when `entity_id` is provided; it MUST NOT serve as the primary identity key.
 
-This rule applies to all butlers with the memory module enabled, not just the relationship butler. Health, finance, education, travel, home, and general butlers MUST all follow this contract.
+When `memory_entity_resolve` returns zero candidates for a subject name, the agent MUST create a **transitory entity** via `memory_entity_create` with `metadata.unidentified = true` and source provenance, then use the returned `entity_id` to anchor the fact. This ensures the entity is visible in the dashboard's "Unidentified Entities" section for user review (merge, confirm, or delete).
+
+This rule applies to all butlers with the memory module enabled: health, finance, education, travel, home, relationship, and general butlers MUST all follow this contract.
 
 #### Scenario: Sender fact uses entity_id from identity preamble
 
@@ -980,14 +982,51 @@ This rule applies to all butlers with the memory module enabled, not just the re
 - **WHEN** a message mentions a person other than the sender (e.g., "Sarah likes coffee")
 - **THEN** the butler MUST call `memory_entity_resolve("Sarah")` before storing the fact
 - **AND** if resolved, MUST pass the resolved `entity_id` to `memory_store_fact`
-- **AND** if unresolved (zero candidates), MUST call `memory_entity_create` first, then use the new `entity_id`
+- **AND** if unresolved (zero candidates), MUST call `memory_entity_create` with `metadata.unidentified = true` first, then use the new `entity_id`
 
 #### Scenario: Fact stored without entity_id is a spec violation
 
-- **WHEN** a butler calls `memory_store_fact` with a person-related fact
+- **WHEN** a butler calls `memory_store_fact` with a fact about an external entity (person, organization, place, or other)
 - **AND** `entity_id` is `None`
-- **THEN** this is a spec violation — facts about people MUST always be entity-anchored
+- **THEN** this is a spec violation — facts about external entities MUST always be entity-anchored
 - **AND** the shared `butler-memory` skill instructs all runtime instances to follow this rule
+
+#### Scenario: Transitory entity for unknown organization from email processing
+
+- **WHEN** a butler processes an email referencing a merchant or organization (e.g., "Nutrition Kitchen SG")
+- **AND** `memory_entity_resolve("Nutrition Kitchen SG", entity_type="organization")` returns an empty list
+- **THEN** the butler MUST call `memory_entity_create` with:
+  - `canonical_name="Nutrition Kitchen SG"`
+  - `entity_type="organization"`
+  - `metadata={"unidentified": true, "source": "fact_storage", "source_butler": "<butler_name>", "source_scope": "<scope>"}`
+- **AND** MUST pass the returned `entity_id` to `memory_store_fact`
+- **AND** the entity MUST appear in the dashboard "Unidentified Entities" section
+
+#### Scenario: Transitory entity for unknown place
+
+- **WHEN** a butler stores a fact referencing a place not yet in the entity graph (e.g., "Marina Bay Sands")
+- **AND** `memory_entity_resolve("Marina Bay Sands", entity_type="place")` returns an empty list
+- **THEN** the butler MUST call `memory_entity_create` with:
+  - `canonical_name="Marina Bay Sands"`
+  - `entity_type="place"`
+  - `metadata={"unidentified": true, "source": "fact_storage", "source_butler": "<butler_name>", "source_scope": "<scope>"}`
+- **AND** MUST use the returned `entity_id` for the fact
+
+#### Scenario: Idempotent entity creation on duplicate name
+
+- **WHEN** `memory_entity_create` raises a unique constraint violation (because the entity already exists for this `(tenant_id, canonical_name, entity_type)`)
+- **THEN** the agent MUST catch the error and call `memory_entity_resolve` to obtain the existing entity's `entity_id`
+- **AND** MUST use that `entity_id` to anchor the fact
+- **AND** MUST NOT treat the duplicate as a failure
+
+#### Scenario: Entity type inference from context
+
+- **WHEN** a butler creates a transitory entity during fact storage
+- **THEN** the butler SHOULD infer the `entity_type` from context:
+  - Merchant/company/service names → `organization`
+  - Person names → `person`
+  - Location names → `place`
+  - Unknown/ambiguous → `other`
 
 ---
 
