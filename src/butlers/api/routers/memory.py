@@ -659,6 +659,10 @@ _ENTITY_ROLE_ORDER_SQL = (
 async def list_entities(
     q: str | None = Query(None, description="Search canonical_name and aliases"),
     entity_type: str | None = Query(None, description="Filter by entity type"),
+    unidentified: bool | None = Query(
+        None,
+        description="Filter by unidentified status: true=only unidentified, false=only confirmed",
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -687,6 +691,11 @@ async def list_entities(
         conditions.append(f"e.entity_type = ${idx}")
         args.append(entity_type)
         idx += 1
+
+    if unidentified is True:
+        conditions.append("COALESCE((e.metadata->>'unidentified')::boolean, false) IS TRUE")
+    elif unidentified is False:
+        conditions.append("COALESCE((e.metadata->>'unidentified')::boolean, false) IS NOT TRUE")
 
     where = " WHERE " + " AND ".join(conditions)
 

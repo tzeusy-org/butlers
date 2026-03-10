@@ -300,23 +300,25 @@ async def resolve_or_create_entity(
         }
     )
 
-    # Try INSERT first
+    # Try INSERT first (wrapped in a savepoint so UniqueViolationError
+    # doesn't abort the outer transaction).
     try:
-        entity_id = await conn.fetchval(
-            """
-            INSERT INTO shared.entities
-                (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-            RETURNING id
-            """,
-            tenant_id,
-            subject,
-            entity_type,
-            [],
-            metadata,
-            [],
-        )
-        return str(entity_id), True
+        async with conn.transaction():
+            entity_id = await conn.fetchval(
+                """
+                INSERT INTO shared.entities
+                    (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                RETURNING id
+                """,
+                tenant_id,
+                subject,
+                entity_type,
+                [],
+                metadata,
+                [],
+            )
+            return str(entity_id), True
     except asyncpg.UniqueViolationError:
         pass
 

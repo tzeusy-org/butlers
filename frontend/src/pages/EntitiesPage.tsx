@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { EditIcon, GitMergeIcon, TrashIcon, UserIcon } from "lucide-react";
+import {
+  CheckCircleIcon,
+  EditIcon,
+  GitMergeIcon,
+  Loader2Icon,
+  TrashIcon,
+  UserIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import type { EntityParams, EntitySummary } from "@/api/types";
@@ -16,6 +23,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -39,7 +47,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useDeleteEntity, useEntities, useMergeEntity } from "@/hooks/use-memory";
+import {
+  useDeleteEntity,
+  useEntities,
+  useMergeEntity,
+  usePromoteEntity,
+} from "@/hooks/use-memory";
 
 const PAGE_SIZE = 50;
 

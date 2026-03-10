@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 
 VALID_ENTITY_TYPES = frozenset({"person", "organization", "place", "other"})
 
+
+def _parse_metadata(raw: Any) -> dict[str, Any]:
+    """Safely parse a metadata value from asyncpg (may be dict, str, or None)."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        return json.loads(raw)
+    return dict(raw)
+
 # Minimum composite score to include a candidate in resolution results.
 _MIN_SCORE: float = 0.0
 
@@ -183,7 +194,7 @@ async def entity_update(
         param_idx += 1
 
     if metadata is not None:
-        existing_metadata: dict[str, Any] = dict(current["metadata"]) if current["metadata"] else {}
+        existing_metadata: dict[str, Any] = _parse_metadata(current["metadata"])
         merged = {**existing_metadata, **metadata}
         params.append(json.dumps(merged))
         set_clauses.append(f"metadata = ${param_idx}::jsonb")
@@ -770,7 +781,7 @@ async def entity_merge(
                 )
 
             # Check source is not already tombstoned
-            src_metadata: dict[str, Any] = dict(src_row["metadata"]) if src_row["metadata"] else {}
+            src_metadata: dict[str, Any] = _parse_metadata(src_row["metadata"])
             if "merged_into" in src_metadata:
                 raise ValueError(
                     f"Source entity '{source_entity_id}' is already tombstoned "
@@ -928,7 +939,7 @@ async def entity_merge(
             # ---------------------------------------------------------------
             # 4. Merge metadata (target wins on conflict)
             # ---------------------------------------------------------------
-            tgt_metadata: dict[str, Any] = dict(tgt_row["metadata"]) if tgt_row["metadata"] else {}
+            tgt_metadata: dict[str, Any] = _parse_metadata(tgt_row["metadata"])
             # Merge source into target; target values take priority
             merged_metadata = {**src_metadata, **tgt_metadata}
 

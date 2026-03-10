@@ -1365,6 +1365,7 @@ export interface EntityDetail extends EntitySummary {
 export interface EntityParams {
   q?: string;
   entity_type?: string;
+  unidentified?: boolean;
   offset?: number;
   limit?: number;
 }
