@@ -153,7 +153,11 @@ async def pool(provisioned_postgres_pool):
                 metadata JSONB DEFAULT '{}'::jsonb,
                 entity_id UUID REFERENCES shared.entities(id),
                 object_entity_id UUID REFERENCES shared.entities(id),
-                valid_at TIMESTAMPTZ DEFAULT NULL
+                valid_at TIMESTAMPTZ DEFAULT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'owner',
+                request_id TEXT,
+                retention_class TEXT NOT NULL DEFAULT 'operational',
+                sensitivity TEXT NOT NULL DEFAULT 'normal'
             )
         """)
 

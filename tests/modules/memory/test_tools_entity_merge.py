@@ -652,8 +652,7 @@ class TestEntityMergeEdgeFacts:
         supersede_calls = [
             c
             for c in execute_calls
-            if "UPDATE facts SET validity = 'superseded'" in c[0][0]
-            and EDGE_FACT_UUID_1 in c[0]
+            if "UPDATE facts SET validity = 'superseded'" in c[0][0] and EDGE_FACT_UUID_1 in c[0]
         ]
         assert len(supersede_calls) == 1
 
@@ -681,8 +680,7 @@ class TestEntityMergeEdgeFacts:
         supersede_existing = [
             c
             for c in execute_calls
-            if "UPDATE facts SET validity = 'superseded'" in c[0][0]
-            and EDGE_FACT_UUID_2 in c[0]
+            if "UPDATE facts SET validity = 'superseded'" in c[0][0] and EDGE_FACT_UUID_2 in c[0]
         ]
         assert len(supersede_existing) == 1
         # Source edge should be re-pointed

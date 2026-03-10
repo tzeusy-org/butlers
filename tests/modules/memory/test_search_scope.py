@@ -105,7 +105,8 @@ class TestSemanticSearchScopeFiltering:
         """scope='butler-x' on facts generates scope IN ('global', $N)."""
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope IN ('global', $2)" in sql
+        # tenant_id is $2; scope is $3
+        assert "scope IN ('global', $3)" in sql
         args = mock_pool.fetch.call_args[0]
         assert "butler-x" in args
 
@@ -113,7 +114,8 @@ class TestSemanticSearchScopeFiltering:
         """scope='butler-x' on rules generates scope IN ('global', $N)."""
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "rules", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope IN ('global', $2)" in sql
+        # tenant_id is $2; scope is $3
+        assert "scope IN ('global', $3)" in sql
         args = mock_pool.fetch.call_args[0]
         assert "butler-x" in args
 
@@ -121,33 +123,36 @@ class TestSemanticSearchScopeFiltering:
         """scope='butler-x' on episodes generates butler = $N."""
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "butler = $2" in sql
+        # tenant_id is $2; butler is $3
+        assert "butler = $3" in sql
         assert "scope" not in sql
         args = mock_pool.fetch.call_args[0]
         assert "butler-x" in args
 
     async def test_scope_episodes_param_index(self, mock_pool: AsyncMock) -> None:
-        """Episodes with scope: $1=embedding, $2=butler, $3=limit."""
+        """Episodes with scope: $1=embedding, $2=tenant_id, $3=butler, $4=limit."""
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-x", limit=5)
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
         assert "$1" in sql
-        assert "butler = $2" in sql
-        assert "LIMIT $3" in sql
+        assert "butler = $3" in sql
+        assert "LIMIT $4" in sql
         assert args[1] == str(_SAMPLE_EMBEDDING)  # $1
-        assert args[2] == "butler-x"  # $2
-        assert args[3] == 5  # $3
+        assert args[2] == "owner"  # $2 = tenant_id
+        assert args[3] == "butler-x"  # $3
+        assert args[4] == 5  # $4
 
     async def test_scope_facts_param_index(self, mock_pool: AsyncMock) -> None:
-        """Facts with scope: $1=embedding, $2=scope, $3=limit."""
+        """Facts with scope: $1=embedding, $2=tenant_id, $3=scope, $4=limit."""
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-x", limit=7)
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
-        assert "scope IN ('global', $2)" in sql
-        assert "LIMIT $3" in sql
+        assert "scope IN ('global', $3)" in sql
+        assert "LIMIT $4" in sql
         assert args[1] == str(_SAMPLE_EMBEDDING)  # $1
-        assert args[2] == "butler-x"  # $2
-        assert args[3] == 7  # $3
+        assert args[2] == "owner"  # $2 = tenant_id
+        assert args[3] == "butler-x"  # $3
+        assert args[4] == 7  # $4
 
 
 # ===================================================================
@@ -183,49 +188,53 @@ class TestKeywordSearchScopeFiltering:
         """scope='butler-x' on facts generates scope IN ('global', $N)."""
         await keyword_search(mock_pool, "test", "facts", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope IN ('global', $2)" in sql
+        # $1=query, $2=tenant_id, $3=scope
+        assert "scope IN ('global', $3)" in sql
         args = mock_pool.fetch.call_args[0]
-        assert args[2] == "butler-x"
+        assert args[3] == "butler-x"
 
     async def test_scope_rules_uses_in_global(self, mock_pool: AsyncMock) -> None:
         """scope='butler-x' on rules generates scope IN ('global', $N)."""
         await keyword_search(mock_pool, "test", "rules", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope IN ('global', $2)" in sql
+        # $1=query, $2=tenant_id, $3=scope
+        assert "scope IN ('global', $3)" in sql
         args = mock_pool.fetch.call_args[0]
-        assert args[2] == "butler-x"
+        assert args[3] == "butler-x"
 
     async def test_scope_episodes_uses_butler_column(self, mock_pool: AsyncMock) -> None:
         """scope='butler-x' on episodes generates butler = $N."""
         await keyword_search(mock_pool, "test", "episodes", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "butler = $2" in sql
+        # $1=query, $2=tenant_id, $3=butler
+        assert "butler = $3" in sql
         assert "scope" not in sql
         args = mock_pool.fetch.call_args[0]
-        assert args[2] == "butler-x"
+        assert args[3] == "butler-x"
 
     async def test_scope_episodes_param_index(self, mock_pool: AsyncMock) -> None:
-        """Episodes with scope: $1=query, $2=butler, $3=limit."""
+        """Episodes with scope: $1=query, $2=tenant_id, $3=butler, $4=limit."""
         await keyword_search(mock_pool, "test", "episodes", scope="butler-x", limit=5)
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
-        assert "butler = $2" in sql
-        assert "LIMIT $3" in sql
+        assert "butler = $3" in sql
+        assert "LIMIT $4" in sql
         assert args[1] == "test"  # $1
-        assert args[2] == "butler-x"  # $2
-        assert args[3] == 5  # $3
+        assert args[2] == "owner"  # $2 = tenant_id
+        assert args[3] == "butler-x"  # $3
+        assert args[4] == 5  # $4
 
     async def test_scope_facts_shifts_limit_param(self, mock_pool: AsyncMock) -> None:
-        """Facts with scope: limit shifts to $3."""
+        """Facts with scope: limit shifts to $4 (tenant_id=$2, scope=$3)."""
         await keyword_search(mock_pool, "test", "facts", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "LIMIT $3" in sql
+        assert "LIMIT $4" in sql
 
     async def test_no_scope_episodes_limit_at_dollar2(self, mock_pool: AsyncMock) -> None:
-        """Episodes without scope: limit is $2."""
+        """Episodes without scope: limit is $3 (tenant_id=$2, no butler filter)."""
         await keyword_search(mock_pool, "test", "episodes", scope=None)
         sql = mock_pool.fetch.call_args[0][0]
-        assert "LIMIT $2" in sql
+        assert "LIMIT $3" in sql
 
 
 # ===================================================================

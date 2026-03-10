@@ -161,7 +161,8 @@ class TestSemanticSearchScope:
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-a")
 
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope IN ('global', $2)" in sql
+        # tenant_id is now $2, scope is $3
+        assert "scope IN ('global', $3)" in sql
         # scope value passed as parameter
         args = mock_pool.fetch.call_args[0]
         assert "butler-a" in args
@@ -173,7 +174,8 @@ class TestSemanticSearchScope:
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "rules", scope="butler-b")
 
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope IN ('global', $2)" in sql
+        # tenant_id is now $2, scope is $3
+        assert "scope IN ('global', $3)" in sql
         args = mock_pool.fetch.call_args[0]
         assert "butler-b" in args
 
@@ -184,7 +186,8 @@ class TestSemanticSearchScope:
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-c")
 
         sql = mock_pool.fetch.call_args[0][0]
-        assert "butler = $2" in sql
+        # tenant_id is now $2, butler is $3
+        assert "butler = $3" in sql
         assert "scope" not in sql
 
     async def test_no_scope_no_scope_filter(self, mock_pool: AsyncMock) -> None:
@@ -340,13 +343,15 @@ class TestSemanticSearchSQL:
 
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
-        # $1 = embedding, $2 = scope, $3 = limit
+        # $1 = embedding, $2 = tenant_id, $3 = scope, $4 = limit
         assert "$1" in sql
         assert "$2" in sql
         assert "$3" in sql
+        assert "$4" in sql
         assert args[1] == str(_SAMPLE_EMBEDDING)  # $1
-        assert args[2] == "global"  # $2
-        assert args[3] == 20  # $3
+        assert args[2] == "owner"  # $2 = tenant_id (default)
+        assert args[3] == "global"  # $3 = scope
+        assert args[4] == 20  # $4 = limit
 
     async def test_param_indices_without_scope(self, mock_pool: AsyncMock) -> None:
         """When no scope, parameter indices skip the scope param."""
@@ -356,7 +361,8 @@ class TestSemanticSearchSQL:
 
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
-        # $1 = embedding, $2 = limit (no scope for episodes)
-        assert "LIMIT $2" in sql
+        # $1 = embedding, $2 = tenant_id, $3 = limit (no butler scope since scope=None)
+        assert "LIMIT $3" in sql
         assert args[1] == str(_SAMPLE_EMBEDDING)
-        assert args[2] == 3
+        assert args[2] == "owner"  # tenant_id
+        assert args[3] == 3

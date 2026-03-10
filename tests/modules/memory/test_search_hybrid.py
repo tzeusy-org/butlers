@@ -77,6 +77,7 @@ class TestHybridSearch:
             "facts",
             limit=10,
             scope=None,
+            tenant_id="owner",
         )
         kw_mock.assert_awaited_once_with(
             pool,
@@ -84,6 +85,7 @@ class TestHybridSearch:
             "facts",
             limit=10,
             scope=None,
+            tenant_id="owner",
         )
 
     async def test_rrf_score_overlapping_results(self) -> None:
@@ -265,6 +267,7 @@ class TestHybridSearch:
             "episodes",
             limit=20,
             scope="my-butler",
+            tenant_id="owner",
         )
         kw_mock.assert_awaited_once_with(
             pool,
@@ -272,6 +275,7 @@ class TestHybridSearch:
             "episodes",
             limit=20,
             scope="my-butler",
+            tenant_id="owner",
         )
 
     async def test_output_contains_rank_fields(self) -> None:

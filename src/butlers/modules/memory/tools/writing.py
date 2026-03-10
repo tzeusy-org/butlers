@@ -15,6 +15,26 @@ from butlers.modules.memory.tools._helpers import _storage, get_embedding_engine
 logger = logging.getLogger(__name__)
 
 
+def _extract_request_context(
+    request_context: dict[str, Any] | None,
+) -> tuple[str, str | None]:
+    """Extract tenant_id and request_id from an optional request_context dict.
+
+    Args:
+        request_context: Optional dict with 'tenant_id' and/or 'request_id' keys.
+
+    Returns:
+        Tuple of (tenant_id, request_id). Defaults to ('owner', None) when
+        request_context is None or keys are absent.
+    """
+    if not request_context:
+        return "owner", None
+    tenant_id_val = request_context.get("tenant_id")
+    request_id = request_context.get("request_id") or None
+    tenant_id = "owner" if tenant_id_val in (None, "") else str(tenant_id_val)
+    return tenant_id, str(request_id) if request_id is not None else None
+
+
 async def memory_store_episode(
     pool: Pool,
     content: str,
@@ -22,13 +42,24 @@ async def memory_store_episode(
     *,
     session_id: str | None = None,
     importance: float = 5.0,
+    request_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Store a raw episode from a runtime session.
 
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new episode's ID and expiry timestamp.
+
+    Args:
+        pool: asyncpg connection pool.
+        content: Episode text.
+        butler: Name of the source butler.
+        session_id: Optional UUID string of the source runtime session.
+        importance: Importance rating (default 5.0).
+        request_context: Optional dict with 'tenant_id' and 'request_id' for
+            multi-tenant isolation and request trace correlation.
     """
     parsed_session_id = uuid.UUID(session_id) if session_id is not None else None
+    tenant_id, request_id = _extract_request_context(request_context)
     result = await _storage.store_episode(
         pool,
         content,
@@ -36,6 +67,8 @@ async def memory_store_episode(
         get_embedding_engine(),
         session_id=parsed_session_id,
         importance=importance,
+        tenant_id=tenant_id,
+        request_id=request_id,
     )
 
     # Backward-compatible: older storage variants may return a mapping.
@@ -72,6 +105,7 @@ async def memory_store_fact(
     entity_id: str | None = None,
     object_entity_id: str | None = None,
     valid_at: str | None = None,
+    request_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Store a distilled fact, automatically superseding any existing match.
 
@@ -93,6 +127,9 @@ async def memory_store_fact(
     other active facts — temporal facts never supersede each other or property
     facts.
 
+    Accepts an optional ``request_context`` dict with 'tenant_id' and 'request_id'
+    for multi-tenant isolation and request trace correlation.
+
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new fact's ID and the superseded fact's ID (if any).
     """
@@ -105,6 +142,8 @@ async def memory_store_fact(
         parsed_valid_at = datetime.fromisoformat(valid_at)
         if parsed_valid_at.tzinfo is None:
             parsed_valid_at = parsed_valid_at.replace(tzinfo=UTC)
+
+    tenant_id, request_id = _extract_request_context(request_context)
 
     result = await _storage.store_fact(
         pool,
@@ -119,6 +158,8 @@ async def memory_store_fact(
         entity_id=parsed_entity_id,
         object_entity_id=parsed_object_entity_id,
         valid_at=parsed_valid_at,
+        tenant_id=tenant_id,
+        request_id=request_id,
     )
 
     # Backward-compatible: older storage variants may return a mapping.
@@ -145,18 +186,31 @@ async def memory_store_rule(
     *,
     scope: str = "global",
     tags: list[str] | None = None,
+    request_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Store a new behavioral rule as a candidate.
 
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new rule's ID.
+
+    Args:
+        pool: asyncpg connection pool.
+        embedding_engine: EmbeddingEngine for semantic vectors.
+        content: Rule description text.
+        scope: Visibility scope (default 'global').
+        tags: Optional list of string tags.
+        request_context: Optional dict with 'tenant_id' and 'request_id' for
+            multi-tenant isolation and request trace correlation.
     """
+    tenant_id, request_id = _extract_request_context(request_context)
     result = await _storage.store_rule(
         pool,
         content,
         embedding_engine,
         scope=scope,
         tags=tags,
+        tenant_id=tenant_id,
+        request_id=request_id,
     )
 
     # Backward-compatible: older storage variants may return a mapping.

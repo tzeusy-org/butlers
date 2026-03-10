@@ -251,14 +251,15 @@ class TestTemporalFacts:
     """Temporal facts: valid_at param and NULL-based supersession skip."""
 
     async def test_valid_at_stored_in_insert(self, mock_pool, embedding_engine):
-        """valid_at is passed through to the INSERT as the last positional arg."""
+        """valid_at is passed through to the INSERT."""
         pool, conn = mock_pool
         ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
         await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts)
 
         insert_call = conn.execute.call_args_list[0]
-        # valid_at is $20 → last arg
-        assert insert_call.args[-1] == ts
+        # valid_at is $20; tenant_id=$21, request_id=$22 follow after
+        # So valid_at is at args[-3]
+        assert insert_call.args[-3] == ts
 
     async def test_valid_at_defaults_to_null_when_omitted(self, mock_pool, embedding_engine):
         """When valid_at is omitted, NULL is stored (property fact semantics)."""

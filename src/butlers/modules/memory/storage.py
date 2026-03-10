@@ -111,6 +111,8 @@ async def store_episode(
     session_id: uuid.UUID | None = None,
     importance: float = 5.0,
     metadata: dict | None = None,
+    tenant_id: str = "owner",
+    request_id: str | None = None,
 ) -> uuid.UUID:
     """Store a raw episode from a butler runtime session.
 
@@ -125,6 +127,8 @@ async def store_episode(
         session_id: Optional UUID of the source runtime session.
         importance: Importance rating (default 5.0).
         metadata: Optional JSONB metadata dict.
+        tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
+        request_id: Optional request trace ID for correlation.
 
     Returns:
         The UUID of the newly created episode row.
@@ -136,8 +140,8 @@ async def store_episode(
 
     sql = f"""
         INSERT INTO episodes (id, butler, session_id, content, embedding, search_vector,
-                              importance, expires_at, metadata)
-        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9)
+                              importance, expires_at, metadata, tenant_id, request_id)
+        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11)
     """
 
     meta_json = json.dumps(metadata or {})
@@ -153,6 +157,8 @@ async def store_episode(
         importance,
         expires_at,
         meta_json,
+        tenant_id,
+        request_id,
     )
 
     return episode_id
@@ -175,6 +181,8 @@ async def store_fact(
     entity_id: uuid.UUID | None = None,
     object_entity_id: uuid.UUID | None = None,
     valid_at: datetime | None = None,
+    tenant_id: str = "owner",
+    request_id: str | None = None,
 ) -> uuid.UUID:
     """Store a distilled fact with optional supersession.
 
@@ -214,6 +222,9 @@ async def store_fact(
             ``None`` (property fact).  Pass an explicit datetime to create a
             temporal fact; multiple temporal facts with different ``valid_at``
             values coexist as active facts without superseding each other.
+        tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
+            Supersession checks are scoped to the same tenant_id.
+        request_id: Optional request trace ID for correlation.
 
     Returns:
         The UUID of the newly created fact.
@@ -271,25 +282,28 @@ async def store_fact(
             if not skip_supersession:
                 # Check for an existing *property* active fact using the appropriate key.
                 # Only consider rows with valid_at IS NULL (property facts).
+                # Supersession is always scoped to the same tenant_id.
                 if object_entity_id is not None:
-                    # Edge-fact: keyed on (entity_id, object_entity_id, scope, predicate)
+                    # Edge-fact: keyed on (tenant_id, entity_id, object_entity_id, scope, predicate)
                     existing = await conn.fetchrow(
                         "SELECT id FROM facts "
-                        "WHERE entity_id = $1 AND object_entity_id = $2 "
-                        "AND scope = $3 AND predicate = $4 "
+                        "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id = $3 "
+                        "AND scope = $4 AND predicate = $5 "
                         "AND validity = 'active' AND valid_at IS NULL",
+                        tenant_id,
                         entity_id,
                         object_entity_id,
                         scope,
                         predicate,
                     )
                 elif entity_id is not None:
-                    # Property-fact: keyed on (entity_id, scope, predicate)
+                    # Property-fact: keyed on (tenant_id, entity_id, scope, predicate)
                     existing = await conn.fetchrow(
                         "SELECT id FROM facts "
-                        "WHERE entity_id = $1 AND object_entity_id IS NULL "
-                        "AND scope = $2 AND predicate = $3 "
+                        "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id IS NULL "
+                        "AND scope = $3 AND predicate = $4 "
                         "AND validity = 'active' AND valid_at IS NULL",
+                        tenant_id,
                         entity_id,
                         scope,
                         predicate,
@@ -297,8 +311,10 @@ async def store_fact(
                 else:
                     existing = await conn.fetchrow(
                         "SELECT id FROM facts "
-                        "WHERE entity_id IS NULL AND subject = $1 AND predicate = $2 "
+                        "WHERE tenant_id = $1 AND entity_id IS NULL "
+                        "AND subject = $2 AND predicate = $3 "
                         "AND validity = 'active' AND valid_at IS NULL",
+                        tenant_id,
                         subject,
                         predicate,
                     )
@@ -319,14 +335,14 @@ async def store_fact(
                     importance, confidence, decay_rate, permanence, source_butler,
                     source_episode_id, supersedes_id, validity, scope,
                     created_at, last_confirmed_at, tags, metadata, entity_id,
-                    object_entity_id, valid_at
+                    object_entity_id, valid_at, tenant_id, request_id
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, {tsvector_sql("$6")},
                     $7, $8, $9, $10, $11,
                     $12, $13, 'active', $14,
                     $15, $15, $16, $17, $18,
-                    $19, $20
+                    $19, $20, $21, $22
                 )
             """
             await conn.execute(
@@ -351,6 +367,8 @@ async def store_fact(
                 entity_id,
                 object_entity_id,
                 fact_valid_at,
+                tenant_id,
+                request_id,
             )
 
             # Create supersedes link if applicable
@@ -376,6 +394,8 @@ async def store_rule(
     source_butler: str | None = None,
     source_episode_id: uuid.UUID | None = None,
     metadata: dict | None = None,
+    tenant_id: str = "owner",
+    request_id: str | None = None,
 ) -> uuid.UUID:
     """Store a new behavioral rule as a candidate.
 
@@ -392,6 +412,8 @@ async def store_rule(
         source_butler: Name of the butler that proposed this rule.
         source_episode_id: Optional source episode UUID.
         metadata: Optional JSONB metadata dict.
+        tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
+        request_id: Optional request trace ID for correlation.
 
     Returns:
         The UUID of the newly created rule.
@@ -407,11 +429,12 @@ async def store_rule(
         INSERT INTO rules (id, content, embedding, search_vector, scope, maturity,
                            confidence, decay_rate, effectiveness_score,
                            applied_count, success_count, harmful_count,
-                           source_episode_id, source_butler, created_at, tags, metadata)
+                           source_episode_id, source_butler, created_at, tags, metadata,
+                           tenant_id, request_id)
         VALUES ($1, $2, $3, {tsvector_sql("$4")}, $5, 'candidate',
                 0.5, 0.01, 0.0,
                 0, 0, 0,
-                $6, $7, $8, $9, $10)
+                $6, $7, $8, $9, $10, $11, $12)
     """
 
     await pool.execute(
@@ -426,6 +449,8 @@ async def store_rule(
         now,
         tags_json,
         meta_json,
+        tenant_id,
+        request_id,
     )
 
     return rule_id

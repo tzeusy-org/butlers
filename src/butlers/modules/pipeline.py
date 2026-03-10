@@ -1151,8 +1151,7 @@ class MessagePipeline:
                             )
                     except Exception:
                         logger.debug(
-                            "Failed to mark message_inbox as processing; "
-                            "scanner may re-enqueue",
+                            "Failed to mark message_inbox as processing; scanner may re-enqueue",
                             exc_info=True,
                         )
 

@@ -74,6 +74,8 @@ class TestMemoryStoreEpisode:
                 mock_get_engine.return_value,
                 session_id=None,
                 importance=5.0,
+                tenant_id="owner",
+                request_id=None,
             )
 
     async def test_returns_id_as_string(self, mock_pool: AsyncMock) -> None:
@@ -183,6 +185,8 @@ class TestMemoryStoreFact:
                 entity_id=None,
                 object_entity_id=None,
                 valid_at=None,
+                tenant_id="owner",
+                request_id=None,
             )
 
     async def test_returns_id_as_string(
@@ -290,6 +294,8 @@ class TestMemoryStoreRule:
                 mock_embedding_engine,
                 scope="global",
                 tags=None,
+                tenant_id="owner",
+                request_id=None,
             )
 
     async def test_returns_id_as_string(

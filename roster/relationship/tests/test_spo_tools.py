@@ -153,7 +153,11 @@ async def pool(provisioned_postgres_pool):
                 last_referenced_at TIMESTAMPTZ,
                 last_confirmed_at TIMESTAMPTZ,
                 tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb
+                metadata JSONB DEFAULT '{}'::jsonb,
+                tenant_id TEXT NOT NULL DEFAULT 'owner',
+                request_id TEXT,
+                retention_class TEXT NOT NULL DEFAULT 'operational',
+                sensitivity TEXT NOT NULL DEFAULT 'normal'
             )
         """)
         await p.execute("""

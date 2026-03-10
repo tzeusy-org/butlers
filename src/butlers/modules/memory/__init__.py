@@ -133,6 +133,16 @@ class MemoryModule(Module):
             butler: str,
             session_id: str | None = None,
             importance: float = 5.0,
+            request_context: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "and 'request_id' (optional trace ID). When omitted, defaults to "
+                        "tenant_id='owner' and no request_id."
+                    )
+                ),
+            ] = None,
         ) -> dict[str, Any]:
             """Store a raw episode from a runtime session."""
             return await _writing.memory_store_episode(
@@ -141,6 +151,7 @@ class MemoryModule(Module):
                 butler,
                 session_id=session_id,
                 importance=importance,
+                request_context=request_context,
             )
 
         @mcp.tool()
@@ -204,6 +215,16 @@ class MemoryModule(Module):
                         "such as meal_breakfast/lunch/dinner/snack. Temporal facts "
                         "skip supersession so multiple entries at different times can "
                         "coexist. Defaults to now() when omitted."
+                    )
+                ),
+            ] = None,
+            request_context: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "and 'request_id' (optional trace ID). When omitted, defaults to "
+                        "tenant_id='owner' and no request_id."
                     )
                 ),
             ] = None,
@@ -290,6 +311,7 @@ class MemoryModule(Module):
                 entity_id=effective_entity_id,
                 object_entity_id=object_entity_id,
                 valid_at=valid_at,
+                request_context=request_context,
             )
 
         @mcp.tool()
@@ -297,6 +319,16 @@ class MemoryModule(Module):
             content: str,
             scope: str = "global",
             tags: Annotated[list[str] | None, BeforeValidator(_coerce_json_list)] = None,
+            request_context: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "and 'request_id' (optional trace ID). When omitted, defaults to "
+                        "tenant_id='owner' and no request_id."
+                    )
+                ),
+            ] = None,
         ) -> dict[str, Any]:
             """Store a new behavioral rule as a candidate."""
             return await _writing.memory_store_rule(
@@ -305,6 +337,7 @@ class MemoryModule(Module):
                 content,
                 scope=scope,
                 tags=tags,
+                request_context=request_context,
             )
 
         # --- Reading tools ---

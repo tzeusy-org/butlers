@@ -215,24 +215,27 @@ class TestKeywordSearchScope:
         """Scope filter includes global+scope for facts."""
         await keyword_search(mock_pool, "test", "facts", scope="butler-a")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope IN ('global', $2)" in sql
-        # scope value passed as second param
+        # $1=query, $2=tenant_id, $3=scope (tenant_id added before scope)
+        assert "scope IN ('global', $3)" in sql
+        # scope value passed as 4th positional arg (index 3, after sql/query/tenant_id)
         call_args = mock_pool.fetch.call_args[0]
-        assert call_args[2] == "butler-a"
+        assert call_args[3] == "butler-a"
 
     async def test_scope_applied_for_rules(self, mock_pool: AsyncMock) -> None:
         """Scope filter includes global+scope for rules."""
         await keyword_search(mock_pool, "test", "rules", scope="butler-b")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope IN ('global', $2)" in sql
+        # $1=query, $2=tenant_id, $3=scope
+        assert "scope IN ('global', $3)" in sql
         call_args = mock_pool.fetch.call_args[0]
-        assert call_args[2] == "butler-b"
+        assert call_args[3] == "butler-b"
 
     async def test_scope_episodes_uses_butler_column(self, mock_pool: AsyncMock) -> None:
         """Episodes use butler column for scope filtering."""
         await keyword_search(mock_pool, "test", "episodes", scope="butler-a")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "butler = $2" in sql
+        # $1=query, $2=tenant_id, $3=butler
+        assert "butler = $3" in sql
         assert "scope" not in sql
 
     async def test_no_scope_no_filter(self, mock_pool: AsyncMock) -> None:
@@ -243,16 +246,16 @@ class TestKeywordSearchScope:
         assert "butler =" not in sql
 
     async def test_scope_shifts_limit_param_index(self, mock_pool: AsyncMock) -> None:
-        """When scope is used, limit parameter index shifts to $3."""
+        """When scope is used, limit parameter index shifts to $4 (tenant_id=$2, scope=$3)."""
         await keyword_search(mock_pool, "test", "facts", scope="global")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "LIMIT $3" in sql
+        assert "LIMIT $4" in sql
 
     async def test_no_scope_limit_param_index(self, mock_pool: AsyncMock) -> None:
-        """Without scope, limit parameter index is $2."""
+        """Without scope, limit parameter index is $3 (tenant_id=$2, no scope)."""
         await keyword_search(mock_pool, "test", "episodes")
         sql = mock_pool.fetch.call_args[0][0]
-        assert "LIMIT $2" in sql
+        assert "LIMIT $3" in sql
 
 
 # ---------------------------------------------------------------------------

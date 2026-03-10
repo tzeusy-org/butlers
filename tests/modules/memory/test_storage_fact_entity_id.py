@@ -197,11 +197,11 @@ class TestEntityIdStoredInFact:
         )
         sql = insert_call.args[0]
         assert "entity_id" in sql
-        # entity_id=$18, object_entity_id=$19, valid_at=$20 (last)
-        assert insert_call.args[-3] == eid
-        assert insert_call.args[-2] is None  # object_entity_id not set
+        # entity_id=$18, object_entity_id=$19, valid_at=$20, tenant_id=$21, request_id=$22
+        assert insert_call.args[-5] == eid
+        assert insert_call.args[-4] is None  # object_entity_id not set
         # valid_at is NULL (property fact — omitted valid_at)
-        assert insert_call.args[-1] is None
+        assert insert_call.args[-3] is None
 
     async def test_entity_id_null_in_insert_when_omitted(self, embedding_engine):
         """When entity_id is not provided, NULL is stored."""
@@ -212,10 +212,10 @@ class TestEntityIdStoredInFact:
 
         insert_call = conn.execute.call_args_list[0]
         assert "entity_id" in insert_call.args[0]
-        assert insert_call.args[-3] is None  # entity_id
-        assert insert_call.args[-2] is None  # object_entity_id
+        assert insert_call.args[-5] is None  # entity_id
+        assert insert_call.args[-4] is None  # object_entity_id
         # valid_at is NULL (property fact — omitted valid_at)
-        assert insert_call.args[-1] is None
+        assert insert_call.args[-3] is None
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,8 @@ class TestEntityKeyedSupersession:
         sql = fetchrow_call.args[0]
         assert "entity_id" in sql
         assert "subject" not in sql
-        assert fetchrow_call.args[1] == eid
+        # args[1] = tenant_id, args[2] = entity_id (tenant_id=$1, entity_id=$2 in SQL)
+        assert fetchrow_call.args[2] == eid
 
     async def test_entity_keyed_old_fact_marked_superseded(
         self, pool_with_existing_entity_fact, embedding_engine
@@ -393,11 +394,11 @@ class TestSubjectKeyedSupersessionUnchanged:
         insert_call = next(
             c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
         )
-        # entity_id=$18, object_entity_id=$19, valid_at=$20 (last)
-        assert insert_call.args[-3] is None  # entity_id = None
-        assert insert_call.args[-2] is None  # object_entity_id = None
+        # entity_id=$18, object_entity_id=$19, valid_at=$20, tenant_id=$21, request_id=$22
+        assert insert_call.args[-5] is None  # entity_id = None
+        assert insert_call.args[-4] is None  # object_entity_id = None
         # valid_at = NULL (property fact — omitted valid_at)
-        assert insert_call.args[-1] is None
+        assert insert_call.args[-3] is None
 
 
 # ---------------------------------------------------------------------------
@@ -615,11 +616,11 @@ class TestObjectEntityIdStoredInFact:
         )
         sql = insert_call.args[0]
         assert "object_entity_id" in sql
-        # entity_id=$18, object_entity_id=$19, valid_at=$20 (last)
-        assert insert_call.args[-2] == obj_eid
-        assert insert_call.args[-3] == eid
+        # entity_id=$18, object_entity_id=$19, valid_at=$20, tenant_id=$21, request_id=$22
+        assert insert_call.args[-4] == obj_eid
+        assert insert_call.args[-5] == eid
         # valid_at = NULL (property fact — omitted valid_at)
-        assert insert_call.args[-1] is None
+        assert insert_call.args[-3] is None
 
     async def test_object_entity_id_null_when_omitted(self, embedding_engine):
         """When object_entity_id is not provided, NULL is stored."""
@@ -630,8 +631,8 @@ class TestObjectEntityIdStoredInFact:
 
         insert_call = conn.execute.call_args_list[0]
         assert "object_entity_id" in insert_call.args[0]
-        # entity_id=$18, object_entity_id=$19, valid_at=$20 (last)
-        assert insert_call.args[-2] is None  # object_entity_id
+        # entity_id=$18, object_entity_id=$19, valid_at=$20, tenant_id=$21, request_id=$22
+        assert insert_call.args[-4] is None  # object_entity_id
 
 
 # ---------------------------------------------------------------------------
@@ -676,8 +677,9 @@ class TestEdgeFactSupersession:
         assert "entity_id" in sql
         assert "object_entity_id" in sql
         assert "subject" not in sql
-        assert fetchrow_call.args[1] == eid
-        assert fetchrow_call.args[2] == obj_eid
+        # args[1] = tenant_id, args[2] = entity_id, args[3] = object_entity_id
+        assert fetchrow_call.args[2] == eid
+        assert fetchrow_call.args[3] == obj_eid
 
     async def test_edge_fact_old_fact_marked_superseded(
         self, pool_with_existing_edge_fact, embedding_engine

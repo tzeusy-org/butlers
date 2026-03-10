@@ -77,6 +77,7 @@ class TestMemoryChainRegistration:
             "011_relationship_predicates.py",
             "012_facts_gin_indexes.py",
             "013_fix_owner_tenant_id.py",
+            "014_tenant_request_lineage.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:

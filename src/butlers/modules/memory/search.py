@@ -61,6 +61,7 @@ async def semantic_search(
     *,
     limit: int = 10,
     scope: str | None = None,
+    tenant_id: str = "owner",
 ) -> list[dict]:
     """Search by cosine similarity using pgvector.
 
@@ -70,6 +71,7 @@ async def semantic_search(
         table: Table name (``'episodes'``, ``'facts'``, or ``'rules'``).
         limit: Max results (default 10).
         scope: Optional scope filter (only applied for facts/rules tables).
+        tenant_id: Tenant scope for isolation (default 'owner').
 
     Returns:
         List of dicts with all table columns plus a ``similarity`` key
@@ -87,6 +89,11 @@ async def semantic_search(
     conditions: list[str] = []
     params: list = [embedding_str]
     param_idx = 2  # $1 is the embedding
+
+    # Tenant isolation filter — always applied.
+    conditions.append(f"tenant_id = ${param_idx}")
+    params.append(tenant_id)
+    param_idx += 1
 
     # Scope filtering: facts/rules use IN ('global', scope), episodes use butler = scope.
     if scope is not None and table in _SCOPED_TABLES:
@@ -133,6 +140,7 @@ async def keyword_search(
     *,
     limit: int = 10,
     scope: str | None = None,
+    tenant_id: str = "owner",
 ) -> list[dict]:
     """Search by keyword using PostgreSQL full-text search.
 
@@ -145,6 +153,7 @@ async def keyword_search(
         table: Table name ('episodes', 'facts', 'rules').
         limit: Max results (default 10).
         scope: Optional scope filter (only for facts/rules).
+        tenant_id: Tenant scope for isolation (default 'owner').
 
     Returns:
         List of dicts with keys: all table columns plus 'rank'.
@@ -164,6 +173,11 @@ async def keyword_search(
     conditions = [f"search_vector @@ plainto_tsquery('{_TS_CONFIG}', $1)"]
     params: list = [cleaned_query]
     param_idx = 2
+
+    # Tenant isolation filter — always applied.
+    conditions.append(f"tenant_id = ${param_idx}")
+    params.append(tenant_id)
+    param_idx += 1
 
     # Scope filtering: facts/rules use IN ('global', scope), episodes use butler = scope.
     if scope is not None and table in _SCOPED_TABLES:
@@ -209,6 +223,7 @@ async def hybrid_search(
     *,
     limit: int = 10,
     scope: str | None = None,
+    tenant_id: str = "owner",
 ) -> list[dict]:
     """Hybrid search combining semantic and keyword search via RRF.
 
@@ -227,6 +242,7 @@ async def hybrid_search(
         table: Table name (``'episodes'``, ``'facts'``, ``'rules'``).
         limit: Max results per search method and for final output.
         scope: Optional scope filter.
+        tenant_id: Tenant scope for isolation (default 'owner').
 
     Returns:
         List of dicts with ``rrf_score``, ``semantic_rank``, and
@@ -245,6 +261,7 @@ async def hybrid_search(
         table,
         limit=limit,
         scope=scope,
+        tenant_id=tenant_id,
     )
     keyword_results = await keyword_search(
         pool,
@@ -252,6 +269,7 @@ async def hybrid_search(
         table,
         limit=limit,
         scope=scope,
+        tenant_id=tenant_id,
     )
 
     # Build rank maps keyed by id
@@ -431,6 +449,7 @@ async def recall(
     limit: int = 10,
     min_confidence: float = 0.2,
     weights: CompositeWeights | None = None,
+    tenant_id: str = "owner",
 ) -> list[dict]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
@@ -450,6 +469,7 @@ async def recall(
         limit: Max results to return (default 10).
         min_confidence: Minimum effective confidence threshold (default 0.2).
         weights: Optional custom composite weights.
+        tenant_id: Tenant scope for isolation (default 'owner').
 
     Returns:
         List of dicts with ``composite_score`` and ``memory_type`` added.
@@ -465,6 +485,7 @@ async def recall(
         "facts",
         limit=limit,
         scope=scope,
+        tenant_id=tenant_id,
     )
     rules_results = await hybrid_search(
         pool,
@@ -473,6 +494,7 @@ async def recall(
         "rules",
         limit=limit,
         scope=scope,
+        tenant_id=tenant_id,
     )
 
     # Tag each result with its memory type
@@ -541,6 +563,7 @@ async def search(
     mode: str = "hybrid",
     limit: int = 10,
     min_confidence: float = 0.0,
+    tenant_id: str = "owner",
 ) -> list[dict]:
     """General-purpose search across memory types.
 
@@ -558,6 +581,7 @@ async def search(
         mode: Search mode ('semantic', 'keyword', 'hybrid').
         limit: Max results per type (default 10).
         min_confidence: Minimum confidence filter (default 0.0).
+        tenant_id: Tenant scope for isolation (default 'owner').
 
     Returns:
         List of dicts with 'memory_type' added, sorted by relevance.
@@ -588,12 +612,16 @@ async def search(
         table = _TYPE_TO_TABLE[mem_type]
 
         if mode == "semantic":
-            results = await semantic_search(pool, query_embedding, table, limit=limit, scope=scope)
+            results = await semantic_search(
+                pool, query_embedding, table, limit=limit, scope=scope, tenant_id=tenant_id
+            )
         elif mode == "keyword":
-            results = await keyword_search(pool, query, table, limit=limit, scope=scope)
+            results = await keyword_search(
+                pool, query, table, limit=limit, scope=scope, tenant_id=tenant_id
+            )
         else:  # hybrid
             results = await hybrid_search(
-                pool, query, query_embedding, table, limit=limit, scope=scope
+                pool, query, query_embedding, table, limit=limit, scope=scope, tenant_id=tenant_id
             )
 
         # Tag with memory type

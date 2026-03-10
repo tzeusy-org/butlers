@@ -335,7 +335,7 @@ class TestToolDelegation:
         writing.memory_store_episode = AsyncMock(return_value={"id": "abc"})
         await tools["memory_store_episode"](content="test", butler="memory")
         writing.memory_store_episode.assert_called_once_with(
-            pool, "test", "memory", session_id=None, importance=5.0
+            pool, "test", "memory", session_id=None, importance=5.0, request_context=None
         )
 
     async def test_memory_store_fact_delegates(self):
@@ -356,6 +356,7 @@ class TestToolDelegation:
             entity_id=None,
             object_entity_id=None,
             valid_at=None,
+            request_context=None,
         )
 
     async def test_memory_store_fact_delegates_with_valid_at(self):
@@ -381,6 +382,7 @@ class TestToolDelegation:
             entity_id=None,
             object_entity_id=None,
             valid_at="2026-03-06T08:00:00Z",
+            request_context=None,
         )
 
     async def test_memory_context_delegates(self):
@@ -504,6 +506,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             entity_id=None,
             object_entity_id=None,
             valid_at=None,
+            request_context=None,
         )
 
     async def test_no_entity_id_with_routing_ctx_uses_sender_entity(self):
@@ -532,6 +535,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             entity_id=sender_uuid,
             object_entity_id=None,
             valid_at=None,
+            request_context=None,
         )
 
     async def test_explicit_entity_id_takes_precedence_over_routing_ctx(self):
@@ -566,6 +570,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             entity_id=explicit_uuid,
             object_entity_id=None,
             valid_at=None,
+            request_context=None,
         )
 
     async def test_routing_ctx_missing_source_entity_id_key_passes_none(self):
@@ -593,6 +598,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             entity_id=None,
             object_entity_id=None,
             valid_at=None,
+            request_context=None,
         )
 
 

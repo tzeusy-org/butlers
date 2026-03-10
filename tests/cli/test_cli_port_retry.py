@@ -29,9 +29,7 @@ class TestStartAllPortRetry:
     def configs(self, tmp_path):
         d = tmp_path / "test_butler"
         d.mkdir()
-        (d / "butler.toml").write_text(
-            '[butler]\nname = "test_butler"\nport = 19999\n'
-        )
+        (d / "butler.toml").write_text('[butler]\nname = "test_butler"\nport = 19999\n')
         return {"test_butler": d}
 
     @pytest.mark.asyncio
