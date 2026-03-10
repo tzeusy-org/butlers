@@ -144,8 +144,10 @@ class TestStoreEpisodeTenantLineage:
         """When request_id is omitted, None is passed in the INSERT."""
         await _storage.store_episode(simple_pool, "test content", "test-butler", embedding_engine)
         _sql, *args = simple_pool.execute.call_args[0]
-        # Last two positional args are tenant_id and request_id
-        assert args[-1] is None  # request_id
+        # Bind params: $1=id, $2=butler, $3=session_id, $4=content, $5=embedding,
+        # $6=search_text, $7=importance, $8=expires_at, $9=metadata, $10=tenant_id,
+        # $11=request_id, $12=retention_class, $13=sensitivity
+        assert args[10] is None  # request_id ($11, 0-based index 10)
 
 
 class TestStoreFactTenantLineage:
