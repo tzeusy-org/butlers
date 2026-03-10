@@ -129,9 +129,14 @@ memory_store_fact(
     content=<brief note about trend, e.g. "mastery accelerating — 5 concepts/week pace">,
     permanence="standard",
     importance=5.0,
-    tags=[<topic_tag>, "progress", "weekly-digest"]
+    tags=[<topic_tag>, "progress", "weekly-digest"],
+    entity_id=<map_entity_id>
 )
 ```
+
+Note: `map_entity_id` is the `entity_id` of the mind map's root concept node (available from
+`analytics_get_snapshot()` or `mind_map_get()`). For topic-level study pattern facts, use the
+map-level entity rather than a specific node's entity.
 
 ## Exit Criteria
 

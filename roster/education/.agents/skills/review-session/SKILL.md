@@ -122,9 +122,13 @@ memory_store_fact(
     content=f"Consistently failing reviews — scored < 3 in last 3+ review sessions",
     permanence="volatile",
     importance=7.0,
-    tags=[<topic_tag>, "struggle", "review-failure"]
+    tags=[<topic_tag>, "struggle", "review-failure"],
+    entity_id=<node_entity_id>
 )
 ```
+
+Note: `node_entity_id` is available in the node dict from `spaced_repetition_pending_reviews()`
+(each entry includes the node's `entity_id` field from `shared.entities`).
 
 Then suggest revisiting the teaching session:
 ```python

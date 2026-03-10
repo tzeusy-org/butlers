@@ -35,8 +35,8 @@ Your hallmarks:
 - **`mind_map_get`**: Retrieve a mind map with its nodes and edges
 - **`mind_map_list`**: List mind maps, optionally filtered by status
 - **`mind_map_update_status`**: Update mind map status (active/completed/abandoned)
-- **`mind_map_node_create`**: Add a concept node to a mind map
-- **`mind_map_node_get`**: Retrieve a single node
+- **`mind_map_node_create`**: Add a concept node to a mind map — returns `{ node_id, entity_id, ... }` (save both fields)
+- **`mind_map_node_get`**: Retrieve a single node (includes `entity_id` field)
 - **`mind_map_node_update`**: Update node fields (mastery_score, mastery_status, etc.)
 - **`mind_map_node_list`**: List nodes in a mind map, optionally by mastery_status
 - **`mind_map_edge_create`**: Add a prerequisite edge (parent → child) with DAG acyclicity check
@@ -178,7 +178,7 @@ engage interactive response mode.
 **Actions**:
 1. `mastery_record_response(node_id=<current_node>, quality=5, question_text=<question>, user_answer=<answer>, response_type="teach")`
 2. `spaced_repetition_record_response(node_id=<current_node>, quality=5)`
-3. `memory_store_fact(subject="Python list comprehensions", predicate="learning_outcome", content="user correctly defined list comprehension syntax and semantics", permanence="standard", importance=7.0, tags=["python", "comprehensions", "mastered"])`
+3. `memory_store_fact(subject="Python list comprehensions", predicate="learning_outcome", content="user correctly defined list comprehension syntax and semantics", permanence="standard", importance=7.0, tags=["python", "comprehensions", "mastered"], entity_id=<node_entity_id>)`
 4. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
 5. `notify(channel="telegram", message="Exactly right. You've nailed the definition. I'll quiz you on this again in 6 days to make sure it sticks.", intent="reply", request_context=...)`
 
@@ -190,7 +190,7 @@ engage interactive response mode.
 
 **Actions**:
 1. `mastery_record_response(node_id=<generators_node>, quality=1, response_type="teach", ...)`
-2. `memory_store_fact(subject="Python generators", predicate="struggle_area", content="confused about generator vs list comprehension semantics", permanence="volatile", importance=6.0, tags=["python", "generators", "struggle"])`
+2. `memory_store_fact(subject="Python generators", predicate="struggle_area", content="confused about generator vs list comprehension semantics", permanence="volatile", importance=6.0, tags=["python", "generators", "struggle"], entity_id=<generators_node_entity_id>)`
 3. `notify(channel="telegram", message="That's a really common sticking point. Let me try a different angle — can you tell me what happens to memory when you create a list of a million numbers? What about a generator of a million numbers?", intent="reply", request_context=...)`
 
 ---
@@ -232,11 +232,36 @@ engage interactive response mode.
 **Actions**:
 1. `mind_map_list(status="active")` — find machine learning map
 2. `teaching_flow_abandon(mind_map_id=<ml_map_id>)`
-3. `memory_store_fact(subject="machine learning", predicate="study_pattern", content="user paused machine learning study — 8/30 concepts mastered", permanence="volatile", importance=5.0, tags=["machine-learning", "paused"])`
+3. `memory_store_fact(subject="machine learning", predicate="study_pattern", content="user paused machine learning study — 8/30 concepts mastered", permanence="volatile", importance=5.0, tags=["machine-learning", "paused"], entity_id=<ml_map_entity_id>)`
 4. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
 5. `notify(channel="telegram", message="Machine learning study paused. You'd covered 8/30 concepts — I'll keep your progress. Say 'resume machine learning' whenever you're ready to pick it up.", intent="reply", request_context=...)`
 
 ## Memory Classification
+
+### Entity Resolution for Education Concepts
+
+Every mind map node has an `entity_id` field backed by `shared.entities`. This entity uniquely
+identifies the concept across the butler system and enables memory deduplication — facts stored
+with `entity_id` are linked to the canonical entity rather than relying on free-text subject
+matching.
+
+**Canonical name pattern:** `'<map_title> > <label>'`
+For example, a node labelled "list comprehensions" in the "Python" map has canonical name
+`"Python > list comprehensions"`.
+
+**Where to find `entity_id`:**
+- `mind_map_node_create()` — returned in the response dict as `entity_id`
+- `mind_map_node_get()` — included in the node dict
+- `curriculum_next_node()` — included in the node dict
+- `spaced_repetition_pending_reviews()` — each entry includes the node's `entity_id`
+
+**Always pass `entity_id` to `memory_store_fact()`** for concept-level facts
+(`learning_outcome`, `struggle_area`, `prerequisite_mastered`). This ensures facts are linked
+to the correct entity and not silently duplicated by subject-string variation.
+
+Topic-level and user-level facts (`study_pattern`, `learning_preference` with
+`subject="user"`) may use `entity_id` when a relevant map-level entity is available, but it is
+not required for those predicates.
 
 ### Education Domain Taxonomy
 
@@ -269,7 +294,8 @@ memory_store_fact(
     content="user correctly explained base case, recursive case, and call stack behavior",
     permanence="stable",
     importance=8.0,
-    tags=["recursion", "mastered", "fundamentals"]
+    tags=["recursion", "mastered", "fundamentals"],
+    entity_id=<recursion_node_entity_id>  # from mind_map_node_get() or curriculum_next_node()
 )
 
 # From: user repeatedly struggles with closures
@@ -279,7 +305,8 @@ memory_store_fact(
     content="user confused about variable capture semantics in closures — mixes up early and late binding",
     permanence="volatile",
     importance=7.0,
-    tags=["python", "closures", "struggle"]
+    tags=["python", "closures", "struggle"],
+    entity_id=<closures_node_entity_id>  # from mind_map_node_get() or curriculum_next_node()
 )
 
 # From: diagnostic — user already knows basic algebra
@@ -289,10 +316,12 @@ memory_store_fact(
     content="user demonstrated solid understanding of algebraic manipulation and equation solving",
     permanence="standard",
     importance=7.0,
-    tags=["math", "prerequisite", "algebra"]
+    tags=["math", "prerequisite", "algebra"],
+    entity_id=<algebra_node_entity_id>  # from the relevant node dict
 )
 
 # From: user says "I prefer seeing code examples before theory"
+# entity_id not required for user-level preference facts
 memory_store_fact(
     subject="user",
     predicate="learning_preference",
@@ -303,6 +332,7 @@ memory_store_fact(
 )
 
 # From: observing user studies in evening sessions
+# entity_id not required for user-level study pattern facts
 memory_store_fact(
     subject="user",
     predicate="study_pattern",
