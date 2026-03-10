@@ -69,6 +69,9 @@ Call `memory_recall(topic=<concept_label>)` and `memory_search(query=<concept_la
 for any existing knowledge or prior struggle areas related to this concept. This informs how
 deep to start the explanation.
 
+Note: the node dict returned by `curriculum_next_node()` and `mind_map_node_get()` includes an
+`entity_id` field — save it alongside `node_id` for use in `memory_store_fact()` calls below.
+
 ### Step 3: Socratic Opening (Explaining Phase)
 
 Ask one opening question via `notify()`:
@@ -164,7 +167,8 @@ memory_store_fact(
     content=<brief summary of what the user understood or got right>,
     permanence=<"stable" for transferable skills, "standard" for topic-specific knowledge>,
     importance=<7.0 for solid mastery, 5.0 for partial understanding>,
-    tags=[<topic_tag>, <"mastered" or "learning">]
+    tags=[<topic_tag>, <"mastered" or "learning">],
+    entity_id=<node_entity_id>
 )
 ```
 
@@ -176,7 +180,8 @@ memory_store_fact(
     content=<what specifically confused the user>,
     permanence="volatile",
     importance=6.0,
-    tags=[<topic_tag>, "struggle"]
+    tags=[<topic_tag>, "struggle"],
+    entity_id=<node_entity_id>
 )
 ```
 

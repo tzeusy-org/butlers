@@ -122,9 +122,14 @@ memory_store_fact(
     content=f"Consistently failing reviews — scored < 3 in last 3+ review sessions",
     permanence="volatile",
     importance=7.0,
-    tags=[<topic_tag>, "struggle", "review-failure"]
+    tags=[<topic_tag>, "struggle", "review-failure"],
+    entity_id=<node_entity_id>
 )
 ```
+
+Note: `spaced_repetition_pending_reviews()` does not include `entity_id` in its response.
+To get `node_entity_id`, call `mind_map_node_get(node_id=<node_id>)` for the node being reviewed
+and read the `entity_id` field from the returned dict.
 
 Then suggest revisiting the teaching session:
 ```python

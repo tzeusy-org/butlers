@@ -81,7 +81,9 @@ mind_map_node_create(
 )
 ```
 
-Save the returned `node_id` for each concept — you need it for edge creation.
+`mind_map_node_create` returns `{ node_id, entity_id, ... }`. Save **both** fields for each
+concept — `node_id` is needed for edge creation and mastery tracking, and `entity_id` is needed
+for `memory_store_fact()` calls later in teaching and review sessions.
 
 ### Step 4: Create Prerequisite Edges
 
