@@ -5,7 +5,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMemoryStats } from "@/hooks/use-memory";
 
@@ -26,27 +25,6 @@ function statRow(label: string, value: number, total?: number) {
       </span>
     </div>
   );
-}
-
-function healthBadge(ratio: number) {
-  if (ratio >= 0.8) {
-    return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-        Healthy
-      </Badge>
-    );
-  }
-  if (ratio >= 0.5) {
-    return (
-      <Badge
-        variant="outline"
-        className="border-amber-500 text-amber-600"
-      >
-        Warning
-      </Badge>
-    );
-  }
-  return <Badge variant="destructive">Needs attention</Badge>;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,32 +73,13 @@ export default function MemoryTierCards() {
   }
 
   const consolidatedEpisodes = stats.total_episodes - stats.unconsolidated_episodes;
-  const episodeHealth =
-    stats.total_episodes > 0
-      ? consolidatedEpisodes / stats.total_episodes
-      : 1;
-
-  const factHealth =
-    stats.total_facts > 0
-      ? stats.active_facts / stats.total_facts
-      : 1;
-
-  const effectiveRules =
-    stats.established_rules + stats.proven_rules;
-  const ruleHealth =
-    stats.total_rules > 0
-      ? effectiveRules / stats.total_rules
-      : 1;
 
   return (
     <div className="grid gap-4 sm:grid-cols-3">
       {/* Episodes (Eden) */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            Episodes
-            {healthBadge(episodeHealth)}
-          </CardTitle>
+          <CardTitle>Episodes</CardTitle>
           <CardDescription>Eden tier — raw session memories</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
@@ -141,10 +100,7 @@ export default function MemoryTierCards() {
       {/* Facts (Mid-term) */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            Facts
-            {healthBadge(factHealth)}
-          </CardTitle>
+          <CardTitle>Facts</CardTitle>
           <CardDescription>Mid-term tier — consolidated knowledge</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
@@ -157,10 +113,7 @@ export default function MemoryTierCards() {
       {/* Rules (Long-term) */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            Rules
-            {healthBadge(ruleHealth)}
-          </CardTitle>
+          <CardTitle>Rules</CardTitle>
           <CardDescription>Long-term tier — behavioral patterns</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
