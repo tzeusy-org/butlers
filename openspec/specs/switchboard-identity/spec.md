@@ -59,6 +59,34 @@ After resolving the sender's identity, the Switchboard MUST inject a structured 
 
 ---
 
+### Requirement: Structured entity_id in route.v1 request_context
+
+In addition to the text preamble, the Switchboard MUST include the resolved sender identity as structured fields in the `request_context` dict of the route.v1 envelope. This provides a machine-readable path for downstream butlers to access the sender's entity_id without parsing free-text.
+
+**Implementation note:** `route_to_butler` in `src/butlers/daemon.py` reads `source_contact_id` and `source_entity_id` from the routing context (populated by `MessagePipeline._set_routing_context()`) and injects them into `request_context` as `source_sender_contact_id` and `source_sender_entity_id`.
+
+#### Scenario: Resolved sender identity in request_context
+
+- **WHEN** a message is routed via route.v1 envelope
+- **AND** the sender was resolved to a known contact with `contact_id` and `entity_id`
+- **THEN** `request_context` MUST contain `source_sender_contact_id` (UUID string)
+- **AND** `request_context` MUST contain `source_sender_entity_id` (UUID string)
+
+#### Scenario: Unknown sender identity in request_context
+
+- **WHEN** a message from an unknown sender is routed via route.v1 envelope
+- **AND** a temporary contact was created with `contact_id` and `entity_id`
+- **THEN** `request_context` MUST contain `source_sender_contact_id` (temporary contact UUID)
+- **AND** `request_context` MUST contain `source_sender_entity_id` (temporary entity UUID)
+
+#### Scenario: Unresolved sender omits identity fields
+
+- **WHEN** identity resolution fails or is disabled
+- **THEN** `request_context` MUST NOT contain `source_sender_contact_id` or `source_sender_entity_id`
+- **AND** downstream butlers MUST fall back to text preamble parsing or `memory_entity_resolve`
+
+---
+
 ### Requirement: Routing log identity enrichment
 
 The Switchboard's `routing_log` table SHALL be extended to store resolved identity alongside the raw `source_id`. The following columns SHALL be added: `contact_id UUID`, `entity_id UUID`, and `sender_roles TEXT[]`.

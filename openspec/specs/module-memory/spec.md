@@ -672,9 +672,12 @@ The Memory module SHALL register 21 MCP tools on the hosting butler's MCP server
 
 - **WHEN** the memory module registers tools
 - **THEN** tools `entity_create`, `entity_get`, `entity_update`, `entity_resolve`, `entity_merge`, and `entity_neighbors` MUST be available
-- **AND** `entity_create` MUST accept `canonical_name`, `entity_type` (required), `tenant_id` (default `'shared'`), `aliases` (optional), `metadata` (optional)
-- **AND** `entity_resolve` MUST accept `name` (required), `tenant_id` (default `'shared'`), `entity_type` (optional), `context_hints` (optional), `enable_fuzzy` (default False)
-- **AND** `entity_neighbors` MUST accept `entity_id` (required UUID), `max_depth` (default 1, max 5), `predicate_filter` (optional list of predicate strings), `direction` (default 'both', one of 'outgoing', 'incoming', 'both')
+- **AND** `entity_create` MUST accept `canonical_name`, `entity_type` (required), `tenant_id` (default 'shared'), `aliases` (optional), `metadata` (optional)
+- **AND** `entity_get` MUST accept `entity_id` (required), `tenant_id` (default 'shared')
+- **AND** `entity_update` MUST accept `entity_id` (required), `tenant_id` (default 'shared'), `canonical_name` (optional), `aliases` (optional), `metadata` (optional)
+- **AND** `entity_resolve` MUST accept `name` (required), `tenant_id` (default 'shared'), `entity_type` (optional), `context_hints` (optional), `enable_fuzzy` (default False)
+- **AND** `entity_neighbors` MUST accept `entity_id` (required UUID), `tenant_id` (default 'shared'), `max_depth` (default 2, max 5), `predicate_filter` (optional list of predicate strings), `direction` (default 'both', one of 'outgoing', 'incoming', 'both')
+- **AND** `entity_merge` MUST accept `source_entity_id` (required), `target_entity_id` (required), `tenant_id` (default 'shared')
 
 #### Scenario: Consolidation and cleanup tools registered
 
@@ -1054,6 +1057,28 @@ This short-circuits the resolve-or-create protocol for the sender specifically. 
 - **WHEN** a butler receives a message where `request_context.source_sender_entity_id` is absent or null
 - **THEN** the butler MUST fall back to the standard resolve-or-create-transitory protocol for the sender entity
 - **AND** MUST call `memory_entity_resolve` and, if empty, `memory_entity_create` with `metadata.unidentified = true`
+
+#### Scenario: memory_store_fact auto-fallback from routing context
+
+- **WHEN** a butler runtime calls `memory_store_fact` with `entity_id = None`
+- **AND** the runtime session's routing context contains `source_entity_id` (set by the Switchboard identity pipeline)
+- **THEN** `memory_store_fact` MUST automatically use the routing context's `source_entity_id` as the effective `entity_id`
+- **AND** the fact MUST be anchored to the sender's entity without requiring explicit LLM extraction
+
+**Implementation note:** `memory_store_fact` in `src/butlers/modules/memory/__init__.py` reads `source_entity_id` from `get_current_runtime_session_routing_context()` when `entity_id` is None. The routing context is populated by `route_to_butler` in `src/butlers/daemon.py` from the identity resolution result.
+
+#### Scenario: Explicit entity_id takes precedence over routing context
+
+- **WHEN** a butler runtime calls `memory_store_fact` with an explicit `entity_id` (non-None)
+- **AND** the routing context also contains `source_entity_id`
+- **THEN** the explicit `entity_id` MUST be used (routing context is not consulted)
+
+#### Scenario: entity_resolve still needed for third-party mentions
+
+- **WHEN** a message mentions a person other than the sender (e.g., owner says "Sarah likes coffee")
+- **THEN** the sender auto-resolution provides the owner's entity_id, NOT Sarah's
+- **AND** the butler MUST call `memory_entity_resolve("Sarah")` to resolve Sarah's entity_id before storing the fact about Sarah
+- **AND** the auto-resolved sender entity_id is only appropriate for facts about the sender themselves
 
 ---
 

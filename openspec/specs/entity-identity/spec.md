@@ -214,6 +214,32 @@ The `roles` field on entities MUST NOT be writable by runtime MCP tool callers. 
 
 ---
 
+### Requirement: MCP entity tools default tenant_id to 'shared'
+
+All memory module MCP entity tools (`entity_create`, `entity_get`, `entity_update`, `entity_resolve`, `entity_neighbors`, `entity_merge`) SHALL default `tenant_id` to `'shared'`. The `shared` schema is the single source of truth for identity entities. Per-butler tenant isolation is a target-state requirement (see module-memory spec, "Tenant-bounded isolation"); until fully implemented, `'shared'` is the only valid `tenant_id` for identity entities.
+
+**Implementation note:** All six entity MCP tool wrappers in `src/butlers/modules/memory/__init__.py` use `tenant_id: str = "shared"` as the default parameter value. The underlying Python functions in `entities.py` accept any `tenant_id` (for internal use such as daemon bootstrap), but the MCP surface always defaults to `'shared'`.
+
+#### Scenario: Entity created without explicit tenant_id
+
+- **WHEN** a runtime instance calls `memory_entity_create(canonical_name="Alice", entity_type="person")`
+- **AND** `tenant_id` is not provided
+- **THEN** the entity MUST be created with `tenant_id = 'shared'`
+
+#### Scenario: Entity resolved without explicit tenant_id
+
+- **WHEN** a runtime instance calls `memory_entity_resolve(name="Alice")`
+- **AND** `tenant_id` is not provided
+- **THEN** the resolution MUST search within `tenant_id = 'shared'`
+
+#### Scenario: Dashboard visibility of entities
+
+- **WHEN** an entity is created with the default `tenant_id = 'shared'`
+- **THEN** the entity MUST be visible in the dashboard entity list and detail pages
+- **AND** the dashboard MUST NOT filter entities by a restrictive set of tenant_id values
+
+---
+
 ### Requirement: Facts FK points to shared.entities
 
 The `facts.entity_id` foreign key MUST reference `shared.entities(id)` (not a butler-local entities table). The migration MUST drop the old search-path-resolved FK from `mem_002` and create a new explicit FK:
