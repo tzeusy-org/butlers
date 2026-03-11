@@ -330,22 +330,26 @@ class TelegramBotConnector:
             """Prometheus metrics endpoint."""
             return generate_latest(REGISTRY)
 
+        from butlers.connectors.health_socket import make_health_socket
+
+        port = self._config.health_port
+        sock = make_health_socket("127.0.0.1", port)
         config = uvicorn.Config(
             app,
             host="127.0.0.1",
-            port=self._config.health_port,
+            port=port,
             log_level="warning",
         )
         self._health_server = uvicorn.Server(config)
 
         def run_server() -> None:
-            asyncio.run(self._health_server.serve())
+            asyncio.run(self._health_server.serve(sockets=[sock]))
 
         self._health_thread = Thread(target=run_server, daemon=True)
         self._health_thread.start()
         logger.info(
             "Health server started",
-            extra={"port": self._config.health_port},
+            extra={"port": port},
         )
 
     def _start_heartbeat(self) -> None:

@@ -654,7 +654,15 @@ async def test_webhook_mode_registration(connector: TelegramBotConnector) -> Non
     mock_response.json.return_value = {"ok": True, "result": True}
     mock_response.raise_for_status = Mock()
 
-    with patch.object(connector._http_client, "post", return_value=mock_response) as mock_post:
+    with (
+        patch(
+            "butlers.connectors.health_socket.make_health_socket",
+            return_value=Mock(),
+        ),
+        patch.object(
+            connector._http_client, "post", return_value=mock_response
+        ) as mock_post,
+    ):
         await connector.start_webhook()
 
         # Verify setWebhook was called

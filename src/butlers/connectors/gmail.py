@@ -626,22 +626,31 @@ class GmailConnectorRuntime:
             """Prometheus metrics endpoint."""
             return generate_latest(REGISTRY)
 
+        port = self._config.connector_health_port
+        if port == 0:
+            # Per-account runtimes use port 0; no point starting an ephemeral
+            # health endpoint that nothing can discover.  Skip silently.
+            return
+
+        from butlers.connectors.health_socket import make_health_socket
+
+        sock = make_health_socket("127.0.0.1", port)
         config = uvicorn.Config(
             app,
             host="127.0.0.1",
-            port=self._config.connector_health_port,
+            port=port,
             log_level="warning",
         )
         self._health_server = uvicorn.Server(config)
 
         def run_server() -> None:
-            asyncio.run(self._health_server.serve())
+            asyncio.run(self._health_server.serve(sockets=[sock]))
 
         self._health_thread = Thread(target=run_server, daemon=True)
         self._health_thread.start()
         logger.info(
             "Health server started",
-            extra={"port": self._config.connector_health_port},
+            extra={"port": port},
         )
 
     def _start_webhook_server(self) -> None:
@@ -674,16 +683,20 @@ class GmailConnectorRuntime:
                 logger.error("Error handling webhook notification: %s", exc, exc_info=True)
                 return {"status": "error", "message": str(exc)}
 
+        from butlers.connectors.health_socket import make_health_socket
+
+        webhook_port = self._config.gmail_pubsub_webhook_port
+        sock = make_health_socket("127.0.0.1", webhook_port)
         config = uvicorn.Config(
             app,
             host="127.0.0.1",
-            port=self._config.gmail_pubsub_webhook_port,
+            port=webhook_port,
             log_level="warning",
         )
         self._webhook_server = uvicorn.Server(config)
 
         def run_server() -> None:
-            asyncio.run(self._webhook_server.serve())
+            asyncio.run(self._webhook_server.serve(sockets=[sock]))
 
         self._webhook_thread = Thread(target=run_server, daemon=True)
         self._webhook_thread.start()
@@ -3311,22 +3324,26 @@ class GmailConnectorManager:
                 self._main_loop.call_soon_threadsafe(self._reload_event.set)
             return {"status": "reload_triggered"}
 
+        from butlers.connectors.health_socket import make_health_socket
+
+        port = self._process_config.connector_health_port
+        sock = make_health_socket("127.0.0.1", port)
         config = uvicorn.Config(
             app,
             host="127.0.0.1",
-            port=self._process_config.connector_health_port,
+            port=port,
             log_level="warning",
         )
         self._health_server = uvicorn.Server(config)
 
         def run_server() -> None:
-            asyncio.run(self._health_server.serve())
+            asyncio.run(self._health_server.serve(sockets=[sock]))
 
         self._health_thread = Thread(target=run_server, daemon=True)
         self._health_thread.start()
         logger.info(
             "Gmail manager: health server started on port %d",
-            self._process_config.connector_health_port,
+            port,
         )
 
     def _get_multi_account_health(self) -> MultiAccountHealthStatus:

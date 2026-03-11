@@ -38,7 +38,7 @@ class DatabaseManager:
         password: str = "postgres",
         ssl: str | None = None,
         min_pool_size: int = 1,
-        max_pool_size: int = 5,
+        max_pool_size: int = 3,
     ) -> None:
         self._host = host
         self._port = port

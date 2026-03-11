@@ -46,7 +46,7 @@ async def test_add_butler_default_db_name(mock_create: AsyncMock, mgr: DatabaseM
         password="secret",
         database="atlas",
         min_size=1,
-        max_size=5,
+        max_size=3,
     )
 
 
@@ -62,7 +62,7 @@ async def test_add_butler_custom_db_name(mock_create: AsyncMock, mgr: DatabaseMa
         password="secret",
         database="atlas_prod",
         min_size=1,
-        max_size=5,
+        max_size=3,
     )
 
 
@@ -81,7 +81,7 @@ async def test_add_butler_schema_sets_search_path(
         password="secret",
         database="butlers",
         min_size=1,
-        max_size=5,
+        max_size=3,
         server_settings={"search_path": "general,shared,public"},
     )
 
@@ -107,7 +107,7 @@ async def test_add_butler_forwards_ssl_mode(mock_create: AsyncMock) -> None:
         password="secret",
         database="atlas",
         min_size=1,
-        max_size=5,
+        max_size=3,
         ssl="disable",
     )
 
@@ -267,7 +267,7 @@ async def test_set_credential_shared_pool(mock_create: AsyncMock, mgr: DatabaseM
         password="secret",
         database="butlers",
         min_size=1,
-        max_size=5,
+        max_size=3,
     )
 
 
@@ -289,7 +289,7 @@ async def test_set_credential_shared_pool_with_schema(
         password="secret",
         database="butlers",
         min_size=1,
-        max_size=5,
+        max_size=3,
         server_settings={"search_path": "shared,public"},
     )
 
