@@ -1582,10 +1582,11 @@ async def get_ingestion_fanout(
             data.sort(key=lambda r: (r.connector_type, r.endpoint_identity, -r.message_count))
             return ApiResponse[list[FanoutRow]](data=data)
 
-        logger.warning(
-            "Prometheus query error for ingestion fanout; falling back to DB: %s",
-            results[0]["error"],
-        )
+        if results:
+            logger.warning(
+                "Prometheus query error for ingestion fanout; falling back to DB: %s",
+                results[0]["error"],
+            )
     else:
         logger.debug("PROMETHEUS_URL not set; using DB fallback for ingestion fanout")
 
