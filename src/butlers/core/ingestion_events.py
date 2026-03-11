@@ -6,10 +6,11 @@ and propagated to all downstream butler sessions.
 
 Functions
 ---------
-ingestion_event_get         — fetch a single event by id
-ingestion_events_list       — paginated list, newest first, optional channel filter
-ingestion_event_sessions    — fan-out across all butler schemas for sessions tied to a request_id
-ingestion_event_rollup      — aggregate cost/token totals from the fan-out result
+ingestion_event_get             — fetch a single event by id
+ingestion_events_list           — paginated list, newest first, optional channel/status filter
+ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
+ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
+ingestion_event_replay_request  — mark a filtered event as replay_pending
 """
 
 from __future__ import annotations
@@ -94,36 +95,176 @@ async def ingestion_events_list(
     limit: int = 20,
     offset: int = 0,
     source_channel: str | None = None,
+    status: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return a paginated list of ingestion events, newest first.
+    """Return a paginated list of ingestion events (unified stream), newest first.
+
+    Merges ``shared.ingestion_events`` (status='ingested', filter_reason=null)
+    with ``connectors.filtered_events`` (status/filter_reason from their own
+    columns) and returns results ordered by ``received_at DESC``.
+
+    When ``status='ingested'`` is passed, only ``shared.ingestion_events`` rows
+    are queried.  Any other ``status`` value queries only
+    ``connectors.filtered_events``.  When ``status`` is ``None`` both tables are
+    included via a UNION ALL.
 
     Args:
-        pool: asyncpg connection pool that can resolve ``shared.ingestion_events``.
+        pool: asyncpg connection pool that can resolve ``shared.ingestion_events``
+            and ``connectors.filtered_events``.
         limit: Maximum number of rows to return (default 20).
         offset: Number of rows to skip for pagination (default 0).
         source_channel: Optional filter; when provided only events whose
             ``source_channel`` matches this value are returned.
+        status: Optional status filter. ``'ingested'`` → ingestion_events only;
+            other values → filtered_events only; ``None`` → both tables.
 
     Returns:
-        List of event dicts ordered by ``received_at DESC``.
+        List of event dicts ordered by ``received_at DESC``.  Each dict includes
+        a ``status`` field (``'ingested'`` or a filtered_events status value) and
+        a ``filter_reason`` field (``None`` for ingested events).
     """
-    if source_channel is not None:
-        sql = (
-            f"SELECT {_EVENT_COLUMNS} FROM shared.ingestion_events "
-            f"WHERE source_channel = $1 "
-            f"ORDER BY received_at DESC "
-            f"LIMIT $2 OFFSET $3"
-        )
-        rows = await pool.fetch(sql, source_channel, limit, offset)
-    else:
-        sql = (
-            f"SELECT {_EVENT_COLUMNS} FROM shared.ingestion_events "
-            f"ORDER BY received_at DESC "
-            f"LIMIT $1 OFFSET $2"
-        )
-        rows = await pool.fetch(sql, limit, offset)
+    # Columns selected from shared.ingestion_events (adds status/filter_reason literals)
+    ingested_cols = (
+        "id, received_at, source_channel, source_provider, source_endpoint_identity, "
+        "source_sender_identity, source_thread_identity, external_event_id, dedupe_key, "
+        "dedupe_strategy, ingestion_tier, policy_tier, triage_decision, triage_target, "
+        "'ingested'::text AS status, NULL::text AS filter_reason"
+    )
 
+    # Columns selected from connectors.filtered_events (maps connector columns onto
+    # the shared.ingestion_events shape; columns not present in filtered_events are NULL)
+    filtered_cols = (
+        "id, received_at, source_channel, NULL::text AS source_provider, "
+        "endpoint_identity AS source_endpoint_identity, "
+        "sender_identity AS source_sender_identity, "
+        "NULL::text AS source_thread_identity, "
+        "external_message_id AS external_event_id, "
+        "NULL::text AS dedupe_key, NULL::text AS dedupe_strategy, "
+        "NULL::text AS ingestion_tier, NULL::text AS policy_tier, "
+        "NULL::text AS triage_decision, NULL::text AS triage_target, "
+        "status, filter_reason"
+    )
+
+    args: list[Any] = []
+
+    # Build channel WHERE clause fragment for each sub-query
+    def _channel_clause(param_n: int) -> str:
+        return f" AND source_channel = ${param_n}" if source_channel is not None else ""
+
+    if status == "ingested":
+        # Only query shared.ingestion_events
+        where_parts: list[str] = []
+        if source_channel is not None:
+            where_parts.append("source_channel = $1")
+            args.append(source_channel)
+        where_clause = " WHERE " + " AND ".join(where_parts) if where_parts else ""
+        args.extend([limit, offset])
+        n_limit = len(args) - 1
+        n_offset = len(args)
+        sql = (
+            f"SELECT {ingested_cols} FROM shared.ingestion_events"
+            f"{where_clause} "
+            f"ORDER BY received_at DESC "
+            f"LIMIT ${n_limit} OFFSET ${n_offset}"
+        )
+    elif status is not None:
+        # Only query connectors.filtered_events
+        where_parts = ["status = $1"]
+        args.append(status)
+        if source_channel is not None:
+            where_parts.append("source_channel = $2")
+            args.append(source_channel)
+        where_clause = " WHERE " + " AND ".join(where_parts)
+        args.extend([limit, offset])
+        n_limit = len(args) - 1
+        n_offset = len(args)
+        sql = (
+            f"SELECT {filtered_cols} FROM connectors.filtered_events"
+            f"{where_clause} "
+            f"ORDER BY received_at DESC "
+            f"LIMIT ${n_limit} OFFSET ${n_offset}"
+        )
+    else:
+        # UNION ALL both tables
+        if source_channel is not None:
+            args.append(source_channel)
+            ch_n = 1
+            ingested_where = f" WHERE source_channel = ${ch_n}"
+            filtered_where = f" WHERE source_channel = ${ch_n}"
+        else:
+            ingested_where = ""
+            filtered_where = ""
+
+        args.extend([limit, offset])
+        n_limit = len(args) - 1
+        n_offset = len(args)
+        sql = (
+            f"SELECT * FROM ("
+            f"SELECT {ingested_cols} FROM shared.ingestion_events{ingested_where} "
+            f"UNION ALL "
+            f"SELECT {filtered_cols} FROM connectors.filtered_events{filtered_where}"
+            f") AS combined "
+            f"ORDER BY received_at DESC "
+            f"LIMIT ${n_limit} OFFSET ${n_offset}"
+        )
+
+    rows = await pool.fetch(sql, *args)
     return [_decode_event_row(row) for row in rows]
+
+
+async def ingestion_event_replay_request(
+    pool: asyncpg.Pool,
+    event_id: str | UUID,
+) -> dict[str, Any]:
+    """Request replay of a filtered event by setting its status to ``replay_pending``.
+
+    Allowed transitions:
+    - ``filtered`` → ``replay_pending``
+    - ``error``    → ``replay_pending``
+    - ``replay_failed`` → ``replay_pending``  (re-replay)
+
+    Non-replayable statuses (``replay_pending``, ``replay_complete``) return a
+    ``conflict`` result so the caller can return HTTP 409.
+
+    Args:
+        pool: asyncpg connection pool that can resolve ``connectors.filtered_events``.
+        event_id: UUID of the filtered event to replay.
+
+    Returns:
+        A dict with ``outcome`` key:
+        - ``"ok"``        → status was updated; dict also contains ``id``.
+        - ``"not_found"`` → no row with that id in connectors.filtered_events.
+        - ``"conflict"``  → row exists but current status is not replayable;
+                            dict also contains ``current_status``.
+    """
+    if isinstance(event_id, str):
+        event_id = UUID(event_id)
+
+    # Fetch the current status first so we can return a meaningful conflict response.
+    current_status = await pool.fetchval(
+        "SELECT status FROM connectors.filtered_events WHERE id = $1",
+        event_id,
+    )
+
+    if current_status is None:
+        return {"outcome": "not_found"}
+
+    replayable = {"filtered", "error", "replay_failed"}
+    if current_status not in replayable:
+        return {"outcome": "conflict", "current_status": current_status}
+
+    await pool.execute(
+        """
+        UPDATE connectors.filtered_events
+        SET
+            status = 'replay_pending',
+            replay_requested_at = now(),
+            error_detail = NULL
+        WHERE id = $1
+        """,
+        event_id,
+    )
+    return {"outcome": "ok", "id": str(event_id)}
 
 
 async def ingestion_event_sessions(

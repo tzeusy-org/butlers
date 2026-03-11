@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 
 
 class IngestionEventSummary(BaseModel):
-    """Lightweight ingestion event representation for list views."""
+    """Lightweight ingestion event representation for list views.
+
+    Returned from the unified timeline endpoint which merges
+    ``shared.ingestion_events`` (status='ingested') with
+    ``connectors.filtered_events`` (status = filtered/error/replay_*).
+    """
 
     id: str
     received_at: datetime
@@ -25,6 +30,9 @@ class IngestionEventSummary(BaseModel):
     policy_tier: str | None = None
     triage_decision: str | None = None
     triage_target: str | None = None
+    # Unified timeline fields — present on all rows regardless of source table.
+    status: str = "ingested"
+    filter_reason: str | None = None
 
 
 class IngestionEventDetail(IngestionEventSummary):

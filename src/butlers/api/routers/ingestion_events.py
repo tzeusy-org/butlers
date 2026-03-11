@@ -1,15 +1,16 @@
-"""Ingestion event endpoints — read-only view of the ingestion event registry.
+"""Ingestion event endpoints — unified timeline over the ingestion event registry.
 
 Provides:
 
-- ``router`` — four read-only endpoints under ``/api/ingestion/events``
+- ``router`` — endpoints under ``/api/ingestion/events``
 
 Endpoints
 ---------
-GET /api/ingestion/events               — paginated list (limit, offset, source_channel)
-GET /api/ingestion/events/{requestId}   — single event detail
-GET /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
-GET /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
+GET  /api/ingestion/events               — paginated unified timeline (channel, status filters)
+GET  /api/ingestion/events/{requestId}   — single event detail
+GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
+GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
+POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from butlers.api.models.ingestion_event import (
 from butlers.api.pricing import PricingConfig
 from butlers.core.ingestion_events import (
     ingestion_event_get,
+    ingestion_event_replay_request,
     ingestion_event_rollup,
     ingestion_event_sessions,
     ingestion_events_list,
@@ -55,13 +57,21 @@ async def list_ingestion_events(
     limit: int = Query(20, ge=1, le=200, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     source_channel: str | None = Query(None, description="Filter by source channel"),
+    status: str | None = Query(
+        None,
+        description=(
+            "Filter by event status. 'ingested' queries only shared.ingestion_events; "
+            "other values (filtered, error, replay_pending, replay_complete, replay_failed) "
+            "query only connectors.filtered_events. Omit for unified stream."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[IngestionEventSummary]:
-    """Return a paginated list of ingestion events, newest first.
+    """Return a paginated unified timeline of ingestion events, newest first.
 
-    Uses the shared ingestion_events pool (``DatabaseManager.shared_pool()``)
-    to query ``shared.ingestion_events``.  Supports optional filtering by
-    ``source_channel``.
+    Merges ``shared.ingestion_events`` (status=ingested, filter_reason=null) with
+    ``connectors.filtered_events`` (status/filter_reason from their own columns).
+    Supports optional filtering by ``source_channel`` and ``status``.
     """
     try:
         pool = db.credential_shared_pool()
@@ -69,17 +79,51 @@ async def list_ingestion_events(
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
     rows = await ingestion_events_list(
-        pool, limit=limit, offset=offset, source_channel=source_channel
+        pool, limit=limit, offset=offset, source_channel=source_channel, status=status
     )
 
-    # Determine total count for pagination metadata
-    if source_channel is not None:
+    # Determine total count for pagination metadata (mirrors the list query logic)
+    ch_filter = " WHERE source_channel = $1" if source_channel is not None else ""
+    ch_args: list = [source_channel] if source_channel is not None else []
+
+    if status == "ingested":
         total = await pool.fetchval(
-            "SELECT count(*) FROM shared.ingestion_events WHERE source_channel = $1",
-            source_channel,
+            f"SELECT count(*) FROM shared.ingestion_events{ch_filter}",
+            *ch_args,
         )
+    elif status is not None:
+        # connectors.filtered_events only
+        if source_channel is not None:
+            total = await pool.fetchval(
+                "SELECT count(*) FROM connectors.filtered_events "
+                "WHERE status = $1 AND source_channel = $2",
+                status,
+                source_channel,
+            )
+        else:
+            total = await pool.fetchval(
+                "SELECT count(*) FROM connectors.filtered_events WHERE status = $1",
+                status,
+            )
     else:
-        total = await pool.fetchval("SELECT count(*) FROM shared.ingestion_events")
+        # Both tables
+        if source_channel is not None:
+            total = await pool.fetchval(
+                "SELECT ("
+                "  SELECT count(*) FROM shared.ingestion_events WHERE source_channel = $1"
+                ") + ("
+                "  SELECT count(*) FROM connectors.filtered_events WHERE source_channel = $1"
+                ")",
+                source_channel,
+            )
+        else:
+            total = await pool.fetchval(
+                "SELECT ("
+                "  SELECT count(*) FROM shared.ingestion_events"
+                ") + ("
+                "  SELECT count(*) FROM connectors.filtered_events"
+                ")"
+            )
 
     summaries = [IngestionEventSummary(**row) for row in rows]
 
@@ -160,3 +204,50 @@ async def get_ingestion_event_rollup(
     sessions_data = await ingestion_event_sessions(db, request_id)
     rollup_data = ingestion_event_rollup(request_id, sessions_data, pricing=pricing)
     return ApiResponse[IngestionEventRollup](data=IngestionEventRollup(**rollup_data))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/events/{id}/replay
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{event_id}/replay")
+async def replay_ingestion_event(
+    event_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict:
+    """Request replay of a filtered or errored event.
+
+    Updates ``connectors.filtered_events`` status to ``replay_pending`` for
+    events currently in ``filtered``, ``error``, or ``replay_failed`` state.
+    Events in ``replay_pending`` or ``replay_complete`` are not replayable
+    (returns 409 Conflict).
+
+    Returns:
+        200 — ``{"status": "replay_pending", "id": "<uuid>"}``
+        404 — event not found in ``connectors.filtered_events``
+        409 — event exists but is not in a replayable state
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    try:
+        result = await ingestion_event_replay_request(pool, event_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid event_id: {exc}") from exc
+
+    if result["outcome"] == "not_found":
+        raise HTTPException(status_code=404, detail=f"Filtered event '{event_id}' not found")
+
+    if result["outcome"] == "conflict":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "Event is not replayable",
+                "current_status": result["current_status"],
+            },
+        )
+
+    return {"status": "replay_pending", "id": result["id"]}
