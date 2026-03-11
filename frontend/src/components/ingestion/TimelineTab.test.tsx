@@ -262,6 +262,63 @@ describe("TimelineTab — Replay button interaction", () => {
     expect(container.textContent).toContain("replay pending");
   });
 
+  it("clears optimistic override when server returns non-replay_pending status after replay", async () => {
+    const event = makeEvent({ status: "filtered", id: "test-event-id-evict" });
+    vi.mocked(replayIngestionEvent).mockResolvedValueOnce({
+      id: event.id,
+      status: "replay_pending",
+    });
+
+    // Initial render: filtered event
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: { data: [event], meta: { total: 1, limit: 50, offset: 0 } },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // Click Replay — optimistic override sets replay_pending
+    const btn = container.querySelector("[data-testid='replay-button']") as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+    });
+    expect(container.textContent).toContain("replay pending");
+
+    // Server refetch returns replay_complete — override should be evicted
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        data: [{ ...event, status: "replay_complete" }],
+        meta: { total: 1, limit: 50, offset: 0 },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    // Re-render with updated server data
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // Badge should now show "replayed" (the label for replay_complete), not the stale "replay pending"
+    expect(container.textContent).toContain("replayed");
+    expect(container.textContent).not.toContain("replay pending");
+  });
+
   it("shows error toast when replay API call fails", async () => {
     const event = makeEvent({ status: "error", id: "test-event-id-err" });
     vi.mocked(replayIngestionEvent).mockRejectedValueOnce(
@@ -377,6 +434,31 @@ describe("TimelineTab — filtered events non-expandable", () => {
     });
 
     // Chevron characters ▼/▲ should not be present for filtered rows
+    expect(container.textContent).not.toContain("▼");
+    expect(container.textContent).not.toContain("▲");
+  });
+
+  it("error rows have no expand chevron", () => {
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        data: [makeEvent({ status: "error" })],
+        meta: { total: 1, limit: 50, offset: 0 },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // Error events never spawned a session, so flamegraph would be empty — no expand chevron
     expect(container.textContent).not.toContain("▼");
     expect(container.textContent).not.toContain("▲");
   });

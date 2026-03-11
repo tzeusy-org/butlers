@@ -261,8 +261,11 @@ class TestLivenessReporterLifecycle:
                 pass
             await daemon.shutdown()
 
-    async def test_switchboard_does_not_create_liveness_reporter(self, tmp_path: Path) -> None:
-        """Switchboard butler must NOT create a liveness reporter task."""
+    async def test_switchboard_creates_liveness_reporter(self, tmp_path: Path) -> None:
+        """Switchboard butler MUST create a liveness reporter task.
+
+        Self-heartbeat prevents the switchboard from being quarantined by its own eligibility sweep.
+        """
         butler_dir = _make_butler_toml(tmp_path, name="switchboard")
         patches = _patch_infra()
 
@@ -285,8 +288,14 @@ class TestLivenessReporterLifecycle:
             await daemon.start()
 
         try:
-            assert daemon._liveness_reporter_task is None
+            assert daemon._liveness_reporter_task is not None
+            assert isinstance(daemon._liveness_reporter_task, asyncio.Task)
         finally:
+            daemon._liveness_reporter_task.cancel()
+            try:
+                await daemon._liveness_reporter_task
+            except asyncio.CancelledError:
+                pass
             await daemon.shutdown()
 
     async def test_liveness_reporter_task_cleared_on_shutdown(self, tmp_path: Path) -> None:

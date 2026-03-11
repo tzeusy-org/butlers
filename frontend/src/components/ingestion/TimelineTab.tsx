@@ -14,7 +14,7 @@
  * - POST /api/ingestion/events/{id}/replay   (Replay/Retry action)
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
@@ -115,9 +115,9 @@ function isReplayPending(status: IngestionEventStatus): boolean {
   return status === "replay_pending";
 }
 
-/** Returns true if this row can be expanded (filtered events cannot). */
+/** Returns true if this row can be expanded (filtered and error events cannot). */
 function isExpandable(status: IngestionEventStatus): boolean {
-  return status !== "filtered";
+  return status !== "filtered" && status !== "error";
 }
 
 // ---------------------------------------------------------------------------
@@ -548,10 +548,24 @@ interface TimelineTabProps {
   isActive: boolean;
 }
 
+// Valid values for the URL `status` query parameter
+const VALID_STATUS_PARAMS = new Set<string>([
+  "all",
+  "ingested",
+  "filtered",
+  "error",
+  "replay_pending",
+  "replay_complete",
+  "replay_failed",
+]);
+
 export function TimelineTab({ isActive }: TimelineTabProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const expandedId = searchParams.get("expanded");
-  const statusFilter = (searchParams.get("status") ?? "all") as IngestionEventStatus | "all";
+  const rawStatus = searchParams.get("status") ?? "all";
+  const statusFilter = VALID_STATUS_PARAMS.has(rawStatus)
+    ? (rawStatus as IngestionEventStatus | "all")
+    : "all";
 
   // Optimistic overrides: map of event id → overridden status
   const [optimisticOverrides, setOptimisticOverrides] = useState<
@@ -565,6 +579,22 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
   );
 
   const rawEvents = eventsResp?.data ?? [];
+
+  // Evict stale optimistic overrides: once the server returns a status other
+  // than replay_pending for an event we overrode, the server has caught up and
+  // the override is no longer needed.
+  useEffect(() => {
+    setOptimisticOverrides((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Map(prev);
+      for (const e of rawEvents) {
+        if (prev.has(e.id) && e.status !== "replay_pending") {
+          next.delete(e.id); // server has moved on; drop override
+        }
+      }
+      return next.size === prev.size ? prev : next; // stable ref if no change
+    });
+  }, [rawEvents]);
 
   // Apply optimistic overrides so replayed events immediately show replay_pending
   const events: IngestionEventSummary[] = rawEvents.map((e) => {
