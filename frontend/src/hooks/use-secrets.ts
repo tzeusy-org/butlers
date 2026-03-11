@@ -2,14 +2,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   deleteGoogleCredentials,
   deleteSecret,
+  disconnectAccount,
+  getAccountStatus,
+  getGoogleAccounts,
   getGoogleCredentialStatus,
   getOAuthStatus,
   listSecrets,
+  setPrimaryAccount,
+  type ApiResponse,
   type SecretEntry,
   type SecretUpsertRequest,
-  type ApiResponse,
-  upsertSecret,
   upsertGoogleCredentials,
+  upsertSecret,
 } from "@/api/index.ts";
 import type { UpsertAppCredentialsRequest } from "@/api/index.ts";
 
@@ -21,6 +25,12 @@ export const secretsKeys = {
   all: ["secrets"] as const,
   credentialStatus: () => ["secrets", "credentials"] as const,
   oauthStatus: () => ["secrets", "oauth-status"] as const,
+};
+
+export const googleAccountsKeys = {
+  all: ["google-accounts"] as const,
+  list: () => ["google-accounts", "list"] as const,
+  status: (accountId: string) => ["google-accounts", "status", accountId] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -67,6 +77,54 @@ export function useDeleteGoogleCredentials() {
     mutationFn: () => deleteGoogleCredentials(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: secretsKeys.all });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Multi-account Google hooks
+// ---------------------------------------------------------------------------
+
+/** Fetch all connected Google accounts. */
+export function useGoogleAccounts() {
+  return useQuery({
+    queryKey: googleAccountsKeys.list(),
+    queryFn: () => getGoogleAccounts(),
+    retry: false,
+  });
+}
+
+/** Fetch per-account credential status. */
+export function useAccountStatus(accountId: string | null) {
+  return useQuery({
+    queryKey: googleAccountsKeys.status(accountId ?? ""),
+    queryFn: () => getAccountStatus(accountId!),
+    enabled: !!accountId,
+    retry: false,
+  });
+}
+
+/** Set a Google account as the primary account. */
+export function useSetPrimaryAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (accountId: string) => setPrimaryAccount(accountId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: googleAccountsKeys.all });
+      queryClient.invalidateQueries({ queryKey: secretsKeys.oauthStatus() });
+    },
+  });
+}
+
+/** Disconnect (or hard-delete) a Google account. */
+export function useDisconnectAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ accountId, hardDelete }: { accountId: string; hardDelete?: boolean }) =>
+      disconnectAccount(accountId, hardDelete),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: googleAccountsKeys.all });
+      queryClient.invalidateQueries({ queryKey: secretsKeys.oauthStatus() });
     },
   });
 }

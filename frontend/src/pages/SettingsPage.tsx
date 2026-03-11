@@ -1,7 +1,13 @@
 import { type FormEvent, useEffect, useState } from "react";
 
-import type { CLIAuthHealthState, CLIAuthProvider, CLIAuthSessionState, OAuthCredentialState } from "@/api/index.ts";
-import { getOAuthStartUrl } from "@/api/index.ts";
+import type {
+  CLIAuthHealthState,
+  CLIAuthProvider,
+  CLIAuthSessionState,
+  GoogleAccount,
+  OAuthCredentialState,
+} from "@/api/index.ts";
+import { getGoogleOAuthStartUrl } from "@/api/index.ts";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,7 +49,10 @@ import {
 } from "@/hooks/use-cli-auth";
 import {
   useDeleteGoogleCredentials,
+  useDisconnectAccount,
+  useGoogleAccounts,
   useGoogleCredentialStatus,
+  useSetPrimaryAccount,
   useUpsertGoogleCredentials,
 } from "@/hooks/use-secrets";
 import { useDarkMode } from "@/hooks/useDarkMode";
@@ -565,17 +574,210 @@ function CLIAuthCard() {
 }
 
 // ---------------------------------------------------------------------------
-// Combined Google OAuth card
+// Account status badge helpers
 // ---------------------------------------------------------------------------
 
-function GoogleOAuthCard() {
+function accountStatusBadge(
+  status: string,
+): { variant: "default" | "secondary" | "destructive" | "outline"; label: string } {
+  switch (status) {
+    case "active":
+      return { variant: "default", label: "Active" };
+    case "disconnected":
+      return { variant: "outline", label: "Disconnected" };
+    case "expired":
+      return { variant: "destructive", label: "Expired" };
+    default:
+      return { variant: "secondary", label: status };
+  }
+}
+
+function formatTimestamp(ts: string | null): string {
+  if (!ts) return "—";
+  try {
+    return new Date(ts).toLocaleString();
+  } catch {
+    return ts;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Disconnect dialog
+// ---------------------------------------------------------------------------
+
+function DisconnectAccountDialog({
+  account,
+  onDismiss,
+}: {
+  account: GoogleAccount;
+  onDismiss: () => void;
+}) {
+  const [hardDelete, setHardDelete] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const disconnectMutation = useDisconnectAccount();
+
+  async function handleDisconnect() {
+    setError(null);
+    try {
+      await disconnectMutation.mutateAsync({ accountId: account.id, hardDelete });
+      onDismiss();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect account.");
+    }
+  }
+
+  const displayName = account.email ?? account.display_name ?? account.id;
+
+  return (
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Disconnect Google account?</DialogTitle>
+        <DialogDescription>
+          This will disconnect <strong>{displayName}</strong> from the butler.
+          The OAuth token will be revoked.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="space-y-3">
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            checked={hardDelete}
+            onChange={(e) => setHardDelete(e.target.checked)}
+            className="rounded"
+          />
+          <span>Permanently delete account record (hard delete)</span>
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Without hard delete, the account row is retained with status &quot;disconnected&quot;.
+          Hard delete removes the row and its companion entity entirely.
+        </p>
+      </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <DialogFooter>
+        <Button variant="outline" onClick={onDismiss}>
+          Cancel
+        </Button>
+        <Button
+          variant="destructive"
+          onClick={handleDisconnect}
+          disabled={disconnectMutation.isPending}
+        >
+          {disconnectMutation.isPending ? "Disconnecting..." : "Disconnect"}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Single account row
+// ---------------------------------------------------------------------------
+
+function GoogleAccountRow({ account }: { account: GoogleAccount }) {
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const setPrimaryMutation = useSetPrimaryAccount();
+
+  async function handleSetPrimary() {
+    setError(null);
+    try {
+      await setPrimaryMutation.mutateAsync(account.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set primary.");
+    }
+  }
+
+  const { variant: statusVariant, label: statusLabel } = accountStatusBadge(account.status);
+  const displayEmail = account.email ?? account.display_name ?? "Unknown account";
+  const reAuthUrl = getGoogleOAuthStartUrl({
+    accountHint: account.email ?? undefined,
+    forceConsent: true,
+  });
+
+  return (
+    <div className="py-4 border-b border-border last:border-0 space-y-2">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-medium truncate">{displayEmail}</p>
+            {account.display_name && account.email && (
+              <span className="text-xs text-muted-foreground truncate">
+                {account.display_name}
+              </span>
+            )}
+            {account.is_primary && (
+              <Badge variant="secondary" className="text-xs">Primary</Badge>
+            )}
+            <Badge variant={statusVariant}>{statusLabel}</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Connected: {formatTimestamp(account.connected_at)}
+            {account.last_token_refresh_at && (
+              <> &middot; Last refresh: {formatTimestamp(account.last_token_refresh_at)}</>
+            )}
+          </p>
+          {account.granted_scopes.length > 0 && (
+            <p className="text-xs text-muted-foreground mt-0.5 font-mono break-all">
+              Scopes: {account.granted_scopes.join(", ")}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {!account.is_primary && account.status === "active" && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSetPrimary}
+              disabled={setPrimaryMutation.isPending}
+            >
+              {setPrimaryMutation.isPending ? "Setting..." : "Set primary"}
+            </Button>
+          )}
+          <a href={reAuthUrl} target="_blank" rel="noopener noreferrer">
+            <Button variant="outline" size="sm">
+              Re-authorize
+            </Button>
+          </a>
+          <Dialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
+            <DialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+              >
+                Disconnect
+              </Button>
+            </DialogTrigger>
+            <DisconnectAccountDialog
+              account={account}
+              onDismiss={() => setDisconnectOpen(false)}
+            />
+          </Dialog>
+        </div>
+      </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Google accounts section (replaces GoogleOAuthCard)
+// ---------------------------------------------------------------------------
+
+function GoogleAccountsSection() {
   const credStatusQuery = useGoogleCredentialStatus();
   const credStatus = credStatusQuery.data;
-  const isLoading = credStatusQuery.isLoading;
+  const accountsQuery = useGoogleAccounts();
+  const accounts = accountsQuery.data ?? [];
+  const isLoading = credStatusQuery.isLoading || accountsQuery.isLoading;
   const isError = credStatusQuery.isError;
-  const oauthStartUrl = getOAuthStartUrl();
   const canStartOAuth =
     credStatus?.client_id_configured && credStatus?.client_secret_configured;
+
+  // Aggregate health badge: worst-case across all accounts
+  const overallHealth = credStatus?.oauth_health ?? "not_configured";
+
+  const connectUrl = getGoogleOAuthStartUrl();
 
   return (
     <Card>
@@ -584,7 +786,7 @@ function GoogleOAuthCard() {
           <div>
             <CardTitle>Google OAuth</CardTitle>
             <CardDescription>
-              Configure Google OAuth credentials and authorization flow for
+              Configure Google OAuth credentials and manage connected Google accounts for
               Calendars, Emails, and Contacts.
             </CardDescription>
           </div>
@@ -592,63 +794,15 @@ function GoogleOAuthCard() {
             <Skeleton className="h-6 w-24" />
           ) : isError ? (
             <Badge variant="destructive">Unavailable</Badge>
-          ) : credStatus ? (
-            <Badge variant={healthBadgeVariant(credStatus.oauth_health)}>
-              {healthBadgeLabel(credStatus.oauth_health)}
+          ) : (
+            <Badge variant={healthBadgeVariant(overallHealth)}>
+              {healthBadgeLabel(overallHealth)}
             </Badge>
-          ) : null}
+          )}
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Credential presence */}
-        {isLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-          </div>
-        ) : isError ? (
-          <p className="text-sm text-destructive">
-            Failed to load credential status. Ensure the dashboard API is running.
-          </p>
-        ) : credStatus ? (
-          <>
-            <PresenceRow
-              label="Client ID"
-              present={credStatus.client_id_configured}
-            />
-            <PresenceRow
-              label="Client Secret"
-              present={credStatus.client_secret_configured}
-            />
-            <PresenceRow
-              label="Refresh Token"
-              present={credStatus.refresh_token_present}
-            />
-            {credStatus.scope && (
-              <div className="pt-2">
-                <p className="text-xs text-muted-foreground">Granted scopes:</p>
-                <p className="text-sm font-mono mt-0.5 break-all">{credStatus.scope}</p>
-              </div>
-            )}
-            {credStatus.oauth_health_remediation && (
-              <div className="pt-2 rounded-md bg-muted/50 p-3">
-                <p className="text-sm text-muted-foreground">
-                  {credStatus.oauth_health_remediation}
-                </p>
-                {credStatus.oauth_health_detail && (
-                  <p className="text-xs text-muted-foreground mt-1 font-mono">
-                    {credStatus.oauth_health_detail}
-                  </p>
-                )}
-              </div>
-            )}
-          </>
-        ) : null}
-
-        <div className="border-t border-border" />
-
-        {/* App credentials input form */}
+        {/* App credentials (shared across all accounts) */}
         <div className="space-y-2">
           <p className="text-sm font-medium">
             {canStartOAuth ? "Update app credentials" : "Configure app credentials"}
@@ -663,43 +817,73 @@ function GoogleOAuthCard() {
             >
               Google Cloud Console
             </a>
-            . These are required before starting the OAuth authorization flow.
+            . These are shared across all connected accounts.
           </p>
+          {isLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          ) : (
+            <>
+              <PresenceRow label="Client ID" present={credStatus?.client_id_configured ?? false} />
+              <PresenceRow
+                label="Client Secret"
+                present={credStatus?.client_secret_configured ?? false}
+              />
+            </>
+          )}
           <AppCredentialsForm />
         </div>
 
         <div className="border-t border-border" />
 
-        {/* Connect / Re-connect */}
-        <div className="flex items-center gap-4">
-          <a
-            href={oauthStartUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => {
-              if (!canStartOAuth) {
-                e.preventDefault();
-              }
-            }}
-          >
-            <Button
-              disabled={!canStartOAuth || isLoading}
-              variant={credStatus?.refresh_token_present ? "outline" : "default"}
+        {/* Connected accounts list */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Connected accounts</p>
+            <a
+              href={connectUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => {
+                if (!canStartOAuth) e.preventDefault();
+              }}
             >
-              {credStatus?.refresh_token_present
-                ? "Re-connect Google"
-                : "Connect Google"}
-            </Button>
-          </a>
+              <Button size="sm" disabled={!canStartOAuth || isLoading}>
+                Connect new Google account
+              </Button>
+            </a>
+          </div>
           {!canStartOAuth && !isLoading && (
-            <p className="text-sm text-muted-foreground">
-              Save your app credentials above before connecting.
+            <p className="text-xs text-muted-foreground">
+              Save app credentials above before connecting accounts.
             </p>
           )}
-          {credStatus?.oauth_health === "connected" && (
-            <p className="text-sm text-green-600 dark:text-green-400">
-              Google account is connected and credentials are valid.
+          {isError ? (
+            <p className="text-sm text-destructive">
+              Failed to load account status. Ensure the dashboard API is running.
             </p>
+          ) : isLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ) : accounts.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border p-6 text-center">
+              <p className="text-sm text-muted-foreground">No Google accounts connected yet.</p>
+              {canStartOAuth && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Click &quot;Connect new Google account&quot; to start the OAuth flow.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div>
+              {accounts.map((account) => (
+                <GoogleAccountRow key={account.id} account={account} />
+              ))}
+            </div>
           )}
         </div>
 
@@ -710,7 +894,8 @@ function GoogleOAuthCard() {
           <div>
             <p className="text-sm font-medium text-destructive">Danger zone</p>
             <p className="text-xs text-muted-foreground">
-              Delete all stored Google OAuth credentials. This cannot be undone.
+              Delete all stored Google OAuth credentials (client_id, client_secret). This cannot be
+              undone.
             </p>
           </div>
           <DeleteCredentialsDialog />
@@ -821,7 +1006,7 @@ export default function SettingsPage() {
 
       <CLIAuthCard />
 
-      <GoogleOAuthCard />
+      <GoogleAccountsSection />
     </div>
   );
 }

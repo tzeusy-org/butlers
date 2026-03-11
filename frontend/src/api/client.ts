@@ -1479,8 +1479,12 @@ export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
 
 import type {
   DeleteCredentialsResponse,
+  DisconnectAccountResponse,
+  GoogleAccount,
+  GoogleAccountStatus,
   GoogleCredentialStatusResponse,
   OAuthStatusResponse,
+  SetPrimaryAccountResponse,
   UpsertAppCredentialsRequest,
   UpsertAppCredentialsResponse,
 } from "./types.ts";
@@ -1515,6 +1519,46 @@ export function deleteGoogleCredentials(): Promise<DeleteCredentialsResponse> {
 /** Trigger the Google OAuth flow (returns the authorization URL). */
 export function getOAuthStartUrl(): string {
   return `${API_BASE_URL}/oauth/google/start`;
+}
+
+/** Build the URL to start an OAuth flow for a new or existing Google account. */
+export function getGoogleOAuthStartUrl(opts?: {
+  accountHint?: string;
+  forceConsent?: boolean;
+}): string {
+  const params = new URLSearchParams();
+  if (opts?.accountHint) params.set("account_hint", opts.accountHint);
+  if (opts?.forceConsent) params.set("force_consent", "true");
+  const qs = params.toString();
+  return `${API_BASE_URL}/oauth/google/start${qs ? `?${qs}` : ""}`;
+}
+
+/** Fetch all connected Google accounts. */
+export function getGoogleAccounts(): Promise<GoogleAccount[]> {
+  return apiFetch<GoogleAccount[]>("/oauth/google/accounts");
+}
+
+/** Set a Google account as the primary account. */
+export function setPrimaryAccount(accountId: string): Promise<SetPrimaryAccountResponse> {
+  return apiFetch<SetPrimaryAccountResponse>(`/oauth/google/accounts/${accountId}/primary`, {
+    method: "PUT",
+  });
+}
+
+/** Disconnect (or hard-delete) a Google account. */
+export function disconnectAccount(
+  accountId: string,
+  hardDelete?: boolean,
+): Promise<DisconnectAccountResponse> {
+  const url = hardDelete
+    ? `/oauth/google/accounts/${accountId}?hard_delete=true`
+    : `/oauth/google/accounts/${accountId}`;
+  return apiFetch<DisconnectAccountResponse>(url, { method: "DELETE" });
+}
+
+/** Fetch per-account credential status. */
+export function getAccountStatus(accountId: string): Promise<GoogleAccountStatus> {
+  return apiFetch<GoogleAccountStatus>(`/oauth/google/accounts/${accountId}/status`);
 }
 
 // ---------------------------------------------------------------------------
