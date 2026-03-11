@@ -49,54 +49,33 @@ async def probe_provider(
 ) -> AuthHealthResult:
     """Run a provider's status command and determine auth health."""
     if not provider.is_available():
-        # api_key providers may still have a stored key even if the binary
-        # is not installed — report based on key presence.
-        if provider.auth_mode == "api_key" and credential_store is not None:
-            key = f"cli-auth/{provider.name}"
-            try:
-                value = await credential_store.load(key)
-            except Exception:
-                value = None
-            if value:
-                return AuthHealthResult(
-                    provider=provider.name,
-                    state=AuthHealthState.authenticated,
-                    detail="API key stored (binary not on PATH).",
-                )
         return AuthHealthResult(
             provider=provider.name,
             state=AuthHealthState.unavailable,
             detail=f"Binary '{provider.binary()}' not found on PATH.",
         )
 
-    # api_key providers: check if a key is stored in the credential store
+    # api_key providers: check if the key exists in the auth file
     if provider.auth_mode == "api_key":
-        if credential_store is None:
-            return AuthHealthResult(
-                provider=provider.name,
-                state=AuthHealthState.not_authenticated,
-                detail="No credential store available.",
-            )
-        key = f"cli-auth/{provider.name}"
-        try:
-            value = await credential_store.load(key)
-        except Exception:
-            logger.exception("CLI auth health: failed to load key for %s", provider.name)
-            return AuthHealthResult(
-                provider=provider.name,
-                state=AuthHealthState.probe_failed,
-                detail="Failed to check credential store.",
-            )
-        if value:
-            return AuthHealthResult(
-                provider=provider.name,
-                state=AuthHealthState.authenticated,
-                detail="API key configured.",
-            )
+        if provider.token_path is not None and provider.token_path.exists():
+            try:
+                import json
+
+                auth_data = json.loads(provider.token_path.read_text(encoding="utf-8"))
+                # OpenCode Go stores as {"opencode-go": {"type": "api", "key": "..."}}
+                entry = auth_data.get("opencode-go", {})
+                if entry.get("key"):
+                    return AuthHealthResult(
+                        provider=provider.name,
+                        state=AuthHealthState.authenticated,
+                        detail="API key configured.",
+                    )
+            except (json.JSONDecodeError, OSError):
+                pass
         return AuthHealthResult(
             provider=provider.name,
             state=AuthHealthState.not_authenticated,
-            detail="No API key stored.",
+            detail="No API key configured.",
         )
 
     if provider.status_command is None or provider.status_ok_pattern is None:

@@ -154,8 +154,12 @@ _register(
         auth_mode="api_key",
         env_var="OPENCODE_GO_API_KEY",
         binary_name="opencode",
-        # Quick validation: `opencode version` should succeed
-        test_command=["opencode", "--version"],
-        test_ok_pattern=re.compile(r"\d+\.\d+"),
+        # Token is stored inside the shared opencode auth.json
+        token_path=Path.home() / ".local" / "share" / "opencode" / "auth.json",
+        # Test: run a minimal prompt with an OpenCode Go model
+        test_command=[
+            "opencode", "run", "--model", "opencode-go/minimax-m2.5", "respond with ok",
+        ],
+        test_ok_pattern=re.compile(r"(?:ok|OK|Ok)", re.IGNORECASE),
     )
 )

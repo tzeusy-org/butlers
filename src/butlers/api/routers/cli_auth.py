@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import secrets
 from typing import Any
 
@@ -220,7 +219,9 @@ async def save_api_key(
     body: CLIAuthApiKeyRequest,
     db_manager: Any = Depends(_get_db_manager),
 ) -> CLIAuthApiKeyResponse:
-    """Save an API key to the shared credential store."""
+    """Save an API key: write to the CLI's auth file and persist to DB."""
+    import json
+
     provider_def = PROVIDERS.get(provider)
     if provider_def is None:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
@@ -230,23 +231,42 @@ async def save_api_key(
             detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
         )
 
-    store = _make_credential_store(db_manager)
-    if store is None:
-        raise HTTPException(status_code=503, detail="Credential store not available.")
+    # Write the key into the CLI's auth.json so the binary can use it
+    if provider_def.token_path is not None:
+        try:
+            provider_def.token_path.parent.mkdir(parents=True, exist_ok=True)
+            # Merge into existing auth.json (other providers may have entries)
+            existing: dict = {}
+            if provider_def.token_path.exists():
+                try:
+                    existing = json.loads(provider_def.token_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    pass
+            # OpenCode Go stores API keys as {"type": "api", "key": "..."}
+            existing["opencode-go"] = {"type": "api", "key": body.api_key}
+            provider_def.token_path.write_text(
+                json.dumps(existing, indent=2), encoding="utf-8"
+            )
+            provider_def.token_path.chmod(0o600)
+            logger.info("CLI auth: wrote API key to %s", provider_def.token_path)
+        except OSError:
+            logger.exception("CLI auth: failed to write auth file for %s", provider_def.name)
+            raise HTTPException(status_code=500, detail="Failed to write auth file.")
 
-    key = f"cli-auth/{provider_def.name}"
-    await store.store(
-        key,
-        body.api_key,
-        category="cli-auth",
-        description=f"API key for {provider_def.display_name}",
-        is_sensitive=True,
-    )
+    # Also persist to DB for K8s restarts
+    store = _make_credential_store(db_manager)
+    if store is not None:
+        # Persist the entire auth.json (contains all providers' creds)
+        if provider_def.token_path is not None and provider_def.token_path.exists():
+            from butlers.cli_auth.persistence import persist_token
+
+            await persist_token(provider_def, store)
+
     logger.info("CLI auth: stored API key for %s", provider_def.name)
     return CLIAuthApiKeyResponse(
         provider=provider_def.name,
         stored=True,
-        message=f"API key stored for {provider_def.display_name}.",
+        message=f"API key saved for {provider_def.display_name}.",
     )
 
 
@@ -258,7 +278,9 @@ async def delete_api_key(
     provider: str,
     db_manager: Any = Depends(_get_db_manager),
 ) -> dict[str, str]:
-    """Remove an API key from the shared credential store."""
+    """Remove an API key from the auth file and credential store."""
+    import json
+
     provider_def = PROVIDERS.get(provider)
     if provider_def is None:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
@@ -268,12 +290,24 @@ async def delete_api_key(
             detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
         )
 
-    store = _make_credential_store(db_manager)
-    if store is None:
-        raise HTTPException(status_code=503, detail="Credential store not available.")
+    # Remove from the CLI's auth.json
+    if provider_def.token_path is not None and provider_def.token_path.exists():
+        try:
+            existing = json.loads(provider_def.token_path.read_text(encoding="utf-8"))
+            if "opencode-go" in existing:
+                del existing["opencode-go"]
+                provider_def.token_path.write_text(
+                    json.dumps(existing, indent=2), encoding="utf-8"
+                )
+        except (json.JSONDecodeError, OSError):
+            logger.exception("CLI auth: failed to update auth file for %s", provider_def.name)
 
-    key = f"cli-auth/{provider_def.name}"
-    await store.delete(key)
+    # Remove from DB
+    store = _make_credential_store(db_manager)
+    if store is not None:
+        key = f"cli-auth/{provider_def.name}"
+        await store.delete(key)
+
     logger.info("CLI auth: deleted API key for %s", provider_def.name)
     return {"status": "deleted", "provider": provider_def.name}
 
@@ -285,9 +319,8 @@ async def delete_api_key(
 )
 async def test_api_key(
     provider: str,
-    db_manager: Any = Depends(_get_db_manager),
 ) -> CLIAuthTestResponse:
-    """Run the provider's test command with the stored API key to validate it."""
+    """Run the provider's test command to validate the stored API key."""
     provider_def = PROVIDERS.get(provider)
     if provider_def is None:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
@@ -301,25 +334,8 @@ async def test_api_key(
             status_code=400, detail=f"No test command configured for {provider}."
         )
 
-    store = _make_credential_store(db_manager)
-    if store is None:
-        raise HTTPException(status_code=503, detail="Credential store not available.")
-
-    key = f"cli-auth/{provider_def.name}"
-    api_key_value = await store.load(key)
-    if not api_key_value:
-        return CLIAuthTestResponse(
-            provider=provider_def.name,
-            success=False,
-            detail="No API key stored. Save a key first.",
-        )
-
-    # Run test command with the API key in the environment
+    # The API key is in the CLI's auth.json — just run the test command
     from butlers.cli_auth.session import _strip_ansi
-
-    test_env = os.environ.copy()
-    if provider_def.env_var:
-        test_env[provider_def.env_var] = api_key_value
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -327,9 +343,8 @@ async def test_api_key(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL,
-            env=test_env,
         )
-        raw_output, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        raw_output, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
         output = _strip_ansi(raw_output.decode(errors="replace")).strip()[:200]
 
         if proc.returncode == 0:
