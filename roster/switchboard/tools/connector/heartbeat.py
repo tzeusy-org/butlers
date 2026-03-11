@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 ConnectorState = Literal["healthy", "degraded", "error"]
 
+# Known valid connector types that can register via heartbeat
+VALID_CONNECTOR_TYPES = {"telegram_bot", "telegram_user_client", "gmail", "discord_user"}
+
 
 class ConnectorIdentityV1(BaseModel):
     """Connector identity section of heartbeat.v1 envelope."""
@@ -49,6 +52,17 @@ class ConnectorIdentityV1(BaseModel):
         default=None,
         description="Optional connector software version (semver or git sha)",
     )
+
+    @field_validator("connector_type")
+    @classmethod
+    def validate_connector_type(cls, v: str) -> str:
+        """Ensure connector_type is in the set of known valid types."""
+        if v not in VALID_CONNECTOR_TYPES:
+            raise ValueError(
+                f"Unknown connector_type: {v!r}. "
+                f"Must be one of: {', '.join(sorted(VALID_CONNECTOR_TYPES))}"
+            )
+        return v
 
 
 class ConnectorStatusV1(BaseModel):

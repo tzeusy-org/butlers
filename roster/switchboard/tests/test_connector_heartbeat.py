@@ -71,6 +71,20 @@ def test_parse_heartbeat_wrong_schema_version(valid_heartbeat_payload):
         parse_connector_heartbeat(valid_heartbeat_payload)
 
 
+def test_parse_heartbeat_unknown_connector_type(valid_heartbeat_payload):
+    """Test that unknown connector_type raises ValueError."""
+    valid_heartbeat_payload["connector"]["connector_type"] = "telegram"
+    with pytest.raises(ValueError, match="Unknown connector_type"):
+        parse_connector_heartbeat(valid_heartbeat_payload)
+
+
+def test_parse_heartbeat_invalid_connector_type_format(valid_heartbeat_payload):
+    """Test that invalid connector_type format raises ValueError."""
+    valid_heartbeat_payload["connector"]["connector_type"] = "invalid_type"
+    with pytest.raises(ValueError, match="Unknown connector_type"):
+        parse_connector_heartbeat(valid_heartbeat_payload)
+
+
 def test_parse_heartbeat_missing_connector(valid_heartbeat_payload):
     """Test that missing connector section raises ValueError."""
     del valid_heartbeat_payload["connector"]
