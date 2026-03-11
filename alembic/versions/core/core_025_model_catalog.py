@@ -27,6 +27,8 @@ Creates the database foundation for dynamic model routing:
 
 from __future__ import annotations
 
+import json
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -37,20 +39,28 @@ depends_on = None
 
 _COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high")
 
-# Default seed entries: (alias, runtime_type, model_id, complexity_tier, priority)
+# Default seed entries: (alias, runtime_type, model_id, extra_args, complexity_tier, priority)
 _SEED_ENTRIES = [
-    ("claude-haiku", "claude-code", "claude-haiku-4-5", "trivial", 10),
-    ("claude-sonnet", "claude-code", "claude-sonnet-4-5", "medium", 20),
-    ("claude-opus", "claude-code", "claude-opus-4-5", "high", 30),
-    ("gpt-5.1", "codex", "gpt-5.1", "medium", 40),
-    ("gpt-5.3-spark", "codex", "gpt-5.3-spark", "trivial", 50),
-    ("gpt-5.4", "codex", "gpt-5.4", "high", 60),
-    ("gpt-5.4-high", "codex", "gpt-5.4-high", "extra_high", 70),
-    ("gemini-2.5-flash", "gemini", "gemini-2.5-flash", "trivial", 80),
-    ("gemini-2.5-pro", "gemini", "gemini-2.5-pro", "high", 90),
-    ("minimax-m2.5", "minimax", "minimax-m2.5", "medium", 100),
-    ("glm-5", "zhipu", "glm-5", "medium", 110),
-    ("kimi-k2.5", "moonshot", "kimi-k2.5", "medium", 120),
+    ("claude-haiku", "claude-code", "claude-haiku-4-5-20251001", [], "trivial", 0),
+    ("claude-sonnet", "claude-code", "claude-sonnet-4-6", [], "medium", 0),
+    ("claude-opus", "claude-code", "claude-opus-4-6", [], "high", 0),
+    ("gpt-5.1", "codex", "gpt-5.1", [], "medium", 10),
+    ("gpt-5.3-spark", "codex", "gpt-5.3-codex-spark", [], "trivial", 0),
+    ("gpt-5.4", "codex", "gpt-5.4", [], "high", 10),
+    # gpt-5.4-high: same model_id as gpt-5.4 but with reasoning effort flag
+    (
+        "gpt-5.4-high",
+        "codex",
+        "gpt-5.4",
+        ["--config", "model_reasoning_effort=high"],
+        "extra_high",
+        0,
+    ),
+    ("gemini-2.5-flash", "gemini", "gemini-2.5-flash", [], "trivial", 10),
+    ("gemini-2.5-pro", "gemini", "gemini-2.5-pro", [], "high", 10),
+    ("minimax-m2.5", "opencode", "minimax/MiniMax-M2.5", [], "medium", 20),
+    ("glm-5", "opencode", "zhipu/GLM-5", [], "medium", 20),
+    ("kimi-k2.5", "opencode", "moonshot/Kimi-K2.5", [], "high", 20),
 ]
 
 
@@ -64,7 +74,7 @@ def upgrade() -> None:
             alias           TEXT NOT NULL,
             runtime_type    TEXT NOT NULL,
             model_id        TEXT NOT NULL,
-            extra_args      JSONB NOT NULL DEFAULT '{}'::jsonb,
+            extra_args      JSONB NOT NULL DEFAULT '[]'::jsonb,
             complexity_tier TEXT NOT NULL DEFAULT 'medium',
             enabled         BOOLEAN NOT NULL DEFAULT true,
             priority        INTEGER NOT NULL DEFAULT 0,
@@ -117,14 +127,29 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 4. Seed 12 default catalog entries (idempotent)
     # -------------------------------------------------------------------------
-    for alias, runtime_type, model_id, complexity_tier, priority in _SEED_ENTRIES:
-        op.execute(f"""
-            INSERT INTO shared.model_catalog
-                (alias, runtime_type, model_id, complexity_tier, priority)
-            VALUES
-                ('{alias}', '{runtime_type}', '{model_id}', '{complexity_tier}', {priority})
-            ON CONFLICT (alias) DO NOTHING
-        """)
+    import sqlalchemy  # noqa: PLC0415
+
+    seed_sql = sqlalchemy.text(
+        "INSERT INTO shared.model_catalog"
+        " (alias, runtime_type, model_id, extra_args, complexity_tier, priority)"
+        " VALUES"
+        " (:alias, :runtime_type, :model_id,"
+        " CAST(:extra_args AS jsonb), :complexity_tier, :priority)"
+        " ON CONFLICT (alias) DO NOTHING"
+    )
+    seed_params = []
+    for alias, runtime_type, model_id, extra_args, complexity_tier, priority in _SEED_ENTRIES:
+        seed_params.append(
+            {
+                "alias": alias,
+                "runtime_type": runtime_type,
+                "model_id": model_id,
+                "extra_args": json.dumps(extra_args),
+                "complexity_tier": complexity_tier,
+                "priority": priority,
+            }
+        )
+    op.get_bind().execute(seed_sql, seed_params)
 
 
 def downgrade() -> None:

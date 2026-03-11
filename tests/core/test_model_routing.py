@@ -79,7 +79,7 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
             alias           TEXT NOT NULL,
             runtime_type    TEXT NOT NULL,
             model_id        TEXT NOT NULL,
-            extra_args      JSONB NOT NULL DEFAULT '{}'::jsonb,
+            extra_args      JSONB NOT NULL DEFAULT '[]'::jsonb,
             complexity_tier TEXT NOT NULL DEFAULT 'medium',
             enabled         BOOLEAN NOT NULL DEFAULT true,
             priority        INTEGER NOT NULL DEFAULT 0,
@@ -118,12 +118,12 @@ async def _insert_catalog_entry(
     complexity_tier: str = "medium",
     enabled: bool = True,
     priority: int = 0,
-    extra_args: dict[str, Any] | None = None,
+    extra_args: list[str] | None = None,
 ) -> str:
     """Insert a catalog entry and return its id."""
     import json
 
-    extra_json = json.dumps(extra_args or {})
+    extra_json = json.dumps(extra_args or [])
     row = await pool.fetchrow(
         """
         INSERT INTO shared.model_catalog
@@ -217,7 +217,7 @@ async def test_resolve_global_only(postgres_container: Any) -> None:
         runtime_type, model_id, extra_args = result
         assert runtime_type == "claude-code"
         assert model_id == "claude-sonnet-4"
-        assert extra_args == {}
+        assert extra_args == []
 
 
 @pytest.mark.integration
@@ -382,20 +382,20 @@ async def test_resolve_tie_breaking_by_created_at(postgres_container: Any) -> No
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_returns_extra_args(postgres_container: Any) -> None:
-    """extra_args JSONB is returned correctly."""
+    """extra_args JSONB (list of CLI token strings) is returned correctly."""
     async with _make_pool(postgres_container) as pool:
         await pool.execute("""
             INSERT INTO shared.model_catalog
                 (alias, runtime_type, model_id, complexity_tier, priority, extra_args)
             VALUES
                 ('opus', 'claude-code', 'claude-opus-4', 'extra_high', 1,
-                 '{"thinking": true, "budget_tokens": 8000}'::jsonb)
+                 '["--config", "model_reasoning_effort=high"]'::jsonb)
         """)
 
         result = await resolve_model(pool, "general", Complexity.EXTRA_HIGH)
         assert result is not None
         _runtime_type, _model_id, extra_args = result
-        assert extra_args == {"thinking": True, "budget_tokens": 8000}
+        assert extra_args == ["--config", "model_reasoning_effort=high"]
 
 
 @pytest.mark.integration

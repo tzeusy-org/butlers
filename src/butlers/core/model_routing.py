@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import enum
 import json
-from typing import Any
 
 import asyncpg
 
@@ -65,7 +64,7 @@ async def resolve_model(
     pool: asyncpg.Pool,
     butler_name: str,
     complexity_tier: Complexity | str,
-) -> tuple[str, str, dict[str, Any]] | None:
+) -> tuple[str, str, list[str]] | None:
     """Resolve the best model for a butler and complexity tier.
 
     Queries ``shared.model_catalog`` with an optional ``shared.butler_model_overrides``
@@ -85,9 +84,10 @@ async def resolve_model(
 
     Returns
     -------
-    tuple[str, str, dict[str, Any]] | None
+    tuple[str, str, list[str]] | None
         ``(runtime_type, model_id, extra_args)`` for the highest-priority
         matching entry, or ``None`` if no enabled entries match.
+        ``extra_args`` is a list of CLI token strings (e.g. ``["--config", "k=v"]``).
     """
     if isinstance(complexity_tier, Complexity):
         tier_value = complexity_tier.value
@@ -101,12 +101,13 @@ async def resolve_model(
     # asyncpg returns JSONB columns as strings; parse them explicitly.
     raw_extra = row["extra_args"]
     if raw_extra is None:
-        extra_args: dict[str, Any] = {}
+        extra_args: list[str] = []
     elif isinstance(raw_extra, str):
-        extra_args = json.loads(raw_extra)
-    elif isinstance(raw_extra, dict):
+        parsed = json.loads(raw_extra)
+        extra_args = parsed if isinstance(parsed, list) else []
+    elif isinstance(raw_extra, list):
         extra_args = raw_extra
     else:
-        extra_args = dict(raw_extra)
+        extra_args = []
 
     return (row["runtime_type"], row["model_id"], extra_args)
