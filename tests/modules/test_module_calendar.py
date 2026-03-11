@@ -150,6 +150,190 @@ class TestCalendarConfig:
         assert defaults_error.value.errors()[0]["loc"] == ("event_defaults", "minutes_beforee")
         assert defaults_error.value.errors()[0]["type"] == "extra_forbidden"
 
+    # ------------------------------------------------------------------
+    # account field tests (multi-account Google support)
+    # ------------------------------------------------------------------
+
+    def test_account_is_optional(self):
+        config = CalendarConfig(provider="google")
+        assert config.account is None
+
+    def test_account_accepted_and_stripped(self):
+        config = CalendarConfig(provider="google", account="  work@gmail.com  ")
+        assert config.account == "work@gmail.com"
+
+    def test_account_whitespace_only_becomes_none(self):
+        config = CalendarConfig(provider="google", account="   ")
+        assert config.account is None
+
+    def test_account_none_explicit(self):
+        config = CalendarConfig(provider="google", account=None)
+        assert config.account is None
+
+
+class TestCalendarConfigAccountStartup:
+    """Tests for startup behavior with account-aware credential resolution."""
+
+    async def test_startup_fails_when_account_not_connected(self) -> None:
+        """Startup fails with a clear error when the configured account is not found."""
+        from unittest.mock import MagicMock
+
+        from butlers.google_account_registry import GoogleAccountNotFoundError
+
+        store = MagicMock()
+        store.resolve = AsyncMock(return_value="cid")
+        store.load_shared = AsyncMock(return_value=None)
+
+        db = MagicMock()
+        db.pool = MagicMock()
+
+        mod = CalendarModule()
+
+        with (
+            patch(
+                "butlers.google_account_registry.get_google_account",
+                new_callable=AsyncMock,
+                side_effect=GoogleAccountNotFoundError("not found"),
+            ),
+        ):
+            with pytest.raises(RuntimeError) as excinfo:
+                await mod.on_startup(
+                    {"provider": "google", "account": "nonexistent@gmail.com"},
+                    db=db,
+                    credential_store=store,
+                )
+
+        assert "nonexistent@gmail.com" in str(excinfo.value)
+        assert "not connected" in str(excinfo.value)
+
+    async def test_startup_fails_when_account_missing_calendar_scope(self) -> None:
+        """Startup fails when the account has not granted Calendar scope."""
+        import uuid
+        from dataclasses import dataclass
+        from datetime import datetime
+        from unittest.mock import MagicMock
+
+        store = MagicMock()
+        store.resolve = AsyncMock(return_value="cid")
+        store.load_shared = AsyncMock(return_value=None)
+
+        db = MagicMock()
+        db.pool = MagicMock()
+
+        @dataclass
+        class _FakeAccount:
+            id: uuid.UUID = uuid.uuid4()
+            entity_id: uuid.UUID = uuid.uuid4()
+            email: str = "work@gmail.com"
+            display_name: str | None = None
+            is_primary: bool = True
+            granted_scopes: list = None
+            status: str = "active"
+            connected_at: datetime = datetime.now()
+            last_token_refresh_at: datetime | None = None
+
+            def __post_init__(self) -> None:
+                if self.granted_scopes is None:
+                    self.granted_scopes = ["gmail.readonly"]
+
+        mod = CalendarModule()
+
+        with (
+            patch(
+                "butlers.google_account_registry.get_google_account",
+                new_callable=AsyncMock,
+                return_value=_FakeAccount(),
+            ),
+        ):
+            with pytest.raises(RuntimeError) as excinfo:
+                await mod.on_startup(
+                    {"provider": "google", "account": "work@gmail.com"},
+                    db=db,
+                    credential_store=store,
+                )
+
+        assert "Calendar scope" in str(excinfo.value)
+        assert "work@gmail.com" in str(excinfo.value)
+
+    async def test_startup_succeeds_with_account_and_calendar_scope(self) -> None:
+        """Startup resolves credentials for an account with the calendar scope."""
+        import uuid
+        from dataclasses import dataclass, field
+        from datetime import datetime
+        from unittest.mock import MagicMock
+
+        store = MagicMock()
+
+        async def _resolve(key: str, *, env_fallback: bool = False) -> str | None:
+            return {"GOOGLE_OAUTH_CLIENT_ID": "cid", "GOOGLE_OAUTH_CLIENT_SECRET": "csec"}.get(key)
+
+        store.resolve = AsyncMock(side_effect=_resolve)
+        store.load_shared = AsyncMock(return_value="cal-id-123")
+
+        fixed_entity_id = uuid.uuid4()
+
+        @dataclass
+        class _FakeAccount:
+            id: uuid.UUID = field(default_factory=uuid.uuid4)
+            entity_id: uuid.UUID = field(default_factory=uuid.uuid4)
+            email: str = "work@gmail.com"
+            display_name: str | None = None
+            is_primary: bool = True
+            granted_scopes: list = None
+            status: str = "active"
+            connected_at: datetime = field(default_factory=datetime.now)
+            last_token_refresh_at: datetime | None = None
+
+            def __post_init__(self) -> None:
+                if self.granted_scopes is None:
+                    self.granted_scopes = ["https://www.googleapis.com/auth/calendar"]
+                # Use the fixed entity_id for the token lookup.
+                self.entity_id = fixed_entity_id
+
+        # Mock db.pool.acquire() as async context manager.
+        mock_conn = MagicMock()
+        mock_conn.fetchrow = AsyncMock(return_value={"value": "refresh-tok"})
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(
+            return_value=MagicMock(
+                __aenter__=AsyncMock(return_value=mock_conn),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
+        db = MagicMock()
+        db.pool = mock_pool
+
+        mod = CalendarModule()
+
+        with (
+            patch(
+                "butlers.google_account_registry.get_google_account",
+                new_callable=AsyncMock,
+                return_value=_FakeAccount(),
+            ),
+            patch.object(
+                CalendarModule,
+                "_resolve_startup_calendar_id",
+                new_callable=AsyncMock,
+                return_value="cal-id-123",
+            ),
+            patch.object(
+                CalendarModule,
+                "_discover_and_register_all_calendars",
+                new_callable=AsyncMock,
+                return_value=["cal-id-123"],
+            ),
+        ):
+            await mod.on_startup(
+                {"provider": "google", "account": "work@gmail.com"},
+                db=db,
+                credential_store=store,
+            )
+
+        provider = getattr(mod, "_provider")
+        assert provider is not None
+        assert provider.name == "google"
+
 
 class TestCalendarProviderInterface:
     """Verify the provider interface exposes required tool operations."""

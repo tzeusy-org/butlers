@@ -192,12 +192,14 @@ class _GoogleOAuthClient:
         self,
         credentials: _GoogleOAuthCredentials,
         http_client: httpx.AsyncClient,
+        on_token_refreshed: Callable[[], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         self._credentials = credentials
         self._http_client = http_client
         self._access_token: str | None = None
         self._access_token_expires_at: datetime | None = None
         self._refresh_lock = asyncio.Lock()
+        self._on_token_refreshed = on_token_refreshed
 
     async def get_access_token(self, *, force_refresh: bool = False) -> str:
         if not force_refresh and self._token_is_fresh():
@@ -261,6 +263,16 @@ class _GoogleOAuthClient:
 
         self._access_token = access_token.strip()
         self._access_token_expires_at = datetime.now(UTC) + timedelta(seconds=refresh_ttl_seconds)
+
+        # Notify caller (e.g. to update last_token_refresh_at in google_accounts).
+        if self._on_token_refreshed is not None:
+            try:
+                await self._on_token_refreshed()
+            except Exception:
+                logger.debug(
+                    "CalendarModule: on_token_refreshed callback failed (non-blocking)",
+                    exc_info=True,
+                )
 
 
 def _cron_next_occurrence(cron: str, *, now: datetime | None = None) -> datetime:
@@ -975,6 +987,7 @@ class CalendarConfig(BaseModel):
     """Configuration for the Calendar module."""
 
     provider: str = Field(min_length=1)
+    account: str | None = None
     calendar_id: str | None = None
     timezone: str = "UTC"
     conflicts: CalendarConflictDefaults = Field(default_factory=CalendarConflictDefaults)
@@ -990,6 +1003,14 @@ class CalendarConfig(BaseModel):
         if not normalized:
             raise ValueError("provider must be a non-empty string")
         return normalized
+
+    @field_validator("account", mode="before")
+    @classmethod
+    def _normalize_account(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
 
     @field_validator("calendar_id", mode="before")
     @classmethod
@@ -1617,11 +1638,41 @@ class _GoogleProvider(CalendarProvider):
         config: CalendarConfig,
         credentials: _GoogleOAuthCredentials,
         http_client: httpx.AsyncClient | None = None,
+        pool: Any = None,
     ) -> None:
         self._config = config
+        self._pool = pool
         self._owns_http_client = http_client is None
         self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
-        self._oauth = _GoogleOAuthClient(credentials, self._http_client)
+
+        # Wire a post-refresh callback to update last_token_refresh_at when an
+        # explicit account is configured (multi-account setup).
+        on_token_refreshed: Callable[[], Coroutine[Any, Any, None]] | None = None
+        account_email = config.account
+        if pool is not None and account_email:
+            _email = account_email
+            _pool = pool
+
+            async def _update_last_token_refresh_at() -> None:
+                try:
+                    await _pool.execute(
+                        """
+                        UPDATE shared.google_accounts
+                        SET last_token_refresh_at = NOW()
+                        WHERE email = $1
+                        """,
+                        _email,
+                    )
+                except Exception:
+                    logger.debug(
+                        "CalendarModule: failed to update last_token_refresh_at for %s",
+                        _email,
+                        exc_info=True,
+                    )
+
+            on_token_refreshed = _update_last_token_refresh_at
+
+        self._oauth = _GoogleOAuthClient(credentials, self._http_client, on_token_refreshed)
 
     @property
     def name(self) -> str:
@@ -4098,8 +4149,10 @@ class CalendarModule(Module):
     ) -> _GoogleOAuthCredentials:
         """Resolve Google OAuth credentials using canonical lookup sources.
 
-        Resolution:
-        1. CredentialStore (``butler_secrets`` table) for individual keys.
+        When ``config.account`` is set, credentials are resolved for that
+        specific Google account from ``shared.google_accounts`` and its
+        companion entity_info.  Otherwise, falls back to the primary account
+        (via owner entity_info) for backward compatibility.
 
         Parameters
         ----------
@@ -4126,21 +4179,75 @@ class CalendarModule(Module):
                 "GOOGLE_OAUTH_CLIENT_SECRET", env_fallback=False
             )
 
-            # Step 2: Refresh token from shared.entity_info (exclusively).
-            refresh_token: str | None = None
             pool = getattr(db, "pool", None)
-            if pool is not None:
+            account_email = self._config.account if self._config is not None else None
+
+            if pool is not None and account_email:
+                # Account-aware: resolve refresh token from the companion entity
+                # for the specific Google account row in shared.google_accounts.
+                from butlers.google_account_registry import (
+                    GoogleAccountNotFoundError,
+                    get_google_account,
+                )
+                from butlers.google_account_registry import (
+                    MissingGoogleCredentialsError as _RegistryMissingError,
+                )
+
+                try:
+                    google_account = await get_google_account(pool, account_email)
+                except (GoogleAccountNotFoundError, _RegistryMissingError) as exc:
+                    raise RuntimeError(
+                        f"CalendarModule: Google account '{account_email}' is not connected. "
+                        "Connect the account via the dashboard OAuth flow and re-start."
+                    ) from exc
+
+                # Scope validation: the account must have granted calendar access.
+                granted = google_account.granted_scopes or []
+                has_calendar_scope = any("calendar" in s.lower() for s in granted)
+                if not has_calendar_scope:
+                    raise RuntimeError(
+                        f"CalendarModule: Google account '{account_email}' has not granted "
+                        "Calendar scope. Re-authorize the account with Calendar access via "
+                        "the dashboard OAuth flow."
+                    )
+
+                # Fetch the refresh token from the companion entity's entity_info.
+                refresh_token: str | None = None
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT value FROM shared.entity_info
+                        WHERE entity_id = $1 AND type = 'google_oauth_refresh'
+                        LIMIT 1
+                        """,
+                        google_account.entity_id,
+                    )
+                    if row is not None:
+                        refresh_token = row["value"]
+
+                if client_id and client_secret and refresh_token:
+                    logger.debug(
+                        "CalendarModule: resolved Google credentials for account %s",
+                        account_email,
+                    )
+                    return _GoogleOAuthCredentials(
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        refresh_token=refresh_token,
+                    )
+            elif pool is not None:
+                # Backward compat: primary account via owner entity_info.
                 from butlers.credential_store import resolve_owner_entity_info
 
                 refresh_token = await resolve_owner_entity_info(pool, "google_oauth_refresh")
 
-            if client_id and client_secret and refresh_token:
-                logger.debug("CalendarModule: resolved Google credentials from CredentialStore")
-                return _GoogleOAuthCredentials(
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    refresh_token=refresh_token,
-                )
+                if client_id and client_secret and refresh_token:
+                    logger.debug("CalendarModule: resolved Google credentials from CredentialStore")
+                    return _GoogleOAuthCredentials(
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        refresh_token=refresh_token,
+                    )
 
         raise RuntimeError(
             "CalendarModule: Google OAuth credentials are not available in database. "
@@ -4627,7 +4734,8 @@ class CalendarModule(Module):
             )
 
         credentials = await self._resolve_credentials(db=db, credential_store=credential_store)
-        self._provider = provider_cls(self._config, credentials)
+        pool = getattr(db, "pool", None)
+        self._provider = provider_cls(self._config, credentials, pool=pool)
 
         self._resolved_calendar_id = await self._resolve_startup_calendar_id(credential_store)
 
