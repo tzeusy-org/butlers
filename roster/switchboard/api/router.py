@@ -1462,58 +1462,140 @@ async def get_ingestion_volume(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/ingestion/fanout", response_model=ApiResponse[list[FanoutRow]])
-async def get_ingestion_fanout(
-    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[list[FanoutRow]]:
-    """Return the cross-connector × butler fanout matrix sourced from Prometheus.
+async def _ingestion_fanout_from_db(
+    db: DatabaseManager,
+    hours: int,
+) -> list[Any]:
+    """Compute the fanout matrix from the DB when Prometheus is unavailable.
 
-    Aggregates message counts per (connector_type, endpoint_identity, target_butler)
-    over the requested period. Used to populate the fanout matrix table on the
-    Overview tab.
+    Fans out to every butler's sessions table and joins each session's
+    ingestion_event_id (UUID FK to shared.ingestion_events, set since
+    migration core_020) to derive:
+      connector_type (= source_provider), endpoint_identity, target_butler,
+      and message_count.
 
-    Requires ``PROMETHEUS_URL`` env var.  Returns an empty list when Prometheus
-    is not configured or unavailable.
+    This approach correctly handles all triage decisions — including
+    pass_through decisions where triage_target is NULL — because it derives
+    the target butler from which butler's sessions table actually contains a
+    row for the ingestion_event_id, rather than from the triage_target column.
 
-    Prometheus metric name expected:
-    - ``switchboard_routed_messages_total``
-      (labels: connector_type, endpoint_identity, target_butler, outcome)
+    Returns a list of FanoutRow-compatible dicts.
     """
-    prom_url = _get_prometheus_url()
-    if not prom_url:
-        logger.debug("PROMETHEUS_URL not set; fanout requires Prometheus")
-        return ApiResponse[list[FanoutRow]](data=[])
+    # Each butler schema has shared in its search_path, so the join against
+    # shared.ingestion_events works from any butler pool.
+    #
+    # We join on sessions.ingestion_event_id (UUID FK, indexed, set for all
+    # connector-sourced sessions since core_020) rather than casting the TEXT
+    # request_id to UUID.  Sessions without an ingestion_event_id (e.g.
+    # tick-triggered sessions) are excluded from the fanout count, which is
+    # correct: they were not sourced from an external connector.
+    sql = """
+        SELECT
+            COALESCE(ie.source_provider, ie.source_channel) AS connector_type,
+            ie.source_endpoint_identity                      AS endpoint_identity,
+            COUNT(*)                                         AS message_count
+        FROM sessions s
+        JOIN shared.ingestion_events ie
+          ON ie.id = s.ingestion_event_id
+        WHERE ie.received_at >= NOW() - ($1 * INTERVAL '1 hour')
+        GROUP BY
+            COALESCE(ie.source_provider, ie.source_channel),
+            ie.source_endpoint_identity
+    """
 
-    hours = _PERIOD_HOURS[period]
-    q = (
-        f"sum by (connector_type, endpoint_identity, target_butler) "
-        f"(increase(switchboard_routed_messages_total[{hours}h]))"
-    )
+    fan_results: dict[str, list[Any]] = await db.fan_out(sql, args=(hours,))
 
-    results = await async_query(prom_url, q)
-    if results and isinstance(results[0], dict) and "error" in results[0]:
-        logger.warning("Prometheus query error for ingestion fanout: %s", results[0]["error"])
-        return ApiResponse[list[FanoutRow]](data=[])
+    # Aggregate across butlers: accumulate counts per
+    # (connector_type, endpoint_identity, butler_name)
+    counts: dict[tuple[str, str, str], int] = {}
+    for butler_name, rows in fan_results.items():
+        for row in rows:
+            connector_type = str(row["connector_type"] or "unknown")
+            endpoint_identity = str(row["endpoint_identity"] or "unknown")
+            count = int(row["message_count"] or 0)
+            key = (connector_type, endpoint_identity, butler_name)
+            counts[key] = counts.get(key, 0) + count
 
     data = []
-    for series in results:
-        m = series.get("metric", {})
-        try:
-            count = int(float(series["value"][1]))
-        except (KeyError, IndexError, TypeError, ValueError):
-            count = 0
+    for (connector_type, endpoint_identity, butler_name), count in counts.items():
         if count > 0:
             data.append(
                 FanoutRow(
-                    connector_type=m.get("connector_type", "unknown"),
-                    endpoint_identity=m.get("endpoint_identity", "unknown"),
-                    target_butler=m.get("target_butler", "unknown"),
+                    connector_type=connector_type,
+                    endpoint_identity=endpoint_identity,
+                    target_butler=butler_name,
                     message_count=count,
                 )
             )
 
     data.sort(key=lambda r: (r.connector_type, r.endpoint_identity, -r.message_count))
+    return data
+
+
+@router.get("/ingestion/fanout", response_model=ApiResponse[list[FanoutRow]])
+async def get_ingestion_fanout(
+    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[FanoutRow]]:
+    """Return the cross-connector × butler fanout matrix.
+
+    Aggregates message counts per (connector_type, endpoint_identity, target_butler)
+    over the requested period. Used to populate the fanout matrix table on the
+    Overview tab.
+
+    Primary source: Prometheus (``switchboard_routed_messages_total`` metric).
+    DB fallback: when ``PROMETHEUS_URL`` is not set or Prometheus returns an
+    error, the matrix is computed from sessions fan-out joined against
+    ``shared.ingestion_events``.  This correctly handles all triage decisions,
+    including pass_through messages where ``triage_target`` is NULL.
+
+    Prometheus metric name expected (primary):
+    - ``switchboard_routed_messages_total``
+      (labels: connector_type, endpoint_identity, target_butler, outcome)
+    """
+    prom_url = _get_prometheus_url()
+    hours = _PERIOD_HOURS[period]
+
+    if prom_url:
+        q = (
+            f"sum by (connector_type, endpoint_identity, target_butler) "
+            f"(increase(switchboard_routed_messages_total[{hours}h]))"
+        )
+        results = await async_query(prom_url, q)
+        if results and not (isinstance(results[0], dict) and "error" in results[0]):
+            data = []
+            for series in results:
+                m = series.get("metric", {})
+                try:
+                    count = int(float(series["value"][1]))
+                except (KeyError, IndexError, TypeError, ValueError):
+                    count = 0
+                if count > 0:
+                    data.append(
+                        FanoutRow(
+                            connector_type=m.get("connector_type", "unknown"),
+                            endpoint_identity=m.get("endpoint_identity", "unknown"),
+                            target_butler=m.get("target_butler", "unknown"),
+                            message_count=count,
+                        )
+                    )
+            data.sort(key=lambda r: (r.connector_type, r.endpoint_identity, -r.message_count))
+            return ApiResponse[list[FanoutRow]](data=data)
+
+        logger.warning(
+            "Prometheus query error for ingestion fanout; falling back to DB: %s",
+            results[0]["error"],
+        )
+    else:
+        logger.debug("PROMETHEUS_URL not set; using DB fallback for ingestion fanout")
+
+    # DB-backed fallback: derive fanout from sessions × ingestion_events join
+    try:
+        data = await _ingestion_fanout_from_db(db, hours)
+    except Exception:
+        logger.warning("DB fallback for ingestion fanout failed", exc_info=True)
+        data = []
+
     return ApiResponse[list[FanoutRow]](data=data)
 
 
