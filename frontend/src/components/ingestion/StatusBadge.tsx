@@ -10,6 +10,7 @@
  * - replay_failed  → red outline
  *
  * For filtered and error statuses, wraps in a Tooltip showing filter_reason.
+ * For error status, also appends error_detail when available.
  */
 
 import { Badge } from "@/components/ui/badge";

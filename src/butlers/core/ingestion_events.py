@@ -120,8 +120,9 @@ async def ingestion_events_list(
 
     Returns:
         List of event dicts ordered by ``received_at DESC``.  Each dict includes
-        a ``status`` field (``'ingested'`` or a filtered_events status value) and
-        a ``filter_reason`` field (``None`` for ingested events).
+        a ``status`` field (``'ingested'`` or a filtered_events status value),
+        a ``filter_reason`` field (``None`` for ingested events), and
+        an ``error_detail`` field (``None`` for ingested events; set on error-status rows).
     """
     # Columns selected from shared.ingestion_events (adds status/filter_reason/error_detail
     # literals — ingested rows never carry filter_reason or error_detail)
