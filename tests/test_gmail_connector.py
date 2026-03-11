@@ -1982,10 +1982,17 @@ class TestResolveGmailCredentialsFromDb:
             return mock_pool
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-        with patch(
-            "butlers.google_credentials.resolve_owner_entity_info",
-            new_callable=AsyncMock,
-            return_value="db-refresh-token",
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.google_credentials.resolve_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value="db-refresh-token",
+            ),
         ):
             result = await _resolve_gmail_credentials_from_db()
         assert result is not None
@@ -2032,10 +2039,17 @@ class TestResolveGmailCredentialsFromDb:
             return mock_pool
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-        with patch(
-            "butlers.google_credentials.resolve_owner_entity_info",
-            new_callable=AsyncMock,
-            return_value="db-refresh-token",
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.google_credentials.resolve_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value="db-refresh-token",
+            ),
         ):
             result = await _resolve_gmail_credentials_from_db()
         assert result is not None
@@ -2080,10 +2094,17 @@ class TestResolveGmailCredentialsFromDb:
             return mock_pool
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-        with patch(
-            "butlers.google_credentials.resolve_owner_entity_info",
-            new_callable=AsyncMock,
-            return_value="db-refresh-token",
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.google_credentials.resolve_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value="db-refresh-token",
+            ),
         ):
             result = await _resolve_gmail_credentials_from_db()
         assert result is not None

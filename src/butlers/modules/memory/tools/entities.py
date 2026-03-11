@@ -306,6 +306,7 @@ async def entity_resolve(
               AND LOWER(canonical_name) = $2
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
+              AND NOT ('google_account' = ANY(roles))
               {type_filter}
 
             UNION ALL
@@ -317,6 +318,7 @@ async def entity_resolve(
               AND $2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
+              AND NOT ('google_account' = ANY(roles))
               {type_filter}
 
             UNION ALL
@@ -339,6 +341,7 @@ async def entity_resolve(
               AND NOT ($2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
+              AND NOT ('google_account' = ANY(roles))
               {type_filter}
         ) candidates
         ORDER BY id, tier ASC
@@ -477,6 +480,7 @@ async def _fetch_fuzzy_candidates(
               AND NOT (LOWER($2) = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
+              AND NOT ('google_account' = ANY(roles))
               {fuzzy_type_filter}
             LIMIT 20
             """,
@@ -702,6 +706,7 @@ async def entity_neighbors(
         n.path
     FROM neighbors n
     JOIN shared.entities e ON e.id = n.neighbor_id AND e.tenant_id = $2
+    WHERE NOT ('google_account' = ANY(e.roles))
     ORDER BY n.depth, e.canonical_name
     """
 

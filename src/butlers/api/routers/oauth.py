@@ -561,7 +561,9 @@ async def delete_google_credentials_endpoint(
             detail="Shared credential database is unavailable. Cannot delete credentials.",
         )
 
-    deleted = await delete_google_credentials(cred_store, pool=_get_shared_pool(db_manager))
+    deleted = await delete_google_credentials(
+        cred_store, pool=_get_shared_pool(db_manager), delete_all=True
+    )
 
     return DeleteCredentialsResponse(
         success=True,

@@ -296,6 +296,11 @@ class TestResolveGoogleCredentialsIsDbOnly:
         with (
             mock.patch.dict("os.environ", different_env, clear=True),
             mock.patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            mock.patch(
                 "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
@@ -336,6 +341,11 @@ class TestStoreAndLoadRoundTrip:
         ci_pool = MagicMock()
 
         with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch(
                 "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
@@ -382,6 +392,11 @@ class TestStoreAndLoadRoundTrip:
 
         with (
             patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
                 "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
@@ -423,6 +438,11 @@ class TestStoreAndLoadRoundTrip:
         ci_pool = MagicMock()
 
         with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch(
                 "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,

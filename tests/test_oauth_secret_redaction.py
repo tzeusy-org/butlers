@@ -218,6 +218,11 @@ class TestLoadCredentialsLogRedaction:
         with (
             caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"),
             patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
                 "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=_SECRET_VALUE,
@@ -244,6 +249,11 @@ class TestLoadCredentialsLogRedaction:
 
         with (
             caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"),
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch(
                 "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,

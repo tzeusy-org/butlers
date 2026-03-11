@@ -673,6 +673,7 @@ async def list_entities(
     conditions: list[str] = [
         "(e.metadata->>'merged_into') IS NULL",
         "(e.metadata->>'deleted_at') IS NULL",
+        "NOT ('google_account' = ANY(e.roles))",
     ]
     args: list[object] = []
     idx = 1

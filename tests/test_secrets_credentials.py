@@ -68,6 +68,7 @@ def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0") 
         record.__getitem__ = lambda self, key: row[key]
         conn.fetchrow.return_value = record
     conn.execute.return_value = execute_result
+    conn.fetch.return_value = []  # Default: empty result set for list queries
 
     # pool.acquire() returns async context manager yielding conn
     cm = AsyncMock()
@@ -146,9 +147,17 @@ class TestLoadAppCredentials:
                 KEY_SCOPES: "gmail",
             }
         )
-        with patch(
-            "butlers.google_credentials.resolve_owner_entity_info",
-            return_value="test-refresh",
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.google_credentials.resolve_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value="test-refresh",
+            ),
         ):
             pool = MagicMock()
             result = await load_app_credentials(store, pool=pool)
@@ -195,14 +204,34 @@ class TestLoadAppCredentials:
 
 
 class TestDeleteGoogleCredentials:
-    async def test_returns_true_when_row_deleted(self) -> None:
+    async def test_returns_true_when_delete_all_and_keys_deleted(self) -> None:
+        """delete_all=True: app credentials deleted → returns True."""
         store = _make_credential_store(delete_returns=True)
-        result = await delete_google_credentials(store)
+        with patch(
+            "butlers.google_credentials._pool_acquire",
+        ) as mock_acquire:
+            # Simulate no google_accounts rows (missing table scenario)
+            mock_acquire.side_effect = Exception("does not exist")
+            with patch(
+                "butlers.google_credentials.delete_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value=False,
+            ):
+                result = await delete_google_credentials(store, delete_all=True)
         assert result is True
 
     async def test_returns_false_when_no_row(self) -> None:
         store = _make_credential_store(delete_returns=False)
-        result = await delete_google_credentials(store)
+        with patch(
+            "butlers.google_credentials._resolve_account_entity_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ), patch(
+            "butlers.google_credentials.delete_owner_entity_info",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            result = await delete_google_credentials(store, pool=MagicMock())
         assert result is False
 
 
