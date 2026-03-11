@@ -1489,7 +1489,7 @@ async def _ingestion_fanout_from_db(
     # request_id to UUID.  Sessions without an ingestion_event_id (e.g.
     # tick-triggered sessions) are excluded from the fanout count, which is
     # correct: they were not sourced from an external connector.
-    sql = f"""
+    sql = """
         SELECT
             COALESCE(ie.source_provider, ie.source_channel) AS connector_type,
             ie.source_endpoint_identity                      AS endpoint_identity,
@@ -1497,13 +1497,13 @@ async def _ingestion_fanout_from_db(
         FROM sessions s
         JOIN shared.ingestion_events ie
           ON ie.id = s.ingestion_event_id
-        WHERE ie.received_at >= NOW() - INTERVAL '{hours} hours'
+        WHERE ie.received_at >= NOW() - ($1 * INTERVAL '1 hour')
         GROUP BY
             COALESCE(ie.source_provider, ie.source_channel),
             ie.source_endpoint_identity
     """
 
-    fan_results: dict[str, list[Any]] = await db.fan_out(sql)
+    fan_results: dict[str, list[Any]] = await db.fan_out(sql, args=(hours,))
 
     # Aggregate across butlers: accumulate counts per
     # (connector_type, endpoint_identity, butler_name)
@@ -1562,7 +1562,7 @@ async def get_ingestion_fanout(
             f"(increase(switchboard_routed_messages_total[{hours}h]))"
         )
         results = await async_query(prom_url, q)
-        if not (results and isinstance(results[0], dict) and "error" in results[0]):
+        if results and not (isinstance(results[0], dict) and "error" in results[0]):
             data = []
             for series in results:
                 m = series.get("metric", {})

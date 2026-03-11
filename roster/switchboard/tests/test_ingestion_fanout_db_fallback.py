@@ -58,6 +58,7 @@ class _FakeFanoutDB:
     def __init__(self, fan_out_result: dict | None = None) -> None:
         self._fan_out_result: dict = fan_out_result or {}
         self._fan_out_calls: list[str] = []
+        self._fan_out_args: list[tuple] = []
 
     @property
     def butler_names(self) -> list[str]:
@@ -68,6 +69,7 @@ class _FakeFanoutDB:
 
     async def fan_out(self, query: str, args: tuple = (), butler_names=None) -> dict:
         self._fan_out_calls.append(query)
+        self._fan_out_args.append(args)
         return self._fan_out_result
 
 
@@ -266,7 +268,7 @@ async def test_db_fallback_exception_returns_empty():
 
 
 async def test_db_fallback_query_contains_hours_interval():
-    """DB fallback SQL uses the period's hours interval for time filtering."""
+    """DB fallback SQL passes the period's hours count as a query argument."""
     os.environ.pop("PROMETHEUS_URL", None)
 
     db = _FakeFanoutDB(fan_out_result={})
@@ -275,8 +277,10 @@ async def test_db_fallback_query_contains_hours_interval():
 
     assert len(db._fan_out_calls) == 1
     sql = db._fan_out_calls[0]
-    # 7d = 168 hours
-    assert "168" in sql, f"Expected '168' hours in SQL, got: {sql}"
+    # Parameterized query: interval is passed via $1 arg, not interpolated
+    assert "$1" in sql, f"Expected parameterized '$1' in SQL, got: {sql}"
+    # 7d = 168 hours — must be passed as the first arg
+    assert db._fan_out_args[0] == (168,), f"Expected args=(168,), got: {db._fan_out_args[0]}"
 
 
 async def test_db_fallback_skips_zero_count_rows():
