@@ -217,6 +217,7 @@ async def route(
         attempt = int(attempt_raw)
     except (TypeError, ValueError):
         attempt = 1
+    complexity = str(route_args.get("complexity") or "medium")
 
     source = str(
         route_args.get("source_channel") or route_args.get("source") or source_butler or "unknown"
@@ -239,6 +240,7 @@ async def route(
             span.set_attribute("routing.segment_id", segment_id)
             span.set_attribute("routing.fanout_mode", fanout_mode)
             span.set_attribute("routing.attempt", attempt)
+            span.set_attribute("routing.complexity", complexity)
 
             telemetry.subroute_dispatched.add(
                 1,
