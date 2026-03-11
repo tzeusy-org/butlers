@@ -44,6 +44,7 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
         # Literal columns now returned by _EVENT_COLUMNS
         "status": "ingested",
         "filter_reason": None,
+        "error_detail": None,
     }
     defaults.update(kwargs)
     return _FakeRecord(defaults)
@@ -68,6 +69,7 @@ def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
         "triage_target": None,
         "status": "filtered",
         "filter_reason": "rate_limit",
+        "error_detail": None,
     }
     defaults.update(kwargs)
     return _FakeRecord(defaults)
@@ -239,6 +241,7 @@ class TestIngestionEventGet:
             "triage_target",
             "status",
             "filter_reason",
+            "error_detail",
         ):
             assert field in result, f"Missing field: {field}"
 
@@ -357,6 +360,7 @@ class TestIngestionEventGetUnifiedLookup:
             "triage_target",
             "status",
             "filter_reason",
+            "error_detail",
         ):
             assert field in result, f"Missing field in filtered event result: {field}"
 
@@ -390,6 +394,28 @@ class TestIngestionEventGetUnifiedLookup:
         fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
         assert fetchrow_calls[0][2][0] == event_id
         assert fetchrow_calls[1][2][0] == event_id
+
+    async def test_filtered_event_error_detail_propagated(self) -> None:
+        """error_detail from connectors.filtered_events must be returned in the detail result."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        filtered_row = _make_filtered_event_record(
+            status="error", filter_reason=None, error_detail="Connection refused"
+        )
+        pool = _FakePool(fetchrow_results=[None, filtered_row])
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert result["error_detail"] == "Connection refused"
+
+    async def test_ingested_event_error_detail_is_none(self) -> None:
+        """Ingested events must return error_detail=None (literal from _EVENT_COLUMNS)."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        row = _make_event_record()
+        pool = _FakePool(fetchrow_result=row)
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert result["error_detail"] is None
 
 
 # ---------------------------------------------------------------------------
