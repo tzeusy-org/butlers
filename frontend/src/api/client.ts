@@ -2215,6 +2215,19 @@ export async function getIngestionOverview(
   );
 }
 
+/** Get aggregate ingestion volume time-series (across all connectors). */
+export async function getIngestionVolume(
+  period: IngestionPeriod = "24h",
+): Promise<ApiResponse<ConnectorStats>> {
+  const resp = await apiFetch<ApiResponse<_BackendStatsRow[]>>(
+    `/switchboard/ingestion/volume?period=${period}`,
+  );
+  return {
+    ...resp,
+    data: _toConnectorStats(resp.data ?? [], "all", "all", period),
+  };
+}
+
 /** Get fanout distribution matrix. */
 export async function getConnectorFanout(
   period: IngestionPeriod = "7d",

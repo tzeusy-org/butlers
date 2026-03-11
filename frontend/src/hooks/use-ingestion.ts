@@ -22,6 +22,7 @@ import {
   getConnectorFanout,
   getConnectorStats,
   getIngestionOverview,
+  getIngestionVolume,
   listConnectorSummaries,
   updateConnectorCursor,
 } from "@/api/index.ts";
@@ -54,6 +55,8 @@ export const ingestionKeys = {
       endpointIdentity,
       period,
     ] as const,
+  ingestionVolume: (period: IngestionPeriod) =>
+    [...ingestionKeys.all, "ingestion-volume", period] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -98,6 +101,22 @@ export function useIngestionOverview(
   return useQuery({
     queryKey: ingestionKeys.ingestionOverview(period),
     queryFn: () => getIngestionOverview(period),
+    refetchInterval: 60_000,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Aggregate ingestion volume time-series (across all connectors).
+ * DB-backed via connector_heartbeat_log — works without Prometheus.
+ */
+export function useIngestionVolume(
+  period: IngestionPeriod,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.ingestionVolume(period),
+    queryFn: () => getIngestionVolume(period),
     refetchInterval: 60_000,
     enabled: options?.enabled !== false,
   });

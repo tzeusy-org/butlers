@@ -99,6 +99,84 @@ def _get_prometheus_url() -> str | None:
     return os.environ.get("PROMETHEUS_URL")
 
 
+# DB fallback helpers for when Prometheus is unavailable
+_DB_TRUNC: dict[str, str] = {"24h": "hour", "7d": "day", "30d": "day"}
+_DB_INTERVAL: dict[str, str] = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}
+
+
+async def _connector_stats_from_db(
+    connector_type: str,
+    endpoint_identity: str,
+    period: PeriodLiteral,
+    db: DatabaseManager,
+) -> ApiResponse:
+    """Compute per-connector time-series from connector_heartbeat_log deltas."""
+    pool = _pool(db)
+    trunc = _DB_TRUNC[period]
+    interval = _DB_INTERVAL[period]
+    try:
+        rows = await pool.fetch(
+            f"SELECT date_trunc('{trunc}', received_at) AS bucket,"
+            f" GREATEST(0, MAX(counter_messages_ingested)"
+            f"   - MIN(counter_messages_ingested)) AS messages_ingested,"
+            f" GREATEST(0, MAX(counter_messages_failed)"
+            f"   - MIN(counter_messages_failed)) AS messages_failed,"
+            f" GREATEST(0, MAX(counter_source_api_calls)"
+            f"   - MIN(counter_source_api_calls)) AS source_api_calls,"
+            f" GREATEST(0, MAX(counter_dedupe_accepted)"
+            f"   - MIN(counter_dedupe_accepted)) AS dedupe_accepted,"
+            f" COUNT(*) AS heartbeat_count,"
+            f" COUNT(*) FILTER (WHERE state = 'healthy') AS healthy_count,"
+            f" COUNT(*) FILTER (WHERE state = 'degraded') AS degraded_count,"
+            f" COUNT(*) FILTER (WHERE state = 'error') AS error_count"
+            f" FROM connector_heartbeat_log"
+            f" WHERE connector_type = $1 AND endpoint_identity = $2"
+            f"   AND received_at >= NOW() - INTERVAL '{interval}'"
+            f" GROUP BY bucket ORDER BY bucket",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning("heartbeat_log fallback query failed", exc_info=True)
+        return ApiResponse(data=[])
+
+    if period == "24h":
+        data: list = [
+            ConnectorStatsHourly(
+                connector_type=connector_type,
+                endpoint_identity=endpoint_identity,
+                hour=r["bucket"].isoformat(),
+                messages_ingested=int(r["messages_ingested"]),
+                messages_failed=int(r["messages_failed"]),
+                source_api_calls=int(r["source_api_calls"]),
+                dedupe_accepted=int(r["dedupe_accepted"]),
+                heartbeat_count=int(r["heartbeat_count"]),
+                healthy_count=int(r["healthy_count"]),
+                degraded_count=int(r["degraded_count"]),
+                error_count=int(r["error_count"]),
+            )
+            for r in rows
+        ]
+    else:
+        data = [
+            ConnectorStatsDaily(
+                connector_type=connector_type,
+                endpoint_identity=endpoint_identity,
+                day=r["bucket"].date().isoformat(),
+                messages_ingested=int(r["messages_ingested"]),
+                messages_failed=int(r["messages_failed"]),
+                source_api_calls=int(r["source_api_calls"]),
+                dedupe_accepted=int(r["dedupe_accepted"]),
+                heartbeat_count=int(r["heartbeat_count"]),
+                healthy_count=int(r["healthy_count"]),
+                degraded_count=int(r["degraded_count"]),
+                error_count=int(r["error_count"]),
+            )
+            for r in rows
+        ]
+    return ApiResponse(data=data)
+
+
 def _normalize_jsonb_string_list(raw: Any) -> list[str]:
     """Normalize a JSONB value that may be a list, a JSON-serialized string, or a plain string.
 
@@ -1039,8 +1117,7 @@ async def get_connector_stats(
     """
     prom_url = _get_prometheus_url()
     if not prom_url:
-        logger.debug("PROMETHEUS_URL not set; returning empty connector stats")
-        return ApiResponse(data=[])
+        return await _connector_stats_from_db(connector_type, endpoint_identity, period, db)
 
     hours = _PERIOD_HOURS[period]
     step = _PERIOD_PROM_STEP[period]
@@ -1146,7 +1223,7 @@ async def get_connector_fanout(
     """
     prom_url = _get_prometheus_url()
     if not prom_url:
-        logger.debug("PROMETHEUS_URL not set; returning empty fanout data")
+        logger.debug("PROMETHEUS_URL not set; fanout requires Prometheus")
         return ApiResponse[list[FanoutRow]](data=[])
 
     hours = _PERIOD_HOURS[period]
@@ -1303,6 +1380,84 @@ async def get_ingestion_overview(
 
 
 # ---------------------------------------------------------------------------
+# GET /ingestion/volume — aggregate ingestion volume time-series
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/ingestion/volume",
+    response_model=ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]],
+)
+async def get_ingestion_volume(
+    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
+    """Return aggregate ingestion volume time-series from connector_heartbeat_log.
+
+    Aggregates counter deltas across all connectors, bucketed by hour or day.
+    Used to populate the volume chart on the Connectors tab.
+    """
+    pool = _pool(db)
+    trunc = _DB_TRUNC[period]
+    interval = _DB_INTERVAL[period]
+
+    try:
+        rows = await pool.fetch(
+            f"""
+            SELECT bucket,
+                SUM(delta_ingested)::bigint AS messages_ingested,
+                SUM(delta_failed)::bigint AS messages_failed
+            FROM (
+                SELECT
+                    date_trunc('{trunc}', received_at) AS bucket,
+                    connector_type,
+                    endpoint_identity,
+                    GREATEST(0, MAX(counter_messages_ingested)
+                        - MIN(counter_messages_ingested)) AS delta_ingested,
+                    GREATEST(0, MAX(counter_messages_failed)
+                        - MIN(counter_messages_failed)) AS delta_failed
+                FROM connector_heartbeat_log
+                WHERE received_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY bucket, connector_type, endpoint_identity
+            ) per_connector
+            GROUP BY bucket
+            ORDER BY bucket
+            """,
+        )
+    except Exception:
+        logger.warning(
+            "connector_heartbeat_log not available for aggregate volume",
+            exc_info=True,
+        )
+        return ApiResponse(data=[])
+
+    if period == "24h":
+        data: list = [
+            ConnectorStatsHourly(
+                connector_type="all",
+                endpoint_identity="all",
+                hour=row["bucket"].isoformat(),
+                messages_ingested=int(row["messages_ingested"]),
+                messages_failed=int(row["messages_failed"]),
+            )
+            for row in rows
+        ]
+    else:
+        data = [
+            ConnectorStatsDaily(
+                connector_type="all",
+                endpoint_identity="all",
+                day=row["bucket"].date().isoformat(),
+                messages_ingested=int(row["messages_ingested"]),
+                messages_failed=int(row["messages_failed"]),
+            )
+            for row in rows
+        ]
+
+    return ApiResponse(data=data)
+
+
+# ---------------------------------------------------------------------------
 # GET /ingestion/fanout — cross-connector fanout matrix
 # ---------------------------------------------------------------------------
 
@@ -1327,7 +1482,7 @@ async def get_ingestion_fanout(
     """
     prom_url = _get_prometheus_url()
     if not prom_url:
-        logger.debug("PROMETHEUS_URL not set; returning empty ingestion fanout")
+        logger.debug("PROMETHEUS_URL not set; fanout requires Prometheus")
         return ApiResponse[list[FanoutRow]](data=[])
 
     hours = _PERIOD_HOURS[period]

@@ -25,7 +25,7 @@ import {
   useConnectorSummaries,
   useCrossConnectorSummary,
   useConnectorFanout,
-  useConnectorStats,
+  useIngestionVolume,
 } from "@/hooks/use-ingestion";
 import { useBackfillJobs } from "@/hooks/use-backfill";
 import type { IngestionPeriod } from "@/api/index.ts";
@@ -78,17 +78,14 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
   );
 
   const connectors = connectorsResp?.data ?? [];
-  const firstConnector = connectors[0] ?? null;
 
-  // Volume timeseries: use first connector as representative (or show empty)
-  const { data: statsResp, isLoading: statsLoading } = useConnectorStats(
-    firstConnector?.connector_type ?? null,
-    firstConnector?.endpoint_identity ?? null,
+  // Aggregate volume timeseries across all connectors (DB-backed)
+  const { data: volumeResp, isLoading: volumeLoading } = useIngestionVolume(
     period,
-    { enabled: isActive && !!firstConnector },
+    { enabled: isActive },
   );
 
-  const timeseries = statsResp?.data?.timeseries ?? [];
+  const timeseries = volumeResp?.data?.timeseries ?? [];
 
   return (
     <div className="space-y-6">
@@ -132,8 +129,8 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
         data={timeseries}
         period={period}
         onPeriodChange={handlePeriodChange}
-        isLoading={statsLoading && isActive}
-        title="Ingestion Volume by Connector"
+        isLoading={volumeLoading && isActive}
+        title="Ingestion Volume"
       />
 
       {/* Fanout distribution table */}
