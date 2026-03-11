@@ -82,6 +82,8 @@ async def pool(postgres_container):
             parent_session_id UUID,
             request_id TEXT,
             ingestion_event_id UUID,
+            complexity TEXT DEFAULT 'medium',
+            resolution_source TEXT DEFAULT 'toml_fallback',
             started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             completed_at TIMESTAMPTZ
         )
@@ -466,6 +468,8 @@ async def test_sessions_get_returns_full_record(pool):
         "output_tokens",
         "request_id",
         "ingestion_event_id",
+        "complexity",
+        "resolution_source",
         "started_at",
         "completed_at",
     }

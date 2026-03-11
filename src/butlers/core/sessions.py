@@ -62,6 +62,8 @@ async def session_create(
     *,
     request_id: str,
     ingestion_event_id: str | None = None,
+    complexity: str | None = None,
+    resolution_source: str | None = None,
 ) -> uuid.UUID:
     """Insert a new session row and return its UUID.
 
@@ -81,6 +83,12 @@ async def session_create(
             this session.  Connector-sourced callers pass the ingestion event
             UUID; internally-triggered sessions (tick, schedule, trigger) pass
             None.
+        complexity: Optional complexity tier used for model selection (e.g.
+            ``"trivial"``, ``"medium"``, ``"high"``). Defaults to ``"medium"``
+            at the database level when not provided.
+        resolution_source: Optional source of model resolution (e.g.
+            ``"catalog"``, ``"toml_fallback"``). Defaults to
+            ``"toml_fallback"`` at the database level when not provided.
 
     Returns:
         The UUID of the newly created session.
@@ -100,8 +108,9 @@ async def session_create(
     session_id: uuid.UUID = await pool.fetchval(
         """
         INSERT INTO sessions
-            (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
+             complexity, resolution_source)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id
         """,
         prompt,
@@ -110,6 +119,8 @@ async def session_create(
         model,
         request_id,
         ingestion_event_id,
+        complexity,
+        resolution_source,
     )
     logger.info("Session created: %s (trigger=%s, model=%s)", session_id, trigger_source, model)
     return session_id
@@ -203,7 +214,7 @@ async def sessions_list(
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error,
                input_tokens, output_tokens, request_id, ingestion_event_id,
-               started_at, completed_at
+               complexity, resolution_source, started_at, completed_at
         FROM sessions
         ORDER BY started_at DESC
         LIMIT $1 OFFSET $2
@@ -234,7 +245,7 @@ async def sessions_active(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error, request_id,
-               ingestion_event_id, started_at, completed_at
+               ingestion_event_id, complexity, resolution_source, started_at, completed_at
         FROM sessions
         WHERE completed_at IS NULL
         ORDER BY started_at DESC
@@ -261,7 +272,7 @@ async def sessions_get(
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error,
                input_tokens, output_tokens, request_id, ingestion_event_id,
-               started_at, completed_at
+               complexity, resolution_source, started_at, completed_at
         FROM sessions
         WHERE id = $1
         """,

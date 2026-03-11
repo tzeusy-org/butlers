@@ -839,6 +839,8 @@ class Spawner:
                     trace_id,
                     model=model,
                     request_id=effective_request_id,
+                    complexity=str(complexity),
+                    resolution_source=resolution_source,
                 )
                 logger.debug(
                     "Session created with model=%s runtime_type=%s complexity=%s source=%s "

@@ -105,6 +105,8 @@ async def _create_sessions_schema(pool: asyncpg.Pool) -> None:
             output_tokens INTEGER,
             parent_session_id UUID,
             ingestion_event_id UUID,
+            complexity TEXT DEFAULT 'medium',
+            resolution_source TEXT DEFAULT 'toml_fallback',
             started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             completed_at TIMESTAMPTZ
         )

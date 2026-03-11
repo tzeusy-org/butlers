@@ -208,7 +208,9 @@ async def pool(postgres_container):
             output_tokens INTEGER,
             parent_session_id UUID REFERENCES sessions(id),
             request_id TEXT,
-            ingestion_event_id UUID
+            ingestion_event_id UUID,
+            complexity TEXT DEFAULT 'medium',
+            resolution_source TEXT DEFAULT 'toml_fallback'
         )
     """)
     yield p
@@ -367,6 +369,8 @@ class TestSessionsActive:
             "error",
             "request_id",
             "ingestion_event_id",
+            "complexity",
+            "resolution_source",
             "started_at",
             "completed_at",
         }
