@@ -180,12 +180,14 @@ async def _has_primary_account(conn: Any) -> bool:
     return row is not None
 
 
-async def _get_oldest_active_account_id(conn: Any, *, exclude_id: uuid.UUID) -> uuid.UUID | None:
-    """Return the id of the oldest active account (by connected_at), excluding exclude_id."""
+async def _get_oldest_active_account_id(
+    conn: Any, *, exclude_id: uuid.UUID | None = None
+) -> uuid.UUID | None:
+    """Return the id of the oldest active account (by connected_at), optionally excluding one id."""
     row = await conn.fetchrow(
         """
         SELECT id FROM shared.google_accounts
-        WHERE status = 'active' AND id != $1
+        WHERE status = 'active' AND ($1::UUID IS NULL OR id != $1)
         ORDER BY connected_at ASC
         LIMIT 1
         """,
@@ -206,7 +208,8 @@ async def _revoke_token_with_google(refresh_token: str) -> None:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 _GOOGLE_REVOKE_URL,
-                params={"token": refresh_token},
+                data={"token": refresh_token},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status == 200:
@@ -347,8 +350,8 @@ async def create_google_account(
             account = GoogleAccount._from_row(row)
 
     logger.info(
-        "Google account created: email=%r is_primary=%s scopes=%s",
-        email,
+        "Google account created: id=%s is_primary=%s scopes=%s",
+        account.id,
         is_primary,
         granted_scopes,
     )
@@ -522,7 +525,7 @@ async def set_primary_account(
             )
 
     account = GoogleAccount._from_row(row)
-    logger.info("Primary Google account set: email=%r id=%s", account.email, account.id)
+    logger.info("Primary Google account set: id=%s", account.id)
     return account
 
 
@@ -562,7 +565,7 @@ async def disconnect_account(
         # Fetch account details first.
         account_row = await conn.fetchrow(
             """
-            SELECT id, entity_id, email, is_primary, status
+            SELECT id, entity_id, is_primary, status
             FROM shared.google_accounts
             WHERE id = $1
             """,
@@ -573,7 +576,6 @@ async def disconnect_account(
 
         entity_id: uuid.UUID = account_row["entity_id"]
         was_primary: bool = account_row["is_primary"]
-        email = account_row["email"]
 
         # Fetch refresh token before deleting.
         refresh_token = await _get_refresh_token(conn, entity_id)
@@ -595,7 +597,7 @@ async def disconnect_account(
                     "DELETE FROM shared.entities WHERE id = $1",
                     entity_id,
                 )
-                logger.info("Google account hard-deleted: email=%r id=%s", email, account_id)
+                logger.info("Google account hard-deleted: id=%s", account_id)
             else:
                 # Soft disconnect: delete entity_info token, mark status revoked.
                 await conn.execute(
@@ -609,25 +611,15 @@ async def disconnect_account(
                     "UPDATE shared.google_accounts SET status = 'revoked' WHERE id = $1",
                     account_id,
                 )
-                logger.info(
-                    "Google account disconnected (revoked): email=%r id=%s", email, account_id
-                )
+                logger.info("Google account disconnected (revoked): id=%s", account_id)
 
             # Auto-promote oldest remaining active account if this was primary.
             if was_primary:
-                if not hard_delete:
-                    next_id = await _get_oldest_active_account_id(conn, exclude_id=account_id)
-                else:
-                    # After hard delete the row is gone; find oldest active without exclusion.
-                    row = await conn.fetchrow(
-                        """
-                        SELECT id FROM shared.google_accounts
-                        WHERE status = 'active'
-                        ORDER BY connected_at ASC
-                        LIMIT 1
-                        """
-                    )
-                    next_id = row["id"] if row else None
+                # Soft disconnect: exclude the revoked account (still in table).
+                # Hard delete: row is gone; no exclusion needed.
+                next_id = await _get_oldest_active_account_id(
+                    conn, exclude_id=account_id if not hard_delete else None
+                )
 
                 if next_id is not None:
                     await conn.execute(

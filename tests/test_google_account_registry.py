@@ -487,7 +487,6 @@ class TestDisconnectAccount:
                 data = {
                     "id": _ACCOUNT_ID,
                     "entity_id": _ENTITY_ID,
-                    "email": "test@gmail.com",
                     "is_primary": was_primary,
                     "status": "active",
                 }
