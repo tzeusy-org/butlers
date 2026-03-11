@@ -2935,13 +2935,9 @@ class GmailProcessConfig(BaseModel):
 
         def _bool_env(key: str, default: bool) -> bool:
             raw = os.environ.get(key, "true" if default else "false").lower()
-            return raw not in ("false", "0", "no", "off")
+            return raw in ("true", "1", "yes", "on")
 
-        pubsub_enabled = os.environ.get("GMAIL_PUBSUB_ENABLED", "false").lower() in (
-            "true",
-            "1",
-            "yes",
-        )
+        pubsub_enabled = _bool_env("GMAIL_PUBSUB_ENABLED", False)
         pubsub_topic = os.environ.get("GMAIL_PUBSUB_TOPIC")
         if pubsub_enabled and not pubsub_topic:
             raise ValueError("GMAIL_PUBSUB_TOPIC is required when GMAIL_PUBSUB_ENABLED=true")
@@ -3203,10 +3199,11 @@ class GmailConnectorManager:
 
     async def _discover_qualifying_accounts(
         self,
-    ) -> list[tuple[str | None, str | None]]:
+    ) -> list[tuple[str | None, dict[str, Any] | None]]:
         """Query shared.google_accounts for active accounts with Gmail scopes.
 
-        Returns list of (email, metadata_gmail_json) tuples.
+        Returns list of (email, metadata_gmail) tuples where metadata_gmail is
+        the parsed ``gmail`` subsection of the account's metadata JSONB column.
         Only accounts with status='active' and gmail.modify or gmail.readonly in
         granted_scopes are returned.
         """
