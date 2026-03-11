@@ -24,6 +24,7 @@ from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_m
 from butlers.api.models import ApiResponse
 from butlers.api.models.schedule import Schedule, ScheduleCreate, ScheduleUpdate
 from butlers.api.routers.audit import log_audit_entry
+from butlers.api.routers.model_settings import _validate_complexity_tier
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,7 @@ async def create_schedule(
     if body.calendar_event_id is not None:
         arguments["calendar_event_id"] = str(body.calendar_event_id)
     if body.complexity is not None:
+        _validate_complexity_tier(body.complexity)
         arguments["complexity"] = body.complexity
 
     summary = {"name": body.name, "cron": body.cron, "dispatch_mode": body.dispatch_mode}
@@ -240,6 +242,8 @@ async def update_schedule(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
     """Update a scheduled task via MCP tool call to the butler."""
+    if body.complexity is not None:
+        _validate_complexity_tier(body.complexity)
     arguments: dict = {"id": str(schedule_id)}
     updates = body.model_dump(exclude_none=True)
     for key in ("start_at", "end_at", "until_at"):

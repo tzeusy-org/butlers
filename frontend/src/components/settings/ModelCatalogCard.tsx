@@ -75,7 +75,7 @@ const MODEL_PRESETS: ModelPreset[] = [
   {
     label: "Claude 3.7 Sonnet",
     values: {
-      runtime_type: "claude",
+      runtime_type: "claude-code",
       model_id: "claude-sonnet-4-5",
       extra_args_raw: "[]",
     },
@@ -83,7 +83,7 @@ const MODEL_PRESETS: ModelPreset[] = [
   {
     label: "Claude 3.7 Sonnet (extended thinking)",
     values: {
-      runtime_type: "claude",
+      runtime_type: "claude-code",
       model_id: "claude-sonnet-4-5",
       extra_args_raw: JSON.stringify(["--thinking", "extended"], null, 2),
     },
@@ -107,7 +107,7 @@ interface ModelFormValues {
 function defaultFormValues(entry?: ModelCatalogEntry | null): ModelFormValues {
   return {
     alias: entry?.alias ?? "",
-    runtime_type: entry?.runtime_type ?? "claude",
+    runtime_type: entry?.runtime_type ?? "claude-code",
     model_id: entry?.model_id ?? "",
     extra_args_raw: entry ? JSON.stringify(entry.extra_args, null, 2) : "[]",
     complexity_tier: entry?.complexity_tier ?? "medium",
@@ -276,7 +276,7 @@ function ModelFormFields({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="claude">claude</SelectItem>
+              <SelectItem value="claude-code">claude-code</SelectItem>
               <SelectItem value="codex">codex</SelectItem>
               <SelectItem value="opencode">opencode</SelectItem>
             </SelectContent>
