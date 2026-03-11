@@ -2030,3 +2030,452 @@ class TestTokenUsageCapture:
         assert result2.error is None
         assert result2.input_tokens == 42
         assert result2.output_tokens == 84
+
+
+# ---------------------------------------------------------------------------
+# Catalog-based model resolution (bu-afm7.2)
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogModelResolution:
+    """Tests for dynamic model selection via the model catalog.
+
+    Covers:
+    - Catalog resolution path (resolve_model returns a valid result)
+    - TOML fallback when catalog has no matching entries
+    - Complexity parameter propagated to resolve_model
+    - extra_args merging: TOML args first, catalog args appended
+    - Adapter pool lazy instantiation for new runtime types
+    - Session records include model, runtime_type, complexity, resolution source
+    - Graceful fallback on catalog resolution errors
+    """
+
+    async def test_catalog_resolution_uses_catalog_model(self, tmp_path: Path):
+        """When catalog returns a result, that model is passed to the adapter."""
+        import uuid
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(model="claude-haiku-4-5-20251001")  # TOML fallback
+
+        captured: dict = {}
+
+        class CapturingAdapter(MockAdapter):
+            async def invoke(self, prompt, system_prompt, mcp_servers, env,
+                             max_turns=20, model=None, runtime_args=None,
+                             cwd=None, timeout=None):
+                captured["model"] = model
+                captured["runtime_args"] = runtime_args
+                return "ok", [], None
+
+        mock_pool = AsyncMock()
+        adapter = CapturingAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=("claude-code", "claude-opus-4-20250514", []),
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            result = await spawner.trigger("prompt", "tick")
+
+        assert result.success is True
+        assert captured["model"] == "claude-opus-4-20250514"
+        assert result.model == "claude-opus-4-20250514"
+
+    async def test_toml_fallback_when_catalog_returns_none(self, tmp_path: Path):
+        """When resolve_model returns None, the TOML model is used."""
+        import uuid
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(model="claude-haiku-4-5-20251001")
+
+        captured: dict = {}
+
+        class CapturingAdapter(MockAdapter):
+            async def invoke(self, prompt, system_prompt, mcp_servers, env,
+                             max_turns=20, model=None, runtime_args=None,
+                             cwd=None, timeout=None):
+                captured["model"] = model
+                return "ok", [], None
+
+        mock_pool = AsyncMock()
+        adapter = CapturingAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            result = await spawner.trigger("prompt", "tick")
+
+        assert result.success is True
+        assert captured["model"] == "claude-haiku-4-5-20251001"
+        assert result.model == "claude-haiku-4-5-20251001"
+
+    async def test_complexity_not_passed_to_resolve_model_without_pool(self, tmp_path: Path):
+        """Without a pool, resolve_model is never called (TOML fallback directly)."""
+        from butlers.core.model_routing import Complexity
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        adapter = MockAdapter(result_text="ok")
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        with patch(
+            "butlers.core.spawner.resolve_model",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_resolve:
+            await spawner.trigger("prompt", "tick", complexity=Complexity.HIGH)
+
+        # No pool → resolve_model is not called, TOML fallback applies
+        mock_resolve.assert_not_called()
+
+    async def test_complexity_forwarded_when_pool_present(self, tmp_path: Path):
+        """With a pool, resolve_model is called with the complexity parameter."""
+        from butlers.core.model_routing import Complexity
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        mock_pool = AsyncMock()
+        adapter = MockAdapter(result_text="ok")
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_resolve,
+        ):
+            import uuid
+
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner.trigger("prompt", "tick", complexity=Complexity.HIGH)
+
+        mock_resolve.assert_called_once()
+        call_args = mock_resolve.call_args
+        # resolve_model(pool, butler_name, complexity)
+        assert call_args[0][1] == "test-butler"
+        assert call_args[0][2] == Complexity.HIGH
+
+    async def test_extra_args_merged_toml_then_catalog(self, tmp_path: Path):
+        """TOML args are first, catalog extra_args are appended."""
+        import uuid
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        config.runtime.args = ("--toml-flag", "toml-value")
+
+        captured: dict = {}
+
+        class CapturingAdapter(MockAdapter):
+            async def invoke(self, prompt, system_prompt, mcp_servers, env,
+                             max_turns=20, model=None, runtime_args=None,
+                             cwd=None, timeout=None):
+                captured["runtime_args"] = runtime_args
+                return "ok", [], None
+
+        mock_pool = AsyncMock()
+        adapter = CapturingAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=("claude-code", "claude-opus-4-20250514", ["--catalog-arg", "val"]),
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner.trigger("prompt", "tick")
+
+        assert captured["runtime_args"] == [
+            "--toml-flag", "toml-value",
+            "--catalog-arg", "val",
+        ]
+
+    async def test_extra_args_catalog_only_when_toml_args_empty(self, tmp_path: Path):
+        """Catalog extra_args used alone when TOML args list is empty."""
+        import uuid
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        # Default args is empty tuple
+
+        captured: dict = {}
+
+        class CapturingAdapter(MockAdapter):
+            async def invoke(self, prompt, system_prompt, mcp_servers, env,
+                             max_turns=20, model=None, runtime_args=None,
+                             cwd=None, timeout=None):
+                captured["runtime_args"] = runtime_args
+                return "ok", [], None
+
+        mock_pool = AsyncMock()
+        adapter = CapturingAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=("claude-code", "claude-opus-4-20250514", ["--catalog-only"]),
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner.trigger("prompt", "tick")
+
+        assert captured["runtime_args"] == ["--catalog-only"]
+
+    async def test_no_runtime_args_when_both_empty(self, tmp_path: Path):
+        """runtime_args key is omitted from invoke_kwargs when both TOML and catalog args empty."""
+        import uuid
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        captured: dict = {}
+
+        class CapturingAdapter(MockAdapter):
+            async def invoke(self, prompt, system_prompt, mcp_servers, env,
+                             max_turns=20, model=None, runtime_args=None,
+                             cwd=None, timeout=None):
+                captured["runtime_args"] = runtime_args
+                return "ok", [], None
+
+        mock_pool = AsyncMock()
+        adapter = CapturingAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=("claude-code", "claude-opus-4-20250514", []),
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner.trigger("prompt", "tick")
+
+        # runtime_args kwarg not passed when empty
+        assert captured["runtime_args"] is None
+
+    async def test_adapter_pool_uses_injected_runtime_for_toml_type(self, tmp_path: Path):
+        """The injected runtime is used when catalog resolves to the TOML runtime type."""
+        import uuid
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        mock_pool = AsyncMock()
+        adapter = MockAdapter(result_text="from-injected")
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=("claude-code", "some-model", []),
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            result = await spawner.trigger("prompt", "tick")
+
+        assert result.success is True
+        assert result.output == "from-injected"
+
+    async def test_catalog_resolution_error_falls_back_to_toml(self, tmp_path: Path):
+        """When resolve_model raises, TOML config is used as fallback."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(model="claude-haiku-4-5-20251001")
+
+        captured: dict = {}
+
+        class CapturingAdapter(MockAdapter):
+            async def invoke(self, prompt, system_prompt, mcp_servers, env,
+                             max_turns=20, model=None, runtime_args=None,
+                             cwd=None, timeout=None):
+                captured["model"] = model
+                return "ok", [], None
+
+        adapter = CapturingAdapter()
+        mock_pool = AsyncMock()
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                side_effect=Exception("DB connection error"),
+            ),
+        ):
+            import uuid
+
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            result = await spawner.trigger("prompt", "tick")
+
+        assert result.success is True
+        assert captured["model"] == "claude-haiku-4-5-20251001"
+        assert result.model == "claude-haiku-4-5-20251001"
+
+    async def test_default_complexity_is_medium(self, tmp_path: Path):
+        """trigger() defaults to Complexity.MEDIUM when complexity not specified."""
+        from butlers.core.model_routing import Complexity
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+        adapter = MockAdapter(result_text="ok")
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_resolve,
+        ):
+            import uuid
+
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner.trigger("prompt", "tick")
+
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args[0][2] == Complexity.MEDIUM
+
+    async def test_session_model_reflects_catalog_choice(self, tmp_path: Path):
+        """session_create receives the catalog-resolved model, not TOML model."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(model="claude-haiku-4-5-20251001")
+
+        mock_pool = AsyncMock()
+        adapter = MockAdapter(result_text="ok")
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=("claude-code", "claude-opus-4-20250514", []),
+            ),
+        ):
+            import uuid
+
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner.trigger("prompt", "tick")
+
+        _, create_kwargs = mock_create.call_args
+        assert create_kwargs["model"] == "claude-opus-4-20250514"
+
+    async def test_audit_log_includes_resolution_metadata(self, tmp_path: Path):
+        """Audit log entry includes model, runtime_type, complexity, resolution_source."""
+        import uuid
+
+        from butlers.core.model_routing import Complexity
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+        adapter = MockAdapter(result_text="ok")
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        audit_entries: list[dict] = []
+
+        async def fake_write_audit(pool, butler_name, event_type, data, **kwargs):
+            audit_entries.append({"data": data, **kwargs})
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch("butlers.core.spawner.write_audit_entry", side_effect=fake_write_audit),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=("claude-code", "claude-opus-4-20250514", []),
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner.trigger("prompt", "tick", complexity=Complexity.HIGH)
+
+        assert len(audit_entries) == 1
+        data = audit_entries[0]["data"]
+        assert data["model"] == "claude-opus-4-20250514"
+        assert data["runtime_type"] == "claude-code"
+        assert data["complexity"] == "high"
+        assert data["resolution_source"] == "catalog"
+
+    async def test_audit_log_shows_toml_fallback_source(self, tmp_path: Path):
+        """Audit log entry shows resolution_source=toml_fallback on TOML fallback."""
+        import uuid
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(model="claude-haiku-4-5-20251001")
+        mock_pool = AsyncMock()
+        adapter = MockAdapter(result_text="ok")
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        audit_entries: list[dict] = []
+
+        async def fake_write_audit(pool, butler_name, event_type, data, **kwargs):
+            audit_entries.append({"data": data, **kwargs})
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch("butlers.core.spawner.write_audit_entry", side_effect=fake_write_audit),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner.trigger("prompt", "tick")
+
+        assert len(audit_entries) == 1
+        data = audit_entries[0]["data"]
+        assert data["model"] == "claude-haiku-4-5-20251001"
+        assert data["resolution_source"] == "toml_fallback"
