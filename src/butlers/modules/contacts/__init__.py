@@ -79,6 +79,7 @@ class ProviderEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: str = Field(min_length=1)
+    account: str | None = None
 
     @field_validator("type")
     @classmethod
@@ -87,6 +88,14 @@ class ProviderEntry(BaseModel):
         if not normalized:
             raise ValueError(f"{info.field_name} must be a non-empty string")
         return normalized
+
+    @field_validator("account", mode="before")
+    @classmethod
+    def _normalize_account(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
 
 
 class ContactsConfig(BaseModel):
@@ -133,16 +142,94 @@ class ContactsConfig(BaseModel):
             raise ValueError("Either 'provider' or 'providers' must be specified.")
         if self.provider is not None and self.providers is None:
             self.providers = [ProviderEntry(type=self.provider)]
-        types = [p.type for p in self.providers]
-        if len(types) != len(set(types)):
-            dupes = sorted({t for t in types if types.count(t) > 1})
-            raise ValueError(f"Duplicate provider types: {', '.join(dupes)}")
+        # Allow duplicate provider types only when each entry has a distinct non-None
+        # account value (multi-account Google support).  Providers without account
+        # disambiguation are still treated as singletons per type.
+        type_accounts: list[tuple[str, str | None]] = [(p.type, p.account) for p in self.providers]
+        seen: set[tuple[str, str | None]] = set()
+        ambiguous_types: list[str] = []
+        for ptype, paccount in type_accounts:
+            key = (ptype, paccount)
+            if key in seen:
+                if paccount is None:
+                    ambiguous_types.append(ptype)
+                else:
+                    ambiguous_types.append(ptype)
+            seen.add(key)
+
+        # Check: multiple entries of the same type with no account = ambiguous.
+        type_counts: dict[str, int] = {}
+        for ptype, _ in type_accounts:
+            type_counts[ptype] = type_counts.get(ptype, 0) + 1
+
+        for ptype, count in type_counts.items():
+            if count > 1:
+                accounts_for_type = [paccount for t, paccount in type_accounts if t == ptype]
+                # Raise if any entry lacks an account (ambiguous).
+                if any(a is None for a in accounts_for_type):
+                    raise ValueError(
+                        f"Multiple '{ptype}' providers require distinct 'account' fields "
+                        f"for disambiguation. Add 'account = \"email@example.com\"' to each "
+                        f"'{ptype}' provider entry."
+                    )
+                # Raise if accounts are not all distinct.
+                if len(set(accounts_for_type)) != len(accounts_for_type):
+                    dupes = sorted({a for a in accounts_for_type if accounts_for_type.count(a) > 1})
+                    raise ValueError(
+                        f"Duplicate '{ptype}' provider entries with the same account: "
+                        f"{', '.join(str(d) for d in dupes)}"
+                    )
         return self
 
     @property
     def provider_types(self) -> list[str]:
         """Return list of configured provider type strings."""
         return [p.type for p in (self.providers or [])]
+
+
+def _filter_runtimes(
+    runtimes: dict[str, Any],
+    *,
+    provider: str | None,
+    account: str | None,
+) -> dict[str, Any]:
+    """Filter the runtimes dict by optional provider type and account.
+
+    Runtime keys are either ``"<type>"`` (single-instance) or
+    ``"<type>:<account>"`` (multi-account).
+
+    Filtering rules:
+    - ``provider=None, account=None``: all runtimes.
+    - ``provider="google", account=None``: all runtimes whose key starts with
+      ``"google"``.
+    - ``provider="google", account="work@gmail.com"``: the specific runtime
+      keyed as ``"google:work@gmail.com"`` (or ``"google"`` if the account_id
+      matches directly).
+    - ``provider=None, account=X``: all runtimes whose runtime._account_id
+      equals X.
+    """
+    if provider is None and account is None:
+        return dict(runtimes)
+
+    result: dict[str, Any] = {}
+    for key, rt in runtimes.items():
+        # Determine the type portion of the key.
+        parts = key.split(":", 1)
+        key_type = parts[0]
+        key_account = parts[1] if len(parts) > 1 else None
+
+        if provider is not None and key_type != provider:
+            continue
+
+        if account is not None:
+            # Match by account: either the key suffix or the runtime's account_id.
+            rt_account_id = getattr(rt, "_account_id", None)
+            if key_account != account and rt_account_id != account:
+                continue
+
+        result[key] = rt
+
+    return result
 
 
 class ContactsModule(Module):
@@ -261,6 +348,7 @@ class ContactsModule(Module):
         @mcp.tool()
         async def contacts_sync_now(
             provider: str | None = None,
+            account: str | None = None,
             mode: ContactsSyncMode = "incremental",
         ) -> dict[str, Any]:
             """Trigger an immediate contacts sync cycle.
@@ -268,6 +356,9 @@ class ContactsModule(Module):
             Args:
                 provider: Provider to sync (e.g. 'google', 'telegram').
                           When omitted, syncs all configured providers.
+                account: Optional Google account email to sync (e.g. 'work@gmail.com').
+                         Only applicable when provider='google'.  When provider='google'
+                         is specified without account, all Google account instances sync.
                 mode: Sync mode — 'incremental' for routine refresh,
                       'full' for a complete backfill from the provider.
 
@@ -288,26 +379,29 @@ class ContactsModule(Module):
 
             configured = sorted(runtimes.keys())
 
-            if provider is not None:
-                if provider not in runtimes:
-                    return {
-                        "error": (
-                            f"Provider '{provider}' is not configured or failed to start. "
-                            f"Configured providers: {configured}"
-                        ),
-                        "provider": provider,
-                        "mode": mode,
-                    }
-                return await _sync_single_provider(runtimes[provider], provider, mode)
+            # Resolve which runtimes to target.
+            target_runtimes = _filter_runtimes(runtimes, provider=provider, account=account)
 
-            # Sync all — return flat result for single provider, aggregated for multi
-            if len(runtimes) == 1:
-                prov_name = configured[0]
-                return await _sync_single_provider(runtimes[prov_name], prov_name, mode)
+            if provider is not None and not target_runtimes:
+                return {
+                    "error": (
+                        f"Provider '{provider}'"
+                        + (f" account '{account}'" if account else "")
+                        + " is not configured or failed to start. "
+                        f"Configured providers: {configured}"
+                    ),
+                    "provider": provider,
+                    "mode": mode,
+                }
+
+            # Sync all matched — return flat result for single, aggregated for multi
+            if len(target_runtimes) == 1:
+                prov_key, rt = next(iter(target_runtimes.items()))
+                return await _sync_single_provider(rt, prov_key, mode)
 
             results: dict[str, Any] = {}
-            for prov_name, runtime in runtimes.items():
-                results[prov_name] = await _sync_single_provider(runtime, prov_name, mode)
+            for prov_key, rt in target_runtimes.items():
+                results[prov_key] = await _sync_single_provider(rt, prov_key, mode)
             return {"results": results, "mode": mode}
 
         # ------------------------------------------------------------------
@@ -317,12 +411,15 @@ class ContactsModule(Module):
         @mcp.tool()
         async def contacts_sync_status(
             provider: str | None = None,
+            account: str | None = None,
         ) -> dict[str, Any]:
             """Return the current contacts sync state.
 
             Args:
                 provider: Provider to query (e.g. 'google', 'telegram').
                           When omitted, returns status for all configured providers.
+                account: Optional Google account email to query (e.g. 'work@gmail.com').
+                         Only applicable when provider='google'.
 
             Returns:
                 A dict with last sync timestamps, cursor age, last error,
@@ -341,25 +438,28 @@ class ContactsModule(Module):
 
             configured = sorted(runtimes.keys())
 
-            if provider is not None:
-                if provider not in runtimes:
-                    return {
-                        "error": (
-                            f"Provider '{provider}' is not configured or failed to start. "
-                            f"Configured providers: {configured}"
-                        ),
-                        "provider": provider,
-                    }
-                return await _status_single_provider(runtimes[provider], provider)
+            # Resolve which runtimes to target.
+            target_runtimes = _filter_runtimes(runtimes, provider=provider, account=account)
+
+            if provider is not None and not target_runtimes:
+                return {
+                    "error": (
+                        f"Provider '{provider}'"
+                        + (f" account '{account}'" if account else "")
+                        + " is not configured or failed to start. "
+                        f"Configured providers: {configured}"
+                    ),
+                    "provider": provider,
+                }
 
             # Status for all — flat for single, aggregated for multi
-            if len(runtimes) == 1:
-                prov_name = configured[0]
-                return await _status_single_provider(runtimes[prov_name], prov_name)
+            if len(target_runtimes) == 1:
+                prov_key, rt = next(iter(target_runtimes.items()))
+                return await _status_single_provider(rt, prov_key)
 
             results: dict[str, Any] = {}
-            for prov_name, runtime in runtimes.items():
-                results[prov_name] = await _status_single_provider(runtime, prov_name)
+            for prov_key, rt in target_runtimes.items():
+                results[prov_key] = await _status_single_provider(rt, prov_key)
             return {"providers": results}
 
         # ------------------------------------------------------------------
@@ -384,57 +484,99 @@ class ContactsModule(Module):
             cfg = module._config
             configured_types = cfg.provider_types
 
-            target_types = [provider] if provider is not None else configured_types
+            # If provider filter was specified but the provider type is not in
+            # configured_types, return empty (not configured at all).
+            if provider is not None and provider not in configured_types:
+                return []
 
+            # For configured but not-started providers (sync disabled), show entries.
             sources: list[dict[str, Any]] = []
-            for prov_type in target_types:
-                if prov_type not in configured_types:
-                    continue
 
-                runtime = runtimes.get(prov_type)
-                if runtime is None:
-                    sources.append(
-                        {
-                            "provider": prov_type,
-                            "account_id": _DEFAULT_ACCOUNT_ID,
-                            "sync_enabled": False,
-                            "status": "sync_disabled",
-                            "last_success_at": None,
-                            "last_error": None,
-                        }
-                    )
-                    continue
-
-                try:
-                    state: ContactsSyncState = await runtime._state_store.load(
-                        provider=runtime._provider_name,
-                        account_id=runtime._account_id,
-                    )
-                    status = "active" if state.last_error is None else "error"
-                    if state.last_success_at is None:
-                        status = "never_synced"
-                except Exception as exc:
-                    logger.warning(
-                        "contacts_source_list: state load failed for %s: %s",
-                        prov_type,
-                        exc,
-                        exc_info=True,
-                    )
-                    state = ContactsSyncState()
-                    status = "unknown"
-
-                sources.append(
-                    {
-                        "provider": runtime._provider_name,
-                        "account_id": runtime._account_id,
-                        "sync_enabled": True,
-                        "status": status,
-                        "last_success_at": state.last_success_at,
-                        "last_error": state.last_error,
-                    }
-                )
+            if provider is not None:
+                # Check configured entries for this type.
+                cfg_entries = [e for e in (cfg.providers or []) if e.type == provider]
+                if not cfg_entries:
+                    return []
+                for entry in cfg_entries:
+                    # Build the runtime key matching how on_startup keyed it.
+                    is_multi = sum(1 for e in (cfg.providers or []) if e.type == provider) > 1
+                    if is_multi and entry.account:
+                        rt_key = f"{entry.type}:{entry.account}"
+                    else:
+                        rt_key = entry.type
+                    acc_id = entry.account or _DEFAULT_ACCOUNT_ID
+                    runtime = runtimes.get(rt_key)
+                    if runtime is None:
+                        sources.append(
+                            {
+                                "provider": entry.type,
+                                "account_id": acc_id,
+                                "sync_enabled": False,
+                                "status": "sync_disabled",
+                                "last_success_at": None,
+                                "last_error": None,
+                            }
+                        )
+                        continue
+                    await _append_runtime_source(sources, runtime, rt_key)
+            else:
+                # All configured entries
+                for entry in cfg.providers or []:
+                    is_multi = sum(1 for e in (cfg.providers or []) if e.type == entry.type) > 1
+                    if is_multi and entry.account:
+                        rt_key = f"{entry.type}:{entry.account}"
+                    else:
+                        rt_key = entry.type
+                    acc_id = entry.account or _DEFAULT_ACCOUNT_ID
+                    runtime = runtimes.get(rt_key)
+                    if runtime is None:
+                        sources.append(
+                            {
+                                "provider": entry.type,
+                                "account_id": acc_id,
+                                "sync_enabled": False,
+                                "status": "sync_disabled",
+                                "last_success_at": None,
+                                "last_error": None,
+                            }
+                        )
+                        continue
+                    await _append_runtime_source(sources, runtime, rt_key)
 
             return sources
+
+        async def _append_runtime_source(
+            sources: list[dict[str, Any]], runtime: Any, rt_key: str
+        ) -> None:
+            """Helper: load state and append a source entry."""
+            try:
+                state: ContactsSyncState = await runtime._state_store.load(
+                    provider=runtime._provider_name,
+                    account_id=runtime._account_id,
+                )
+                status = "active" if state.last_error is None else "error"
+                if state.last_success_at is None:
+                    status = "never_synced"
+            except Exception as exc:
+                logger.warning(
+                    "contacts_source_list: state load failed for %s: %s",
+                    rt_key,
+                    exc,
+                    exc_info=True,
+                )
+                state = ContactsSyncState()
+                status = "unknown"
+
+            sources.append(
+                {
+                    "provider": runtime._provider_name,
+                    "account_id": runtime._account_id,
+                    "sync_enabled": True,
+                    "status": status,
+                    "last_success_at": state.last_success_at,
+                    "last_error": state.last_error,
+                }
+            )
 
         # ------------------------------------------------------------------
         # contacts_source_reconcile
@@ -520,17 +662,39 @@ class ContactsModule(Module):
 
         pool = getattr(db, "pool", None) if db is not None else None
 
+        # Count how many times each provider type appears to determine keying strategy.
+        type_counts: dict[str, int] = {}
         for entry in self._config.providers:
+            type_counts[entry.type] = type_counts.get(entry.type, 0) + 1
+
+        for entry in self._config.providers:
+            # Derive the runtime key and account_id for this entry.
+            # For multi-account providers (type appears more than once), use
+            # "<type>:<account>" as the key and the account email as account_id.
+            # For single-instance providers, use just "<type>" and "default".
+            account_id: str
+            runtime_key: str
+            if type_counts[entry.type] > 1:
+                # Multi-account: account must be set (validated by ContactsConfig)
+                account_id = entry.account or _DEFAULT_ACCOUNT_ID
+                runtime_key = f"{entry.type}:{account_id}"
+            else:
+                account_id = entry.account or _DEFAULT_ACCOUNT_ID
+                runtime_key = entry.type
+
             try:
                 provider = await self._create_provider(
-                    entry.type, pool=pool, credential_store=credential_store
+                    entry.type,
+                    account=entry.account,
+                    pool=pool,
+                    credential_store=credential_store,
                 )
 
                 state_store = ContactsSyncStateStore(pool)
                 backfill_engine = ContactBackfillEngine(
                     pool,
                     provider=provider.name,
-                    account_id=_DEFAULT_ACCOUNT_ID,
+                    account_id=account_id,
                 )
                 sync_engine = ContactsSyncEngine(
                     provider=provider,
@@ -553,24 +717,29 @@ class ContactsModule(Module):
                     sync_engine=sync_engine,
                     state_store=state_store,
                     provider_name=provider.name,
-                    account_id=_DEFAULT_ACCOUNT_ID,
+                    account_id=account_id,
                     incremental_interval=timedelta(minutes=self._config.sync.interval_minutes),
                     forced_full_interval=timedelta(days=self._config.sync.full_sync_interval_days),
                     on_cycle_complete=on_cycle_complete,
                 )
 
                 await runtime.start()
-                self._providers[entry.type] = provider
-                self._runtimes[entry.type] = runtime
+                self._providers[runtime_key] = provider
+                self._runtimes[runtime_key] = runtime
                 logger.info(
-                    "ContactsModule: sync runtime started for %s "
-                    "(interval=%dm, full_sync_interval=%dd)",
+                    "ContactsModule: sync runtime started for %s (account=%s, "
+                    "interval=%dm, full_sync_interval=%dd)",
                     entry.type,
+                    account_id,
                     self._config.sync.interval_minutes,
                     self._config.sync.full_sync_interval_days,
                 )
             except Exception:
-                logger.exception("ContactsModule: failed to start provider '%s'", entry.type)
+                logger.exception(
+                    "ContactsModule: failed to start provider '%s' (account=%s)",
+                    entry.type,
+                    entry.account,
+                )
                 if len(self._config.providers) == 1:
                     raise  # Single provider: propagate for backwards compat
 
@@ -599,6 +768,7 @@ class ContactsModule(Module):
         self,
         provider_type: str,
         *,
+        account: str | None = None,
         pool: Any,
         credential_store: Any,
     ) -> ContactsProvider:
@@ -607,7 +777,9 @@ class ContactsModule(Module):
             return await self._create_telegram_provider(pool)
         else:
             client_id, client_secret, refresh_token = await self._resolve_google_credentials(
-                credential_store=credential_store
+                account=account,
+                pool=pool,
+                credential_store=credential_store,
             )
             return GoogleContactsProvider(
                 client_id=client_id,
@@ -618,36 +790,109 @@ class ContactsModule(Module):
     async def _resolve_google_credentials(
         self,
         *,
+        account: str | None = None,
+        pool: Any = None,
         credential_store: Any,
     ) -> tuple[str, str, str]:
         """Resolve Google OAuth credentials from DB-backed credential store.
+
+        When *account* is provided, credentials are resolved for that specific
+        Google account from ``shared.google_accounts`` and its companion
+        entity_info.  Otherwise, the primary account (via owner entity_info) is
+        used for backward compatibility.
+
+        Parameters
+        ----------
+        account:
+            Optional email of the Google account to resolve credentials for.
+        pool:
+            asyncpg pool for direct DB lookups.  When ``None``, only the
+            credential_store path is attempted.
+        credential_store:
+            A CredentialStore instance.  Required; raises if ``None``.
 
         Returns
         -------
         tuple[str, str, str]
             ``(client_id, client_secret, refresh_token)``
         """
-        if credential_store is not None:
-            client_id = await credential_store.resolve(
-                _GOOGLE_OAUTH_CLIENT_ID_KEY, env_fallback=False
-            )
-            client_secret = await credential_store.resolve(
-                _GOOGLE_OAUTH_CLIENT_SECRET_KEY, env_fallback=False
+        if credential_store is None:
+            raise RuntimeError(
+                "ContactsModule: Google OAuth credentials require a shared credential store. "
+                f"Required keys: {_GOOGLE_OAUTH_CLIENT_ID_KEY}, {_GOOGLE_OAUTH_CLIENT_SECRET_KEY}, "
+                "refresh token (contact_info). "
+                "Store them via the dashboard OAuth flow (shared credential store)."
             )
 
-            # Refresh token from shared.contact_info (exclusively)
-            refresh_token: str | None = None
-            pool = getattr(self._db, "pool", None)
-            if pool is not None:
+        client_id = await credential_store.resolve(_GOOGLE_OAUTH_CLIENT_ID_KEY, env_fallback=False)
+        client_secret = await credential_store.resolve(
+            _GOOGLE_OAUTH_CLIENT_SECRET_KEY, env_fallback=False
+        )
+
+        refresh_token: str | None = None
+
+        if pool is not None and account:
+            # Account-aware: resolve refresh token from the companion entity
+            # for the specific Google account row in shared.google_accounts.
+            from butlers.google_account_registry import (
+                GoogleAccountNotFoundError,
+                get_google_account,
+            )
+            from butlers.google_account_registry import (
+                MissingGoogleCredentialsError as _RegistryMissingError,
+            )
+
+            try:
+                google_account = await get_google_account(pool, account)
+            except (GoogleAccountNotFoundError, _RegistryMissingError) as exc:
+                raise RuntimeError(
+                    f"ContactsModule: Google account '{account}' is not connected. "
+                    "Connect the account via the dashboard OAuth flow and re-start."
+                ) from exc
+
+            # Scope validation: the account must have granted contacts access.
+            granted = google_account.granted_scopes or []
+            has_contacts_scope = any("contacts" in s.lower() for s in granted)
+            if not has_contacts_scope:
+                raise RuntimeError(
+                    f"ContactsModule: Google account '{account}' has not granted "
+                    "Contacts scope. Re-authorize the account with Contacts access via "
+                    "the dashboard OAuth flow."
+                )
+
+            # Fetch the refresh token from the companion entity's entity_info.
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT value FROM shared.entity_info
+                    WHERE entity_id = $1 AND type = 'google_oauth_refresh'
+                    LIMIT 1
+                    """,
+                    google_account.entity_id,
+                )
+                if row is not None:
+                    refresh_token = row["value"]
+        elif pool is not None:
+            # Backward compat: primary account via owner entity_info.
+            from butlers.credential_store import resolve_owner_entity_info
+
+            refresh_token = await resolve_owner_entity_info(pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE)
+        else:
+            # No pool: fall back to owner entity_info via db.pool
+            db_pool = getattr(self._db, "pool", None)
+            if db_pool is not None:
                 from butlers.credential_store import resolve_owner_entity_info
 
                 refresh_token = await resolve_owner_entity_info(
-                    pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
+                    db_pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
                 )
 
-            if client_id and client_secret and refresh_token:
-                logger.debug("ContactsModule: resolved Google credentials from CredentialStore")
-                return client_id, client_secret, refresh_token
+        if client_id and client_secret and refresh_token:
+            logger.debug(
+                "ContactsModule: resolved Google credentials (account=%s)",
+                account or "primary",
+            )
+            return client_id, client_secret, refresh_token
 
         raise RuntimeError(
             "ContactsModule: Google OAuth credentials are not available in database. "

@@ -90,7 +90,7 @@ class TestContactsConfig:
             ContactsConfig(provider="google", providers=[{"type": "google"}])
 
     def test_duplicate_provider_types_raises(self) -> None:
-        with pytest.raises(ValidationError, match="Duplicate provider types"):
+        with pytest.raises(ValidationError, match="distinct 'account' fields"):
             ContactsConfig(providers=[{"type": "google"}, {"type": "google"}])
 
     def test_provider_normalization(self) -> None:
@@ -122,6 +122,50 @@ class TestContactsConfig:
         # Can't construct this normally (validator prevents it), but test the property
         config = ContactsConfig(provider="google")
         assert config.provider_types == ["google"]
+
+    # ------------------------------------------------------------------
+    # Multi-account Google support (account field on ProviderEntry)
+    # ------------------------------------------------------------------
+
+    def test_provider_entry_accepts_account(self) -> None:
+        config = ContactsConfig(providers=[{"type": "google", "account": "personal@gmail.com"}])
+        assert config.providers[0].account == "personal@gmail.com"
+
+    def test_provider_entry_account_stripped(self) -> None:
+        config = ContactsConfig(providers=[{"type": "google", "account": "  work@gmail.com  "}])
+        assert config.providers[0].account == "work@gmail.com"
+
+    def test_provider_entry_account_whitespace_none(self) -> None:
+        config = ContactsConfig(providers=[{"type": "google", "account": "   "}])
+        assert config.providers[0].account is None
+
+    def test_multi_account_google_succeeds_with_distinct_accounts(self) -> None:
+        config = ContactsConfig(
+            providers=[
+                {"type": "google", "account": "personal@gmail.com"},
+                {"type": "google", "account": "work@gmail.com"},
+                {"type": "telegram"},
+            ]
+        )
+        assert len(config.providers) == 3
+        assert config.providers[0].account == "personal@gmail.com"
+        assert config.providers[1].account == "work@gmail.com"
+
+    def test_multi_account_google_raises_without_account_disambiguation(self) -> None:
+        with pytest.raises(ValidationError, match="distinct 'account' fields"):
+            ContactsConfig(providers=[{"type": "google"}, {"type": "google"}])
+
+    def test_multi_account_google_raises_on_duplicate_account_values(self) -> None:
+        with pytest.raises(
+            ValidationError,
+            match="Duplicate 'google' provider entries with the same account",
+        ):
+            ContactsConfig(
+                providers=[
+                    {"type": "google", "account": "same@gmail.com"},
+                    {"type": "google", "account": "same@gmail.com"},
+                ]
+            )
 
 
 def _make_credential_store(
@@ -306,6 +350,151 @@ class TestModuleStartup:
         # Telegram failed, Google succeeded
         assert "telegram" not in runtimes
         assert "google" in runtimes
+
+    async def test_startup_multi_account_google_creates_keyed_runtimes(self) -> None:
+        """on_startup() with two Google accounts creates runtimes keyed by 'google:<email>'."""
+        import uuid
+        from dataclasses import dataclass
+        from datetime import datetime
+
+        mod = ContactsModule()
+        credential_store = _make_credential_store()
+        db = _make_db_with_pool()
+
+        # Fake google_accounts for both accounts.
+        @dataclass
+        class _FakeAccount:
+            id: uuid.UUID = uuid.uuid4()
+            entity_id: uuid.UUID = uuid.uuid4()
+            email: str = "default@gmail.com"
+            display_name: str | None = None
+            is_primary: bool = True
+            granted_scopes: list = None
+            status: str = "active"
+            connected_at: datetime = datetime.now()
+            last_token_refresh_at: datetime | None = None
+
+            def __post_init__(self) -> None:
+                if self.granted_scopes is None:
+                    self.granted_scopes = ["https://www.googleapis.com/auth/contacts.readonly"]
+
+        personal_entity_id = uuid.uuid4()
+        work_entity_id = uuid.uuid4()
+
+        accounts = {
+            "personal@gmail.com": _FakeAccount(
+                email="personal@gmail.com", entity_id=personal_entity_id
+            ),
+            "work@gmail.com": _FakeAccount(email="work@gmail.com", entity_id=work_entity_id),
+        }
+
+        async def _get_account(pool: Any, email: Any) -> Any:
+            return accounts[email]
+
+        # Mock pool.acquire() to return refresh tokens.
+        mock_conn = MagicMock()
+        mock_conn.fetchrow = AsyncMock(return_value={"value": "rtoken"})
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(
+            return_value=MagicMock(
+                __aenter__=AsyncMock(return_value=mock_conn),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
+        db = MagicMock()
+        db.pool = mock_pool
+
+        with (
+            patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
+            patch(
+                "butlers.google_account_registry.get_google_account",
+                new_callable=AsyncMock,
+                side_effect=lambda pool, email: accounts[email],
+            ),
+        ):
+            await mod.on_startup(
+                {
+                    "providers": [
+                        {"type": "google", "account": "personal@gmail.com"},
+                        {"type": "google", "account": "work@gmail.com"},
+                    ]
+                },
+                db=db,
+                credential_store=credential_store,
+            )
+
+        runtimes = getattr(mod, "_runtimes")
+        assert "google:personal@gmail.com" in runtimes
+        assert "google:work@gmail.com" in runtimes
+        # Verify account_id is set correctly on each runtime.
+        assert runtimes["google:personal@gmail.com"]._account_id == "personal@gmail.com"
+        assert runtimes["google:work@gmail.com"]._account_id == "work@gmail.com"
+
+    async def test_startup_google_account_not_connected_raises(self) -> None:
+        """on_startup() with an unconfigured account raises a clear RuntimeError."""
+        from butlers.google_account_registry import GoogleAccountNotFoundError
+
+        mod = ContactsModule()
+        credential_store = _make_credential_store()
+
+        mock_pool = MagicMock()
+        db = MagicMock()
+        db.pool = mock_pool
+
+        with (
+            patch(
+                "butlers.google_account_registry.get_google_account",
+                new_callable=AsyncMock,
+                side_effect=GoogleAccountNotFoundError("not found"),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="not connected"):
+                await mod.on_startup(
+                    {"providers": [{"type": "google", "account": "ghost@gmail.com"}]},
+                    db=db,
+                    credential_store=credential_store,
+                )
+
+    async def test_startup_google_account_missing_contacts_scope_raises(self) -> None:
+        """on_startup() fails when account lacks contacts scope."""
+        import uuid
+        from dataclasses import dataclass
+        from datetime import datetime
+
+        @dataclass
+        class _FakeAccount:
+            id: uuid.UUID = uuid.uuid4()
+            entity_id: uuid.UUID = uuid.uuid4()
+            email: str = "work@gmail.com"
+            display_name: str | None = None
+            is_primary: bool = True
+            granted_scopes: list = None
+            status: str = "active"
+            connected_at: datetime = datetime.now()
+            last_token_refresh_at: datetime | None = None
+
+            def __post_init__(self) -> None:
+                if self.granted_scopes is None:
+                    self.granted_scopes = ["gmail.readonly"]
+
+        mod = ContactsModule()
+        credential_store = _make_credential_store()
+        db = MagicMock()
+        db.pool = MagicMock()
+
+        with (
+            patch(
+                "butlers.google_account_registry.get_google_account",
+                new_callable=AsyncMock,
+                return_value=_FakeAccount(),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="Contacts scope"):
+                await mod.on_startup(
+                    {"providers": [{"type": "google", "account": "work@gmail.com"}]},
+                    db=db,
+                    credential_store=credential_store,
+                )
 
 
 class TestModuleShutdown:
@@ -971,3 +1160,195 @@ class TestContactsSourceReconcileTool:
         rt_telegram.trigger_immediate_sync.assert_called_once()
         assert result["queued"] is True
         assert sorted(result["providers_triggered"]) == ["google", "telegram"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-account Google MCP tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestContactsSyncNowMultiAccountTool:
+    """Tests for contacts_sync_now with multi-account Google runtimes."""
+
+    async def test_sync_now_with_account_filter_targets_specific_google(self) -> None:
+        """contacts_sync_now with provider='google' and account targets one instance."""
+        from butlers.modules.contacts.sync import ContactsSyncResult
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "providers": [
+                    {"type": "google", "account": "personal@gmail.com"},
+                    {"type": "google", "account": "work@gmail.com"},
+                ]
+            },
+            db=None,
+        )
+
+        sync_result = ContactsSyncResult(
+            mode="incremental",
+            fetched_contacts=5,
+            applied_contacts=5,
+            skipped_contacts=0,
+            deleted_contacts=0,
+            next_sync_cursor="c1",
+        )
+        rt_personal = _make_runtime_mock(provider_name="google", account_id="personal@gmail.com")
+        rt_work = _make_runtime_mock(provider_name="google", account_id="work@gmail.com")
+        rt_personal._sync_engine.sync = AsyncMock(return_value=sync_result)
+        rt_work._sync_engine.sync = AsyncMock(return_value=sync_result)
+
+        mod._runtimes = {
+            "google:personal@gmail.com": rt_personal,
+            "google:work@gmail.com": rt_work,
+        }
+
+        result = await mcp["contacts_sync_now"](
+            provider="google", account="work@gmail.com", mode="incremental"
+        )
+
+        # Only work account should be synced (flat single-result).
+        rt_personal._sync_engine.sync.assert_not_awaited()
+        rt_work._sync_engine.sync.assert_awaited_once()
+        assert result["provider"] == "google:work@gmail.com"
+
+    async def test_sync_now_provider_google_no_account_syncs_all_google(self) -> None:
+        """contacts_sync_now with provider='google' (no account) syncs all Google instances."""
+        from butlers.modules.contacts.sync import ContactsSyncResult
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "providers": [
+                    {"type": "google", "account": "personal@gmail.com"},
+                    {"type": "google", "account": "work@gmail.com"},
+                ]
+            },
+            db=None,
+        )
+
+        sync_result = ContactsSyncResult(
+            mode="incremental",
+            fetched_contacts=3,
+            applied_contacts=3,
+            skipped_contacts=0,
+            deleted_contacts=0,
+            next_sync_cursor="cx",
+        )
+        rt_personal = _make_runtime_mock(provider_name="google", account_id="personal@gmail.com")
+        rt_work = _make_runtime_mock(provider_name="google", account_id="work@gmail.com")
+        rt_personal._sync_engine.sync = AsyncMock(return_value=sync_result)
+        rt_work._sync_engine.sync = AsyncMock(return_value=sync_result)
+
+        mod._runtimes = {
+            "google:personal@gmail.com": rt_personal,
+            "google:work@gmail.com": rt_work,
+        }
+
+        result = await mcp["contacts_sync_now"](provider="google", mode="incremental")
+
+        # Both accounts should be synced — aggregated result.
+        rt_personal._sync_engine.sync.assert_awaited_once()
+        rt_work._sync_engine.sync.assert_awaited_once()
+        assert "results" in result
+        assert "google:personal@gmail.com" in result["results"]
+        assert "google:work@gmail.com" in result["results"]
+
+    async def test_sync_now_account_filter_not_found_returns_error(self) -> None:
+        """contacts_sync_now returns error when account filter matches nothing."""
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "providers": [
+                    {"type": "google", "account": "personal@gmail.com"},
+                ]
+            },
+            db=None,
+        )
+        rt = _make_runtime_mock(provider_name="google", account_id="personal@gmail.com")
+        mod._runtimes = {"google:personal@gmail.com": rt}
+
+        result = await mcp["contacts_sync_now"](provider="google", account="ghost@gmail.com")
+
+        assert "error" in result
+        assert "ghost@gmail.com" in result["error"]
+
+
+class TestContactsSyncStatusMultiAccountTool:
+    """Tests for contacts_sync_status with multi-account Google runtimes."""
+
+    async def test_sync_status_multi_account_returns_per_account_status(self) -> None:
+        """contacts_sync_status returns per-account status for multiple Google accounts."""
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "providers": [
+                    {"type": "google", "account": "personal@gmail.com"},
+                    {"type": "google", "account": "work@gmail.com"},
+                ]
+            },
+            db=None,
+        )
+
+        state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
+        rt_personal = _make_runtime_mock(
+            provider_name="google", account_id="personal@gmail.com", state=state
+        )
+        rt_work = _make_runtime_mock(
+            provider_name="google", account_id="work@gmail.com", state=state
+        )
+        mod._runtimes = {
+            "google:personal@gmail.com": rt_personal,
+            "google:work@gmail.com": rt_work,
+        }
+
+        result = await mcp["contacts_sync_status"]()
+
+        assert "providers" in result
+        assert "google:personal@gmail.com" in result["providers"]
+        assert "google:work@gmail.com" in result["providers"]
+
+    async def test_sync_status_with_account_filter_targets_specific(self) -> None:
+        """contacts_sync_status with account filter returns status for that account."""
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "providers": [
+                    {"type": "google", "account": "personal@gmail.com"},
+                    {"type": "google", "account": "work@gmail.com"},
+                ]
+            },
+            db=None,
+        )
+
+        state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
+        rt_personal = _make_runtime_mock(
+            provider_name="google", account_id="personal@gmail.com", state=state
+        )
+        rt_work = _make_runtime_mock(
+            provider_name="google", account_id="work@gmail.com", state=state
+        )
+        mod._runtimes = {
+            "google:personal@gmail.com": rt_personal,
+            "google:work@gmail.com": rt_work,
+        }
+
+        result = await mcp["contacts_sync_status"](provider="google", account="work@gmail.com")
+
+        # Single match → flat result (not aggregated).
+        assert result["provider"] == "google:work@gmail.com"
+        assert "providers" not in result
