@@ -158,7 +158,11 @@ _register(
         token_path=Path.home() / ".local" / "share" / "opencode" / "auth.json",
         # Test: run a minimal prompt with an OpenCode Go model
         test_command=[
-            "opencode", "run", "--model", "opencode-go/minimax-m2.5", "respond with ok",
+            "opencode",
+            "run",
+            "--model",
+            "opencode-go/minimax-m2.5",
+            "respond with ok",
         ],
         test_ok_pattern=re.compile(r"(?:ok|OK|Ok)", re.IGNORECASE),
     )

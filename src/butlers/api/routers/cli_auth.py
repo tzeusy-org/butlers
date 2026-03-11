@@ -244,9 +244,7 @@ async def save_api_key(
                     pass
             # OpenCode Go stores API keys as {"type": "api", "key": "..."}
             existing["opencode-go"] = {"type": "api", "key": body.api_key}
-            provider_def.token_path.write_text(
-                json.dumps(existing, indent=2), encoding="utf-8"
-            )
+            provider_def.token_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             provider_def.token_path.chmod(0o600)
             logger.info("CLI auth: wrote API key to %s", provider_def.token_path)
         except OSError:
@@ -296,9 +294,7 @@ async def delete_api_key(
             existing = json.loads(provider_def.token_path.read_text(encoding="utf-8"))
             if "opencode-go" in existing:
                 del existing["opencode-go"]
-                provider_def.token_path.write_text(
-                    json.dumps(existing, indent=2), encoding="utf-8"
-                )
+                provider_def.token_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
         except (json.JSONDecodeError, OSError):
             logger.exception("CLI auth: failed to update auth file for %s", provider_def.name)
 
@@ -330,9 +326,7 @@ async def test_api_key(
             detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
         )
     if not provider_def.test_command:
-        raise HTTPException(
-            status_code=400, detail=f"No test command configured for {provider}."
-        )
+        raise HTTPException(status_code=400, detail=f"No test command configured for {provider}.")
 
     # The API key is in the CLI's auth.json — just run the test command
     from butlers.cli_auth.session import _strip_ansi

@@ -99,9 +99,7 @@ async def probe_provider(
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL,
         )
-        raw_output, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=_PROBE_TIMEOUT
-        )
+        raw_output, _ = await asyncio.wait_for(proc.communicate(), timeout=_PROBE_TIMEOUT)
         output = _strip_ansi(raw_output.decode(errors="replace"))
 
         if proc.returncode == 0 and provider.status_ok_pattern.search(output):
