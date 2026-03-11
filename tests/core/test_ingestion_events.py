@@ -17,6 +17,81 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
+# Column spec integrity — ensures _UNION_COLUMN_SPEC stays correct
+# ---------------------------------------------------------------------------
+
+
+class TestUnionColumnSpec:
+    """Verify that the column spec produces the correct SQL strings.
+
+    These tests lock down the exact column lists that both sides of the UNION ALL
+    must emit so that adding a new column only requires a single spec entry.
+    """
+
+    def test_ingested_cols_exact_content(self) -> None:
+        """_INGESTED_COLS must match the original hardcoded ingestion_events SELECT list."""
+        from butlers.core.ingestion_events import _INGESTED_COLS
+
+        expected = (
+            "id, received_at, source_channel, source_provider, "
+            "source_endpoint_identity, source_sender_identity, "
+            "source_thread_identity, external_event_id, dedupe_key, "
+            "dedupe_strategy, ingestion_tier, policy_tier, "
+            "triage_decision, triage_target, "
+            "'ingested'::text AS status, "
+            "NULL::text AS filter_reason, "
+            "NULL::text AS error_detail"
+        )
+        assert _INGESTED_COLS == expected
+
+    def test_filtered_cols_exact_content(self) -> None:
+        """_FILTERED_COLS must match the original hardcoded filtered_events SELECT list."""
+        from butlers.core.ingestion_events import _FILTERED_COLS
+
+        expected = (
+            "id, received_at, source_channel, "
+            "NULL::text AS source_provider, "
+            "endpoint_identity AS source_endpoint_identity, "
+            "sender_identity AS source_sender_identity, "
+            "NULL::text AS source_thread_identity, "
+            "external_message_id AS external_event_id, "
+            "NULL::text AS dedupe_key, NULL::text AS dedupe_strategy, "
+            "NULL::text AS ingestion_tier, NULL::text AS policy_tier, "
+            "NULL::text AS triage_decision, NULL::text AS triage_target, "
+            "status, filter_reason, error_detail"
+        )
+        assert _FILTERED_COLS == expected
+
+    def test_event_columns_exact_content(self) -> None:
+        """_EVENT_COLUMNS must match the original ingestion_events column list for point lookups."""
+        from butlers.core.ingestion_events import _EVENT_COLUMNS
+
+        expected = (
+            "id, received_at, source_channel, source_provider, "
+            "source_endpoint_identity, source_sender_identity, "
+            "source_thread_identity, external_event_id, dedupe_key, "
+            "dedupe_strategy, ingestion_tier, policy_tier, "
+            "triage_decision, triage_target"
+        )
+        assert _EVENT_COLUMNS == expected
+
+    def test_ingested_and_filtered_have_same_column_count(self) -> None:
+        """Both UNION branches must produce the same number of columns as the spec."""
+        from butlers.core.ingestion_events import _FILTERED_COLS, _INGESTED_COLS, _UNION_COLUMN_SPEC
+
+        ingested_count = len(_INGESTED_COLS.split(","))
+        filtered_count = len(_FILTERED_COLS.split(","))
+        assert ingested_count == filtered_count == len(_UNION_COLUMN_SPEC)
+
+    def test_spec_has_no_duplicate_aliases(self) -> None:
+        """Each output_alias in _UNION_COLUMN_SPEC must be unique."""
+        from butlers.core.ingestion_events import _UNION_COLUMN_SPEC
+
+        aliases = [alias for alias, _, _ in _UNION_COLUMN_SPEC]
+        assert len(aliases) == len(set(aliases)), "Duplicate aliases found in _UNION_COLUMN_SPEC"
+
+
+# ---------------------------------------------------------------------------
 # Fake asyncpg / DatabaseManager infrastructure
 # ---------------------------------------------------------------------------
 
@@ -41,7 +116,7 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
         "policy_tier": "default",
         "triage_decision": None,
         "triage_target": None,
-        # Literal columns now returned by _EVENT_COLUMNS
+        # Literal columns returned by _INGESTED_COLS (from _UNION_COLUMN_SPEC)
         "status": "ingested",
         "filter_reason": None,
         "error_detail": None,
@@ -408,7 +483,7 @@ class TestIngestionEventGetUnifiedLookup:
         assert result["error_detail"] == "Connection refused"
 
     async def test_ingested_event_error_detail_is_none(self) -> None:
-        """Ingested events must return error_detail=None (literal from _EVENT_COLUMNS)."""
+        """Ingested events must return error_detail=None (NULL::text from _INGESTED_COLS)."""
         from butlers.core.ingestion_events import ingestion_event_get
 
         row = _make_event_record()
