@@ -50,6 +50,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
@@ -187,6 +188,9 @@ class TelegramUserClientConnector:
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
 
+        # DB pool for filtered event persistence (may be None if DB unavailable).
+        self._db_pool = db_pool
+
         # Metrics
         self._metrics = ConnectorMetrics(
             connector_type="telegram_user_client",
@@ -211,6 +215,13 @@ class TelegramUserClientConnector:
         self._global_ingestion_policy = IngestionPolicyEvaluator(
             scope="global",
             db_pool=db_pool,
+        )
+
+        # Filtered event buffer: accumulates events filtered during each message event.
+        # Flushed to connectors.filtered_events after each event is processed.
+        self._filtered_event_buffer = FilteredEventBuffer(
+            connector_type=config.provider,
+            endpoint_identity=config.endpoint_identity,
         )
 
     async def start(self) -> None:
@@ -362,6 +373,9 @@ class TelegramUserClientConnector:
         """Process a single Telegram message event.
 
         Normalizes to ingest.v1 and submits to Switchboard ingest API.
+
+        Filtered and errored events are recorded into the FilteredEventBuffer
+        for batch persistence after the event is processed.
         """
         async with self._semaphore:
             try:
@@ -373,6 +387,8 @@ class TelegramUserClientConnector:
                         extra={"endpoint_identity": self._config.endpoint_identity},
                     )
                     return
+
+                message_id_str = str(message_id)
 
                 # Ingestion policy gate: evaluate before Switchboard submission.
                 # Blocked messages are intentionally dropped — not an error condition.
@@ -388,6 +404,28 @@ class TelegramUserClientConnector:
                         _ip_decision.action,
                         _ip_decision.reason,
                     )
+                    self._filtered_event_buffer.record(
+                        external_message_id=message_id_str,
+                        source_channel=self._config.channel,
+                        sender_identity=self._extract_sender_identity(message),
+                        subject_or_preview=self._extract_preview(message),
+                        filter_reason=FilteredEventBuffer.reason_policy_rule(
+                            "connector_rule",
+                            "block",
+                            _ip_decision.matched_rule_type or "unknown",
+                        ),
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.channel,
+                            provider=self._config.provider,
+                            endpoint_identity=self._config.endpoint_identity,
+                            external_event_id=message_id_str,
+                            external_thread_id=self._extract_chat_id(message),
+                            observed_at=datetime.now(UTC).isoformat(),
+                            sender_identity=self._extract_sender_identity(message),
+                            raw=message.to_dict() if hasattr(message, "to_dict") else {},
+                        ),
+                    )
+                    await self._flush_and_drain()
                     return
 
                 # 2. Global-scope rules (skip/metadata_only/route_to/low_priority_queue)
@@ -399,6 +437,28 @@ class TelegramUserClientConnector:
                         message_id,
                         _gp_decision.reason,
                     )
+                    self._filtered_event_buffer.record(
+                        external_message_id=message_id_str,
+                        source_channel=self._config.channel,
+                        sender_identity=self._extract_sender_identity(message),
+                        subject_or_preview=self._extract_preview(message),
+                        filter_reason=FilteredEventBuffer.reason_policy_rule(
+                            "global_rule",
+                            "skip",
+                            _gp_decision.matched_rule_type or "unknown",
+                        ),
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.channel,
+                            provider=self._config.provider,
+                            endpoint_identity=self._config.endpoint_identity,
+                            external_event_id=message_id_str,
+                            external_thread_id=self._extract_chat_id(message),
+                            observed_at=datetime.now(UTC).isoformat(),
+                            sender_identity=self._extract_sender_identity(message),
+                            raw=message.to_dict() if hasattr(message, "to_dict") else {},
+                        ),
+                    )
+                    await self._flush_and_drain()
                     return
 
                 # Normalize to ingest.v1
@@ -407,12 +467,15 @@ class TelegramUserClientConnector:
                 # Submit to Switchboard ingest
                 await self._submit_to_ingest(envelope)
 
+                # Flush after successful processing (drain replay-pending rows too)
+                await self._flush_and_drain()
+
                 # Update checkpoint
                 if self._last_message_id is None or message_id > self._last_message_id:
                     self._last_message_id = message_id
                     await self._save_checkpoint()
 
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Failed to process Telegram message",
                     extra={
@@ -420,6 +483,32 @@ class TelegramUserClientConnector:
                         "endpoint_identity": self._config.endpoint_identity,
                     },
                 )
+                # Record error event in the filtered event buffer
+                msg_id_str = str(getattr(message, "id", "unknown"))
+                try:
+                    raw_for_error = message.to_dict() if hasattr(message, "to_dict") else {}
+                except Exception:
+                    raw_for_error = {}
+                self._filtered_event_buffer.record(
+                    external_message_id=msg_id_str,
+                    source_channel=self._config.channel,
+                    sender_identity="unknown",
+                    subject_or_preview=None,
+                    filter_reason=FilteredEventBuffer.reason_submission_error(),
+                    full_payload=FilteredEventBuffer.full_payload(
+                        channel=self._config.channel,
+                        provider=self._config.provider,
+                        endpoint_identity=self._config.endpoint_identity,
+                        external_event_id=msg_id_str,
+                        external_thread_id=None,
+                        observed_at=datetime.now(UTC).isoformat(),
+                        sender_identity="unknown",
+                        raw=raw_for_error,
+                    ),
+                    status="error",
+                    error_detail=str(exc),
+                )
+                await self._flush_and_drain()
 
     @staticmethod
     def _build_ingestion_envelope(message: object) -> IngestionEnvelope:
@@ -445,6 +534,169 @@ class TelegramUserClientConnector:
             source_channel="telegram",
             raw_key=chat_id,
         )
+
+    @staticmethod
+    def _extract_chat_id(message: Any) -> str | None:
+        """Extract chat ID string from a Telethon message object, or None if absent."""
+        cid = getattr(message, "chat_id", None)
+        if cid is not None:
+            return str(cid)
+        peer_id = getattr(message, "peer_id", None)
+        if peer_id is not None:
+            for attr in ("channel_id", "chat_id", "user_id"):
+                val = getattr(peer_id, attr, None)
+                if val is not None:
+                    return str(val)
+        return None
+
+    @staticmethod
+    def _extract_sender_identity(message: Any) -> str:
+        """Extract sender identity from a Telethon message object."""
+        sender_id = getattr(message, "sender_id", None)
+        if sender_id is not None:
+            return str(sender_id)
+        from_id = getattr(message, "from_id", None)
+        if from_id is not None:
+            user_id = getattr(from_id, "user_id", None)
+            if user_id is not None:
+                return str(user_id)
+        return "unknown"
+
+    @staticmethod
+    def _extract_preview(message: Any) -> str | None:
+        """Extract a short text preview from a Telethon message object."""
+        text = getattr(message, "message", None) or getattr(message, "text", None)
+        if text:
+            return str(text)[:200]
+        return None
+
+    # SQL for the replay drain loop.
+    # Locks up to 10 replay_pending rows with skip-locked concurrency safety,
+    # then updates each to replay_complete or replay_failed after submission.
+    _REPLAY_SELECT_SQL = """\
+SELECT id, received_at, external_message_id, full_payload
+FROM connectors.filtered_events
+WHERE connector_type = $1
+  AND endpoint_identity = $2
+  AND status = 'replay_pending'
+ORDER BY received_at ASC
+LIMIT 10
+FOR UPDATE SKIP LOCKED
+"""
+
+    _REPLAY_UPDATE_SQL = """\
+UPDATE connectors.filtered_events
+SET status = $1,
+    error_detail = $2,
+    replay_completed_at = now()
+WHERE id = $3 AND received_at = $4
+"""
+
+    async def _flush_and_drain(self) -> None:
+        """Flush filtered event buffer then drain up to 10 replay-pending rows.
+
+        Called after each message event is processed.  No-op when ``_db_pool``
+        is None (no DB connectivity at connector startup).
+        """
+        if self._db_pool is None:
+            return
+
+        # 1. Flush accumulated filtered/error events from this event.
+        await self._filtered_event_buffer.flush(self._db_pool)
+
+        # 2. Drain replay-pending rows left by the dashboard "retry" action.
+        await self._drain_replay_pending()
+
+    async def _drain_replay_pending(self) -> None:
+        """Process up to 10 replay_pending rows from connectors.filtered_events.
+
+        For each row:
+        - Deserialize full_payload from JSONB.
+        - Wrap in an ingest.v1 envelope (adds schema_version).
+        - Submit via _submit_to_ingest.
+        - Mark status=replay_complete on success or replay_failed on error.
+
+        Uses FOR UPDATE SKIP LOCKED so concurrent connector instances never
+        process the same row twice.
+        """
+        if self._db_pool is None:
+            return
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                async with conn.transaction():
+                    rows = await conn.fetch(
+                        self._REPLAY_SELECT_SQL,
+                        self._config.provider,
+                        self._config.endpoint_identity,
+                    )
+
+                    if not rows:
+                        return
+
+                    logger.debug("replay drain: processing %d replay_pending rows", len(rows))
+
+                    for row in rows:
+                        row_id = row["id"]
+                        received_at = row["received_at"]
+                        external_message_id = row["external_message_id"]
+                        raw_payload = row["full_payload"]
+
+                        # Deserialize JSONB (asyncpg may return str or dict depending on codec)
+                        if isinstance(raw_payload, str):
+                            try:
+                                payload_dict: dict[str, Any] = json.loads(raw_payload)
+                            except Exception as exc:
+                                logger.warning(
+                                    "replay drain: failed to parse full_payload for id=%s: %s",
+                                    row_id,
+                                    exc,
+                                )
+                                await conn.execute(
+                                    self._REPLAY_UPDATE_SQL,
+                                    "replay_failed",
+                                    str(exc),
+                                    row_id,
+                                    received_at,
+                                )
+                                continue
+                        else:
+                            payload_dict = dict(raw_payload)
+
+                        # Build ingest.v1 envelope by adding schema_version
+                        envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
+
+                        try:
+                            await self._submit_to_ingest(envelope)
+                            await conn.execute(
+                                self._REPLAY_UPDATE_SQL,
+                                "replay_complete",
+                                None,
+                                row_id,
+                                received_at,
+                            )
+                            logger.info(
+                                "replay drain: replayed message %s (id=%s)",
+                                external_message_id,
+                                row_id,
+                            )
+                        except Exception as exc:
+                            error_msg = str(exc)
+                            logger.warning(
+                                "replay drain: failed to replay message %s (id=%s): %s",
+                                external_message_id,
+                                row_id,
+                                exc,
+                            )
+                            await conn.execute(
+                                self._REPLAY_UPDATE_SQL,
+                                "replay_failed",
+                                error_msg,
+                                row_id,
+                                received_at,
+                            )
+        except Exception:
+            logger.warning("replay drain: failed to query replay_pending rows", exc_info=True)
 
     async def _normalize_to_ingest_v1(self, message: Any) -> dict[str, Any]:
         """Normalize Telegram user-client message to canonical ingest.v1 format.
