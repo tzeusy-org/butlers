@@ -1678,3 +1678,18 @@ async def test_schedule_update_rejects_invalid_complexity(pool):
 
     with pytest.raises(ValueError, match="complexity"):
         await schedule_update(pool, task_id, complexity="super_high")
+
+
+async def test_schedule_list_includes_complexity(pool):
+    """schedule_list returns the complexity field for each task."""
+    from butlers.core.scheduler import schedule_create, schedule_list
+
+    await schedule_create(pool, "list-high-complexity", "0 9 * * *", "hard work", complexity="high")
+    await schedule_create(pool, "list-default-complexity", "0 10 * * *", "default work")
+
+    tasks = await schedule_list(pool)
+    high_task = next(t for t in tasks if t["name"] == "list-high-complexity")
+    default_task = next(t for t in tasks if t["name"] == "list-default-complexity")
+
+    assert high_task["complexity"] == "high"
+    assert default_task["complexity"] == "medium"

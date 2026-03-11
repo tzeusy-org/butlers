@@ -629,6 +629,7 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     rows = await pool.fetch(
         """
         SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
+               complexity,
                timezone, start_at, end_at, until_at, display_title, calendar_event_id,
                source, enabled,
                next_run_at, last_run_at, last_result,
