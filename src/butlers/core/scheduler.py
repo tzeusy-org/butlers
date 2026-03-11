@@ -200,7 +200,8 @@ def _normalize_schedule_dispatch(
             f"{context} with dispatch_mode={_DISPATCH_MODE_JOB!r} requires non-empty job_name"
         )
 
-    return mode, None, job_name.strip(), dict(job_args) if job_args is not None else None, normalized_complexity
+    coerced_job_args = dict(job_args) if job_args is not None else None
+    return mode, None, job_name.strip(), coerced_job_args, normalized_complexity
 
 
 def _cron_interval_seconds(cron: str, *, now: datetime | None = None) -> int:

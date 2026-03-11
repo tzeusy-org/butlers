@@ -657,3 +657,178 @@ class TestCrashRecovery:
             await daemon.start()
 
         assert not recovery_called, "_recover_route_inbox should NOT be called for switchboard"
+
+
+# ---------------------------------------------------------------------------
+# Complexity plumbing: route.execute extracts complexity and passes to spawner
+# ---------------------------------------------------------------------------
+
+
+class TestRouteExecuteComplexityPlumbing:
+    """Verify complexity from route.v1 envelope is forwarded to spawner.trigger()."""
+
+    async def test_complexity_high_passed_to_spawner(self, tmp_path: Path) -> None:
+        """route.execute with input.complexity=high passes Complexity.HIGH to spawner."""
+        from butlers.core.model_routing import Complexity
+
+        patches = _patch_infra("health")
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        trigger_mock = AsyncMock()
+        trigger_result = MagicMock()
+        trigger_result.session_id = uuid.uuid4()
+        trigger_mock.return_value = trigger_result
+        daemon.spawner.trigger = trigger_mock
+
+        with (
+            patch(
+                "butlers.daemon.route_inbox_insert",
+                new_callable=AsyncMock,
+                return_value=uuid.uuid4(),
+            ),
+            patch("butlers.daemon.route_inbox_mark_processing", new_callable=AsyncMock),
+            patch("butlers.daemon.route_inbox_mark_processed", new_callable=AsyncMock),
+        ):
+            await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={"prompt": "Deep analysis needed.", "complexity": "high"},
+            )
+            await asyncio.sleep(0.05)
+
+        trigger_mock.assert_awaited()
+        call_kwargs = trigger_mock.call_args.kwargs
+        assert call_kwargs["complexity"] == Complexity.HIGH
+
+    async def test_complexity_defaults_to_medium_when_absent(self, tmp_path: Path) -> None:
+        """route.execute without input.complexity defaults to Complexity.MEDIUM."""
+        from butlers.core.model_routing import Complexity
+
+        patches = _patch_infra("health")
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        trigger_mock = AsyncMock()
+        trigger_result = MagicMock()
+        trigger_result.session_id = uuid.uuid4()
+        trigger_mock.return_value = trigger_result
+        daemon.spawner.trigger = trigger_mock
+
+        with (
+            patch(
+                "butlers.daemon.route_inbox_insert",
+                new_callable=AsyncMock,
+                return_value=uuid.uuid4(),
+            ),
+            patch("butlers.daemon.route_inbox_mark_processing", new_callable=AsyncMock),
+            patch("butlers.daemon.route_inbox_mark_processed", new_callable=AsyncMock),
+        ):
+            await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={"prompt": "Run health check."},
+            )
+            await asyncio.sleep(0.05)
+
+        trigger_mock.assert_awaited()
+        call_kwargs = trigger_mock.call_args.kwargs
+        assert call_kwargs["complexity"] == Complexity.MEDIUM
+
+    async def test_complexity_extra_high_passed_to_spawner(self, tmp_path: Path) -> None:
+        """route.execute with input.complexity=extra_high passes Complexity.EXTRA_HIGH."""
+        from butlers.core.model_routing import Complexity
+
+        patches = _patch_infra("health")
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        trigger_mock = AsyncMock()
+        trigger_result = MagicMock()
+        trigger_result.session_id = uuid.uuid4()
+        trigger_mock.return_value = trigger_result
+        daemon.spawner.trigger = trigger_mock
+
+        with (
+            patch(
+                "butlers.daemon.route_inbox_insert",
+                new_callable=AsyncMock,
+                return_value=uuid.uuid4(),
+            ),
+            patch("butlers.daemon.route_inbox_mark_processing", new_callable=AsyncMock),
+            patch("butlers.daemon.route_inbox_mark_processed", new_callable=AsyncMock),
+        ):
+            await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={"prompt": "Synthesize everything.", "complexity": "extra_high"},
+            )
+            await asyncio.sleep(0.05)
+
+        trigger_mock.assert_awaited()
+        call_kwargs = trigger_mock.call_args.kwargs
+        assert call_kwargs["complexity"] == Complexity.EXTRA_HIGH
+
+    async def test_invalid_complexity_falls_back_to_medium(self, tmp_path: Path) -> None:
+        """Invalid complexity value in route.v1 input defaults to MEDIUM at spawner."""
+        from butlers.core.model_routing import Complexity
+
+        patches = _patch_infra("health")
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        trigger_mock = AsyncMock()
+        trigger_result = MagicMock()
+        trigger_result.session_id = uuid.uuid4()
+        trigger_mock.return_value = trigger_result
+        daemon.spawner.trigger = trigger_mock
+
+        # Build a raw dict with invalid complexity that bypasses pydantic
+        # (we inject it directly into the parsed_route simulation via extra="forbid" bypass
+        # by using a value that's valid according to the validator — "medium" — but we need
+        # to test the extraction path in _route_execute_inner where Complexity() conversion
+        # happens).  The pydantic model validates first, so we test _route_complexity
+        # extraction with a mock of parsed_route.
+        import butlers.daemon as daemon_module
+
+        orig_parse = daemon_module.parse_route_envelope
+
+        def _mock_parse(payload):
+            envelope = orig_parse(payload)
+            # Monkey-patch the input's complexity to an invalid string
+            # by creating a new model with the patched input field via model_copy
+            from butlers.tools.switchboard.routing.contracts import RouteInputV1
+
+            bad_input = object.__new__(RouteInputV1)
+            object.__setattr__(bad_input, "prompt", envelope.input.prompt)
+            object.__setattr__(bad_input, "context", envelope.input.context)
+            conv_hist = envelope.input.conversation_history
+            object.__setattr__(bad_input, "conversation_history", conv_hist)
+            object.__setattr__(bad_input, "complexity", "not_a_valid_value")
+            object.__setattr__(envelope, "input", bad_input)
+            return envelope
+
+        with (
+            patch("butlers.daemon.parse_route_envelope", side_effect=_mock_parse),
+            patch(
+                "butlers.daemon.route_inbox_insert",
+                new_callable=AsyncMock,
+                return_value=uuid.uuid4(),
+            ),
+            patch("butlers.daemon.route_inbox_mark_processing", new_callable=AsyncMock),
+            patch("butlers.daemon.route_inbox_mark_processed", new_callable=AsyncMock),
+        ):
+            await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={"prompt": "Run health check."},
+            )
+            await asyncio.sleep(0.05)
+
+        trigger_mock.assert_awaited()
+        call_kwargs = trigger_mock.call_args.kwargs
+        assert call_kwargs["complexity"] == Complexity.MEDIUM

@@ -1485,8 +1485,12 @@ async def test_sync_inserts_complexity_from_toml(pool):
     from butlers.core.scheduler import sync_schedules
 
     schedules = [
-        {"name": "high-complexity-task", "cron": "0 9 * * *", "prompt": "do hard work",
-         "complexity": "high"},
+        {
+            "name": "high-complexity-task",
+            "cron": "0 9 * * *",
+            "prompt": "do hard work",
+            "complexity": "high",
+        },
     ]
     await sync_schedules(pool, schedules)
 
@@ -1517,12 +1521,19 @@ async def test_sync_detects_complexity_change(pool):
     """sync_schedules triggers update when complexity changes between syncs."""
     from butlers.core.scheduler import sync_schedules
 
-    original = [{"name": "complexity-change", "cron": "0 9 * * *", "prompt": "work",
-                 "complexity": "trivial"}]
+    original = [
+        {
+            "name": "complexity-change",
+            "cron": "0 9 * * *",
+            "prompt": "work",
+            "complexity": "trivial",
+        }
+    ]
     await sync_schedules(pool, original)
 
-    updated = [{"name": "complexity-change", "cron": "0 9 * * *", "prompt": "work",
-                "complexity": "high"}]
+    updated = [
+        {"name": "complexity-change", "cron": "0 9 * * *", "prompt": "work", "complexity": "high"}
+    ]
     await sync_schedules(pool, updated)
 
     row = await pool.fetchrow(
@@ -1536,8 +1547,12 @@ async def test_sync_rejects_invalid_complexity(pool):
     from butlers.core.scheduler import sync_schedules
 
     schedules = [
-        {"name": "bad-complexity", "cron": "0 9 * * *", "prompt": "work",
-         "complexity": "ultra_high"},
+        {
+            "name": "bad-complexity",
+            "cron": "0 9 * * *",
+            "prompt": "work",
+            "complexity": "ultra_high",
+        },
     ]
     with pytest.raises(ValueError, match="complexity"):
         await sync_schedules(pool, schedules)
@@ -1562,6 +1577,7 @@ async def test_tick_passes_complexity_to_dispatch_fn(pool):
     assert count == 1
     assert len(dispatch.calls) == 1
     from butlers.core.model_routing import Complexity
+
     assert dispatch.calls[0]["complexity"] == Complexity.HIGH
 
 
@@ -1581,6 +1597,7 @@ async def test_tick_uses_medium_complexity_by_default(pool):
 
     assert count == 1
     from butlers.core.model_routing import Complexity
+
     assert dispatch.calls[0]["complexity"] == Complexity.MEDIUM
 
 
@@ -1617,9 +1634,7 @@ async def test_schedule_create_persists_complexity(pool):
     task_id = await schedule_create(
         pool, "create-complexity", "0 9 * * *", "work", complexity="extra_high"
     )
-    row = await pool.fetchrow(
-        "SELECT complexity FROM scheduled_tasks WHERE id = $1", task_id
-    )
+    row = await pool.fetchrow("SELECT complexity FROM scheduled_tasks WHERE id = $1", task_id)
     assert row["complexity"] == "extra_high"
 
 
@@ -1628,9 +1643,7 @@ async def test_schedule_create_defaults_complexity_to_medium(pool):
     from butlers.core.scheduler import schedule_create
 
     task_id = await schedule_create(pool, "create-default-complexity", "0 9 * * *", "work")
-    row = await pool.fetchrow(
-        "SELECT complexity FROM scheduled_tasks WHERE id = $1", task_id
-    )
+    row = await pool.fetchrow("SELECT complexity FROM scheduled_tasks WHERE id = $1", task_id)
     assert row["complexity"] == "medium"
 
 
@@ -1653,9 +1666,7 @@ async def test_schedule_update_changes_complexity(pool):
     )
     await schedule_update(pool, task_id, complexity="extra_high")
 
-    row = await pool.fetchrow(
-        "SELECT complexity FROM scheduled_tasks WHERE id = $1", task_id
-    )
+    row = await pool.fetchrow("SELECT complexity FROM scheduled_tasks WHERE id = $1", task_id)
     assert row["complexity"] == "extra_high"
 
 

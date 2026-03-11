@@ -72,6 +72,7 @@ from butlers.config import (
 )
 from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import ButlerMetrics, init_metrics
+from butlers.core.model_routing import Complexity
 from butlers.core.route_inbox import (
     route_inbox_insert,
     route_inbox_mark_errored,
@@ -2564,6 +2565,13 @@ class ButlerDaemon:
                 if isinstance(_raw_entity_id, str) and _raw_entity_id.strip():
                     _route_sender_entity_id = _raw_entity_id.strip()
 
+                # Extract complexity from envelope input; default to MEDIUM on missing/invalid.
+                _raw_route_complexity = parsed_route.input.complexity
+                try:
+                    _route_complexity = Complexity(_raw_route_complexity)
+                except ValueError:
+                    _route_complexity = Complexity.MEDIUM
+
                 async def _process_route(
                     _inbox_id: uuid.UUID,
                     _pool: asyncpg.Pool,
@@ -2575,6 +2583,7 @@ class ButlerDaemon:
                     _parent_ctx: OtelContext | None,
                     _accept_span_ctx: trace.SpanContext | None,
                     _sender_entity_id: str | None,
+                    _complexity: Complexity,
                 ) -> None:
                     """Background task: call spawner.trigger() and update route_inbox.
 
@@ -2620,6 +2629,7 @@ class ButlerDaemon:
                                 # rejection guard (trigger_source=="trigger" deadlock check).
                                 trigger_source="route",
                                 request_id=_request_id,
+                                complexity=_complexity,
                             )
                             await route_inbox_mark_processed(_pool, _inbox_id, result.session_id)
                         except Exception as exc:
@@ -2650,6 +2660,7 @@ class ButlerDaemon:
                         parent_ctx,
                         accept_span_ctx,
                         _route_sender_entity_id,
+                        _route_complexity,
                     ),
                     name=f"route-inbox-{inbox_id}",
                 )
@@ -3198,17 +3209,20 @@ class ButlerDaemon:
                 butler: str,
                 prompt: str,
                 context: str | None = None,
+                complexity: str | None = None,
             ) -> dict[str, Any]:
                 """Route a message to a specific butler.
 
-                IMPORTANT: This tool accepts exactly three parameters: butler,
-                prompt, and context. Do NOT pass any other keyword arguments.
+                IMPORTANT: This tool accepts exactly four parameters: butler,
+                prompt, context, and complexity. Do NOT pass any other keyword arguments.
 
                 Args:
                     butler: Target butler name (e.g. "health", "relationship").
                     prompt: Self-contained prompt for the target butler.
                     context: Optional — key details and context the target butler needs to act on
                         this request.
+                    complexity: Task complexity tier — one of "trivial", "medium", "high",
+                        "extra_high". Defaults to "medium" when omitted or invalid.
                 """
                 _routing_ctx = _routing_ctx_var.get() or {}
                 if not isinstance(_routing_ctx, dict):
@@ -3264,7 +3278,20 @@ class ButlerDaemon:
                 identity_preamble = _routing_ctx.get("identity_preamble")
                 effective_prompt = f"{identity_preamble}\n{prompt}" if identity_preamble else prompt
 
-                _input: dict[str, Any] = {"prompt": effective_prompt, "context": context}
+                # Normalize complexity: accept valid enum values, default to medium.
+                _complexity_values = {c.value for c in Complexity}
+                _raw_complexity = complexity.strip().lower() if isinstance(complexity, str) else ""
+                _normalized_complexity = (
+                    _raw_complexity
+                    if _raw_complexity in _complexity_values
+                    else Complexity.MEDIUM.value
+                )
+
+                _input: dict[str, Any] = {
+                    "prompt": effective_prompt,
+                    "context": context,
+                    "complexity": _normalized_complexity,
+                }
 
                 # Structured sender identity from resolution (contact_id, entity_id).
                 rc: dict[str, Any] = {

@@ -320,6 +320,9 @@ class RouteRequestContextV1(BaseModel):
         )
 
 
+_ALLOWED_COMPLEXITY_VALUES: frozenset[str] = frozenset({"trivial", "medium", "high", "extra_high"})
+
+
 class RouteInputV1(BaseModel):
     """Route input payload."""
 
@@ -328,6 +331,19 @@ class RouteInputV1(BaseModel):
     prompt: NonEmptyStr
     context: NonEmptyStr | dict[str, Any] | None = None
     conversation_history: str | None = None
+    complexity: str = "medium"
+
+    @field_validator("complexity")
+    @classmethod
+    def _validate_complexity(cls, value: str) -> str:
+        normalized = value.strip().lower() if isinstance(value, str) else value
+        if normalized not in _ALLOWED_COMPLEXITY_VALUES:
+            raise PydanticCustomError(
+                "invalid_complexity",
+                "input.complexity '{value}' is not valid; expected one of {allowed}.",
+                {"value": value, "allowed": sorted(_ALLOWED_COMPLEXITY_VALUES)},
+            )
+        return normalized
 
 
 class RouteSubrequestV1(BaseModel):

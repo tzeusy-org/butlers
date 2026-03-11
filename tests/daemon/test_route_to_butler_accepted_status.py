@@ -422,3 +422,129 @@ class TestRouteToButlerAcceptedStatusPassthrough:
         assert captured_envelope["request_context"]["source_channel"] == "telegram"
         assert captured_envelope["request_context"]["source_sender_identity"] == "123456789"
         assert captured_envelope["request_context"]["source_thread_identity"] == "123456789:999"
+
+
+class TestRouteToButlerComplexityEnvelope:
+    """Verify that route_to_butler embeds complexity in the route.v1 input section."""
+
+    async def test_complexity_defaults_to_medium_in_envelope(self, tmp_path: Path) -> None:
+        """When complexity is not passed, route.v1 input.complexity defaults to 'medium'."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        await route_to_butler_fn(butler="health", prompt="check my meds")
+
+        assert captured_envelope["input"]["complexity"] == "medium"
+
+    async def test_complexity_high_included_in_envelope(self, tmp_path: Path) -> None:
+        """Passing complexity='high' puts 'high' in route.v1 input.complexity."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        await route_to_butler_fn(butler="health", prompt="deep analysis needed", complexity="high")
+
+        assert captured_envelope["input"]["complexity"] == "high"
+
+    async def test_complexity_extra_high_included_in_envelope(self, tmp_path: Path) -> None:
+        """Passing complexity='extra_high' puts 'extra_high' in route.v1 input.complexity."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        await route_to_butler_fn(
+            butler="general", prompt="synthesize everything", complexity="extra_high"
+        )
+
+        assert captured_envelope["input"]["complexity"] == "extra_high"
+
+    async def test_invalid_complexity_falls_back_to_medium(self, tmp_path: Path) -> None:
+        """Invalid complexity string falls back to 'medium' in the envelope."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        await route_to_butler_fn(butler="health", prompt="check status", complexity="extreme")
+
+        assert captured_envelope["input"]["complexity"] == "medium"
+
+    async def test_none_complexity_falls_back_to_medium(self, tmp_path: Path) -> None:
+        """None complexity falls back to 'medium'."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        await route_to_butler_fn(butler="health", prompt="check status", complexity=None)
+
+        assert captured_envelope["input"]["complexity"] == "medium"
+
+    async def test_trivial_complexity_in_envelope(self, tmp_path: Path) -> None:
+        """Trivial complexity is propagated correctly."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        await route_to_butler_fn(butler="health", prompt="ping", complexity="trivial")
+
+        assert captured_envelope["input"]["complexity"] == "trivial"

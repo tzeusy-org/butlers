@@ -237,6 +237,67 @@ def test_unknown_or_newer_schema_version_fails_deterministically(
     assert error["type"] == "unsupported_schema_version"
 
 
+# ---------------------------------------------------------------------------
+# RouteInputV1 complexity field tests
+# ---------------------------------------------------------------------------
+
+
+class TestRouteInputV1Complexity:
+    """Tests for the complexity field on RouteInputV1."""
+
+    def test_complexity_defaults_to_medium_when_absent(self) -> None:
+        payload = _valid_route_payload()
+        # complexity not set in input
+        envelope = parse_route_envelope(payload)
+        assert envelope.input.complexity == "medium"
+
+    def test_complexity_medium_explicit(self) -> None:
+        payload = _valid_route_payload()
+        payload["input"]["complexity"] = "medium"
+        envelope = parse_route_envelope(payload)
+        assert envelope.input.complexity == "medium"
+
+    def test_complexity_trivial_accepted(self) -> None:
+        payload = _valid_route_payload()
+        payload["input"]["complexity"] = "trivial"
+        envelope = parse_route_envelope(payload)
+        assert envelope.input.complexity == "trivial"
+
+    def test_complexity_high_accepted(self) -> None:
+        payload = _valid_route_payload()
+        payload["input"]["complexity"] = "high"
+        envelope = parse_route_envelope(payload)
+        assert envelope.input.complexity == "high"
+
+    def test_complexity_extra_high_accepted(self) -> None:
+        payload = _valid_route_payload()
+        payload["input"]["complexity"] = "extra_high"
+        envelope = parse_route_envelope(payload)
+        assert envelope.input.complexity == "extra_high"
+
+    def test_complexity_normalizes_to_lowercase(self) -> None:
+        payload = _valid_route_payload()
+        payload["input"]["complexity"] = "HIGH"
+        envelope = parse_route_envelope(payload)
+        assert envelope.input.complexity == "high"
+
+    def test_complexity_invalid_value_raises(self) -> None:
+        payload = _valid_route_payload()
+        payload["input"]["complexity"] = "insane"
+        with pytest.raises(ValidationError) as exc_info:
+            parse_route_envelope(payload)
+        error = exc_info.value.errors()[0]
+        assert error["type"] == "invalid_complexity"
+
+    def test_route_v1_envelope_with_complexity_roundtrip(self) -> None:
+        """Envelope with complexity field validates and roundtrips correctly."""
+        payload = _valid_route_payload()
+        payload["input"]["complexity"] = "high"
+        envelope = parse_route_envelope(payload)
+        assert envelope.input.complexity == "high"
+        assert envelope.input.prompt == "summarize this message"
+
+
 def test_request_context_lineage_immutability_enforced() -> None:
     original_payload = {
         "request_id": _VALID_UUID7,
