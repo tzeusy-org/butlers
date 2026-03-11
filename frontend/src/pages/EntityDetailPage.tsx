@@ -442,7 +442,7 @@ function EntityInfoSection({
             <span>
               Google OAuth tokens are managed on companion Google account entities.
               {hasHiddenOAuthRows
-                ? " Existing token rows are hidden here — "
+                ? " Existing token rows are hidden here — manage them at "
                 : " To manage Google accounts, go to "}
               <Link to="/settings" className="text-primary hover:underline">
                 Settings → Google OAuth
