@@ -212,9 +212,9 @@ The spawner generates ephemeral MCP configurations and invokes LLM CLI runtimes 
 
 #### Scenario: Environment sandboxing
 - **WHEN** the spawner builds the subprocess environment
-- **THEN** it starts with a minimal baseline: only `PATH` plus explicitly declared credentials
-- **AND** core API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) are always included if available
+- **THEN** it starts with a minimal baseline: only `PATH` plus explicitly declared `[butler.env]` vars
 - **AND** module credentials are resolved via the CredentialStore (DB-first with env fallback)
+- **AND** runtime authentication uses CLI-level OAuth tokens (device-code flow via the dashboard Settings page), not API keys
 - **AND** no undeclared environment variables leak from the host to the runtime subprocess
 
 #### Scenario: Runtime adapter selection
@@ -363,7 +363,7 @@ Butler credentials follow a layered resolution strategy: database-first from the
 - **WHEN** a butler or module needs a credential (API key, OAuth token, etc.)
 - **THEN** the CredentialStore first checks the `shared.secrets` table in PostgreSQL
 - **AND** if not found, falls back to the environment variable specified in the module config (e.g., `token_env = "BUTLER_TELEGRAM_TOKEN"`)
-- **AND** `ANTHROPIC_API_KEY` validation is fatal — butler will not start without it
+- **AND** runtime authentication is via CLI-level OAuth tokens; no API key validation is performed at startup
 
 #### Scenario: Credential isolation in runtime sessions
 - **WHEN** the spawner builds the subprocess environment for a runtime session

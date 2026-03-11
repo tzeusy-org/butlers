@@ -1,21 +1,26 @@
 """CLI auth provider registry.
 
-Each provider defines the command, stdout patterns, and token path for a
-specific CLI tool's device-code login flow, plus a status command for
-health probing.
+Each provider defines how a CLI tool authenticates. Two modes are supported:
+
+- **device_code**: Interactive device-code flow (e.g. OpenCode, Codex). The
+  provider defines the command, stdout patterns, and token path.
+- **api_key**: Simple API key entry. The key is stored in the credential
+  store and injected as an environment variable at runtime.
+
+All providers support an optional status command for health probing.
 """
 
 from __future__ import annotations
 
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
 @dataclass(frozen=True)
 class CLIAuthProviderDef:
-    """Definition of a CLI tool's device-code auth flow."""
+    """Definition of a CLI tool's auth flow."""
 
     name: str
     """Unique identifier (used in API paths)."""
@@ -23,23 +28,42 @@ class CLIAuthProviderDef:
     display_name: str
     """Human-readable label for the dashboard."""
 
-    command: list[str]
-    """Command + args to spawn the login flow."""
-
-    url_pattern: re.Pattern[str]
-    """Regex to extract the authorization URL from stdout."""
-
-    code_pattern: re.Pattern[str]
-    """Regex to extract the device code from stdout."""
-
-    success_pattern: re.Pattern[str]
-    """Regex to detect successful login in stdout."""
-
-    token_path: Path
-    """Path to the credential file written by the CLI on success."""
-
     runtime: str
     """Butler runtime adapter name this provider authenticates."""
+
+    auth_mode: str = "device_code"
+    """Auth mode: ``"device_code"`` or ``"api_key"``."""
+
+    # -- device_code fields --------------------------------------------------
+
+    command: list[str] = field(default_factory=list)
+    """Command + args to spawn the login flow (device_code mode only)."""
+
+    url_pattern: re.Pattern[str] | None = None
+    """Regex to extract the authorization URL from stdout."""
+
+    code_pattern: re.Pattern[str] | None = None
+    """Regex to extract the device code from stdout."""
+
+    success_pattern: re.Pattern[str] | None = None
+    """Regex to detect successful login in stdout."""
+
+    token_path: Path | None = None
+    """Path to the credential file written by the CLI on success."""
+
+    # -- api_key fields ------------------------------------------------------
+
+    env_var: str = ""
+    """Environment variable name to inject the API key as (api_key mode)."""
+
+    test_command: list[str] = field(default_factory=list)
+    """Command to run for testing the API key (api_key mode). The env_var is
+    set in the subprocess environment before running this command."""
+
+    test_ok_pattern: re.Pattern[str] | None = None
+    """Regex that matches test command output on success."""
+
+    # -- shared fields -------------------------------------------------------
 
     status_command: list[str] | None = None
     """Command to check current auth status (e.g. ``["codex", "login", "status"]``)."""
@@ -54,15 +78,24 @@ class CLIAuthProviderDef:
     """Maximum time to wait for authorization (15 minutes default)."""
 
     def binary(self) -> str:
-        return self.binary_name or self.command[0]
+        if self.binary_name:
+            return self.binary_name
+        if self.command:
+            return self.command[0]
+        if self.test_command:
+            return self.test_command[0]
+        return ""
 
     def is_available(self) -> bool:
         """Check if the CLI binary is on PATH."""
-        return shutil.which(self.binary()) is not None
+        b = self.binary()
+        return bool(b) and shutil.which(b) is not None
 
     def is_authenticated(self) -> bool:
-        """Check if credential file exists on disk."""
-        return self.token_path.exists()
+        """Check if credential file exists on disk (device_code mode)."""
+        if self.token_path is not None:
+            return self.token_path.exists()
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -110,5 +143,19 @@ _register(
         # `codex login status` outputs "Logged in using ChatGPT" when authenticated
         status_command=["codex", "login", "status"],
         status_ok_pattern=re.compile(r"Logged in", re.IGNORECASE),
+    )
+)
+
+_register(
+    CLIAuthProviderDef(
+        name="opencode-go",
+        display_name="OpenCode Go",
+        runtime="opencode",
+        auth_mode="api_key",
+        env_var="OPENCODE_GO_API_KEY",
+        binary_name="opencode",
+        # Quick validation: `opencode version` should succeed
+        test_command=["opencode", "version"],
+        test_ok_pattern=re.compile(r"opencode", re.IGNORECASE),
     )
 )

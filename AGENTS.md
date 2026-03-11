@@ -744,8 +744,7 @@ make test-qg
 - `frontend/src/pages/SecretsPage.tsx` no longer includes a dedicated "Configure App Credentials" form card; Google app credentials are managed through generic secrets rows (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`) and the OAuth section focuses on status/connect/delete actions.
 - `src/butlers/api/routers/oauth.py::_get_scopes()` uses the fixed `_DEFAULT_SCOPES` set for `/api/oauth/google/start`; `GOOGLE_OAUTH_SCOPES` is no longer a runtime override input.
 - Fixed OAuth scopes now include People-related scopes in addition to Gmail/Calendar: `contacts`, `contacts.readonly`, `contacts.other.readonly`, and `directory.readonly`.
-- `frontend/src/lib/secret-templates.ts` should include `OPENAI_API_KEY` under core templates so `/secrets` shows it as a first-class configurable key.
-- `src/butlers/core/spawner.py::_build_env` globally injects both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (CredentialStore DB-first, env fallback) for every runtime spawn, independent of `[butler.env]`.
+- Runtime authentication is handled by CLI-level OAuth tokens (device-code flow via the dashboard `/settings` page), not API keys. The spawner only includes `PATH` plus declared `[butler.env]` vars and module credential vars in the runtime environment.
 
 ### One-DB multi-schema migration planning contract
 - `docs/operations/one-db-multi-schema-migration.md` is the authoritative plan for epic `butlers-1003`: target topology (`shared` + per-butler schemas), role/ACL model, phased cutover + rollback, parity/isolation gates, and child-issue decomposition.

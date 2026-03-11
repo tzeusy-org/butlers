@@ -296,7 +296,7 @@ E2E security tests validate credential isolation, MCP config lockdown, database 
 - **WHEN** testing environment variable isolation
 - **THEN** a canary env var (`TEST_SECRET_CANARY`) is set, a butler is triggered, and the test asserts the runtime instance cannot access the undeclared variable
 - **AND** cross-butler credential isolation is validated (health runtime cannot access relationship credentials)
-- **AND** `ANTHROPIC_API_KEY` is always present in runtime environment
+- **AND** runtime authentication uses CLI-level OAuth tokens, not API keys injected via env vars
 
 #### Scenario: MCP config lockdown testing
 - **WHEN** testing MCP tool scope

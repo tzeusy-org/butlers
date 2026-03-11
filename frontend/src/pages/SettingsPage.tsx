@@ -36,7 +36,10 @@ import {
   useCancelCLIAuth,
   useCLIAuthProviders,
   useCLIAuthSession,
+  useDeleteCLIAuthApiKey,
+  useSaveCLIAuthApiKey,
   useStartCLIAuth,
+  useTestCLIAuthApiKey,
 } from "@/hooks/use-cli-auth";
 import {
   useDeleteGoogleCredentials,
@@ -409,6 +412,114 @@ function CLIAuthProviderRow({ provider }: { provider: CLIAuthProvider }) {
   );
 }
 
+function CLIAuthApiKeyRow({ provider }: { provider: CLIAuthProvider }) {
+  const [apiKey, setApiKey] = useState("");
+  const [saved, setSaved] = useState(false);
+  const saveMutation = useSaveCLIAuthApiKey();
+  const deleteMutation = useDeleteCLIAuthApiKey();
+  const testMutation = useTestCLIAuthApiKey();
+
+  async function handleSave() {
+    setSaved(false);
+    await saveMutation.mutateAsync({ provider: provider.name, apiKey: apiKey.trim() });
+    setApiKey("");
+    setSaved(true);
+  }
+
+  async function handleTest() {
+    testMutation.mutate(provider.name);
+  }
+
+  async function handleDelete() {
+    setSaved(false);
+    await deleteMutation.mutateAsync(provider.name);
+  }
+
+  return (
+    <div className="space-y-3 py-4 border-b border-border last:border-0">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium">{provider.display_name}</p>
+          {provider.env_var && (
+            <p className="text-xs text-muted-foreground font-mono">
+              {provider.env_var}
+            </p>
+          )}
+        </div>
+        <Badge variant={cliHealthBadge(provider.health, provider.authenticated).variant}>
+          {cliHealthBadge(provider.health, provider.authenticated).label}
+        </Badge>
+      </div>
+
+      {/* Health detail */}
+      {provider.health_detail && provider.health !== "authenticated" && (
+        <p className="text-xs text-muted-foreground">{provider.health_detail}</p>
+      )}
+
+      {/* API key input */}
+      <div className="flex items-center gap-2">
+        <Input
+          type="password"
+          placeholder="Enter API key"
+          value={apiKey}
+          onChange={(e) => { setApiKey(e.target.value); setSaved(false); }}
+          autoComplete="new-password"
+          className="max-w-sm h-8 text-sm"
+        />
+        <Button
+          size="sm"
+          onClick={handleSave}
+          disabled={saveMutation.isPending || !apiKey.trim()}
+        >
+          {saveMutation.isPending ? "Saving..." : "Save"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleTest}
+          disabled={testMutation.isPending || !provider.authenticated}
+        >
+          {testMutation.isPending ? "Testing..." : "Test"}
+        </Button>
+        {provider.authenticated && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={handleDelete}
+            disabled={deleteMutation.isPending}
+          >
+            Delete
+          </Button>
+        )}
+      </div>
+
+      {/* Feedback messages */}
+      {saved && !saveMutation.isError && (
+        <p className="text-sm text-green-600 dark:text-green-400">
+          API key saved successfully.
+        </p>
+      )}
+      {saveMutation.isError && (
+        <p className="text-sm text-destructive">
+          Failed to save: {saveMutation.error instanceof Error ? saveMutation.error.message : "Unknown error"}
+        </p>
+      )}
+      {testMutation.data && (
+        <p className={`text-sm ${testMutation.data.success ? "text-green-600 dark:text-green-400" : "text-destructive"}`}>
+          {testMutation.data.success ? "Test passed" : "Test failed"}
+          {testMutation.data.detail && `: ${testMutation.data.detail}`}
+        </p>
+      )}
+      {testMutation.isError && (
+        <p className="text-sm text-destructive">
+          Test failed: {testMutation.error instanceof Error ? testMutation.error.message : "Unknown error"}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function CLIAuthCard() {
   const providersQuery = useCLIAuthProviders();
   const providers = providersQuery.data;
@@ -420,8 +531,8 @@ function CLIAuthCard() {
       <CardHeader>
         <CardTitle>CLI Runtime Authentication</CardTitle>
         <CardDescription>
-          Authenticate CLI tools used by butler runtimes. Uses device-code
-          authorization — no API keys required.
+          Authenticate CLI tools used by butler runtimes via device-code
+          flow or API key.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -435,9 +546,13 @@ function CLIAuthCard() {
             Failed to load CLI auth providers. Ensure the dashboard API is running.
           </p>
         ) : providers && providers.length > 0 ? (
-          providers.map((p) => (
-            <CLIAuthProviderRow key={p.name} provider={p} />
-          ))
+          providers.map((p) =>
+            p.auth_mode === "api_key" ? (
+              <CLIAuthApiKeyRow key={p.name} provider={p} />
+            ) : (
+              <CLIAuthProviderRow key={p.name} provider={p} />
+            ),
+          )
         ) : (
           <p className="text-sm text-muted-foreground">
             No CLI tools found on the server. Install opencode or codex to enable

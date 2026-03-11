@@ -41,7 +41,7 @@ name = "jarvis_db"
 model = "claude-sonnet-4-20250514"
 
 [butler.env]
-required = ["OPENAI_API_KEY", "PG_DSN"]
+required = ["SMTP_PASSWORD", "PG_DSN"]
 optional = ["SLACK_TOKEN"]
 
 [[butler.schedule]]
@@ -133,7 +133,7 @@ def test_load_full_config(tmp_path: Path):
     }
 
     # Env
-    assert cfg.env_required == ["OPENAI_API_KEY", "PG_DSN"]
+    assert cfg.env_required == ["SMTP_PASSWORD", "PG_DSN"]
     assert cfg.env_optional == ["SLACK_TOKEN"]
 
 

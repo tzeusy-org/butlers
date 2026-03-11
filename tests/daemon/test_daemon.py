@@ -1595,7 +1595,7 @@ description = "A test butler"
 name = "butler_test"
 
 [butler.env]
-required = ["ANTHROPIC_API_KEY", "SECRET_TOKEN"]
+required = ["PG_DSN", "SECRET_TOKEN"]
 optional = ["OPTIONAL_KEY"]
 """
         (tmp_path / "butler.toml").write_text(toml_content)
@@ -2080,7 +2080,7 @@ port = 9100
 name = "butler_test"
 
 [butler.env]
-required = ["ANTHROPIC_API_KEY"]
+required = ["PG_DSN"]
 optional = ["OPTIONAL_KEY"]
 """
         (tmp_path / "butler.toml").write_text(toml_content)

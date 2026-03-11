@@ -25,4 +25,4 @@ The switchboard spec and Dockerfile already reference OpenCode as a supported ru
 - **Config:** Butlers can set `[runtime] type = "opencode"` in `butler.toml`; requires `opencode` binary on PATH (already installed in Dockerfile via `opencode-ai`)
 - **Tests:** New test file `tests/adapters/test_opencode_adapter.py`, update registry tests
 - **Dependencies:** No new Python dependencies (subprocess-based like Codex/Gemini)
-- **Environment:** Needs provider API keys passed through (e.g., `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) depending on configured model
+- **Environment:** Receives declared `[butler.env]` vars; runtime authentication uses CLI-level OAuth tokens

@@ -22,7 +22,7 @@ The spawner delegates to a `RuntimeAdapter` abstract base class. Four concrete a
 #### Scenario: Gemini adapter invocation
 - **WHEN** the butler's runtime type is `gemini`
 - **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
-- **AND** filters env vars to exclude `ANTHROPIC_API_KEY` and include `GOOGLE_API_KEY`
+- **AND** passes declared butler env vars to the subprocess
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the butler's runtime type is `opencode`
@@ -77,11 +77,11 @@ Valid trigger sources are: `tick`, `external`, `trigger`, `route`, and `schedule
 - **THEN** the session's `trigger_source` is `"schedule:daily_digest"`
 
 ### Requirement: Credential Isolation
-The spawner builds an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), core API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`), butler-level required/optional env vars, and module credential vars. Credentials are resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars do not leak through.
+The spawner builds an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, and module credential vars. Runtime authentication uses CLI-level OAuth tokens (device-code flow via the dashboard Settings page), not API keys. Credentials are resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars do not leak through.
 
 #### Scenario: Only declared credentials are passed
 - **WHEN** the spawner builds the runtime environment
-- **THEN** only `PATH`, core API keys, declared butler env vars, and declared module credential vars are included
+- **THEN** only `PATH`, declared `[butler.env]` vars, and declared module credential vars are included
 - **AND** other host environment variables are excluded
 
 ### Requirement: Memory Context Injection

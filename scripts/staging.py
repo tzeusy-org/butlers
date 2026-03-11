@@ -76,11 +76,6 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     """Boot the ecosystem and hold it open until interrupted."""
-    # Check for API key
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        logger.error("ANTHROPIC_API_KEY not set — ecosystem requires real LLM calls")
-        sys.exit(1)
-
     logger.info("Starting PostgreSQL testcontainer...")
     pg = PostgresContainer("pgvector/pgvector:pg17")
     pg.start()

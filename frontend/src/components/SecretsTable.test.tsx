@@ -162,8 +162,8 @@ describe("SecretsTable", () => {
           butlerName="general"
           secrets={[
             secret({
-              key: "ANTHROPIC_API_KEY",
-              category: "core",
+              key: "BUTLER_EMAIL_PASSWORD",
+              category: "email",
               source: "database",
               is_set: true,
             }),
@@ -202,7 +202,7 @@ describe("SecretsTable", () => {
     });
 
     const setValueButton = container.querySelector(
-      'button[aria-label="Set BUTLER_TELEGRAM_TOKEN"]',
+      'button[aria-label="Set GOOGLE_OAUTH_CLIENT_ID"]',
     ) as HTMLButtonElement | null;
     expect(setValueButton).not.toBeNull();
   });

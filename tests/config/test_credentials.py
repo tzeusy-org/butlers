@@ -96,7 +96,6 @@ def test_multiple_missing_aggregated(monkeypatch: pytest.MonkeyPatch):
         )
 
     msg = str(exc_info.value)
-    # ANTHROPIC_API_KEY is no longer checked here (deferred to async DB-first check)
     assert "PG_DSN" in msg
     assert "EMAIL_PASS" in msg
 
@@ -146,7 +145,6 @@ def test_error_message_identifies_sources(monkeypatch: pytest.MonkeyPatch):
         )
 
     msg = str(exc_info.value)
-    # "required by core" no longer applies (ANTHROPIC_API_KEY is DB-first now)
     assert "required by butler.env" in msg
     assert "required by module:telegram" in msg
 

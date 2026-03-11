@@ -110,15 +110,7 @@ The `startup_guard` module provides `check_google_credentials()` (sync, returns 
 - **THEN** a warning is logged but no exception is raised
 
 ### Requirement: Async Core Credential Validation
-`validate_core_credentials_async(credential_store, runtime_type)` validates that the runtime's core credentials are resolvable via DB-first resolution. For `claude-code`, checks `ANTHROPIC_API_KEY`; for `gemini`, checks `GOOGLE_API_KEY`.
-
-#### Scenario: Core credential available in DB
-- **WHEN** `ANTHROPIC_API_KEY` is stored in `butler_secrets`
-- **THEN** `validate_core_credentials_async()` passes without error
-
-#### Scenario: Core credential missing everywhere
-- **WHEN** `ANTHROPIC_API_KEY` is not in DB or env
-- **THEN** `CredentialError` is raised with a message suggesting dashboard Secrets page or env var
+Runtime authentication uses CLI-level OAuth tokens (device-code flow via the dashboard Settings page), not API keys. The `validate_core_credentials_async()` function is a no-op; no API key validation is performed at startup.
 
 ### Requirement: Async Module Credential Validation
 `validate_module_credentials_async(module_credentials, credential_store)` checks each module's declared credential keys via `CredentialStore.resolve()`. Returns a dict of per-module missing keys (non-fatal, does not raise).

@@ -604,7 +604,7 @@ class TestCredentialPassthrough:
         config = _make_config(env_required=["MY_SECRET"])
         with patch.dict(
             os.environ,
-            {"ANTHROPIC_API_KEY": "sk-key", "MY_SECRET": "s3cret"},
+            {"MY_SECRET": "s3cret"},
             clear=False,
         ):
             env = await _build_env(config)
@@ -614,7 +614,7 @@ class TestCredentialPassthrough:
         config = _make_config(env_optional=["OPT_VAR"])
         with patch.dict(
             os.environ,
-            {"ANTHROPIC_API_KEY": "sk-key", "OPT_VAR": "opt-val"},
+            {"OPT_VAR": "opt-val"},
             clear=False,
         ):
             env = await _build_env(config)
@@ -622,11 +622,9 @@ class TestCredentialPassthrough:
 
     async def test_optional_env_vars_excluded_when_absent(self):
         config = _make_config(env_optional=["MISSING_OPT"])
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-key"}, clear=False):
-            # Ensure the var is not set
-            os.environ.pop("MISSING_OPT", None)
-            env = await _build_env(config)
-            assert "MISSING_OPT" not in env
+        os.environ.pop("MISSING_OPT", None)
+        env = await _build_env(config)
+        assert "MISSING_OPT" not in env
 
     async def test_module_credentials_included(self):
         config = _make_config()
@@ -634,7 +632,6 @@ class TestCredentialPassthrough:
         with patch.dict(
             os.environ,
             {
-                "ANTHROPIC_API_KEY": "sk-key",
                 "SMTP_PASSWORD": "pw123",
                 "IMAP_TOKEN": "tok456",
             },
@@ -649,7 +646,6 @@ class TestCredentialPassthrough:
         with patch.dict(
             os.environ,
             {
-                "ANTHROPIC_API_KEY": "sk-key",
                 "DECLARED": "yes",
                 "UNDECLARED_SECRET": "should-not-leak",
             },
@@ -658,22 +654,6 @@ class TestCredentialPassthrough:
             env = await _build_env(config)
             assert "UNDECLARED_SECRET" not in env
             assert "DECLARED" in env
-
-    async def test_anthropic_key_missing_not_included(self):
-        config = _make_config()
-        env_copy = os.environ.copy()
-        env_copy.pop("ANTHROPIC_API_KEY", None)
-        with patch.dict(os.environ, env_copy, clear=True):
-            env = await _build_env(config)
-            assert "ANTHROPIC_API_KEY" not in env
-
-    async def test_openai_key_missing_not_included(self):
-        config = _make_config()
-        env_copy = os.environ.copy()
-        env_copy.pop("OPENAI_API_KEY", None)
-        with patch.dict(os.environ, env_copy, clear=True):
-            env = await _build_env(config)
-            assert "OPENAI_API_KEY" not in env
 
     # ------------------------------------------------------------------
     # DB-first resolution path (with mocked CredentialStore)
@@ -685,7 +665,6 @@ class TestCredentialPassthrough:
         module_creds = {"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}
         store = AsyncMock()
         resolved = {
-            "ANTHROPIC_API_KEY": "sk-key",
             "SMTP_PASSWORD": "db-smtp-pw",
             "IMAP_TOKEN": "db-imap-tok",
         }
@@ -697,7 +676,7 @@ class TestCredentialPassthrough:
     async def test_db_resolution_required_env_vars(self):
         """butler-level required env vars resolved from DB when CredentialStore is provided."""
         config = _make_config(env_required=["MY_SECRET"])
-        resolved = {"ANTHROPIC_API_KEY": "sk-key", "MY_SECRET": "db-secret-value"}
+        resolved = {"MY_SECRET": "db-secret-value"}
         store = AsyncMock()
         store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
         env = await _build_env(config, credential_store=store)
@@ -1295,8 +1274,7 @@ class TestModelPassthrough:
             runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
         )
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-key"}, clear=False):
-            await spawner.trigger("test model", "tick")
+        await spawner.trigger("test model", "tick")
 
         assert len(captured_options) == 1
         assert captured_options[0].model == "claude-sonnet-4-20250514"
@@ -1320,8 +1298,7 @@ class TestModelPassthrough:
             runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
         )
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-key"}, clear=False):
-            await spawner.trigger("test default", "tick")
+        await spawner.trigger("test default", "tick")
 
         assert len(captured_options) == 1
         assert captured_options[0].model == "claude-haiku-4-5-20251001"

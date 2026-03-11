@@ -1551,10 +1551,12 @@ export interface CLIAuthProvider {
   name: string;
   display_name: string;
   runtime: string;
+  auth_mode: "device_code" | "api_key";
   authenticated: boolean;
   health: CLIAuthHealthState | null;
   health_detail: string | null;
   token_path: string | null;
+  env_var: string | null;
 }
 
 export interface CLIAuthStartResponse {
@@ -1572,6 +1574,18 @@ export interface CLIAuthSessionResponse {
   device_code: string | null;
   message: string | null;
   provider: string | null;
+}
+
+export interface CLIAuthApiKeyResponse {
+  provider: string;
+  stored: boolean;
+  message: string | null;
+}
+
+export interface CLIAuthTestResponse {
+  provider: string;
+  success: boolean;
+  detail: string | null;
 }
 
 // ---------------------------------------------------------------------------

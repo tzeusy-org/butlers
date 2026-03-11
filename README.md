@@ -237,22 +237,23 @@ Butlers spawn ephemeral LLM CLI instances to reason and act. Each butler declare
 
 | Runtime type | CLI binary | Install | Authenticate |
 | ------------ | ---------- | ------- | ------------ |
-| `claude-code` (default) | `claude` | `npm install -g @anthropic-ai/claude-code` | `claude` (interactive login), or set `ANTHROPIC_API_KEY` |
-| `codex` | `codex` | `npm install -g @openai/codex` | `codex` (interactive login), or set `OPENAI_API_KEY` |
-| `gemini` | `gemini` | `npm install -g @anthropic-ai/gemini-cli` | Set `GOOGLE_API_KEY` |
+| `claude-code` (default) | `claude` | `npm install -g @anthropic-ai/claude-code` | Dashboard Settings > CLI Runtime Authentication |
+| `codex` | `codex` | `npm install -g @openai/codex` | Dashboard Settings > CLI Runtime Authentication |
+| `gemini` | `gemini` | `npm install -g @anthropic-ai/gemini-cli` | Dashboard Settings > CLI Runtime Authentication |
 
-The daemon verifies the configured binary is on `PATH` at startup and will fail fast if it's missing or unauthenticated.
+The daemon verifies the configured binary is on `PATH` at startup and will fail fast if it's missing.
 
-Most butlers default to `claude-code`. If you only plan to use the default runtime, you only need `claude` installed and authenticated.
+Most butlers default to `claude-code`. If you only plan to use the default runtime, you only need `claude` installed.
 
-### API Keys and Credentials
+### CLI Runtime Authentication
+
+Runtime CLIs authenticate via **OAuth device-code flow**, managed from the dashboard Settings page. Click "Login" next to the provider, follow the device-code URL, and authorize. Tokens are persisted to the shared credential store and restored automatically on restart (no PVs needed for Kubernetes).
+
+Health probes run periodically to verify tokens are still valid — the Settings page shows live auth status for each provider.
+
+### Credentials
 
 ```bash
-# Required — at least one, matching your configured runtime(s)
-export ANTHROPIC_API_KEY="sk-ant-..."   # For claude-code runtime
-export OPENAI_API_KEY="sk-..."          # For codex runtime
-# GOOGLE_API_KEY is needed for the gemini runtime
-
 # Optional — Google OAuth (Calendar, Contacts, Gmail modules)
 # Can also be bootstrapped via the dashboard UI after first start
 export GOOGLE_OAUTH_CLIENT_ID="..."
@@ -297,10 +298,7 @@ uv sync --dev
 # Start PostgreSQL
 docker compose up -d postgres
 
-# Set your API key
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# Start all butlers
+# Start all butlers (authenticate runtimes via dashboard Settings page)
 butlers up
 
 # Or start a specific butler
@@ -347,7 +345,7 @@ All services run in Docker:
 ```bash
 # Configure environment
 cp .env.example .env
-# Edit .env — set ANTHROPIC_API_KEY at minimum
+# Edit .env — set database credentials; runtime auth is via dashboard Settings
 
 # Start everything
 docker compose up -d
@@ -418,7 +416,6 @@ These apply to all butler instances:
 
 | Variable                      | Required | Default     | Description                                                                                              |
 | ----------------------------- | -------- | ----------- | -------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`           | Yes      | —           | API key for Claude Agent SDK. Checked at startup for every butler.                                        |
 | `POSTGRES_HOST`               | No       | `localhost` | PostgreSQL server hostname                                                                               |
 | `POSTGRES_PORT`               | No       | `5432`      | PostgreSQL server port                                                                                   |
 | `POSTGRES_USER`               | No       | `postgres`  | PostgreSQL username                                                                                      |

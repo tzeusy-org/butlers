@@ -51,6 +51,9 @@ class CLIAuthProvider(BaseModel):
     runtime: str
     """Which butler runtime adapter this provides auth for."""
 
+    auth_mode: str = "device_code"
+    """Auth mode: ``"device_code"`` or ``"api_key"``."""
+
     authenticated: bool
     """Whether valid credentials currently exist on disk."""
 
@@ -62,6 +65,9 @@ class CLIAuthProvider(BaseModel):
 
     token_path: str | None = None
     """Path to the credential file (masked for display, not secret)."""
+
+    env_var: str | None = None
+    """Environment variable name for API key providers."""
 
 
 class CLIAuthStartResponse(BaseModel):
@@ -92,3 +98,26 @@ class CLIAuthSessionResponse(BaseModel):
     device_code: str | None = None
     message: str | None = None
     provider: str | None = None
+
+
+class CLIAuthApiKeyRequest(BaseModel):
+    """Request body for PUT /api/cli-auth/{provider}/api-key."""
+
+    api_key: str
+    """The API key value to store."""
+
+
+class CLIAuthApiKeyResponse(BaseModel):
+    """Response from PUT /api/cli-auth/{provider}/api-key."""
+
+    provider: str
+    stored: bool
+    message: str | None = None
+
+
+class CLIAuthTestResponse(BaseModel):
+    """Response from POST /api/cli-auth/{provider}/test."""
+
+    provider: str
+    success: bool
+    detail: str | None = None

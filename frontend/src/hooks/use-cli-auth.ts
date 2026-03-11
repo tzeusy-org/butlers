@@ -1,9 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   cancelCLIAuthSession,
+  deleteCLIAuthApiKey,
   getCLIAuthSession,
   listCLIAuthProviders,
+  saveCLIAuthApiKey,
   startCLIAuth,
+  testCLIAuthApiKey,
 } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -68,5 +71,35 @@ export function useCancelCLIAuth() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: cliAuthKeys.providers() });
     },
+  });
+}
+
+/** Save an API key for an api_key-mode provider. */
+export function useSaveCLIAuthApiKey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ provider, apiKey }: { provider: string; apiKey: string }) =>
+      saveCLIAuthApiKey(provider, apiKey),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: cliAuthKeys.providers() });
+    },
+  });
+}
+
+/** Delete a stored API key for an api_key-mode provider. */
+export function useDeleteCLIAuthApiKey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (provider: string) => deleteCLIAuthApiKey(provider),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: cliAuthKeys.providers() });
+    },
+  });
+}
+
+/** Test a stored API key by running the provider's test command. */
+export function useTestCLIAuthApiKey() {
+  return useMutation({
+    mutationFn: (provider: string) => testCLIAuthApiKey(provider),
   });
 }

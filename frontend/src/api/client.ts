@@ -1521,9 +1521,11 @@ export function getOAuthStartUrl(): string {
 // ---------------------------------------------------------------------------
 
 import type {
+  CLIAuthApiKeyResponse,
   CLIAuthProvider,
   CLIAuthSessionResponse,
   CLIAuthStartResponse,
+  CLIAuthTestResponse,
 } from "./types.ts";
 
 /** List available CLI auth providers and their current auth status. */
@@ -1547,6 +1549,31 @@ export function getCLIAuthSession(sessionId: string): Promise<CLIAuthSessionResp
 export function cancelCLIAuthSession(sessionId: string): Promise<{ status: string }> {
   return apiFetch<{ status: string }>(`/cli-auth/sessions/${sessionId}`, {
     method: "DELETE",
+  });
+}
+
+/** Save an API key for an api_key-mode CLI auth provider. */
+export function saveCLIAuthApiKey(
+  provider: string,
+  apiKey: string,
+): Promise<CLIAuthApiKeyResponse> {
+  return apiFetch<CLIAuthApiKeyResponse>(`/cli-auth/${provider}/api-key`, {
+    method: "PUT",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+/** Delete a stored API key for an api_key-mode CLI auth provider. */
+export function deleteCLIAuthApiKey(provider: string): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>(`/cli-auth/${provider}/api-key`, {
+    method: "DELETE",
+  });
+}
+
+/** Test a stored API key by running the provider's test command. */
+export function testCLIAuthApiKey(provider: string): Promise<CLIAuthTestResponse> {
+  return apiFetch<CLIAuthTestResponse>(`/cli-auth/${provider}/test`, {
+    method: "POST",
   });
 }
 

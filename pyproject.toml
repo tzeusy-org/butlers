@@ -83,7 +83,7 @@ addopts = "--import-mode=importlib -m 'not nightly' -n auto --dist loadfile"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "integration: Integration tests — require Docker (testcontainers)",
-    "e2e: End-to-end tests — require ANTHROPIC_API_KEY, claude binary, and Docker",
+    "e2e: End-to-end tests — require authenticated CLI runtime, claude binary, and Docker",
     "nightly: Long-running tests excluded from default CI (run with -m nightly)",
 ]
 filterwarnings = [

@@ -13,6 +13,7 @@ from enum import StrEnum
 
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.cli_auth.session import _strip_ansi
+from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +43,60 @@ class AuthHealthResult:
     detail: str | None = None
 
 
-async def probe_provider(provider: CLIAuthProviderDef) -> AuthHealthResult:
+async def probe_provider(
+    provider: CLIAuthProviderDef,
+    credential_store: CredentialStore | None = None,
+) -> AuthHealthResult:
     """Run a provider's status command and determine auth health."""
     if not provider.is_available():
+        # api_key providers may still have a stored key even if the binary
+        # is not installed — report based on key presence.
+        if provider.auth_mode == "api_key" and credential_store is not None:
+            key = f"cli-auth/{provider.name}"
+            try:
+                value = await credential_store.load(key)
+            except Exception:
+                value = None
+            if value:
+                return AuthHealthResult(
+                    provider=provider.name,
+                    state=AuthHealthState.authenticated,
+                    detail="API key stored (binary not on PATH).",
+                )
         return AuthHealthResult(
             provider=provider.name,
             state=AuthHealthState.unavailable,
             detail=f"Binary '{provider.binary()}' not found on PATH.",
+        )
+
+    # api_key providers: check if a key is stored in the credential store
+    if provider.auth_mode == "api_key":
+        if credential_store is None:
+            return AuthHealthResult(
+                provider=provider.name,
+                state=AuthHealthState.not_authenticated,
+                detail="No credential store available.",
+            )
+        key = f"cli-auth/{provider.name}"
+        try:
+            value = await credential_store.load(key)
+        except Exception:
+            logger.exception("CLI auth health: failed to load key for %s", provider.name)
+            return AuthHealthResult(
+                provider=provider.name,
+                state=AuthHealthState.probe_failed,
+                detail="Failed to check credential store.",
+            )
+        if value:
+            return AuthHealthResult(
+                provider=provider.name,
+                state=AuthHealthState.authenticated,
+                detail="API key configured.",
+            )
+        return AuthHealthResult(
+            provider=provider.name,
+            state=AuthHealthState.not_authenticated,
+            detail="No API key stored.",
         )
 
     if provider.status_command is None or provider.status_ok_pattern is None:
@@ -106,12 +154,14 @@ async def probe_provider(provider: CLIAuthProviderDef) -> AuthHealthResult:
         )
 
 
-async def probe_all() -> dict[str, AuthHealthResult]:
+async def probe_all(
+    credential_store: CredentialStore | None = None,
+) -> dict[str, AuthHealthResult]:
     """Probe all registered providers concurrently."""
     tasks = {
-        name: asyncio.create_task(probe_provider(provider))
+        name: asyncio.create_task(probe_provider(provider, credential_store))
         for name, provider in PROVIDERS.items()
-        if provider.is_available()
+        if provider.is_available() or provider.auth_mode == "api_key"
     }
     results: dict[str, AuthHealthResult] = {}
     for name, task in tasks.items():

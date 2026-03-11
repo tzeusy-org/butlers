@@ -97,7 +97,7 @@ The adapter SHALL parse OpenCode's `--format json` output to extract result text
 - **THEN** the entire stdout is returned as result text
 
 ### Requirement: Environment Variable Handling
-The adapter SHALL pass the provided `env` dict to the subprocess, adding `OPENCODE_CONFIG` pointing to the temporary config file. The adapter SHALL NOT filter out any provider API keys (unlike Gemini which excludes `ANTHROPIC_API_KEY`), since OpenCode supports multiple providers.
+The adapter SHALL pass the provided `env` dict to the subprocess, adding `OPENCODE_CONFIG` pointing to the temporary config file. The adapter SHALL NOT filter out any env vars, since OpenCode supports multiple providers.
 
 #### Scenario: Config env var injected
 - **WHEN** the adapter prepares the subprocess environment

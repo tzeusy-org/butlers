@@ -272,18 +272,23 @@ export type {
   OAuthStatusResponse,
   UpsertAppCredentialsRequest,
   UpsertAppCredentialsResponse,
+  CLIAuthApiKeyResponse,
   CLIAuthHealthState,
   CLIAuthProvider,
   CLIAuthSessionState,
   CLIAuthStartResponse,
   CLIAuthSessionResponse,
+  CLIAuthTestResponse,
 } from "./types.ts";
 
 export {
   cancelCLIAuthSession,
+  deleteCLIAuthApiKey,
   getCLIAuthSession,
   listCLIAuthProviders,
+  saveCLIAuthApiKey,
   startCLIAuth,
+  testCLIAuthApiKey,
 } from "./client.ts";
 
 export {

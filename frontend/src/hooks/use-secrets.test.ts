@@ -30,13 +30,13 @@ describe("mergeResolvedSecrets", () => {
     const merged = mergeResolvedSecrets(
       [
         secret({
-          key: "ANTHROPIC_API_KEY",
+          key: "BUTLER_TELEGRAM_TOKEN",
           source: "database",
         }),
       ],
       [
         secret({
-          key: "anthropic_api_key",
+          key: "butler_telegram_token",
           source: "database",
         }),
         secret({
@@ -47,7 +47,7 @@ describe("mergeResolvedSecrets", () => {
     );
 
     expect(merged).toHaveLength(2);
-    expect(merged.find((s) => s.key === "ANTHROPIC_API_KEY")?.source).toBe("database");
+    expect(merged.find((s) => s.key === "BUTLER_TELEGRAM_TOKEN")?.source).toBe("database");
     expect(merged.find((s) => s.key === "BUTLER_EMAIL_PASSWORD")?.source).toBe("shared");
   });
 });

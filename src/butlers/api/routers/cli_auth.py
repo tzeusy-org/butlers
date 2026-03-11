@@ -1,27 +1,34 @@
-"""CLI auth device-code flow endpoints.
+"""CLI auth endpoints.
 
 Provides a REST API for starting and polling CLI tool authentication
-flows (OpenCode, Codex) via device code authorization. The dashboard
-uses these endpoints to present a one-click login experience.
+flows. Supports two modes:
 
-After a successful auth flow, the token file is persisted to the shared
-credential store so it survives container restarts (no PV needed).
+- **device_code**: Interactive device-code authorization (OpenCode, Codex).
+- **api_key**: Simple API key storage and validation (OpenCode Go).
+
+After a successful auth flow, credentials are persisted to the shared
+credential store so they survive container restarts (no PV needed).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from butlers.api.models.cli_auth import (
+    CLIAuthApiKeyRequest,
+    CLIAuthApiKeyResponse,
     CLIAuthHealthState,
     CLIAuthProvider,
     CLIAuthSessionResponse,
     CLIAuthSessionState,
     CLIAuthStartResponse,
+    CLIAuthTestResponse,
 )
 from butlers.cli_auth.health import probe_all
 from butlers.cli_auth.persistence import persist_token
@@ -79,17 +86,21 @@ def _build_on_success(db_manager: Any):
     response_model=list[CLIAuthProvider],
     summary="List CLI auth providers and their status",
 )
-async def list_providers() -> list[CLIAuthProvider]:
+async def list_providers(
+    db_manager: Any = Depends(_get_db_manager),
+) -> list[CLIAuthProvider]:
     """List all registered CLI auth providers with current auth status.
 
     Runs live health probes against each provider's status command to
     determine whether tokens are actually valid (not just present on disk).
     """
-    health_results = await probe_all()
+    store = _make_credential_store(db_manager)
+    health_results = await probe_all(credential_store=store)
 
     result = []
     for p in PROVIDERS.values():
-        if not p.is_available():
+        # Show api_key providers even if binary is not installed
+        if not p.is_available() and p.auth_mode != "api_key":
             continue
         health = health_results.get(p.name)
         result.append(
@@ -97,10 +108,16 @@ async def list_providers() -> list[CLIAuthProvider]:
                 name=p.name,
                 display_name=p.display_name,
                 runtime=p.runtime,
-                authenticated=p.is_authenticated(),
+                auth_mode=p.auth_mode,
+                authenticated=(
+                    p.is_authenticated()
+                    if p.auth_mode == "device_code"
+                    else (health is not None and health.state == "authenticated")
+                ),
                 health=CLIAuthHealthState(health.state) if health else None,
                 health_detail=health.detail if health else None,
-                token_path=str(p.token_path),
+                token_path=str(p.token_path) if p.token_path else None,
+                env_var=p.env_var or None,
             )
         )
     return result
@@ -186,3 +203,170 @@ async def cancel_session(session_id: str) -> dict[str, str]:
 
     await session.kill()
     return {"status": "cancelled", "session_id": session_id}
+
+
+# ---------------------------------------------------------------------------
+# API-key provider endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/{provider}/api-key",
+    response_model=CLIAuthApiKeyResponse,
+    summary="Store an API key for an api_key-mode provider",
+)
+async def save_api_key(
+    provider: str,
+    body: CLIAuthApiKeyRequest,
+    db_manager: Any = Depends(_get_db_manager),
+) -> CLIAuthApiKeyResponse:
+    """Save an API key to the shared credential store."""
+    provider_def = PROVIDERS.get(provider)
+    if provider_def is None:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+    if provider_def.auth_mode != "api_key":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
+        )
+
+    store = _make_credential_store(db_manager)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Credential store not available.")
+
+    key = f"cli-auth/{provider_def.name}"
+    await store.store(
+        key,
+        body.api_key,
+        category="cli-auth",
+        description=f"API key for {provider_def.display_name}",
+        is_sensitive=True,
+    )
+    logger.info("CLI auth: stored API key for %s", provider_def.name)
+    return CLIAuthApiKeyResponse(
+        provider=provider_def.name,
+        stored=True,
+        message=f"API key stored for {provider_def.display_name}.",
+    )
+
+
+@router.delete(
+    "/{provider}/api-key",
+    summary="Delete a stored API key for an api_key-mode provider",
+)
+async def delete_api_key(
+    provider: str,
+    db_manager: Any = Depends(_get_db_manager),
+) -> dict[str, str]:
+    """Remove an API key from the shared credential store."""
+    provider_def = PROVIDERS.get(provider)
+    if provider_def is None:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+    if provider_def.auth_mode != "api_key":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
+        )
+
+    store = _make_credential_store(db_manager)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Credential store not available.")
+
+    key = f"cli-auth/{provider_def.name}"
+    await store.delete(key)
+    logger.info("CLI auth: deleted API key for %s", provider_def.name)
+    return {"status": "deleted", "provider": provider_def.name}
+
+
+@router.post(
+    "/{provider}/test",
+    response_model=CLIAuthTestResponse,
+    summary="Test an API key by running the provider's test command",
+)
+async def test_api_key(
+    provider: str,
+    db_manager: Any = Depends(_get_db_manager),
+) -> CLIAuthTestResponse:
+    """Run the provider's test command with the stored API key to validate it."""
+    provider_def = PROVIDERS.get(provider)
+    if provider_def is None:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+    if provider_def.auth_mode != "api_key":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
+        )
+    if not provider_def.test_command:
+        raise HTTPException(
+            status_code=400, detail=f"No test command configured for {provider}."
+        )
+
+    store = _make_credential_store(db_manager)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Credential store not available.")
+
+    key = f"cli-auth/{provider_def.name}"
+    api_key_value = await store.load(key)
+    if not api_key_value:
+        return CLIAuthTestResponse(
+            provider=provider_def.name,
+            success=False,
+            detail="No API key stored. Save a key first.",
+        )
+
+    # Run test command with the API key in the environment
+    from butlers.cli_auth.session import _strip_ansi
+
+    test_env = os.environ.copy()
+    if provider_def.env_var:
+        test_env[provider_def.env_var] = api_key_value
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *provider_def.test_command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,
+            env=test_env,
+        )
+        raw_output, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        output = _strip_ansi(raw_output.decode(errors="replace")).strip()[:200]
+
+        if proc.returncode == 0:
+            if provider_def.test_ok_pattern and provider_def.test_ok_pattern.search(output):
+                return CLIAuthTestResponse(
+                    provider=provider_def.name,
+                    success=True,
+                    detail=output or "Test passed.",
+                )
+            elif not provider_def.test_ok_pattern:
+                return CLIAuthTestResponse(
+                    provider=provider_def.name,
+                    success=True,
+                    detail=output or "Command succeeded (exit 0).",
+                )
+            else:
+                return CLIAuthTestResponse(
+                    provider=provider_def.name,
+                    success=False,
+                    detail=output or "Command succeeded but output didn't match expected pattern.",
+                )
+
+        return CLIAuthTestResponse(
+            provider=provider_def.name,
+            success=False,
+            detail=output or f"Exit code {proc.returncode}.",
+        )
+    except TimeoutError:
+        return CLIAuthTestResponse(
+            provider=provider_def.name,
+            success=False,
+            detail="Test command timed out.",
+        )
+    except Exception:
+        logger.exception("CLI auth test failed for %s", provider_def.name)
+        return CLIAuthTestResponse(
+            provider=provider_def.name,
+            success=False,
+            detail="Test command failed to execute.",
+        )

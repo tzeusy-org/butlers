@@ -3,14 +3,11 @@
 import asyncio
 import re
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.api.models.cli_auth import CLIAuthSessionState
-from butlers.cli_auth.registry import CLIAuthProviderDef, PROVIDERS
+from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.cli_auth.session import CLIAuthSession, _strip_ansi, clear_sessions, store_session
-
 
 # ---------------------------------------------------------------------------
 # Registry tests
@@ -20,6 +17,7 @@ from butlers.cli_auth.session import CLIAuthSession, _strip_ansi, clear_sessions
 def test_providers_registered():
     assert "opencode-openai" in PROVIDERS
     assert "codex" in PROVIDERS
+    assert "opencode-go" in PROVIDERS
 
 
 def test_provider_binary_defaults_to_command0():
@@ -30,6 +28,13 @@ def test_provider_binary_defaults_to_command0():
 def test_provider_display_name():
     assert PROVIDERS["opencode-openai"].display_name == "OpenCode (OpenAI)"
     assert PROVIDERS["codex"].display_name == "Codex (OpenAI)"
+    assert PROVIDERS["opencode-go"].display_name == "OpenCode Go"
+
+
+def test_opencode_go_is_api_key_mode():
+    p = PROVIDERS["opencode-go"]
+    assert p.auth_mode == "api_key"
+    assert p.env_var == "OPENCODE_GO_API_KEY"
 
 
 # ---------------------------------------------------------------------------
