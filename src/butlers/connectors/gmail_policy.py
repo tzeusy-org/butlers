@@ -131,7 +131,12 @@ class LabelFilterPolicy:
         # Exclude check takes precedence
         excluded_hits = normalized_msg_labels & self.exclude_labels
         if excluded_hits:
-            return False, f"label_excluded:{','.join(sorted(excluded_hits))}"
+            # Per spec: filter_reason format is 'label_exclude:<label>' (no 'd' suffix).
+            # When multiple labels match, emit one reason per label joined with comma for
+            # display, but the canonical spec format uses the first (sorted) label name.
+            # For multiple hits we join them: 'label_exclude:SPAM,TRASH'.
+            labels_str = ",".join(sorted(excluded_hits))
+            return False, f"label_exclude:{labels_str}"
 
         # Include check (empty include = allow all)
         if self.include_labels:
@@ -312,7 +317,7 @@ class MessagePolicyResult:
     """Policy tier assignment rule for telemetry."""
 
     filter_reason: str
-    """Label filter reason (e.g. 'label_allowed', 'label_excluded:SPAM')."""
+    """Label filter reason (e.g. 'label_allowed', 'label_exclude:SPAM')."""
 
     triage_action: str
     """Triage action that drove ingestion tier, or 'pass_through' if no match."""

@@ -142,8 +142,8 @@ class TestLabelExcludeRecording:
         row = gmail_runtime._filtered_event_buffer._rows[0]
         # external_message_id is index 3
         assert row[3] == "spam-001"
-        # filter_reason is index 7 — must start with "label_excluded:" (from LabelFilterPolicy)
-        assert row[7].startswith("label_excluded:")
+        # filter_reason is index 7 — must start with "label_exclude:" (spec-compliant format)
+        assert row[7].startswith("label_exclude:")
         # status is index 8
         assert row[8] == "filtered"
         # error_detail is index 10
@@ -163,7 +163,7 @@ class TestLabelExcludeRecording:
 
         assert len(gmail_runtime._filtered_event_buffer) == 1
         row = gmail_runtime._filtered_event_buffer._rows[0]
-        assert row[7].startswith("label_excluded:")
+        assert row[7].startswith("label_exclude:")
         assert row[8] == "filtered"
 
     async def test_label_exclude_full_payload_shape(
@@ -656,7 +656,7 @@ class TestEndToEndFilterReplayIngest:
         assert len(gmail_runtime._filtered_event_buffer) == 1
         row_data = gmail_runtime._filtered_event_buffer._rows[0]
         assert row_data[3] == "e2e-spam-001"
-        assert row_data[7].startswith("label_excluded:")
+        assert row_data[7].startswith("label_exclude:")
         assert row_data[8] == "filtered"
 
         # --- Step 2: flush -> row inserted into filtered_events ---
