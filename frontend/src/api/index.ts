@@ -417,6 +417,27 @@ export type {
 } from "./types.ts";
 
 export {
+  listModelCatalog,
+  createModelCatalogEntry,
+  updateModelCatalogEntry,
+  deleteModelCatalogEntry,
+  listButlerModelOverrides,
+  upsertButlerModelOverrides,
+  deleteButlerModelOverride,
+  resolveButlerModel,
+} from "./client.ts";
+
+export type {
+  ComplexityTier,
+  ModelCatalogEntry,
+  ModelCatalogCreate,
+  ModelCatalogUpdate,
+  ButlerModelOverride,
+  ButlerModelOverrideUpsert,
+  ResolveModelResponse,
+} from "./types.ts";
+
+export {
   getEducationCrossTopicAnalytics,
   getEducationFlows,
   getEducationMasterySummary,

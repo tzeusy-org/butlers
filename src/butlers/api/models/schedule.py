@@ -53,6 +53,7 @@ class Schedule(BaseModel):
     prompt: str | None = None
     job_name: str | None = None
     job_args: dict[str, Any] | None = None
+    complexity: str | None = "medium"
     timezone: str | None = None
     start_at: datetime | None = None
     end_at: datetime | None = None
@@ -76,6 +77,7 @@ class ScheduleCreate(BaseModel):
     prompt: str | None = None
     job_name: str | None = None
     job_args: dict[str, Any] | None = None
+    complexity: str | None = "medium"
     timezone: str | None = None
     start_at: AwareDatetime | None = None
     end_at: AwareDatetime | None = None
@@ -124,6 +126,7 @@ class ScheduleUpdate(BaseModel):
     prompt: str | None = None
     job_name: str | None = None
     job_args: dict[str, Any] | None = None
+    complexity: str | None = None
     enabled: bool | None = None
     timezone: str | None = None
     start_at: AwareDatetime | None = None

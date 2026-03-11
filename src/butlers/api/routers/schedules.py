@@ -41,7 +41,7 @@ def _get_db_manager() -> DatabaseManager:
 
 _SCHEDULE_COLUMNS = (
     "id, name, cron, dispatch_mode, prompt, job_name, job_args, "
-    "timezone, start_at, end_at, until_at, display_title, calendar_event_id, "
+    "complexity, timezone, start_at, end_at, until_at, display_title, calendar_event_id, "
     "source, enabled, next_run_at, last_run_at, created_at, updated_at"
 )
 _DISPATCH_MODE_PROMPT = "prompt"
@@ -90,6 +90,7 @@ def _row_to_schedule(row) -> Schedule:
         prompt=_row_value(row, "prompt"),
         job_name=_row_value(row, "job_name"),
         job_args=_normalize_job_args(_row_value(row, "job_args")),
+        complexity=_row_value(row, "complexity", "medium"),
         timezone=_row_value(row, "timezone"),
         start_at=_row_value(row, "start_at"),
         end_at=_row_value(row, "end_at"),
@@ -205,6 +206,8 @@ async def create_schedule(
         arguments["display_title"] = body.display_title
     if body.calendar_event_id is not None:
         arguments["calendar_event_id"] = str(body.calendar_event_id)
+    if body.complexity is not None:
+        arguments["complexity"] = body.complexity
 
     summary = {"name": body.name, "cron": body.cron, "dispatch_mode": body.dispatch_mode}
     if body.job_name is not None:

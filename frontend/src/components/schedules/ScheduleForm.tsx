@@ -6,6 +6,7 @@ import type {
   ScheduleDispatchMode,
   ScheduleJobArgs,
 } from "@/api/types.ts";
+import { COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,6 +17,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
 // ---------------------------------------------------------------------------
@@ -87,6 +96,7 @@ function ScheduleFormFields({
   const [jobArgsRaw, setJobArgsRaw] = useState(
     schedule?.job_args ? JSON.stringify(schedule.job_args, null, 2) : "",
   );
+  const [complexity, setComplexity] = useState(schedule?.complexity ?? "medium");
 
   const parsedJobArgs = parseJobArgs(jobArgsRaw);
   const isPromptMode = dispatchMode === "prompt";
@@ -108,6 +118,7 @@ function ScheduleFormFields({
         cron: cron.trim(),
         dispatch_mode: "prompt",
         prompt: prompt.trim(),
+        complexity,
       });
       return;
     }
@@ -119,6 +130,7 @@ function ScheduleFormFields({
       dispatch_mode: "job",
       job_name: jobName.trim(),
       ...(parsedJobArgs.value ? { job_args: parsedJobArgs.value } : {}),
+      complexity,
     });
   }
 
@@ -153,20 +165,42 @@ function ScheduleFormFields({
         </p>
       </div>
 
-      <div className="space-y-2">
-        <label htmlFor="schedule-dispatch-mode" className="text-sm font-medium">
-          Mode
-        </label>
-        <select
-          id="schedule-dispatch-mode"
-          value={dispatchMode}
-          onChange={(e) => setDispatchMode(e.target.value as ScheduleDispatchMode)}
-          disabled={isSubmitting}
-          className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <option value="prompt">Prompt</option>
-          <option value="job">Job</option>
-        </select>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <Label htmlFor="schedule-dispatch-mode">Mode</Label>
+          <Select
+            value={dispatchMode}
+            onValueChange={(v) => setDispatchMode(v as ScheduleDispatchMode)}
+            disabled={isSubmitting}
+          >
+            <SelectTrigger id="schedule-dispatch-mode">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="prompt">Prompt</SelectItem>
+              <SelectItem value="job">Job</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="schedule-complexity">Complexity</Label>
+          <Select
+            value={complexity}
+            onValueChange={setComplexity}
+            disabled={isSubmitting}
+          >
+            <SelectTrigger id="schedule-complexity">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {COMPLEXITY_TIERS.map((tier) => (
+                <SelectItem key={tier} value={tier}>
+                  {complexityLabel(tier)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {isPromptMode ? (
