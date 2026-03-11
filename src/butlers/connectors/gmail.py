@@ -2382,9 +2382,6 @@ class GmailConnectorRuntime:
                         "media_type": mime_type,
                         "storage_ref": storage_ref,
                         "size_bytes": size_bytes,
-                        "message_id": message_id,
-                        "attachment_id": attachment_id,
-                        "fetched": True,
                     }
                     if filename:
                         attachment_dict["filename"] = filename
@@ -2429,18 +2426,10 @@ class GmailConnectorRuntime:
                     blob_ref=None,
                 )
 
-                attachment_dict = {
-                    "media_type": mime_type,
-                    "size_bytes": size_bytes,
-                    "message_id": message_id,
-                    "attachment_id": attachment_id,
-                    "fetched": False,
-                    "storage_ref": None,
-                }
-                if filename:
-                    attachment_dict["filename"] = filename
-
-                processed_attachments.append(attachment_dict)
+                # Lazy-fetched attachments are NOT included in the ingest
+                # envelope — IngestAttachment requires a non-empty storage_ref.
+                # The attachment_refs DB row (written above) is sufficient for
+                # on-demand fetch via fetch_attachment().
                 self._metrics.record_attachment_fetched(
                     media_type=mime_type, fetch_mode="lazy", result="success"
                 )

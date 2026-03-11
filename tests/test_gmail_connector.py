@@ -1648,7 +1648,12 @@ class TestGmailAttachmentExtraction:
     async def test_process_attachments_success(
         self, gmail_runtime_with_blob_store: GmailConnectorRuntime, mock_blob_store: AsyncMock
     ) -> None:
-        """Test successful lazy-fetch attachment processing (JPEG — no download at ingest)."""
+        """Test lazy-fetch attachment processing writes DB ref but excludes from envelope.
+
+        Lazy-fetched attachments cannot appear in the ingest envelope because
+        IngestAttachment requires a non-empty storage_ref. They are persisted
+        as attachment_refs DB rows for on-demand fetch via fetch_attachment().
+        """
         runtime = gmail_runtime_with_blob_store
         # No HTTP client needed: lazy-fetch attachments are not downloaded at ingest time.
 
@@ -1668,16 +1673,9 @@ class TestGmailAttachmentExtraction:
 
         result = await runtime._process_attachments("msg123", payload)
 
-        assert result is not None
-        assert len(result) == 1
-        assert result[0]["media_type"] == "image/jpeg"
-        # Lazy-fetched: storage_ref is None until on-demand materialization.
-        assert result[0]["storage_ref"] is None
-        assert result[0]["fetched"] is False
-        assert result[0]["size_bytes"] == 1024
-        assert result[0]["filename"] == "photo.jpg"
-        assert result[0]["message_id"] == "msg123"
-        assert result[0]["attachment_id"] == "att123"
+        # Lazy-fetched attachments are NOT returned (no storage_ref yet).
+        # The attachment_refs DB row is written for on-demand materialization.
+        assert result is None
 
         # Blob store must NOT be called during lazy ingest.
         mock_blob_store.put.assert_not_awaited()
@@ -1686,11 +1684,12 @@ class TestGmailAttachmentExtraction:
     async def test_process_attachments_no_blob_store(
         self, gmail_runtime: GmailConnectorRuntime
     ) -> None:
-        """Test that lazy-fetch attachments are returned even without a blob store.
+        """Test that lazy-fetch attachments write DB ref without blob store.
 
         Lazy-fetch model: metadata refs are written regardless of blob store
-        availability (DB pool permitting). Blob store is only needed for eager
-        paths (text/calendar) and on-demand materialization.
+        availability. Lazy attachments are excluded from the return value
+        (and thus the ingest envelope) because IngestAttachment requires
+        a non-empty storage_ref.
         """
         payload = {
             "mimeType": "multipart/mixed",
@@ -1708,12 +1707,8 @@ class TestGmailAttachmentExtraction:
 
         result = await gmail_runtime._process_attachments("msg123", payload)
 
-        # Lazy-fetch succeeds without blob store: metadata ref is returned.
-        assert result is not None
-        assert len(result) == 1
-        assert result[0]["media_type"] == "image/jpeg"
-        assert result[0]["fetched"] is False
-        assert result[0]["storage_ref"] is None
+        # Lazy-fetched: not returned (DB ref only).
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_process_attachments_oversized_skipped(
@@ -1744,16 +1739,16 @@ class TestGmailAttachmentExtraction:
         mock_blob_store.put.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_process_attachments_lazy_returns_both_refs(
+    async def test_process_attachments_lazy_writes_refs_only(
         self, gmail_runtime_with_blob_store: GmailConnectorRuntime, mock_blob_store: AsyncMock
     ) -> None:
-        """Test that lazy-fetch returns metadata refs for multiple attachments without download.
+        """Test that lazy-fetch writes DB refs but excludes attachments from return.
 
-        Both images (JPEG, PNG) are lazy-fetched. No HTTP download occurs at ingest,
-        so both refs are returned regardless of any simulated download failure.
+        Both images (JPEG, PNG) are lazy-fetched. No HTTP download occurs at ingest.
+        Lazy attachments are excluded from the return value because IngestAttachment
+        requires a non-empty storage_ref.
         """
         runtime = gmail_runtime_with_blob_store
-        # No HTTP client needed: lazy-fetch attachments are not downloaded at ingest.
 
         payload = {
             "mimeType": "multipart/mixed",
@@ -1779,13 +1774,8 @@ class TestGmailAttachmentExtraction:
 
         result = await runtime._process_attachments("msg123", payload)
 
-        # Both lazy-fetched: both refs returned.
-        assert result is not None
-        assert len(result) == 2
-        assert all(r["fetched"] is False for r in result)
-        assert all(r["storage_ref"] is None for r in result)
-        filenames = {r["filename"] for r in result}
-        assert filenames == {"first.jpg", "second.png"}
+        # Lazy-fetched: not returned (DB refs only).
+        assert result is None
 
         # No blob store calls during lazy ingest.
         mock_blob_store.put.assert_not_awaited()
@@ -1838,10 +1828,9 @@ class TestGmailAttachmentExtraction:
         envelope = await runtime._build_ingest_envelope(message_data)
 
         assert envelope["schema_version"] == "ingest.v1"
-        assert envelope["payload"]["attachments"] is not None
-        assert len(envelope["payload"]["attachments"]) == 1
-        assert envelope["payload"]["attachments"][0]["media_type"] == "image/jpeg"
-        assert envelope["payload"]["attachments"][0]["filename"] == "photo.jpg"
+        # JPEG is lazy-fetched, so it is excluded from the envelope (no storage_ref).
+        # The attachment ref is persisted via _write_attachment_ref for on-demand fetch.
+        assert envelope["payload"]["attachments"] is None
 
     @pytest.mark.asyncio
     async def test_build_ingest_envelope_without_attachments(
@@ -2348,7 +2337,7 @@ class TestAttachmentPolicyEnforcement:
 
     @pytest.mark.asyncio
     async def test_pdf_under_15mb_accepted(self, runtime: GmailConnectorRuntime) -> None:
-        """PDF at 10 MB (< 15 MB limit) is lazy-accepted."""
+        """PDF at 10 MB (< 15 MB limit) is lazy-accepted (DB ref only, not in envelope)."""
         payload = {
             "mimeType": "multipart/mixed",
             "parts": [
@@ -2360,9 +2349,8 @@ class TestAttachmentPolicyEnforcement:
             ],
         }
         result = await runtime._process_attachments("msg2", payload)
-        assert result is not None
-        assert result[0]["media_type"] == "application/pdf"
-        assert result[0]["fetched"] is False
+        # Lazy-fetched: not returned (DB ref written for on-demand fetch).
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_pdf_over_15mb_skipped(self, runtime: GmailConnectorRuntime) -> None:
@@ -2433,8 +2421,8 @@ class TestAttachmentPolicyEnforcement:
         assert result is not None
         assert len(result) == 1
         assert result[0]["media_type"] == "text/calendar"
-        assert result[0]["fetched"] is True
         assert result[0]["storage_ref"] == "local://2026/02/blob.bin"
+        assert "fetched" not in result[0]  # Internal field excluded from envelope dict
         # Blob store must be called for eager fetch.
         mock_blob_store.put.assert_awaited_once()
 
@@ -2524,18 +2512,13 @@ class TestAttachmentPolicyEnforcement:
 
         result = await runtime._process_attachments("msg9", payload)
 
+        # Only eager-fetched attachments (calendar) appear in the return value.
+        # Lazy-fetched (JPEG) is excluded (DB ref only).
         assert result is not None
-        assert len(result) == 2
-
-        by_type = {r["media_type"]: r for r in result}
-
-        # JPEG: lazy
-        assert by_type["image/jpeg"]["fetched"] is False
-        assert by_type["image/jpeg"]["storage_ref"] is None
-
-        # Calendar: eager
-        assert by_type["text/calendar"]["fetched"] is True
-        assert by_type["text/calendar"]["storage_ref"] is not None
+        assert len(result) == 1
+        assert result[0]["media_type"] == "text/calendar"
+        assert result[0]["storage_ref"] is not None
+        assert "fetched" not in result[0]
 
         # Blob store called exactly once (for .ics only).
         mock_blob_store.put.assert_awaited_once()
