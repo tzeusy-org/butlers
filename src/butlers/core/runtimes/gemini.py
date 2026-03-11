@@ -11,8 +11,8 @@ and ``--sandbox=false`` to disable sandboxing. The system prompt
 (from GEMINI.md or AGENTS.md) is passed inline via ``--system-prompt``.
 MCP server configs are written to a temporary config file.
 
-Environment filtering ensures GOOGLE_API_KEY is passed through
-while ANTHROPIC_API_KEY is excluded.
+Runtime authentication is handled by CLI-level OAuth tokens
+(device-code flow via the dashboard).
 
 If the Gemini CLI binary is not installed on PATH, invoke() raises
 FileNotFoundError.
@@ -33,10 +33,6 @@ logger = logging.getLogger(__name__)
 
 # Default timeout for Gemini CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
-
-# Keys that must NOT be passed to Gemini subprocess
-_EXCLUDED_ENV_KEYS = frozenset({"ANTHROPIC_API_KEY"})
-
 
 def _find_gemini_binary() -> str:
     """Locate the gemini binary on PATH.
@@ -62,10 +58,7 @@ def _find_gemini_binary() -> str:
 
 
 def _filter_env(env: dict[str, str]) -> dict[str, str]:
-    """Filter environment variables for Gemini subprocess.
-
-    Ensures GOOGLE_API_KEY is present (if in source env) and
-    ANTHROPIC_API_KEY is excluded.
+    """Pass through environment variables for Gemini subprocess.
 
     Parameters
     ----------
@@ -75,9 +68,9 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
     Returns
     -------
     dict[str, str]
-        Filtered environment variables safe for Gemini.
+        Environment variables for Gemini.
     """
-    return {k: v for k, v in env.items() if k not in _EXCLUDED_ENV_KEYS}
+    return dict(env)
 
 
 def _parse_gemini_output(
@@ -217,7 +210,7 @@ class GeminiAdapter(RuntimeAdapter):
     - Locating the ``gemini`` binary on PATH
     - Passing system prompts via ``--system-prompt`` flag
     - Writing MCP config in Gemini-compatible JSON format
-    - Filtering env vars (include GOOGLE_API_KEY, exclude ANTHROPIC_API_KEY)
+    - Passing through env vars
     - Parsing CLI output into (result_text, tool_calls)
 
     Parameters
@@ -267,9 +260,6 @@ class GeminiAdapter(RuntimeAdapter):
         Builds the command line, passes the system prompt via
         ``--system-prompt``, writes MCP config if servers are provided,
         and parses the output.
-
-        Environment variables are filtered to include GOOGLE_API_KEY
-        and exclude ANTHROPIC_API_KEY.
 
         Parameters
         ----------

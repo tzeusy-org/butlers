@@ -20,6 +20,7 @@ from starlette.staticfiles import StaticFiles
 
 from butlers.api.deps import (
     get_butler_configs,
+    get_db_manager,
     init_db_manager,
     init_dependencies,
     init_pricing,
@@ -35,6 +36,7 @@ from butlers.api.routers.butlers import router as butlers_router
 from butlers.api.routers.calendar_workspace import (
     router as calendar_workspace_router,
 )
+from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.costs import router as costs_router
 from butlers.api.routers.ingestion_events import router as ingestion_events_router
 from butlers.api.routers.issues import router as issues_router
@@ -86,6 +88,22 @@ async def lifespan(app: FastAPI):
         dynamic_modules = [module for _, module in dynamic_routers]
         wire_db_dependencies(app, dynamic_modules=dynamic_modules)
         logger.info("DatabaseManager initialized for %d butler(s)", len(butler_configs))
+
+        # Restore CLI auth tokens from DB to filesystem
+        try:
+            from butlers.cli_auth.persistence import restore_tokens
+            from butlers.credential_store import CredentialStore
+
+            db_mgr = get_db_manager()
+            shared_pool = db_mgr.credential_shared_pool()
+            store = CredentialStore(shared_pool)
+            results = await restore_tokens(store)
+            restored = sum(1 for v in results.values() if v)
+            if restored:
+                logger.info("Restored %d CLI auth token(s) from DB", restored)
+        except Exception:
+            logger.debug("CLI auth token restoration skipped", exc_info=True)
+
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
 
@@ -174,6 +192,7 @@ def create_app(
     app.include_router(audit_router)
     app.include_router(memory_router)
     app.include_router(oauth_router)
+    app.include_router(cli_auth_router)
     app.include_router(sse_router)
 
     # --- Auto-discovered Butler Routers ---

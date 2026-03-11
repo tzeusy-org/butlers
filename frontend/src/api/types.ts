@@ -1531,6 +1531,50 @@ export interface DeleteCredentialsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// CLI auth (device-code flow) types
+// ---------------------------------------------------------------------------
+
+export type CLIAuthSessionState =
+  | "starting"
+  | "awaiting_auth"
+  | "success"
+  | "failed"
+  | "expired";
+
+export type CLIAuthHealthState =
+  | "authenticated"
+  | "not_authenticated"
+  | "unavailable"
+  | "probe_failed";
+
+export interface CLIAuthProvider {
+  name: string;
+  display_name: string;
+  runtime: string;
+  authenticated: boolean;
+  health: CLIAuthHealthState | null;
+  health_detail: string | null;
+  token_path: string | null;
+}
+
+export interface CLIAuthStartResponse {
+  session_id: string;
+  state: CLIAuthSessionState;
+  auth_url: string | null;
+  device_code: string | null;
+  message: string | null;
+}
+
+export interface CLIAuthSessionResponse {
+  session_id: string;
+  state: CLIAuthSessionState;
+  auth_url: string | null;
+  device_code: string | null;
+  message: string | null;
+  provider: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Generic secrets management types
 // ---------------------------------------------------------------------------
 

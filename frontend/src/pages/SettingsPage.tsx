@@ -1,6 +1,6 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
-import type { OAuthCredentialState } from "@/api/index.ts";
+import type { CLIAuthHealthState, CLIAuthProvider, CLIAuthSessionState, OAuthCredentialState } from "@/api/index.ts";
 import { getOAuthStartUrl } from "@/api/index.ts";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,12 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
+import {
+  useCancelCLIAuth,
+  useCLIAuthProviders,
+  useCLIAuthSession,
+  useStartCLIAuth,
+} from "@/hooks/use-cli-auth";
 import {
   useDeleteGoogleCredentials,
   useGoogleCredentialStatus,
@@ -238,6 +244,208 @@ function DeleteCredentialsDialog() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CLI Auth (device-code flow) components
+// ---------------------------------------------------------------------------
+
+function cliHealthBadge(
+  health: CLIAuthHealthState | null,
+  authenticated: boolean,
+): { variant: "default" | "outline" | "destructive" | "secondary"; label: string } {
+  if (health === "authenticated") return { variant: "default", label: "Connected" };
+  if (health === "not_authenticated") return { variant: "destructive", label: "Not authenticated" };
+  if (health === "probe_failed") return { variant: "secondary", label: "Probe failed" };
+  // Fallback to file check when no probe result
+  return authenticated
+    ? { variant: "default", label: "Token present" }
+    : { variant: "outline", label: "Not authenticated" };
+}
+
+function sessionStateBadge(
+  state: CLIAuthSessionState,
+): { variant: "default" | "secondary" | "destructive" | "outline"; label: string } {
+  switch (state) {
+    case "starting":
+      return { variant: "secondary", label: "Starting..." };
+    case "awaiting_auth":
+      return { variant: "outline", label: "Waiting for authorization" };
+    case "success":
+      return { variant: "default", label: "Connected" };
+    case "failed":
+      return { variant: "destructive", label: "Failed" };
+    case "expired":
+      return { variant: "destructive", label: "Expired" };
+    default:
+      return { variant: "secondary", label: state };
+  }
+}
+
+function CLIAuthProviderRow({ provider }: { provider: CLIAuthProvider }) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const startMutation = useStartCLIAuth();
+  const cancelMutation = useCancelCLIAuth();
+  const sessionQuery = useCLIAuthSession(sessionId);
+  const session = sessionQuery.data;
+
+  // When the session reaches success, stop tracking it after a delay
+  const isTerminal =
+    session?.state === "success" ||
+    session?.state === "failed" ||
+    session?.state === "expired";
+
+  // Refresh provider list when auth succeeds
+  const { refetch: refetchProviders } = useCLIAuthProviders();
+  useEffect(() => {
+    if (session?.state === "success") {
+      refetchProviders();
+    }
+  }, [session?.state, refetchProviders]);
+
+  async function handleStart() {
+    try {
+      const result = await startMutation.mutateAsync(provider.name);
+      setSessionId(result.session_id);
+    } catch {
+      // Error shown via mutation state
+    }
+  }
+
+  function handleCancel() {
+    if (sessionId) {
+      cancelMutation.mutate(sessionId);
+      setSessionId(null);
+    }
+  }
+
+  const isInProgress = sessionId && !isTerminal;
+
+  return (
+    <div className="space-y-3 py-4 border-b border-border last:border-0">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium">{provider.display_name}</p>
+          <p className="text-xs text-muted-foreground font-mono">
+            {provider.token_path}
+          </p>
+        </div>
+        <Badge variant={cliHealthBadge(provider.health, provider.authenticated).variant}>
+          {cliHealthBadge(provider.health, provider.authenticated).label}
+        </Badge>
+      </div>
+
+      {/* Health detail */}
+      {provider.health_detail && provider.health !== "authenticated" && (
+        <p className="text-xs text-muted-foreground">{provider.health_detail}</p>
+      )}
+
+      {/* Active session: show device code */}
+      {session && sessionId && (
+        <div className="rounded-md bg-muted/50 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Badge variant={sessionStateBadge(session.state).variant}>
+              {sessionStateBadge(session.state).label}
+            </Badge>
+            {session.message && session.state !== "awaiting_auth" && (
+              <span className="text-sm text-muted-foreground">{session.message}</span>
+            )}
+          </div>
+
+          {session.state === "awaiting_auth" && session.auth_url && session.device_code && (
+            <div className="space-y-2">
+              <p className="text-sm">
+                Open{" "}
+                <a
+                  href={session.auth_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium underline underline-offset-2"
+                >
+                  {session.auth_url}
+                </a>{" "}
+                and enter the code:
+              </p>
+              <div className="flex items-center gap-3">
+                <code className="text-2xl font-bold tracking-widest bg-background px-4 py-2 rounded border">
+                  {session.device_code}
+                </code>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigator.clipboard.writeText(session.device_code!)}
+                >
+                  Copy
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex items-center gap-2">
+        {isInProgress ? (
+          <Button variant="outline" size="sm" onClick={handleCancel}>
+            Cancel
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant={provider.authenticated ? "outline" : "default"}
+            onClick={handleStart}
+            disabled={startMutation.isPending}
+          >
+            {startMutation.isPending
+              ? "Starting..."
+              : provider.authenticated
+                ? "Re-authenticate"
+                : "Login"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CLIAuthCard() {
+  const providersQuery = useCLIAuthProviders();
+  const providers = providersQuery.data;
+  const isLoading = providersQuery.isLoading;
+  const isError = providersQuery.isError;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>CLI Runtime Authentication</CardTitle>
+        <CardDescription>
+          Authenticate CLI tools used by butler runtimes. Uses device-code
+          authorization — no API keys required.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-16 w-full" />
+          </div>
+        ) : isError ? (
+          <p className="text-sm text-destructive">
+            Failed to load CLI auth providers. Ensure the dashboard API is running.
+          </p>
+        ) : providers && providers.length > 0 ? (
+          providers.map((p) => (
+            <CLIAuthProviderRow key={p.name} provider={p} />
+          ))
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No CLI tools found on the server. Install opencode or codex to enable
+            device-code authentication.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -495,6 +703,8 @@ export default function SettingsPage() {
           </Button>
         </CardContent>
       </Card>
+
+      <CLIAuthCard />
 
       <GoogleOAuthCard />
     </div>

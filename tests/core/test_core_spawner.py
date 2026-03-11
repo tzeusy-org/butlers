@@ -593,18 +593,6 @@ class TestCredentialPassthrough:
     # Env-only path (no credential_store — backwards compatibility)
     # ------------------------------------------------------------------
 
-    async def test_anthropic_key_always_included(self):
-        config = _make_config()
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-123"}, clear=False):
-            env = await _build_env(config)
-            assert env["ANTHROPIC_API_KEY"] == "sk-test-123"
-
-    async def test_openai_key_always_included(self):
-        config = _make_config()
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai-123"}, clear=False):
-            env = await _build_env(config)
-            assert env["OPENAI_API_KEY"] == "sk-openai-123"
-
     async def test_path_baseline_included(self):
         """PATH is passed through so runtime shebangs can resolve binaries."""
         config = _make_config()
@@ -691,36 +679,6 @@ class TestCredentialPassthrough:
     # DB-first resolution path (with mocked CredentialStore)
     # ------------------------------------------------------------------
 
-    async def test_db_resolution_anthropic_key(self):
-        """ANTHROPIC_API_KEY resolved from DB takes precedence over env."""
-        config = _make_config()
-        store = AsyncMock()
-        store.resolve = AsyncMock(
-            side_effect=lambda key: "db-sk-key" if key == "ANTHROPIC_API_KEY" else None
-        )
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "env-sk-key"}, clear=False):
-            env = await _build_env(config, credential_store=store)
-        assert env["ANTHROPIC_API_KEY"] == "db-sk-key"
-
-    async def test_db_resolution_openai_key(self):
-        """OPENAI_API_KEY resolved from DB takes precedence over env."""
-        config = _make_config()
-        store = AsyncMock()
-        store.resolve = AsyncMock(
-            side_effect=lambda key: "db-openai-key" if key == "OPENAI_API_KEY" else None
-        )
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-openai-key"}, clear=False):
-            env = await _build_env(config, credential_store=store)
-        assert env["OPENAI_API_KEY"] == "db-openai-key"
-
-    async def test_db_resolution_env_fallback_when_db_miss(self):
-        """When DB has no value, env var is used as fallback via CredentialStore.resolve()."""
-        config = _make_config()
-        store = AsyncMock()
-        store.resolve = AsyncMock(return_value="env-via-store-fallback")
-        env = await _build_env(config, credential_store=store)
-        assert env["ANTHROPIC_API_KEY"] == "env-via-store-fallback"
-
     async def test_db_resolution_module_credentials(self):
         """Module credentials resolved from DB when CredentialStore is provided."""
         config = _make_config()
@@ -768,14 +726,13 @@ class TestCredentialPassthrough:
 
         with patch.dict(
             os.environ,
-            {"ANTHROPIC_API_KEY": "sk-key", "BUTLER_SECRET": "s3cret"},
+            {"BUTLER_SECRET": "s3cret"},
             clear=False,
         ):
             await spawner.trigger("test env", "tick")
 
         assert len(adapter.calls) == 1
         passed_env = adapter.calls[0]["env"]
-        assert passed_env["ANTHROPIC_API_KEY"] == "sk-key"
         assert passed_env["BUTLER_SECRET"] == "s3cret"
 
     async def test_spawner_with_credential_store_passes_db_values_to_adapter(self, tmp_path: Path):
@@ -785,7 +742,7 @@ class TestCredentialPassthrough:
         config = _make_config(env_required=["MY_API_KEY"])
 
         store = AsyncMock()
-        resolved = {"ANTHROPIC_API_KEY": "db-anthropic", "MY_API_KEY": "db-my-api-key"}
+        resolved = {"MY_API_KEY": "db-my-api-key"}
         store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
 
         adapter = MockAdapter(result_text="", capture=True)
@@ -800,7 +757,6 @@ class TestCredentialPassthrough:
 
         assert len(adapter.calls) == 1
         passed_env = adapter.calls[0]["env"]
-        assert passed_env["ANTHROPIC_API_KEY"] == "db-anthropic"
         assert passed_env["MY_API_KEY"] == "db-my-api-key"
 
 
@@ -1456,7 +1412,7 @@ class TestFullFlow:
         ) as mock_fetch:
             with patch.dict(
                 os.environ,
-                {"ANTHROPIC_API_KEY": "sk-flow", "CUSTOM_VAR": "cv"},
+                {"CUSTOM_VAR": "cv"},
                 clear=False,
             ):
                 result = await spawner.trigger("do the thing", "schedule")
@@ -1479,7 +1435,6 @@ class TestFullFlow:
         call = adapter.calls[0]
         assert call["system_prompt"] == "You are the test butler."
         assert "flow-butler" in call["mcp_servers"]
-        assert call["env"]["ANTHROPIC_API_KEY"] == "sk-flow"
         assert call["env"]["CUSTOM_VAR"] == "cv"
 
     async def test_full_trigger_flow_appends_memory_context_suffix(self, tmp_path: Path):

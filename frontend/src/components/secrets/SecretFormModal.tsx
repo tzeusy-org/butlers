@@ -199,7 +199,7 @@ export function SecretFormModal({
                 <Input
                   id="secret-key"
                   list="secret-key-suggestions"
-                  placeholder="ANTHROPIC_API_KEY"
+                  placeholder="BUTLER_TELEGRAM_TOKEN"
                   value={form.key}
                   onChange={(e) => handleKeyChange(e.target.value)}
                   autoComplete="off"

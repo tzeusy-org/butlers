@@ -56,7 +56,6 @@ logger = logging.getLogger(__name__)
 
 _MEMORY_TABLE_NAMES = ("episodes", "facts", "rules", "memory_links", "memory_events")
 _missing_memory_table_warnings: set[tuple[str, str]] = set()
-_GLOBAL_CREDENTIAL_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 
 
 def _is_missing_memory_table_error(exc: Exception) -> bool:
@@ -231,9 +230,11 @@ async def _build_env(
     working in spawned subprocesses without requiring machine-specific paths.
 
     Other than `PATH`, only declared variables are included — undeclared env
-    vars do not leak through.
-    Always includes core API keys (ANTHROPIC/OPENAI), plus butler-level
-    required/optional vars and module credential vars.
+    vars do not leak through.  Includes butler-level required/optional vars
+    and module credential vars.
+
+    Runtime authentication is handled by CLI-level OAuth tokens (device-code
+    flow via the dashboard), not API keys.
 
     When *credential_store* is provided, credentials are resolved DB-first
     with automatic env-var fallback via ``CredentialStore.resolve()``.
@@ -252,12 +253,6 @@ async def _build_env(
         if credential_store is not None:
             return await credential_store.resolve(key)
         return os.environ.get(key) or None
-
-    # Always include core API keys (DB-first, env fallback).
-    for key in _GLOBAL_CREDENTIAL_KEYS:
-        value = await _resolve(key)
-        if value:
-            env[key] = value
 
     # Butler-level required + optional env vars
     for var in config.env_required + config.env_optional:

@@ -86,17 +86,15 @@ def test_filter_env_passes_google_api_key():
     assert filtered["GOOGLE_API_KEY"] == "gk-test"
 
 
-def test_filter_env_excludes_anthropic_api_key():
-    """ANTHROPIC_API_KEY is excluded from Gemini env."""
+def test_filter_env_passes_all_keys():
+    """All env vars are passed through to Gemini."""
     env = {
         "GOOGLE_API_KEY": "gk-test",
         "ANTHROPIC_API_KEY": "sk-ant-secret",
         "PATH": "/usr/bin",
     }
     filtered = _filter_env(env)
-    assert "ANTHROPIC_API_KEY" not in filtered
-    assert "GOOGLE_API_KEY" in filtered
-    assert "PATH" in filtered
+    assert filtered == env
 
 
 def test_filter_env_empty():
@@ -104,11 +102,11 @@ def test_filter_env_empty():
     assert _filter_env({}) == {}
 
 
-def test_filter_env_only_anthropic_key():
-    """Env with only ANTHROPIC_API_KEY returns empty dict."""
+def test_filter_env_single_key():
+    """Env with a single key is passed through."""
     env = {"ANTHROPIC_API_KEY": "sk-ant-secret"}
     filtered = _filter_env(env)
-    assert filtered == {}
+    assert filtered == env
 
 
 # ---------------------------------------------------------------------------
@@ -342,8 +340,8 @@ async def test_invoke_no_system_prompt():
     assert "--system-prompt" not in cmd
 
 
-async def test_invoke_filters_env():
-    """invoke() filters env to exclude ANTHROPIC_API_KEY."""
+async def test_invoke_passes_env():
+    """invoke() passes all env vars through to subprocess."""
     adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
 
     mock_proc = AsyncMock()
@@ -352,7 +350,6 @@ async def test_invoke_filters_env():
 
     env = {
         "GOOGLE_API_KEY": "gk-test",
-        "ANTHROPIC_API_KEY": "sk-ant-secret",
         "PATH": "/usr/bin",
     }
 
@@ -367,7 +364,6 @@ async def test_invoke_filters_env():
     call_kwargs = mock_sub.call_args[1]
     passed_env = call_kwargs["env"]
     assert "GOOGLE_API_KEY" in passed_env
-    assert "ANTHROPIC_API_KEY" not in passed_env
     assert "PATH" in passed_env
 
 

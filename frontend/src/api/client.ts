@@ -1517,6 +1517,40 @@ export function getOAuthStartUrl(): string {
 }
 
 // ---------------------------------------------------------------------------
+// CLI auth (device-code flow) API functions
+// ---------------------------------------------------------------------------
+
+import type {
+  CLIAuthProvider,
+  CLIAuthSessionResponse,
+  CLIAuthStartResponse,
+} from "./types.ts";
+
+/** List available CLI auth providers and their current auth status. */
+export function listCLIAuthProviders(): Promise<CLIAuthProvider[]> {
+  return apiFetch<CLIAuthProvider[]>("/cli-auth/providers");
+}
+
+/** Start a device-code auth flow for a CLI provider. */
+export function startCLIAuth(provider: string): Promise<CLIAuthStartResponse> {
+  return apiFetch<CLIAuthStartResponse>(`/cli-auth/${provider}/start`, {
+    method: "POST",
+  });
+}
+
+/** Poll the status of an in-flight CLI auth session. */
+export function getCLIAuthSession(sessionId: string): Promise<CLIAuthSessionResponse> {
+  return apiFetch<CLIAuthSessionResponse>(`/cli-auth/sessions/${sessionId}`);
+}
+
+/** Cancel a running CLI auth session. */
+export function cancelCLIAuthSession(sessionId: string): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>(`/cli-auth/sessions/${sessionId}`, {
+    method: "DELETE",
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Generic secrets CRUD API functions
 // ---------------------------------------------------------------------------
 

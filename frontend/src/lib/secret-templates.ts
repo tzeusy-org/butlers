@@ -1,9 +1,7 @@
 export type SecretCategory =
-  | "core"
   | "telegram"
   | "email"
   | "google"
-  | "gemini"
   | "home_assistant"
   | "general";
 
@@ -14,11 +12,6 @@ export interface SecretTemplate {
 }
 
 export const SECRET_TEMPLATES: SecretTemplate[] = [
-  // Core — LLM API keys
-  { key: "ANTHROPIC_API_KEY", description: "Anthropic Claude API key", category: "core" },
-  { key: "OPENAI_API_KEY", description: "OpenAI API key", category: "core" },
-  { key: "GOOGLE_API_KEY", description: "Google API key (Maps, etc.)", category: "core" },
-  { key: "GEMINI_API_KEY", description: "Google Gemini API key", category: "gemini" },
   // Telegram — butler-owned bot credential
   { key: "BUTLER_TELEGRAM_TOKEN", description: "Telegram bot token (from @BotFather)", category: "telegram" },
   // Email — butler-owned mailbox credentials
@@ -44,11 +37,9 @@ export const SECRET_TEMPLATES: SecretTemplate[] = [
  */
 
 export const SECRET_CATEGORIES: SecretCategory[] = [
-  "core",
   "telegram",
   "email",
   "google",
-  "gemini",
   "home_assistant",
   "general",
 ];
@@ -58,15 +49,6 @@ export function categoryFromKey(key: string): SecretCategory {
   if (upper.includes("TELEGRAM")) return "telegram";
   if (upper.includes("EMAIL") || upper.includes("SMTP") || upper.includes("IMAP")) return "email";
   if (upper.includes("GOOGLE") || upper.includes("GOOGLE_CLIENT")) return "google";
-  if (upper.includes("GEMINI")) return "gemini";
   if (upper.includes("HOME_ASSISTANT")) return "home_assistant";
-  if (
-    upper.includes("ANTHROPIC")
-    || upper.includes("OPENAI")
-    || upper.includes("DATABASE_URL")
-    || upper.includes("SECRET_KEY")
-  ) {
-    return "core";
-  }
   return "general";
 }
