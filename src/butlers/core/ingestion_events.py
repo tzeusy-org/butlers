@@ -147,10 +147,6 @@ async def ingestion_events_list(
 
     args: list[Any] = []
 
-    # Build channel WHERE clause fragment for each sub-query
-    def _channel_clause(param_n: int) -> str:
-        return f" AND source_channel = ${param_n}" if source_channel is not None else ""
-
     if status == "ingested":
         # Only query shared.ingestion_events
         where_parts: list[str] = []
