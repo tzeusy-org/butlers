@@ -24,6 +24,7 @@ from uuid import UUID
 from opentelemetry import trace
 from pydantic import BaseModel
 
+from butlers.core.model_routing import Complexity
 from butlers.core.utils import generate_uuid7_string
 from butlers.modules.base import Module
 from butlers.tools.switchboard.routing.telemetry import (
@@ -1433,6 +1434,7 @@ class MessagePipeline:
                             prompt=routing_prompt,
                             trigger_source="tick",
                             request_id=request_id,
+                            complexity=Complexity.TRIVIAL,
                         )
 
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
