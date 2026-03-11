@@ -105,7 +105,10 @@ def upgrade() -> None:
             replay_requested_at TIMESTAMPTZ,
             replay_completed_at TIMESTAMPTZ,
             created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (received_at, id)
+            PRIMARY KEY (received_at, id),
+            CONSTRAINT chk_filtered_events_status CHECK (status IN (
+                'filtered', 'error', 'replay_pending', 'replay_complete', 'replay_failed'
+            ))
         ) PARTITION BY RANGE (received_at)
     """)
 

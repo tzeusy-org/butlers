@@ -92,6 +92,17 @@ def test_upgrade_filtered_events_status_has_default():
     assert "DEFAULT 'filtered'" in source
 
 
+def test_upgrade_filtered_events_status_has_check_constraint():
+    module = _load_migration()
+    source = inspect.getsource(module.upgrade)
+
+    # Spec defines exactly 5 valid status values; a CHECK constraint enforces them.
+    assert "chk_filtered_events_status" in source
+    assert "replay_pending" in source
+    assert "replay_complete" in source
+    assert "replay_failed" in source
+
+
 def test_upgrade_creates_partition_management_function():
     module = _load_migration()
     source = inspect.getsource(module.upgrade)
