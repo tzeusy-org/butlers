@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/card";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
+import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { useIssues } from "@/hooks/use-issues";
 import { useNotifications } from "@/hooks/use-notifications";
 import { useSessions } from "@/hooks/use-sessions";
@@ -68,6 +69,7 @@ export default function DashboardPage() {
     since: new Date(new Date().setHours(0, 0, 0, 0)).toISOString(),
   }, { refetchInterval: 60_000 });
   const { data: issuesResponse, isLoading: issuesLoading } = useIssues();
+  const { data: connectorsResponse, isLoading: connectorsLoading } = useConnectorSummaries();
   const { data: failedResponse, isLoading: failedLoading } = useNotifications({
     status: "failed",
     limit: 5,
@@ -77,6 +79,7 @@ export default function DashboardPage() {
   const totalButlers = butlers.length;
   const healthyButlers = butlers.filter((b) => b.status === "ok").length;
 
+  const connectors = connectorsResponse?.data ?? [];
   const failedNotifications = failedResponse?.data ?? [];
   const failedTotal = failedResponse?.meta.total ?? 0;
   const sessionsToday = sessionsTodayResponse?.meta.total ?? 0;
@@ -113,10 +116,14 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Butler Topology */}
+      {/* Ecosystem Topology */}
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="lg:col-span-2">
-          <TopologyGraph butlers={butlers} isLoading={butlersLoading} />
+          <TopologyGraph
+            butlers={butlers}
+            connectors={connectors}
+            isLoading={butlersLoading && connectorsLoading}
+          />
         </div>
       </div>
 

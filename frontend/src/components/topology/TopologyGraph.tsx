@@ -17,8 +17,15 @@ interface ButlerNode {
   port: number;
 }
 
+interface ConnectorNode {
+  connector_type: string;
+  endpoint_identity: string;
+  liveness: string; // "online" | "stale" | "offline"
+}
+
 interface TopologyGraphProps {
   butlers: ButlerNode[];
+  connectors?: ConnectorNode[];
   isLoading?: boolean;
 }
 
@@ -28,13 +35,26 @@ const STATUS_COLORS: Record<string, string> = {
   down: "#ef4444", // red-500
   offline: "#ef4444",
   degraded: "#eab308", // yellow-500
+  stale: "#eab308", // yellow-500
 };
 
 function getStatusColor(status: string): string {
   return STATUS_COLORS[status] ?? "#6b7280"; // gray-500
 }
 
-function buildNodes(butlers: ButlerNode[]): Node[] {
+function connectorLabel(c: ConnectorNode): string {
+  // e.g. "gmail / user@example.com" — truncate long identities
+  const id =
+    c.endpoint_identity.length > 18
+      ? c.endpoint_identity.slice(0, 16) + "…"
+      : c.endpoint_identity;
+  return `${c.connector_type}\n${id}`;
+}
+
+function buildNodes(
+  butlers: ButlerNode[],
+  connectors: ConnectorNode[] = [],
+): Node[] {
   const nodes: Node[] = [];
   const switchboard = butlers.find((b) => b.name === "switchboard");
   const heartbeat = butlers.find((b) => b.name === "heartbeat");
@@ -43,10 +63,13 @@ function buildNodes(butlers: ButlerNode[]): Node[] {
   );
 
   // Center node: Switchboard
+  const centerX = 300;
+  const centerY = 250;
+
   if (switchboard) {
     nodes.push({
       id: switchboard.name,
-      position: { x: 300, y: 200 },
+      position: { x: centerX - 70, y: centerY - 20 },
       data: { label: switchboard.name },
       style: {
         background: getStatusColor(switchboard.status),
@@ -86,16 +109,16 @@ function buildNodes(butlers: ButlerNode[]): Node[] {
     });
   }
 
-  // Arrange other butlers in a circle around switchboard
-  const centerX = 300;
-  const centerY = 200;
-  const radius = 200;
-  const count = others.length;
+  // Arrange butlers in a right semicircle (right side of switchboard)
+  const butlerRadius = 200;
+  const butlerCount = others.length;
 
   others.forEach((butler, i) => {
-    const angle = (2 * Math.PI * i) / Math.max(count, 1) - Math.PI / 2;
-    const x = centerX + radius * Math.cos(angle) - 50;
-    const y = centerY + radius * Math.sin(angle) - 20;
+    // Spread from -PI/2 to PI/2 (right semicircle)
+    const angle =
+      -Math.PI / 2 + (Math.PI * (i + 0.5)) / Math.max(butlerCount, 1);
+    const x = centerX + butlerRadius * Math.cos(angle) - 50;
+    const y = centerY + butlerRadius * Math.sin(angle) - 20;
 
     nodes.push({
       id: butler.name,
@@ -115,10 +138,45 @@ function buildNodes(butlers: ButlerNode[]): Node[] {
     });
   });
 
+  // Arrange connectors in a left semicircle (left side of switchboard)
+  const connectorRadius = 200;
+  const connectorCount = connectors.length;
+
+  connectors.forEach((connector, i) => {
+    const connId = `connector-${connector.connector_type}-${connector.endpoint_identity}`;
+    // Spread from PI/2 to 3PI/2 (left semicircle)
+    const angle =
+      Math.PI / 2 + (Math.PI * (i + 0.5)) / Math.max(connectorCount, 1);
+    const x = centerX + connectorRadius * Math.cos(angle) - 55;
+    const y = centerY + connectorRadius * Math.sin(angle) - 20;
+
+    nodes.push({
+      id: connId,
+      position: { x, y },
+      data: { label: connectorLabel(connector) },
+      style: {
+        background: "#0f172a",
+        color: "white",
+        border: `2px solid ${getStatusColor(connector.liveness)}`,
+        borderRadius: "8px",
+        padding: "8px 12px",
+        fontWeight: 500,
+        fontSize: "11px",
+        width: 130,
+        textAlign: "center" as const,
+        whiteSpace: "pre-line" as const,
+        lineHeight: "1.3",
+      },
+    });
+  });
+
   return nodes;
 }
 
-function buildEdges(butlers: ButlerNode[]): Edge[] {
+function buildEdges(
+  butlers: ButlerNode[],
+  connectors: ConnectorNode[] = [],
+): Edge[] {
   const edges: Edge[] = [];
   const hasSwitch = butlers.some((b) => b.name === "switchboard");
   const hasHeartbeat = butlers.some((b) => b.name === "heartbeat");
@@ -135,6 +193,20 @@ function buildEdges(butlers: ButlerNode[]): Edge[] {
         target: butler.name,
         style: { stroke: "#64748b" },
         animated: butler.status === "ok" || butler.status === "online",
+      });
+    }
+  }
+
+  // Connector -> Switchboard
+  if (hasSwitch) {
+    for (const connector of connectors) {
+      const connId = `connector-${connector.connector_type}-${connector.endpoint_identity}`;
+      edges.push({
+        id: `conn-${connId}`,
+        source: connId,
+        target: "switchboard",
+        style: { stroke: "#8b5cf6" }, // purple for connector edges
+        animated: connector.liveness === "online",
       });
     }
   }
@@ -165,16 +237,25 @@ function buildEdges(butlers: ButlerNode[]): Edge[] {
 
 export default function TopologyGraph({
   butlers,
+  connectors = [],
   isLoading,
 }: TopologyGraphProps) {
   const navigate = useNavigate();
 
-  const nodes = useMemo(() => buildNodes(butlers), [butlers]);
-  const edges = useMemo(() => buildEdges(butlers), [butlers]);
+  const nodes = useMemo(() => buildNodes(butlers, connectors), [butlers, connectors]);
+  const edges = useMemo(() => buildEdges(butlers, connectors), [butlers, connectors]);
 
   const onNodeClick: NodeMouseHandler = useCallback(
     (_, node) => {
-      navigate(`/butlers/${node.id}`);
+      if (node.id.startsWith("connector-")) {
+        // connector-{type}-{identity} → /ingestion/connectors/{type}/{identity}
+        const parts = node.id.replace("connector-", "").split("-");
+        const connType = parts[0];
+        const identity = parts.slice(1).join("-");
+        navigate(`/ingestion/connectors/${connType}/${identity}`);
+      } else {
+        navigate(`/butlers/${node.id}`);
+      }
     },
     [navigate],
   );
@@ -183,7 +264,7 @@ export default function TopologyGraph({
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Butler Topology</CardTitle>
+          <CardTitle>Ecosystem Topology</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="h-96 animate-pulse rounded bg-muted" />
@@ -196,7 +277,7 @@ export default function TopologyGraph({
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Butler Topology</CardTitle>
+          <CardTitle>Ecosystem Topology</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex h-96 items-center justify-center text-sm text-muted-foreground">
@@ -210,7 +291,7 @@ export default function TopologyGraph({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Butler Topology</CardTitle>
+        <CardTitle>Ecosystem Topology</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="h-96">
@@ -231,4 +312,4 @@ export default function TopologyGraph({
   );
 }
 
-export type { ButlerNode, TopologyGraphProps };
+export type { ButlerNode, ConnectorNode, TopologyGraphProps };
