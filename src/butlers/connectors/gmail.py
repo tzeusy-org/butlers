@@ -44,6 +44,7 @@ import asyncio
 import base64
 import codecs
 import html
+import json
 import logging
 import os
 import re
@@ -62,6 +63,7 @@ from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
     INGESTION_TIER_METADATA,
@@ -513,6 +515,13 @@ class GmailConnectorRuntime:
             db_pool=db_pool,
         )
 
+        # Filtered event buffer: accumulates events filtered during each poll cycle.
+        # Flushed to connectors.filtered_events after each cycle completes.
+        self._filtered_event_buffer = FilteredEventBuffer(
+            connector_type=config.connector_provider,
+            endpoint_identity=config.connector_endpoint_identity,
+        )
+
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
         uptime = time.time() - self._start_time
@@ -826,6 +835,9 @@ class GmailConnectorRuntime:
                 # Back off on error
                 await asyncio.sleep(min(60, self._config.gmail_poll_interval_s * 2))
 
+            # Flush filtered event buffer and drain replay-pending rows after each poll cycle
+            await self._flush_and_drain()
+
             # Wait before next poll
             await asyncio.sleep(self._config.gmail_poll_interval_s)
 
@@ -890,6 +902,9 @@ class GmailConnectorRuntime:
 
                     # Update last poll time
                     last_poll_time = time.time()
+
+                    # Flush filtered event buffer and drain replay-pending rows
+                    await self._flush_and_drain()
 
             except Exception as exc:
                 logger.error("Error in Pub/Sub ingestion loop: %s", exc, exc_info=True)
@@ -1713,6 +1728,9 @@ class GmailConnectorRuntime:
            - Tier 2 (metadata): submit slim envelope with ingestion_tier=metadata.
            - Tier 1 (full): submit full envelope.
 
+        Filtered and errored events are recorded into the FilteredEventBuffer
+        for batch persistence after the poll cycle completes.
+
         Transient connectivity errors (ConnectionError, httpx.ConnectError,
         etc.) are re-raised so that _ingest_messages can propagate them to the
         batch loop, preventing cursor advancement.
@@ -1722,6 +1740,18 @@ class GmailConnectorRuntime:
             try:
                 # Fetch message data (required for label/header-based policy evaluation)
                 message_data = await self._fetch_message(message_id)
+
+                # Extract common fields for buffer recording
+                _subject = self._get_subject(message_data)
+                _from_header = self._get_from_header(message_data)
+                _thread_id = message_data.get("threadId")
+                _internal_date = message_data.get("internalDate", "0")
+                try:
+                    _observed_at = datetime.fromtimestamp(
+                        int(_internal_date) / 1000, tz=UTC
+                    ).isoformat()
+                except (ValueError, OSError):
+                    _observed_at = datetime.now(UTC).isoformat()
 
                 # Evaluate label filter + tier policy
                 policy_result = evaluate_message_policy(
@@ -1735,8 +1765,26 @@ class GmailConnectorRuntime:
                 if not policy_result.should_ingest:
                     logger.info(
                         "[Gmail] '%s' filtered out: %s",
-                        self._get_subject(message_data),
+                        _subject,
                         policy_result.filter_reason,
+                    )
+                    self._filtered_event_buffer.record(
+                        external_message_id=message_id,
+                        source_channel=self._config.connector_channel,
+                        sender_identity=_from_header,
+                        subject_or_preview=_subject or None,
+                        filter_reason=policy_result.filter_reason,
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.connector_channel,
+                            provider=self._config.connector_provider,
+                            endpoint_identity=self._config.connector_endpoint_identity,
+                            external_event_id=message_id,
+                            external_thread_id=_thread_id,
+                            observed_at=_observed_at,
+                            sender_identity=_from_header,
+                            raw=message_data,
+                            policy_tier=policy_result.policy_tier,
+                        ),
                     )
                     return
 
@@ -1748,8 +1796,30 @@ class GmailConnectorRuntime:
                 if not _ip_decision.allowed:
                     logger.info(
                         "[Gmail] '%s' filtered out by connector rule: %s",
-                        self._get_subject(message_data),
+                        _subject,
                         _ip_decision.reason,
+                    )
+                    self._filtered_event_buffer.record(
+                        external_message_id=message_id,
+                        source_channel=self._config.connector_channel,
+                        sender_identity=_from_header,
+                        subject_or_preview=_subject or None,
+                        filter_reason=FilteredEventBuffer.reason_policy_rule(
+                            "connector_rule",
+                            "block",
+                            _ip_decision.matched_rule_type or "unknown",
+                        ),
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.connector_channel,
+                            provider=self._config.connector_provider,
+                            endpoint_identity=self._config.connector_endpoint_identity,
+                            external_event_id=message_id,
+                            external_thread_id=_thread_id,
+                            observed_at=_observed_at,
+                            sender_identity=_from_header,
+                            raw=message_data,
+                            policy_tier=policy_result.policy_tier,
+                        ),
                     )
                     return
 
@@ -1758,8 +1828,30 @@ class GmailConnectorRuntime:
                 if _gp_decision.action == "skip":
                     logger.info(
                         "[Gmail] '%s' filtered out by global rule: %s",
-                        self._get_subject(message_data),
+                        _subject,
                         _gp_decision.reason,
+                    )
+                    self._filtered_event_buffer.record(
+                        external_message_id=message_id,
+                        source_channel=self._config.connector_channel,
+                        sender_identity=_from_header,
+                        subject_or_preview=_subject or None,
+                        filter_reason=FilteredEventBuffer.reason_policy_rule(
+                            "global_rule",
+                            "skip",
+                            _gp_decision.matched_rule_type or "unknown",
+                        ),
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.connector_channel,
+                            provider=self._config.connector_provider,
+                            endpoint_identity=self._config.connector_endpoint_identity,
+                            external_event_id=message_id,
+                            external_thread_id=_thread_id,
+                            observed_at=_observed_at,
+                            sender_identity=_from_header,
+                            raw=message_data,
+                            policy_tier=policy_result.policy_tier,
+                        ),
                     )
                     return
 
@@ -1791,6 +1883,157 @@ class GmailConnectorRuntime:
                 raise
             except Exception as exc:
                 logger.error("Failed to ingest message %s: %s", message_id, exc, exc_info=True)
+                # Record error event in the filtered event buffer
+                self._filtered_event_buffer.record(
+                    external_message_id=message_id,
+                    source_channel=self._config.connector_channel,
+                    sender_identity="unknown",
+                    subject_or_preview=None,
+                    filter_reason=FilteredEventBuffer.reason_submission_error(),
+                    full_payload=FilteredEventBuffer.full_payload(
+                        channel=self._config.connector_channel,
+                        provider=self._config.connector_provider,
+                        endpoint_identity=self._config.connector_endpoint_identity,
+                        external_event_id=message_id,
+                        external_thread_id=None,
+                        observed_at=datetime.now(UTC).isoformat(),
+                        sender_identity="unknown",
+                        raw={"message_id": message_id},
+                    ),
+                    status="error",
+                    error_detail=str(exc),
+                )
+
+    # SQL for the replay drain loop.
+    # Locks up to 10 replay_pending rows with skip-locked concurrency safety,
+    # then updates each to replay_complete or replay_failed after submission.
+    _REPLAY_SELECT_SQL = """\
+SELECT id, received_at, external_message_id, full_payload
+FROM connectors.filtered_events
+WHERE connector_type = $1
+  AND endpoint_identity = $2
+  AND status = 'replay_pending'
+ORDER BY received_at ASC
+LIMIT 10
+FOR UPDATE SKIP LOCKED
+"""
+
+    _REPLAY_UPDATE_SQL = """\
+UPDATE connectors.filtered_events
+SET status = $1,
+    error_detail = $2,
+    replay_completed_at = now()
+WHERE id = $3 AND received_at = $4
+"""
+
+    async def _flush_and_drain(self) -> None:
+        """Flush filtered event buffer then drain up to 10 replay-pending rows.
+
+        Called after each poll cycle.  No-op when ``_db_pool`` is None (no DB
+        connectivity at connector startup).
+        """
+        if self._db_pool is None:
+            return
+
+        # 1. Flush accumulated filtered/error events from this cycle.
+        await self._filtered_event_buffer.flush(self._db_pool)
+
+        # 2. Drain replay-pending rows left by the dashboard "retry" action.
+        await self._drain_replay_pending()
+
+    async def _drain_replay_pending(self) -> None:
+        """Process up to 10 replay_pending rows from connectors.filtered_events.
+
+        For each row:
+        - Deserialize full_payload from JSONB.
+        - Wrap in an ingest.v1 envelope (adds schema_version).
+        - Submit via _submit_to_ingest_api.
+        - Mark status=replay_complete on success or replay_failed on error.
+
+        Uses FOR UPDATE SKIP LOCKED so concurrent connector instances never
+        process the same row twice.  The SELECT and all UPDATEs share a single
+        connection and transaction so the row locks are held until every status
+        update commits — defeating the race window that would otherwise exist
+        between connection-per-update calls.
+        """
+        if self._db_pool is None:
+            return
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                async with conn.transaction():
+                    rows = await conn.fetch(
+                        self._REPLAY_SELECT_SQL,
+                        self._config.connector_provider,
+                        self._config.connector_endpoint_identity,
+                    )
+
+                    if not rows:
+                        return
+
+                    logger.debug("replay drain: processing %d replay_pending rows", len(rows))
+
+                    for row in rows:
+                        row_id = row["id"]
+                        received_at = row["received_at"]
+                        external_message_id = row["external_message_id"]
+                        raw_payload = row["full_payload"]
+
+                        # Deserialize JSONB (asyncpg may return str or dict depending on codec)
+                        if isinstance(raw_payload, str):
+                            try:
+                                payload_dict: dict[str, Any] = json.loads(raw_payload)
+                            except Exception as exc:
+                                logger.warning(
+                                    "replay drain: failed to parse full_payload for id=%s: %s",
+                                    row_id,
+                                    exc,
+                                )
+                                await conn.execute(
+                                    self._REPLAY_UPDATE_SQL,
+                                    "replay_failed",
+                                    str(exc),
+                                    row_id,
+                                    received_at,
+                                )
+                                continue
+                        else:
+                            payload_dict = dict(raw_payload)
+
+                        # Build ingest.v1 envelope by adding schema_version
+                        envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
+
+                        try:
+                            await self._submit_to_ingest_api(envelope)
+                            await conn.execute(
+                                self._REPLAY_UPDATE_SQL,
+                                "replay_complete",
+                                None,
+                                row_id,
+                                received_at,
+                            )
+                            logger.info(
+                                "replay drain: replayed message %s (id=%s)",
+                                external_message_id,
+                                row_id,
+                            )
+                        except Exception as exc:
+                            error_msg = str(exc)
+                            logger.warning(
+                                "replay drain: failed to replay message %s (id=%s): %s",
+                                external_message_id,
+                                row_id,
+                                exc,
+                            )
+                            await conn.execute(
+                                self._REPLAY_UPDATE_SQL,
+                                "replay_failed",
+                                error_msg,
+                                row_id,
+                                received_at,
+                            )
+        except Exception:
+            logger.warning("replay drain: failed to query replay_pending rows", exc_info=True)
 
     @staticmethod
     def _get_from_header(message_data: dict[str, Any]) -> str:
