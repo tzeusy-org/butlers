@@ -81,11 +81,11 @@ from butlers.core.route_inbox import (
     route_inbox_recovery_sweep,
 )
 from butlers.core.runtimes import get_adapter
+from butlers.core.scheduler import _parse_complexity_from_db_row, sync_schedules
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_list as _schedule_list
 from butlers.core.scheduler import schedule_update as _schedule_update
-from butlers.core.scheduler import sync_schedules
 from butlers.core.scheduler import tick as _tick
 from butlers.core.sessions import schedule_costs as _schedule_costs
 from butlers.core.sessions import sessions_daily as _sessions_daily
@@ -3835,16 +3835,7 @@ class ButlerDaemon:
             job_name = row["job_name"]
             raw_job_args = row["job_args"]
             job_args = json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
-            raw_complexity = row.get("complexity") or Complexity.MEDIUM.value
-            try:
-                task_complexity = Complexity(raw_complexity)
-            except ValueError:
-                logger.warning(
-                    "Unknown complexity value %r for task %s; defaulting to medium",
-                    raw_complexity,
-                    name,
-                )
-                task_complexity = Complexity.MEDIUM
+            task_complexity = _parse_complexity_from_db_row(row, name)
 
             now = datetime.now(UTC)
             try:

@@ -150,6 +150,24 @@ def _normalize_complexity(value: Any, *, context: str) -> str:
     return normalized
 
 
+def _parse_complexity_from_db_row(row: asyncpg.Record, task_name: str) -> Complexity:
+    """Parse complexity from a DB row, falling back to MEDIUM on missing or invalid values.
+
+    Logs a warning on invalid values — complexity is DB-serialized by this codebase but
+    could be stale (e.g. old migration, manual edit), so a visible warning is appropriate.
+    """
+    raw_complexity = row.get("complexity") or _DEFAULT_COMPLEXITY
+    try:
+        return Complexity(raw_complexity)
+    except ValueError:
+        logger.warning(
+            "Unknown complexity value %r for task %s; defaulting to medium",
+            raw_complexity,
+            task_name,
+        )
+        return Complexity.MEDIUM
+
+
 def _normalize_schedule_dispatch(
     *,
     dispatch_mode: Any,
@@ -529,16 +547,7 @@ async def tick(
             dispatch_mode = row["dispatch_mode"]
             job_name = row["job_name"]
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
-            raw_complexity = row.get("complexity") or _DEFAULT_COMPLEXITY
-            try:
-                task_complexity = Complexity(raw_complexity)
-            except ValueError:
-                logger.warning(
-                    "Unknown complexity value %r for task %s; defaulting to medium",
-                    raw_complexity,
-                    name,
-                )
-                task_complexity = Complexity.MEDIUM
+            task_complexity = _parse_complexity_from_db_row(row, name)
 
             until_at = row["until_at"]
 
