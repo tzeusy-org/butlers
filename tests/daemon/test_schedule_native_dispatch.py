@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.config import ButlerConfig
+from butlers.core.model_routing import Complexity
 from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
@@ -105,7 +106,89 @@ class TestNativeScheduleDispatch:
         mock_spawner.trigger.assert_awaited_once_with(
             prompt="run memory cleanup",
             trigger_source="schedule:non-native-prompt-task",
+            complexity=Complexity.MEDIUM,
         )
+
+    async def test_prompt_dispatch_passes_complexity_to_spawner(self, tmp_path):
+        """Complexity parameter must be forwarded to spawner.trigger for prompt-mode tasks."""
+        daemon = ButlerDaemon(tmp_path)
+        daemon.config = ButlerConfig(name="general", port=40101)
+
+        mock_pool = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        daemon.db = mock_db
+
+        spawner_result = {"ok": True}
+        mock_spawner = MagicMock()
+        mock_spawner.trigger = AsyncMock(return_value=spawner_result)
+        daemon.spawner = mock_spawner
+
+        result = await daemon._dispatch_scheduled_task(
+            prompt="do a complex analysis",
+            trigger_source="schedule:complex-task",
+            complexity=Complexity.HIGH,
+        )
+
+        assert result == spawner_result
+        mock_spawner.trigger.assert_awaited_once_with(
+            prompt="do a complex analysis",
+            trigger_source="schedule:complex-task",
+            complexity=Complexity.HIGH,
+        )
+
+    async def test_prompt_dispatch_defaults_complexity_to_medium(self, tmp_path):
+        """When complexity is not provided, spawner.trigger receives Complexity.MEDIUM."""
+        daemon = ButlerDaemon(tmp_path)
+        daemon.config = ButlerConfig(name="general", port=40101)
+
+        mock_pool = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        daemon.db = mock_db
+
+        spawner_result = {"ok": True}
+        mock_spawner = MagicMock()
+        mock_spawner.trigger = AsyncMock(return_value=spawner_result)
+        daemon.spawner = mock_spawner
+
+        await daemon._dispatch_scheduled_task(
+            prompt="routine task",
+            trigger_source="schedule:routine",
+        )
+
+        call_kwargs = mock_spawner.trigger.call_args.kwargs
+        assert call_kwargs["complexity"] is Complexity.MEDIUM
+
+    async def test_job_dispatch_does_not_pass_complexity_to_handler(self, tmp_path):
+        """Deterministic job-mode dispatch ignores complexity (handler owns its own resources)."""
+        daemon = ButlerDaemon(tmp_path)
+        daemon.config = ButlerConfig(name="switchboard", port=40100)
+
+        mock_pool = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        daemon.db = mock_db
+
+        native_result = {"evaluated": 1}
+        mock_handler = AsyncMock(return_value=native_result)
+        mock_spawner = MagicMock()
+        mock_spawner.trigger = AsyncMock()
+        daemon.spawner = mock_spawner
+
+        with patch.dict(
+            "butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+            {"switchboard": {"eligibility_sweep": mock_handler}},
+            clear=True,
+        ):
+            result = await daemon._dispatch_scheduled_task(
+                trigger_source="schedule:eligibility_sweep",
+                job_name="eligibility_sweep",
+                complexity=Complexity.HIGH,  # complexity ignored for job mode
+            )
+
+        assert result == native_result
+        mock_spawner.trigger.assert_not_awaited()
 
     async def test_unknown_job_mode_raises(self, tmp_path):
         """Unknown deterministic job names fail explicitly."""

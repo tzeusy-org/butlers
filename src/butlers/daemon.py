@@ -81,11 +81,11 @@ from butlers.core.route_inbox import (
     route_inbox_recovery_sweep,
 )
 from butlers.core.runtimes import get_adapter
+from butlers.core.scheduler import _parse_complexity_from_db_row, sync_schedules
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_list as _schedule_list
 from butlers.core.scheduler import schedule_update as _schedule_update
-from butlers.core.scheduler import sync_schedules
 from butlers.core.scheduler import tick as _tick
 from butlers.core.sessions import schedule_costs as _schedule_costs
 from butlers.core.sessions import sessions_daily as _sessions_daily
@@ -1995,6 +1995,7 @@ class ButlerDaemon:
         prompt: str | None = None,
         job_name: str | None = None,
         job_args: dict[str, Any] | None = None,
+        complexity: Complexity = Complexity.MEDIUM,
     ) -> Any:
         """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -2039,7 +2040,9 @@ class ButlerDaemon:
             raise RuntimeError("Scheduler dispatch requires an initialized spawner")
         if prompt is None or not prompt.strip():
             raise RuntimeError("Prompt-mode scheduler dispatch requires a non-empty prompt payload")
-        return await self.spawner.trigger(prompt=prompt, trigger_source=trigger_source)
+        return await self.spawner.trigger(
+            prompt=prompt, trigger_source=trigger_source, complexity=complexity
+        )
 
     async def _scheduler_loop(self) -> None:
         """Periodically call tick() to dispatch due scheduled tasks.
@@ -3819,7 +3822,7 @@ class ButlerDaemon:
             task_uuid = uuid.UUID(resolved_id)
 
             row = await pool.fetchrow(
-                "SELECT id, name, dispatch_mode, prompt, job_name, job_args "
+                "SELECT id, name, dispatch_mode, prompt, job_name, job_args, complexity "
                 "FROM scheduled_tasks WHERE id = $1",
                 task_uuid,
             )
@@ -3832,6 +3835,7 @@ class ButlerDaemon:
             job_name = row["job_name"]
             raw_job_args = row["job_args"]
             job_args = json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
+            task_complexity = _parse_complexity_from_db_row(row, name)
 
             now = datetime.now(UTC)
             try:
@@ -3845,6 +3849,7 @@ class ButlerDaemon:
                     result = await daemon._dispatch_scheduled_task(
                         trigger_source=f"schedule:{name}",
                         prompt=prompt,
+                        complexity=task_complexity,
                     )
 
                 # Serialize dispatch result for JSONB storage
