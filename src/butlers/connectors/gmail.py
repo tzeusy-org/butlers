@@ -44,6 +44,7 @@ import asyncio
 import base64
 import codecs
 import html
+import json
 import logging
 import os
 import re
@@ -1772,9 +1773,7 @@ class GmailConnectorRuntime:
                         source_channel=self._config.connector_channel,
                         sender_identity=_from_header,
                         subject_or_preview=_subject or None,
-                        filter_reason=FilteredEventBuffer.reason_label_exclude(
-                            policy_result.filter_reason
-                        ),
+                        filter_reason=policy_result.filter_reason,
                         full_payload=FilteredEventBuffer.full_payload(
                             channel=self._config.connector_channel,
                             provider=self._config.connector_provider,
@@ -1952,97 +1951,89 @@ WHERE id = $3 AND received_at = $4
         - Mark status=replay_complete on success or replay_failed on error.
 
         Uses FOR UPDATE SKIP LOCKED so concurrent connector instances never
-        process the same row twice.
+        process the same row twice.  The SELECT and all UPDATEs share a single
+        connection and transaction so the row locks are held until every status
+        update commits — defeating the race window that would otherwise exist
+        between connection-per-update calls.
         """
         if self._db_pool is None:
             return
 
-        import json as _json
-
         try:
             async with self._db_pool.acquire() as conn:
-                rows = await conn.fetch(
-                    self._REPLAY_SELECT_SQL,
-                    self._config.connector_provider,
-                    self._config.connector_endpoint_identity,
-                )
+                async with conn.transaction():
+                    rows = await conn.fetch(
+                        self._REPLAY_SELECT_SQL,
+                        self._config.connector_provider,
+                        self._config.connector_endpoint_identity,
+                    )
+
+                    if not rows:
+                        return
+
+                    logger.debug("replay drain: processing %d replay_pending rows", len(rows))
+
+                    for row in rows:
+                        row_id = row["id"]
+                        received_at = row["received_at"]
+                        external_message_id = row["external_message_id"]
+                        raw_payload = row["full_payload"]
+
+                        # Deserialize JSONB (asyncpg may return str or dict depending on codec)
+                        if isinstance(raw_payload, str):
+                            try:
+                                payload_dict: dict[str, Any] = json.loads(raw_payload)
+                            except Exception as exc:
+                                logger.warning(
+                                    "replay drain: failed to parse full_payload for id=%s: %s",
+                                    row_id,
+                                    exc,
+                                )
+                                await conn.execute(
+                                    self._REPLAY_UPDATE_SQL,
+                                    "replay_failed",
+                                    str(exc),
+                                    row_id,
+                                    received_at,
+                                )
+                                continue
+                        else:
+                            payload_dict = dict(raw_payload)
+
+                        # Build ingest.v1 envelope by adding schema_version
+                        envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
+
+                        try:
+                            await self._submit_to_ingest_api(envelope)
+                            await conn.execute(
+                                self._REPLAY_UPDATE_SQL,
+                                "replay_complete",
+                                None,
+                                row_id,
+                                received_at,
+                            )
+                            logger.info(
+                                "replay drain: replayed message %s (id=%s)",
+                                external_message_id,
+                                row_id,
+                            )
+                        except Exception as exc:
+                            error_msg = str(exc)
+                            logger.warning(
+                                "replay drain: failed to replay message %s (id=%s): %s",
+                                external_message_id,
+                                row_id,
+                                exc,
+                            )
+                            await conn.execute(
+                                self._REPLAY_UPDATE_SQL,
+                                "replay_failed",
+                                error_msg,
+                                row_id,
+                                received_at,
+                            )
         except Exception:
             logger.warning("replay drain: failed to query replay_pending rows", exc_info=True)
-            return
-
-        if not rows:
-            return
-
-        logger.debug("replay drain: processing %d replay_pending rows", len(rows))
-
-        for row in rows:
-            row_id = row["id"]
-            received_at = row["received_at"]
-            external_message_id = row["external_message_id"]
-            raw_payload = row["full_payload"]
-
-            # Deserialize JSONB (asyncpg may return str or dict depending on codec)
-            if isinstance(raw_payload, str):
-                try:
-                    payload_dict: dict[str, Any] = _json.loads(raw_payload)
-                except Exception as exc:
-                    logger.warning(
-                        "replay drain: failed to parse full_payload for id=%s: %s",
-                        row_id,
-                        exc,
-                    )
-                    await self._replay_update_status(row_id, received_at, "replay_failed", str(exc))
-                    continue
-            else:
-                payload_dict = dict(raw_payload)
-
-            # Build ingest.v1 envelope by adding schema_version
-            envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
-
-            try:
-                await self._submit_to_ingest_api(envelope)
-                await self._replay_update_status(row_id, received_at, "replay_complete", None)
-                logger.info(
-                    "replay drain: replayed message %s (id=%s)",
-                    external_message_id,
-                    row_id,
-                )
-            except Exception as exc:
-                error_msg = str(exc)
-                logger.warning(
-                    "replay drain: failed to replay message %s (id=%s): %s",
-                    external_message_id,
-                    row_id,
-                    exc,
-                )
-                await self._replay_update_status(row_id, received_at, "replay_failed", error_msg)
-
-    async def _replay_update_status(
-        self,
-        row_id: Any,
-        received_at: Any,
-        status: str,
-        error_detail: str | None,
-    ) -> None:
-        """Update the status of a single replay row."""
-        if self._db_pool is None:
-            return
-        try:
-            async with self._db_pool.acquire() as conn:
-                await conn.execute(
-                    self._REPLAY_UPDATE_SQL,
-                    status,
-                    error_detail,
-                    row_id,
-                    received_at,
-                )
-        except Exception:
-            logger.warning(
-                "replay drain: failed to update status=%s for id=%s",
-                status,
-                row_id,
-                exc_info=True,
-            )
 
     @staticmethod
     def _get_from_header(message_data: dict[str, Any]) -> str:
