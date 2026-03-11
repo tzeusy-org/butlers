@@ -37,7 +37,6 @@ docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
-    pytest.mark.asyncio(loop_scope="session"),
 ]
 
 
@@ -278,6 +277,7 @@ class _MockAdapter:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_trigger_high_complexity_resolves_catalog_model(
     postgres_container: Any,
     tmp_path: Path,
@@ -338,6 +338,7 @@ async def test_trigger_high_complexity_resolves_catalog_model(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_trigger_high_complexity_toml_fallback_when_catalog_empty(
     postgres_container: Any,
     tmp_path: Path,
@@ -389,6 +390,7 @@ async def test_trigger_high_complexity_toml_fallback_when_catalog_empty(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_trigger_complexity_tier_is_respected(
     postgres_container: Any,
     tmp_path: Path,
@@ -440,6 +442,7 @@ async def test_trigger_complexity_tier_is_respected(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_trigger_catalog_priority_ordering(
     postgres_container: Any,
     tmp_path: Path,
@@ -494,6 +497,7 @@ async def test_trigger_catalog_priority_ordering(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_scheduler_tick_complexity_propagated_to_dispatch(
     postgres_container: Any,
 ) -> None:
@@ -539,6 +543,7 @@ async def test_scheduler_tick_complexity_propagated_to_dispatch(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_scheduler_tick_complexity_defaults_to_medium(
     postgres_container: Any,
 ) -> None:
@@ -580,6 +585,7 @@ async def test_scheduler_tick_complexity_defaults_to_medium(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_scheduler_high_complexity_resolves_catalog_model_in_session(
     postgres_container: Any,
     tmp_path: Path,
@@ -659,6 +665,7 @@ async def test_scheduler_high_complexity_resolves_catalog_model_in_session(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_model_returns_none_for_empty_catalog(
     postgres_container: Any,
 ) -> None:
@@ -692,10 +699,6 @@ class TestSwitchboardComplexityContract:
     [bu-afm7.6]
     """
 
-    # Override module-level asyncio mark — tests here are synchronous
-    pytestmark = [pytest.mark.unit]
-
-    @pytest.mark.unit
     def test_route_v1_complexity_high_roundtrips(self) -> None:
         """route.v1 envelope with complexity=high validates and roundtrips correctly."""
         from butlers.tools.switchboard.routing.contracts import RouteEnvelopeV1
@@ -706,7 +709,6 @@ class TestSwitchboardComplexityContract:
         envelope = RouteEnvelopeV1.model_validate(payload)
         assert envelope.input.complexity == "high"
 
-    @pytest.mark.unit
     def test_route_v1_complexity_extra_high_roundtrips(self) -> None:
         """route.v1 envelope with complexity=extra_high validates correctly."""
         from butlers.tools.switchboard.routing.contracts import RouteEnvelopeV1
@@ -717,7 +719,6 @@ class TestSwitchboardComplexityContract:
         envelope = RouteEnvelopeV1.model_validate(payload)
         assert envelope.input.complexity == "extra_high"
 
-    @pytest.mark.unit
     def test_route_v1_complexity_defaults_medium_when_absent(self) -> None:
         """route.v1 envelope defaults complexity to medium when not specified."""
         from butlers.tools.switchboard.routing.contracts import RouteEnvelopeV1
@@ -729,7 +730,6 @@ class TestSwitchboardComplexityContract:
         envelope = RouteEnvelopeV1.model_validate(payload)
         assert envelope.input.complexity == "medium"
 
-    @pytest.mark.unit
     def test_route_v1_complexity_normalizes_case(self) -> None:
         """route.v1 complexity field normalizes uppercase input to lowercase."""
         from butlers.tools.switchboard.routing.contracts import RouteEnvelopeV1
@@ -740,7 +740,6 @@ class TestSwitchboardComplexityContract:
         envelope = RouteEnvelopeV1.model_validate(payload)
         assert envelope.input.complexity == "high"
 
-    @pytest.mark.unit
     def test_route_v1_invalid_complexity_raises_validation_error(self) -> None:
         """route.v1 envelope with invalid complexity value raises ValidationError."""
         from pydantic import ValidationError
@@ -756,7 +755,6 @@ class TestSwitchboardComplexityContract:
         error = exc_info.value.errors()[0]
         assert error["type"] == "invalid_complexity"
 
-    @pytest.mark.unit
     def test_complexity_enum_covers_all_valid_contract_values(self) -> None:
         """Complexity enum values match the set accepted by the route.v1 contract."""
         from butlers.tools.switchboard.routing.contracts import _ALLOWED_COMPLEXITY_VALUES
