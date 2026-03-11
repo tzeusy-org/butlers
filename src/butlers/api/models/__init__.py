@@ -196,6 +196,7 @@ class TriggerRequest(BaseModel):
     """Request body for triggering a runtime session on a butler."""
 
     prompt: str
+    complexity: str = "medium"
 
 
 class TriggerResponse(BaseModel):
