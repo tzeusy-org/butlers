@@ -155,7 +155,7 @@ _register(
         env_var="OPENCODE_GO_API_KEY",
         binary_name="opencode",
         # Quick validation: `opencode version` should succeed
-        test_command=["opencode", "version"],
-        test_ok_pattern=re.compile(r"opencode", re.IGNORECASE),
+        test_command=["opencode", "--version"],
+        test_ok_pattern=re.compile(r"\d+\.\d+"),
     )
 )
