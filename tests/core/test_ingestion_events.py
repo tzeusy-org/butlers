@@ -116,7 +116,7 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
         "policy_tier": "default",
         "triage_decision": None,
         "triage_target": None,
-        # Literal columns returned by _INGESTED_COLS (NULL/literal expressions from _UNION_COLUMN_SPEC)
+        # Literal columns returned by _INGESTED_COLS (from _UNION_COLUMN_SPEC)
         "status": "ingested",
         "filter_reason": None,
         "error_detail": None,
@@ -483,7 +483,7 @@ class TestIngestionEventGetUnifiedLookup:
         assert result["error_detail"] == "Connection refused"
 
     async def test_ingested_event_error_detail_is_none(self) -> None:
-        """Ingested events must return error_detail=None (NULL::text literal from _INGESTED_COLS)."""
+        """Ingested events must return error_detail=None (NULL::text from _INGESTED_COLS)."""
         from butlers.core.ingestion_events import ingestion_event_get
 
         row = _make_event_record()
