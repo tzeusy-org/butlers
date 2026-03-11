@@ -145,6 +145,8 @@ class SessionSummary(BaseModel):
     started_at: datetime
     completed_at: datetime | None = None
     duration_ms: int | None = None
+    model: str | None = None
+    complexity: str | None = None
 
 
 class ButlerConfigResponse(BaseModel):

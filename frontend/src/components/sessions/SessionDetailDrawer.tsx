@@ -5,6 +5,7 @@ import { CopyIcon, CheckIcon } from "lucide-react";
 
 import { useSessionDetail } from "@/hooks/use-sessions";
 import { Badge } from "@/components/ui/badge";
+import { ComplexityBadge } from "@/components/general/ComplexityBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Sheet,
@@ -182,7 +183,24 @@ export function SessionDetailDrawer({
                   <MetadataRow label="Started">{formatTimestamp(session.started_at)}</MetadataRow>
                   <MetadataRow label="Completed">{formatTimestamp(session.completed_at)}</MetadataRow>
                   <MetadataRow label="Duration">{formatDuration(session.duration_ms)}</MetadataRow>
-                  <MetadataRow label="Model">{session.model ?? "\u2014"}</MetadataRow>
+                  <MetadataRow label="Model">
+                    <span className="font-mono">{session.model ?? "\u2014"}</span>
+                  </MetadataRow>
+                  {session.resolution_source && (
+                    <MetadataRow label="Resolution Source">
+                      <span className="text-muted-foreground">{session.resolution_source}</span>
+                    </MetadataRow>
+                  )}
+                  {session.complexity && (
+                    <MetadataRow label="Complexity">
+                      <ComplexityBadge tier={session.complexity} />
+                    </MetadataRow>
+                  )}
+                  {session.process_log?.runtime_type && (
+                    <MetadataRow label="Runtime Type">
+                      <span className="text-muted-foreground">{session.process_log.runtime_type}</span>
+                    </MetadataRow>
+                  )}
                   {session.parent_session_id && (
                     <MetadataRow label="Parent Session">
                       <span className="font-mono text-[10px]">{session.parent_session_id}</span>

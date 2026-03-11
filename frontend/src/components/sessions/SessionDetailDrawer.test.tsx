@@ -35,6 +35,9 @@ const SESSION_DETAIL = {
   input_tokens: 100,
   output_tokens: 200,
   parent_session_id: null,
+  complexity: null,
+  resolution_source: null,
+  process_log: null,
 };
 
 function setQueryState(state: Partial<UseSessionDetailResult>) {
@@ -284,6 +287,91 @@ describe("SessionDetailDrawer", () => {
     expect(dots[3]?.getAttribute("data-tool-call-outcome")).toBe("unknown");
     expect(dots[3]?.className).toContain("bg-muted-foreground/40");
     expect(dots[3]?.getAttribute("aria-label")).toBe("Tool call outcome: Unknown");
+  });
+
+  it("shows complexity badge when complexity field is present", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          complexity: "high",
+          resolution_source: null,
+          process_log: null,
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("Complexity");
+    expect(document.body.textContent).toContain("High");
+  });
+
+  it("shows resolution_source when present", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          complexity: null,
+          resolution_source: "toml_fallback",
+          process_log: null,
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("Resolution Source");
+    expect(document.body.textContent).toContain("toml_fallback");
+  });
+
+  it("shows runtime_type from process_log when present", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          complexity: null,
+          resolution_source: null,
+          process_log: {
+            pid: 1234,
+            exit_code: 0,
+            command: null,
+            stderr: null,
+            runtime_type: "claude_code",
+            created_at: null,
+            expires_at: null,
+          },
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("Runtime Type");
+    expect(document.body.textContent).toContain("claude_code");
+  });
+
+  it("hides complexity, resolution_source, runtime_type rows when all are null", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          complexity: null,
+          resolution_source: null,
+          process_log: null,
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).not.toContain("Complexity");
+    expect(document.body.textContent).not.toContain("Resolution Source");
+    expect(document.body.textContent).not.toContain("Runtime Type");
   });
 
   it("surfaces failed-then-retried tool call outcomes as separate timeline entries", () => {

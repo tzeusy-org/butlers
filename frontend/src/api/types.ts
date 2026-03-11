@@ -81,6 +81,8 @@ export interface SessionSummary {
   duration_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  model?: string | null;
+  complexity?: string | null;
 }
 
 /** Full session detail returned by the single-session endpoint. */
@@ -103,6 +105,17 @@ export interface SessionDetail {
   input_tokens: number | null;
   output_tokens: number | null;
   parent_session_id: string | null;
+  complexity?: string | null;
+  resolution_source?: string | null;
+  process_log?: {
+    pid?: number | null;
+    exit_code?: number | null;
+    command?: string | null;
+    stderr?: string | null;
+    runtime_type?: string | null;
+    created_at?: string | null;
+    expires_at?: string | null;
+  } | null;
 }
 
 /** Query parameters for session list endpoints. */

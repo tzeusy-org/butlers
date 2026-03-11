@@ -2,6 +2,7 @@ import { formatDistanceToNow, format } from "date-fns";
 
 import type { SessionSummary } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
+import { ComplexityBadge } from "@/components/general/ComplexityBadge";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -139,6 +140,8 @@ function SkeletonRows({
           <TableCell><Skeleton className="h-4 w-14" /></TableCell>
           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-48" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-12" /></TableCell>
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
           <TableCell className="text-right"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
@@ -185,6 +188,8 @@ export function SessionTable({
           <TableHead>Trigger</TableHead>
           <TableHead>Request ID</TableHead>
           <TableHead>Prompt</TableHead>
+          <TableHead>Model</TableHead>
+          <TableHead>Complexity</TableHead>
           <TableHead>Duration</TableHead>
           <TableHead>Status</TableHead>
           <TableHead className="text-right">Tokens</TableHead>
@@ -243,6 +248,19 @@ export function SessionTable({
                   title={session.prompt}
                 >
                   {truncate(session.prompt)}
+                </TableCell>
+                <TableCell
+                  className="font-mono text-xs text-muted-foreground max-w-[120px] truncate"
+                  title={session.model ?? undefined}
+                >
+                  {session.model ?? "\u2014"}
+                </TableCell>
+                <TableCell>
+                  {session.complexity ? (
+                    <ComplexityBadge tier={session.complexity} />
+                  ) : (
+                    <span className="text-xs text-muted-foreground">&mdash;</span>
+                  )}
                 </TableCell>
                 <TableCell className="tabular-nums text-xs text-muted-foreground">
                   {formatDuration(session.duration_ms)}

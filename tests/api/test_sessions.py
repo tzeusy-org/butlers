@@ -39,6 +39,8 @@ def _make_summary_record(
     started_at: datetime = _NOW,
     completed_at: datetime | None = _NOW,
     duration_ms: int = 1234,
+    model: str | None = None,
+    complexity: str | None = None,
 ) -> dict:
     """Create a dict mimicking an asyncpg Record for summary columns."""
     return {
@@ -50,6 +52,8 @@ def _make_summary_record(
         "started_at": started_at,
         "completed_at": completed_at,
         "duration_ms": duration_ms,
+        "model": model,
+        "complexity": complexity,
     }
 
 
