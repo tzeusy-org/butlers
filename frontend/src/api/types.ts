@@ -1500,8 +1500,40 @@ export interface OAuthCredentialStatus {
   detail: string | null;
 }
 
+export interface GoogleAccount {
+  id: string;
+  email: string | null;
+  display_name: string | null;
+  is_primary: boolean;
+  status: "active" | "revoked" | "expired";
+  granted_scopes: string[];
+  connected_at: string;
+  last_token_refresh_at: string | null;
+}
+
+export interface GoogleAccountStatus {
+  has_refresh_token: boolean;
+  has_app_credentials: boolean;
+  granted_scopes: string[];
+  missing_scopes: string[];
+  token_valid: boolean;
+  last_token_refresh_at: string | null;
+}
+
+export interface SetPrimaryAccountResponse {
+  success: boolean;
+  account: GoogleAccount;
+}
+
+export interface DisconnectAccountResponse {
+  success: boolean;
+  message: string;
+  auto_promoted_id: string | null;
+}
+
 export interface OAuthStatusResponse {
   google: OAuthCredentialStatus;
+  accounts: GoogleAccount[] | null;
 }
 
 export interface GoogleCredentialStatusResponse {
