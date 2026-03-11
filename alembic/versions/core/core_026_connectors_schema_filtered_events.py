@@ -173,6 +173,12 @@ def upgrade() -> None:
         f" TO {_quote_ident(_CONNECTOR_ROLE)}",
         role_name=_CONNECTOR_ROLE,
     )
+    # Ensure future partitions (created by ensure_partition()) also get DML grants.
+    _execute_best_effort(
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {_quote_ident(_CONNECTORS_SCHEMA)}"
+        f" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {_quote_ident(_CONNECTOR_ROLE)}",
+        role_name=_CONNECTOR_ROLE,
+    )
     _execute_best_effort(
         f"GRANT USAGE ON SCHEMA {_quote_ident(_SHARED_SCHEMA)} TO {_quote_ident(_CONNECTOR_ROLE)}",
         role_name=_CONNECTOR_ROLE,
@@ -181,6 +187,12 @@ def upgrade() -> None:
         f"GRANT SELECT ON ALL TABLES"
         f" IN SCHEMA {_quote_ident(_SHARED_SCHEMA)}"
         f" TO {_quote_ident(_CONNECTOR_ROLE)}",
+        role_name=_CONNECTOR_ROLE,
+    )
+    # Ensure future shared schema tables also get SELECT grant.
+    _execute_best_effort(
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {_quote_ident(_SHARED_SCHEMA)}"
+        f" GRANT SELECT ON TABLES TO {_quote_ident(_CONNECTOR_ROLE)}",
         role_name=_CONNECTOR_ROLE,
     )
 

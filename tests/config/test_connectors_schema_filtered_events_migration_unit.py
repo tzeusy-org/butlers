@@ -128,6 +128,16 @@ def test_upgrade_grants_connector_writer_role():
     assert "GRANT SELECT" in source
 
 
+def test_upgrade_sets_default_privileges_for_future_partitions():
+    """New monthly partitions must inherit DML grants automatically."""
+    module = _load_migration()
+    source = inspect.getsource(module.upgrade)
+
+    assert "ALTER DEFAULT PRIVILEGES IN SCHEMA" in source
+    # Must cover DML on connectors schema for future partition tables
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES" in source
+
+
 # ---------------------------------------------------------------------------
 # downgrade() content assertions
 # ---------------------------------------------------------------------------
