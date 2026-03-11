@@ -14,9 +14,13 @@ import httpx
 import pytest
 
 from butlers.connectors.gmail import (
+    AccountHealthStatus,
+    GmailAccountLoop,
     GmailConnectorConfig,
+    GmailConnectorManager,
     GmailConnectorRuntime,
     GmailCursor,
+    GmailProcessConfig,
     _resolve_gmail_credentials_from_db,
     resolve_gmail_endpoint_identity,
     run_gmail_connector,
@@ -123,60 +127,48 @@ class TestGmailConnectorConfig:
 
 
 class TestRunGmailConnectorStartup:
-    """Tests for run_gmail_connector() startup credential resolution flow."""
+    """Tests for run_gmail_connector() multi-account startup flow."""
 
-    async def test_db_credentials_path_builds_runtime_from_db_credentials(
+    async def test_startup_creates_manager_and_starts(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """DB-resolved credentials should be injected into config."""
+        """run_gmail_connector should create GmailConnectorManager and call start()."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
 
-        db_creds = {
-            "client_id": "db-client-id",
-            "client_secret": "db-client-secret",
-            "refresh_token": "db-refresh-token",
-        }
+        manager = MagicMock()
+        manager.start = AsyncMock()
 
-        runtime = MagicMock()
-        runtime.start = AsyncMock()
+        mock_shared_pool = AsyncMock()
+        mock_shared_pool.close = AsyncMock()
+        mock_cursor_pool = AsyncMock()
+        mock_cursor_pool.close = AsyncMock()
 
         with (
             patch("butlers.connectors.gmail.configure_logging"),
             patch(
-                "butlers.connectors.gmail._resolve_gmail_credentials_from_db",
-                new=AsyncMock(return_value=db_creds),
+                "butlers.connectors.gmail._create_shared_db_pool",
+                new=AsyncMock(return_value=mock_shared_pool),
             ),
-            patch("butlers.connectors.gmail.GmailConnectorRuntime", return_value=runtime) as ctor,
             patch(
                 "butlers.connectors.cursor_store.create_cursor_pool_from_env",
-                new=AsyncMock(return_value=AsyncMock()),
+                new=AsyncMock(return_value=mock_cursor_pool),
             ),
+            patch("butlers.connectors.gmail.GmailConnectorManager", return_value=manager),
         ):
             await run_gmail_connector()
 
-        ctor.assert_called_once()
-        config = ctor.call_args.args[0]
-        assert config.gmail_client_id == "db-client-id"
-        assert config.gmail_client_secret == "db-client-secret"
-        assert config.gmail_refresh_token == "db-refresh-token"
-        runtime.start.assert_awaited_once()
+        manager.start.assert_awaited_once()
 
-    async def test_startup_fails_when_db_has_no_credentials(
+    async def test_startup_raises_on_missing_switchboard_url(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """DB-only startup should fail when credentials are not found in DB."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        """run_gmail_connector should raise on missing SWITCHBOARD_MCP_URL."""
+        monkeypatch.delenv("SWITCHBOARD_MCP_URL", raising=False)
 
         with (
             patch("butlers.connectors.gmail.configure_logging"),
-            patch(
-                "butlers.connectors.gmail._resolve_gmail_credentials_from_db",
-                new=AsyncMock(return_value=None),
-            ),
         ):
-            with pytest.raises(RuntimeError, match="requires DB-stored Google OAuth credentials"):
+            with pytest.raises((KeyError, ValueError)):
                 await run_gmail_connector()
 
 
@@ -4179,82 +4171,637 @@ class TestResolveGmailEndpointIdentity:
         assert result == "gmail:user:dev"
 
 
+class TestGmailProcessConfig:
+    """Tests for GmailProcessConfig environment variable loading."""
+
+    def test_from_env_minimal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Minimal required env vars should produce a valid config."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        # Clear optional vars to test defaults
+        for key in [
+            "CONNECTOR_PROVIDER",
+            "CONNECTOR_CHANNEL",
+            "CONNECTOR_MAX_INFLIGHT",
+            "GMAIL_POLL_INTERVAL_S",
+            "GMAIL_ACCOUNT_RESCAN_INTERVAL_S",
+        ]:
+            monkeypatch.delenv(key, raising=False)
+
+        config = GmailProcessConfig.from_env()
+        assert config.switchboard_mcp_url == "http://localhost:40100/sse"
+        assert config.connector_provider == "gmail"
+        assert config.connector_channel == "email"
+        assert config.connector_max_inflight == 8
+        assert config.gmail_poll_interval_s == 60
+        assert config.gmail_account_rescan_interval_s == 300
+
+    def test_from_env_custom_rescan_interval(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GMAIL_ACCOUNT_RESCAN_INTERVAL_S should override default."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("GMAIL_ACCOUNT_RESCAN_INTERVAL_S", "120")
+        config = GmailProcessConfig.from_env()
+        assert config.gmail_account_rescan_interval_s == 120
+
+    def test_from_env_missing_switchboard_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Missing SWITCHBOARD_MCP_URL should raise."""
+        monkeypatch.delenv("SWITCHBOARD_MCP_URL", raising=False)
+        with pytest.raises(KeyError):
+            GmailProcessConfig.from_env()
+
+    def test_make_account_config_uses_process_defaults(self) -> None:
+        """make_account_config should use process defaults when no metadata overrides."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            gmail_poll_interval_s=90,
+            gmail_label_exclude=("SPAM", "TRASH"),
+        )
+        account_config = process_config.make_account_config(
+            email="alice@example.com",
+            client_id="cid",
+            client_secret="csec",
+            refresh_token="rtoken",
+        )
+        assert account_config.connector_endpoint_identity == "gmail:user:alice@example.com"
+        assert account_config.gmail_poll_interval_s == 90
+        assert account_config.gmail_label_exclude == ("SPAM", "TRASH")
+        assert account_config.gmail_user_email == "alice@example.com"
+        assert account_config.gmail_client_id == "cid"
+
+    def test_make_account_config_applies_metadata_overrides(self) -> None:
+        """Per-account metadata.gmail overrides should take precedence."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            gmail_poll_interval_s=60,
+            gmail_label_exclude=("SPAM", "TRASH"),
+        )
+        account_config = process_config.make_account_config(
+            email="work@example.com",
+            client_id="cid",
+            client_secret="csec",
+            refresh_token="rtoken",
+            metadata_gmail={"poll_interval_s": 120, "label_exclude": "SPAM"},
+        )
+        assert account_config.gmail_poll_interval_s == 120
+        assert account_config.gmail_label_exclude == ("SPAM",)
+
+    def test_make_account_config_endpoint_identity_format(self) -> None:
+        """Endpoint identity should be gmail:user:<email>."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+        )
+        account_config = process_config.make_account_config(
+            email="user@domain.com",
+            client_id="cid",
+            client_secret="csec",
+            refresh_token="rtoken",
+        )
+        assert account_config.connector_endpoint_identity == "gmail:user:user@domain.com"
+
+
+class TestGmailConnectorManager:
+    """Tests for GmailConnectorManager multi-account orchestration."""
+
+    def _make_process_config(self) -> GmailProcessConfig:
+        return GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            gmail_poll_interval_s=5,
+            gmail_account_rescan_interval_s=999,
+        )
+
+    def _make_mock_pool(self) -> MagicMock:
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        return pool
+
+    async def test_discover_qualifying_accounts_filters_by_scope(self) -> None:
+        """Only active accounts with Gmail scopes should be returned."""
+        process_config = self._make_process_config()
+        db_pool = self._make_mock_pool()
+        manager = GmailConnectorManager(
+            process_config=process_config,
+            db_pool=db_pool,
+            cursor_pool=None,
+        )
+
+        rows = [
+            {
+                "email": "alice@example.com",
+                "granted_scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+                "metadata": {},
+            },
+            {
+                "email": "bob@example.com",
+                "granted_scopes": ["https://www.googleapis.com/auth/calendar"],
+                "metadata": {},
+            },
+            {
+                "email": "carol@example.com",
+                "granted_scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+                "metadata": {"gmail": {"poll_interval_s": 120}},
+            },
+        ]
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=rows)
+
+        # Mock pool.acquire() as async context manager
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        db_pool.acquire = MagicMock(return_value=cm)
+
+        result = await manager._discover_qualifying_accounts()
+
+        emails = [r[0] for r in result]
+        assert "alice@example.com" in emails
+        assert "carol@example.com" in emails
+        assert "bob@example.com" not in emails
+
+    async def test_discover_accounts_returns_empty_on_db_error(self) -> None:
+        """DB errors during discovery should return empty list (non-fatal)."""
+        process_config = self._make_process_config()
+        db_pool = self._make_mock_pool()
+        manager = GmailConnectorManager(
+            process_config=process_config,
+            db_pool=db_pool,
+            cursor_pool=None,
+        )
+
+        db_pool.acquire = MagicMock(side_effect=Exception("DB connection failed"))
+
+        result = await manager._discover_qualifying_accounts()
+        assert result == []
+
+    async def test_sync_accounts_adds_new_loop(self) -> None:
+        """Newly discovered accounts should spawn a GmailAccountLoop."""
+        process_config = self._make_process_config()
+        db_pool = self._make_mock_pool()
+        manager = GmailConnectorManager(
+            process_config=process_config,
+            db_pool=db_pool,
+            cursor_pool=None,
+        )
+
+        mock_creds = {
+            "client_id": "cid",
+            "client_secret": "csec",
+            "refresh_token": "rtoken",
+        }
+
+        mock_loop = MagicMock()
+        mock_loop.start = MagicMock()
+        mock_loop.is_running = True
+
+        with (
+            patch.object(
+                manager,
+                "_discover_qualifying_accounts",
+                new=AsyncMock(return_value=[("alice@example.com", None)]),
+            ),
+            patch.object(
+                manager,
+                "_resolve_credentials_for_account",
+                new=AsyncMock(return_value=mock_creds),
+            ),
+            patch("butlers.connectors.gmail.GmailAccountLoop", return_value=mock_loop) as loop_ctor,
+        ):
+            added, removed, unchanged = await manager._sync_accounts()
+
+        assert "alice@example.com" in added
+        assert removed == []
+        loop_ctor.assert_called_once()
+        mock_loop.start.assert_called_once()
+
+    async def test_sync_accounts_removes_old_loop(self) -> None:
+        """Accounts no longer in DB should have their loops stopped."""
+        process_config = self._make_process_config()
+        db_pool = self._make_mock_pool()
+        manager = GmailConnectorManager(
+            process_config=process_config,
+            db_pool=db_pool,
+            cursor_pool=None,
+        )
+
+        # Pre-populate with an existing loop
+        old_loop = MagicMock()
+        old_loop.stop = AsyncMock()
+        manager._loops["old@example.com"] = old_loop
+
+        with patch.object(
+            manager,
+            "_discover_qualifying_accounts",
+            new=AsyncMock(return_value=[]),
+        ):
+            added, removed, unchanged = await manager._sync_accounts()
+
+        assert "old@example.com" in removed
+        assert "old@example.com" not in manager._loops
+        old_loop.stop.assert_awaited_once()
+
+    async def test_sync_accounts_skips_failed_credentials(self) -> None:
+        """Accounts where credential resolution fails should be skipped (not crash)."""
+        process_config = self._make_process_config()
+        db_pool = self._make_mock_pool()
+        manager = GmailConnectorManager(
+            process_config=process_config,
+            db_pool=db_pool,
+            cursor_pool=None,
+        )
+
+        with (
+            patch.object(
+                manager,
+                "_discover_qualifying_accounts",
+                new=AsyncMock(return_value=[("badcreds@example.com", None)]),
+            ),
+            patch.object(
+                manager,
+                "_resolve_credentials_for_account",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            added, removed, unchanged = await manager._sync_accounts()
+
+        assert added == []
+        assert "badcreds@example.com" not in manager._loops
+
+    def test_get_multi_account_health_degraded_when_no_accounts(self) -> None:
+        """Health status should be degraded when no accounts are active."""
+        process_config = self._make_process_config()
+        db_pool = self._make_mock_pool()
+        manager = GmailConnectorManager(
+            process_config=process_config,
+            db_pool=db_pool,
+            cursor_pool=None,
+        )
+
+        health = manager._get_multi_account_health()
+        assert health.status == "degraded"
+        assert health.active_accounts == 0
+        assert health.account_health == []
+
+    def test_get_multi_account_health_worst_case_aggregation(self) -> None:
+        """Overall status should be worst-case of all account statuses."""
+        process_config = self._make_process_config()
+        db_pool = self._make_mock_pool()
+        manager = GmailConnectorManager(
+            process_config=process_config,
+            db_pool=db_pool,
+            cursor_pool=None,
+        )
+
+        healthy_loop = MagicMock()
+        healthy_loop.get_health = MagicMock(
+            return_value=AccountHealthStatus(
+                email="a@example.com",
+                endpoint_identity="gmail:user:a@example.com",
+                status="healthy",
+                last_checkpoint_save_at=None,
+                last_ingest_submit_at=None,
+                source_api_connectivity="connected",
+            )
+        )
+        error_loop = MagicMock()
+        error_loop.get_health = MagicMock(
+            return_value=AccountHealthStatus(
+                email="b@example.com",
+                endpoint_identity="gmail:user:b@example.com",
+                status="error",
+                last_checkpoint_save_at=None,
+                last_ingest_submit_at=None,
+                source_api_connectivity="disconnected",
+                error="token expired",
+            )
+        )
+        manager._loops = {
+            "a@example.com": healthy_loop,
+            "b@example.com": error_loop,
+        }
+
+        health = manager._get_multi_account_health()
+        assert health.status == "error"
+        assert health.active_accounts == 2
+
+    async def test_reload_accounts_triggers_rescan(self) -> None:
+        """reload_accounts should call _sync_accounts and return summary."""
+        process_config = self._make_process_config()
+        db_pool = self._make_mock_pool()
+        manager = GmailConnectorManager(
+            process_config=process_config,
+            db_pool=db_pool,
+            cursor_pool=None,
+        )
+
+        with patch.object(
+            manager,
+            "_sync_accounts",
+            new=AsyncMock(return_value=(["new@example.com"], [], ["existing@example.com"])),
+        ):
+            result = await manager.reload_accounts()
+
+        assert result["added"] == ["new@example.com"]
+        assert result["removed"] == []
+        assert result["unchanged"] == ["existing@example.com"]
+
+
+class TestGmailAccountLoop:
+    """Tests for GmailAccountLoop per-account wrapper."""
+
+    def _make_config(self) -> GmailConnectorConfig:
+        return GmailConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            connector_endpoint_identity="gmail:user:test@example.com",
+            gmail_client_id="cid",
+            gmail_client_secret="csec",
+            gmail_refresh_token="rtoken",
+            gmail_poll_interval_s=5,
+        )
+
+    def test_loop_tracks_endpoint_identity(self) -> None:
+        """GmailAccountLoop should set endpoint_identity from config."""
+        config = self._make_config()
+        loop = GmailAccountLoop(
+            email="test@example.com",
+            config=config,
+            cursor_pool=None,
+        )
+        assert loop.endpoint_identity == "gmail:user:test@example.com"
+        assert loop.email == "test@example.com"
+
+    def test_loop_health_returns_account_status(self) -> None:
+        """get_health() should return AccountHealthStatus with correct fields."""
+        config = self._make_config()
+        loop = GmailAccountLoop(
+            email="test@example.com",
+            config=config,
+            cursor_pool=None,
+        )
+        health = loop.get_health()
+        assert isinstance(health, AccountHealthStatus)
+        assert health.email == "test@example.com"
+        assert health.endpoint_identity == "gmail:user:test@example.com"
+        assert health.source_api_connectivity == "unknown"
+
+    async def test_loop_stop_cancels_task(self) -> None:
+        """stop() should cancel the running task."""
+        config = self._make_config()
+        mock_runtime = MagicMock()
+        mock_runtime.start = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_runtime.stop = AsyncMock()
+        mock_runtime._start_time = 0.0
+        mock_runtime._last_checkpoint_save = None
+        mock_runtime._last_ingest_submit = None
+        mock_runtime._source_api_ok = None
+
+        loop = GmailAccountLoop(
+            email="test@example.com",
+            config=config,
+            cursor_pool=None,
+        )
+        loop._runtime = mock_runtime
+
+        loop.start()
+        # Give event loop a tick
+        await asyncio.sleep(0)
+        await loop.stop()
+
+        mock_runtime.stop.assert_awaited_once()
+
+
 class TestRunGmailConnectorIdentityResolution:
-    """Tests for endpoint_identity auto-resolution in run_gmail_connector()."""
+    """Tests for per-account endpoint_identity derivation in GmailProcessConfig."""
 
-    async def test_endpoint_identity_updated_from_resolved_email(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """run_gmail_connector should update endpoint_identity with the resolved email."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:dev")
-
-        db_creds = {
-            "client_id": "db-client-id",
-            "client_secret": "db-client-secret",
-            "refresh_token": "db-refresh-token",
-        }
-
-        runtime = MagicMock()
-        runtime.start = AsyncMock()
-
-        with (
-            patch("butlers.connectors.gmail.configure_logging"),
-            patch(
-                "butlers.connectors.gmail._resolve_gmail_credentials_from_db",
-                new=AsyncMock(return_value=db_creds),
-            ),
-            patch(
-                "butlers.connectors.gmail.resolve_gmail_endpoint_identity",
-                new=AsyncMock(return_value="gmail:user:alice@example.com"),
-            ),
-            patch("butlers.connectors.gmail.GmailConnectorRuntime", return_value=runtime) as ctor,
-            patch(
-                "butlers.connectors.cursor_store.create_cursor_pool_from_env",
-                new=AsyncMock(return_value=AsyncMock()),
-            ),
-        ):
-            await run_gmail_connector()
-
-        ctor.assert_called_once()
-        config = ctor.call_args.args[0]
+    def test_endpoint_identity_derived_from_email(self) -> None:
+        """Per-account endpoint_identity should be gmail:user:<email>."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+        )
+        config = process_config.make_account_config(
+            email="alice@example.com",
+            client_id="cid",
+            client_secret="csec",
+            refresh_token="rtoken",
+        )
         assert config.connector_endpoint_identity == "gmail:user:alice@example.com"
 
-    async def test_endpoint_identity_unchanged_when_already_resolved(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """run_gmail_connector should not update config if identity already matches resolved."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:alice@example.com")
+    def test_multiple_accounts_have_independent_identities(self) -> None:
+        """Each account should have a distinct endpoint_identity."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+        )
+        config1 = process_config.make_account_config(
+            email="personal@example.com",
+            client_id="cid",
+            client_secret="csec",
+            refresh_token="rtoken1",
+        )
+        config2 = process_config.make_account_config(
+            email="work@example.com",
+            client_id="cid",
+            client_secret="csec",
+            refresh_token="rtoken2",
+        )
+        assert config1.connector_endpoint_identity != config2.connector_endpoint_identity
+        assert config1.connector_endpoint_identity == "gmail:user:personal@example.com"
+        assert config2.connector_endpoint_identity == "gmail:user:work@example.com"
 
-        db_creds = {
-            "client_id": "db-client-id",
-            "client_secret": "db-client-secret",
-            "refresh_token": "db-refresh-token",
-        }
 
-        runtime = MagicMock()
-        runtime.start = AsyncMock()
+class TestGmailPortConflictFix:
+    """Regression tests: per-account runtimes must not bind the manager health port."""
+
+    def test_make_account_config_uses_port_zero(self) -> None:
+        """make_account_config must set connector_health_port=0 for per-account runtimes.
+
+        Each GmailAccountLoop wraps a GmailConnectorRuntime that starts its own
+        health server. If all accounts inherit the manager's port, every runtime
+        after the first silently fails to bind — a port conflict.
+        Port 0 lets the OS assign an ephemeral port per runtime.
+        """
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            connector_health_port=40082,
+        )
+        account_config = process_config.make_account_config(
+            email="alice@example.com",
+            client_id="cid",
+            client_secret="csec",
+            refresh_token="rtoken",
+        )
+        # Per-account runtime MUST NOT inherit the manager's port.
+        assert account_config.connector_health_port == 0, (
+            "Per-account GmailConnectorRuntime must use port=0, not the manager health port, "
+            "to avoid bind conflicts when multiple accounts run simultaneously."
+        )
+
+    def test_multiple_account_configs_do_not_share_port(self) -> None:
+        """Two configs produced by make_account_config should both use port 0."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            connector_health_port=40082,
+        )
+        cfg1 = process_config.make_account_config(
+            email="alice@example.com", client_id="cid", client_secret="csec", refresh_token="rt1"
+        )
+        cfg2 = process_config.make_account_config(
+            email="bob@example.com", client_id="cid", client_secret="csec", refresh_token="rt2"
+        )
+        assert cfg1.connector_health_port == 0
+        assert cfg2.connector_health_port == 0
+
+
+class TestGmailReloadEventThreadSafety:
+    """Regression tests: /reload endpoint must use call_soon_threadsafe."""
+
+    def test_manager_stores_main_loop_reference(self) -> None:
+        """GmailConnectorManager must initialise _main_loop to None before start()."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+        )
+        db_pool = MagicMock()
+        manager = GmailConnectorManager(
+            process_config=process_config, db_pool=db_pool, cursor_pool=None
+        )
+        # Before start(), _main_loop should be None (no loop captured yet)
+        assert manager._main_loop is None
+
+    async def test_start_captures_running_loop(self) -> None:
+        """start() must capture the running event loop into _main_loop."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            gmail_account_rescan_interval_s=9999,
+        )
+        db_pool = MagicMock()
+        manager = GmailConnectorManager(
+            process_config=process_config, db_pool=db_pool, cursor_pool=None
+        )
 
         with (
-            patch("butlers.connectors.gmail.configure_logging"),
-            patch(
-                "butlers.connectors.gmail._resolve_gmail_credentials_from_db",
-                new=AsyncMock(return_value=db_creds),
+            patch.object(manager, "_start_health_server", return_value=None),
+            patch.object(manager, "_setup_sighup", return_value=None),
+            patch.object(
+                manager,
+                "_sync_accounts",
+                new=AsyncMock(return_value=([], [], [])),
             ),
             patch(
-                "butlers.connectors.gmail.resolve_gmail_endpoint_identity",
-                # Returns same value as what's in env
-                new=AsyncMock(return_value="gmail:user:alice@example.com"),
+                "butlers.connectors.gmail.wait_for_switchboard_ready",
+                new=AsyncMock(return_value=None),
             ),
-            patch("butlers.connectors.gmail.GmailConnectorRuntime", return_value=runtime) as ctor,
+            patch.object(
+                manager,
+                "_run_rescan_loop",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(manager, "stop", new=AsyncMock(return_value=None)),
+        ):
+            await manager.start()
+
+        # _main_loop should now be set to the running loop
+        assert manager._main_loop is asyncio.get_running_loop()
+
+
+class TestGmailPubsubWebhookTokenResolution:
+    """Regression tests: _resolve_credentials_for_account must include pubsub_webhook_token."""
+
+    async def test_pubsub_token_included_when_available(self) -> None:
+        """When the credential store holds GMAIL_PUBSUB_WEBHOOK_TOKEN, it must be returned."""
+        from butlers.google_credentials import GoogleCredentials
+
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+        )
+        db_pool = MagicMock()
+        manager = GmailConnectorManager(
+            process_config=process_config, db_pool=db_pool, cursor_pool=None
+        )
+
+        mock_creds = GoogleCredentials(
+            client_id="cid", client_secret="csec", refresh_token="rtoken"
+        )
+        mock_store = AsyncMock()
+        mock_store.resolve = AsyncMock(return_value="webhook-secret")
+
+        with (
+            patch.object(manager, "_get_credential_store", return_value=mock_store),
             patch(
-                "butlers.connectors.cursor_store.create_cursor_pool_from_env",
-                new=AsyncMock(return_value=AsyncMock()),
+                "butlers.connectors.gmail.load_google_credentials",
+                new=AsyncMock(return_value=mock_creds),
             ),
         ):
-            await run_gmail_connector()
+            result = await manager._resolve_credentials_for_account("alice@example.com")
 
-        ctor.assert_called_once()
-        config = ctor.call_args.args[0]
-        assert config.connector_endpoint_identity == "gmail:user:alice@example.com"
+        assert result is not None
+        assert result["client_id"] == "cid"
+        assert result["pubsub_webhook_token"] == "webhook-secret"
+
+    async def test_pubsub_token_absent_when_not_stored(self) -> None:
+        """When GMAIL_PUBSUB_WEBHOOK_TOKEN is not in DB, key must be absent (not None)."""
+        from butlers.google_credentials import GoogleCredentials
+
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+        )
+        db_pool = MagicMock()
+        manager = GmailConnectorManager(
+            process_config=process_config, db_pool=db_pool, cursor_pool=None
+        )
+
+        mock_creds = GoogleCredentials(
+            client_id="cid", client_secret="csec", refresh_token="rtoken"
+        )
+        mock_store = AsyncMock()
+        mock_store.resolve = AsyncMock(return_value=None)  # not stored
+
+        with (
+            patch.object(manager, "_get_credential_store", return_value=mock_store),
+            patch(
+                "butlers.connectors.gmail.load_google_credentials",
+                new=AsyncMock(return_value=mock_creds),
+            ),
+        ):
+            result = await manager._resolve_credentials_for_account("alice@example.com")
+
+        assert result is not None
+        assert "pubsub_webhook_token" not in result
+
+    async def test_pubsub_token_propagated_to_make_account_config(self) -> None:
+        """pubsub_webhook_token from _resolve_credentials_for_account must reach account config."""
+        process_config = GmailProcessConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+        )
+        db_pool = MagicMock()
+        manager = GmailConnectorManager(
+            process_config=process_config, db_pool=db_pool, cursor_pool=None
+        )
+
+        mock_creds = {
+            "client_id": "cid",
+            "client_secret": "csec",
+            "refresh_token": "rtoken",
+            "pubsub_webhook_token": "per-account-token",
+        }
+        mock_loop = MagicMock()
+        mock_loop.start = MagicMock()
+        mock_loop.is_running = True
+
+        with (
+            patch.object(
+                manager,
+                "_discover_qualifying_accounts",
+                new=AsyncMock(return_value=[("alice@example.com", None)]),
+            ),
+            patch.object(
+                manager,
+                "_resolve_credentials_for_account",
+                new=AsyncMock(return_value=mock_creds),
+            ),
+            patch(
+                "butlers.connectors.gmail.GmailAccountLoop", return_value=mock_loop
+            ) as loop_ctor,
+        ):
+            await manager._sync_accounts()
+
+        # Verify GmailAccountLoop was constructed with a config carrying the token
+        call_kwargs = loop_ctor.call_args[1]
+        account_cfg = call_kwargs["config"]
+        assert account_cfg.gmail_pubsub_webhook_token == "per-account-token"
