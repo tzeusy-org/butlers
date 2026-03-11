@@ -1648,7 +1648,7 @@ class _GoogleProvider(CalendarProvider):
         # Wire a post-refresh callback to update last_token_refresh_at when an
         # explicit account is configured (multi-account setup).
         on_token_refreshed: Callable[[], Coroutine[Any, Any, None]] | None = None
-        account_email = config.account if config is not None else None
+        account_email = config.account
         if pool is not None and account_email:
             _email = account_email
             _pool = pool

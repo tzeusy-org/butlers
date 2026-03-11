@@ -146,16 +146,6 @@ class ContactsConfig(BaseModel):
         # account value (multi-account Google support).  Providers without account
         # disambiguation are still treated as singletons per type.
         type_accounts: list[tuple[str, str | None]] = [(p.type, p.account) for p in self.providers]
-        seen: set[tuple[str, str | None]] = set()
-        ambiguous_types: list[str] = []
-        for ptype, paccount in type_accounts:
-            key = (ptype, paccount)
-            if key in seen:
-                if paccount is None:
-                    ambiguous_types.append(ptype)
-                else:
-                    ambiguous_types.append(ptype)
-            seen.add(key)
 
         # Check: multiple entries of the same type with no account = ambiguous.
         type_counts: dict[str, int] = {}
@@ -382,7 +372,7 @@ class ContactsModule(Module):
             # Resolve which runtimes to target.
             target_runtimes = _filter_runtimes(runtimes, provider=provider, account=account)
 
-            if provider is not None and not target_runtimes:
+            if not target_runtimes and (provider is not None or account is not None):
                 return {
                     "error": (
                         f"Provider '{provider}'"
@@ -441,7 +431,7 @@ class ContactsModule(Module):
             # Resolve which runtimes to target.
             target_runtimes = _filter_runtimes(runtimes, provider=provider, account=account)
 
-            if provider is not None and not target_runtimes:
+            if not target_runtimes and (provider is not None or account is not None):
                 return {
                     "error": (
                         f"Provider '{provider}'"
