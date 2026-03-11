@@ -22,9 +22,10 @@ pytestmark = pytest.mark.unit
 
 
 def _make_mock_pool() -> MagicMock:
-    """Create a mock asyncpg pool with acquire() returning an async context manager."""
+    """Create a mock asyncpg pool with acquire() and execute() as async methods."""
     mock_conn = AsyncMock()
     mock_pool = MagicMock()
+    mock_pool.execute = AsyncMock()
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
@@ -272,6 +273,34 @@ class TestFlush:
         assert row[8] == "error"
         assert row[10] == "HTTPStatusError: 503 Service Unavailable"
 
+    async def test_flush_calls_ensure_partition_before_insert(self) -> None:
+        """flush() calls connectors_filtered_events_ensure_partition via pool.execute."""
+        buf = _make_buffer()
+        buf.record(
+            external_message_id="msg-1",
+            source_channel="email",
+            sender_identity="sender@example.com",
+            subject_or_preview=None,
+            filter_reason="label_exclude:X",
+            full_payload=_sample_payload(),
+        )
+        pool = _make_mock_pool()
+
+        await buf.flush(pool)
+
+        pool.execute.assert_awaited_once()
+        sql_arg = pool.execute.call_args[0][0]
+        assert "connectors_filtered_events_ensure_partition" in sql_arg
+
+    async def test_flush_empty_does_not_call_ensure_partition(self) -> None:
+        """flush() on an empty buffer is a no-op — ensure_partition is not called."""
+        buf = _make_buffer()
+        pool = _make_mock_pool()
+
+        await buf.flush(pool)
+
+        pool.execute.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Flush failure / crash-safety tests
@@ -294,6 +323,23 @@ class TestFlushFailure:
         pool = _make_mock_pool()
         conn = pool.acquire.return_value.__aenter__.return_value
         conn.executemany.side_effect = RuntimeError("DB connection refused")
+
+        # Must not raise
+        await buf.flush(pool)
+
+    async def test_flush_ensure_partition_failure_does_not_raise(self) -> None:
+        """If ensure_partition fails, flush does not raise and events are dropped."""
+        buf = _make_buffer()
+        buf.record(
+            external_message_id="msg-1",
+            source_channel="email",
+            sender_identity="sender@example.com",
+            subject_or_preview=None,
+            filter_reason="label_exclude:X",
+            full_payload=_sample_payload(),
+        )
+        pool = _make_mock_pool()
+        pool.execute.side_effect = RuntimeError("permission denied for schema connectors")
 
         # Must not raise
         await buf.flush(pool)

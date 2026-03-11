@@ -63,6 +63,7 @@ def mock_db_pool() -> MagicMock:
 
     mock_pool = MagicMock()
     mock_pool.acquire = MagicMock(return_value=mock_ctx)
+    mock_pool.execute = AsyncMock(return_value=None)
     return mock_pool
 
 

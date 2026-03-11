@@ -168,6 +168,12 @@ class FilteredEventBuffer:
 
         If the buffer is empty the call is a no-op (no SQL executed).
 
+        Before inserting, ensures the monthly partition for the current
+        timestamp exists by calling ``connectors_filtered_events_ensure_partition``
+        on an autocommit connection.  DDL (CREATE TABLE IF NOT EXISTS) must run
+        outside a transaction so that a subsequent failure cannot roll back the
+        partition creation.
+
         Flush failures are logged as warnings and do **not** raise; unflushed
         events are silently dropped.  This is intentional — filtered events are
         operational visibility data and their loss is acceptable.
@@ -181,6 +187,12 @@ class FilteredEventBuffer:
         rows_to_flush = list(self._rows)
 
         try:
+            # Ensure the monthly partition exists before inserting.  Must run on
+            # an autocommit connection (pool.execute, not inside a transaction)
+            # so that DDL is immediately durable even if the batch INSERT below
+            # fails or is retried.
+            await pool.execute("SELECT connectors_filtered_events_ensure_partition(now())")
+
             async with pool.acquire() as conn:
                 await conn.executemany(_INSERT_SQL, rows_to_flush)
             self._rows.clear()

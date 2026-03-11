@@ -103,6 +103,15 @@ _MIGRATION_SPECS = [
         branch_labels=None,
         depends_on=None,
     ),
+    # Core chain – filtered_events ensure_partition next-month proactive creation
+    MigrationSpec(
+        chain="core",
+        filename="core_028_filtered_events_ensure_partition_next_month.py",
+        revision="core_028",
+        down_revision="core_027",
+        branch_labels=None,
+        depends_on=None,
+    ),
 ]
 
 
