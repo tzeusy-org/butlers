@@ -19,6 +19,7 @@ from croniter import croniter
 from opentelemetry import trace
 
 from butlers.core.metrics import ButlerMetrics
+from butlers.core.model_routing import Complexity
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,8 @@ _DEFAULT_MAX_STAGGER_SECONDS = 15 * 60
 _DISPATCH_MODE_PROMPT = "prompt"
 _DISPATCH_MODE_JOB = "job"
 _ALLOWED_DISPATCH_MODES = {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
+_ALLOWED_COMPLEXITY_VALUES = {c.value for c in Complexity}
+_DEFAULT_COMPLEXITY = Complexity.MEDIUM.value
 
 
 def _normalize_schedule_projection_fields(
@@ -129,16 +132,42 @@ def _normalize_dispatch_mode(value: Any, *, context: str) -> str:
     return normalized
 
 
+def _normalize_complexity(value: Any, *, context: str) -> str:
+    """Normalize and validate a complexity value; default to medium when None."""
+    if value is None:
+        return _DEFAULT_COMPLEXITY
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{context}.complexity must be a string when set; "
+            f"expected one of {sorted(_ALLOWED_COMPLEXITY_VALUES)!r}"
+        )
+    normalized = value.strip().lower()
+    if normalized not in _ALLOWED_COMPLEXITY_VALUES:
+        raise ValueError(
+            f"Invalid {context}.complexity: {value!r}. "
+            f"Expected one of {sorted(_ALLOWED_COMPLEXITY_VALUES)!r}."
+        )
+    return normalized
+
+
 def _normalize_schedule_dispatch(
     *,
     dispatch_mode: Any,
     prompt: Any,
     job_name: Any,
     job_args: Any,
+    complexity: Any = None,
     context: str,
-) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
-    """Validate mode-specific dispatch fields and return normalized values."""
+) -> tuple[str, str | None, str | None, dict[str, Any] | None, str]:
+    """Validate mode-specific dispatch fields and return normalized values.
+
+    Returns
+    -------
+    tuple
+        ``(mode, prompt, job_name, job_args, complexity)``
+    """
     mode = _normalize_dispatch_mode(dispatch_mode, context=context)
+    normalized_complexity = _normalize_complexity(complexity, context=context)
 
     if prompt is not None and not isinstance(prompt, str):
         raise ValueError(f"{context}.prompt must be a string when set")
@@ -160,7 +189,7 @@ def _normalize_schedule_dispatch(
             raise ValueError(
                 f"{context}.job_args is only valid when dispatch_mode={_DISPATCH_MODE_JOB!r}"
             )
-        return mode, prompt, None, None
+        return mode, prompt, None, None, normalized_complexity
 
     if prompt is not None:
         raise ValueError(
@@ -171,7 +200,7 @@ def _normalize_schedule_dispatch(
             f"{context} with dispatch_mode={_DISPATCH_MODE_JOB!r} requires non-empty job_name"
         )
 
-    return mode, None, job_name.strip(), dict(job_args) if job_args is not None else None
+    return mode, None, job_name.strip(), dict(job_args) if job_args is not None else None, normalized_complexity
 
 
 def _cron_interval_seconds(cron: str, *, now: datetime | None = None) -> int:
@@ -298,11 +327,12 @@ async def sync_schedules(
         if not croniter.is_valid(cron):
             raise ValueError(f"Invalid {schedule_path}.cron: {cron!r}")
 
-        dispatch_mode, prompt, job_name, job_args = _normalize_schedule_dispatch(
+        dispatch_mode, prompt, job_name, job_args, complexity = _normalize_schedule_dispatch(
             dispatch_mode=schedule.get("dispatch_mode", _DISPATCH_MODE_PROMPT),
             prompt=schedule.get("prompt"),
             job_name=schedule.get("job_name"),
             job_args=schedule.get("job_args"),
+            complexity=schedule.get("complexity"),
             context=schedule_path,
         )
         normalized_schedules.append(
@@ -313,6 +343,7 @@ async def sync_schedules(
                 "prompt": prompt,
                 "job_name": job_name,
                 "job_args": job_args,
+                "complexity": complexity,
             }
         )
 
@@ -323,7 +354,8 @@ async def sync_schedules(
     # TOML takes ownership on next startup to avoid unique-constraint violations.
     rows = await pool.fetch(
         """
-        SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args, enabled
+        SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args,
+               complexity, enabled
         FROM scheduled_tasks
         WHERE name = ANY($1::text[])
         """,
@@ -332,7 +364,8 @@ async def sync_schedules(
     # Also fetch all remaining toml-sourced tasks (for the disable-removed-tasks pass below).
     toml_only_rows = await pool.fetch(
         """
-        SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args, enabled
+        SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args,
+               complexity, enabled
         FROM scheduled_tasks
         WHERE source = 'toml' AND name != ALL($1::text[])
         """,
@@ -350,6 +383,7 @@ async def sync_schedules(
         dispatch_mode = entry["dispatch_mode"]
         job_name = entry["job_name"]
         job_args = entry["job_args"]
+        complexity = entry["complexity"]
         next_run_at = _next_run(
             cron,
             stagger_key=stagger_key,
@@ -362,6 +396,7 @@ async def sync_schedules(
                 existing["job_args"],
                 context=f"scheduled_tasks[{name}]",
             )
+            existing_complexity = existing.get("complexity") or _DEFAULT_COMPLEXITY
             # Reclaim from 'db' source, or update if schedule payload changed / disabled.
             needs_update = (
                 existing.get("source", "toml") != "toml"
@@ -370,6 +405,7 @@ async def sync_schedules(
                 or existing["prompt"] != prompt
                 or existing["job_name"] != job_name
                 or existing_job_args != job_args
+                or existing_complexity != complexity
                 or not existing["enabled"]
             )
             if needs_update:
@@ -381,7 +417,8 @@ async def sync_schedules(
                         prompt = $4,
                         job_name = $5,
                         job_args = $6,
-                        next_run_at = $7,
+                        complexity = $7,
+                        next_run_at = $8,
                         source = 'toml',
                         enabled = true,
                         updated_at = now()
@@ -393,6 +430,7 @@ async def sync_schedules(
                     prompt,
                     job_name,
                     _dict_to_jsonb(job_args),
+                    complexity,
                     next_run_at,
                 )
                 logger.info("Updated TOML schedule: %s", name)
@@ -407,11 +445,12 @@ async def sync_schedules(
                     prompt,
                     job_name,
                     job_args,
+                    complexity,
                     source,
                     enabled,
                     next_run_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, 'toml', true, $7)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8)
                 """,
                 name,
                 cron,
@@ -419,6 +458,7 @@ async def sync_schedules(
                 prompt,
                 job_name,
                 _dict_to_jsonb(job_args),
+                complexity,
                 next_run_at,
             )
             logger.info("Inserted TOML schedule: %s", name)
@@ -467,7 +507,8 @@ async def tick(
         now = datetime.now(UTC)
         rows = await pool.fetch(
             """
-            SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args, until_at
+            SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
+                   complexity, until_at
             FROM scheduled_tasks
             WHERE enabled = true AND next_run_at <= $1
             ORDER BY next_run_at
@@ -487,13 +528,27 @@ async def tick(
             dispatch_mode = row["dispatch_mode"]
             job_name = row["job_name"]
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
+            raw_complexity = row.get("complexity") or _DEFAULT_COMPLEXITY
+            try:
+                task_complexity = Complexity(raw_complexity)
+            except ValueError:
+                logger.warning(
+                    "Unknown complexity value %r for task %s; defaulting to medium",
+                    raw_complexity,
+                    name,
+                )
+                task_complexity = Complexity.MEDIUM
 
             until_at = row["until_at"]
 
             result_json: str | None = None
             try:
                 if dispatch_mode == _DISPATCH_MODE_PROMPT:
-                    result = await dispatch_fn(prompt=prompt, trigger_source=f"schedule:{name}")
+                    result = await dispatch_fn(
+                        prompt=prompt,
+                        trigger_source=f"schedule:{name}",
+                        complexity=task_complexity,
+                    )
                 elif dispatch_mode == _DISPATCH_MODE_JOB:
                     result = await dispatch_fn(
                         job_name=job_name,
@@ -601,6 +656,7 @@ async def schedule_create(
     dispatch_mode: str = _DISPATCH_MODE_PROMPT,
     job_name: str | None = None,
     job_args: dict[str, Any] | None = None,
+    complexity: str | None = None,
     timezone: str | None = None,
     start_at: datetime | None = None,
     end_at: datetime | None = None,
@@ -629,11 +685,12 @@ async def schedule_create(
     """
     if not croniter.is_valid(cron):
         raise ValueError(f"Invalid cron expression: {cron!r}")
-    dispatch_mode, prompt, job_name, job_args = _normalize_schedule_dispatch(
+    dispatch_mode, prompt, job_name, job_args, complexity = _normalize_schedule_dispatch(
         dispatch_mode=dispatch_mode,
         prompt=prompt,
         job_name=job_name,
         job_args=job_args,
+        complexity=complexity,
         context="schedule_create",
     )
     (
@@ -670,6 +727,7 @@ async def schedule_create(
                 prompt,
                 job_name,
                 job_args,
+                complexity,
                 timezone,
                 start_at,
                 end_at,
@@ -680,7 +738,7 @@ async def schedule_create(
                 enabled,
                 next_run_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'db', true, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'db', true, $14)
             RETURNING id
             """,
             name,
@@ -689,6 +747,7 @@ async def schedule_create(
             prompt,
             job_name,
             _dict_to_jsonb(job_args),
+            complexity,
             timezone,
             start_at,
             end_at,
@@ -714,8 +773,9 @@ async def schedule_update(
     """Update fields on a scheduled task.
 
     Allowed fields: ``name``, ``cron``, ``dispatch_mode``, ``prompt``,
-    ``job_name``, ``job_args``, ``enabled``, ``timezone``, ``start_at``,
-    ``end_at``, ``until_at``, ``display_title``, and ``calendar_event_id``.
+    ``job_name``, ``job_args``, ``complexity``, ``enabled``, ``timezone``,
+    ``start_at``, ``end_at``, ``until_at``, ``display_title``, and
+    ``calendar_event_id``.
     If ``cron`` is updated, recomputes ``next_run_at``.
     If ``enabled`` is set to ``true``, recomputes ``next_run_at``.
     If ``enabled`` is set to ``false``, sets ``next_run_at`` to ``NULL``.
@@ -736,6 +796,7 @@ async def schedule_update(
         "prompt",
         "job_name",
         "job_args",
+        "complexity",
         "enabled",
         "timezone",
         "start_at",
@@ -758,11 +819,17 @@ async def schedule_update(
             fields["dispatch_mode"],
             context="schedule_update",
         )
+    if "complexity" in fields:
+        fields["complexity"] = _normalize_complexity(
+            fields["complexity"],
+            context="schedule_update",
+        )
     # Check task exists and fetch current state
     existing = await pool.fetchrow(
         """
         SELECT id, cron, enabled, dispatch_mode, prompt, job_name, job_args,
-               timezone, start_at, end_at, until_at, display_title, calendar_event_id
+               complexity, timezone, start_at, end_at, until_at, display_title,
+               calendar_event_id
         FROM scheduled_tasks
         WHERE id = $1
         """,
@@ -831,12 +898,14 @@ async def schedule_update(
             "job_name": normalized_fields.get("job_name", existing["job_name"]),
             "job_args": normalized_fields.get("job_args", existing_job_args),
         }
-        dispatch_mode, prompt, job_name, job_args = _normalize_schedule_dispatch(
-            dispatch_mode=merged["dispatch_mode"],
-            prompt=merged["prompt"],
-            job_name=merged["job_name"],
-            job_args=merged["job_args"],
-            context="schedule_update",
+        dispatch_mode, prompt, job_name, job_args, _dispatch_complexity = (
+            _normalize_schedule_dispatch(
+                dispatch_mode=merged["dispatch_mode"],
+                prompt=merged["prompt"],
+                job_name=merged["job_name"],
+                job_args=merged["job_args"],
+                context="schedule_update",
+            )
         )
         normalized_fields["dispatch_mode"] = dispatch_mode
         normalized_fields["prompt"] = prompt
