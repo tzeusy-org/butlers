@@ -3017,7 +3017,10 @@ class GmailProcessConfig(BaseModel):
             connector_channel=self.connector_channel,
             connector_endpoint_identity=endpoint_identity,
             connector_max_inflight=self.connector_max_inflight,
-            connector_health_port=self.connector_health_port,
+            # Per-account runtimes must NOT bind the aggregated manager health port.
+            # Pass 0 so each GmailConnectorRuntime gets an OS-assigned ephemeral port
+            # (or its health server start is effectively a no-op on port 0).
+            connector_health_port=0,
             gmail_client_id=client_id,
             gmail_client_secret=client_secret,
             gmail_refresh_token=refresh_token,
@@ -3108,7 +3111,6 @@ class GmailAccountLoop:
     def get_health(self) -> AccountHealthStatus:
         """Return per-account health snapshot."""
         runtime = self._runtime
-        uptime = time.time() - runtime._start_time
 
         last_checkpoint_save_at = None
         if runtime._last_checkpoint_save is not None:
@@ -3137,7 +3139,6 @@ class GmailAccountLoop:
             account_status = "error"
         else:
             account_status = "healthy"
-        _ = uptime  # uptime tracked at manager level
 
         return AccountHealthStatus(
             email=self.email,
@@ -3180,6 +3181,9 @@ class GmailConnectorManager:
         self._start_time = time.time()
         self._running = False
         self._reload_event = asyncio.Event()
+        # Capture the main event loop at construction time so the background
+        # health-server thread can safely signal reload via call_soon_threadsafe.
+        self._main_loop: asyncio.AbstractEventLoop | None = None
 
         # Health server
         self._health_server: uvicorn.Server | None = None
@@ -3251,7 +3255,8 @@ class GmailConnectorManager:
     ) -> dict[str, str] | None:
         """Resolve OAuth credentials for a single Google account.
 
-        Returns dict with client_id, client_secret, refresh_token on success.
+        Returns dict with client_id, client_secret, refresh_token on success,
+        and optionally pubsub_webhook_token if stored in the credential store.
         Returns None if credentials cannot be resolved (non-fatal — account is skipped).
         """
         try:
@@ -3262,11 +3267,24 @@ class GmailConnectorManager:
                     "Gmail manager: no credentials found for account %r — skipping", email
                 )
                 return None
-            return {
+            result: dict[str, str] = {
                 "client_id": creds.client_id,
                 "client_secret": creds.client_secret,
                 "refresh_token": creds.refresh_token,
             }
+            # Resolve optional PubSub webhook token from DB — non-fatal if absent.
+            try:
+                pubsub_token = await store.resolve("GMAIL_PUBSUB_WEBHOOK_TOKEN", env_fallback=False)
+                if pubsub_token:
+                    result["pubsub_webhook_token"] = pubsub_token
+            except Exception as exc:
+                logger.debug(
+                    "Gmail manager: optional Pub/Sub token lookup failed for account %r "
+                    "(non-fatal): %s",
+                    email,
+                    exc,
+                )
+            return result
         except InvalidGoogleCredentialsError as exc:
             logger.warning(
                 "Gmail manager: invalid credentials for account %r (skipping): %s",
@@ -3327,6 +3345,7 @@ class GmailConnectorManager:
                     client_secret=creds["client_secret"],
                     refresh_token=creds["refresh_token"],
                     metadata_gmail=metadata_gmail,
+                    pubsub_webhook_token=creds.get("pubsub_webhook_token"),
                 )
             except Exception as exc:
                 logger.warning(
@@ -3363,7 +3382,12 @@ class GmailConnectorManager:
         @app.post("/reload")
         async def reload_accounts() -> dict[str, Any]:
             """Trigger immediate account re-scan (connector_reload_accounts MCP tool)."""
-            self._reload_event.set()
+            # _reload_event was created in the main event loop. This endpoint runs
+            # inside asyncio.run() in a background thread (a separate event loop),
+            # so calling .set() directly would be unsafe. Use call_soon_threadsafe
+            # to signal the main loop from the background thread's loop.
+            if self._main_loop is not None and self._main_loop.is_running():
+                self._main_loop.call_soon_threadsafe(self._reload_event.set)
             return {"status": "reload_triggered"}
 
         config = uvicorn.Config(
@@ -3425,6 +3449,10 @@ class GmailConnectorManager:
     async def start(self) -> None:
         """Start the connector manager: discover accounts, start loops, run rescan loop."""
         self._running = True
+
+        # Capture the running event loop so the background health-server thread
+        # can safely signal _reload_event via loop.call_soon_threadsafe.
+        self._main_loop = asyncio.get_running_loop()
 
         # Start health server
         self._start_health_server()
