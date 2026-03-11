@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, ExternalLink, Pencil, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type { ContactSummary, EntityInfoEntry } from "@/api/types";
@@ -278,15 +278,22 @@ function EntityInfoRow({
 function AddEntityInfoForm({
   entityId,
   onDone,
+  isOwner = false,
 }: {
   entityId: string;
   onDone: () => void;
+  isOwner?: boolean;
 }) {
   const createInfo = useCreateEntityInfo();
   const [type, setType] = useState<string>("api_key");
   const [value, setValue] = useState("");
   const [label, setLabel] = useState("");
   const [isPrimary, setIsPrimary] = useState(false);
+
+  // Owner entities do not store google_oauth_refresh — those live on companion entities.
+  const availableTypes = isOwner
+    ? ENTITY_INFO_TYPES.filter((t) => t !== "google_oauth_refresh")
+    : ENTITY_INFO_TYPES;
 
   const isSecured = SECURED_TYPES.has(type);
 
@@ -324,7 +331,7 @@ function AddEntityInfoForm({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {ENTITY_INFO_TYPES.map((t) => (
+            {availableTypes.map((t) => (
               <SelectItem key={t} value={t} className="text-xs">
                 {entityInfoTypeLabel(t)}
               </SelectItem>
@@ -394,11 +401,21 @@ function AddEntityInfoForm({
 function EntityInfoSection({
   entityId,
   entries,
+  isOwner = false,
 }: {
   entityId: string;
   entries: EntityInfoEntry[];
+  isOwner?: boolean;
 }) {
   const [addingInfo, setAddingInfo] = useState(false);
+
+  // Owner entities do not store google_oauth_refresh — those live on companion
+  // entities. Filter them out so the owner entity view stays clean.
+  const visibleEntries = isOwner
+    ? entries.filter((e) => e.type !== "google_oauth_refresh")
+    : entries;
+
+  const hasHiddenOAuthRows = isOwner && entries.some((e) => e.type === "google_oauth_refresh");
 
   return (
     <Card>
@@ -408,19 +425,38 @@ function EntityInfoSection({
         </div>
       </CardHeader>
       <CardContent>
-        {entries.length === 0 && !addingInfo ? (
+        {visibleEntries.length === 0 && !addingInfo ? (
           <p className="text-muted-foreground py-2 text-center text-sm">
             No entity info entries yet.
           </p>
         ) : (
           <div className="space-y-1.5">
-            {entries.map((entry) => (
+            {visibleEntries.map((entry) => (
               <EntityInfoRow key={entry.id} entry={entry} entityId={entityId} />
             ))}
           </div>
         )}
+        {isOwner && (
+          <div className="mt-3 flex items-center gap-1.5 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+            <ExternalLink className="h-3 w-3 shrink-0" />
+            <span>
+              Google OAuth tokens are managed on companion Google account entities.
+              {hasHiddenOAuthRows
+                ? " Existing token rows are hidden here — manage them at "
+                : " To manage Google accounts, go to "}
+              <Link to="/settings" className="text-primary hover:underline">
+                Settings → Google OAuth
+              </Link>
+              .
+            </span>
+          </div>
+        )}
         {addingInfo ? (
-          <AddEntityInfoForm entityId={entityId} onDone={() => setAddingInfo(false)} />
+          <AddEntityInfoForm
+            entityId={entityId}
+            onDone={() => setAddingInfo(false)}
+            isOwner={isOwner}
+          />
         ) : (
           <Button
             variant="ghost"
@@ -889,6 +925,7 @@ export default function EntityDetailPage() {
           <EntityInfoSection
             entityId={entity.id}
             entries={entity.entity_info ?? []}
+            isOwner={entity.roles?.includes("owner") ?? false}
           />
 
           {/* Facts tab */}
