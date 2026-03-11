@@ -790,6 +790,30 @@ class TestStatusFilter:
 
         assert resp.status_code == 200
 
+    async def test_status_invalid_value_returns_422(self, app):
+        """Invalid status value should return 422 Unprocessable Entity."""
+        _app_with_mock_db(app)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events", params={"status": "unknown_status"})
+
+        assert resp.status_code == 422
+
+    async def test_status_invalid_value_detail_message(self, app):
+        """422 response for invalid status should include validation error detail."""
+        _app_with_mock_db(app)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events", params={"status": "invalid"})
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "detail" in body
+
 
 # ---------------------------------------------------------------------------
 # POST /api/ingestion/events/{id}/replay

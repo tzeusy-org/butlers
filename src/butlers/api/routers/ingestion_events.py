@@ -16,6 +16,7 @@ POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -57,7 +58,10 @@ async def list_ingestion_events(
     limit: int = Query(20, ge=1, le=200, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     source_channel: str | None = Query(None, description="Filter by source channel"),
-    status: str | None = Query(
+    status: Literal[
+        "ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"
+    ]
+    | None = Query(
         None,
         description=(
             "Filter by event status. 'ingested' queries only shared.ingestion_events; "
