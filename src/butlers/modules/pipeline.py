@@ -419,6 +419,12 @@ def _build_routing_prompt(
         "relevant components to the appropriate butler(s) by calling the `route_to_butler` "
         "tool on your configured MCP.\n\n"
         "IMPORTANT: You MUST call your MCP's route_to_butler to AT LEAST ONE Butler.\n\n"
+        "For each route_to_butler call, set the `complexity` parameter based on how much "
+        "reasoning the target butler will need:\n"
+        "- trivial: simple lookups, status checks, factual one-liners\n"
+        "- medium: typical requests, summaries, moderate analysis (default)\n"
+        "- high: multi-step reasoning, planning, significant synthesis\n"
+        "- extra_high: deep research, very long synthesis, complex multi-domain tasks\n\n"
         "After routing, respond with a brief text summary of your routing decisions.\n\n"
     ]
 
