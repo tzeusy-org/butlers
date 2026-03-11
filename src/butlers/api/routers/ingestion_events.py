@@ -16,6 +16,7 @@ POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
 from __future__ import annotations
 
 import logging
+from asyncio import gather as _asyncio_gather
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -35,6 +36,7 @@ from butlers.core.ingestion_events import (
     ingestion_event_replay_request,
     ingestion_event_rollup,
     ingestion_event_sessions,
+    ingestion_events_count,
     ingestion_events_list,
 )
 
@@ -82,58 +84,18 @@ async def list_ingestion_events(
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
-    rows = await ingestion_events_list(
-        pool, limit=limit, offset=offset, source_channel=source_channel, status=status
+    rows, total = await _asyncio_gather(
+        ingestion_events_list(
+            pool, limit=limit, offset=offset, source_channel=source_channel, status=status
+        ),
+        ingestion_events_count(pool, source_channel=source_channel, status=status),
     )
-
-    # Determine total count for pagination metadata (mirrors the list query logic)
-    ch_filter = " WHERE source_channel = $1" if source_channel is not None else ""
-    ch_args: list = [source_channel] if source_channel is not None else []
-
-    if status == "ingested":
-        total = await pool.fetchval(
-            f"SELECT count(*) FROM shared.ingestion_events{ch_filter}",
-            *ch_args,
-        )
-    elif status is not None:
-        # connectors.filtered_events only
-        if source_channel is not None:
-            total = await pool.fetchval(
-                "SELECT count(*) FROM connectors.filtered_events "
-                "WHERE status = $1 AND source_channel = $2",
-                status,
-                source_channel,
-            )
-        else:
-            total = await pool.fetchval(
-                "SELECT count(*) FROM connectors.filtered_events WHERE status = $1",
-                status,
-            )
-    else:
-        # Both tables
-        if source_channel is not None:
-            total = await pool.fetchval(
-                "SELECT ("
-                "  SELECT count(*) FROM shared.ingestion_events WHERE source_channel = $1"
-                ") + ("
-                "  SELECT count(*) FROM connectors.filtered_events WHERE source_channel = $1"
-                ")",
-                source_channel,
-            )
-        else:
-            total = await pool.fetchval(
-                "SELECT ("
-                "  SELECT count(*) FROM shared.ingestion_events"
-                ") + ("
-                "  SELECT count(*) FROM connectors.filtered_events"
-                ")"
-            )
 
     summaries = [IngestionEventSummary(**row) for row in rows]
 
     return PaginatedResponse[IngestionEventSummary](
         data=summaries,
-        meta=PaginationMeta(total=total or 0, offset=offset, limit=limit),
+        meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
 
 

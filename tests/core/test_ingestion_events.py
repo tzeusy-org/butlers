@@ -298,6 +298,108 @@ class TestIngestionEventsList:
 
 
 # ---------------------------------------------------------------------------
+# ingestion_events_count
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionEventsCount:
+    async def test_returns_zero_when_fetchval_returns_none(self) -> None:
+        """fetchval returning None (empty table) should be normalised to 0."""
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=None)
+        result = await ingestion_events_count(pool)
+        assert result == 0
+
+    async def test_returns_integer_count(self) -> None:
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=42)
+        result = await ingestion_events_count(pool)
+        assert result == 42
+
+    async def test_no_status_queries_both_tables(self) -> None:
+        """Without a status filter both shared.ingestion_events and connectors.filtered_events
+        should be referenced in the SQL."""
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=0)
+        await ingestion_events_count(pool)
+        assert pool.calls, "fetchval should have been called"
+        _, sql, _ = pool.calls[0]
+        assert "shared.ingestion_events" in sql
+        assert "connectors.filtered_events" in sql
+
+    async def test_no_status_no_channel_passes_no_args(self) -> None:
+        """UNION ALL count without filters should need no bind args."""
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=0)
+        await ingestion_events_count(pool)
+        _, _, args = pool.calls[0]
+        assert args == ()
+
+    async def test_no_status_with_channel_passes_channel_arg(self) -> None:
+        """UNION ALL count with source_channel filter should pass channel as bind arg."""
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=0)
+        await ingestion_events_count(pool, source_channel="telegram")
+        _, _, args = pool.calls[0]
+        assert args == ("telegram",)
+
+    async def test_status_ingested_queries_only_ingestion_events(self) -> None:
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=5)
+        await ingestion_events_count(pool, status="ingested")
+        _, sql, _ = pool.calls[0]
+        assert "shared.ingestion_events" in sql
+        assert "connectors.filtered_events" not in sql
+
+    async def test_status_ingested_with_channel(self) -> None:
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=3)
+        await ingestion_events_count(pool, status="ingested", source_channel="email")
+        _, sql, args = pool.calls[0]
+        assert "shared.ingestion_events" in sql
+        assert "source_channel" in sql
+        assert args == ("email",)
+
+    async def test_status_filtered_queries_only_filtered_events(self) -> None:
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=7)
+        await ingestion_events_count(pool, status="filtered")
+        _, sql, args = pool.calls[0]
+        assert "connectors.filtered_events" in sql
+        assert "shared.ingestion_events" not in sql
+        assert "filtered" in args
+
+    async def test_status_filtered_with_channel(self) -> None:
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=2)
+        await ingestion_events_count(pool, status="filtered", source_channel="telegram")
+        _, sql, args = pool.calls[0]
+        assert "connectors.filtered_events" in sql
+        assert "source_channel" in sql
+        assert "filtered" in args
+        assert "telegram" in args
+
+    async def test_status_error_queries_filtered_events(self) -> None:
+        """status='error' (non-ingested) should query filtered_events."""
+        from butlers.core.ingestion_events import ingestion_events_count
+
+        pool = _FakePool(fetchval_result=1)
+        await ingestion_events_count(pool, status="error")
+        _, sql, args = pool.calls[0]
+        assert "connectors.filtered_events" in sql
+        assert "error" in args
+
+
+# ---------------------------------------------------------------------------
 # ingestion_event_sessions
 # ---------------------------------------------------------------------------
 

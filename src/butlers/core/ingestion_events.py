@@ -8,6 +8,7 @@ Functions
 ---------
 ingestion_event_get             — fetch a single event by id
 ingestion_events_list           — paginated list, newest first, optional channel/status filter
+ingestion_events_count          — total row count matching the same filters as ingestion_events_list
 ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
 ingestion_event_replay_request  — mark a filtered event as replay_pending
@@ -206,6 +207,84 @@ async def ingestion_events_list(
 
     rows = await pool.fetch(sql, *args)
     return [_decode_event_row(row) for row in rows]
+
+
+async def ingestion_events_count(
+    pool: asyncpg.Pool,
+    source_channel: str | None = None,
+    status: str | None = None,
+) -> int:
+    """Return the total number of ingestion events matching the given filters.
+
+    Mirrors the status/channel branching logic of :func:`ingestion_events_list`
+    so that both functions stay in sync: any future filter change only needs to
+    be applied here (core) rather than duplicated into the API router.
+
+    Args:
+        pool: asyncpg connection pool that can resolve ``shared.ingestion_events``
+            and ``connectors.filtered_events``.
+        source_channel: Optional filter; when provided only events whose
+            ``source_channel`` matches this value are counted.
+        status: Optional status filter. ``'ingested'`` → ingestion_events only;
+            other values → filtered_events only; ``None`` → both tables.
+
+    Returns:
+        Integer count of rows matching the filter combination.
+    """
+    if status == "ingested":
+        # Only count shared.ingestion_events
+        if source_channel is not None:
+            return (
+                await pool.fetchval(
+                    "SELECT count(*) FROM shared.ingestion_events WHERE source_channel = $1",
+                    source_channel,
+                )
+                or 0
+            )
+        return await pool.fetchval("SELECT count(*) FROM shared.ingestion_events") or 0
+    elif status is not None:
+        # Only count connectors.filtered_events
+        if source_channel is not None:
+            return (
+                await pool.fetchval(
+                    "SELECT count(*) FROM connectors.filtered_events "
+                    "WHERE status = $1 AND source_channel = $2",
+                    status,
+                    source_channel,
+                )
+                or 0
+            )
+        return (
+            await pool.fetchval(
+                "SELECT count(*) FROM connectors.filtered_events WHERE status = $1",
+                status,
+            )
+            or 0
+        )
+    else:
+        # Both tables
+        if source_channel is not None:
+            return (
+                await pool.fetchval(
+                    "SELECT ("
+                    "  SELECT count(*) FROM shared.ingestion_events WHERE source_channel = $1"
+                    ") + ("
+                    "  SELECT count(*) FROM connectors.filtered_events WHERE source_channel = $1"
+                    ")",
+                    source_channel,
+                )
+                or 0
+            )
+        return (
+            await pool.fetchval(
+                "SELECT ("
+                "  SELECT count(*) FROM shared.ingestion_events"
+                ") + ("
+                "  SELECT count(*) FROM connectors.filtered_events"
+                ")"
+            )
+            or 0
+        )
 
 
 async def ingestion_event_replay_request(
