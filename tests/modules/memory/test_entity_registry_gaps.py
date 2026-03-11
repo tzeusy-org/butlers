@@ -195,8 +195,14 @@ class TestEntityCreateGaps:
         self, mock_pool: AsyncMock
     ) -> None:
         """ValueError message from unique constraint includes the canonical_name."""
+        # First fetchval call (INSERT) raises the duplicate constraint.
+        # Second fetchval call (tombstone rename lookup) returns None — no tombstone
+        # exists, so entity_create raises ValueError for the live-entity conflict.
         mock_pool.fetchval = AsyncMock(
-            side_effect=Exception("duplicate key value violates unique constraint")
+            side_effect=[
+                Exception("duplicate key value violates unique constraint"),
+                None,
+            ]
         )
         with pytest.raises(ValueError, match="Alice"):
             await entity_create(mock_pool, "Alice", "person", tenant_id=TENANT_A)
