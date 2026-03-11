@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +91,141 @@ INSERT INTO connectors.filtered_events (
     error_detail
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
+
+# SQL for the replay drain loop.
+# Locks up to 10 replay_pending rows with skip-locked concurrency safety,
+# then updates each to replay_complete or replay_failed after submission.
+_REPLAY_SELECT_SQL = """\
+SELECT id, received_at, external_message_id, full_payload
+FROM connectors.filtered_events
+WHERE connector_type = $1
+  AND endpoint_identity = $2
+  AND status = 'replay_pending'
+ORDER BY received_at ASC
+LIMIT 10
+FOR UPDATE SKIP LOCKED
+"""
+
+_REPLAY_UPDATE_SQL = """\
+UPDATE connectors.filtered_events
+SET status = $1,
+    error_detail = $2,
+    replay_completed_at = now()
+WHERE id = $3 AND received_at = $4
+"""
+
+# ---------------------------------------------------------------------------
+# Shared replay drain helper
+# ---------------------------------------------------------------------------
+
+
+async def drain_replay_pending(
+    pool: asyncpg.Pool,
+    connector_type: str,
+    endpoint_identity: str,
+    submit_fn: Callable[[dict[str, Any]], Awaitable[None]],
+    drain_logger: logging.Logger | None = None,
+) -> None:
+    """Process up to 10 replay_pending rows from connectors.filtered_events.
+
+    For each row:
+    - Deserialise full_payload from JSONB.
+    - Wrap in an ingest.v1 envelope (adds schema_version).
+    - Submit via *submit_fn*.
+    - Mark status=replay_complete on success or replay_failed on error.
+
+    Uses ``FOR UPDATE SKIP LOCKED`` so concurrent connector instances never
+    process the same row twice.  The SELECT and all UPDATEs share a single
+    connection and transaction so the row locks are held until every status
+    update commits — defeating the race window that would otherwise exist
+    between connection-per-update calls.
+
+    Args:
+        pool: asyncpg pool with access to the ``connectors`` schema.
+        connector_type: Connector type string used to filter rows (e.g. ``"gmail"``).
+        endpoint_identity: Endpoint identity used to filter rows.
+        submit_fn: Async callable that accepts an ingest.v1 envelope dict and
+            submits it to the ingestion pipeline.  Raises on failure.
+        drain_logger: Optional logger to use; defaults to this module's logger.
+    """
+    _log = drain_logger if drain_logger is not None else logger
+
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    _REPLAY_SELECT_SQL,
+                    connector_type,
+                    endpoint_identity,
+                )
+
+                if not rows:
+                    return
+
+                _log.debug("replay drain: processing %d replay_pending rows", len(rows))
+
+                for row in rows:
+                    row_id = row["id"]
+                    received_at = row["received_at"]
+                    external_message_id = row["external_message_id"]
+                    raw_payload = row["full_payload"]
+
+                    # Deserialise JSONB (asyncpg may return str or dict depending on codec)
+                    if isinstance(raw_payload, str):
+                        try:
+                            payload_dict: dict[str, Any] = json.loads(raw_payload)
+                        except Exception as exc:
+                            _log.warning(
+                                "replay drain: failed to parse full_payload for id=%s: %s",
+                                row_id,
+                                exc,
+                            )
+                            await conn.execute(
+                                _REPLAY_UPDATE_SQL,
+                                "replay_failed",
+                                str(exc),
+                                row_id,
+                                received_at,
+                            )
+                            continue
+                    else:
+                        payload_dict = dict(raw_payload)
+
+                    # Build ingest.v1 envelope by adding schema_version
+                    envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
+
+                    try:
+                        await submit_fn(envelope)
+                        await conn.execute(
+                            _REPLAY_UPDATE_SQL,
+                            "replay_complete",
+                            None,
+                            row_id,
+                            received_at,
+                        )
+                        _log.info(
+                            "replay drain: replayed message %s (id=%s)",
+                            external_message_id,
+                            row_id,
+                        )
+                    except Exception as exc:
+                        error_msg = str(exc)
+                        _log.warning(
+                            "replay drain: failed to replay message %s (id=%s): %s",
+                            external_message_id,
+                            row_id,
+                            exc,
+                        )
+                        await conn.execute(
+                            _REPLAY_UPDATE_SQL,
+                            "replay_failed",
+                            error_msg,
+                            row_id,
+                            received_at,
+                        )
+    except Exception:
+        _log.warning("replay drain: failed to query replay_pending rows", exc_info=True)
+
 
 # ---------------------------------------------------------------------------
 # FilteredEventBuffer

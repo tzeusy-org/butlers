@@ -1,4 +1,7 @@
-"""Tests for FilteredEventBuffer — accumulation, flush, reason helpers, crash safety."""
+"""Tests for FilteredEventBuffer — accumulation, flush, reason helpers, crash safety.
+
+Also tests for the standalone drain_replay_pending helper.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +14,10 @@ import pytest
 
 from butlers.connectors.filtered_event_buffer import (
     _INSERT_SQL,
+    _REPLAY_SELECT_SQL,
+    _REPLAY_UPDATE_SQL,
     FilteredEventBuffer,
+    drain_replay_pending,
 )
 
 pytestmark = pytest.mark.unit
@@ -501,3 +507,223 @@ class TestFullPayloadHelper:
         # Should not raise
         serialized = json.dumps(p)
         assert isinstance(serialized, str)
+
+
+# ---------------------------------------------------------------------------
+# drain_replay_pending helper tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_pool_with_transaction(rows: list) -> tuple[MagicMock, AsyncMock, AsyncMock]:
+    """Return (pool, conn, tx_ctx) mocks wired to yield *rows* from fetch()."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=rows)
+    mock_conn.execute = AsyncMock()
+
+    # Transaction context manager
+    mock_tx = AsyncMock()
+    mock_tx.__aenter__ = AsyncMock(return_value=None)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    mock_conn.transaction = MagicMock(return_value=mock_tx)
+
+    # Acquire context manager
+    mock_acquire_ctx = AsyncMock()
+    mock_acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_acquire_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_pool = MagicMock()
+    mock_pool.acquire = MagicMock(return_value=mock_acquire_ctx)
+
+    return mock_pool, mock_conn, mock_tx
+
+
+def _make_row(
+    row_id: int = 1,
+    external_message_id: str = "msg-001",
+    full_payload: str | dict | None = None,
+) -> MagicMock:
+    """Build a mock asyncpg Record-like row."""
+    if full_payload is None:
+        full_payload = json.dumps(
+            {
+                "source": {"channel": "email", "provider": "gmail", "endpoint_identity": "x"},
+                "event": {
+                    "external_event_id": "msg-001",
+                    "external_thread_id": None,
+                    "observed_at": "2026-03-11T10:00:00Z",
+                },
+                "sender": {"identity": "sender@example.com"},
+                "payload": {"raw": {}, "normalized_text": None},
+                "control": {"policy_tier": None},
+            }
+        )
+    row = MagicMock()
+    row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "id": row_id,
+            "received_at": datetime(2026, 3, 11, 10, 0, 0, tzinfo=UTC),
+            "external_message_id": external_message_id,
+            "full_payload": full_payload,
+        }[key]
+    )
+    return row
+
+
+class TestDrainReplayPending:
+    """Tests for the shared drain_replay_pending helper function."""
+
+    async def test_noop_when_no_rows(self) -> None:
+        pool, conn, _ = _make_mock_pool_with_transaction([])
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        submit_fn.assert_not_awaited()
+        conn.execute.assert_not_awaited()
+
+    async def test_submits_envelope_with_schema_version(self) -> None:
+        row = _make_row()
+        pool, conn, _ = _make_mock_pool_with_transaction([row])
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        submit_fn.assert_awaited_once()
+        envelope = submit_fn.call_args[0][0]
+        assert envelope["schema_version"] == "ingest.v1"
+        # Original payload fields are preserved
+        assert "source" in envelope
+
+    async def test_marks_row_replay_complete_on_success(self) -> None:
+        row = _make_row(row_id=42)
+        pool, conn, _ = _make_mock_pool_with_transaction([row])
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        conn.execute.assert_awaited_once()
+        args = conn.execute.call_args[0]
+        assert args[0] == _REPLAY_UPDATE_SQL
+        assert args[1] == "replay_complete"
+        assert args[2] is None  # error_detail
+        assert args[3] == 42  # row_id
+
+    async def test_marks_row_replay_failed_on_submit_error(self) -> None:
+        row = _make_row(row_id=7, external_message_id="bad-msg")
+        pool, conn, _ = _make_mock_pool_with_transaction([row])
+        submit_fn = AsyncMock(side_effect=RuntimeError("ingest down"))
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        conn.execute.assert_awaited_once()
+        args = conn.execute.call_args[0]
+        assert args[0] == _REPLAY_UPDATE_SQL
+        assert args[1] == "replay_failed"
+        assert "ingest down" in args[2]
+        assert args[3] == 7
+
+    async def test_marks_row_replay_failed_on_json_parse_error(self) -> None:
+        row = _make_row(row_id=99, full_payload="not-valid-json{{{")
+        pool, conn, _ = _make_mock_pool_with_transaction([row])
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        # JSON parse failure → replay_failed, submit never called
+        submit_fn.assert_not_awaited()
+        conn.execute.assert_awaited_once()
+        args = conn.execute.call_args[0]
+        assert args[1] == "replay_failed"
+
+    async def test_processes_multiple_rows(self) -> None:
+        rows = [_make_row(row_id=i, external_message_id=f"msg-{i}") for i in range(3)]
+        pool, conn, _ = _make_mock_pool_with_transaction(rows)
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        assert submit_fn.await_count == 3
+        assert conn.execute.await_count == 3
+
+    async def test_continues_processing_after_one_row_failure(self) -> None:
+        """A failure on one row must not abort processing of subsequent rows."""
+        row_ok = _make_row(row_id=1, external_message_id="msg-ok")
+        row_bad = _make_row(row_id=2, external_message_id="msg-bad", full_payload="bad{json")
+        row_ok2 = _make_row(row_id=3, external_message_id="msg-ok2")
+        pool, conn, _ = _make_mock_pool_with_transaction([row_ok, row_bad, row_ok2])
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        # submit called for the two valid rows only
+        assert submit_fn.await_count == 2
+        # execute called for all three rows (2 complete + 1 failed)
+        assert conn.execute.await_count == 3
+
+    async def test_uses_correct_select_sql_and_params(self) -> None:
+        pool, conn, _ = _make_mock_pool_with_transaction([])
+
+        await drain_replay_pending(pool, "telegram_bot", "tg:bot:123", AsyncMock())
+
+        conn.fetch.assert_awaited_once_with(_REPLAY_SELECT_SQL, "telegram_bot", "tg:bot:123")
+
+    async def test_outer_db_error_does_not_raise(self) -> None:
+        mock_pool = MagicMock()
+        mock_acquire_ctx = AsyncMock()
+        mock_acquire_ctx.__aenter__ = AsyncMock(side_effect=OSError("DB unreachable"))
+        mock_acquire_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_pool.acquire = MagicMock(return_value=mock_acquire_ctx)
+        submit_fn = AsyncMock()
+
+        # Should not raise — outer exception is swallowed with a warning log
+        await drain_replay_pending(mock_pool, "gmail", "gmail:user:x@example.com", submit_fn)
+
+    async def test_outer_db_error_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_pool = MagicMock()
+        mock_acquire_ctx = AsyncMock()
+        mock_acquire_ctx.__aenter__ = AsyncMock(side_effect=OSError("DB unreachable"))
+        mock_acquire_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_pool.acquire = MagicMock(return_value=mock_acquire_ctx)
+
+        with caplog.at_level(logging.WARNING, logger="butlers.connectors.filtered_event_buffer"):
+            await drain_replay_pending(mock_pool, "gmail", "x", AsyncMock())
+
+        assert any("replay_pending" in rec.message for rec in caplog.records)
+        assert any(rec.levelno == logging.WARNING for rec in caplog.records)
+
+    async def test_accepts_dict_full_payload(self) -> None:
+        """asyncpg may return JSONB as a dict — the helper handles both str and dict."""
+        payload_dict = {
+            "source": {"channel": "email", "provider": "gmail", "endpoint_identity": "x"},
+            "event": {
+                "external_event_id": "msg-1",
+                "external_thread_id": None,
+                "observed_at": "2026-03-11T10:00:00Z",
+            },
+            "sender": {"identity": "s@example.com"},
+            "payload": {"raw": {}, "normalized_text": None},
+            "control": {"policy_tier": None},
+        }
+        row = _make_row(full_payload=payload_dict)  # dict, not str
+        pool, conn, _ = _make_mock_pool_with_transaction([row])
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        submit_fn.assert_awaited_once()
+        envelope = submit_fn.call_args[0][0]
+        assert envelope["schema_version"] == "ingest.v1"
+        assert envelope["source"] == payload_dict["source"]
+
+    async def test_custom_logger_is_used(self, caplog: pytest.LogCaptureFixture) -> None:
+        row = _make_row()
+        pool, conn, _ = _make_mock_pool_with_transaction([row])
+        submit_fn = AsyncMock()
+        custom_logger = logging.getLogger("custom.connector.logger")
+
+        with caplog.at_level(logging.DEBUG, logger="custom.connector.logger"):
+            await drain_replay_pending(pool, "gmail", "x", submit_fn, custom_logger)
+
+        assert any("custom.connector.logger" == rec.name for rec in caplog.records)

@@ -65,7 +65,7 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
@@ -1130,28 +1130,6 @@ class DiscordUserConnector:
             return str(content)[:200]
         return None
 
-    # SQL for the replay drain loop.
-    # Locks up to 10 replay_pending rows with skip-locked concurrency safety,
-    # then updates each to replay_complete or replay_failed after submission.
-    _REPLAY_SELECT_SQL = """\
-SELECT id, received_at, external_message_id, full_payload
-FROM connectors.filtered_events
-WHERE connector_type = $1
-  AND endpoint_identity = $2
-  AND status = 'replay_pending'
-ORDER BY received_at ASC
-LIMIT 10
-FOR UPDATE SKIP LOCKED
-"""
-
-    _REPLAY_UPDATE_SQL = """\
-UPDATE connectors.filtered_events
-SET status = $1,
-    error_detail = $2,
-    replay_completed_at = now()
-WHERE id = $3 AND received_at = $4
-"""
-
     async def _flush_and_drain(self) -> None:
         """Flush filtered event buffer then drain up to 10 replay-pending rows.
 
@@ -1170,93 +1148,19 @@ WHERE id = $3 AND received_at = $4
     async def _drain_replay_pending(self) -> None:
         """Process up to 10 replay_pending rows from connectors.filtered_events.
 
-        For each row:
-        - Deserialize full_payload from JSONB.
-        - Wrap in an ingest.v1 envelope (adds schema_version).
-        - Submit via _submit_to_ingest.
-        - Mark status=replay_complete on success or replay_failed on error.
-
-        Uses FOR UPDATE SKIP LOCKED so concurrent connector instances never
-        process the same row twice.
+        Delegates to the shared ``drain_replay_pending`` helper in
+        :mod:`butlers.connectors.filtered_event_buffer`.
         """
         if self._db_pool is None:
             return
 
-        try:
-            async with self._db_pool.acquire() as conn:
-                async with conn.transaction():
-                    rows = await conn.fetch(
-                        self._REPLAY_SELECT_SQL,
-                        self._config.provider,
-                        self._config.endpoint_identity,
-                    )
-
-                    if not rows:
-                        return
-
-                    logger.debug("replay drain: processing %d replay_pending rows", len(rows))
-
-                    for row in rows:
-                        row_id = row["id"]
-                        received_at = row["received_at"]
-                        external_message_id = row["external_message_id"]
-                        raw_payload = row["full_payload"]
-
-                        # Deserialize JSONB (asyncpg may return str or dict depending on codec)
-                        if isinstance(raw_payload, str):
-                            try:
-                                payload_dict: dict[str, Any] = json.loads(raw_payload)
-                            except Exception as exc:
-                                logger.warning(
-                                    "replay drain: failed to parse full_payload for id=%s: %s",
-                                    row_id,
-                                    exc,
-                                )
-                                await conn.execute(
-                                    self._REPLAY_UPDATE_SQL,
-                                    "replay_failed",
-                                    str(exc),
-                                    row_id,
-                                    received_at,
-                                )
-                                continue
-                        else:
-                            payload_dict = dict(raw_payload)
-
-                        # Build ingest.v1 envelope by adding schema_version
-                        envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
-
-                        try:
-                            await self._submit_to_ingest(envelope)
-                            await conn.execute(
-                                self._REPLAY_UPDATE_SQL,
-                                "replay_complete",
-                                None,
-                                row_id,
-                                received_at,
-                            )
-                            logger.info(
-                                "replay drain: replayed message %s (id=%s)",
-                                external_message_id,
-                                row_id,
-                            )
-                        except Exception as exc:
-                            error_msg = str(exc)
-                            logger.warning(
-                                "replay drain: failed to replay message %s (id=%s): %s",
-                                external_message_id,
-                                row_id,
-                                exc,
-                            )
-                            await conn.execute(
-                                self._REPLAY_UPDATE_SQL,
-                                "replay_failed",
-                                error_msg,
-                                row_id,
-                                received_at,
-                            )
-        except Exception:
-            logger.warning("replay drain: failed to query replay_pending rows", exc_info=True)
+        await drain_replay_pending(
+            self._db_pool,
+            self._config.provider,
+            self._config.endpoint_identity,
+            self._submit_to_ingest,
+            logger,
+        )
 
     # -------------------------------------------------------------------------
     # Internal: Checkpoint persistence
