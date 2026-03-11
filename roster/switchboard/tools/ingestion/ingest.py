@@ -80,6 +80,7 @@ def _strip_null_bytes(value: Any) -> Any:
         return type(value)(_strip_null_bytes(v) for v in value)
     return value
 
+
 # Module-level metrics instance for the switchboard ingest boundary.
 # Safe to construct before init_metrics() is called; recordings are no-ops
 # until a real MeterProvider is installed.
@@ -743,7 +744,38 @@ async def ingest_v1(
     if attachments_json is not None:
         attachments_json = _strip_null_bytes(attachments_json)
 
-    # 7–8. Dedup-safe insert: acquire a dedicated connection and serialise on
+    # 7. Ensure partition exists for received_at — committed immediately,
+    # OUTSIDE any transaction so that DDL (CREATE TABLE IF NOT EXISTS) cannot
+    # be rolled back by a subsequent failure inside the dedup transaction.
+    #
+    # Background: switchboard_message_inbox_ensure_partition() uses DDL
+    # (CREATE TABLE IF NOT EXISTS ... PARTITION OF message_inbox).
+    # PostgreSQL allows DDL inside a transaction, but a transaction rollback
+    # also drops any tables created within it.  If ensure_partition is called
+    # inside the advisory-lock transaction and the transaction rolls back (e.g.
+    # shared.ingestion_events missing, network error, unique violation), the
+    # newly created partition is dropped and subsequent inserts keep failing in
+    # a tight loop until the problem is resolved.
+    #
+    # Running ensure_partition on an auto-commit connection (pool.execute, not
+    # conn.execute inside a transaction) makes the partition creation durable
+    # regardless of what happens later in the dedup transaction.
+    try:
+        await pool.execute(
+            "SELECT switchboard_message_inbox_ensure_partition($1)",
+            received_at,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to ensure message_inbox partition for received_at=%s: %s",
+            received_at,
+            exc,
+            exc_info=True,
+        )
+        _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")
+        raise RuntimeError(f"Failed to ensure message_inbox partition: {exc}") from exc
+
+    # 8. Dedup-safe insert: acquire a dedicated connection and serialise on
     # the dedupe_key via pg_advisory_xact_lock so that concurrent submissions
     # for the same logical event cannot both pass the duplicate check.
     #
@@ -810,12 +842,6 @@ async def ingest_v1(
                         triage_decision=None,
                         triage_target=None,
                     )
-
-                # Ensure partition exists for received_at
-                await conn.execute(
-                    "SELECT switchboard_message_inbox_ensure_partition($1)",
-                    received_at,
-                )
 
                 # Insert into message_inbox lifecycle store
                 await conn.execute(

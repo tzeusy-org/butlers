@@ -9,6 +9,13 @@ Verifies the invariants stated in bu-0b7.3:
   that would be written to shared.ingestion_events.
 - Fields written to shared.ingestion_events match the envelope.
 
+Also verifies the ensure_partition outside-transaction invariant (bu-v8ip):
+- ensure_partition is called via pool.execute() (auto-commit / outside the
+  advisory-lock transaction) so that a transaction rollback cannot drop a
+  newly-created partition.
+- Pre-lock duplicate detection skips ensure_partition entirely (no inserts
+  needed, no partition required).
+
 These tests use a fake asyncpg pool/connection so no Docker is needed.
 """
 
@@ -97,6 +104,8 @@ class _FakePool:
         self.conn = _FakeConn(existing_row=inner_existing)
         # Outer duplicate check (pre-lock) — controlled via fetchrow_result.
         self._outer_existing: dict | None = None
+        # Track pool-level execute() calls (e.g. ensure_partition outside tx).
+        self.pool_execute_calls: list[tuple[str, tuple]] = []
 
     def set_outer_existing(self, row: dict) -> None:
         """Make the pre-lock duplicate check return an existing row."""
@@ -104,6 +113,11 @@ class _FakePool:
 
     def acquire(self) -> _FakeAcquire:
         return _FakeAcquire(self.conn)
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        """Pool-level execute — used for ensure_partition (outside transaction)."""
+        self.pool_execute_calls.append((sql, args))
+        return "OK"
 
     async def fetchrow(self, sql: str, *args: Any) -> dict | None:
         """Top-level pool.fetchrow — used for the pre-lock duplicate check."""
@@ -475,3 +489,81 @@ class TestIngestionEventsSkippedOnDuplicate:
         )
 
         assert result.request_id == canonical_id
+
+
+# ---------------------------------------------------------------------------
+# Tests: ensure_partition called outside transaction (bu-v8ip fix)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsurePartitionOutsideTransaction:
+    """ensure_partition must be called via pool.execute() (auto-commit), not
+    inside the advisory-lock transaction.
+
+    Background (bu-v8ip): If ensure_partition runs inside a transaction and
+    that transaction rolls back (e.g. shared.ingestion_events missing, network
+    error), the newly-created partition is also dropped, causing every
+    subsequent insert to fail in a tight loop.
+
+    The fix (bu-v8ip) moves ensure_partition to a pool.execute() call BEFORE
+    the transaction block so that DDL commits immediately and independently.
+    """
+
+    async def test_ensure_partition_called_via_pool_execute(self) -> None:
+        """ensure_partition must be called on pool (auto-commit), not conn (inside tx)."""
+        pool = _FakePool()
+        envelope = _telegram_envelope(update_id="90001")
+
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+        # pool.pool_execute_calls captures calls routed through pool.execute()
+        # (outside the transaction).  At least one should be ensure_partition.
+        ensure_partition_calls = [
+            sql
+            for sql, _ in pool.pool_execute_calls
+            if "switchboard_message_inbox_ensure_partition" in sql
+        ]
+        assert len(ensure_partition_calls) == 1, (
+            "ensure_partition must be called exactly once via pool.execute() "
+            "(outside the advisory-lock transaction)"
+        )
+
+    async def test_ensure_partition_not_in_conn_execute_calls(self) -> None:
+        """ensure_partition must NOT appear in conn.execute_calls (inside-tx path)."""
+        pool = _FakePool()
+        envelope = _telegram_envelope(update_id="90002")
+
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+        # conn.execute_calls are calls inside the advisory-lock transaction.
+        conn_ensure_partition_calls = [
+            sql
+            for sql, _ in pool.conn.execute_calls
+            if "switchboard_message_inbox_ensure_partition" in sql
+        ]
+        assert len(conn_ensure_partition_calls) == 0, (
+            "ensure_partition must NOT be called inside the advisory-lock "
+            "transaction (conn.execute); a transaction rollback would drop "
+            "the newly-created partition"
+        )
+
+    async def test_pre_lock_duplicate_skips_ensure_partition(self) -> None:
+        """Pre-lock duplicate detection exits early — ensure_partition is not called."""
+        pool = _FakePool()
+        existing_id = uuid.uuid4()
+        pool.set_outer_existing({"request_id": existing_id})
+
+        result = await ingest_v1(
+            pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+        )
+
+        assert result.duplicate is True
+        ensure_partition_calls = [
+            sql
+            for sql, _ in pool.pool_execute_calls
+            if "switchboard_message_inbox_ensure_partition" in sql
+        ]
+        assert len(ensure_partition_calls) == 0, (
+            "ensure_partition must NOT be called for pre-lock duplicate "
+            "(no insert needed, no partition required)"
+        )
