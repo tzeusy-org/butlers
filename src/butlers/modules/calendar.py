@@ -4674,6 +4674,17 @@ class CalendarModule(Module):
                         "WHERE calendar_event_id IS NOT NULL"
                     )
                     known_event_ids.update(str(r["calendar_event_id"]) for r in rem_rows)
+            # Include events created via calendar_create_event (workspace
+            # mutations).  These are tracked in the action log, not in
+            # scheduled_tasks/reminders.
+            if await self._table_exists("calendar_action_log"):
+                action_rows = await pool.fetch(
+                    "SELECT origin_ref FROM calendar_action_log "
+                    "WHERE action_type IN ('workspace_user_create', 'workspace_user_update') "
+                    "  AND action_status = 'applied' "
+                    "  AND origin_ref IS NOT NULL"
+                )
+                known_event_ids.update(str(r["origin_ref"]) for r in action_rows)
 
             google_events = await provider.list_events(
                 calendar_id=cal_id,
