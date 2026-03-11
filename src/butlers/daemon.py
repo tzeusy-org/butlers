@@ -1435,9 +1435,8 @@ class ButlerDaemon:
         # 16. Start internal scheduler loop
         self._scheduler_loop_task = asyncio.create_task(self._scheduler_loop())
 
-        # 17. Start liveness reporter (non-switchboard butlers only)
-        if self.config.name != "switchboard":
-            self._liveness_reporter_task = asyncio.create_task(self._liveness_reporter_loop())
+        # 17. Start liveness reporter (all butlers, including switchboard)
+        self._liveness_reporter_task = asyncio.create_task(self._liveness_reporter_loop())
 
         # Mark as accepting connections and record startup time
         self._accepting_connections = True
@@ -1804,7 +1803,7 @@ class ButlerDaemon:
         """Create or reuse a connection pool for daemon-side audit logging.
 
         The switchboard butler reuses its own pool. Other butlers open a small
-        dedicated pool to the switchboard DB context.
+        dedicated pool to the switchboard schema in the shared ``butlers`` DB.
 
         Returns ``None`` (with a warning) if the pool cannot be created.
         """
@@ -1812,8 +1811,8 @@ class ButlerDaemon:
             return own_pool
 
         try:
-            audit_db_name = self.config.db_name if self.config.db_schema else "butler_switchboard"
-            audit_db_schema = "switchboard" if self.config.db_schema else None
+            audit_db_name = self.config.db_name or "butlers"
+            audit_db_schema = "switchboard"
             audit_db = Database.from_env(audit_db_name)
             audit_db.set_schema(audit_db_schema)
             audit_db.min_pool_size = 1
@@ -2107,7 +2106,8 @@ class ButlerDaemon:
     async def _liveness_reporter_loop(self) -> None:
         """Periodically POST to the Switchboard's heartbeat endpoint to signal liveness.
 
-        Runs as a background task for the lifetime of the butler (non-switchboard only).
+        Runs as a background task for the lifetime of every butler, including the
+        switchboard itself (which heartbeats to its own dashboard endpoint).
         Sends an initial heartbeat within 5 seconds of startup, then repeats every
         ``heartbeat_interval_seconds`` (from ``[butler.scheduler]`` config, default 120).
 
