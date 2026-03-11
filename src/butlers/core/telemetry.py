@@ -74,7 +74,8 @@ def init_telemetry(service_name: str) -> trace.Tracer:
     resource = _build_resource()
     provider = TracerProvider(resource=resource)
 
-    exporter = OTLPSpanExporter(endpoint=endpoint)
+    traces_endpoint = endpoint.rstrip("/") + "/v1/traces"
+    exporter = OTLPSpanExporter(endpoint=traces_endpoint)
     provider.add_span_processor(BatchSpanProcessor(exporter))
 
     trace.set_tracer_provider(provider)

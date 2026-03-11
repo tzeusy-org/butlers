@@ -154,7 +154,8 @@ def init_metrics(service_name: str) -> metrics.Meter:
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
     resource = _build_resource()
-    exporter = OTLPMetricExporter(endpoint=endpoint)
+    metrics_endpoint = endpoint.rstrip("/") + "/v1/metrics"
+    exporter = OTLPMetricExporter(endpoint=metrics_endpoint)
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=15_000)
     provider = MeterProvider(resource=resource, metric_readers=[reader])
 
