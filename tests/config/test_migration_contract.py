@@ -94,6 +94,15 @@ _MIGRATION_SPECS = [
         branch_labels=("finance",),
         depends_on=None,
     ),
+    # Core chain – connectors schema + filtered_events partitioned table
+    MigrationSpec(
+        chain="core",
+        filename="core_026_connectors_schema_filtered_events.py",
+        revision="core_026",
+        down_revision="core_025",
+        branch_labels=None,
+        depends_on=None,
+    ),
 ]
 
 
