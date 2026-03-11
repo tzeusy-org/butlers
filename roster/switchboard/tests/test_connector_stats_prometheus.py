@@ -8,8 +8,10 @@ Tested behaviors:
   (period=24h) or ConnectorStatsDaily (period=7d/30d).
 - get_connector_fanout: queries Prometheus instant API for per-connector fanout.
 - get_ingestion_fanout: queries Prometheus instant API for cross-connector matrix.
-- All endpoints fall back to empty lists when PROMETHEUS_URL is not set.
-- All endpoints fall back to empty lists when Prometheus returns an error.
+  Falls back to DB-backed fan-out when PROMETHEUS_URL is not set or Prometheus
+  returns an error.
+- get_connector_stats and get_connector_fanout return empty lists when
+  PROMETHEUS_URL is not set (no DB fallback for these).
 """
 
 from __future__ import annotations
@@ -54,6 +56,13 @@ class _FakePool:
 class _FakeDB:
     def pool(self, name: str):
         return _FakePool()
+
+    @property
+    def butler_names(self) -> list[str]:
+        return []
+
+    async def fan_out(self, query: str, args: tuple = (), butler_names=None) -> dict:
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -315,12 +324,13 @@ async def test_get_connector_fanout_prometheus_error_returns_empty():
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_ingestion_fanout — no Prometheus URL → empty list
+# Tests: get_ingestion_fanout — no Prometheus URL → DB fallback
 # ---------------------------------------------------------------------------
 
 
-async def test_get_ingestion_fanout_no_prometheus_url():
-    """When PROMETHEUS_URL is not set, get_ingestion_fanout returns empty list."""
+async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
+    """When PROMETHEUS_URL is not set, get_ingestion_fanout falls back to DB (returns empty when
+    DB has no sessions)."""
     import os
 
     os.environ.pop("PROMETHEUS_URL", None)
@@ -334,6 +344,7 @@ async def test_get_ingestion_fanout_no_prometheus_url():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
+    # _FakeDB.fan_out returns empty dict (no butlers / no rows) → empty data list
     result = await mod.get_ingestion_fanout(
         period="24h",
         db=_FakeDB(),
@@ -390,8 +401,9 @@ async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
     assert ("telegram_bot", "bot@123", "health") in connectors
 
 
-async def test_get_ingestion_fanout_prometheus_error_returns_empty():
-    """When Prometheus returns an error, get_ingestion_fanout returns empty list."""
+async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
+    """When Prometheus returns an error, get_ingestion_fanout falls back to DB
+    (returns empty when DB has no sessions)."""
     fake_error_result = [{"error": "bad request"}]
 
     with patch(
@@ -408,6 +420,7 @@ async def test_get_ingestion_fanout_prometheus_error_returns_empty():
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
+            # _FakeDB.fan_out returns empty dict → empty data list
             result = await mod.get_ingestion_fanout(
                 period="24h",
                 db=_FakeDB(),
