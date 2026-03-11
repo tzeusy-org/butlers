@@ -43,6 +43,14 @@ async def _get(app, path: str, headers: dict | None = None) -> httpx.Response:
         return await client.get(path, headers=headers or {})
 
 
+async def _options(app, path: str, headers: dict | None = None) -> httpx.Response:
+    """Issue an OPTIONS (CORS preflight) against the test app."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.options(path, headers=headers or {})
+
+
 # ---------------------------------------------------------------------------
 # Auth disabled (no DASHBOARD_API_KEY)
 # ---------------------------------------------------------------------------
@@ -198,6 +206,74 @@ class TestApiKeyMiddlewareClass:
         inner_app = Starlette()
         mw = ApiKeyMiddleware(inner_app, api_key="")
         assert mw._api_key is None
+
+
+# ---------------------------------------------------------------------------
+# Env-var-driven auth via create_app (integration-style)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# CORS preflight (OPTIONS) must pass through auth middleware
+# ---------------------------------------------------------------------------
+
+
+class TestCorsPreflightPassthrough:
+    """CORS preflight OPTIONS requests must not be blocked by ApiKeyMiddleware.
+
+    Starlette adds middleware in reverse: CORSMiddleware (added first) ends up
+    *inside* ApiKeyMiddleware.  Without an explicit OPTIONS exemption, preflight
+    requests to /api/* would receive 401 before the browser sees any CORS header.
+    """
+
+    _CORS_HEADERS = {
+        "Origin": "http://localhost:40173",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "X-API-Key",
+    }
+
+    async def test_cors_preflight_passes_when_auth_enabled(self):
+        """OPTIONS /api/* must not return 401 even when auth is configured."""
+        app = _app_with_auth()
+        resp = await _options(app, "/api/issues", headers=self._CORS_HEADERS)
+        assert resp.status_code != 401
+
+    async def test_cors_preflight_passes_without_api_key_header(self):
+        """CORS preflight must succeed without X-API-Key in request headers."""
+        app = _app_with_auth()
+        resp = await _options(
+            app,
+            "/api/issues",
+            headers={"Origin": "http://localhost:40173", "Access-Control-Request-Method": "GET"},
+        )
+        assert resp.status_code != 401
+
+    async def test_cors_preflight_passes_when_auth_disabled(self):
+        """OPTIONS requests also pass through when auth is off (baseline check)."""
+        app = _app_without_auth()
+        resp = await _options(app, "/api/issues", headers=self._CORS_HEADERS)
+        assert resp.status_code != 401
+
+
+# ---------------------------------------------------------------------------
+# 401 response headers
+# ---------------------------------------------------------------------------
+
+
+class TestUnauthorizedResponseHeaders:
+    """The 401 response must include WWW-Authenticate per RFC 7235 sec. 3.1."""
+
+    async def test_401_includes_www_authenticate_header(self):
+        app = _app_with_auth()
+        resp = await _get(app, "/api/issues")
+        assert resp.status_code == 401
+        assert "www-authenticate" in resp.headers
+
+    async def test_www_authenticate_references_apikey_scheme(self):
+        app = _app_with_auth()
+        resp = await _get(app, "/api/issues")
+        www_auth = resp.headers.get("www-authenticate", "")
+        assert "ApiKey" in www_auth
 
 
 # ---------------------------------------------------------------------------

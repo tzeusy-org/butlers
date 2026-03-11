@@ -154,6 +154,13 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if not self._api_key:
             return await call_next(request)
 
+        # Allow CORS preflight requests through so that CORSMiddleware (which sits
+        # inside this middleware in the Starlette stack) can handle them.  Without
+        # this exemption, OPTIONS requests to /api/* would receive a 401 before the
+        # browser ever sees the CORS headers, breaking cross-origin access entirely.
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         path = request.url.path
 
         # Public paths are always allowed (health/readiness probes).
@@ -177,7 +184,11 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                     message="Missing or invalid API key. Provide a valid X-API-Key header.",
                 )
             )
-            return JSONResponse(status_code=401, content=body.model_dump())
+            return JSONResponse(
+                status_code=401,
+                content=body.model_dump(),
+                headers={"WWW-Authenticate": 'ApiKey realm="Butlers Dashboard"'},
+            )
 
         return await call_next(request)
 
