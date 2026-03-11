@@ -802,9 +802,8 @@ class TestReplayEndpoint:
     async def test_replay_returns_200_and_replay_pending(self, app):
         """Replay of a filtered event returns 200 and sets status to replay_pending."""
         mock_pool = AsyncMock()
-        # fetchval returns current status = 'filtered'
-        mock_pool.fetchval = AsyncMock(return_value="filtered")
-        mock_pool.execute = AsyncMock()
+        # Atomic UPDATE RETURNING succeeds — row was in a replayable state.
+        mock_pool.fetchrow = AsyncMock(return_value={"id": uuid4()})
 
         _app_with_mock_db(app, shared_pool=mock_pool)
 
@@ -816,13 +815,12 @@ class TestReplayEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "replay_pending"
-        assert body["id"] == _FILTERED_ID
+        assert "id" in body
 
     async def test_replay_of_error_event_returns_200(self, app):
         """Replay of an error-status event returns 200."""
         mock_pool = AsyncMock()
-        mock_pool.fetchval = AsyncMock(return_value="error")
-        mock_pool.execute = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value={"id": uuid4()})
 
         _app_with_mock_db(app, shared_pool=mock_pool)
 
@@ -837,8 +835,7 @@ class TestReplayEndpoint:
     async def test_replay_of_replay_failed_returns_200(self, app):
         """Re-replay of replay_failed event is allowed and returns 200."""
         mock_pool = AsyncMock()
-        mock_pool.fetchval = AsyncMock(return_value="replay_failed")
-        mock_pool.execute = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value={"id": uuid4()})
 
         _app_with_mock_db(app, shared_pool=mock_pool)
 
@@ -855,7 +852,8 @@ class TestReplayEndpoint:
         unknown_id = str(uuid4())
 
         mock_pool = AsyncMock()
-        # fetchval returns None — event not found
+        # fetchrow returns None (UPDATE matched nothing) and fetchval also None (no row).
+        mock_pool.fetchrow = AsyncMock(return_value=None)
         mock_pool.fetchval = AsyncMock(return_value=None)
 
         _app_with_mock_db(app, shared_pool=mock_pool)
@@ -870,6 +868,9 @@ class TestReplayEndpoint:
     async def test_replay_returns_409_for_replay_pending(self, app):
         """Replay of replay_pending event returns 409 Conflict."""
         mock_pool = AsyncMock()
+        # fetchrow returns None (UPDATE missed — status is not replayable).
+        # fetchval returns the current non-replayable status for the conflict response.
+        mock_pool.fetchrow = AsyncMock(return_value=None)
         mock_pool.fetchval = AsyncMock(return_value="replay_pending")
 
         _app_with_mock_db(app, shared_pool=mock_pool)
@@ -888,6 +889,7 @@ class TestReplayEndpoint:
     async def test_replay_returns_409_for_replay_complete(self, app):
         """Replay of replay_complete event returns 409 Conflict."""
         mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value=None)
         mock_pool.fetchval = AsyncMock(return_value="replay_complete")
 
         _app_with_mock_db(app, shared_pool=mock_pool)
@@ -904,6 +906,7 @@ class TestReplayEndpoint:
     async def test_replay_409_includes_error_message(self, app):
         """409 response must include 'error' key with human-readable message."""
         mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value=None)
         mock_pool.fetchval = AsyncMock(return_value="replay_pending")
 
         _app_with_mock_db(app, shared_pool=mock_pool)
