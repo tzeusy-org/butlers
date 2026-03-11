@@ -47,3 +47,5 @@ class SessionDetail(BaseModel):
     output_tokens: int | None = None
     parent_session_id: UUID | None = None
     process_log: ProcessLog | None = None
+    complexity: str | None = None
+    resolution_source: str | None = None

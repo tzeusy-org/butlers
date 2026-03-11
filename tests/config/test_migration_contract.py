@@ -112,6 +112,15 @@ _MIGRATION_SPECS = [
         branch_labels=None,
         depends_on=None,
     ),
+    # Core chain – sessions add complexity and resolution_source columns
+    MigrationSpec(
+        chain="core",
+        filename="core_029_sessions_add_complexity_resolution_source.py",
+        revision="core_029",
+        down_revision="core_028",
+        branch_labels=None,
+        depends_on=None,
+    ),
 ]
 
 

@@ -49,7 +49,7 @@ _SUMMARY_COLUMNS = (
 _DETAIL_COLUMNS = (
     "id, prompt, trigger_source, result, tool_calls, duration_ms, trace_id, request_id, cost, "
     "started_at, completed_at, success, error, model, input_tokens, output_tokens, "
-    "parent_session_id"
+    "parent_session_id, complexity, resolution_source"
 )
 
 
@@ -144,6 +144,8 @@ def _row_to_detail(row, *, butler: str | None = None) -> SessionDetail:
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
         parent_session_id=row["parent_session_id"],
+        complexity=row["complexity"],
+        resolution_source=row["resolution_source"],
     )
 
 

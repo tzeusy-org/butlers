@@ -129,7 +129,9 @@ async def test_session_create_passes_request_id_to_insert():
 
     assert pool.fetchval_calls, "fetchval should have been called"
     _, args = pool.fetchval_calls[0]
-    # The INSERT args are: prompt, trigger_source, trace_id, model, request_id, ingestion_event_id
+    # The INSERT args are:
+    #   prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
+    #   complexity, resolution_source
     # Index 4 is request_id (0-indexed from args tuple)
     assert args[4] == request_id, (  # noqa: E501
         f"request_id {request_id!r} not found at index 4 in INSERT args: {args}"
@@ -152,8 +154,10 @@ async def test_session_create_passes_none_ingestion_event_id_for_internal():
 
     assert pool.fetchval_calls, "fetchval should have been called"
     _, args = pool.fetchval_calls[0]
-    # ingestion_event_id is the last positional arg ($6 in the INSERT)
-    assert args[-1] is None, f"ingestion_event_id should be None but got {args[-1]!r}"
+    # ingestion_event_id is at index 5 ($6 in the INSERT)
+    # args: prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
+    #       complexity, resolution_source
+    assert args[5] is None, f"ingestion_event_id should be None but got {args[5]!r}"
 
 
 async def test_session_create_passes_ingestion_event_id_for_connector():
@@ -174,9 +178,9 @@ async def test_session_create_passes_ingestion_event_id_for_connector():
 
     assert pool.fetchval_calls, "fetchval should have been called"
     _, args = pool.fetchval_calls[0]
-    # ingestion_event_id is the last positional arg ($6 in the INSERT)
-    assert args[-1] == ingestion_event_id, (
-        f"ingestion_event_id {ingestion_event_id!r} not found as last INSERT arg: {args}"
+    # ingestion_event_id is at index 5 ($6 in the INSERT)
+    assert args[5] == ingestion_event_id, (
+        f"ingestion_event_id {ingestion_event_id!r} not found at index 5 in INSERT args: {args}"
     )
 
 
@@ -226,3 +230,72 @@ async def test_session_create_accepts_valid_trigger_sources(trigger_source: str)
         request_id=str(uuid.uuid4()),
     )
     assert pool.fetchval_calls, f"fetchval not called for trigger_source={trigger_source!r}"
+
+
+# ---------------------------------------------------------------------------
+# session_create — complexity and resolution_source forwarded to INSERT
+# ---------------------------------------------------------------------------
+
+
+async def test_session_create_passes_complexity_to_insert():
+    """session_create forwards complexity to the DB INSERT at index 6."""
+    from butlers.core.sessions import session_create
+
+    pool = _FakePool()
+
+    await session_create(
+        pool,
+        prompt="Complex task",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        complexity="high",
+    )
+
+    assert pool.fetchval_calls, "fetchval should have been called"
+    _, args = pool.fetchval_calls[0]
+    # args: prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
+    #       complexity, resolution_source
+    assert args[6] == "high", f"complexity 'high' not found at index 6 in INSERT args: {args}"
+
+
+async def test_session_create_passes_resolution_source_to_insert():
+    """session_create forwards resolution_source to the DB INSERT at index 7."""
+    from butlers.core.sessions import session_create
+
+    pool = _FakePool()
+
+    await session_create(
+        pool,
+        prompt="Catalog-resolved task",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        resolution_source="catalog",
+    )
+
+    assert pool.fetchval_calls, "fetchval should have been called"
+    _, args = pool.fetchval_calls[0]
+    # args: prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
+    #       complexity, resolution_source
+    assert args[7] == "catalog", (
+        f"resolution_source 'catalog' not found at index 7 in INSERT args: {args}"
+    )
+
+
+async def test_session_create_defaults_complexity_and_resolution_source_to_none():
+    """When not provided, complexity and resolution_source are None (DB defaults apply)."""
+    from butlers.core.sessions import session_create
+
+    pool = _FakePool()
+
+    await session_create(
+        pool,
+        prompt="Default task",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+    )
+
+    assert pool.fetchval_calls, "fetchval should have been called"
+    _, args = pool.fetchval_calls[0]
+    # When not supplied, both default to None so the DB server_default applies.
+    assert args[6] is None, f"complexity should default to None, got {args[6]!r}"
+    assert args[7] is None, f"resolution_source should default to None, got {args[7]!r}"

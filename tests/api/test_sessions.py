@@ -72,6 +72,8 @@ def _make_detail_record(
     input_tokens: int | None = 100,
     output_tokens: int | None = 200,
     parent_session_id: UUID | None = None,
+    complexity: str | None = "medium",
+    resolution_source: str | None = "toml_fallback",
 ) -> dict:
     """Create a dict mimicking an asyncpg Record for detail columns."""
     return {
@@ -92,6 +94,8 @@ def _make_detail_record(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "parent_session_id": parent_session_id,
+        "complexity": complexity,
+        "resolution_source": resolution_source,
     }
 
 
@@ -353,6 +357,8 @@ class TestGetButlerSession:
             cost={"usd": 0.05},
             error=None,
             parent_session_id=parent_id,
+            complexity="high",
+            resolution_source="catalog",
         )
         _app_with_mock_db(app, fetchrow_result=detail)
         async with httpx.AsyncClient(
@@ -368,3 +374,5 @@ class TestGetButlerSession:
         assert data["trace_id"] == "trace-123"
         assert data["error"] is None
         assert data["parent_session_id"] == str(parent_id)
+        assert data["complexity"] == "high"
+        assert data["resolution_source"] == "catalog"
