@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # Default timeout for Gemini CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
 
+
 def _find_gemini_binary() -> str:
     """Locate the gemini binary on PATH.
 

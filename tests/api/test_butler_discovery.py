@@ -243,7 +243,7 @@ class TestDetailWithRealConfig:
         assert data["name"] == "general"
         assert data["port"] == 40101
         assert data["description"] == "Catch-all assistant"
-        assert data["db_name"] == "butler_general"
+        assert data["db_name"] == "butlers"
         assert "classify" in data["skills"]
 
     async def test_detail_includes_modules_from_config(self, app, tmp_path: Path):

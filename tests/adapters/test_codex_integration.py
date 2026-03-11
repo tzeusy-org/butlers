@@ -71,14 +71,14 @@ class TestCodexOutputFormat:
 
         events = parse_jsonl_events(stdout)
         agent_msgs = [
-            e for e in events
+            e
+            for e in events
             if e.get("type") == "item.completed"
             and isinstance(e.get("item"), dict)
             and e["item"].get("type") == "agent_message"
         ]
         assert len(agent_msgs) >= 1, (
-            f"No agent_message item.completed events. Types: "
-            f"{[e.get('type') for e in events]}"
+            f"No agent_message item.completed events. Types: {[e.get('type') for e in events]}"
         )
 
         for msg in agent_msgs:
@@ -108,14 +108,13 @@ class TestCodexOutputFormat:
 
     def test_command_execution_event_has_command_and_exit_code(self):
         """command_execution events contain command, exit_code, and aggregated_output."""
-        stdout, stderr, rc = _run_codex(
-            "Run echo codex-format-test in the shell"
-        )
+        stdout, stderr, rc = _run_codex("Run echo codex-format-test in the shell")
         assert rc == 0, f"codex failed: {stderr}"
 
         events = parse_jsonl_events(stdout)
         cmd_events = [
-            e for e in events
+            e
+            for e in events
             if e.get("type") == "item.completed"
             and isinstance(e.get("item"), dict)
             and e["item"].get("type") == "command_execution"
@@ -130,9 +129,7 @@ class TestCodexOutputFormat:
         assert isinstance(item["command"], str)
         assert len(item["command"]) > 0
         assert "exit_code" in item, f"command_execution missing 'exit_code': {item}"
-        assert "aggregated_output" in item, (
-            f"command_execution missing 'aggregated_output': {item}"
-        )
+        assert "aggregated_output" in item, f"command_execution missing 'aggregated_output': {item}"
 
 
 # ---------------------------------------------------------------------------
@@ -149,9 +146,7 @@ class TestParserWithRealOutput:
         assert rc == 0, f"codex failed: {stderr}"
 
         result_text, tool_calls, usage = _parse_codex_output(stdout, stderr, rc)
-        assert result_text is not None, (
-            f"Parser returned None result_text. stdout: {stdout[:500]}"
-        )
+        assert result_text is not None, f"Parser returned None result_text. stdout: {stdout[:500]}"
         assert len(result_text) > 0, "Parser returned empty result_text"
 
     def test_token_usage_extracted(self):
@@ -160,9 +155,7 @@ class TestParserWithRealOutput:
         assert rc == 0, f"codex failed: {stderr}"
 
         result_text, tool_calls, usage = _parse_codex_output(stdout, stderr, rc)
-        assert usage is not None, (
-            f"Parser returned None usage. stdout: {stdout[:500]}"
-        )
+        assert usage is not None, f"Parser returned None usage. stdout: {stdout[:500]}"
         assert isinstance(usage["input_tokens"], int)
         assert isinstance(usage["output_tokens"], int)
         assert usage["input_tokens"] > 0, "input_tokens should be positive"
@@ -170,15 +163,11 @@ class TestParserWithRealOutput:
 
     def test_tool_call_parsed_with_name_and_input(self):
         """Parser extracts tool calls with non-empty name and input."""
-        stdout, stderr, rc = _run_codex(
-            "Run echo parser-codex-test in the shell"
-        )
+        stdout, stderr, rc = _run_codex("Run echo parser-codex-test in the shell")
         assert rc == 0, f"codex failed: {stderr}"
 
         result_text, tool_calls, usage = _parse_codex_output(stdout, stderr, rc)
-        assert len(tool_calls) >= 1, (
-            f"Expected at least 1 tool call. stdout: {stdout[:500]}"
-        )
+        assert len(tool_calls) >= 1, f"Expected at least 1 tool call. stdout: {stdout[:500]}"
         tc = tool_calls[0]
         assert tc["name"], f"Tool call has empty name: {tc}"
         assert tc["id"], f"Tool call has empty id: {tc}"

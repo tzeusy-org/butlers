@@ -206,19 +206,20 @@ password = "${UNDEFINED_PASSWORD}"
 
     def test_db_name_resolved(self, tmp_path, monkeypatch):
         """Env vars in db name are resolved."""
-        monkeypatch.setenv("DB_SUFFIX", "prod")
+        monkeypatch.setenv("DB_NAME", "butlers")
         toml = """\
 [butler]
 name = "dbbot"
 port = 8500
 
 [butler.db]
-name = "butler_${DB_SUFFIX}"
+name = "${DB_NAME}"
+schema = "dbbot"
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.db_name == "butler_prod"
+        assert cfg.db_name == "butlers"
 
     def test_db_schema_resolved(self, tmp_path, monkeypatch):
         """Env vars in db schema are resolved."""

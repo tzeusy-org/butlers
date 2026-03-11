@@ -607,9 +607,7 @@ class TestResolveTelegramUserCredentialsFromDb:
     """Tests for _resolve_telegram_user_credentials_from_db."""
 
     @staticmethod
-    def _configure_single_db_env(
-        monkeypatch: pytest.MonkeyPatch, db_name: str = "butler_test"
-    ) -> None:
+    def _configure_single_db_env(monkeypatch: pytest.MonkeyPatch, db_name: str = "butlers") -> None:
         monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", db_name)
         monkeypatch.setenv("BUTLER_SHARED_DB_NAME", db_name)
 

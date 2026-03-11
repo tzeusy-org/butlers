@@ -27,7 +27,8 @@ class _StubMCP:
 
 def _mock_db() -> MagicMock:
     db = MagicMock()
-    db.db_name = "butler_general"
+    db.db_name = "butlers"
+    db.db_schema = "general"
     db.pool = AsyncMock()
     return db
 
@@ -234,7 +235,7 @@ class TestButlerEventTools:
         mod = CalendarModule()
         mcp = _StubMCP()
         db = _mock_db()
-        db.db_name = "butler_health"
+        db.db_schema = "health"
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},

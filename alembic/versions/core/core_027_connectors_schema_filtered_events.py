@@ -1,7 +1,7 @@
 """connectors_schema: create connectors schema and filtered_events table
 
-Revision ID: core_026
-Revises: core_025
+Revision ID: core_027
+Revises: core_026
 Create Date: 2026-03-11 00:00:00.000000
 
 Creates the database foundation for the connectors subsystem:
@@ -37,8 +37,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_026"
-down_revision = "core_025"
+revision = "core_027"
+down_revision = "core_026"
 branch_labels = None
 depends_on = None
 

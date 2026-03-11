@@ -34,7 +34,7 @@ def test_build_db_url_legacy_mode_has_no_search_path_options(tmp_path):
     """Legacy DB URLs remain unchanged when no schema is configured."""
     daemon = ButlerDaemon(tmp_path)
     daemon.db = Database(
-        db_name="butler_general",
+        db_name="butlers",
         host="localhost",
         port=5432,
         user="butlers",
@@ -43,7 +43,7 @@ def test_build_db_url_legacy_mode_has_no_search_path_options(tmp_path):
 
     url = daemon._build_db_url()
 
-    assert url == "postgresql://butlers:butlers@localhost:5432/butler_general"
+    assert url == "postgresql://butlers:butlers@localhost:5432/butlers"
 
 
 def test_build_db_url_encodes_credentials_and_db_name(tmp_path):

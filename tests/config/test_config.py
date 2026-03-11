@@ -153,12 +153,12 @@ def test_load_minimal_config(tmp_path: Path):
 
 
 def test_default_db_name(tmp_path: Path):
-    """db_name defaults to butler_{name} when [butler.db] is omitted."""
+    """db_name defaults to 'butlers' with schema=name when [butler.db] is omitted."""
     config_dir = _write_toml(tmp_path, MINIMAL_TOML)
     cfg = load_config(config_dir)
 
-    assert cfg.db_name == "butler_alfred"
-    assert cfg.db_schema is None
+    assert cfg.db_name == "butlers"
+    assert cfg.db_schema == "alfred"
 
 
 def test_db_schema_parsed_for_one_db_topology(tmp_path: Path):
@@ -178,8 +178,8 @@ schema = "general"
     assert cfg.db_schema == "general"
 
 
-def test_db_schema_required_when_db_name_is_butlers(tmp_path: Path):
-    """Consolidated DB configs must declare explicit schema target."""
+def test_db_schema_defaults_to_butler_name_when_db_is_butlers(tmp_path: Path):
+    """Consolidated DB configs auto-default schema to butler name."""
     toml = """\
 [butler]
 name = "general"
@@ -188,8 +188,9 @@ port = 9002
 [butler.db]
 name = "butlers"
 """
-    with pytest.raises(ConfigError, match="butler.db.schema is required"):
-        load_config(_write_toml(tmp_path, toml))
+    cfg = load_config(_write_toml(tmp_path, toml))
+    assert cfg.db_name == "butlers"
+    assert cfg.db_schema == "general"
 
 
 def test_db_schema_rejects_invalid_identifier(tmp_path: Path):

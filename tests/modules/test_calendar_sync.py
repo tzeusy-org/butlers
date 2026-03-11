@@ -131,7 +131,7 @@ def _make_mock_db(state_store: dict | None = None) -> MagicMock:
 
     db = MagicMock()
     db.pool = pool
-    db.db_name = "butler_test"
+    db.db_name = "butlers"
     return db
 
 
@@ -1283,7 +1283,7 @@ class TestCalendarProjectionSync:
         pool.execute = AsyncMock(return_value="OK")
         db = MagicMock()
         db.pool = pool
-        db.db_name = "butler_general"
+        db.db_name = "butlers"
         mod._db = db
         mod._butler_name = "general"
         return mod
@@ -1522,7 +1522,7 @@ class TestProjectSchedulerSourceSyntheticWindow:
         pool.execute = AsyncMock(return_value="OK")
         db = MagicMock()
         db.pool = pool
-        db.db_name = "butler_general"
+        db.db_name = "butlers"
         mod._db = db
         mod._butler_name = "general"
         return mod
@@ -1974,7 +1974,7 @@ class TestWindowedRecurrenceExpansion:
         pool.execute = AsyncMock(return_value="OK")
         db = MagicMock()
         db.pool = pool
-        db.db_name = "butler_general"
+        db.db_name = "butlers"
         mod._db = db
         mod._butler_name = "general"
         return mod

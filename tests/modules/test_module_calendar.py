@@ -697,7 +697,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         result = await mcp.tools["calendar_create_event"](
@@ -744,7 +744,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         await mcp.tools["calendar_update_event"](
@@ -810,7 +810,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         await mcp.tools["calendar_create_event"](
@@ -835,7 +835,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         with pytest.raises(ValueError, match="must start with 'RRULE:'"):
@@ -856,7 +856,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         with pytest.raises(ValueError, match="timezone must be a valid IANA timezone"):
@@ -878,7 +878,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         with pytest.raises(ValueError, match="timezone is required when recurrence_rule is set"):
@@ -909,7 +909,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         await mcp.tools["calendar_update_event"](
@@ -941,7 +941,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         with pytest.raises(ValidationError, match="Input should be 'series'"):
@@ -977,7 +977,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         result = await mcp.tools["calendar_create_event"](
@@ -1027,7 +1027,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         result = await mcp.tools["calendar_create_event"](
@@ -1072,7 +1072,7 @@ class TestCalendarWriteTools:
                 "calendar_id": "primary",
                 "conflicts": {"policy": "suggest", "require_approval_for_overlap": False},
             },
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         result = await mcp.tools["calendar_create_event"](
@@ -1116,7 +1116,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         enqueue_calls: list[tuple[str, dict, str]] = []
@@ -1169,7 +1169,7 @@ class TestCalendarWriteTools:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         result = await mcp.tools["calendar_create_event"](
@@ -1905,7 +1905,7 @@ class TestCalendarOverlapApprovalGate:
                 "calendar_id": "primary",
                 "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
             },
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         enqueue_calls: list[tuple[str, dict, str]] = []
@@ -1973,7 +1973,7 @@ class TestCalendarOverlapApprovalGate:
                 "calendar_id": "primary",
                 "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
             },
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         # No enqueuer set -- approvals module is disabled.
@@ -2024,7 +2024,7 @@ class TestCalendarOverlapApprovalGate:
                 "calendar_id": "primary",
                 "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": False},
             },
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         # Even with an enqueuer set, require_approval_for_overlap=False skips gating.
@@ -2070,7 +2070,7 @@ class TestCalendarOverlapApprovalGate:
                 "calendar_id": "primary",
                 "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
             },
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         async def _mock_enqueuer(tool_name: str, tool_args: dict, summary: str) -> str:
@@ -2229,7 +2229,7 @@ class TestCalendarOverlapApprovalGate:
                 "calendar_id": "primary",
                 "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
             },
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
         )
 
         enqueue_calls: list[tuple[str, dict, str]] = []

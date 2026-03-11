@@ -165,7 +165,7 @@ async def butler_ecosystem(
 
         # Create and provision database
         db = Database(
-            db_name=f"butler_{butler_name}",
+            db_name="butlers",
             host=host,
             port=port,
             user=user,

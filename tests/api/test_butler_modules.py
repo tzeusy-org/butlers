@@ -54,7 +54,7 @@ def _make_roster_with_modules(
     (butler_dir / "butler.toml").write_text(
         f'[butler]\nname = "{name}"\nport = {port}\n'
         f'description = "Test butler"\n'
-        f'[butler.db]\nname = "butler_{name}"\n'
+        f'[butler.db]\nname = "butlers"\nschema = "{name}"\n'
         f"[runtime]\n"
         f'type = "claude-code"\n'
         f"{mod_sections}"
@@ -69,7 +69,7 @@ def _make_roster_no_modules(tmp_path: Path, name: str = "bare", port: int = 4010
     (butler_dir / "butler.toml").write_text(
         f'[butler]\nname = "{name}"\nport = {port}\n'
         f'description = "Bare butler"\n'
-        f'[butler.db]\nname = "butler_{name}"\n'
+        f'[butler.db]\nname = "butlers"\nschema = "{name}"\n'
         f"[runtime]\n"
         f'type = "claude-code"\n'
     )

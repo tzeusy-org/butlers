@@ -145,10 +145,11 @@ def _make_butler_toml(
     *,
     butler_name: str = "test-butler",
     port: int = 9100,
-    db_name: str = "butler_test",
+    db_name: str = "butlers",
 ) -> Path:
     """Write a minimal butler.toml in tmp_path and return the directory."""
     modules = modules or {}
+    schema = butler_name.replace("-", "_")
     toml_lines = [
         "[butler]",
         f'name = "{butler_name}"',
@@ -157,6 +158,7 @@ def _make_butler_toml(
         "",
         "[butler.db]",
         f'name = "{db_name}"',
+        f'schema = "{schema}"',
         "",
         "[[butler.schedule]]",
         'name = "daily-check"',
@@ -213,7 +215,7 @@ def _patch_infra():
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()
@@ -1520,7 +1522,8 @@ port = 9100
 description = "sk-1234567890abcdefghij1234567890abcdef"
 
 [butler.db]
-name = "butler_test"
+name = "butlers"
+schema = "test_butler"
 """
         (tmp_path / "butler.toml").write_text(toml_content)
         patches = _patch_infra()
@@ -1592,7 +1595,8 @@ port = 9100
 description = "A test butler"
 
 [butler.db]
-name = "butler_test"
+name = "butlers"
+schema = "test_butler"
 
 [butler.env]
 required = ["PG_DSN", "SECRET_TOKEN"]
@@ -1892,7 +1896,8 @@ port = 9100
 description = "A test butler"
 
 [butler.db]
-name = "butler_test"
+name = "butlers"
+schema = "switchboard"
 
 [modules.telegram]
 
@@ -2005,7 +2010,7 @@ class TestFlattenConfigForSecretScan:
         assert flat["butler.name"] == "test-butler"
         assert flat["butler.port"] == 9100
         assert flat["butler.description"] == "A test butler"
-        assert flat["butler.db.name"] == "butler_test"
+        assert flat["butler.db.name"] == "butlers"
 
     def test_flatten_schedules(self, butler_dir: Path) -> None:
         """Schedules should be flattened with array indices."""
@@ -2027,7 +2032,8 @@ name = "test-butler"
 port = 9100
 
 [butler.db]
-name = "butler_test"
+name = "butlers"
+schema = "test_butler"
 
 [modules.email]
 smtp_server = "smtp.example.com"
@@ -2051,7 +2057,8 @@ name = "test-butler"
 port = 9100
 
 [butler.db]
-name = "butler_test"
+name = "butlers"
+schema = "test_butler"
 
 [modules.email]
 credentials_env = ["EMAIL_TOKEN", "API_KEY"]
@@ -2077,7 +2084,8 @@ name = "test-butler"
 port = 9100
 
 [butler.db]
-name = "butler_test"
+name = "butlers"
+schema = "test_butler"
 
 [butler.env]
 required = ["PG_DSN"]
@@ -2138,7 +2146,7 @@ class TestMessagePipelineWiring:
             modules={"telegram": {}, "email": {}},
             butler_name="switchboard",
             port=40100,
-            db_name="butler_switchboard",
+            db_name="butlers",
         )
         registry = _make_registry(TelegramModule, EmailModule)
         patches = _patch_infra()
@@ -2342,7 +2350,8 @@ name = "switchboard"
 port = 40100
 
 [butler.db]
-name = "butler_switchboard"
+name = "butlers"
+schema = "switchboard"
 """
         (tmp_path / "butler.toml").write_text(toml)
         patches = _patch_infra()
@@ -2493,7 +2502,8 @@ name = "health"
 port = 40103
 
 [butler.db]
-name = "butler_health"
+name = "butlers"
+schema = "health"
 
 [butler.switchboard]
 url = "http://custom-switchboard:9000/sse"
@@ -3682,7 +3692,8 @@ name = "switchboard"
 port = 40100
 
 [butler.db]
-name = "butler_switchboard"
+name = "butlers"
+schema = "switchboard"
 
 [[butler.schedule]]
 name = "daily-check"

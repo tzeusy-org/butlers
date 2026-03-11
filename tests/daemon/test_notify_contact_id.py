@@ -35,7 +35,8 @@ port = 9100
 description = "Test butler"
 
 [butler.db]
-name = "butler_test"
+name = "butlers"
+schema = "test_butler"
 
 [[butler.schedule]]
 name = "daily-check"
@@ -64,7 +65,7 @@ def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()
@@ -309,7 +310,7 @@ class TestNotifyContactIdResolution:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
 
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
@@ -363,7 +364,7 @@ class TestNotifyContactIdResolution:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
 
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
@@ -408,7 +409,7 @@ class TestNotifyContactIdResolution:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
 
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
@@ -480,7 +481,7 @@ class TestNotifyContactIdResolution:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
 
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
@@ -514,7 +515,7 @@ class TestNotifyMissingIdentifierFallback:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -561,7 +562,7 @@ class TestNotifyMissingIdentifierFallback:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -613,7 +614,7 @@ class TestNotifyMissingIdentifierFallback:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -669,7 +670,7 @@ class TestNotifyMissingIdentifierFallback:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -723,7 +724,7 @@ class TestNotifyMissingIdentifierFallback:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_test"
+        mock_db.db_name = "butlers"
         patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
 
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)

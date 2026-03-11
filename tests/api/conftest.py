@@ -191,7 +191,8 @@ port = {port}
 description = "{description}"
 
 [butler.db]
-name = "butler_{name}"
+name = "butlers"
+schema = "{name}"
 
 [runtime]
 type = "claude-code"
@@ -204,7 +205,8 @@ port = {port}
 description = "{description}"
 
 [butler.db]
-name = "butler_{name}"
+name = "butlers"
+schema = "{name}"
 
 [runtime]
 type = "claude-code"
@@ -219,7 +221,8 @@ port = {port}
 description = "{description}"
 
 [butler.db]
-name = "butler_{name}"
+name = "butlers"
+schema = "{name}"
 
 [runtime]
 type = "claude-code"

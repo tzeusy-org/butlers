@@ -48,7 +48,7 @@ class TestModuleStatus:
 
 class TestButlerSummaryModel:
     def test_minimal(self):
-        b = ButlerSummary(name="general", status="running", port=40101, db="butler_general")
+        b = ButlerSummary(name="general", status="running", port=40101, db="butlers")
         assert b.name == "general"
         assert b.modules == []
         assert b.schedule_count == 0
@@ -58,7 +58,7 @@ class TestButlerSummaryModel:
             name="switchboard",
             status="running",
             port=40100,
-            db="butler_switchboard",
+            db="butlers",
             modules=["telegram", "email"],
             schedule_count=3,
         )
@@ -70,7 +70,7 @@ class TestButlerSummaryModel:
             name="heartbeat",
             status="idle",
             port=40199,
-            db="butler_heartbeat",
+            db="butlers",
             modules=[],
             schedule_count=1,
         )
@@ -85,7 +85,7 @@ class TestButlerDetailModel:
             name="switchboard",
             status="running",
             port=40100,
-            db="butler_switchboard",
+            db="butlers",
             modules=["telegram"],
             schedule_count=0,
         )
@@ -99,7 +99,7 @@ class TestButlerDetailModel:
             name="switchboard",
             status="running",
             port=40100,
-            db="butler_switchboard",
+            db="butlers",
             modules=["telegram", "email"],
             schedule_count=2,
             config={"butler": {"description": "Routes messages"}},
@@ -118,7 +118,7 @@ class TestButlerDetailModel:
             name="general",
             status="running",
             port=40101,
-            db="butler_general",
+            db="butlers",
             config={"key": "value"},
             skills=["search"],
             module_health=[ModuleStatus(name="x", enabled=True, status="ok")],

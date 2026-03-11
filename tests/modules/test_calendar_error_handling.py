@@ -454,7 +454,7 @@ class TestFailClosedWriteTools:
                 "calendar_id": "primary",
                 "conflicts": {"policy": "fail"},
             },
-            db=SimpleNamespace(db_name="butler_general"),
+            db=SimpleNamespace(db_name="butlers"),
         )
         return mod, mcp
 

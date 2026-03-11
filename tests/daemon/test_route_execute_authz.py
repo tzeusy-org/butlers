@@ -41,7 +41,7 @@ def _toml_value(v: Any) -> str:
 def _make_butler_toml(
     tmp_path: Path,
     *,
-    butler_name: str = "test-butler",
+    butler_name: str = "test_butler",
     port: int = 9100,
     modules: dict[str, dict] | None = None,
     trusted_route_callers: list[str] | None = None,
@@ -54,7 +54,8 @@ def _make_butler_toml(
         'description = "A test butler"',
         "",
         "[butler.db]",
-        f'name = "butler_{butler_name}"',
+        'name = "butlers"',
+        f'schema = "{butler_name}"',
         "",
         "[[butler.schedule]]",
         'name = "daily-check"',
@@ -85,7 +86,7 @@ def _patch_infra():
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()
@@ -450,7 +451,7 @@ class TestTrustedRouteCallersConfig:
         """Without explicit config, trusted_route_callers defaults to ('switchboard',)."""
         from butlers.config import load_config
 
-        butler_dir = _make_butler_toml(tmp_path, butler_name="test-butler")
+        butler_dir = _make_butler_toml(tmp_path, butler_name="test_butler")
         config = load_config(butler_dir)
         assert config.trusted_route_callers == ("switchboard",)
 
@@ -460,7 +461,7 @@ class TestTrustedRouteCallersConfig:
 
         butler_dir = _make_butler_toml(
             tmp_path,
-            butler_name="test-butler",
+            butler_name="test_butler",
             trusted_route_callers=["switchboard", "heartbeat", "admin"],
         )
         config = load_config(butler_dir)
@@ -472,7 +473,7 @@ class TestTrustedRouteCallersConfig:
 
         butler_dir = _make_butler_toml(
             tmp_path,
-            butler_name="test-butler",
+            butler_name="test_butler",
             trusted_route_callers=[],
         )
         config = load_config(butler_dir)
@@ -484,12 +485,13 @@ class TestTrustedRouteCallersConfig:
 
         toml_content = """
 [butler]
-name = "test-butler"
+name = "test_butler"
 port = 9100
 description = "A test butler"
 
 [butler.db]
-name = "butler_test"
+name = "butlers"
+schema = "test_butler"
 
 [butler.security]
 trusted_route_callers = "switchboard"

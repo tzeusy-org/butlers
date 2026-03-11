@@ -91,9 +91,7 @@ class CLIAuthSession:
             try:
                 await self.on_success(self.provider)
             except Exception:
-                logger.exception(
-                    "CLI auth session %s: on_success callback failed", self.id
-                )
+                logger.exception("CLI auth session %s: on_success callback failed", self.id)
 
         self._done_event.set()
 
@@ -197,9 +195,7 @@ def _evict_old_sessions() -> None:
     if len(_sessions) < _MAX_SESSIONS:
         return
 
-    terminal = [
-        (sid, s) for sid, s in _sessions.items() if s.is_terminal
-    ]
+    terminal = [(sid, s) for sid, s in _sessions.items() if s.is_terminal]
     terminal.sort(key=lambda pair: pair[1]._started_at)
 
     while len(_sessions) >= _MAX_SESSIONS and terminal:

@@ -125,16 +125,13 @@ class TestOpenCodeOutputFormat:
 
     def test_tool_use_event_has_part_tool_and_state(self):
         """tool_use events store tool info in part.tool, part.callID, part.state."""
-        stdout, stderr, rc = _run_opencode(
-            "Use the shell to run: echo 'integration-test-marker'"
-        )
+        stdout, stderr, rc = _run_opencode("Use the shell to run: echo 'integration-test-marker'")
         assert rc == 0, f"opencode failed: {stderr}"
 
         events = _parse_raw_events(stdout)
         tool_events = [e for e in events if e.get("type") == "tool_use"]
         assert len(tool_events) >= 1, (
-            f"No tool_use events found. Events: "
-            f"{[e.get('type') for e in events]}"
+            f"No tool_use events found. Events: {[e.get('type') for e in events]}"
         )
 
         te = tool_events[0]
@@ -178,9 +175,7 @@ class TestParserWithRealOutput:
         assert rc == 0, f"opencode failed: {stderr}"
 
         result_text, tool_calls, usage = _parse_opencode_output(stdout, stderr, rc)
-        assert usage is not None, (
-            f"Parser returned None usage. stdout sample: {stdout[:500]}"
-        )
+        assert usage is not None, f"Parser returned None usage. stdout sample: {stdout[:500]}"
         assert isinstance(usage["input_tokens"], int)
         assert isinstance(usage["output_tokens"], int)
         assert usage["input_tokens"] > 0, "input_tokens should be positive"
@@ -188,15 +183,11 @@ class TestParserWithRealOutput:
 
     def test_tool_call_parsed_with_name_and_input(self):
         """Parser extracts tool calls with non-empty name and input from real output."""
-        stdout, stderr, rc = _run_opencode(
-            "Use the shell to run: echo 'parser-test-marker'"
-        )
+        stdout, stderr, rc = _run_opencode("Use the shell to run: echo 'parser-test-marker'")
         assert rc == 0, f"opencode failed: {stderr}"
 
         result_text, tool_calls, usage = _parse_opencode_output(stdout, stderr, rc)
-        assert len(tool_calls) >= 1, (
-            f"Expected at least 1 tool call. stdout sample: {stdout[:500]}"
-        )
+        assert len(tool_calls) >= 1, f"Expected at least 1 tool call. stdout sample: {stdout[:500]}"
         tc = tool_calls[0]
         assert tc["name"], f"Tool call has empty name: {tc}"
         assert tc["id"], f"Tool call has empty id: {tc}"
@@ -212,28 +203,47 @@ class TestParserWithRealOutput:
         ts = 1700000000000
 
         def env(etype: str, part: dict) -> str:
-            return json.dumps({
-                "type": etype, "timestamp": ts,
-                "sessionID": session_id, "part": part,
-            })
+            return json.dumps(
+                {
+                    "type": etype,
+                    "timestamp": ts,
+                    "sessionID": session_id,
+                    "part": part,
+                }
+            )
 
-        stdout = "\n".join([
-            env("step_start", {"type": "step-start"}),
-            env("tool_use", {
-                "type": "tool", "callID": "call_1", "tool": "bash",
-                "state": {"status": "completed", "input": {"command": "ls"}},
-            }),
-            env("step_finish", {
-                "type": "step-finish", "reason": "tool-calls",
-                "tokens": {"total": 1000, "input": 800, "output": 200},
-            }),
-            env("step_start", {"type": "step-start"}),
-            env("text", {"type": "text", "text": "Here are the files."}),
-            env("step_finish", {
-                "type": "step-finish", "reason": "stop",
-                "tokens": {"total": 500, "input": 300, "output": 200},
-            }),
-        ])
+        stdout = "\n".join(
+            [
+                env("step_start", {"type": "step-start"}),
+                env(
+                    "tool_use",
+                    {
+                        "type": "tool",
+                        "callID": "call_1",
+                        "tool": "bash",
+                        "state": {"status": "completed", "input": {"command": "ls"}},
+                    },
+                ),
+                env(
+                    "step_finish",
+                    {
+                        "type": "step-finish",
+                        "reason": "tool-calls",
+                        "tokens": {"total": 1000, "input": 800, "output": 200},
+                    },
+                ),
+                env("step_start", {"type": "step-start"}),
+                env("text", {"type": "text", "text": "Here are the files."}),
+                env(
+                    "step_finish",
+                    {
+                        "type": "step-finish",
+                        "reason": "stop",
+                        "tokens": {"total": 500, "input": 300, "output": 200},
+                    },
+                ),
+            ]
+        )
 
         result_text, tool_calls, usage = _parse_opencode_output(stdout, "", 0)
 

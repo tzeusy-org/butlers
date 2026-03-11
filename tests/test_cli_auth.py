@@ -186,6 +186,7 @@ async def test_session_store():
     store_session(session)
 
     from butlers.cli_auth.session import get_session
+
     assert get_session("s1") is session
     assert get_session("nonexistent") is None
 

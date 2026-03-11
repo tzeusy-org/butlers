@@ -190,12 +190,7 @@ def _parse_opencode_output(
 
         if obj_type == "text":
             # Plain text delta — OpenCode may emit incremental text events
-            text_val = (
-                obj.get("text")
-                or obj.get("content")
-                or obj.get("value")
-                or obj.get("delta")
-            )
+            text_val = obj.get("text") or obj.get("content") or obj.get("value") or obj.get("delta")
             if isinstance(text_val, str) and text_val:
                 text_parts.append(text_val)
 
@@ -213,9 +208,7 @@ def _parse_opencode_output(
                             if text_val:
                                 text_parts.append(text_val)
                         elif _looks_like_tool_call_event(block):
-                            tool_calls.append(
-                                _extract_opencode_tool_call(block)
-                            )
+                            tool_calls.append(_extract_opencode_tool_call(block))
 
         elif obj_type == "assistant":
             # Assistant response wrapper — may contain message or content
@@ -233,9 +226,7 @@ def _parse_opencode_output(
                                 if text_val:
                                     text_parts.append(text_val)
                             elif _looks_like_tool_call_event(block):
-                                tool_calls.append(
-                                    _extract_opencode_tool_call(block)
-                                )
+                                tool_calls.append(_extract_opencode_tool_call(block))
             else:
                 content = obj.get("content", "")
                 if isinstance(content, str) and content:
@@ -280,18 +271,14 @@ def _parse_opencode_output(
             else:
                 response_obj = obj.get("response")
                 if isinstance(response_obj, dict):
-                    extracted = _extract_usage(
-                        response_obj.get("usage") or response_obj
-                    )
+                    extracted = _extract_usage(response_obj.get("usage") or response_obj)
                     if extracted is not None:
                         usage = extracted
 
         else:
             # Unknown event type — log and skip, but harvest text/content
             if obj_type:
-                logger.debug(
-                    "OpenCode: unknown event type %r — skipping", obj_type
-                )
+                logger.debug("OpenCode: unknown event type %r — skipping", obj_type)
             if "text" in obj and isinstance(obj["text"], str):
                 text_parts.append(obj["text"])
             elif "content" in obj and isinstance(obj["content"], str):
@@ -299,9 +286,7 @@ def _parse_opencode_output(
 
     # If we couldn't parse any JSON, treat entire stdout as result text
     if not parsed_any_json and not text_parts:
-        text_parts = fallback_text_parts or (
-            [stdout.strip()] if stdout.strip() else []
-        )
+        text_parts = fallback_text_parts or ([stdout.strip()] if stdout.strip() else [])
 
     result_text = "\n".join(part for part in text_parts if part) or None
     return result_text, tool_calls, usage

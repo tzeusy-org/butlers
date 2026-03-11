@@ -932,7 +932,8 @@ class TestDaemonIntegration:
                 "port = 40100",
                 "",
                 "[butler.db]",
-                'name = "butler_switchboard"',
+                'name = "butlers"',
+                'schema = "switchboard"',
             ]
         )
         (butler_dir / "butler.toml").write_text(toml_content)
@@ -950,7 +951,7 @@ class TestDaemonIntegration:
         mock_db.password = "postgres"
         mock_db.host = "localhost"
         mock_db.port = 5432
-        mock_db.db_name = "butler_switchboard"
+        mock_db.db_name = "butlers"
 
         mock_spawner = MagicMock()
         mock_spawner.stop_accepting = MagicMock()
@@ -1042,7 +1043,8 @@ class TestDaemonIntegration:
                     'name = "health"',
                     "port = 40200",
                     "[butler.db]",
-                    'name = "butler_health"',
+                    'name = "butlers"',
+                    'schema = "health"',
                 ]
             )
         )

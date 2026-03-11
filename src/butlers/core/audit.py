@@ -32,7 +32,7 @@ async def write_audit_entry(
     Parameters
     ----------
     pool:
-        asyncpg connection pool pointed at ``butler_switchboard``.
+        asyncpg connection pool pointed at the ``switchboard`` schema.
         If ``None``, the call is a silent no-op.
     butler:
         Butler name that produced the activity.

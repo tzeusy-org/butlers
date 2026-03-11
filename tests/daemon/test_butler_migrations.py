@@ -402,7 +402,8 @@ def _make_butler_toml(
 ) -> Path:
     """Write a butler.toml with a given butler name."""
     modules = modules or {}
-    resolved_db_name = db_name or f"butler_{name.replace('-', '_')}"
+    resolved_db_name = db_name or "butlers"
+    resolved_schema = db_schema or name.replace("-", "_")
     toml_lines = [
         "[butler]",
         f'name = "{name}"',
@@ -411,9 +412,8 @@ def _make_butler_toml(
         "",
         "[butler.db]",
         f'name = "{resolved_db_name}"',
+        f'schema = "{resolved_schema}"',
     ]
-    if db_schema is not None:
-        toml_lines.append(f'schema = "{db_schema}"')
     for mod_name, mod_cfg in modules.items():
         toml_lines.append(f"\n[modules.{mod_name}]")
         for k, v in mod_cfg.items():
@@ -438,7 +438,7 @@ def _patch_infra():
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"

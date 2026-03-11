@@ -346,13 +346,13 @@ async def init_db_manager(
 
     params = _db_params_from_env()
     mgr = DatabaseManager(**params)
-    effective_db_names = {cfg.db_name or f"butler_{cfg.name}" for cfg in butler_configs}
+    effective_db_names = {cfg.db_name or "butlers" for cfg in butler_configs}
     all_schema_scoped = bool(butler_configs) and all(cfg.db_schema for cfg in butler_configs)
     one_db_schema_topology = len(effective_db_names) == 1 and all_schema_scoped
 
     for cfg in butler_configs:
         try:
-            effective_db_name = cfg.db_name or f"butler_{cfg.name}"
+            effective_db_name = cfg.db_name or "butlers"
             db = Database.from_env(effective_db_name)
             db.set_schema(cfg.db_schema)
             await db.provision()

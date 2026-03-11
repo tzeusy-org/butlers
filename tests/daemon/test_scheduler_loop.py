@@ -49,7 +49,8 @@ def _make_butler_toml(
         'description = "A test butler"',
         "",
         "[butler.db]",
-        'name = "butler_test"',
+        'name = "butlers"',
+        'schema = "test_butler"',
     ]
     if tick_interval_seconds is not None:
         lines += [
@@ -74,17 +75,22 @@ def _patch_infra():
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
     mock_audit_db = MagicMock()
     mock_audit_db.connect = AsyncMock()
     mock_audit_db.close = AsyncMock()
     mock_audit_db.pool = AsyncMock()
 
+    _db_call_count = 0
+
     def _db_from_env_factory(db_name: str) -> MagicMock:
-        if db_name == "butler_switchboard":
-            return mock_audit_db
-        return mock_db
+        nonlocal _db_call_count
+        _db_call_count += 1
+        # First call is the main butler DB; second is the audit pool
+        if _db_call_count == 1:
+            return mock_db
+        return mock_audit_db
 
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()

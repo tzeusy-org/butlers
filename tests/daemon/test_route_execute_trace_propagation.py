@@ -73,7 +73,8 @@ def _make_butler_toml(
         'description = "A test butler"',
         "",
         "[butler.db]",
-        f'name = "butler_{butler_name}"',
+        'name = "butlers"',
+        f'schema = "{butler_name}"',
         "",
         "[[butler.schedule]]",
         'name = "daily-check"',
@@ -99,7 +100,7 @@ def _patch_infra():
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()

@@ -150,7 +150,8 @@ def _make_butler_toml(tmp_path: Path, modules: dict[str, dict] | None = None) ->
         'description = "A test butler"',
         "",
         "[butler.db]",
-        'name = "butler_test"',
+        'name = "butlers"',
+        'schema = "test_butler"',
     ]
     for mod_name, mod_cfg in modules.items():
         toml_lines.append(f"\n[modules.{mod_name}]")
@@ -196,7 +197,7 @@ def _patch_infra():
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
     mock_spawner = MagicMock()
 

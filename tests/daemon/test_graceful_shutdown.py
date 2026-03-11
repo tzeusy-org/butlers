@@ -145,7 +145,8 @@ def _make_butler_toml(
         'description = "A test butler"',
         "",
         "[butler.db]",
-        'name = "butler_test"',
+        'name = "butlers"',
+        'schema = "test_butler"',
     ]
     if shutdown_timeout_s is not None:
         toml_lines.extend(
@@ -176,7 +177,20 @@ def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
 
 def _patch_infra():
     """Return a dict of patches for all infrastructure dependencies."""
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock(return_value=None)
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+
     mock_pool = AsyncMock()
+    # Support `async with pool.acquire() as conn:` pattern
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.execute = AsyncMock(return_value=None)
+    mock_pool.fetchrow = AsyncMock(return_value=None)
+    mock_pool.fetchval = AsyncMock(return_value=None)
+    mock_pool.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
@@ -187,19 +201,24 @@ def _patch_infra():
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
-    # Separate mock for the audit DB (butler_switchboard) so that its close()
+    # Separate mock for the audit DB (switchboard schema) so that its close()
     # does not interfere with call-order assertions on the main DB's close().
     mock_audit_db = MagicMock()
     mock_audit_db.connect = AsyncMock()
     mock_audit_db.close = AsyncMock()
     mock_audit_db.pool = AsyncMock()
 
+    _db_call_count = 0
+
     def _db_from_env_factory(db_name: str) -> MagicMock:
-        if db_name == "butler_switchboard":
-            return mock_audit_db
-        return mock_db
+        nonlocal _db_call_count
+        _db_call_count += 1
+        # First call is the main butler DB; second is the audit pool
+        if _db_call_count == 1:
+            return mock_db
+        return mock_audit_db
 
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()

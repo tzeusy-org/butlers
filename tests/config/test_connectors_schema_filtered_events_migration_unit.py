@@ -1,4 +1,4 @@
-"""Unit tests for the core_026 connectors schema / filtered_events migration."""
+"""Unit tests for the core_027 connectors schema / filtered_events migration."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ def _migration_file() -> Path:
 
     chain_dir = _resolve_chain_dir("core")
     assert chain_dir is not None, "Core chain should exist"
-    return chain_dir / "core_026_connectors_schema_filtered_events.py"
+    return chain_dir / "core_027_connectors_schema_filtered_events.py"
 
 
 def _load_migration():
     migration_file = _migration_file()
-    spec = importlib.util.spec_from_file_location("core_026", migration_file)
+    spec = importlib.util.spec_from_file_location("core_027", migration_file)
     assert spec is not None, "Should be able to load migration spec"
     assert spec.loader is not None, "Should have a loader"
     module = importlib.util.module_from_spec(spec)

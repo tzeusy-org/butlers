@@ -395,7 +395,7 @@ async def _provision_databases(configs: dict[str, Path]) -> None:
 
     for name, config_dir in sorted(configs.items()):
         config = load_config(config_dir)
-        db_name = config.db_name or f"butler_{name}"
+        db_name = config.db_name or "butlers"
         try:
             database = Database.from_env(db_name)
             await database.provision()

@@ -97,9 +97,9 @@ _MIGRATION_SPECS = [
     # Core chain – connectors schema + filtered_events partitioned table
     MigrationSpec(
         chain="core",
-        filename="core_026_connectors_schema_filtered_events.py",
-        revision="core_026",
-        down_revision="core_025",
+        filename="core_027_connectors_schema_filtered_events.py",
+        revision="core_027",
+        down_revision="core_026",
         branch_labels=None,
         depends_on=None,
     ),

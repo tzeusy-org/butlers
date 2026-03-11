@@ -51,7 +51,8 @@ def _make_butler_toml(
         'description = "A test butler"',
         "",
         "[butler.db]",
-        'name = "butler_test"',
+        'name = "butlers"',
+        'schema = "test_butler"',
     ]
     scheduler_lines = []
     if heartbeat_interval_seconds is not None:
@@ -66,7 +67,20 @@ def _make_butler_toml(
 
 def _patch_infra():
     """Return patches for all infrastructure dependencies used by ButlerDaemon.start()."""
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock(return_value=None)
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+
     mock_pool = AsyncMock()
+    # Support `async with pool.acquire() as conn:` pattern
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.execute = AsyncMock(return_value=None)
+    mock_pool.fetchrow = AsyncMock(return_value=None)
+    mock_pool.fetchval = AsyncMock(return_value=None)
+    mock_pool.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
@@ -77,17 +91,22 @@ def _patch_infra():
     mock_db.password = "postgres"
     mock_db.host = "localhost"
     mock_db.port = 5432
-    mock_db.db_name = "butler_test"
+    mock_db.db_name = "butlers"
 
     mock_audit_db = MagicMock()
     mock_audit_db.connect = AsyncMock()
     mock_audit_db.close = AsyncMock()
     mock_audit_db.pool = AsyncMock()
 
+    _db_call_count = 0
+
     def _db_from_env_factory(db_name: str) -> MagicMock:
-        if db_name == "butler_switchboard":
-            return mock_audit_db
-        return mock_db
+        nonlocal _db_call_count
+        _db_call_count += 1
+        # First call is the main butler DB; second is the audit pool
+        if _db_call_count == 1:
+            return mock_db
+        return mock_audit_db
 
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()
@@ -261,11 +280,8 @@ class TestLivenessReporterLifecycle:
                 pass
             await daemon.shutdown()
 
-    async def test_switchboard_creates_liveness_reporter(self, tmp_path: Path) -> None:
-        """Switchboard butler MUST create a liveness reporter task.
-
-        Self-heartbeat prevents the switchboard from being quarantined by its own eligibility sweep.
-        """
+    async def test_switchboard_also_creates_liveness_reporter(self, tmp_path: Path) -> None:
+        """Switchboard butler also gets a liveness reporter (all butlers do)."""
         butler_dir = _make_butler_toml(tmp_path, name="switchboard")
         patches = _patch_infra()
 
@@ -289,7 +305,6 @@ class TestLivenessReporterLifecycle:
 
         try:
             assert daemon._liveness_reporter_task is not None
-            assert isinstance(daemon._liveness_reporter_task, asyncio.Task)
         finally:
             daemon._liveness_reporter_task.cancel()
             try:

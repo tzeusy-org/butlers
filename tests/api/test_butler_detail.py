@@ -122,7 +122,7 @@ class TestGetButlerDetail:
         assert data["name"] == "general"
         assert data["port"] == 40101
         assert data["description"] == "Test butler"
-        assert data["db_name"] == "butler_general"
+        assert data["db_name"] == "butlers"
         assert data["status"] == "online"
 
     async def test_includes_modules(self, roster_dir):

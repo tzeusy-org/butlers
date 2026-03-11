@@ -616,7 +616,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
 
     # --- [butler.db] sub-section ---
     db_section = butler_section.get("db", {})
-    db_name = str(db_section.get("name", f"butler_{name}")).strip()
+    db_name = str(db_section.get("name", "butlers")).strip()
     if not db_name:
         raise ConfigError("butler.db.name must be a non-empty string")
 
@@ -636,10 +636,8 @@ def load_config(config_dir: Path) -> ButlerConfig:
         db_schema = normalized_schema
 
     if db_name == _CONSOLIDATED_DB_NAME and db_schema is None:
-        raise ConfigError(
-            "butler.db.schema is required when butler.db.name is 'butlers' "
-            "(one-db schema-scoped topology)."
-        )
+        # Default schema to butler name for one-db topology
+        db_schema = name
 
     # --- [butler.env] sub-section ---
     env_section = butler_section.get("env", {})

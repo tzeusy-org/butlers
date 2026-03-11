@@ -273,15 +273,11 @@ class TestMatchSenderAddress:
     def test_rfc2822_local_part_prefix(self) -> None:
         """Local-part prefix works with 'Display Name <email>' format."""
         env = _email_envelope(sender="GitHub <no-reply@github.com>")
-        assert _match_sender_address(
-            env, {"address": "no-reply", "match": "local_part_prefix"}
-        )
+        assert _match_sender_address(env, {"address": "no-reply", "match": "local_part_prefix"})
 
     def test_rfc2822_noreply_prefix(self) -> None:
         env = _email_envelope(sender="Some Service <noreply@example.com>")
-        assert _match_sender_address(
-            env, {"address": "noreply", "match": "local_part_prefix"}
-        )
+        assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
 
 
 # ---------------------------------------------------------------------------
