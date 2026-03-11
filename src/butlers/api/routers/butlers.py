@@ -611,14 +611,19 @@ async def trigger_butler(
     if not any(cfg.name == name for cfg in configs):
         raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
 
-    summary = {"prompt": request.prompt[:200]}
+    from butlers.api.routers.model_settings import _validate_complexity_tier
+
+    _validate_complexity_tier(request.complexity)
+
+    summary = {"prompt": request.prompt[:200], "complexity": request.complexity}
+    trigger_args: dict = {"prompt": request.prompt, "complexity": request.complexity}
     try:
         client = await asyncio.wait_for(
             mcp_manager.get_client(name),
             timeout=_TRIGGER_TIMEOUT_S,
         )
         result = await asyncio.wait_for(
-            client.call_tool("trigger", {"prompt": request.prompt}),
+            client.call_tool("trigger", trigger_args),
             timeout=_TRIGGER_TIMEOUT_S,
         )
     except ButlerUnreachableError:
