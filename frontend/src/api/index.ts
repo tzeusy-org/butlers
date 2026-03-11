@@ -375,12 +375,15 @@ export {
   getIngestionEvent,
   getIngestionEventSessions,
   getIngestionEventRollup,
+  replayIngestionEvent,
 } from "./client.ts";
 
 export type {
+  IngestionEventStatus,
   IngestionEventSummary,
   IngestionEventSession,
   IngestionEventRollup,
+  IngestionEventReplayResponse,
   IngestionEventsParams,
   ButlerRollupEntry,
 } from "./types.ts";

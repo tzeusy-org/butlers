@@ -1866,6 +1866,23 @@ export interface ConnectorFanout {
 // Ingestion event lineage types (GET /api/switchboard/ingestion/events/*)
 // ---------------------------------------------------------------------------
 
+/**
+ * All possible lifecycle statuses for an ingestion event from the unified timeline.
+ * - ingested: processed successfully
+ * - filtered: dropped by a rule
+ * - error: processing failed
+ * - replay_pending: replay requested, awaiting processing
+ * - replay_complete: replay succeeded
+ * - replay_failed: replay attempt failed
+ */
+export type IngestionEventStatus =
+  | "ingested"
+  | "filtered"
+  | "error"
+  | "replay_pending"
+  | "replay_complete"
+  | "replay_failed";
+
 /** One ingestion event from shared.ingestion_events (list view). */
 export interface IngestionEventSummary {
   id: string; // UUIDv7 — the request_id
@@ -1882,6 +1899,16 @@ export interface IngestionEventSummary {
   policy_tier: string | null;
   triage_decision: string | null;
   triage_target: string | null;
+  /** Unified timeline status. Defaults to 'ingested' for legacy rows. */
+  status: IngestionEventStatus;
+  /** Human-readable reason why this event was filtered or errored. */
+  filter_reason: string | null;
+}
+
+/** Response body from POST /api/ingestion/events/{id}/replay. */
+export interface IngestionEventReplayResponse {
+  id: string;
+  status: IngestionEventStatus;
 }
 
 /** One butler session spawned in response to an ingestion event. */
@@ -1922,6 +1949,8 @@ export interface IngestionEventsParams {
   limit?: number;
   offset?: number;
   source_channel?: string;
+  /** Filter by event status. Omit to return all events. */
+  status?: IngestionEventStatus;
 }
 
 // ---------------------------------------------------------------------------

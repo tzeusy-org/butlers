@@ -1814,6 +1814,10 @@ class ButlerDaemon:
             audit_db_name = self.config.db_name or "butlers"
             audit_db_schema = "switchboard"
             audit_db = Database.from_env(audit_db_name)
+            if audit_db is self.db:
+                # Same DB object — reuse the existing pool directly (avoids double-close
+                # on shutdown when the audit DB and main DB share the same connection).
+                return own_pool
             audit_db.set_schema(audit_db_schema)
             audit_db.min_pool_size = 1
             audit_db.max_pool_size = 2

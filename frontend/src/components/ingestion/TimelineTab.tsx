@@ -8,18 +8,29 @@
  * - Rollup totals (total cost, total tokens, by_butler)
  *
  * Data is fetched from:
- * - GET /api/ingestion/events          (event list)
+ * - GET /api/ingestion/events          (event list, supports status filter)
  * - GET /api/ingestion/events/{id}/sessions  (on expand)
  * - GET /api/ingestion/events/{id}/rollup    (on expand)
+ * - POST /api/ingestion/events/{id}/replay   (Replay/Retry action)
  */
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
+import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -33,7 +44,13 @@ import {
   useIngestionEventLineage,
   useIngestionEventRollup,
 } from "@/hooks/use-ingestion-events";
-import type { IngestionEventSummary, IngestionEventSession } from "@/api/index.ts";
+import type {
+  IngestionEventSummary,
+  IngestionEventSession,
+  IngestionEventStatus,
+} from "@/api/index.ts";
+import { replayIngestionEvent } from "@/api/index.ts";
+import { StatusBadge } from "./StatusBadge";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,6 +105,21 @@ function fmtNum(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
+/** Returns true if this status is replayable (Replay button shown). */
+function isReplayable(status: IngestionEventStatus): boolean {
+  return status === "filtered" || status === "error" || status === "replay_failed";
+}
+
+/** Returns true if this status is pending replay (spinner shown). */
+function isReplayPending(status: IngestionEventStatus): boolean {
+  return status === "replay_pending";
+}
+
+/** Returns true if this row can be expanded (filtered and error events cannot). */
+function isExpandable(status: IngestionEventStatus): boolean {
+  return status !== "filtered" && status !== "error";
+}
+
 // ---------------------------------------------------------------------------
 // Session flamegraph
 // ---------------------------------------------------------------------------
@@ -130,7 +162,6 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
 
   // Group sessions into swim lanes by butler
   const butlers = [...colors.keys()];
-  const laneMap = new Map(butlers.map((b, i) => [b, i]));
 
   return (
     <div className="space-y-1.5">
@@ -146,7 +177,7 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
 
       {/* Lanes */}
       <div className="relative rounded-md border bg-muted/20 overflow-hidden">
-        {butlers.map((butler, laneIdx) => {
+        {butlers.map((butler) => {
           const laneSessions = withTimes.filter((s) => s.butler_name === butler);
           return (
             <div
@@ -338,6 +369,64 @@ function LineageView({ requestId }: LineageViewProps) {
 }
 
 // ---------------------------------------------------------------------------
+// ActionCell — Replay/Retry button or spinner based on event status
+// ---------------------------------------------------------------------------
+
+interface ActionCellProps {
+  event: IngestionEventSummary;
+  onOptimisticUpdate: (id: string, newStatus: IngestionEventStatus) => void;
+}
+
+function ActionCell({ event, onOptimisticUpdate }: ActionCellProps) {
+  const [isPending, setIsPending] = useState(false);
+
+  if (isReplayPending(event.status)) {
+    return (
+      <span
+        className="flex items-center gap-1 text-xs text-muted-foreground"
+        data-testid="replay-pending-spinner"
+      >
+        <Loader2 className="size-3 animate-spin" />
+        pending
+      </span>
+    );
+  }
+
+  if (!isReplayable(event.status)) {
+    return null;
+  }
+
+  const label = event.status === "replay_failed" ? "Retry" : "Replay";
+
+  async function handleReplay(e: React.MouseEvent) {
+    e.stopPropagation(); // Don't trigger row expand
+    setIsPending(true);
+    try {
+      await replayIngestionEvent(event.id);
+      onOptimisticUpdate(event.id, "replay_pending");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Replay request failed";
+      toast.error(message);
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  return (
+    <Button
+      variant="outline"
+      size="xs"
+      disabled={isPending}
+      onClick={handleReplay}
+      data-testid="replay-button"
+    >
+      {isPending ? <Loader2 className="size-3 animate-spin" /> : null}
+      {label}
+    </Button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // EventRow — one row in the event list that can be expanded
 // ---------------------------------------------------------------------------
 
@@ -345,18 +434,28 @@ interface EventRowProps {
   event: IngestionEventSummary;
   isExpanded: boolean;
   onToggle: () => void;
+  onOptimisticUpdate: (id: string, newStatus: IngestionEventStatus) => void;
 }
 
-function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
+function EventRow({ event, isExpanded, onToggle, onOptimisticUpdate }: EventRowProps) {
   const { data: rollupResp } = useIngestionEventRollup(event.id);
   const r = rollupResp?.data;
+
+  const expandable = isExpandable(event.status);
+
+  function handleRowClick() {
+    if (expandable) onToggle();
+  }
+
+  // Total column count: Request ID, Received At, Channel, Sender, Status, Tier, Tokens In, Tokens Out, Cost, Action, expand-chevron
+  const TOTAL_COLS = 11;
 
   return (
     <>
       <TableRow
-        className="cursor-pointer hover:bg-muted/50"
-        onClick={onToggle}
-        aria-expanded={isExpanded}
+        className={expandable ? "cursor-pointer hover:bg-muted/50" : ""}
+        onClick={handleRowClick}
+        aria-expanded={expandable ? isExpanded : undefined}
       >
         <TableCell className="font-mono text-xs" title={event.id}>
           {truncateId(event.id)}
@@ -370,6 +469,9 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
         <TableCell className="max-w-[180px] truncate text-sm" title={event.source_sender_identity ?? undefined}>
           {event.source_sender_identity ?? "—"}
         </TableCell>
+        <TableCell>
+          <StatusBadge status={event.status} filterReason={event.filter_reason} />
+        </TableCell>
         <TableCell className="text-sm">
           {event.policy_tier ?? event.ingestion_tier ?? "—"}
         </TableCell>
@@ -382,19 +484,24 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
         <TableCell className="text-sm tabular-nums">
           {r ? formatCost(r.total_cost) : "—"}
         </TableCell>
+        <TableCell onClick={(e) => e.stopPropagation()}>
+          <ActionCell event={event} onOptimisticUpdate={onOptimisticUpdate} />
+        </TableCell>
         <TableCell className="text-sm text-muted-foreground">
-          <span
-            className="text-xs select-none"
-            aria-label={isExpanded ? "Collapse" : "Expand"}
-          >
-            {isExpanded ? "▲" : "▼"}
-          </span>
+          {expandable ? (
+            <span
+              className="text-xs select-none"
+              aria-label={isExpanded ? "Collapse" : "Expand"}
+            >
+              {isExpanded ? "▲" : "▼"}
+            </span>
+          ) : null}
         </TableCell>
       </TableRow>
 
-      {isExpanded && (
+      {isExpanded && expandable && (
         <TableRow>
-          <TableCell colSpan={9} className="p-0">
+          <TableCell colSpan={TOTAL_COLS} className="p-0">
             <LineageView requestId={event.id} />
           </TableCell>
         </TableRow>
@@ -410,7 +517,7 @@ function EventRow({ event, isExpanded, onToggle }: EventRowProps) {
 function EventRowSkeleton() {
   return (
     <TableRow>
-      {Array.from({ length: 9 }).map((_, i) => (
+      {Array.from({ length: 11 }).map((_, i) => (
         <TableCell key={i}>
           <Skeleton className="h-4 w-full" />
         </TableCell>
@@ -420,6 +527,20 @@ function EventRowSkeleton() {
 }
 
 // ---------------------------------------------------------------------------
+// Status filter options
+// ---------------------------------------------------------------------------
+
+const STATUS_FILTER_OPTIONS: Array<{ value: IngestionEventStatus | "all"; label: string }> = [
+  { value: "all", label: "All statuses" },
+  { value: "ingested", label: "Ingested" },
+  { value: "filtered", label: "Filtered" },
+  { value: "error", label: "Error" },
+  { value: "replay_pending", label: "Replay Pending" },
+  { value: "replay_complete", label: "Replay Complete" },
+  { value: "replay_failed", label: "Replay Failed" },
+];
+
+// ---------------------------------------------------------------------------
 // TimelineTab
 // ---------------------------------------------------------------------------
 
@@ -427,16 +548,59 @@ interface TimelineTabProps {
   isActive: boolean;
 }
 
+// Valid values for the URL `status` query parameter
+const VALID_STATUS_PARAMS = new Set<string>([
+  "all",
+  "ingested",
+  "filtered",
+  "error",
+  "replay_pending",
+  "replay_complete",
+  "replay_failed",
+]);
+
 export function TimelineTab({ isActive }: TimelineTabProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const expandedId = searchParams.get("expanded");
+  const rawStatus = searchParams.get("status") ?? "all";
+  const statusFilter = VALID_STATUS_PARAMS.has(rawStatus)
+    ? (rawStatus as IngestionEventStatus | "all")
+    : "all";
 
+  // Optimistic overrides: map of event id → overridden status
+  const [optimisticOverrides, setOptimisticOverrides] = useState<
+    Map<string, IngestionEventStatus>
+  >(new Map());
+
+  const filters = statusFilter !== "all" ? { status: statusFilter } : {};
   const { data: eventsResp, isLoading, isError } = useIngestionEvents(
-    {},
+    filters,
     { enabled: isActive },
   );
 
-  const events = eventsResp?.data ?? [];
+  const rawEvents = eventsResp?.data ?? [];
+
+  // Evict stale optimistic overrides: once the server returns a status other
+  // than replay_pending for an event we overrode, the server has caught up and
+  // the override is no longer needed.
+  useEffect(() => {
+    setOptimisticOverrides((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Map(prev);
+      for (const e of rawEvents) {
+        if (prev.has(e.id) && e.status !== "replay_pending") {
+          next.delete(e.id); // server has moved on; drop override
+        }
+      }
+      return next.size === prev.size ? prev : next; // stable ref if no change
+    });
+  }, [rawEvents]);
+
+  // Apply optimistic overrides so replayed events immediately show replay_pending
+  const events: IngestionEventSummary[] = rawEvents.map((e) => {
+    const override = optimisticOverrides.get(e.id);
+    return override ? { ...e, status: override } : e;
+  });
 
   const handleToggle = useCallback(
     (id: string) => {
@@ -453,11 +617,59 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
     [setSearchParams],
   );
 
+  const handleStatusFilterChange = useCallback(
+    (value: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (value === "all") {
+          next.delete("status");
+        } else {
+          next.set("status", value);
+        }
+        next.delete("expanded"); // Clear expansion when filter changes
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
+
+  const handleOptimisticUpdate = useCallback(
+    (id: string, newStatus: IngestionEventStatus) => {
+      setOptimisticOverrides((prev) => {
+        const next = new Map(prev);
+        next.set(id, newStatus);
+        return next;
+      });
+    },
+    [],
+  );
+
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>Ingestion Events</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Ingestion Events</CardTitle>
+            {/* Status filter */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Status:</span>
+              <Select
+                value={statusFilter}
+                onValueChange={handleStatusFilterChange}
+              >
+                <SelectTrigger size="sm" className="w-44" data-testid="status-filter">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_FILTER_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="px-4 pb-4 pt-0">
           {isError ? (
@@ -472,10 +684,12 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                   <TableHead>Received At</TableHead>
                   <TableHead>Channel</TableHead>
                   <TableHead>Sender</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead>Tier</TableHead>
                   <TableHead>Tokens In</TableHead>
                   <TableHead>Tokens Out</TableHead>
                   <TableHead>Cost</TableHead>
+                  <TableHead>Action</TableHead>
                   <TableHead className="w-8" />
                 </TableRow>
               </TableHeader>
@@ -486,7 +700,7 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                   ))
                 ) : events.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9}>
+                    <TableCell colSpan={11}>
                       <EmptyState
                         title="No ingestion events"
                         description="Events will appear here once the system receives incoming messages."
@@ -500,6 +714,7 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                       event={event}
                       isExpanded={expandedId === event.id}
                       onToggle={() => handleToggle(event.id)}
+                      onOptimisticUpdate={handleOptimisticUpdate}
                     />
                   ))
                 )}
