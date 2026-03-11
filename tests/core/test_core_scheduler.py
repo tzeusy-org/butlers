@@ -1444,7 +1444,8 @@ async def test_sync_toml_reclaims_db_sourced_task(pool):
     # Pre-insert a runtime-created task with source='db'
     await pool.execute(
         """
-        INSERT INTO scheduled_tasks (name, cron, dispatch_mode, prompt, source, enabled, next_run_at)
+        INSERT INTO scheduled_tasks
+            (name, cron, dispatch_mode, prompt, source, enabled, next_run_at)
         VALUES ('daily-nudge', '0 12 * * *', 'prompt', 'old prompt', 'db', true, now())
         """
     )
