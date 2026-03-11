@@ -25,6 +25,7 @@ import pytest
 from butlers.core.runtimes import get_adapter
 from butlers.core.runtimes.opencode import (
     OpenCodeAdapter,
+    _extract_envelope_tool_call,
     _extract_opencode_tool_call,
     _extract_usage,
     _find_opencode_binary,
@@ -1633,3 +1634,362 @@ async def test_invoke_temp_dir_cleaned_up_after_runtime_error():
     # The temp dir should have been created and then cleaned up
     assert len(captured_tmp_dirs) == 1
     assert not Path(captured_tmp_dirs[0]).exists(), "Temp dir should be cleaned up on failure"
+
+
+# ---------------------------------------------------------------------------
+# OpenCode v1.2+ envelope format — _parse_opencode_output
+# ---------------------------------------------------------------------------
+
+
+def _envelope(event_type: str, part: dict, session_id: str = "ses_test") -> str:
+    """Build a JSON-serialized OpenCode v1.2+ envelope event."""
+    return json.dumps({
+        "type": event_type,
+        "timestamp": 1700000000000,
+        "sessionID": session_id,
+        "part": part,
+    })
+
+
+def test_parse_envelope_text_event():
+    """Envelope text event extracts part.text as result text."""
+    line = _envelope("text", {
+        "type": "text",
+        "text": "Hello from envelope",
+        "id": "prt_1",
+        "sessionID": "ses_test",
+        "messageID": "msg_1",
+    })
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Hello from envelope"
+    assert tool_calls == []
+    assert usage is None
+
+
+def test_parse_envelope_multiple_text_events():
+    """Multiple envelope text events are concatenated."""
+    lines = "\n".join([
+        _envelope("text", {"type": "text", "text": "Part one"}),
+        _envelope("text", {"type": "text", "text": "Part two"}),
+    ])
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "Part one\nPart two"
+
+
+def test_parse_envelope_tool_use_event():
+    """Envelope tool_use event extracts part.tool, part.callID, part.state.input."""
+    line = _envelope("tool_use", {
+        "type": "tool",
+        "callID": "call_ABC123",
+        "tool": "bash",
+        "state": {
+            "status": "completed",
+            "input": {"command": "ls -la", "workdir": "/tmp"},
+            "output": "total 0\n",
+        },
+    })
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text is None
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "call_ABC123"
+    assert tool_calls[0]["name"] == "bash"
+    assert tool_calls[0]["input"] == {"command": "ls -la", "workdir": "/tmp"}
+
+
+def test_parse_envelope_tool_use_read_tool():
+    """Envelope tool_use event for file read tool extracts correctly."""
+    line = _envelope("tool_use", {
+        "type": "tool",
+        "callID": "call_READ1",
+        "tool": "read",
+        "state": {
+            "status": "completed",
+            "input": {"filePath": "/tmp/test.txt"},
+            "output": "file contents here",
+        },
+    })
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "read"
+    assert tool_calls[0]["input"] == {"filePath": "/tmp/test.txt"}
+
+
+def test_parse_envelope_step_finish_extracts_tokens():
+    """Envelope step_finish event extracts part.tokens as usage."""
+    line = _envelope("step_finish", {
+        "type": "step-finish",
+        "reason": "stop",
+        "cost": 0,
+        "tokens": {
+            "total": 15711,
+            "input": 15485,
+            "output": 226,
+            "reasoning": 219,
+            "cache": {"read": 0, "write": 0},
+        },
+    })
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert usage == {"input_tokens": 15485, "output_tokens": 226}
+    assert result_text is None
+    assert tool_calls == []
+
+
+def test_parse_envelope_multi_step_tokens_accumulated():
+    """Token usage from multiple step_finish events is accumulated."""
+    lines = "\n".join([
+        _envelope("step_start", {"type": "step-start"}),
+        _envelope("tool_use", {
+            "type": "tool",
+            "callID": "call_1",
+            "tool": "bash",
+            "state": {"status": "completed", "input": {"command": "ls"}},
+        }),
+        _envelope("step_finish", {
+            "type": "step-finish",
+            "reason": "tool-calls",
+            "tokens": {"total": 15686, "input": 15472, "output": 214},
+        }),
+        _envelope("step_start", {"type": "step-start"}),
+        _envelope("text", {"type": "text", "text": "Done"}),
+        _envelope("step_finish", {
+            "type": "step-finish",
+            "reason": "stop",
+            "tokens": {"total": 16166, "input": 346, "output": 460},
+        }),
+    ])
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "Done"
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "bash"
+    assert usage == {
+        "input_tokens": 15472 + 346,
+        "output_tokens": 214 + 460,
+    }
+
+
+def test_parse_envelope_step_start_skipped():
+    """Envelope step_start events are silently skipped."""
+    lines = "\n".join([
+        _envelope("step_start", {"type": "step-start", "id": "prt_1"}),
+        _envelope("text", {"type": "text", "text": "After start"}),
+    ])
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "After start"
+    assert tool_calls == []
+
+
+def test_parse_envelope_unknown_type_harvests_part_text():
+    """Unknown envelope event type harvests text from part if present."""
+    line = _envelope("some_new_event", {
+        "type": "new-thing",
+        "text": "Harvested from part",
+    })
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Harvested from part"
+
+
+def test_parse_envelope_full_conversation_flow():
+    """Full OpenCode v1.2+ conversation: tool call → text → token accumulation."""
+    lines = "\n".join([
+        _envelope("step_start", {"type": "step-start"}),
+        _envelope("tool_use", {
+            "type": "tool",
+            "callID": "call_VFLEFkFe",
+            "tool": "read",
+            "state": {
+                "status": "completed",
+                "input": {"filePath": "/tmp/test.txt"},
+                "output": "file content",
+            },
+        }),
+        _envelope("step_finish", {
+            "type": "step-finish",
+            "reason": "tool-calls",
+            "cost": 0,
+            "tokens": {"total": 15639, "input": 9087, "output": 152},
+        }),
+        _envelope("step_start", {"type": "step-start"}),
+        _envelope("text", {
+            "type": "text",
+            "text": "The file contains: file content",
+        }),
+        _envelope("step_finish", {
+            "type": "step-finish",
+            "reason": "stop",
+            "cost": 0,
+            "tokens": {"total": 16417, "input": 748, "output": 309},
+        }),
+    ])
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "The file contains: file content"
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "call_VFLEFkFe"
+    assert tool_calls[0]["name"] == "read"
+    assert tool_calls[0]["input"] == {"filePath": "/tmp/test.txt"}
+    assert usage == {
+        "input_tokens": 9087 + 748,
+        "output_tokens": 152 + 309,
+    }
+
+
+def test_parse_envelope_step_finish_no_tokens_key():
+    """step_finish without tokens key does not set usage."""
+    line = _envelope("step_finish", {
+        "type": "step-finish",
+        "reason": "stop",
+    })
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert usage is None
+
+
+def test_parse_envelope_tool_use_missing_state():
+    """Envelope tool_use with missing state still extracts name and id."""
+    line = _envelope("tool_use", {
+        "type": "tool",
+        "callID": "call_NO_STATE",
+        "tool": "write",
+    })
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "call_NO_STATE"
+    assert tool_calls[0]["name"] == "write"
+    assert tool_calls[0]["input"] == {}
+
+
+# ---------------------------------------------------------------------------
+# _extract_envelope_tool_call — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_extract_envelope_tool_call_full():
+    """Full envelope part with callID, tool, state.input is extracted."""
+    tc = _extract_envelope_tool_call({
+        "type": "tool",
+        "callID": "call_ABC",
+        "tool": "bash",
+        "state": {
+            "status": "completed",
+            "input": {"command": "echo hello", "workdir": "/tmp"},
+            "output": "hello\n",
+        },
+    })
+    assert tc == {
+        "id": "call_ABC",
+        "name": "bash",
+        "input": {"command": "echo hello", "workdir": "/tmp"},
+    }
+
+
+def test_extract_envelope_tool_call_no_state():
+    """Part without state defaults input to empty dict."""
+    tc = _extract_envelope_tool_call({
+        "type": "tool",
+        "callID": "call_1",
+        "tool": "read",
+    })
+    assert tc == {"id": "call_1", "name": "read", "input": {}}
+
+
+def test_extract_envelope_tool_call_fallback_to_id():
+    """Falls back to 'id' when 'callID' is absent."""
+    tc = _extract_envelope_tool_call({
+        "type": "tool",
+        "id": "alt_id",
+        "tool": "write",
+        "state": {"input": {"path": "/tmp/x"}},
+    })
+    assert tc["id"] == "alt_id"
+
+
+def test_extract_envelope_tool_call_fallback_to_name():
+    """Falls back to 'name' when 'tool' is absent."""
+    tc = _extract_envelope_tool_call({
+        "type": "tool",
+        "callID": "call_2",
+        "name": "custom_tool",
+        "state": {"input": {"k": "v"}},
+    })
+    assert tc["name"] == "custom_tool"
+
+
+def test_extract_envelope_tool_call_stringified_input():
+    """Stringified JSON in state.input is parsed into dict."""
+    tc = _extract_envelope_tool_call({
+        "callID": "call_3",
+        "tool": "bash",
+        "state": {"input": '{"command": "ls"}'},
+    })
+    assert tc["input"] == {"command": "ls"}
+
+
+def test_extract_envelope_tool_call_non_json_string_input():
+    """Non-JSON string in state.input is kept as-is."""
+    tc = _extract_envelope_tool_call({
+        "callID": "call_4",
+        "tool": "bash",
+        "state": {"input": "not json"},
+    })
+    assert tc["input"] == "not json"
+
+
+def test_extract_envelope_tool_call_empty_defaults():
+    """Empty part defaults to empty id, name, and input."""
+    tc = _extract_envelope_tool_call({})
+    assert tc == {"id": "", "name": "", "input": {}}
+
+
+# ---------------------------------------------------------------------------
+# invoke() with envelope format (mocked subprocess)
+# ---------------------------------------------------------------------------
+
+
+async def test_invoke_with_envelope_output():
+    """invoke() correctly parses OpenCode v1.2+ envelope format output."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    output_lines = "\n".join([
+        _envelope("step_start", {"type": "step-start"}),
+        _envelope("tool_use", {
+            "type": "tool",
+            "callID": "call_123",
+            "tool": "bash",
+            "state": {
+                "status": "completed",
+                "input": {"command": "echo hi"},
+                "output": "hi\n",
+            },
+        }),
+        _envelope("step_finish", {
+            "type": "step-finish",
+            "reason": "tool-calls",
+            "tokens": {"total": 500, "input": 400, "output": 100},
+        }),
+        _envelope("step_start", {"type": "step-start"}),
+        _envelope("text", {"type": "text", "text": "Done!"}),
+        _envelope("step_finish", {
+            "type": "step-finish",
+            "reason": "stop",
+            "tokens": {"total": 200, "input": 150, "output": 50},
+        }),
+    ])
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(
+        return_value=(output_lines.encode(), b"")
+    )
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="do something",
+            system_prompt="you are helpful",
+            mcp_servers={},
+            env={},
+        )
+
+    assert result_text == "Done!"
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "bash"
+    assert tool_calls[0]["id"] == "call_123"
+    assert tool_calls[0]["input"] == {"command": "echo hi"}
+    assert usage == {"input_tokens": 550, "output_tokens": 150}

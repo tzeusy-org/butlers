@@ -64,20 +64,25 @@ def _parse_opencode_output(
     """Parse OpenCode CLI JSON output into (result_text, tool_calls, usage).
 
     OpenCode CLI emits JSON-lines on stdout when invoked with ``--format json``.
-    The exact event shapes are not fully documented; this parser handles multiple
-    known variants and degrades gracefully on unknown types.
 
-    Known event types handled:
-    - ``type: "text"`` — plain text delta or result text
-    - ``type: "message"`` — assistant message with text or multi-part content
-    - ``type: "assistant"`` — assistant response wrapper
+    **OpenCode v1.2+ envelope format** (primary):
+    Every event is wrapped in ``{type, timestamp, sessionID, part: {...}}``.
+    The ``part`` object contains the actual payload:
+
+    - ``type: "text"`` → ``part.text`` contains the response text
+    - ``type: "tool_use"`` → ``part.tool`` (name), ``part.callID`` (id),
+      ``part.state.input`` (arguments)
+    - ``type: "step_finish"`` → ``part.tokens.{input, output}`` for usage
+    - ``type: "step_start"`` → skipped (no useful data)
+
+    **Legacy format** (fallback for future compatibility):
+    Non-envelope events are handled as before for backward compatibility:
+
+    - ``type: "text"`` — plain text delta
+    - ``type: "message"`` / ``type: "assistant"`` — assistant messages
     - ``type: "result"`` — final result payload
-    - ``type: "tool_use"`` — standard MCP/Claude tool use
-    - ``type: "tool_call"`` — alternative tool call variant
-    - ``type: "function_call"`` — OpenAI function_call format
-    - ``type: "mcp_tool_call"`` — explicit MCP tool call events
-    - ``type: "usage"`` — token usage counts
-    - ``type: "turn.completed"`` / ``type: "response.completed"`` — final usage wrapper
+    - ``type: "tool_use"`` / ``type: "tool_call"`` / ``type: "function_call"`` — tool calls
+    - ``type: "usage"`` / ``type: "turn.completed"`` / ``type: "response.completed"`` — usage
     - ``type: "item.completed"`` / ``type: "response.output_item.done"`` — nested items
 
     Unknown event types are logged at DEBUG level and skipped.
@@ -134,9 +139,63 @@ def _parse_opencode_output(
         parsed_any_json = True
         obj_type = obj.get("type", "")
 
+        # -----------------------------------------------------------
+        # OpenCode v1.2+ envelope detection
+        # All events are wrapped: {type, timestamp, sessionID, part: {...}}
+        # -----------------------------------------------------------
+        part = obj.get("part")
+        is_envelope = isinstance(part, dict) and "sessionID" in obj
+
+        if is_envelope:
+            if obj_type == "text":
+                text_val = part.get("text")
+                if isinstance(text_val, str) and text_val:
+                    text_parts.append(text_val)
+
+            elif obj_type == "tool_use":
+                tool_calls.append(_extract_envelope_tool_call(part))
+
+            elif obj_type in ("step_finish", "step-finish"):
+                tokens = part.get("tokens")
+                if isinstance(tokens, dict):
+                    step_in = tokens.get("input")
+                    step_out = tokens.get("output")
+                    if isinstance(step_in, int) or isinstance(step_out, int):
+                        if usage is None:
+                            usage = {"input_tokens": 0, "output_tokens": 0}
+                        if isinstance(step_in, int):
+                            usage["input_tokens"] += step_in
+                        if isinstance(step_out, int):
+                            usage["output_tokens"] += step_out
+
+            elif obj_type in ("step_start", "step-start"):
+                pass  # No useful data
+
+            else:
+                # Unknown envelope event — try to harvest text from part
+                if obj_type:
+                    logger.debug(
+                        "OpenCode: unknown envelope event type %r — skipping",
+                        obj_type,
+                    )
+                text_val = part.get("text")
+                if isinstance(text_val, str) and text_val:
+                    text_parts.append(text_val)
+
+            continue  # Envelope handled — skip legacy path
+
+        # -----------------------------------------------------------
+        # Legacy / non-envelope format (backward compatibility)
+        # -----------------------------------------------------------
+
         if obj_type == "text":
             # Plain text delta — OpenCode may emit incremental text events
-            text_val = obj.get("text") or obj.get("content") or obj.get("value") or obj.get("delta")
+            text_val = (
+                obj.get("text")
+                or obj.get("content")
+                or obj.get("value")
+                or obj.get("delta")
+            )
             if isinstance(text_val, str) and text_val:
                 text_parts.append(text_val)
 
@@ -154,13 +213,14 @@ def _parse_opencode_output(
                             if text_val:
                                 text_parts.append(text_val)
                         elif _looks_like_tool_call_event(block):
-                            tool_calls.append(_extract_opencode_tool_call(block))
+                            tool_calls.append(
+                                _extract_opencode_tool_call(block)
+                            )
 
         elif obj_type == "assistant":
-            # Assistant response wrapper — may contain message or content directly
+            # Assistant response wrapper — may contain message or content
             inner = obj.get("message") or obj.get("response")
             if isinstance(inner, dict):
-                # Recurse into inner message content
                 content = inner.get("content", "")
                 if isinstance(content, str) and content:
                     text_parts.append(content)
@@ -173,9 +233,10 @@ def _parse_opencode_output(
                                 if text_val:
                                     text_parts.append(text_val)
                             elif _looks_like_tool_call_event(block):
-                                tool_calls.append(_extract_opencode_tool_call(block))
+                                tool_calls.append(
+                                    _extract_opencode_tool_call(block)
+                                )
             else:
-                # Content may be directly on the assistant event
                 content = obj.get("content", "")
                 if isinstance(content, str) and content:
                     text_parts.append(content)
@@ -187,7 +248,6 @@ def _parse_opencode_output(
                 text_parts.append(str(result_content))
 
         elif _looks_like_tool_call_event(obj):
-            # Heuristic match — object looks like a tool call (known types and structural patterns)
             tool_calls.append(_extract_opencode_tool_call(obj))
 
         elif obj_type in (
@@ -213,22 +273,25 @@ def _parse_opencode_output(
             usage = _extract_usage(obj)
 
         elif obj_type in ("turn.completed", "response.completed"):
-            # Final usage wrapper — may embed usage directly or in response sub-object
+            # Final usage wrapper
             extracted = _extract_usage(obj)
             if extracted is not None:
                 usage = extracted
             else:
-                # Try nested response.usage
                 response_obj = obj.get("response")
                 if isinstance(response_obj, dict):
-                    extracted = _extract_usage(response_obj.get("usage") or response_obj)
+                    extracted = _extract_usage(
+                        response_obj.get("usage") or response_obj
+                    )
                     if extracted is not None:
                         usage = extracted
 
         else:
-            # Unknown event type — log and skip, but harvest any text/content
+            # Unknown event type — log and skip, but harvest text/content
             if obj_type:
-                logger.debug("OpenCode: unknown event type %r — skipping", obj_type)
+                logger.debug(
+                    "OpenCode: unknown event type %r — skipping", obj_type
+                )
             if "text" in obj and isinstance(obj["text"], str):
                 text_parts.append(obj["text"])
             elif "content" in obj and isinstance(obj["content"], str):
@@ -236,10 +299,67 @@ def _parse_opencode_output(
 
     # If we couldn't parse any JSON, treat entire stdout as result text
     if not parsed_any_json and not text_parts:
-        text_parts = fallback_text_parts or ([stdout.strip()] if stdout.strip() else [])
+        text_parts = fallback_text_parts or (
+            [stdout.strip()] if stdout.strip() else []
+        )
 
     result_text = "\n".join(part for part in text_parts if part) or None
     return result_text, tool_calls, usage
+
+
+def _extract_envelope_tool_call(part: dict[str, Any]) -> dict[str, Any]:
+    """Extract a normalized tool call from an OpenCode v1.2+ envelope ``part``.
+
+    OpenCode v1.2+ wraps tool calls in an envelope where the ``part`` object
+    contains:
+
+    .. code-block:: json
+
+        {
+            "type": "tool",
+            "callID": "call_...",
+            "tool": "bash",
+            "state": {
+                "status": "completed",
+                "input": {"command": "ls -1", "workdir": "/tmp"},
+                "output": "file.txt\\n",
+                "metadata": {...},
+                "time": {...}
+            }
+        }
+
+    Parameters
+    ----------
+    part:
+        The ``part`` dict from an OpenCode envelope event with ``type: "tool_use"``.
+
+    Returns
+    -------
+    dict[str, Any]
+        Normalized tool call with 'id', 'name', and 'input' keys.
+    """
+    state = part.get("state")
+    input_payload: Any = {}
+    if isinstance(state, dict):
+        inp = state.get("input")
+        if isinstance(inp, dict):
+            input_payload = inp
+        elif isinstance(inp, str):
+            # Try to parse stringified JSON
+            try:
+                parsed = json.loads(inp)
+                input_payload = parsed if isinstance(parsed, dict) else inp
+            except (json.JSONDecodeError, ValueError):
+                input_payload = inp
+
+    tool_id = part.get("callID") or part.get("id") or ""
+    tool_name = part.get("tool") or part.get("name") or ""
+
+    return {
+        "id": tool_id if isinstance(tool_id, str) else "",
+        "name": tool_name if isinstance(tool_name, str) else "",
+        "input": input_payload,
+    }
 
 
 def _extract_usage(obj: dict[str, Any]) -> dict[str, Any] | None:
