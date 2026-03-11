@@ -15,6 +15,7 @@ from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
     _resolve_telegram_bot_token_from_db,
+    resolve_telegram_endpoint_identity,
     run_telegram_bot_connector,
 )
 from butlers.ingestion_policy import IngestionPolicyEvaluator
@@ -1635,3 +1636,177 @@ def test_connector_instantiates_ingestion_policy_evaluator(
     assert isinstance(connector._ingestion_policy, IngestionPolicyEvaluator)
     expected_scope = f"connector:telegram-bot:{connector._config.endpoint_identity}"
     assert connector._ingestion_policy.scope == expected_scope
+
+
+# -- resolve_telegram_endpoint_identity tests --
+
+
+class TestResolveTelegramEndpointIdentity:
+    """Tests for resolve_telegram_endpoint_identity()."""
+
+    async def test_resolves_username_from_get_me(self) -> None:
+        """Should return bot username when getMe returns ok=true with a username."""
+        get_me_response = MagicMock(spec=httpx.Response)
+        get_me_response.raise_for_status = MagicMock()
+        get_me_response.json.return_value = {
+            "ok": True,
+            "result": {
+                "id": 123456789,
+                "is_bot": True,
+                "first_name": "My Bot",
+                "username": "my_bot",
+            },
+        }
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=get_me_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.connectors.telegram_bot.httpx.AsyncClient", return_value=mock_client):
+            result = await resolve_telegram_endpoint_identity(
+                token="test-token",
+                env_fallback="telegram:user:dev",
+            )
+
+        assert result == "my_bot"
+
+    async def test_falls_back_to_first_name_when_no_username(self) -> None:
+        """Should return first_name when username is absent from the getMe result."""
+        get_me_response = MagicMock(spec=httpx.Response)
+        get_me_response.raise_for_status = MagicMock()
+        get_me_response.json.return_value = {
+            "ok": True,
+            "result": {
+                "id": 123456789,
+                "is_bot": True,
+                "first_name": "My Bot",
+                # no username
+            },
+        }
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=get_me_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.connectors.telegram_bot.httpx.AsyncClient", return_value=mock_client):
+            result = await resolve_telegram_endpoint_identity(
+                token="test-token",
+                env_fallback="telegram:user:dev",
+            )
+
+        assert result == "My Bot"
+
+    async def test_falls_back_to_env_fallback_on_api_error(self) -> None:
+        """Should return env_fallback when the API call raises an exception."""
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.connectors.telegram_bot.httpx.AsyncClient", return_value=mock_client):
+            result = await resolve_telegram_endpoint_identity(
+                token="test-token",
+                env_fallback="telegram:user:dev",
+            )
+
+        assert result == "telegram:user:dev"
+
+    async def test_falls_back_to_env_fallback_when_ok_is_false(self) -> None:
+        """Should return env_fallback when getMe returns ok=false."""
+        get_me_response = MagicMock(spec=httpx.Response)
+        get_me_response.raise_for_status = MagicMock()
+        get_me_response.json.return_value = {"ok": False, "description": "Unauthorized"}
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=get_me_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.connectors.telegram_bot.httpx.AsyncClient", return_value=mock_client):
+            result = await resolve_telegram_endpoint_identity(
+                token="bad-token",
+                env_fallback="telegram:user:dev",
+            )
+
+        assert result == "telegram:user:dev"
+
+
+class TestRunTelegramConnectorIdentityResolution:
+    """Tests for endpoint_identity auto-resolution in run_telegram_bot_connector()."""
+
+    async def test_endpoint_identity_updated_from_resolved_username(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """run_telegram_bot_connector should update endpoint_identity with resolved username."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:user:dev")
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        monkeypatch.setenv("CONNECTOR_POLL_INTERVAL_S", "1.0")
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.delenv("POSTGRES_HOST", raising=False)
+
+        connector_mock = MagicMock()
+        connector_mock.start_polling = AsyncMock()
+        connector_mock.stop = AsyncMock()
+
+        with (
+            patch("butlers.connectors.telegram_bot.configure_logging"),
+            patch(
+                "butlers.connectors.telegram_bot.resolve_telegram_endpoint_identity",
+                new=AsyncMock(return_value="my_real_bot"),
+            ),
+            patch(
+                "butlers.connectors.telegram_bot.TelegramBotConnector",
+                return_value=connector_mock,
+            ) as ctor,
+            patch(
+                "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+                new=AsyncMock(return_value=AsyncMock()),
+            ),
+        ):
+            connector_mock.start_polling.side_effect = KeyboardInterrupt
+            await run_telegram_bot_connector()
+
+        ctor.assert_called_once()
+        used_config = ctor.call_args.args[0]
+        assert used_config.endpoint_identity == "my_real_bot"
+
+    async def test_endpoint_identity_uses_fallback_when_resolution_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """run_telegram_bot_connector should keep env var identity when resolution fails."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:user:dev")
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        monkeypatch.setenv("CONNECTOR_POLL_INTERVAL_S", "1.0")
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.delenv("POSTGRES_HOST", raising=False)
+
+        connector_mock = MagicMock()
+        connector_mock.start_polling = AsyncMock()
+        connector_mock.stop = AsyncMock()
+
+        with (
+            patch("butlers.connectors.telegram_bot.configure_logging"),
+            patch(
+                "butlers.connectors.telegram_bot.resolve_telegram_endpoint_identity",
+                # Returns the fallback unchanged (simulates resolution failure)
+                new=AsyncMock(return_value="telegram:user:dev"),
+            ),
+            patch(
+                "butlers.connectors.telegram_bot.TelegramBotConnector",
+                return_value=connector_mock,
+            ) as ctor,
+            patch(
+                "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+                new=AsyncMock(return_value=AsyncMock()),
+            ),
+        ):
+            connector_mock.start_polling.side_effect = KeyboardInterrupt
+            await run_telegram_bot_connector()
+
+        ctor.assert_called_once()
+        used_config = ctor.call_args.args[0]
+        assert used_config.endpoint_identity == "telegram:user:dev"

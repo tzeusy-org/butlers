@@ -1054,6 +1054,50 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
             await pool.close()
 
 
+async def resolve_telegram_endpoint_identity(token: str, env_fallback: str) -> str:
+    """Resolve the bot username from the Telegram Bot API for use as endpoint_identity.
+
+    Calls the Telegram ``getMe`` method to retrieve the bot's username. Falls back
+    to ``env_fallback`` if the API call fails for any reason.
+
+    Args:
+        token: Telegram bot token.
+        env_fallback: Value to return if auto-resolution fails.
+
+    Returns:
+        The bot username (e.g. ``my_bot``) if successful, otherwise ``env_fallback``.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"https://api.telegram.org/bot{token}/getMe",
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("ok"):
+                result = data.get("result", {})
+                username = result.get("username") or result.get("first_name", "")
+                if username:
+                    logger.info(
+                        "Telegram connector: auto-resolved endpoint_identity=%s from bot account",
+                        username,
+                    )
+                    return username
+            logger.warning(
+                "Telegram connector: getMe response missing username; "
+                "falling back to env var endpoint_identity=%s",
+                env_fallback,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Telegram connector: failed to auto-resolve endpoint_identity (%s); "
+            "falling back to env var value=%s",
+            exc,
+            env_fallback,
+        )
+    return env_fallback
+
+
 async def run_telegram_bot_connector() -> None:
     """CLI entry point for running Telegram bot connector.
 
@@ -1110,6 +1154,20 @@ async def run_telegram_bot_connector() -> None:
         logger.debug("Telegram bot connector: config updated with DB-resolved token")
 
     assert config is not None
+
+    # Step 4: Auto-resolve endpoint_identity from the authenticated bot account.
+    # This replaces the static env var default (e.g. "telegram:user:dev") with the
+    # actual bot username returned by the Telegram getMe API.
+    resolved_identity = await resolve_telegram_endpoint_identity(
+        token=config.telegram_token,
+        env_fallback=config.endpoint_identity,
+    )
+    if resolved_identity != config.endpoint_identity:
+        config = replace(config, endpoint_identity=resolved_identity)
+        logger.info(
+            "Telegram bot connector: updated endpoint_identity to resolved value: %s",
+            resolved_identity,
+        )
 
     # Create cursor pool for DB-backed checkpoint persistence.
     from butlers.connectors.cursor_store import create_cursor_pool_from_env

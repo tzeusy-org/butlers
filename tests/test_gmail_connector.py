@@ -18,6 +18,7 @@ from butlers.connectors.gmail import (
     GmailConnectorRuntime,
     GmailCursor,
     _resolve_gmail_credentials_from_db,
+    resolve_gmail_endpoint_identity,
     run_gmail_connector,
 )
 
@@ -4049,3 +4050,190 @@ class TestBackfillJobValidation:
             f"Expected backfill semaphore value={expected}, "
             f"got {backfill_runtime._backfill_semaphore._value}"
         )
+
+
+class TestResolveGmailEndpointIdentity:
+    """Tests for resolve_gmail_endpoint_identity()."""
+
+    async def test_resolves_email_from_profile_api(self) -> None:
+        """Should return gmail:user:<email> when profile API returns emailAddress."""
+        token_response = MagicMock(spec=httpx.Response)
+        token_response.raise_for_status = MagicMock()
+        token_response.json.return_value = {"access_token": "test-access-token"}
+
+        profile_response = MagicMock(spec=httpx.Response)
+        profile_response.raise_for_status = MagicMock()
+        profile_response.json.return_value = {
+            "emailAddress": "alice@example.com",
+            "historyId": "12345",
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=token_response)
+        mock_client.get = AsyncMock(return_value=profile_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.connectors.gmail.httpx.AsyncClient", return_value=mock_client):
+            result = await resolve_gmail_endpoint_identity(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+                env_fallback="gmail:user:dev",
+            )
+
+        assert result == "gmail:user:alice@example.com"
+
+    async def test_falls_back_to_env_fallback_on_api_error(self) -> None:
+        """Should return env_fallback when the API call raises an exception."""
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.connectors.gmail.httpx.AsyncClient", return_value=mock_client):
+            result = await resolve_gmail_endpoint_identity(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+                env_fallback="gmail:user:dev",
+            )
+
+        assert result == "gmail:user:dev"
+
+    async def test_falls_back_when_profile_missing_email(self) -> None:
+        """Should return env_fallback when profile response has no emailAddress."""
+        token_response = MagicMock(spec=httpx.Response)
+        token_response.raise_for_status = MagicMock()
+        token_response.json.return_value = {"access_token": "test-access-token"}
+
+        profile_response = MagicMock(spec=httpx.Response)
+        profile_response.raise_for_status = MagicMock()
+        # Profile response missing emailAddress field
+        profile_response.json.return_value = {"historyId": "12345"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=token_response)
+        mock_client.get = AsyncMock(return_value=profile_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.connectors.gmail.httpx.AsyncClient", return_value=mock_client):
+            result = await resolve_gmail_endpoint_identity(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+                env_fallback="gmail:user:dev",
+            )
+
+        assert result == "gmail:user:dev"
+
+    async def test_falls_back_on_http_error_status(self) -> None:
+        """Should return env_fallback when the profile API returns an HTTP error."""
+        token_response = MagicMock(spec=httpx.Response)
+        token_response.raise_for_status = MagicMock()
+        token_response.json.return_value = {"access_token": "test-access-token"}
+
+        profile_response = MagicMock(spec=httpx.Response)
+        profile_response.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                "401 Unauthorized", request=MagicMock(), response=MagicMock()
+            )
+        )
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=token_response)
+        mock_client.get = AsyncMock(return_value=profile_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.connectors.gmail.httpx.AsyncClient", return_value=mock_client):
+            result = await resolve_gmail_endpoint_identity(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+                env_fallback="gmail:user:dev",
+            )
+
+        assert result == "gmail:user:dev"
+
+
+class TestRunGmailConnectorIdentityResolution:
+    """Tests for endpoint_identity auto-resolution in run_gmail_connector()."""
+
+    async def test_endpoint_identity_updated_from_resolved_email(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """run_gmail_connector should update endpoint_identity with the resolved email."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:dev")
+
+        db_creds = {
+            "client_id": "db-client-id",
+            "client_secret": "db-client-secret",
+            "refresh_token": "db-refresh-token",
+        }
+
+        runtime = MagicMock()
+        runtime.start = AsyncMock()
+
+        with (
+            patch("butlers.connectors.gmail.configure_logging"),
+            patch(
+                "butlers.connectors.gmail._resolve_gmail_credentials_from_db",
+                new=AsyncMock(return_value=db_creds),
+            ),
+            patch(
+                "butlers.connectors.gmail.resolve_gmail_endpoint_identity",
+                new=AsyncMock(return_value="gmail:user:alice@example.com"),
+            ),
+            patch("butlers.connectors.gmail.GmailConnectorRuntime", return_value=runtime) as ctor,
+            patch(
+                "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+                new=AsyncMock(return_value=AsyncMock()),
+            ),
+        ):
+            await run_gmail_connector()
+
+        ctor.assert_called_once()
+        config = ctor.call_args.args[0]
+        assert config.connector_endpoint_identity == "gmail:user:alice@example.com"
+
+    async def test_endpoint_identity_unchanged_when_already_resolved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """run_gmail_connector should not update config if identity already matches resolved."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:alice@example.com")
+
+        db_creds = {
+            "client_id": "db-client-id",
+            "client_secret": "db-client-secret",
+            "refresh_token": "db-refresh-token",
+        }
+
+        runtime = MagicMock()
+        runtime.start = AsyncMock()
+
+        with (
+            patch("butlers.connectors.gmail.configure_logging"),
+            patch(
+                "butlers.connectors.gmail._resolve_gmail_credentials_from_db",
+                new=AsyncMock(return_value=db_creds),
+            ),
+            patch(
+                "butlers.connectors.gmail.resolve_gmail_endpoint_identity",
+                # Returns same value as what's in env
+                new=AsyncMock(return_value="gmail:user:alice@example.com"),
+            ),
+            patch("butlers.connectors.gmail.GmailConnectorRuntime", return_value=runtime) as ctor,
+            patch(
+                "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+                new=AsyncMock(return_value=AsyncMock()),
+            ),
+        ):
+            await run_gmail_connector()
+
+        ctor.assert_called_once()
+        config = ctor.call_args.args[0]
+        assert config.connector_endpoint_identity == "gmail:user:alice@example.com"
