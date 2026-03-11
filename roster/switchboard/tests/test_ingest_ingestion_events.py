@@ -106,16 +106,24 @@ class _FakePool:
         self._outer_existing: dict | None = None
         # Track pool-level execute() calls (e.g. ensure_partition outside tx).
         self.pool_execute_calls: list[tuple[str, tuple]] = []
+        # If set, pool.execute() raises this exception (simulates DB failure).
+        self._pool_execute_raises: Exception | None = None
 
     def set_outer_existing(self, row: dict) -> None:
         """Make the pre-lock duplicate check return an existing row."""
         self._outer_existing = row
+
+    def set_pool_execute_to_raise(self, exc: Exception) -> None:
+        """Make pool.execute() raise exc (simulates ensure_partition failure)."""
+        self._pool_execute_raises = exc
 
     def acquire(self) -> _FakeAcquire:
         return _FakeAcquire(self.conn)
 
     async def execute(self, sql: str, *args: Any) -> str:
         """Pool-level execute — used for ensure_partition (outside transaction)."""
+        if self._pool_execute_raises is not None:
+            raise self._pool_execute_raises
         self.pool_execute_calls.append((sql, args))
         return "OK"
 
@@ -567,3 +575,14 @@ class TestEnsurePartitionOutsideTransaction:
             "ensure_partition must NOT be called for pre-lock duplicate "
             "(no insert needed, no partition required)"
         )
+
+    async def test_ensure_partition_failure_raises_runtime_error(self) -> None:
+        """A failure during ensure_partition is caught and re-raised as RuntimeError."""
+        pool = _FakePool()
+        pool.set_pool_execute_to_raise(ValueError("DB connection failed"))
+        envelope = _telegram_envelope(update_id="90003")
+
+        with pytest.raises(
+            RuntimeError, match="Failed to ensure message_inbox partition: DB connection failed"
+        ):
+            await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
