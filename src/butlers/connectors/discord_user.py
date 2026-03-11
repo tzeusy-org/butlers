@@ -65,6 +65,7 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
@@ -262,6 +263,9 @@ class DiscordUserConnector:
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
 
+        # DB pool for filtered event persistence (may be None if DB unavailable).
+        self._db_pool = db_pool
+
         # Gateway state
         self._sequence: int | None = None
         self._session_id: str | None = None
@@ -302,6 +306,13 @@ class DiscordUserConnector:
         self._global_ingestion_policy = IngestionPolicyEvaluator(
             scope="global",
             db_pool=db_pool,
+        )
+
+        # Filtered event buffer: accumulates events filtered during each dispatch event.
+        # Flushed to connectors.filtered_events after each event is processed.
+        self._filtered_event_buffer = FilteredEventBuffer(
+            connector_type=config.provider,
+            endpoint_identity=config.endpoint_identity,
         )
 
     async def get_health_status(self) -> HealthStatus:
@@ -778,8 +789,14 @@ class DiscordUserConnector:
         event_type: str,
         event_data: dict[str, Any],
     ) -> None:
-        """Normalize a Discord dispatch event to ingest.v1 and submit to Switchboard."""
+        """Normalize a Discord dispatch event to ingest.v1 and submit to Switchboard.
+
+        Filtered and errored events are recorded into the FilteredEventBuffer
+        for batch persistence after the event is processed.
+        """
         async with self._semaphore:
+            message_id = str(event_data.get("id", "unknown"))
+            channel_id = str(event_data.get("channel_id", ""))
             try:
                 envelope = self._normalize_to_ingest_v1(event_type, event_data)
                 if envelope is None:
@@ -794,6 +811,28 @@ class DiscordUserConnector:
                             "channel_id": event_data.get("channel_id"),
                         },
                     )
+                    self._filtered_event_buffer.record(
+                        external_message_id=message_id,
+                        source_channel=self._config.channel,
+                        sender_identity=self._extract_sender_identity(event_data),
+                        subject_or_preview=self._extract_preview(event_data),
+                        filter_reason=FilteredEventBuffer.reason_policy_rule(
+                            "connector_rule",
+                            "block",
+                            "allowlist",
+                        ),
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.channel,
+                            provider=self._config.provider,
+                            endpoint_identity=self._config.endpoint_identity,
+                            external_event_id=message_id,
+                            external_thread_id=channel_id,
+                            observed_at=datetime.now(UTC).isoformat(),
+                            sender_identity=self._extract_sender_identity(event_data),
+                            raw={"event_type": event_type, **event_data},
+                        ),
+                    )
+                    await self._flush_and_drain()
                     return
 
                 # Ingestion policy gate: evaluate before Switchboard submission.
@@ -812,6 +851,28 @@ class DiscordUserConnector:
                         _ip_decision.action,
                         _ip_decision.reason,
                     )
+                    self._filtered_event_buffer.record(
+                        external_message_id=message_id,
+                        source_channel=self._config.channel,
+                        sender_identity=self._extract_sender_identity(event_data),
+                        subject_or_preview=self._extract_preview(event_data),
+                        filter_reason=FilteredEventBuffer.reason_policy_rule(
+                            "connector_rule",
+                            "block",
+                            _ip_decision.matched_rule_type or "unknown",
+                        ),
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.channel,
+                            provider=self._config.provider,
+                            endpoint_identity=self._config.endpoint_identity,
+                            external_event_id=message_id,
+                            external_thread_id=channel_id,
+                            observed_at=datetime.now(UTC).isoformat(),
+                            sender_identity=self._extract_sender_identity(event_data),
+                            raw={"event_type": event_type, **event_data},
+                        ),
+                    )
+                    await self._flush_and_drain()
                     return
 
                 # 2. Global-scope rules (skip/metadata_only/route_to/low_priority_queue)
@@ -822,20 +883,45 @@ class DiscordUserConnector:
                         event_data.get("channel_id"),
                         _gp_decision.reason,
                     )
+                    self._filtered_event_buffer.record(
+                        external_message_id=message_id,
+                        source_channel=self._config.channel,
+                        sender_identity=self._extract_sender_identity(event_data),
+                        subject_or_preview=self._extract_preview(event_data),
+                        filter_reason=FilteredEventBuffer.reason_policy_rule(
+                            "global_rule",
+                            "skip",
+                            _gp_decision.matched_rule_type or "unknown",
+                        ),
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.channel,
+                            provider=self._config.provider,
+                            endpoint_identity=self._config.endpoint_identity,
+                            external_event_id=message_id,
+                            external_thread_id=channel_id,
+                            observed_at=datetime.now(UTC).isoformat(),
+                            sender_identity=self._extract_sender_identity(event_data),
+                            raw={"event_type": event_type, **event_data},
+                        ),
+                    )
+                    await self._flush_and_drain()
                     return
 
                 await self._submit_to_ingest(envelope)
 
+                # Flush after successful processing (drain replay-pending rows too)
+                await self._flush_and_drain()
+
                 # Advance per-channel checkpoint after successful ingest
-                channel_id = event_data.get("channel_id")
-                message_id = event_data.get("id")
-                if channel_id and message_id:
-                    self._update_checkpoint(channel_id, message_id)
+                ch_id = event_data.get("channel_id")
+                msg_id = event_data.get("id")
+                if ch_id and msg_id:
+                    self._update_checkpoint(ch_id, msg_id)
                     await self._save_checkpoint()
 
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Failed to process Discord event",
                     extra={
@@ -843,6 +929,27 @@ class DiscordUserConnector:
                         "endpoint_identity": self._config.endpoint_identity,
                     },
                 )
+                # Record error event in the filtered event buffer
+                self._filtered_event_buffer.record(
+                    external_message_id=message_id,
+                    source_channel=self._config.channel,
+                    sender_identity="unknown",
+                    subject_or_preview=None,
+                    filter_reason=FilteredEventBuffer.reason_submission_error(),
+                    full_payload=FilteredEventBuffer.full_payload(
+                        channel=self._config.channel,
+                        provider=self._config.provider,
+                        endpoint_identity=self._config.endpoint_identity,
+                        external_event_id=message_id,
+                        external_thread_id=channel_id,
+                        observed_at=datetime.now(UTC).isoformat(),
+                        sender_identity="unknown",
+                        raw={"event_type": event_type, **event_data},
+                    ),
+                    status="error",
+                    error_detail=str(exc),
+                )
+                await self._flush_and_drain()
 
     def _is_allowed(self, event_data: dict[str, Any]) -> bool:
         """Check whether this event passes the guild/channel allowlists.
@@ -1000,6 +1107,156 @@ class DiscordUserConnector:
         finally:
             latency = time.perf_counter() - start_time
             self._metrics.record_ingest_submission(status=status, latency=latency)
+
+    # -------------------------------------------------------------------------
+    # Internal: FilteredEventBuffer helpers
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_sender_identity(event_data: dict[str, Any]) -> str:
+        """Extract sender identity from a Discord event data dict."""
+        author = event_data.get("author")
+        if isinstance(author, dict):
+            author_id = author.get("id")
+            if author_id:
+                return str(author_id)
+        return "unknown"
+
+    @staticmethod
+    def _extract_preview(event_data: dict[str, Any]) -> str | None:
+        """Extract a short text preview from a Discord event data dict."""
+        content = event_data.get("content")
+        if content:
+            return str(content)[:200]
+        return None
+
+    # SQL for the replay drain loop.
+    # Locks up to 10 replay_pending rows with skip-locked concurrency safety,
+    # then updates each to replay_complete or replay_failed after submission.
+    _REPLAY_SELECT_SQL = """\
+SELECT id, received_at, external_message_id, full_payload
+FROM connectors.filtered_events
+WHERE connector_type = $1
+  AND endpoint_identity = $2
+  AND status = 'replay_pending'
+ORDER BY received_at ASC
+LIMIT 10
+FOR UPDATE SKIP LOCKED
+"""
+
+    _REPLAY_UPDATE_SQL = """\
+UPDATE connectors.filtered_events
+SET status = $1,
+    error_detail = $2,
+    replay_completed_at = now()
+WHERE id = $3 AND received_at = $4
+"""
+
+    async def _flush_and_drain(self) -> None:
+        """Flush filtered event buffer then drain up to 10 replay-pending rows.
+
+        Called after each dispatch event is processed.  No-op when ``_db_pool``
+        is None (no DB connectivity at connector startup).
+        """
+        if self._db_pool is None:
+            return
+
+        # 1. Flush accumulated filtered/error events from this event.
+        await self._filtered_event_buffer.flush(self._db_pool)
+
+        # 2. Drain replay-pending rows left by the dashboard "retry" action.
+        await self._drain_replay_pending()
+
+    async def _drain_replay_pending(self) -> None:
+        """Process up to 10 replay_pending rows from connectors.filtered_events.
+
+        For each row:
+        - Deserialize full_payload from JSONB.
+        - Wrap in an ingest.v1 envelope (adds schema_version).
+        - Submit via _submit_to_ingest.
+        - Mark status=replay_complete on success or replay_failed on error.
+
+        Uses FOR UPDATE SKIP LOCKED so concurrent connector instances never
+        process the same row twice.
+        """
+        if self._db_pool is None:
+            return
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                async with conn.transaction():
+                    rows = await conn.fetch(
+                        self._REPLAY_SELECT_SQL,
+                        self._config.provider,
+                        self._config.endpoint_identity,
+                    )
+
+                    if not rows:
+                        return
+
+                    logger.debug("replay drain: processing %d replay_pending rows", len(rows))
+
+                    for row in rows:
+                        row_id = row["id"]
+                        received_at = row["received_at"]
+                        external_message_id = row["external_message_id"]
+                        raw_payload = row["full_payload"]
+
+                        # Deserialize JSONB (asyncpg may return str or dict depending on codec)
+                        if isinstance(raw_payload, str):
+                            try:
+                                payload_dict: dict[str, Any] = json.loads(raw_payload)
+                            except Exception as exc:
+                                logger.warning(
+                                    "replay drain: failed to parse full_payload for id=%s: %s",
+                                    row_id,
+                                    exc,
+                                )
+                                await conn.execute(
+                                    self._REPLAY_UPDATE_SQL,
+                                    "replay_failed",
+                                    str(exc),
+                                    row_id,
+                                    received_at,
+                                )
+                                continue
+                        else:
+                            payload_dict = dict(raw_payload)
+
+                        # Build ingest.v1 envelope by adding schema_version
+                        envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
+
+                        try:
+                            await self._submit_to_ingest(envelope)
+                            await conn.execute(
+                                self._REPLAY_UPDATE_SQL,
+                                "replay_complete",
+                                None,
+                                row_id,
+                                received_at,
+                            )
+                            logger.info(
+                                "replay drain: replayed message %s (id=%s)",
+                                external_message_id,
+                                row_id,
+                            )
+                        except Exception as exc:
+                            error_msg = str(exc)
+                            logger.warning(
+                                "replay drain: failed to replay message %s (id=%s): %s",
+                                external_message_id,
+                                row_id,
+                                exc,
+                            )
+                            await conn.execute(
+                                self._REPLAY_UPDATE_SQL,
+                                "replay_failed",
+                                error_msg,
+                                row_id,
+                                received_at,
+                            )
+        except Exception:
+            logger.warning("replay drain: failed to query replay_pending rows", exc_info=True)
 
     # -------------------------------------------------------------------------
     # Internal: Checkpoint persistence
