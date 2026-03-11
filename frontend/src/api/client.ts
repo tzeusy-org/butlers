@@ -137,6 +137,12 @@ import type {
   IngestionRuleListParams,
   IngestionRuleTestRequest,
   IngestionRuleTestResponse,
+  ModelCatalogEntry,
+  ModelCatalogCreate,
+  ModelCatalogUpdate,
+  ButlerModelOverride,
+  ButlerModelOverrideUpsert,
+  ResolveModelResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -506,12 +512,13 @@ export function deleteButlerState(
 export function triggerButler(
   name: string,
   prompt: string,
+  complexity?: string,
 ): Promise<TriggerResponse> {
   return apiFetch<TriggerResponse>(
     `/butlers/${encodeURIComponent(name)}/trigger`,
     {
       method: "POST",
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, complexity: complexity ?? "medium" }),
     },
   );
 }
@@ -2440,5 +2447,96 @@ export async function replayIngestionEvent(
   return apiFetch<IngestionEventReplayResponse>(
     `/ingestion/events/${encodeURIComponent(requestId)}/replay`,
     { method: "POST" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Model catalog
+// ---------------------------------------------------------------------------
+
+/** GET /api/settings/models — list all catalog entries */
+export function listModelCatalog(): Promise<ApiResponse<ModelCatalogEntry[]>> {
+  return apiFetch<ApiResponse<ModelCatalogEntry[]>>("/settings/models");
+}
+
+/** POST /api/settings/models — create a catalog entry */
+export function createModelCatalogEntry(
+  body: ModelCatalogCreate,
+): Promise<ApiResponse<ModelCatalogEntry>> {
+  return apiFetch<ApiResponse<ModelCatalogEntry>>("/settings/models", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** PUT /api/settings/models/{id} — update a catalog entry */
+export function updateModelCatalogEntry(
+  id: string,
+  body: ModelCatalogUpdate,
+): Promise<ApiResponse<ModelCatalogEntry>> {
+  return apiFetch<ApiResponse<ModelCatalogEntry>>(
+    `/settings/models/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** DELETE /api/settings/models/{id} — delete a catalog entry */
+export function deleteModelCatalogEntry(
+  id: string,
+): Promise<ApiResponse<{ deleted: boolean; id: string }>> {
+  return apiFetch<ApiResponse<{ deleted: boolean; id: string }>>(
+    `/settings/models/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Butler model overrides
+// ---------------------------------------------------------------------------
+
+/** GET /api/butlers/{name}/model-overrides — list overrides for a butler */
+export function listButlerModelOverrides(
+  butlerName: string,
+): Promise<ApiResponse<ButlerModelOverride[]>> {
+  return apiFetch<ApiResponse<ButlerModelOverride[]>>(
+    `/butlers/${encodeURIComponent(butlerName)}/model-overrides`,
+  );
+}
+
+/** PUT /api/butlers/{name}/model-overrides — batch upsert overrides */
+export function upsertButlerModelOverrides(
+  butlerName: string,
+  body: ButlerModelOverrideUpsert[],
+): Promise<ApiResponse<ButlerModelOverride[]>> {
+  return apiFetch<ApiResponse<ButlerModelOverride[]>>(
+    `/butlers/${encodeURIComponent(butlerName)}/model-overrides`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** DELETE /api/butlers/{name}/model-overrides/{overrideId} — remove a single override */
+export function deleteButlerModelOverride(
+  butlerName: string,
+  overrideId: string,
+): Promise<ApiResponse<{ deleted: boolean; id: string }>> {
+  return apiFetch<ApiResponse<{ deleted: boolean; id: string }>>(
+    `/butlers/${encodeURIComponent(butlerName)}/model-overrides/${encodeURIComponent(overrideId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** GET /api/butlers/{name}/resolve-model?complexity=X — preview model resolution */
+export function resolveButlerModel(
+  butlerName: string,
+  complexity: string,
+): Promise<ApiResponse<ResolveModelResponse>> {
+  return apiFetch<ApiResponse<ResolveModelResponse>>(
+    `/butlers/${encodeURIComponent(butlerName)}/resolve-model?complexity=${encodeURIComponent(complexity)}`,
   );
 }

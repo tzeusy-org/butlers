@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router";
 
 import { triggerButler } from "@/api/index.ts";
 import { ApiError } from "@/api/client.ts";
+import { ComplexityBadge, COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +13,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useResolveModel } from "@/hooks/use-model-catalog.ts";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -29,6 +39,7 @@ interface ButlerTriggerTabProps {
 interface TriggerHistoryEntry {
   id: string;
   prompt: string;
+  complexity: string;
   success: boolean;
   sessionId: string | null;
   output: string;
@@ -44,6 +55,7 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
   const skillParam = searchParams.get("skill");
 
   const [prompt, setPrompt] = useState("");
+  const [complexity, setComplexity] = useState("medium");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [lastResult, setLastResult] = useState<{
     success: boolean;
@@ -52,6 +64,9 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
     error?: string;
   } | null>(null);
   const [history, setHistory] = useState<TriggerHistoryEntry[]>([]);
+
+  const resolveModelQuery = useResolveModel(butlerName, complexity);
+  const resolvedModel = resolveModelQuery.data?.data;
 
   // Pre-fill prompt when skill param is present
   useEffect(() => {
@@ -67,7 +82,7 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
     setLastResult(null);
 
     try {
-      const response = await triggerButler(butlerName, prompt.trim());
+      const response = await triggerButler(butlerName, prompt.trim(), complexity);
 
       const result = {
         success: response.success,
@@ -82,6 +97,7 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
         {
           id: crypto.randomUUID(),
           prompt: prompt.trim(),
+          complexity,
           success: response.success,
           sessionId: response.session_id,
           output: response.output,
@@ -108,6 +124,7 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
         {
           id: crypto.randomUUID(),
           prompt: prompt.trim(),
+          complexity,
           success: false,
           sessionId: null,
           output: message,
@@ -118,7 +135,7 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
     } finally {
       setIsSubmitting(false);
     }
-  }, [butlerName, prompt, isSubmitting]);
+  }, [butlerName, prompt, complexity, isSubmitting]);
 
   return (
     <div className="space-y-6">
@@ -138,9 +155,50 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
             className="min-h-32"
             disabled={isSubmitting}
           />
-          <Button onClick={handleSubmit} disabled={!prompt.trim() || isSubmitting}>
-            {isSubmitting ? "Triggering..." : "Trigger Session"}
-          </Button>
+          <div className="flex items-end gap-4">
+            <div className="space-y-1.5 min-w-40">
+              <Label htmlFor="trigger-complexity">Complexity</Label>
+              <Select
+                value={complexity}
+                onValueChange={setComplexity}
+                disabled={isSubmitting}
+              >
+                <SelectTrigger id="trigger-complexity">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {COMPLEXITY_TIERS.map((tier) => (
+                    <SelectItem key={tier} value={tier}>
+                      {complexityLabel(tier)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button onClick={handleSubmit} disabled={!prompt.trim() || isSubmitting}>
+              {isSubmitting ? "Triggering..." : "Trigger Session"}
+            </Button>
+          </div>
+          {/* Resolved model preview */}
+          {resolvedModel && (
+            <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              {resolvedModel.resolved ? (
+                <span>
+                  Model:{" "}
+                  <code className="font-mono text-foreground">{resolvedModel.model_id}</code>
+                  {" via "}
+                  <code className="font-mono">{resolvedModel.runtime_type}</code>
+                  {resolvedModel.extra_args.length > 0 && (
+                    <span className="ml-1 font-mono">{resolvedModel.extra_args.join(" ")}</span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-amber-600 dark:text-amber-400">
+                  No model configured for {complexityLabel(complexity)} complexity.
+                </span>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -209,8 +267,9 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">{entry.prompt}</p>
-                    <p className="text-muted-foreground text-xs">
+                    <p className="text-muted-foreground text-xs flex items-center gap-1.5">
                       {new Date(entry.timestamp).toLocaleTimeString()}
+                      <ComplexityBadge tier={entry.complexity} />
                       {entry.sessionId && (
                         <>
                           {" \u2014 "}

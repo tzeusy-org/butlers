@@ -1,6 +1,7 @@
 import { formatDistanceToNow, format } from "date-fns";
 
 import type { Schedule, ScheduleDispatchMode } from "@/api/types.ts";
+import { ComplexityBadge } from "@/components/general/ComplexityBadge.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -75,6 +76,7 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
           <TableCell><Skeleton className="h-4 w-14" /></TableCell>
           <TableCell><Skeleton className="h-4 w-48" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-14" /></TableCell>
           <TableCell><Skeleton className="h-4 w-12" /></TableCell>
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
@@ -124,6 +126,7 @@ export function ScheduleTable({
           <TableHead>Cron</TableHead>
           <TableHead>Mode</TableHead>
           <TableHead>Prompt / Job</TableHead>
+          <TableHead>Complexity</TableHead>
           <TableHead>Enabled</TableHead>
           <TableHead>Source</TableHead>
           <TableHead>Next Run</TableHead>
@@ -175,6 +178,13 @@ export function ScheduleTable({
                         <p className="text-muted-foreground text-xs">\u2014</p>
                       )}
                     </div>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {schedule.complexity ? (
+                    <ComplexityBadge tier={schedule.complexity} />
+                  ) : (
+                    <span className="text-xs text-muted-foreground">&mdash;</span>
                   )}
                 </TableCell>
                 <TableCell>

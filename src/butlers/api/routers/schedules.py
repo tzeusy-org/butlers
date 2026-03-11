@@ -24,6 +24,7 @@ from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_m
 from butlers.api.models import ApiResponse
 from butlers.api.models.schedule import Schedule, ScheduleCreate, ScheduleUpdate
 from butlers.api.routers.audit import log_audit_entry
+from butlers.api.routers.model_settings import _validate_complexity_tier
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def _get_db_manager() -> DatabaseManager:
 
 _SCHEDULE_COLUMNS = (
     "id, name, cron, dispatch_mode, prompt, job_name, job_args, "
-    "timezone, start_at, end_at, until_at, display_title, calendar_event_id, "
+    "complexity, timezone, start_at, end_at, until_at, display_title, calendar_event_id, "
     "source, enabled, next_run_at, last_run_at, created_at, updated_at"
 )
 _DISPATCH_MODE_PROMPT = "prompt"
@@ -90,6 +91,7 @@ def _row_to_schedule(row) -> Schedule:
         prompt=_row_value(row, "prompt"),
         job_name=_row_value(row, "job_name"),
         job_args=_normalize_job_args(_row_value(row, "job_args")),
+        complexity=_row_value(row, "complexity", "medium"),
         timezone=_row_value(row, "timezone"),
         start_at=_row_value(row, "start_at"),
         end_at=_row_value(row, "end_at"),
@@ -205,6 +207,9 @@ async def create_schedule(
         arguments["display_title"] = body.display_title
     if body.calendar_event_id is not None:
         arguments["calendar_event_id"] = str(body.calendar_event_id)
+    if body.complexity is not None:
+        _validate_complexity_tier(body.complexity)
+        arguments["complexity"] = body.complexity
 
     summary = {"name": body.name, "cron": body.cron, "dispatch_mode": body.dispatch_mode}
     if body.job_name is not None:
@@ -237,6 +242,8 @@ async def update_schedule(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
     """Update a scheduled task via MCP tool call to the butler."""
+    if body.complexity is not None:
+        _validate_complexity_tier(body.complexity)
     arguments: dict = {"id": str(schedule_id)}
     updates = body.model_dump(exclude_none=True)
     for key in ("start_at", "end_at", "until_at"):

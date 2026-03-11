@@ -318,6 +318,7 @@ export interface Schedule {
   dispatch_mode?: ScheduleDispatchMode | null;
   job_name?: string | null;
   job_args?: ScheduleJobArgs | null;
+  complexity?: string | null;
   source: string;
   enabled: boolean;
   next_run_at: string | null;
@@ -332,6 +333,7 @@ export interface PromptScheduleCreate {
   cron: string;
   dispatch_mode?: "prompt";
   prompt: string;
+  complexity?: string;
 }
 
 /** Payload for creating a new deterministic job schedule. */
@@ -341,6 +343,7 @@ export interface JobScheduleCreate {
   dispatch_mode: "job";
   job_name: string;
   job_args?: ScheduleJobArgs;
+  complexity?: string;
 }
 
 /** Payload for creating a schedule (prompt or deterministic job mode). */
@@ -354,6 +357,7 @@ export interface ScheduleUpdate {
   dispatch_mode?: ScheduleDispatchMode;
   job_name?: string | null;
   job_args?: ScheduleJobArgs | null;
+  complexity?: string | null;
   enabled?: boolean;
 }
 
@@ -2219,4 +2223,74 @@ export interface IngestionRuleListParams {
   rule_type?: string;
   action?: string;
   enabled?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Model catalog
+// ---------------------------------------------------------------------------
+
+/** Valid complexity tier values for the model catalog. */
+export type ComplexityTier = "trivial" | "medium" | "high" | "extra_high";
+
+/** A single entry in the shared model catalog. */
+export interface ModelCatalogEntry {
+  id: string;
+  alias: string;
+  runtime_type: string;
+  model_id: string;
+  extra_args: string[];
+  complexity_tier: ComplexityTier;
+  enabled: boolean;
+  priority: number;
+}
+
+/** Request body for creating a catalog entry. */
+export interface ModelCatalogCreate {
+  alias: string;
+  runtime_type: string;
+  model_id: string;
+  extra_args?: string[];
+  complexity_tier?: ComplexityTier;
+  enabled?: boolean;
+  priority?: number;
+}
+
+/** Request body for updating a catalog entry (all fields optional). */
+export interface ModelCatalogUpdate {
+  alias?: string;
+  runtime_type?: string;
+  model_id?: string;
+  extra_args?: string[];
+  complexity_tier?: ComplexityTier;
+  enabled?: boolean;
+  priority?: number;
+}
+
+/** A single per-butler model override joined with catalog alias. */
+export interface ButlerModelOverride {
+  id: string;
+  butler_name: string;
+  catalog_entry_id: string;
+  alias: string;
+  enabled: boolean;
+  priority: number | null;
+  complexity_tier: ComplexityTier | null;
+}
+
+/** One item in a batch upsert request for butler model overrides. */
+export interface ButlerModelOverrideUpsert {
+  catalog_entry_id: string;
+  enabled?: boolean;
+  priority?: number | null;
+  complexity_tier?: ComplexityTier | null;
+}
+
+/** Response from the resolve-model preview endpoint. */
+export interface ResolveModelResponse {
+  butler_name: string;
+  complexity: string;
+  runtime_type: string | null;
+  model_id: string | null;
+  extra_args: string[];
+  resolved: boolean;
 }

@@ -52,6 +52,9 @@ const ButlerRoutingLogTab = lazy(
 const ButlerRegistryTab = lazy(
   () => import("@/components/butler-detail/ButlerRegistryTab.tsx"),
 );
+const ButlerModelOverridesTab = lazy(
+  () => import("@/components/butler-detail/ButlerModelOverridesTab.tsx"),
+);
 
 // ---------------------------------------------------------------------------
 // Tab configuration
@@ -68,6 +71,7 @@ const BASE_TABS = [
   "mcp",
   "crm",
   "memory",
+  "models",
 ] as const;
 
 const HEALTH_TABS = ["health"] as const;
@@ -400,6 +404,7 @@ export default function ButlerDetailPage() {
           <TabsTrigger value="state">State</TabsTrigger>
           <TabsTrigger value="crm">CRM</TabsTrigger>
           <TabsTrigger value="memory">Memory</TabsTrigger>
+          <TabsTrigger value="models">Models</TabsTrigger>
           {showHealthTab && <TabsTrigger value="health">Health</TabsTrigger>}
           {isSwitchboard && (
             <>
@@ -458,6 +463,12 @@ export default function ButlerDetailPage() {
         <TabsContent value="memory">
           <Suspense fallback={<TabFallback label="memory" />}>
             <ButlerMemoryTab butlerName={name} />
+          </Suspense>
+        </TabsContent>
+
+        <TabsContent value="models">
+          <Suspense fallback={<TabFallback label="models" />}>
+            <ButlerModelOverridesTab butlerName={name} />
           </Suspense>
         </TabsContent>
 
