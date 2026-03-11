@@ -2061,9 +2061,18 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
-            async def invoke(self, prompt, system_prompt, mcp_servers, env,
-                             max_turns=20, model=None, runtime_args=None,
-                             cwd=None, timeout=None):
+            async def invoke(
+                self,
+                prompt,
+                system_prompt,
+                mcp_servers,
+                env,
+                max_turns=20,
+                model=None,
+                runtime_args=None,
+                cwd=None,
+                timeout=None,
+            ):
                 captured["model"] = model
                 captured["runtime_args"] = runtime_args
                 return "ok", [], None
@@ -2099,9 +2108,18 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
-            async def invoke(self, prompt, system_prompt, mcp_servers, env,
-                             max_turns=20, model=None, runtime_args=None,
-                             cwd=None, timeout=None):
+            async def invoke(
+                self,
+                prompt,
+                system_prompt,
+                mcp_servers,
+                env,
+                max_turns=20,
+                model=None,
+                runtime_args=None,
+                cwd=None,
+                timeout=None,
+            ):
                 captured["model"] = model
                 return "ok", [], None
 
@@ -2190,9 +2208,18 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
-            async def invoke(self, prompt, system_prompt, mcp_servers, env,
-                             max_turns=20, model=None, runtime_args=None,
-                             cwd=None, timeout=None):
+            async def invoke(
+                self,
+                prompt,
+                system_prompt,
+                mcp_servers,
+                env,
+                max_turns=20,
+                model=None,
+                runtime_args=None,
+                cwd=None,
+                timeout=None,
+            ):
                 captured["runtime_args"] = runtime_args
                 return "ok", [], None
 
@@ -2213,8 +2240,10 @@ class TestCatalogModelResolution:
             await spawner.trigger("prompt", "tick")
 
         assert captured["runtime_args"] == [
-            "--toml-flag", "toml-value",
-            "--catalog-arg", "val",
+            "--toml-flag",
+            "toml-value",
+            "--catalog-arg",
+            "val",
         ]
 
     async def test_extra_args_catalog_only_when_toml_args_empty(self, tmp_path: Path):
@@ -2229,9 +2258,18 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
-            async def invoke(self, prompt, system_prompt, mcp_servers, env,
-                             max_turns=20, model=None, runtime_args=None,
-                             cwd=None, timeout=None):
+            async def invoke(
+                self,
+                prompt,
+                system_prompt,
+                mcp_servers,
+                env,
+                max_turns=20,
+                model=None,
+                runtime_args=None,
+                cwd=None,
+                timeout=None,
+            ):
                 captured["runtime_args"] = runtime_args
                 return "ok", [], None
 
@@ -2264,9 +2302,18 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
-            async def invoke(self, prompt, system_prompt, mcp_servers, env,
-                             max_turns=20, model=None, runtime_args=None,
-                             cwd=None, timeout=None):
+            async def invoke(
+                self,
+                prompt,
+                system_prompt,
+                mcp_servers,
+                env,
+                max_turns=20,
+                model=None,
+                runtime_args=None,
+                cwd=None,
+                timeout=None,
+            ):
                 captured["runtime_args"] = runtime_args
                 return "ok", [], None
 
@@ -2325,9 +2372,18 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
-            async def invoke(self, prompt, system_prompt, mcp_servers, env,
-                             max_turns=20, model=None, runtime_args=None,
-                             cwd=None, timeout=None):
+            async def invoke(
+                self,
+                prompt,
+                system_prompt,
+                mcp_servers,
+                env,
+                max_turns=20,
+                model=None,
+                runtime_args=None,
+                cwd=None,
+                timeout=None,
+            ):
                 captured["model"] = model
                 return "ok", [], None
 
