@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import re
+import signal
 import time
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
@@ -99,6 +100,36 @@ class HealthStatus(BaseModel):
     last_ingest_submit_at: str | None
     source_api_connectivity: Literal["connected", "disconnected", "unknown"]
     timestamp: str
+
+
+class AccountHealthStatus(BaseModel):
+    """Per-account health status for multi-account connectors."""
+
+    email: str | None
+    endpoint_identity: str
+    status: Literal["healthy", "degraded", "error"]
+    last_checkpoint_save_at: str | None
+    last_ingest_submit_at: str | None
+    source_api_connectivity: Literal["connected", "disconnected", "unknown"]
+    error: str | None = None
+
+
+class MultiAccountHealthStatus(BaseModel):
+    """Aggregated health status for the multi-account Gmail connector manager."""
+
+    status: Literal["healthy", "degraded", "error"]
+    uptime_seconds: float
+    active_accounts: int
+    account_health: list[AccountHealthStatus]
+    timestamp: str
+
+
+# Gmail OAuth scope constants for account filtering.
+_GMAIL_SCOPE_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
+_GMAIL_SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
+
+# Default re-scan interval for dynamic account discovery (seconds).
+_DEFAULT_ACCOUNT_RESCAN_INTERVAL_S = 300
 
 
 # Attachment policy: per-MIME-type size limits and fetch mode.
@@ -2845,6 +2876,641 @@ WHERE id = $3 AND received_at = $4
             self._metrics.record_ingest_submission(status=status, latency=latency)
 
 
+class GmailProcessConfig(BaseModel):
+    """Process-level configuration for the multi-account Gmail connector manager.
+
+    This holds environment-variable-based defaults. Per-account overrides come from
+    ``google_accounts.metadata.gmail``. Credentials are resolved per-account from DB.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    # Switchboard MCP
+    switchboard_mcp_url: str
+
+    # Connector identity (process-level defaults; per-account values are derived)
+    connector_provider: str = "gmail"
+    connector_channel: str = "email"
+    connector_max_inflight: int = 8
+
+    # Health check
+    connector_health_port: int = 40082
+
+    # Runtime controls (process-level defaults, overridable per-account)
+    gmail_watch_renew_interval_s: int = 86400
+    gmail_poll_interval_s: int = 60
+
+    # Pub/Sub
+    gmail_pubsub_enabled: bool = False
+    gmail_pubsub_topic: str | None = None
+    gmail_pubsub_webhook_port: int = 40083
+    gmail_pubsub_webhook_path: str = "/gmail/webhook"
+    gmail_pubsub_webhook_token: str | None = None
+
+    # Label policy defaults
+    gmail_label_include: tuple[str, ...] = ()
+    gmail_label_exclude: tuple[str, ...] = ("SPAM", "TRASH")
+
+    # Known contacts path
+    gmail_known_contacts_path: str | None = None
+
+    # Backfill
+    connector_backfill_enabled: bool = True
+    connector_backfill_poll_interval_s: int = 60
+    connector_backfill_progress_interval: int = 50
+
+    # Dynamic account discovery interval (seconds)
+    gmail_account_rescan_interval_s: int = _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
+
+    @classmethod
+    def from_env(cls) -> GmailProcessConfig:
+        """Load process-level config from environment variables."""
+
+        def _int_env(key: str, default: int) -> int:
+            raw = os.environ.get(key, str(default))
+            try:
+                return int(raw)
+            except ValueError as exc:
+                raise ValueError(f"{key} must be an integer, got: {raw}") from exc
+
+        def _bool_env(key: str, default: bool) -> bool:
+            raw = os.environ.get(key, "true" if default else "false").lower()
+            return raw not in ("false", "0", "no", "off")
+
+        pubsub_enabled = os.environ.get("GMAIL_PUBSUB_ENABLED", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        pubsub_topic = os.environ.get("GMAIL_PUBSUB_TOPIC")
+        if pubsub_enabled and not pubsub_topic:
+            raise ValueError("GMAIL_PUBSUB_TOPIC is required when GMAIL_PUBSUB_ENABLED=true")
+
+        label_include_raw = os.environ.get("GMAIL_LABEL_INCLUDE", "")
+        label_exclude_raw = os.environ.get("GMAIL_LABEL_EXCLUDE", "SPAM,TRASH")
+
+        return cls(
+            switchboard_mcp_url=os.environ["SWITCHBOARD_MCP_URL"],
+            connector_provider=os.environ.get("CONNECTOR_PROVIDER", "gmail"),
+            connector_channel=os.environ.get("CONNECTOR_CHANNEL", "email"),
+            connector_max_inflight=_int_env("CONNECTOR_MAX_INFLIGHT", 8),
+            connector_health_port=_int_env("CONNECTOR_HEALTH_PORT", 40082),
+            gmail_watch_renew_interval_s=_int_env("GMAIL_WATCH_RENEW_INTERVAL_S", 86400),
+            gmail_poll_interval_s=_int_env("GMAIL_POLL_INTERVAL_S", 60),
+            gmail_pubsub_enabled=pubsub_enabled,
+            gmail_pubsub_topic=pubsub_topic,
+            gmail_pubsub_webhook_port=_int_env("GMAIL_PUBSUB_WEBHOOK_PORT", 40083),
+            gmail_pubsub_webhook_path=os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook"),
+            gmail_pubsub_webhook_token=os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN"),
+            gmail_label_include=tuple(parse_label_list(label_include_raw)),
+            gmail_label_exclude=tuple(parse_label_list(label_exclude_raw)),
+            gmail_known_contacts_path=os.environ.get("GMAIL_KNOWN_CONTACTS_PATH"),
+            connector_backfill_enabled=_bool_env("CONNECTOR_BACKFILL_ENABLED", True),
+            connector_backfill_poll_interval_s=_int_env("CONNECTOR_BACKFILL_POLL_INTERVAL_S", 60),
+            connector_backfill_progress_interval=_int_env(
+                "CONNECTOR_BACKFILL_PROGRESS_INTERVAL", 50
+            ),
+            gmail_account_rescan_interval_s=_int_env(
+                "GMAIL_ACCOUNT_RESCAN_INTERVAL_S", _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
+            ),
+        )
+
+    def make_account_config(
+        self,
+        email: str,
+        client_id: str,
+        client_secret: str,
+        refresh_token: str,
+        metadata_gmail: dict[str, Any] | None = None,
+        pubsub_webhook_token: str | None = None,
+    ) -> GmailConnectorConfig:
+        """Build a per-account GmailConnectorConfig by merging process defaults with overrides.
+
+        Per-account overrides come from ``google_accounts.metadata.gmail``.
+        Supported override fields: label_include, label_exclude, poll_interval_s,
+        pubsub_enabled, pubsub_topic.
+        """
+        md = metadata_gmail or {}
+
+        endpoint_identity = f"gmail:user:{email}"
+
+        # Per-account label overrides
+        label_include_raw = md.get("label_include", None)
+        if label_include_raw is not None:
+            label_include = tuple(parse_label_list(str(label_include_raw)))
+        else:
+            label_include = self.gmail_label_include
+
+        label_exclude_raw = md.get("label_exclude", None)
+        if label_exclude_raw is not None:
+            label_exclude = tuple(parse_label_list(str(label_exclude_raw)))
+        else:
+            label_exclude = self.gmail_label_exclude
+
+        poll_interval_s = int(md.get("poll_interval_s", self.gmail_poll_interval_s))
+        pubsub_enabled = bool(md.get("pubsub_enabled", self.gmail_pubsub_enabled))
+        pubsub_topic = md.get("pubsub_topic", self.gmail_pubsub_topic)
+
+        return GmailConnectorConfig(
+            switchboard_mcp_url=self.switchboard_mcp_url,
+            connector_provider=self.connector_provider,
+            connector_channel=self.connector_channel,
+            connector_endpoint_identity=endpoint_identity,
+            connector_max_inflight=self.connector_max_inflight,
+            connector_health_port=self.connector_health_port,
+            gmail_client_id=client_id,
+            gmail_client_secret=client_secret,
+            gmail_refresh_token=refresh_token,
+            gmail_watch_renew_interval_s=self.gmail_watch_renew_interval_s,
+            gmail_poll_interval_s=poll_interval_s,
+            gmail_pubsub_enabled=pubsub_enabled,
+            gmail_pubsub_topic=pubsub_topic,
+            gmail_pubsub_webhook_port=self.gmail_pubsub_webhook_port,
+            gmail_pubsub_webhook_path=self.gmail_pubsub_webhook_path,
+            gmail_pubsub_webhook_token=pubsub_webhook_token or self.gmail_pubsub_webhook_token,
+            gmail_label_include=label_include,
+            gmail_label_exclude=label_exclude,
+            gmail_user_email=email,
+            gmail_known_contacts_path=self.gmail_known_contacts_path,
+            connector_backfill_enabled=self.connector_backfill_enabled,
+            connector_backfill_poll_interval_s=self.connector_backfill_poll_interval_s,
+            connector_backfill_progress_interval=self.connector_backfill_progress_interval,
+        )
+
+
+class GmailAccountLoop:
+    """Per-account Gmail ingestion loop.
+
+    Wraps a GmailConnectorRuntime instance for a single Google account.
+    Runs as an independent asyncio task; errors are isolated from other accounts.
+    """
+
+    def __init__(
+        self,
+        email: str,
+        config: GmailConnectorConfig,
+        cursor_pool: asyncpg.Pool | None,
+    ) -> None:
+        self.email = email
+        self.endpoint_identity = config.connector_endpoint_identity
+        self._config = config
+        self._cursor_pool = cursor_pool
+        self._runtime = GmailConnectorRuntime(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
+        self._task: asyncio.Task[None] | None = None
+        self._error: str | None = None
+
+    def start(self) -> None:
+        """Launch the per-account ingestion loop as an asyncio task."""
+        self._task = asyncio.create_task(self._run(), name=f"gmail-account-{self.email}")
+        self._task.add_done_callback(self._on_done)
+
+    async def _run(self) -> None:
+        try:
+            logger.info(
+                "Gmail account loop starting: email=%s endpoint_identity=%s",
+                self.email,
+                self.endpoint_identity,
+            )
+            await self._runtime.start()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._error = str(exc)
+            logger.error(
+                "Gmail account loop failed: email=%s error=%s",
+                self.email,
+                exc,
+                exc_info=True,
+            )
+            raise
+
+    def _on_done(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                self._error = str(exc)
+
+    async def stop(self) -> None:
+        """Gracefully stop the account loop."""
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await self._runtime.stop()
+        logger.info("Gmail account loop stopped: email=%s", self.email)
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def get_health(self) -> AccountHealthStatus:
+        """Return per-account health snapshot."""
+        runtime = self._runtime
+        uptime = time.time() - runtime._start_time
+
+        last_checkpoint_save_at = None
+        if runtime._last_checkpoint_save is not None:
+            last_checkpoint_save_at = datetime.fromtimestamp(
+                runtime._last_checkpoint_save, UTC
+            ).isoformat()
+
+        last_ingest_submit_at = None
+        if runtime._last_ingest_submit is not None:
+            last_ingest_submit_at = datetime.fromtimestamp(
+                runtime._last_ingest_submit, UTC
+            ).isoformat()
+
+        if runtime._source_api_ok is None:
+            connectivity: Literal["connected", "disconnected", "unknown"] = "unknown"
+        elif runtime._source_api_ok:
+            connectivity = "connected"
+        else:
+            connectivity = "disconnected"
+
+        # Determine per-account status
+        error_msg = self._error
+        if not self.is_running and error_msg:
+            account_status: Literal["healthy", "degraded", "error"] = "error"
+        elif runtime._source_api_ok is False:
+            account_status = "error"
+        else:
+            account_status = "healthy"
+        _ = uptime  # uptime tracked at manager level
+
+        return AccountHealthStatus(
+            email=self.email,
+            endpoint_identity=self.endpoint_identity,
+            status=account_status,
+            last_checkpoint_save_at=last_checkpoint_save_at,
+            last_ingest_submit_at=last_ingest_submit_at,
+            source_api_connectivity=connectivity,
+            error=error_msg,
+        )
+
+
+class GmailConnectorManager:
+    """Top-level orchestrator for multi-account Gmail connector.
+
+    Discovers all active Google accounts with Gmail scopes from shared.google_accounts,
+    spawns independent GmailAccountLoop instances per account, and manages their lifecycle.
+
+    Supports:
+    - Periodic account re-scan at GMAIL_ACCOUNT_RESCAN_INTERVAL_S (default 300)
+    - On-demand reload via connector_reload_accounts MCP tool or SIGHUP
+    - Aggregated health endpoint across all accounts
+    - Degraded startup when no qualifying accounts found
+    """
+
+    def __init__(
+        self,
+        process_config: GmailProcessConfig,
+        db_pool: asyncpg.Pool,
+        cursor_pool: asyncpg.Pool | None,
+    ) -> None:
+        self._process_config = process_config
+        self._db_pool = db_pool
+        self._cursor_pool = cursor_pool
+
+        # Active account loops keyed by email
+        self._loops: dict[str, GmailAccountLoop] = {}
+
+        # State
+        self._start_time = time.time()
+        self._running = False
+        self._reload_event = asyncio.Event()
+
+        # Health server
+        self._health_server: uvicorn.Server | None = None
+        self._health_thread: Thread | None = None
+
+        # Rescan task
+        self._rescan_task: asyncio.Task[None] | None = None
+
+        # Credential store (shared across accounts for app creds)
+        self._credential_store: CredentialStore | None = None
+
+    def _get_credential_store(self) -> CredentialStore:
+        """Return or initialize the CredentialStore for app credentials."""
+        if self._credential_store is None:
+            self._credential_store = CredentialStore(self._db_pool)
+        return self._credential_store
+
+    async def _discover_qualifying_accounts(
+        self,
+    ) -> list[tuple[str | None, str | None]]:
+        """Query shared.google_accounts for active accounts with Gmail scopes.
+
+        Returns list of (email, metadata_gmail_json) tuples.
+        Only accounts with status='active' and gmail.modify or gmail.readonly in
+        granted_scopes are returned.
+        """
+        try:
+            async with self._db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT email, granted_scopes, metadata
+                    FROM shared.google_accounts
+                    WHERE status = 'active'
+                    ORDER BY is_primary DESC, connected_at ASC
+                    """
+                )
+        except Exception as exc:
+            logger.warning("Gmail manager: failed to query google_accounts (non-fatal): %s", exc)
+            return []
+
+        qualifying = []
+        for row in rows:
+            email = row["email"]
+            scopes = list(row["granted_scopes"] or [])
+            metadata = row["metadata"] or {}
+
+            has_gmail_scope = any(s in (_GMAIL_SCOPE_MODIFY, _GMAIL_SCOPE_READONLY) for s in scopes)
+            if not has_gmail_scope:
+                logger.warning(
+                    "Gmail manager: skipping account %r — no Gmail scopes in granted_scopes=%s",
+                    email,
+                    scopes,
+                )
+                continue
+
+            metadata_gmail: dict[str, Any] | None = None
+            if isinstance(metadata, dict):
+                gmail_section = metadata.get("gmail")
+                if isinstance(gmail_section, dict):
+                    metadata_gmail = gmail_section
+
+            qualifying.append((email, metadata_gmail))
+
+        return qualifying
+
+    async def _resolve_credentials_for_account(
+        self,
+        email: str,
+    ) -> dict[str, str] | None:
+        """Resolve OAuth credentials for a single Google account.
+
+        Returns dict with client_id, client_secret, refresh_token on success.
+        Returns None if credentials cannot be resolved (non-fatal — account is skipped).
+        """
+        try:
+            store = self._get_credential_store()
+            creds = await load_google_credentials(store, pool=self._db_pool, account=email)
+            if creds is None:
+                logger.warning(
+                    "Gmail manager: no credentials found for account %r — skipping", email
+                )
+                return None
+            return {
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "refresh_token": creds.refresh_token,
+            }
+        except InvalidGoogleCredentialsError as exc:
+            logger.warning(
+                "Gmail manager: invalid credentials for account %r (skipping): %s",
+                email,
+                exc,
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Gmail manager: credential resolution failed for account %r (skipping): %s",
+                email,
+                exc,
+            )
+            return None
+
+    async def _sync_accounts(
+        self,
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Discover qualifying accounts and reconcile running loops.
+
+        Returns (added, removed, unchanged) email lists.
+        """
+        qualifying = await self._discover_qualifying_accounts()
+
+        # Compute desired set
+        desired_emails: set[str] = set()
+        account_metadata: dict[str, dict[str, Any] | None] = {}
+        for email, metadata_gmail in qualifying:
+            if email is None:
+                continue
+            desired_emails.add(email)
+            account_metadata[email] = metadata_gmail
+
+        current_emails = set(self._loops.keys())
+
+        to_add = desired_emails - current_emails
+        to_remove = current_emails - desired_emails
+        unchanged = current_emails & desired_emails
+
+        # Stop removed loops
+        for email in to_remove:
+            loop = self._loops.pop(email)
+            logger.info("Gmail manager: stopping loop for removed account %r", email)
+            await loop.stop()
+
+        # Start new loops
+        added: list[str] = []
+        for email in to_add:
+            creds = await self._resolve_credentials_for_account(email)
+            if creds is None:
+                continue
+
+            metadata_gmail = account_metadata.get(email)
+            try:
+                account_config = self._process_config.make_account_config(
+                    email=email,
+                    client_id=creds["client_id"],
+                    client_secret=creds["client_secret"],
+                    refresh_token=creds["refresh_token"],
+                    metadata_gmail=metadata_gmail,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Gmail manager: failed to build config for account %r (skipping): %s",
+                    email,
+                    exc,
+                )
+                continue
+
+            loop = GmailAccountLoop(
+                email=email,
+                config=account_config,
+                cursor_pool=self._cursor_pool,
+            )
+            self._loops[email] = loop
+            loop.start()
+            added.append(email)
+            logger.info("Gmail manager: started loop for new account %r", email)
+
+        return added, list(to_remove), list(unchanged)
+
+    def _start_health_server(self) -> None:
+        """Start aggregated health endpoint in background thread."""
+        app = FastAPI(title="Gmail Connector Health")
+
+        @app.get("/health")
+        async def health() -> MultiAccountHealthStatus:
+            return self._get_multi_account_health()
+
+        @app.get("/metrics")
+        async def metrics() -> bytes:
+            return generate_latest(REGISTRY)
+
+        @app.post("/reload")
+        async def reload_accounts() -> dict[str, Any]:
+            """Trigger immediate account re-scan (connector_reload_accounts MCP tool)."""
+            self._reload_event.set()
+            return {"status": "reload_triggered"}
+
+        config = uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=self._process_config.connector_health_port,
+            log_level="warning",
+        )
+        self._health_server = uvicorn.Server(config)
+
+        def run_server() -> None:
+            asyncio.run(self._health_server.serve())
+
+        self._health_thread = Thread(target=run_server, daemon=True)
+        self._health_thread.start()
+        logger.info(
+            "Gmail manager: health server started on port %d",
+            self._process_config.connector_health_port,
+        )
+
+    def _get_multi_account_health(self) -> MultiAccountHealthStatus:
+        """Build aggregated health status across all account loops."""
+        uptime = time.time() - self._start_time
+        account_statuses = [loop.get_health() for loop in self._loops.values()]
+
+        # Worst-case aggregation
+        overall: Literal["healthy", "degraded", "error"] = "healthy"
+        if not account_statuses:
+            overall = "degraded"  # No accounts → degraded idle mode
+        else:
+            statuses = [a.status for a in account_statuses]
+            if "error" in statuses:
+                overall = "error"
+            elif "degraded" in statuses:
+                overall = "degraded"
+
+        return MultiAccountHealthStatus(
+            status=overall,
+            uptime_seconds=uptime,
+            active_accounts=len(self._loops),
+            account_health=account_statuses,
+            timestamp=datetime.now(UTC).isoformat(),
+        )
+
+    def _setup_sighup(self) -> None:
+        """Register SIGHUP handler to trigger immediate account re-scan."""
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _on_sighup() -> None:
+                logger.info("Gmail manager: SIGHUP received — triggering account reload")
+                self._reload_event.set()
+
+            loop.add_signal_handler(signal.SIGHUP, _on_sighup)
+        except (OSError, NotImplementedError):
+            # SIGHUP not available on Windows
+            logger.debug("Gmail manager: SIGHUP not available on this platform")
+
+    async def start(self) -> None:
+        """Start the connector manager: discover accounts, start loops, run rescan loop."""
+        self._running = True
+
+        # Start health server
+        self._start_health_server()
+
+        # Register SIGHUP for reload
+        self._setup_sighup()
+
+        # Initial account discovery
+        added, removed, unchanged = await self._sync_accounts()
+        logger.info(
+            "Gmail manager: initial account sync — added=%d removed=%d unchanged=%d",
+            len(added),
+            len(removed),
+            len(unchanged),
+        )
+
+        if not self._loops:
+            logger.warning(
+                "Gmail manager: no qualifying Gmail accounts found at startup. "
+                "Running in idle/degraded mode. Will retry at rescan interval=%ds.",
+                self._process_config.gmail_account_rescan_interval_s,
+            )
+
+        # Wait for Switchboard readiness before main loop
+        try:
+            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
+        except TimeoutError:
+            logger.warning(
+                "Gmail manager: Switchboard readiness probe timed out; proceeding anyway."
+            )
+
+        # Main rescan loop
+        try:
+            await self._run_rescan_loop()
+        finally:
+            await self.stop()
+
+    async def _run_rescan_loop(self) -> None:
+        """Periodically re-scan for account changes, also triggered by reload events."""
+        rescan_interval = self._process_config.gmail_account_rescan_interval_s
+        while self._running:
+            # Wait for either rescan interval or reload trigger
+            try:
+                await asyncio.wait_for(self._reload_event.wait(), timeout=rescan_interval)
+                logger.info("Gmail manager: reload triggered — re-scanning accounts")
+                self._reload_event.clear()
+            except TimeoutError:
+                logger.debug("Gmail manager: periodic re-scan triggered")
+
+            if not self._running:
+                break
+
+            added, removed, unchanged = await self._sync_accounts()
+            if added or removed:
+                logger.info(
+                    "Gmail manager: account sync — added=%s removed=%s unchanged=%d",
+                    added,
+                    removed,
+                    len(unchanged),
+                )
+
+    async def stop(self) -> None:
+        """Gracefully stop all account loops and the manager."""
+        self._running = False
+
+        # Stop all loops
+        for email, loop in list(self._loops.items()):
+            logger.info("Gmail manager: stopping loop for %r", email)
+            await loop.stop()
+        self._loops.clear()
+
+        logger.info("Gmail manager: all account loops stopped")
+
+    async def reload_accounts(self) -> dict[str, Any]:
+        """Trigger immediate account re-scan (MCP tool handler).
+
+        Returns a summary of accounts added, removed, and unchanged.
+        """
+        added, removed, unchanged = await self._sync_accounts()
+        return {
+            "added": added,
+            "removed": removed,
+            "unchanged": unchanged,
+        }
+
+
 async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
     """Attempt DB-first credential resolution for the Gmail connector.
 
@@ -3092,58 +3758,96 @@ async def resolve_gmail_endpoint_identity(
     return env_fallback
 
 
-async def run_gmail_connector() -> None:
-    """Run the Gmail connector runtime (async entrypoint).
+async def _create_shared_db_pool() -> asyncpg.Pool:
+    """Create an asyncpg pool for the shared database (google_accounts + entity_info).
 
-    Credentials are resolved from the database only (``butler_secrets``).
+    Uses standard DB env vars with the shared DB name from BUTLER_SHARED_DB_NAME.
+    """
+    import asyncpg as _asyncpg
+
+    db_params = db_params_from_env()
+    shared_db_name = shared_db_name_from_env()
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared")
+
+    pool_kwargs: dict[str, Any] = {
+        "host": db_params["host"],
+        "port": db_params["port"],
+        "user": db_params["user"],
+        "password": db_params["password"],
+        "database": shared_db_name,
+        "min_size": 1,
+        "max_size": 4,
+        "command_timeout": 10,
+    }
+
+    if shared_schema:
+        try:
+            search_path = schema_search_path(shared_schema)
+            pool_kwargs["server_settings"] = {"search_path": search_path}
+        except ValueError as exc:
+            logger.debug(
+                "Gmail manager: invalid shared schema %r (non-fatal): %s", shared_schema, exc
+            )
+
+    configured_ssl = db_params.get("ssl")
+    if configured_ssl is not None:
+        pool_kwargs["ssl"] = configured_ssl
+
+    try:
+        return await _asyncpg.create_pool(**pool_kwargs)
+    except Exception as exc:
+        ssl_str = configured_ssl if isinstance(configured_ssl, str) else None
+        if should_retry_with_ssl_disable(exc, ssl_str):
+            pool_kwargs["ssl"] = "disable"
+            return await _asyncpg.create_pool(**pool_kwargs)
+        raise
+
+
+async def run_gmail_connector() -> None:
+    """Run the multi-account Gmail connector manager (async entrypoint).
+
+    Discovers all active Google accounts with Gmail scopes from shared.google_accounts
+    and manages independent ingestion loops per account. Does not require
+    CONNECTOR_ENDPOINT_IDENTITY — identity is derived per-account from the email address.
+    Runs in idle/degraded mode if no qualifying accounts are found at startup.
     """
     configure_logging(level="INFO", butler_name="gmail")
 
-    # Step 1: Resolve credentials from DB.
-    db_creds: dict[str, str] | None = await _resolve_gmail_credentials_from_db()
-    if db_creds is None:
-        raise RuntimeError(
-            "Gmail connector requires DB-stored Google OAuth credentials in butler_secrets. "
-            "Run OAuth bootstrap via the dashboard."
-        )
-
-    # Step 2: Parse non-secret env config and inject DB credentials.
+    # Step 1: Parse process-level config from environment variables.
     try:
-        config = GmailConnectorConfig.from_env(
-            gmail_client_id=db_creds["client_id"],
-            gmail_client_secret=db_creds["client_secret"],
-            gmail_refresh_token=db_creds["refresh_token"],
-            gmail_pubsub_webhook_token=db_creds.get("pubsub_webhook_token"),
-        )
+        process_config = GmailProcessConfig.from_env()
     except Exception as exc:
-        logger.error("Failed to build connector config from DB credentials: %s", exc)
+        logger.error("Gmail connector: failed to load process config: %s", exc)
         raise
 
-    # Step 3: Auto-resolve endpoint_identity from the authenticated Gmail account.
-    # This replaces the static env var default (e.g. "gmail:user:dev") with the
-    # actual email address of the authenticated account.
-    resolved_identity = await resolve_gmail_endpoint_identity(
-        client_id=db_creds["client_id"],
-        client_secret=db_creds["client_secret"],
-        refresh_token=db_creds["refresh_token"],
-        env_fallback=config.connector_endpoint_identity,
-    )
-    if resolved_identity != config.connector_endpoint_identity:
-        config = config.model_copy(update={"connector_endpoint_identity": resolved_identity})
-        logger.info(
-            "Gmail connector: updated endpoint_identity to resolved value: %s", resolved_identity
-        )
-
-    # Create cursor pool for DB-backed checkpoint persistence.
+    # Step 2: Create DB pools.
     from butlers.connectors.cursor_store import create_cursor_pool_from_env
 
-    cursor_pool = await create_cursor_pool_from_env()
-    logger.info("Gmail connector: cursor pool created for DB-backed checkpoints")
-
-    connector = GmailConnectorRuntime(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
     try:
-        await connector.start()
+        shared_pool = await _create_shared_db_pool()
+        logger.info("Gmail connector: shared DB pool created for account discovery")
+    except Exception as exc:
+        logger.error("Gmail connector: failed to create shared DB pool: %s", exc)
+        raise
+
+    try:
+        cursor_pool = await create_cursor_pool_from_env()
+        logger.info("Gmail connector: cursor pool created for DB-backed checkpoints")
+    except Exception as exc:
+        logger.error("Gmail connector: failed to create cursor pool: %s", exc)
+        await shared_pool.close()
+        raise
+
+    # Step 3: Start the multi-account manager.
+    manager = GmailConnectorManager(
+        process_config=process_config,
+        db_pool=shared_pool,
+        cursor_pool=cursor_pool,
+    )
+    try:
+        await manager.start()
     finally:
+        await shared_pool.close()
         if cursor_pool is not None:
             await cursor_pool.close()
 
@@ -3151,7 +3855,8 @@ async def run_gmail_connector() -> None:
 def main() -> None:
     """CLI entrypoint for Gmail connector.
 
-    Credentials are loaded from DB-backed credential storage only.
+    Discovers and manages all Gmail-scoped Google accounts from shared.google_accounts.
+    Does not require GMAIL_ACCOUNT or CONNECTOR_ENDPOINT_IDENTITY env vars.
     """
     asyncio.run(run_gmail_connector())
 
