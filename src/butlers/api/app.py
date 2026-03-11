@@ -28,7 +28,7 @@ from butlers.api.deps import (
     shutdown_dependencies,
     wire_db_dependencies,
 )
-from butlers.api.middleware import register_error_handlers
+from butlers.api.middleware import ApiKeyMiddleware, register_error_handlers
 from butlers.api.router_discovery import discover_butler_routers
 from butlers.api.routers.approvals import router as approvals_router
 from butlers.api.routers.audit import router as audit_router
@@ -118,6 +118,7 @@ async def lifespan(app: FastAPI):
 def create_app(
     cors_origins: list[str] | None = None,
     static_dir: str | Path | None = None,
+    api_key: str | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -132,6 +133,12 @@ def create_app(
         ``html=True`` for SPA fallback.  Falls back to the
         ``DASHBOARD_STATIC_DIR`` environment variable.  When neither is
         set, no static mount is registered (development mode).
+    api_key:
+        When provided, enables ``ApiKeyMiddleware`` with this key.  When
+        ``None`` (default), the middleware reads ``DASHBOARD_API_KEY`` from
+        the environment; if that variable is also absent, auth is disabled.
+        Pass an empty string ``""`` to explicitly disable auth regardless of
+        the environment variable (useful in tests).
     """
     if cors_origins is None:
         cors_origins = ["http://localhost:40173"]
@@ -165,6 +172,22 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # API-key authentication (opt-in via DASHBOARD_API_KEY env var).
+    # Resolve the effective key here so ApiKeyMiddleware receives a definitive
+    # value and never reads the environment itself.
+    #
+    # Resolution rules:
+    #   api_key=None  → read DASHBOARD_API_KEY from environment (default)
+    #   api_key=""    → force-disable auth (useful in tests)
+    #   api_key="..." → use as-is (testing / programmatic override)
+    if api_key is None:
+        _effective_api_key: str | None = os.environ.get("DASHBOARD_API_KEY") or None
+    elif api_key == "":
+        _effective_api_key = None
+    else:
+        _effective_api_key = api_key
+    app.add_middleware(ApiKeyMiddleware, api_key=_effective_api_key)
 
     register_error_handlers(app)
 
