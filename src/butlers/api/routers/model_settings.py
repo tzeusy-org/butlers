@@ -13,10 +13,12 @@ directly via the shared credential pool.  Writes mutate those tables directly
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -140,8 +142,6 @@ def _coerce_extra_args(raw: Any) -> list[str]:
     if isinstance(raw, list):
         return [str(v) for v in raw]
     if isinstance(raw, str):
-        import json
-
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
@@ -236,7 +236,6 @@ async def create_catalog_entry(
     """Create a new catalog entry. Returns 409 on duplicate alias."""
     _validate_complexity_tier(body.complexity_tier)
     pool = _shared_pool(db)
-    import json
 
     try:
         row = await pool.fetchrow(
@@ -255,13 +254,12 @@ async def create_catalog_entry(
             body.enabled,
             body.priority,
         )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Catalog entry with alias '{body.alias}' already exists",
+        )
     except Exception as exc:
-        exc_str = str(exc).lower()
-        if "unique" in exc_str or "duplicate" in exc_str or "uq_model_catalog_alias" in exc_str:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Catalog entry with alias '{body.alias}' already exists",
-            )
         logger.error("Failed to create catalog entry: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to create catalog entry")
 
@@ -293,8 +291,6 @@ async def update_catalog_entry(
     pool = _shared_pool(db)
 
     # Build SET clause dynamically
-    import json
-
     set_parts = []
     params: list[Any] = []
     idx = 1
@@ -320,13 +316,12 @@ async def update_catalog_entry(
 
     try:
         row = await pool.fetchrow(sql, *params)
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Catalog entry with alias '{updates.get('alias')}' already exists",
+        )
     except Exception as exc:
-        exc_str = str(exc).lower()
-        if "unique" in exc_str or "duplicate" in exc_str or "uq_model_catalog_alias" in exc_str:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Catalog entry with alias '{updates.get('alias')}' already exists",
-            )
         logger.error("Failed to update catalog entry %s: %s", entry_id, exc)
         raise HTTPException(status_code=500, detail="Failed to update catalog entry")
 

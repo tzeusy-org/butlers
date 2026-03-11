@@ -611,6 +611,10 @@ async def trigger_butler(
     if not any(cfg.name == name for cfg in configs):
         raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
 
+    from butlers.api.routers.model_settings import _validate_complexity_tier
+
+    _validate_complexity_tier(request.complexity)
+
     summary = {"prompt": request.prompt[:200], "complexity": request.complexity}
     trigger_args: dict = {"prompt": request.prompt, "complexity": request.complexity}
     try:

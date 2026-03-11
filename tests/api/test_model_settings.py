@@ -19,6 +19,7 @@ import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import httpx
 import pytest
 
@@ -102,9 +103,7 @@ def _build_app_with_pool(
     Returns (app, mock_pool, mock_db).
     """
     mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(
-        return_value=[_mock_record(r) for r in (fetch_rows or [])]
-    )
+    mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in (fetch_rows or [])])
     mock_pool.fetchrow = AsyncMock(
         return_value=_mock_record(fetchrow_result) if fetchrow_result else None
     )
@@ -113,15 +112,19 @@ def _build_app_with_pool(
 
     # Simulate acquire() as async context manager returning mock_pool
     mock_conn = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=None),
-        __aexit__=AsyncMock(return_value=None),
-    ))
+    mock_conn.transaction = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=None),
+        )
+    )
     mock_conn.fetchrow = mock_pool.fetchrow
-    mock_pool.acquire = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=mock_conn),
-        __aexit__=AsyncMock(return_value=None),
-    ))
+    mock_pool.acquire = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock(return_value=None),
+        )
+    )
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = mock_pool
@@ -235,7 +238,7 @@ class TestCreateCatalogEntry:
     async def test_returns_409_on_duplicate_alias(self, app):
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(
-            side_effect=Exception("violates unique constraint uq_model_catalog_alias")
+            side_effect=asyncpg.UniqueViolationError("uq_model_catalog_alias")
         )
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = mock_pool
@@ -361,7 +364,7 @@ class TestUpdateCatalogEntry:
         entry_id = uuid.uuid4()
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(
-            side_effect=Exception("violates unique constraint uq_model_catalog_alias")
+            side_effect=asyncpg.UniqueViolationError("uq_model_catalog_alias")
         )
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = mock_pool
@@ -596,9 +599,7 @@ class TestDeleteButlerModelOverride:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.delete(
-                f"/api/butlers/general/model-overrides/{override_id}"
-            )
+            response = await client.delete(f"/api/butlers/general/model-overrides/{override_id}")
 
         assert response.status_code == 200
         data = response.json()["data"]
@@ -616,9 +617,7 @@ class TestDeleteButlerModelOverride:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.delete(
-                f"/api/butlers/general/model-overrides/{override_id}"
-            )
+            response = await client.delete(f"/api/butlers/general/model-overrides/{override_id}")
 
         assert response.status_code == 404
 
@@ -645,9 +644,7 @@ class TestResolveModelPreview:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get(
-                "/api/butlers/general/resolve-model?complexity=medium"
-            )
+            response = await client.get("/api/butlers/general/resolve-model?complexity=medium")
 
         assert response.status_code == 200
         data = response.json()["data"]
@@ -668,9 +665,7 @@ class TestResolveModelPreview:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get(
-                "/api/butlers/general/resolve-model?complexity=trivial"
-            )
+            response = await client.get("/api/butlers/general/resolve-model?complexity=trivial")
 
         assert response.status_code == 200
         data = response.json()["data"]
@@ -709,9 +704,7 @@ class TestResolveModelPreview:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get(
-                "/api/butlers/general/resolve-model?complexity=ultra"
-            )
+            response = await client.get("/api/butlers/general/resolve-model?complexity=ultra")
 
         assert response.status_code == 422
 
@@ -727,9 +720,7 @@ class TestResolveModelPreview:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get(
-                f"/api/butlers/general/resolve-model?complexity={tier}"
-            )
+            response = await client.get(f"/api/butlers/general/resolve-model?complexity={tier}")
 
         assert response.status_code == 200
 
