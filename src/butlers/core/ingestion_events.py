@@ -214,6 +214,12 @@ async def ingestion_event_replay_request(
 ) -> dict[str, Any]:
     """Request replay of a filtered event by setting its status to ``replay_pending``.
 
+    The transition is performed atomically via a single
+    ``UPDATE … WHERE status = ANY(replayable) RETURNING id`` statement, which
+    eliminates the TOCTOU race that would occur with a separate SELECT followed
+    by an UPDATE.  A second SELECT is issued only on the miss path (UPDATE
+    matched zero rows) to distinguish *not_found* from *conflict*.
+
     Allowed transitions:
     - ``filtered`` → ``replay_pending``
     - ``error``    → ``replay_pending``
@@ -236,7 +242,33 @@ async def ingestion_event_replay_request(
     if isinstance(event_id, str):
         event_id = UUID(event_id)
 
-    # Fetch the current status first so we can return a meaningful conflict response.
+    replayable = ("filtered", "error", "replay_failed")
+
+    # Atomic UPDATE: only transitions rows whose status is in the replayable set.
+    # RETURNING id on success; no row returned means either not_found or conflict.
+    row = await pool.fetchrow(
+        """
+        UPDATE connectors.filtered_events
+        SET
+            status = 'replay_pending',
+            replay_requested_at = now(),
+            error_detail = NULL
+        WHERE id = $1
+          AND status = ANY($2)
+        RETURNING id
+        """,
+        event_id,
+        list(replayable),
+    )
+
+    if row is not None:
+        # Update succeeded — row was in a replayable state and is now replay_pending.
+        return {"outcome": "ok", "id": str(row["id"])}
+
+    # Miss path: determine whether the row doesn't exist (not_found) or exists but
+    # is already in a non-replayable state (conflict).  A separate SELECT is safe
+    # here because the write already failed — the only information we're reading is
+    # the current status for a meaningful error response.
     current_status = await pool.fetchval(
         "SELECT status FROM connectors.filtered_events WHERE id = $1",
         event_id,
@@ -245,22 +277,7 @@ async def ingestion_event_replay_request(
     if current_status is None:
         return {"outcome": "not_found"}
 
-    replayable = {"filtered", "error", "replay_failed"}
-    if current_status not in replayable:
-        return {"outcome": "conflict", "current_status": current_status}
-
-    await pool.execute(
-        """
-        UPDATE connectors.filtered_events
-        SET
-            status = 'replay_pending',
-            replay_requested_at = now(),
-            error_detail = NULL
-        WHERE id = $1
-        """,
-        event_id,
-    )
-    return {"outcome": "ok", "id": str(event_id)}
+    return {"outcome": "conflict", "current_status": current_status}
 
 
 async def ingestion_event_sessions(

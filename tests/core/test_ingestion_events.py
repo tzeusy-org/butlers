@@ -63,11 +63,17 @@ def _make_session_record(**kwargs: Any) -> _FakeRecord:
 
 
 class _FakePool:
-    """Minimal fake asyncpg pool that captures fetchrow / fetch calls."""
+    """Minimal fake asyncpg pool that captures fetchrow / fetchval / fetch calls."""
 
-    def __init__(self, fetchrow_result: Any = None, fetch_results: list | None = None) -> None:
+    def __init__(
+        self,
+        fetchrow_result: Any = None,
+        fetch_results: list | None = None,
+        fetchval_result: Any = None,
+    ) -> None:
         self._fetchrow_result = fetchrow_result
         self._fetch_results: list[Any] = fetch_results if fetch_results is not None else []
+        self._fetchval_result = fetchval_result
         # Captured calls: list of (method, sql, args)
         self.calls: list[tuple[str, str, tuple]] = []
 
@@ -78,6 +84,10 @@ class _FakePool:
     async def fetch(self, sql: str, *args: Any) -> list[Any]:
         self.calls.append(("fetch", sql, args))
         return self._fetch_results
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        self.calls.append(("fetchval", sql, args))
+        return self._fetchval_result
 
 
 class _FakeDatabaseManager:
@@ -615,3 +625,174 @@ class TestIngestionEventRollup:
             "by_butler",
         ):
             assert key in result, f"Missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# ingestion_event_replay_request
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionEventReplayRequest:
+    """Tests for the atomic replay transition in ingestion_event_replay_request.
+
+    The implementation uses a single UPDATE … WHERE status = ANY(replayable) RETURNING id
+    to avoid TOCTOU races.  A follow-up SELECT is only issued on the miss path.
+    """
+
+    async def test_ok_outcome_when_update_returns_row(self) -> None:
+        """UPDATE RETURNING id succeeds → outcome='ok' with the event id."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        pool = _FakePool(fetchrow_result=returning_row)
+        result = await ingestion_event_replay_request(pool, event_id)
+        assert result["outcome"] == "ok"
+        assert result["id"] == str(event_id)
+
+    async def test_ok_id_is_string(self) -> None:
+        """The id in the ok result should be a string."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        pool = _FakePool(fetchrow_result=returning_row)
+        result = await ingestion_event_replay_request(pool, event_id)
+        assert isinstance(result["id"], str)
+
+    async def test_ok_accepts_string_event_id(self) -> None:
+        """String event_id should be accepted and converted to UUID."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        pool = _FakePool(fetchrow_result=returning_row)
+        result = await ingestion_event_replay_request(pool, str(event_id))
+        assert result["outcome"] == "ok"
+
+    async def test_update_uses_fetchrow_not_execute(self) -> None:
+        """The atomic UPDATE must use fetchrow (RETURNING), not pool.execute."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        pool = _FakePool(fetchrow_result=returning_row)
+        await ingestion_event_replay_request(pool, event_id)
+        methods_used = [method for method, _, _ in pool.calls]
+        # On the happy path only one call: fetchrow for the UPDATE RETURNING
+        assert methods_used == ["fetchrow"], f"Unexpected calls: {methods_used}"
+
+    async def test_update_sql_contains_returning(self) -> None:
+        """The UPDATE statement must contain RETURNING to be atomic."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        pool = _FakePool(fetchrow_result=returning_row)
+        await ingestion_event_replay_request(pool, event_id)
+        _, sql, _ = pool.calls[0]
+        assert "RETURNING" in sql.upper()
+
+    async def test_update_sql_uses_any_for_status_filter(self) -> None:
+        """The UPDATE WHERE clause must use ANY($) to filter replayable statuses."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        pool = _FakePool(fetchrow_result=returning_row)
+        await ingestion_event_replay_request(pool, event_id)
+        _, sql, args = pool.calls[0]
+        assert "ANY" in sql.upper()
+        # The replayable list must be passed as a query parameter
+        replayable_arg = None
+        for arg in args:
+            if isinstance(arg, list):
+                replayable_arg = arg
+                break
+        assert replayable_arg is not None, "Expected a list argument for ANY($)"
+        assert set(replayable_arg) == {"filtered", "error", "replay_failed"}
+
+    async def test_update_targets_connectors_filtered_events(self) -> None:
+        """The UPDATE must target connectors.filtered_events."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        pool = _FakePool(fetchrow_result=returning_row)
+        await ingestion_event_replay_request(pool, event_id)
+        _, sql, _ = pool.calls[0]
+        assert "connectors.filtered_events" in sql
+
+    async def test_not_found_when_update_miss_and_no_row(self) -> None:
+        """UPDATE returns no row AND follow-up SELECT also returns None → not_found."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        # fetchrow returns None (UPDATE matched nothing)
+        # fetchval also returns None (row doesn't exist)
+        pool = _FakePool(fetchrow_result=None, fetchval_result=None)
+        result = await ingestion_event_replay_request(pool, event_id)
+        assert result["outcome"] == "not_found"
+
+    async def test_not_found_only_one_fetchval_on_miss(self) -> None:
+        """On the miss path a single fetchval SELECT determines not_found."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        pool = _FakePool(fetchrow_result=None, fetchval_result=None)
+        await ingestion_event_replay_request(pool, event_id)
+        fetchval_calls = [c for c in pool.calls if c[0] == "fetchval"]
+        assert len(fetchval_calls) == 1
+
+    async def test_conflict_when_update_miss_and_row_exists(self) -> None:
+        """UPDATE misses (status not replayable) AND SELECT returns current status → conflict."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        # fetchrow returns None (UPDATE missed because status is replay_pending)
+        # fetchval returns the current non-replayable status
+        pool = _FakePool(fetchrow_result=None, fetchval_result="replay_pending")
+        result = await ingestion_event_replay_request(pool, event_id)
+        assert result["outcome"] == "conflict"
+        assert result["current_status"] == "replay_pending"
+
+    async def test_conflict_includes_current_status(self) -> None:
+        """Conflict response must include current_status for the caller."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        pool = _FakePool(fetchrow_result=None, fetchval_result="replay_complete")
+        result = await ingestion_event_replay_request(pool, event_id)
+        assert result["outcome"] == "conflict"
+        assert result["current_status"] == "replay_complete"
+
+    async def test_no_fetchval_on_success_path(self) -> None:
+        """When UPDATE RETURNING succeeds there must be no follow-up SELECT."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        pool = _FakePool(fetchrow_result=returning_row)
+        await ingestion_event_replay_request(pool, event_id)
+        fetchval_calls = [c for c in pool.calls if c[0] == "fetchval"]
+        assert fetchval_calls == [], "fetchval must NOT be called when UPDATE RETURNING succeeds"
+
+    async def test_miss_path_select_queries_by_event_id(self) -> None:
+        """The miss-path SELECT must filter by the correct event_id."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        pool = _FakePool(fetchrow_result=None, fetchval_result=None)
+        await ingestion_event_replay_request(pool, event_id)
+        fetchval_calls = [(sql, args) for method, sql, args in pool.calls if method == "fetchval"]
+        assert fetchval_calls, "Expected at least one fetchval call"
+        sql, args = fetchval_calls[0]
+        assert args[0] == event_id
+
+    async def test_invalid_uuid_raises_value_error(self) -> None:
+        """Passing a non-UUID string should raise ValueError."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        pool = _FakePool()
+        with pytest.raises(ValueError):
+            await ingestion_event_replay_request(pool, "not-a-uuid")
