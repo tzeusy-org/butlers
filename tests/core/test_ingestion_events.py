@@ -41,6 +41,35 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
         "policy_tier": "default",
         "triage_decision": None,
         "triage_target": None,
+        # Literal columns now returned by _EVENT_COLUMNS
+        "status": "ingested",
+        "filter_reason": None,
+        "error_detail": None,
+    }
+    defaults.update(kwargs)
+    return _FakeRecord(defaults)
+
+
+def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
+    """Simulate a row from connectors.filtered_events (mapped to shared shape)."""
+    defaults: dict[str, Any] = {
+        "id": uuid.uuid4(),
+        "received_at": datetime.now(UTC),
+        "source_channel": "telegram",
+        "source_provider": None,
+        "source_endpoint_identity": "bot@example.com",
+        "source_sender_identity": "user123",
+        "source_thread_identity": None,
+        "external_event_id": "tg-msg-42",
+        "dedupe_key": None,
+        "dedupe_strategy": None,
+        "ingestion_tier": None,
+        "policy_tier": None,
+        "triage_decision": None,
+        "triage_target": None,
+        "status": "filtered",
+        "filter_reason": "rate_limit",
+        "error_detail": None,
     }
     defaults.update(kwargs)
     return _FakeRecord(defaults)
@@ -63,15 +92,26 @@ def _make_session_record(**kwargs: Any) -> _FakeRecord:
 
 
 class _FakePool:
-    """Minimal fake asyncpg pool that captures fetchrow / fetchval / fetch calls."""
+    """Minimal fake asyncpg pool that captures fetchrow / fetchval / fetch calls.
+
+    ``fetchrow_results`` is a list of return values consumed in order for each
+    ``fetchrow`` call.  Pass a single-element list for the common case.  The
+    legacy ``fetchrow_result`` kwarg is still accepted for backwards compat and
+    is treated as ``fetchrow_results=[fetchrow_result]``.
+    """
 
     def __init__(
         self,
         fetchrow_result: Any = None,
         fetch_results: list | None = None,
         fetchval_result: Any = None,
+        fetchrow_results: list | None = None,
     ) -> None:
-        self._fetchrow_result = fetchrow_result
+        if fetchrow_results is not None:
+            self._fetchrow_results: list[Any] = list(fetchrow_results)
+        else:
+            # Legacy single-result compat
+            self._fetchrow_results = [fetchrow_result]
         self._fetch_results: list[Any] = fetch_results if fetch_results is not None else []
         self._fetchval_result = fetchval_result
         # Captured calls: list of (method, sql, args)
@@ -79,7 +119,9 @@ class _FakePool:
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
         self.calls.append(("fetchrow", sql, args))
-        return self._fetchrow_result
+        if self._fetchrow_results:
+            return self._fetchrow_results.pop(0)
+        return None
 
     async def fetch(self, sql: str, *args: Any) -> list[Any]:
         self.calls.append(("fetch", sql, args))
@@ -197,8 +239,183 @@ class TestIngestionEventGet:
             "policy_tier",
             "triage_decision",
             "triage_target",
+            "status",
+            "filter_reason",
+            "error_detail",
         ):
             assert field in result, f"Missing field: {field}"
+
+    async def test_ingested_event_has_status_ingested(self) -> None:
+        """ingested events must return status='ingested' and filter_reason=None."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        row = _make_event_record()
+        pool = _FakePool(fetchrow_result=row)
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert result["status"] == "ingested"
+        assert result["filter_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# ingestion_event_get — unified lookup (filtered events)
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionEventGetUnifiedLookup:
+    """Covers the fallback to connectors.filtered_events when an event is not
+    found in shared.ingestion_events."""
+
+    async def test_returns_none_when_not_in_either_table(self) -> None:
+        """Both fetchrow calls return None → result is None."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        # fetchrow_results=[None, None]: first for ingestion_events, second for filtered_events
+        pool = _FakePool(fetchrow_results=[None, None])
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is None
+
+    async def test_two_fetchrow_calls_on_miss(self) -> None:
+        """When shared.ingestion_events misses, filtered_events is also queried."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        pool = _FakePool(fetchrow_results=[None, None])
+        await ingestion_event_get(pool, uuid.uuid4())
+        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
+        assert len(fetchrow_calls) == 2, "Expected two fetchrow calls for the unified lookup"
+
+    async def test_first_fetchrow_targets_shared_ingestion_events(self) -> None:
+        """First lookup must query shared.ingestion_events."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        pool = _FakePool(fetchrow_results=[None, None])
+        await ingestion_event_get(pool, uuid.uuid4())
+        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
+        assert "shared.ingestion_events" in fetchrow_calls[0][1]
+
+    async def test_second_fetchrow_targets_connectors_filtered_events(self) -> None:
+        """Fallback lookup must query connectors.filtered_events."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        pool = _FakePool(fetchrow_results=[None, None])
+        await ingestion_event_get(pool, uuid.uuid4())
+        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
+        assert "connectors.filtered_events" in fetchrow_calls[1][1]
+
+    async def test_returns_filtered_event_when_found_in_filtered_events(self) -> None:
+        """When shared.ingestion_events misses but filtered_events has the row,
+        the filtered event is returned with its real status and filter_reason."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        filtered_row = _make_filtered_event_record(status="filtered", filter_reason="rate_limit")
+        # First fetchrow (ingestion_events) → None; second (filtered_events) → filtered_row
+        pool = _FakePool(fetchrow_results=[None, filtered_row])
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert result["status"] == "filtered"
+        assert result["filter_reason"] == "rate_limit"
+
+    async def test_filtered_event_source_channel_present(self) -> None:
+        """source_channel must be present in the filtered event result."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        filtered_row = _make_filtered_event_record(source_channel="telegram")
+        pool = _FakePool(fetchrow_results=[None, filtered_row])
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert result["source_channel"] == "telegram"
+
+    async def test_filtered_event_id_is_string(self) -> None:
+        """The id in the filtered event result must be a string."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        filtered_row = _make_filtered_event_record()
+        pool = _FakePool(fetchrow_results=[None, filtered_row])
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert isinstance(result["id"], str)
+
+    async def test_filtered_event_all_expected_fields_present(self) -> None:
+        """All unified-shape fields must be present for a filtered event."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        filtered_row = _make_filtered_event_record()
+        pool = _FakePool(fetchrow_results=[None, filtered_row])
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        for field in (
+            "id",
+            "received_at",
+            "source_channel",
+            "source_provider",
+            "source_endpoint_identity",
+            "source_sender_identity",
+            "source_thread_identity",
+            "external_event_id",
+            "dedupe_key",
+            "dedupe_strategy",
+            "ingestion_tier",
+            "policy_tier",
+            "triage_decision",
+            "triage_target",
+            "status",
+            "filter_reason",
+            "error_detail",
+        ):
+            assert field in result, f"Missing field in filtered event result: {field}"
+
+    async def test_no_second_fetchrow_when_found_in_ingestion_events(self) -> None:
+        """When shared.ingestion_events returns a row, no fallback query is issued."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        row = _make_event_record()
+        pool = _FakePool(fetchrow_result=row)
+        await ingestion_event_get(pool, uuid.uuid4())
+        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
+        assert len(fetchrow_calls) == 1, "Must not query filtered_events when ingestion_events hits"
+
+    async def test_filtered_event_with_replay_pending_status(self) -> None:
+        """Filtered events in replay_pending state are returned correctly."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        filtered_row = _make_filtered_event_record(status="replay_pending", filter_reason="dedupe")
+        pool = _FakePool(fetchrow_results=[None, filtered_row])
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert result["status"] == "replay_pending"
+
+    async def test_both_fetchrow_calls_pass_same_event_id(self) -> None:
+        """Both queries must use the same event_id parameter."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        event_id = uuid.uuid4()
+        pool = _FakePool(fetchrow_results=[None, None])
+        await ingestion_event_get(pool, event_id)
+        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
+        assert fetchrow_calls[0][2][0] == event_id
+        assert fetchrow_calls[1][2][0] == event_id
+
+    async def test_filtered_event_error_detail_propagated(self) -> None:
+        """error_detail from connectors.filtered_events must be returned in the detail result."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        filtered_row = _make_filtered_event_record(
+            status="error", filter_reason=None, error_detail="Connection refused"
+        )
+        pool = _FakePool(fetchrow_results=[None, filtered_row])
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert result["error_detail"] == "Connection refused"
+
+    async def test_ingested_event_error_detail_is_none(self) -> None:
+        """Ingested events must return error_detail=None (literal from _EVENT_COLUMNS)."""
+        from butlers.core.ingestion_events import ingestion_event_get
+
+        row = _make_event_record()
+        pool = _FakePool(fetchrow_result=row)
+        result = await ingestion_event_get(pool, uuid.uuid4())
+        assert result is not None
+        assert result["error_detail"] is None
 
 
 # ---------------------------------------------------------------------------

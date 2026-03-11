@@ -28,11 +28,30 @@ from butlers.api.pricing import PricingConfig, estimate_session_cost
 
 logger = logging.getLogger(__name__)
 
-# Columns returned for each ingestion_event row
+# Columns returned for each ingestion_event row.
+# status, filter_reason, and error_detail are included as literals so callers always
+# receive these fields consistently (ingested events never have a filter_reason or
+# error_detail).
 _EVENT_COLUMNS = (
     "id, received_at, source_channel, source_provider, source_endpoint_identity, "
     "source_sender_identity, source_thread_identity, external_event_id, dedupe_key, "
-    "dedupe_strategy, ingestion_tier, policy_tier, triage_decision, triage_target"
+    "dedupe_strategy, ingestion_tier, policy_tier, triage_decision, triage_target, "
+    "'ingested'::text AS status, NULL::text AS filter_reason, NULL::text AS error_detail"
+)
+
+# Columns selected from connectors.filtered_events when doing a unified detail lookup.
+# Maps connector column names onto the shared.ingestion_events shape so the caller
+# receives a uniform dict regardless of which table the event came from.
+_FILTERED_EVENT_COLUMNS = (
+    "id, received_at, source_channel, NULL::text AS source_provider, "
+    "endpoint_identity AS source_endpoint_identity, "
+    "sender_identity AS source_sender_identity, "
+    "NULL::text AS source_thread_identity, "
+    "external_message_id AS external_event_id, "
+    "NULL::text AS dedupe_key, NULL::text AS dedupe_strategy, "
+    "NULL::text AS ingestion_tier, NULL::text AS policy_tier, "
+    "NULL::text AS triage_decision, NULL::text AS triage_target, "
+    "status, filter_reason, error_detail"
 )
 
 # Columns fetched from each butler's sessions table during fan-out
@@ -71,19 +90,35 @@ async def ingestion_event_get(
 ) -> dict[str, Any] | None:
     """Return a single ingestion event by its UUID, or None if not found.
 
+    Performs a unified lookup: checks ``shared.ingestion_events`` first (the
+    common path for accepted/ingested events), then falls back to
+    ``connectors.filtered_events`` so that filtered events are also retrievable
+    by ID.  Both result shapes are normalised to the same dict structure,
+    including explicit ``status`` and ``filter_reason`` fields.
+
     Args:
-        pool: asyncpg connection pool scoped to a database that can resolve
-            ``shared.ingestion_events`` (i.e. search_path includes ``shared``).
+        pool: asyncpg connection pool that can resolve both
+            ``shared.ingestion_events`` and ``connectors.filtered_events``.
         event_id: UUID of the ingestion event to fetch.
 
     Returns:
-        The event as a plain dict, or ``None`` if no row with that id exists.
+        The event as a plain dict, or ``None`` if no row with that id exists
+        in either table.
     """
     if isinstance(event_id, str):
         event_id = UUID(event_id)
 
+    # 1. Try shared.ingestion_events first (happy path for accepted events).
     row = await pool.fetchrow(
         f"SELECT {_EVENT_COLUMNS} FROM shared.ingestion_events WHERE id = $1",
+        event_id,
+    )
+    if row is not None:
+        return _decode_event_row(row)
+
+    # 2. Fall back to connectors.filtered_events for filtered/errored events.
+    row = await pool.fetchrow(
+        f"SELECT {_FILTERED_EVENT_COLUMNS} FROM connectors.filtered_events WHERE id = $1",
         event_id,
     )
     if row is None:
