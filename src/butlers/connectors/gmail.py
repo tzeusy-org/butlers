@@ -2782,6 +2782,73 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
             await pool.close()
 
 
+async def resolve_gmail_endpoint_identity(
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    env_fallback: str,
+) -> str:
+    """Resolve the authenticated Gmail email address for use as endpoint_identity.
+
+    Makes a lightweight OAuth token refresh + profile API call to determine the
+    real email address associated with the configured credentials. Falls back to
+    ``env_fallback`` if the API call fails for any reason.
+
+    Args:
+        client_id: OAuth client ID.
+        client_secret: OAuth client secret.
+        refresh_token: OAuth refresh token.
+        env_fallback: Value to return if auto-resolution fails.
+
+    Returns:
+        Resolved identity string in the form ``gmail:user:<email>`` if successful,
+        otherwise the ``env_fallback`` value unchanged.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Refresh access token
+            token_response = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+            token_response.raise_for_status()
+            access_token = token_response.json()["access_token"]
+
+            # Fetch Gmail profile
+            profile_response = await client.get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            profile_response.raise_for_status()
+            email = profile_response.json().get("emailAddress", "")
+            if email:
+                resolved = f"gmail:user:{email}"
+                logger.info(
+                    "Gmail connector: auto-resolved endpoint_identity=%s "
+                    "from authenticated account",
+                    resolved,
+                )
+                return resolved
+            logger.warning(
+                "Gmail connector: profile response missing emailAddress; "
+                "falling back to env var endpoint_identity=%s",
+                env_fallback,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Gmail connector: failed to auto-resolve endpoint_identity (%s); "
+            "falling back to env var value=%s",
+            exc,
+            env_fallback,
+        )
+    return env_fallback
+
+
 async def run_gmail_connector() -> None:
     """Run the Gmail connector runtime (async entrypoint).
 
@@ -2808,6 +2875,21 @@ async def run_gmail_connector() -> None:
     except Exception as exc:
         logger.error("Failed to build connector config from DB credentials: %s", exc)
         raise
+
+    # Step 3: Auto-resolve endpoint_identity from the authenticated Gmail account.
+    # This replaces the static env var default (e.g. "gmail:user:dev") with the
+    # actual email address of the authenticated account.
+    resolved_identity = await resolve_gmail_endpoint_identity(
+        client_id=db_creds["client_id"],
+        client_secret=db_creds["client_secret"],
+        refresh_token=db_creds["refresh_token"],
+        env_fallback=config.connector_endpoint_identity,
+    )
+    if resolved_identity != config.connector_endpoint_identity:
+        config = config.model_copy(update={"connector_endpoint_identity": resolved_identity})
+        logger.info(
+            "Gmail connector: updated endpoint_identity to resolved value: %s", resolved_identity
+        )
 
     # Create cursor pool for DB-backed checkpoint persistence.
     from butlers.connectors.cursor_store import create_cursor_pool_from_env
