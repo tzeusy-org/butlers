@@ -332,7 +332,7 @@ class TelegramBotConnector:
 
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host="127.0.0.1",
             port=self._config.health_port,
             log_level="warning",
         )
