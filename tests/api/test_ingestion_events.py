@@ -5,10 +5,11 @@ Verifies the API contract (status codes, response shapes, pagination) for:
 - GET /api/ingestion/events/{requestId}
 - GET /api/ingestion/events/{requestId}/sessions
 - GET /api/ingestion/events/{requestId}/rollup
+- POST /api/ingestion/events/{id}/replay
 
 Uses mocked DatabaseManager so no real database is required.
 
-Issue: bu-0b7.7
+Issue: bu-0b7.7, bu-6kvk.5
 """
 
 from __future__ import annotations
@@ -44,8 +45,14 @@ def _make_event_row(
     source_provider: str | None = "telegram",
     triage_decision: str = "accepted",
     triage_target: str | None = "atlas",
+    status: str = "ingested",
+    filter_reason: str | None = None,
 ) -> dict:
-    """Create a dict mimicking an asyncpg Record for ingestion_event columns."""
+    """Create a dict mimicking an asyncpg Record for the unified ingestion timeline.
+
+    Includes ``status`` and ``filter_reason`` fields that are added by the
+    unified UNION query.
+    """
     return {
         "id": event_id or str(uuid4()),
         "received_at": received_at or _NOW,
@@ -61,6 +68,41 @@ def _make_event_row(
         "policy_tier": None,
         "triage_decision": triage_decision,
         "triage_target": triage_target,
+        "status": status,
+        "filter_reason": filter_reason,
+    }
+
+
+def _make_filtered_event_row(
+    *,
+    event_id: str | None = None,
+    received_at: datetime | None = None,
+    source_channel: str = "email",
+    status: str = "filtered",
+    filter_reason: str = "label_exclude:CATEGORY_PROMOTIONS",
+) -> dict:
+    """Create a dict mimicking a connectors.filtered_events row in the unified timeline.
+
+    The unified UNION query maps filtered_events columns onto the shared shape,
+    so non-present columns are NULL.
+    """
+    return {
+        "id": event_id or str(uuid4()),
+        "received_at": received_at or _NOW,
+        "source_channel": source_channel,
+        "source_provider": None,
+        "source_endpoint_identity": None,  # endpoint_identity in filtered_events
+        "source_sender_identity": None,  # sender_identity in filtered_events
+        "source_thread_identity": None,
+        "external_event_id": None,  # external_message_id in filtered_events
+        "dedupe_key": None,
+        "dedupe_strategy": None,
+        "ingestion_tier": None,
+        "policy_tier": None,
+        "triage_decision": None,
+        "triage_target": None,
+        "status": status,
+        "filter_reason": filter_reason,
     }
 
 
@@ -567,3 +609,325 @@ class TestTracesRouteRemoved:
             resp = await client.get("/api/traces/some-trace-id")
 
         assert resp.status_code in (404, 405)
+
+
+# ---------------------------------------------------------------------------
+# Unified timeline: status and filter_reason fields in list response
+# ---------------------------------------------------------------------------
+
+
+class TestUnifiedTimeline:
+    async def test_ingested_event_has_status_and_filter_reason(self, app):
+        """Ingested events must include status='ingested' and filter_reason=null."""
+        row = _make_event_row(event_id=_REQUEST_ID, status="ingested", filter_reason=None)
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+        assert resp.status_code == 200
+        event = resp.json()["data"][0]
+        assert event["status"] == "ingested"
+        assert event["filter_reason"] is None
+
+    async def test_filtered_event_has_status_and_filter_reason(self, app):
+        """Filtered events from connectors.filtered_events must include status and filter_reason."""
+        row = _make_filtered_event_row(
+            event_id=str(uuid4()),
+            status="filtered",
+            filter_reason="label_exclude:CATEGORY_PROMOTIONS",
+        )
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+        assert resp.status_code == 200
+        event = resp.json()["data"][0]
+        assert event["status"] == "filtered"
+        assert event["filter_reason"] == "label_exclude:CATEGORY_PROMOTIONS"
+
+    async def test_mixed_events_returned(self, app):
+        """Unified list can contain both ingested and filtered events."""
+        row_ingested = _make_event_row(status="ingested")
+        row_filtered = _make_filtered_event_row(status="filtered")
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=2)
+        mock_pool.fetch = AsyncMock(return_value=[row_ingested, row_filtered])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["meta"]["total"] == 2
+        statuses = {e["status"] for e in body["data"]}
+        assert "ingested" in statuses
+        assert "filtered" in statuses
+
+
+# ---------------------------------------------------------------------------
+# Status filter parameter
+# ---------------------------------------------------------------------------
+
+
+class TestStatusFilter:
+    async def test_status_ingested_filter_accepted(self, app):
+        """status=ingested query param should be accepted without error."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=0)
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events", params={"status": "ingested"})
+
+        assert resp.status_code == 200
+
+    async def test_status_filtered_filter_accepted(self, app):
+        """status=filtered query param should be accepted without error."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=0)
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events", params={"status": "filtered"})
+
+        assert resp.status_code == 200
+
+    async def test_status_error_filter_accepted(self, app):
+        """status=error query param should be accepted without error."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=0)
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events", params={"status": "error"})
+
+        assert resp.status_code == 200
+
+    async def test_status_replay_pending_filter_accepted(self, app):
+        """status=replay_pending query param should be accepted without error."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=0)
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events", params={"status": "replay_pending"})
+
+        assert resp.status_code == 200
+
+    async def test_status_filter_returns_correct_events(self, app):
+        """status filter should return events matching that status."""
+        row = _make_filtered_event_row(status="error", filter_reason="validation_error")
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events", params={"status": "error"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["meta"]["total"] == 1
+        assert body["data"][0]["status"] == "error"
+        assert body["data"][0]["filter_reason"] == "validation_error"
+
+    async def test_status_and_channel_combined(self, app):
+        """status and source_channel filters can be combined."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=0)
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events",
+                params={"status": "filtered", "source_channel": "email"},
+            )
+
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/events/{id}/replay
+# ---------------------------------------------------------------------------
+
+_FILTERED_ID = str(uuid4())
+
+
+class TestReplayEndpoint:
+    async def test_replay_returns_200_and_replay_pending(self, app):
+        """Replay of a filtered event returns 200 and sets status to replay_pending."""
+        mock_pool = AsyncMock()
+        # fetchval returns current status = 'filtered'
+        mock_pool.fetchval = AsyncMock(return_value="filtered")
+        mock_pool.execute = AsyncMock()
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "replay_pending"
+        assert body["id"] == _FILTERED_ID
+
+    async def test_replay_of_error_event_returns_200(self, app):
+        """Replay of an error-status event returns 200."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value="error")
+        mock_pool.execute = AsyncMock()
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "replay_pending"
+
+    async def test_replay_of_replay_failed_returns_200(self, app):
+        """Re-replay of replay_failed event is allowed and returns 200."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value="replay_failed")
+        mock_pool.execute = AsyncMock()
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "replay_pending"
+
+    async def test_replay_returns_404_for_unknown_id(self, app):
+        """Replay of unknown event returns 404."""
+        unknown_id = str(uuid4())
+
+        mock_pool = AsyncMock()
+        # fetchval returns None — event not found
+        mock_pool.fetchval = AsyncMock(return_value=None)
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{unknown_id}/replay")
+
+        assert resp.status_code == 404
+
+    async def test_replay_returns_409_for_replay_pending(self, app):
+        """Replay of replay_pending event returns 409 Conflict."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value="replay_pending")
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
+
+        assert resp.status_code == 409
+        body = resp.json()
+        # FastAPI wraps HTTPException detail in {"detail": ...}
+        detail = body.get("detail", body)
+        assert detail["current_status"] == "replay_pending"
+
+    async def test_replay_returns_409_for_replay_complete(self, app):
+        """Replay of replay_complete event returns 409 Conflict."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value="replay_complete")
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
+
+        assert resp.status_code == 409
+        detail = resp.json().get("detail", resp.json())
+        assert detail["current_status"] == "replay_complete"
+
+    async def test_replay_409_includes_error_message(self, app):
+        """409 response must include 'error' key with human-readable message."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value="replay_pending")
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
+
+        assert resp.status_code == 409
+        detail = resp.json().get("detail", resp.json())
+        assert "error" in detail
+        assert "not replayable" in detail["error"].lower()
+
+    async def test_replay_503_when_shared_pool_unavailable(self, app):
+        """Replay returns 503 when credential_shared_pool() raises KeyError."""
+        _app_with_mock_db(
+            app,
+            shared_pool_error=KeyError("Shared credential pool is not configured"),
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
+
+        assert resp.status_code == 503
