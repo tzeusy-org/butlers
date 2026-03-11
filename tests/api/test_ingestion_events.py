@@ -47,11 +47,12 @@ def _make_event_row(
     triage_target: str | None = "atlas",
     status: str = "ingested",
     filter_reason: str | None = None,
+    error_detail: str | None = None,
 ) -> dict:
     """Create a dict mimicking an asyncpg Record for the unified ingestion timeline.
 
-    Includes ``status`` and ``filter_reason`` fields that are added by the
-    unified UNION query.
+    Includes ``status``, ``filter_reason``, and ``error_detail`` fields that are
+    added by the unified UNION query.
     """
     return {
         "id": event_id or str(uuid4()),
@@ -70,6 +71,7 @@ def _make_event_row(
         "triage_target": triage_target,
         "status": status,
         "filter_reason": filter_reason,
+        "error_detail": error_detail,
     }
 
 
@@ -80,6 +82,7 @@ def _make_filtered_event_row(
     source_channel: str = "email",
     status: str = "filtered",
     filter_reason: str = "label_exclude:CATEGORY_PROMOTIONS",
+    error_detail: str | None = None,
 ) -> dict:
     """Create a dict mimicking a connectors.filtered_events row in the unified timeline.
 
@@ -103,6 +106,7 @@ def _make_filtered_event_row(
         "triage_target": None,
         "status": status,
         "filter_reason": filter_reason,
+        "error_detail": error_detail,
     }
 
 
@@ -683,6 +687,50 @@ class TestUnifiedTimeline:
         statuses = {e["status"] for e in body["data"]}
         assert "ingested" in statuses
         assert "filtered" in statuses
+
+    async def test_error_event_exposes_error_detail(self, app):
+        """Error events must expose error_detail when present."""
+        row = _make_filtered_event_row(
+            status="error",
+            filter_reason="exception_raised",
+            error_detail="ConnectionError: timed out after 30s",
+        )
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+        assert resp.status_code == 200
+        event = resp.json()["data"][0]
+        assert event["status"] == "error"
+        assert event["filter_reason"] == "exception_raised"
+        assert event["error_detail"] == "ConnectionError: timed out after 30s"
+
+    async def test_ingested_event_has_null_error_detail(self, app):
+        """Ingested events must always have error_detail=null."""
+        row = _make_event_row(status="ingested", error_detail=None)
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        _app_with_mock_db(app, shared_pool=mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+        assert resp.status_code == 200
+        event = resp.json()["data"][0]
+        assert event["error_detail"] is None
 
 
 # ---------------------------------------------------------------------------

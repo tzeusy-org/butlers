@@ -123,12 +123,13 @@ async def ingestion_events_list(
         a ``status`` field (``'ingested'`` or a filtered_events status value) and
         a ``filter_reason`` field (``None`` for ingested events).
     """
-    # Columns selected from shared.ingestion_events (adds status/filter_reason literals)
+    # Columns selected from shared.ingestion_events (adds status/filter_reason/error_detail
+    # literals — ingested rows never carry filter_reason or error_detail)
     ingested_cols = (
         "id, received_at, source_channel, source_provider, source_endpoint_identity, "
         "source_sender_identity, source_thread_identity, external_event_id, dedupe_key, "
         "dedupe_strategy, ingestion_tier, policy_tier, triage_decision, triage_target, "
-        "'ingested'::text AS status, NULL::text AS filter_reason"
+        "'ingested'::text AS status, NULL::text AS filter_reason, NULL::text AS error_detail"
     )
 
     # Columns selected from connectors.filtered_events (maps connector columns onto
@@ -142,7 +143,7 @@ async def ingestion_events_list(
         "NULL::text AS dedupe_key, NULL::text AS dedupe_strategy, "
         "NULL::text AS ingestion_tier, NULL::text AS policy_tier, "
         "NULL::text AS triage_decision, NULL::text AS triage_target, "
-        "status, filter_reason"
+        "status, filter_reason, error_detail"
     )
 
     args: list[Any] = []

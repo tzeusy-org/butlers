@@ -24,6 +24,7 @@ import type { IngestionEventStatus } from "@/api/index.ts";
 interface StatusBadgeProps {
   status: IngestionEventStatus;
   filterReason?: string | null;
+  errorDetail?: string | null;
 }
 
 const STATUS_LABELS: Record<IngestionEventStatus, string> = {
@@ -80,11 +81,12 @@ function BadgeInner({ status }: { status: IngestionEventStatus }) {
   }
 }
 
-export function StatusBadge({ status, filterReason }: StatusBadgeProps) {
-  const showTooltip =
-    (status === "filtered" || status === "error") && !!filterReason;
+export function StatusBadge({ status, filterReason, errorDetail }: StatusBadgeProps) {
+  const hasTooltipContent =
+    (status === "filtered" || status === "error") &&
+    (!!filterReason || (status === "error" && !!errorDetail));
 
-  if (!showTooltip) {
+  if (!hasTooltipContent) {
     return <BadgeInner status={status} />;
   }
 
@@ -97,7 +99,10 @@ export function StatusBadge({ status, filterReason }: StatusBadgeProps) {
           </span>
         </TooltipTrigger>
         <TooltipContent side="top">
-          <p className="max-w-xs text-xs">{filterReason}</p>
+          {filterReason && <p className="max-w-xs text-xs">{filterReason}</p>}
+          {status === "error" && errorDetail && (
+            <p className="max-w-xs text-xs">{errorDetail}</p>
+          )}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

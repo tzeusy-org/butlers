@@ -25,9 +25,9 @@ describe("StatusBadge", () => {
     container.remove();
   });
 
-  function render(status: IngestionEventStatus, filterReason?: string | null) {
+  function render(status: IngestionEventStatus, filterReason?: string | null, errorDetail?: string | null) {
     act(() => {
-      root.render(<StatusBadge status={status} filterReason={filterReason} />);
+      root.render(<StatusBadge status={status} filterReason={filterReason} errorDetail={errorDetail} />);
     });
   }
 
@@ -104,5 +104,30 @@ describe("StatusBadge", () => {
     render("ingested", "some reason");
     const trigger = container.querySelector("[data-slot='tooltip-trigger']");
     expect(trigger).toBeNull();
+  });
+
+  it("wraps error badge in a tooltip trigger when only errorDetail is provided", () => {
+    render("error", null, "Exception: connection timeout");
+    const trigger = container.querySelector("[data-slot='tooltip-trigger']");
+    expect(trigger).not.toBeNull();
+  });
+
+  it("does NOT add tooltip trigger for error badge with neither filterReason nor errorDetail", () => {
+    render("error", null, null);
+    const trigger = container.querySelector("[data-slot='tooltip-trigger']");
+    expect(trigger).toBeNull();
+  });
+
+  it("does NOT add tooltip trigger for filtered badge with errorDetail but no filterReason", () => {
+    // errorDetail is only shown for error status, not filtered
+    render("filtered", null, "some error detail");
+    const trigger = container.querySelector("[data-slot='tooltip-trigger']");
+    expect(trigger).toBeNull();
+  });
+
+  it("wraps error badge in tooltip trigger when both filterReason and errorDetail are provided", () => {
+    render("error", "filter_reason text", "error_detail text");
+    const trigger = container.querySelector("[data-slot='tooltip-trigger']");
+    expect(trigger).not.toBeNull();
   });
 });

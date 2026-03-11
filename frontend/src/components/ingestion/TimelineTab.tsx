@@ -470,7 +470,7 @@ function EventRow({ event, isExpanded, onToggle, onOptimisticUpdate }: EventRowP
           {event.source_sender_identity ?? "—"}
         </TableCell>
         <TableCell>
-          <StatusBadge status={event.status} filterReason={event.filter_reason} />
+          <StatusBadge status={event.status} filterReason={event.filter_reason} errorDetail={event.error_detail} />
         </TableCell>
         <TableCell className="text-sm">
           {event.policy_tier ?? event.ingestion_tier ?? "—"}
