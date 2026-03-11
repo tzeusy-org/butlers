@@ -129,6 +129,7 @@ import type {
   IngestionEventSummary,
   IngestionEventSession,
   IngestionEventRollup,
+  IngestionEventReplayResponse,
   IngestionEventsParams,
   IngestionRule,
   IngestionRuleCreate,
@@ -2348,6 +2349,7 @@ export async function listIngestionEvents(
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
   if (params?.offset !== undefined) sp.set("offset", String(params.offset));
   if (params?.source_channel) sp.set("source_channel", params.source_channel);
+  if (params?.status) sp.set("status", params.status);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<PaginatedResponse<IngestionEventSummary>>(
     `/ingestion/events${qs}`,
@@ -2378,5 +2380,21 @@ export async function getIngestionEventRollup(
 ): Promise<ApiResponse<IngestionEventRollup>> {
   return apiFetch<ApiResponse<IngestionEventRollup>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/rollup`,
+  );
+}
+
+/**
+ * Request replay of a filtered/error/replay_failed ingestion event.
+ * POST /api/ingestion/events/{id}/replay
+ *
+ * Returns the updated event id + new status (replay_pending).
+ * Throws ApiError on 404 (unknown id) or 409 (non-replayable status).
+ */
+export async function replayIngestionEvent(
+  requestId: string,
+): Promise<IngestionEventReplayResponse> {
+  return apiFetch<IngestionEventReplayResponse>(
+    `/ingestion/events/${encodeURIComponent(requestId)}/replay`,
+    { method: "POST" },
   );
 }
