@@ -33,6 +33,7 @@ class IngestionEventSummary(BaseModel):
     # Unified timeline fields — present on all rows regardless of source table.
     status: str = "ingested"
     filter_reason: str | None = None
+    error_detail: str | None = None
 
 
 class IngestionEventDetail(IngestionEventSummary):

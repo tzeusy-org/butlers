@@ -1939,6 +1939,8 @@ export interface IngestionEventSummary {
   status: IngestionEventStatus;
   /** Human-readable reason why this event was filtered or errored. */
   filter_reason: string | null;
+  /** Detailed error context for error-status events (e.g. exception message). */
+  error_detail: string | null;
 }
 
 /** Response body from POST /api/ingestion/events/{id}/replay. */
