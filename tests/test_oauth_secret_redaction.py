@@ -317,6 +317,7 @@ class TestOAuthCallbackResponseRedaction:
             _generate_state,
             _store_state,
         )
+        from butlers.google_account_registry import GoogleAccountNotFoundError
 
         _clear_state_store()
         app = _make_app()
@@ -324,12 +325,20 @@ class TestOAuthCallbackResponseRedaction:
         _store_state(state)
 
         mock_exchange = AsyncMock(return_value=FAKE_TOKEN_RESPONSE)
+        mock_userinfo = AsyncMock(return_value={"email": "test@example.com", "name": "Test User"})
+        mock_get_account = AsyncMock(side_effect=GoogleAccountNotFoundError("not found"))
+        mock_create_account = AsyncMock()
+        mock_store_app_creds = AsyncMock()
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch(
                 "butlers.api.routers.oauth._exchange_code_for_tokens",
                 mock_exchange,
             ),
+            patch("butlers.api.routers.oauth._fetch_google_userinfo", mock_userinfo),
+            patch("butlers.api.routers.oauth.get_google_account", mock_get_account),
+            patch("butlers.api.routers.oauth.create_google_account", mock_create_account),
+            patch("butlers.api.routers.oauth.store_app_credentials", mock_store_app_creds),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -354,6 +363,7 @@ class TestOAuthCallbackResponseRedaction:
             _generate_state,
             _store_state,
         )
+        from butlers.google_account_registry import GoogleAccountNotFoundError
 
         _clear_state_store()
         app = _make_app()
@@ -361,12 +371,20 @@ class TestOAuthCallbackResponseRedaction:
         _store_state(state)
 
         mock_exchange = AsyncMock(return_value=FAKE_TOKEN_RESPONSE)
+        mock_userinfo = AsyncMock(return_value={"email": "test@example.com", "name": "Test User"})
+        mock_get_account = AsyncMock(side_effect=GoogleAccountNotFoundError("not found"))
+        mock_create_account = AsyncMock()
+        mock_store_app_creds = AsyncMock()
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch(
                 "butlers.api.routers.oauth._exchange_code_for_tokens",
                 mock_exchange,
             ),
+            patch("butlers.api.routers.oauth._fetch_google_userinfo", mock_userinfo),
+            patch("butlers.api.routers.oauth.get_google_account", mock_get_account),
+            patch("butlers.api.routers.oauth.create_google_account", mock_create_account),
+            patch("butlers.api.routers.oauth.store_app_credentials", mock_store_app_creds),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),

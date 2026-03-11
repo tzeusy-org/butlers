@@ -27,6 +27,7 @@ from butlers.api.routers.oauth import (
     _clear_state_store,
     _generate_state,
     _state_store,
+    _StateEntry,
     _store_state,
     _TokenExchangeError,
     _validate_and_consume_state,
@@ -59,6 +60,11 @@ _FAKE_TOKEN_RESPONSE = {
 }
 
 _EXCHANGE_PATCH_TARGET = "butlers.api.routers.oauth._exchange_code_for_tokens"
+_USERINFO_PATCH_TARGET = "butlers.api.routers.oauth._fetch_google_userinfo"
+_GET_ACCOUNT_PATCH_TARGET = "butlers.api.routers.oauth.get_google_account"
+_STORE_APP_CREDS_PATCH_TARGET = "butlers.api.routers.oauth.store_app_credentials"
+
+_FAKE_USERINFO = {"email": "test@example.com", "name": "Test User"}
 
 
 @pytest.fixture(autouse=True)
@@ -157,10 +163,20 @@ class TestFullOAuthFlowHappyPath:
         assert state  # State was generated
 
         # Phase 2: Use the same state token in callback
+        from butlers.google_account_registry import GoogleAccountNotFoundError
+
         mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
+        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
+        mock_get_account = AsyncMock(side_effect=GoogleAccountNotFoundError("not found"))
+        mock_create_account = AsyncMock()
+        mock_store_app_creds = AsyncMock()
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
+            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
+            patch(_GET_ACCOUNT_PATCH_TARGET, mock_get_account),
+            patch("butlers.api.routers.oauth.create_google_account", mock_create_account),
+            patch(_STORE_APP_CREDS_PATCH_TARGET, mock_store_app_creds),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -192,10 +208,20 @@ class TestFullOAuthFlowHappyPath:
         state = start_resp.json()["state"]
 
         # First callback: succeeds
+        from butlers.google_account_registry import GoogleAccountNotFoundError
+
         mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
+        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
+        mock_get_account = AsyncMock(side_effect=GoogleAccountNotFoundError("not found"))
+        mock_create_account = AsyncMock()
+        mock_store_app_creds = AsyncMock()
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
+            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
+            patch(_GET_ACCOUNT_PATCH_TARGET, mock_get_account),
+            patch("butlers.api.routers.oauth.create_google_account", mock_create_account),
+            patch(_STORE_APP_CREDS_PATCH_TARGET, mock_store_app_creds),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -216,19 +242,27 @@ class TestFullOAuthFlowHappyPath:
         assert resp2.json()["error_code"] == "invalid_state"
 
     async def test_full_flow_credentials_persisted_on_success(self):
-        """Successful callback stores credentials in DB via store_google_credentials."""
+        """Successful callback stores app credentials in DB via store_app_credentials."""
+        from butlers.google_account_registry import GoogleAccountNotFoundError
+
         app = _make_app()
 
         state = _generate_state()
         _store_state(state)
 
         mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_store = AsyncMock()
+        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
+        mock_get_account = AsyncMock(side_effect=GoogleAccountNotFoundError("not found"))
+        mock_create_account = AsyncMock()
+        mock_store_app_creds = AsyncMock()
 
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch("butlers.api.routers.oauth.store_google_credentials", mock_store),
+            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
+            patch(_GET_ACCOUNT_PATCH_TARGET, mock_get_account),
+            patch("butlers.api.routers.oauth.create_google_account", mock_create_account),
+            patch(_STORE_APP_CREDS_PATCH_TARGET, mock_store_app_creds),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -241,12 +275,11 @@ class TestFullOAuthFlowHappyPath:
 
         assert resp.status_code == 200
         assert resp.json()["success"] is True
-        mock_store.assert_awaited_once()
-        # Verify the stored credentials include expected fields
-        call_kwargs = mock_store.call_args[1]
+        mock_store_app_creds.assert_awaited_once()
+        # Verify the stored app credentials include expected fields
+        call_kwargs = mock_store_app_creds.call_args[1]
         assert call_kwargs["client_id"] == GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_ID"]
         assert call_kwargs["client_secret"] == GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_SECRET"]
-        assert call_kwargs["refresh_token"] == _FAKE_TOKEN_RESPONSE["refresh_token"]
 
 
 # ---------------------------------------------------------------------------
@@ -280,10 +313,12 @@ class TestFullOAuthFlowFailurePaths:
         assert resp.status_code == 400
         assert resp.json()["error_code"] == "token_exchange_failed"
         # State should have been consumed (cannot replay)
-        assert _validate_and_consume_state(state) is False
+        assert _validate_and_consume_state(state) is None
 
     async def test_flow_fails_without_refresh_token_in_response(self):
         """Callback fails if token response lacks refresh_token (no offline access)."""
+        from butlers.google_account_registry import GoogleAccountNotFoundError
+
         app = _make_app()
         state = _generate_state()
         _store_state(state)
@@ -295,9 +330,15 @@ class TestFullOAuthFlowFailurePaths:
             # No refresh_token
         }
         mock_exchange = AsyncMock(return_value=no_refresh)
+        # access_token is present → userinfo will be called
+        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
+        # No existing account → new account path requires refresh_token
+        mock_get_account = AsyncMock(side_effect=GoogleAccountNotFoundError("not found"))
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
+            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
+            patch(_GET_ACCOUNT_PATCH_TARGET, mock_get_account),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -338,7 +379,7 @@ class TestFullOAuthFlowFailurePaths:
         app = _make_app()
         state = _generate_state()
         # Store with already-expired timestamp
-        _state_store[state] = time.monotonic() - 1
+        _state_store[state] = _StateEntry(expiry=time.monotonic() - 1)
 
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(

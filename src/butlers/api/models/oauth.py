@@ -6,6 +6,8 @@ and the credential status surface.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, computed_field
@@ -32,6 +34,10 @@ class OAuthCallbackSuccess(BaseModel):
     message: str = "OAuth bootstrap complete. Refresh token stored."
     provider: str = "google"
     scope: str | None = None
+    account_email: str | None = None
+    """The authenticated Google account email (multi-account flows)."""
+    is_new_account: bool | None = None
+    """True if a new account was created; False if an existing account was re-authorized."""
 
 
 class OAuthCallbackError(BaseModel):
@@ -124,14 +130,68 @@ class OAuthCredentialStatus(BaseModel):
     """
 
 
+# ---------------------------------------------------------------------------
+# Per-account status and management models
+# ---------------------------------------------------------------------------
+
+
+class GoogleAccountStatus(BaseModel):
+    """Per-account credential status for GET /api/oauth/google/accounts/<id>/status."""
+
+    has_refresh_token: bool
+    has_app_credentials: bool
+    granted_scopes: list[str]
+    missing_scopes: list[str]
+    token_valid: bool
+    last_token_refresh_at: datetime | None = None
+
+
+class GoogleAccountResponse(BaseModel):
+    """Serialized representation of a connected Google account.
+
+    No credential material (refresh tokens, client secrets) is included.
+    """
+
+    id: uuid.UUID
+    email: str | None
+    display_name: str | None
+    is_primary: bool
+    status: str
+    granted_scopes: list[str]
+    connected_at: datetime
+    last_token_refresh_at: datetime | None = None
+
+
+class SetPrimaryResponse(BaseModel):
+    """Response for PUT /api/oauth/google/accounts/<id>/primary."""
+
+    success: bool = True
+    account: GoogleAccountResponse
+
+
+class DisconnectAccountResponse(BaseModel):
+    """Response for DELETE /api/oauth/google/accounts/<id>."""
+
+    success: bool = True
+    message: str
+    auto_promoted_id: uuid.UUID | None = None
+    """UUID of the account auto-promoted to primary, if applicable."""
+
+
 class OAuthStatusResponse(BaseModel):
     """Top-level response for GET /api/oauth/status.
 
     Aggregates the status of all OAuth credential sets known to the system.
     For v1, only Google credentials are surfaced.
+
+    The ``accounts`` array contains per-account status when multi-account
+    Google is configured.  The top-level ``google`` status reflects the
+    worst-case across all accounts (backward compatible).
     """
 
     google: OAuthCredentialStatus
+    accounts: list[GoogleAccountResponse] | None = None
+    """Per-account list for multi-account setups.  None when no accounts exist."""
 
 
 # ---------------------------------------------------------------------------

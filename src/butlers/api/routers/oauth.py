@@ -9,13 +9,14 @@ The bootstrap flow:
      - Generates a cryptographically random state token (CSRF protection).
      - Stores the state in an in-memory store (keyed by state value, TTL 10 min).
      - Returns the Google authorization URL as a redirect response.
+     - Optional: account_hint passes login_hint to Google; force_consent adds prompt=consent.
 
   2. GET /api/oauth/google/callback
      - Validates the state parameter against the stored state token.
      - Exchanges the authorization code for tokens via Google's token endpoint.
-     - Extracts and logs the refresh token (redacted) and persists credentials
-       to the shared credential store. Secret material is never printed or
-       logged in plaintext.
+     - Calls Google's userinfo endpoint to resolve the authenticated email.
+     - Resolves or creates a google_accounts row via the registry.
+     - Stores the refresh token on the companion entity.
      - Redirects to the dashboard URL on success (if OAUTH_DASHBOARD_URL is set),
        or returns a JSON success payload.
 
@@ -23,6 +24,10 @@ The bootstrap flow:
      - Reports whether Google credentials are present and usable.
      - Returns a machine-readable state (OAuthCredentialState) plus actionable
        remediation guidance for the dashboard UX.
+     - Includes per-account status array when multi-account is configured.
+
+  4. Account management endpoints (GET/PUT/DELETE /api/oauth/google/accounts/*)
+     - List, set primary, disconnect, and check per-account credential status.
 
 Environment variables:
   GOOGLE_OAUTH_REDIRECT_URI  — Callback URL registered with Google
@@ -45,6 +50,8 @@ import logging
 import os
 import secrets
 import time
+import uuid
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
@@ -54,6 +61,9 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from butlers.api.models.oauth import (
     DeleteCredentialsResponse,
+    DisconnectAccountResponse,
+    GoogleAccountResponse,
+    GoogleAccountStatus,
     GoogleCredentialStatusResponse,
     OAuthCallbackError,
     OAuthCallbackSuccess,
@@ -61,10 +71,21 @@ from butlers.api.models.oauth import (
     OAuthCredentialStatus,
     OAuthStartResponse,
     OAuthStatusResponse,
+    SetPrimaryResponse,
     UpsertAppCredentialsRequest,
     UpsertAppCredentialsResponse,
 )
 from butlers.credential_store import CredentialStore
+from butlers.google_account_registry import (
+    GoogleAccountAlreadyExistsError,
+    GoogleAccountLimitExceededError,
+    GoogleAccountNotFoundError,
+    create_google_account,
+    disconnect_account,
+    get_google_account,
+    list_google_accounts,
+    set_primary_account,
+)
 from butlers.google_credentials import (
     delete_google_credentials,
     load_app_credentials,
@@ -141,6 +162,7 @@ router = APIRouter(prefix="/api/oauth", tags=["oauth"])
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 _DEFAULT_REDIRECT_URI = "http://localhost:40200/api/oauth/google/callback"
 _DEFAULT_SCOPES = " ".join(
@@ -170,10 +192,25 @@ _REQUIRED_SCOPES = frozenset(
 
 _STATE_TTL_SECONDS = 600  # 10 minutes
 
-# Maps state token → expiry timestamp (monotonic)
+
+@dataclass
+class _StateEntry:
+    """CSRF state store entry carrying account context."""
+
+    expiry: float
+    """Monotonic clock timestamp when this entry expires."""
+
+    account_hint: str | None = None
+    """Optional Google account hint (email) passed via login_hint."""
+
+    force_consent: bool = False
+    """When True, prompt=consent was added to the authorization URL."""
+
+
+# Maps state token → _StateEntry
 # NOTE: This store is process-local. Do not run multiple worker processes
 # (e.g. gunicorn -w N) — CSRF state validation will silently fail across workers.
-_state_store: dict[str, float] = {}
+_state_store: dict[str, _StateEntry] = {}
 
 
 def _generate_state() -> str:
@@ -181,28 +218,39 @@ def _generate_state() -> str:
     return secrets.token_urlsafe(32)
 
 
-def _store_state(state: str) -> None:
-    """Store a state token with an expiry timestamp."""
-    _state_store[state] = time.monotonic() + _STATE_TTL_SECONDS
+def _store_state(
+    state: str,
+    *,
+    account_hint: str | None = None,
+    force_consent: bool = False,
+) -> None:
+    """Store a state token with an expiry timestamp and optional account context."""
+    _state_store[state] = _StateEntry(
+        expiry=time.monotonic() + _STATE_TTL_SECONDS,
+        account_hint=account_hint,
+        force_consent=force_consent,
+    )
     _evict_expired_states()
 
 
-def _validate_and_consume_state(state: str) -> bool:
+def _validate_and_consume_state(state: str) -> _StateEntry | None:
     """Validate a state token and consume it (one-time-use).
 
-    Returns True if the state was valid and unexpired, False otherwise.
+    Returns the _StateEntry if the state was valid and unexpired, None otherwise.
     """
     _evict_expired_states()
-    expiry = _state_store.pop(state, None)
-    if expiry is None:
-        return False
-    return time.monotonic() < expiry
+    entry = _state_store.pop(state, None)
+    if entry is None:
+        return None
+    if time.monotonic() >= entry.expiry:
+        return None
+    return entry
 
 
 def _evict_expired_states() -> None:
     """Remove all expired state tokens from the store."""
     now = time.monotonic()
-    expired = [k for k, exp in _state_store.items() if now >= exp]
+    expired = [k for k, entry in _state_store.items() if now >= entry.expiry]
     for k in expired:
         del _state_store[k]
 
@@ -268,6 +316,7 @@ async def _resolve_app_credentials(db_manager: Any = None) -> tuple[str, str]:
     responses={
         200: {"model": OAuthStartResponse, "description": "JSON payload (redirect=false)"},
         302: {"description": "Redirect to Google authorization URL"},
+        409: {"description": "Account limit reached"},
     },
 )
 async def oauth_google_start(
@@ -276,6 +325,16 @@ async def oauth_google_start(
         description="If true (default), redirect to Google authorization URL. "
         "If false, return the URL as JSON for programmatic callers.",
     ),
+    account_hint: str | None = Query(
+        default=None,
+        description="Optional Google account email to pre-select via login_hint. "
+        "When provided, the hint is carried through the CSRF state token to the callback.",
+    ),
+    force_consent: bool = Query(
+        default=False,
+        description="When true, adds prompt=consent to the authorization URL to force "
+        "Google to return a new refresh token (useful for scope upgrades or re-authorization).",
+    ),
     db_manager: Any = Depends(_get_db_manager),
 ) -> Response:
     """Begin the Google OAuth authorization flow.
@@ -283,27 +342,86 @@ async def oauth_google_start(
     Generates a CSRF state token, stores it in the in-memory state store,
     builds the Google authorization URL, and either redirects the browser
     or returns the URL as JSON (when ``?redirect=false``).
+
+    Supports multi-account flows via ``account_hint`` (pre-selects account)
+    and ``force_consent`` (forces refresh token re-issuance for scope upgrades).
     """
+    # --- Account limit check ---
+    # Only check if this would be a new account (not a re-auth of an existing one).
+    shared_pool = _get_shared_pool(db_manager)
+    if shared_pool is not None and account_hint:
+        # Check if this email already exists — if it does, it's a re-auth, skip limit check.
+        try:
+            await get_google_account(shared_pool, account=account_hint)
+            # Account exists — re-auth, no limit check needed.
+        except GoogleAccountNotFoundError:
+            # New account — check the limit.
+            try:
+                await _check_account_limit(shared_pool)
+            except GoogleAccountLimitExceededError as exc:
+                from butlers.google_account_registry import _max_accounts  # noqa: PLC0415
+
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "error": "account_limit_reached",
+                        "max_accounts": _max_accounts(),
+                        "message": str(exc),
+                    },
+                )
+        except Exception:  # noqa: BLE001
+            pass  # DB unavailable — proceed without limit check
+    elif shared_pool is not None and not account_hint:
+        # No hint provided — could be a new account. Check the limit.
+        try:
+            await _check_account_limit(shared_pool)
+        except GoogleAccountLimitExceededError as exc:
+            from butlers.google_account_registry import _max_accounts  # noqa: PLC0415
+
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "account_limit_reached",
+                    "max_accounts": _max_accounts(),
+                    "message": str(exc),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass  # DB unavailable — proceed without limit check
+
     client_id, _ = await _resolve_app_credentials(db_manager)
     redirect_uri = _get_redirect_uri()
     scopes = _get_scopes()
 
     state = _generate_state()
-    _store_state(state)
+    _store_state(state, account_hint=account_hint, force_consent=force_consent)
 
-    params = {
+    params: dict[str, str] = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": scopes,
         "access_type": "offline",
-        "prompt": "consent",  # Force refresh token to be returned
         "state": state,
     }
 
+    # Add prompt=consent when explicitly requested (scope upgrades, forced re-auth).
+    # When force_consent=False (default), omit the prompt parameter so Google decides
+    # whether to show the consent screen (skips it for re-auths without scope changes).
+    if force_consent:
+        params["prompt"] = "consent"
+
+    if account_hint:
+        params["login_hint"] = account_hint
+
     authorization_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
-    logger.info("Google OAuth bootstrap started (state=%s...)", state[:8])
+    logger.info(
+        "Google OAuth flow started (state=%s..., account_hint=%s, force_consent=%s)",
+        state[:8],
+        account_hint,
+        force_consent,
+    )
 
     if redirect:
         return RedirectResponse(url=authorization_url, status_code=302)
@@ -314,6 +432,26 @@ async def oauth_google_start(
             state=state,
         ).model_dump()
     )
+
+
+async def _check_account_limit(pool: Any) -> None:
+    """Check the active account count against the soft limit.
+
+    Raises GoogleAccountLimitExceededError if the limit is reached.
+    """
+    from butlers.google_account_registry import (  # noqa: PLC0415
+        _count_active_accounts,
+        _max_accounts,
+    )
+
+    async with pool.acquire() as conn:
+        active_count = await _count_active_accounts(conn)
+        if active_count >= _max_accounts():
+            raise GoogleAccountLimitExceededError(
+                f"Google account limit reached ({active_count}/{_max_accounts()}). "
+                "Disconnect an existing account before adding a new one, or raise "
+                "GOOGLE_MAX_ACCOUNTS."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -333,13 +471,13 @@ async def oauth_google_callback(
 ) -> Response:
     """Handle the Google OAuth callback after user authorization.
 
-    Validates state, exchanges the authorization code for tokens, extracts
-    the refresh token, and either redirects to the dashboard or returns a
-    structured JSON payload.
+    Validates state, exchanges the authorization code for tokens, calls
+    Google's userinfo endpoint to resolve the authenticated account,
+    and resolves or creates a google_accounts row via the registry.
 
     On success:
-        - Logs the refresh token so the operator can capture it.
         - Returns ``OAuthCallbackSuccess`` JSON (or redirects to dashboard).
+        - Includes the account email and whether it was new or re-authorized.
 
     On failure:
         - Returns ``OAuthCallbackError`` JSON with an actionable error message.
@@ -382,7 +520,8 @@ async def oauth_google_callback(
         return JSONResponse(status_code=400, content=error_payload.model_dump())
 
     # --- Validate CSRF state ---
-    if not _validate_and_consume_state(state):
+    state_entry = _validate_and_consume_state(state)
+    if state_entry is None:
         logger.warning("OAuth callback received invalid or expired state token")
         error_payload = OAuthCallbackError(
             error_code="invalid_state",
@@ -410,21 +549,92 @@ async def oauth_google_callback(
         )
         return JSONResponse(status_code=400, content=error_payload.model_dump())
 
-    # --- Extract refresh token ---
     refresh_token = token_data.get("refresh_token")
+    access_token = token_data.get("access_token")
     scope = token_data.get("scope")
 
-    if not refresh_token:
-        logger.warning("Google OAuth token response did not include a refresh token")
-        error_payload = OAuthCallbackError(
-            error_code="no_refresh_token",
-            message="Google did not return a refresh token. "
-            "Ensure your OAuth app requests 'offline' access and 'prompt=consent' "
-            "and that the user has not previously granted access.",
-        )
-        return JSONResponse(status_code=400, content=error_payload.model_dump())
+    # --- Call Google userinfo to resolve account email ---
+    # When access_token is available, call userinfo to get the authenticated email.
+    # This is the authoritative source — ignore the account_hint from state.
+    account_email: str | None = None
+    account_display_name: str | None = None
 
-    # --- Persist credentials to DB ---
+    if access_token:
+        try:
+            userinfo = await _fetch_google_userinfo(access_token)
+            account_email = userinfo.get("email")
+            account_display_name = userinfo.get("name")
+        except _UserinfoError as exc:
+            logger.warning("Google userinfo call failed: %s", exc)
+            error_payload = OAuthCallbackError(
+                error_code="userinfo_failed",
+                message="Failed to retrieve account information from Google. "
+                "Please restart the OAuth flow.",
+            )
+            return JSONResponse(status_code=502, content=error_payload.model_dump())
+
+    # --- Resolve or create account in registry ---
+    shared_pool = _get_shared_pool(db_manager)
+    is_new_account: bool | None = None
+
+    if shared_pool is not None and account_email:
+        # Try to find existing account.
+        try:
+            existing_account = await get_google_account(shared_pool, account=account_email)
+            # Account exists — update credentials.
+            is_new_account = False
+            if refresh_token:
+                # Update refresh token on existing companion entity.
+                await _update_account_refresh_token(
+                    shared_pool,
+                    entity_id=existing_account.entity_id,
+                    refresh_token=refresh_token,
+                    scopes=scope,
+                )
+            # else: No new refresh_token — preserve existing one.
+        except GoogleAccountNotFoundError:
+            # New account — need a refresh_token to register it.
+            is_new_account = True
+            if not refresh_token:
+                logger.warning(
+                    "New Google account %r in callback but no refresh_token provided",
+                    account_email,
+                )
+                error_payload = OAuthCallbackError(
+                    error_code="no_refresh_token",
+                    message="Google did not return a refresh token for a new account. "
+                    "Please re-authorize using 'force_consent=true' to get a fresh token.",
+                )
+                return JSONResponse(status_code=400, content=error_payload.model_dump())
+
+            scope_list = [s for s in scope.split() if s] if scope else []
+            try:
+                await create_google_account(
+                    shared_pool,
+                    email=account_email,
+                    display_name=account_display_name,
+                    scopes=scope_list,
+                    refresh_token=refresh_token,
+                )
+            except GoogleAccountAlreadyExistsError:
+                # Race condition — treat as re-auth.
+                is_new_account = False
+                existing_account = await get_google_account(shared_pool, account=account_email)
+                if refresh_token:
+                    await _update_account_refresh_token(
+                        shared_pool,
+                        entity_id=existing_account.entity_id,
+                        refresh_token=refresh_token,
+                        scopes=scope,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Google account registry error: %s", exc)
+            # Fall through to legacy credential storage below.
+    elif shared_pool is None:
+        # No shared pool — fall back to legacy single-account credential storage.
+        pass
+
+    # --- Persist app credentials and legacy refresh token ---
     # Secret material (client_secret, refresh_token) is NEVER logged in plaintext.
     cred_store = _make_credential_store(db_manager)
     if cred_store is None:
@@ -433,22 +643,28 @@ async def oauth_google_callback(
             detail="Shared credential DB unavailable; cannot persist OAuth credentials.",
         )
 
-    await store_google_credentials(
-        cred_store,
-        pool=_get_shared_pool(db_manager),
-        client_id=client_id,
-        client_secret=client_secret,
-        refresh_token=refresh_token,
-        scope=scope,
-    )
-    logger.info(
-        "Google OAuth credentials persisted to database (client_id=%s)",
-        client_id,
-    )
+    # Store app credentials (client_id, client_secret) always.
+    # For the refresh token: use registry (above) when pool is available and account resolved;
+    # otherwise fall back to owner entity storage.
+    if refresh_token and (shared_pool is None or not account_email):
+        # Legacy path: store refresh token on owner entity.
+        await store_google_credentials(
+            cred_store,
+            pool=shared_pool,
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            scope=scope,
+        )
+    else:
+        # Multi-account path: only store app credentials (refresh token stored by registry).
+        await store_app_credentials(cred_store, client_id=client_id, client_secret=client_secret)
 
     logger.info(
-        "Google OAuth bootstrap COMPLETE (client_id=%s, persisted=true)",
+        "Google OAuth COMPLETE (client_id=%s, account=%s, is_new=%s, persisted=true)",
         client_id,
+        account_email,
+        is_new_account,
     )
     logger.info("Scope granted: %s", scope)
 
@@ -457,6 +673,8 @@ async def oauth_google_callback(
         message="OAuth bootstrap complete. Credentials persisted to database.",
         provider="google",
         scope=scope,
+        account_email=account_email,
+        is_new_account=is_new_account,
     )
 
     if dashboard_url:
@@ -466,6 +684,55 @@ async def oauth_google_callback(
         )
 
     return JSONResponse(content=success_payload.model_dump())
+
+
+async def _update_account_refresh_token(
+    pool: Any,
+    *,
+    entity_id: uuid.UUID,
+    refresh_token: str,
+    scopes: str | None,
+) -> None:
+    """Update the refresh token and scopes on an existing google_accounts companion entity."""
+    scope_list = [s for s in scopes.split() if s] if scopes else None
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Update refresh token in entity_info.
+            await conn.execute(
+                """
+                INSERT INTO shared.entity_info (entity_id, type, value, secured, is_primary)
+                VALUES ($1, 'google_oauth_refresh', $2, true, true)
+                ON CONFLICT (entity_id, type) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    secured = EXCLUDED.secured
+                """,
+                entity_id,
+                refresh_token,
+            )
+            # Update granted_scopes and last_token_refresh_at on google_accounts row.
+            if scope_list is not None:
+                await conn.execute(
+                    """
+                    UPDATE shared.google_accounts
+                    SET granted_scopes = $1::text[],
+                        status = 'active',
+                        last_token_refresh_at = now()
+                    WHERE entity_id = $2
+                    """,
+                    scope_list,
+                    entity_id,
+                )
+            else:
+                await conn.execute(
+                    """
+                    UPDATE shared.google_accounts
+                    SET status = 'active',
+                        last_token_refresh_at = now()
+                    WHERE entity_id = $1
+                    """,
+                    entity_id,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +898,188 @@ async def get_google_credential_status(
 
 
 # ---------------------------------------------------------------------------
+# Google Account management endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/google/accounts",
+    response_model=list[GoogleAccountResponse],
+    summary="List connected Google accounts",
+    description=(
+        "Returns all connected Google accounts ordered by is_primary DESC, connected_at ASC. "
+        "No credential material (refresh tokens, client secrets) is included."
+    ),
+)
+async def list_google_accounts_endpoint(
+    db_manager: Any = Depends(_get_db_manager),
+) -> list[GoogleAccountResponse]:
+    """List all connected Google accounts."""
+    shared_pool = _get_shared_pool(db_manager)
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared database is unavailable.")
+
+    accounts = await list_google_accounts(shared_pool)
+    return [_account_to_response(a) for a in accounts]
+
+
+@router.put(
+    "/google/accounts/{account_id}/primary",
+    response_model=SetPrimaryResponse,
+    summary="Set primary Google account",
+    description="Atomically sets the specified account as primary; all others become non-primary.",
+)
+async def set_primary_google_account(
+    account_id: uuid.UUID,
+    db_manager: Any = Depends(_get_db_manager),
+) -> SetPrimaryResponse:
+    """Set a Google account as the primary account."""
+    shared_pool = _get_shared_pool(db_manager)
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared database is unavailable.")
+
+    try:
+        account = await set_primary_account(shared_pool, account_id)
+    except GoogleAccountNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    return SetPrimaryResponse(account=_account_to_response(account))
+
+
+@router.delete(
+    "/google/accounts/{account_id}",
+    response_model=DisconnectAccountResponse,
+    summary="Disconnect a Google account",
+    description=(
+        "Disconnects a Google account: revokes the token, cleans up entity_info, "
+        "and updates the account status. If the account was primary, the oldest remaining "
+        "active account is auto-promoted."
+    ),
+)
+async def disconnect_google_account(
+    account_id: uuid.UUID,
+    hard_delete: bool = Query(
+        default=False,
+        description="When true, fully removes the google_accounts row and companion entity.",
+    ),
+    db_manager: Any = Depends(_get_db_manager),
+) -> DisconnectAccountResponse:
+    """Disconnect a Google account."""
+    shared_pool = _get_shared_pool(db_manager)
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared database is unavailable.")
+
+    # Capture primary status before disconnect to report auto-promotion.
+    try:
+        account_before = await get_google_account(shared_pool, account=account_id)
+        was_primary = account_before.is_primary
+    except GoogleAccountNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    await disconnect_account(shared_pool, account_id, hard_delete=hard_delete)
+
+    # Detect auto-promoted account if this was primary.
+    # This applies to both soft and hard-delete: the registry always auto-promotes
+    # the next active account when a primary is removed.
+    auto_promoted_id: uuid.UUID | None = None
+    if was_primary:
+        accounts_after = await list_google_accounts(shared_pool)
+        primary_after = next((a for a in accounts_after if a.is_primary), None)
+        if primary_after and primary_after.id != account_id:
+            auto_promoted_id = primary_after.id
+
+    msg = "Account disconnected (hard deleted)." if hard_delete else "Account disconnected."
+    return DisconnectAccountResponse(
+        message=msg,
+        auto_promoted_id=auto_promoted_id,
+    )
+
+
+@router.get(
+    "/google/accounts/{account_id}/status",
+    response_model=GoogleAccountStatus,
+    summary="Get per-account credential status",
+    description=(
+        "Returns per-account credential status including token validity and scope coverage."
+    ),
+)
+async def get_google_account_status(
+    account_id: uuid.UUID,
+    db_manager: Any = Depends(_get_db_manager),
+) -> GoogleAccountStatus:
+    """Get per-account credential status."""
+    shared_pool = _get_shared_pool(db_manager)
+    cred_store = _make_credential_store(db_manager)
+
+    if shared_pool is None or cred_store is None:
+        raise HTTPException(status_code=503, detail="Shared database is unavailable.")
+
+    try:
+        account = await get_google_account(shared_pool, account=account_id)
+    except GoogleAccountNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    # Check app credentials.
+    app_creds = await load_app_credentials(cred_store)
+    has_app_credentials = app_creds is not None and bool(app_creds.client_id)
+
+    # Check refresh token on companion entity.
+    has_refresh_token = False
+    token_valid = False
+    async with shared_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT value FROM shared.entity_info
+            WHERE entity_id = $1 AND type = 'google_oauth_refresh'
+            LIMIT 1
+            """,
+            account.entity_id,
+        )
+        if row is not None:
+            has_refresh_token = True
+            refresh_token_val = row["value"]
+
+    # Probe token validity if we have everything needed.
+    granted_scopes = list(account.granted_scopes)
+    if has_refresh_token and has_app_credentials and app_creds is not None:
+        probe_result = await _probe_google_token(
+            client_id=app_creds.client_id,
+            client_secret=app_creds.client_secret,
+            refresh_token=refresh_token_val,  # type: ignore[possibly-undefined]
+        )
+        token_valid = probe_result.connected
+        if probe_result.scopes_granted:
+            granted_scopes = list(probe_result.scopes_granted)
+
+    # Compute missing scopes.
+    granted_scope_set = set(granted_scopes)
+    missing_scopes = sorted(_REQUIRED_SCOPES - granted_scope_set)
+
+    return GoogleAccountStatus(
+        has_refresh_token=has_refresh_token,
+        has_app_credentials=has_app_credentials,
+        granted_scopes=granted_scopes,
+        missing_scopes=missing_scopes,
+        token_valid=token_valid,
+        last_token_refresh_at=account.last_token_refresh_at,
+    )
+
+
+def _account_to_response(account: Any) -> GoogleAccountResponse:
+    """Convert a GoogleAccount dataclass to a GoogleAccountResponse Pydantic model."""
+    return GoogleAccountResponse(
+        id=account.id,
+        email=account.email,
+        display_name=account.display_name,
+        is_primary=account.is_primary,
+        status=account.status,
+        granted_scopes=list(account.granted_scopes),
+        connected_at=account.connected_at,
+        last_token_refresh_at=account.last_token_refresh_at,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Status endpoint
 # ---------------------------------------------------------------------------
 
@@ -656,13 +1105,30 @@ async def oauth_status(
     This endpoint is designed for dashboard polling (e.g. after completing the
     OAuth bootstrap flow) and for surfacing connection status badges in the UI.
 
+    The top-level ``google`` status reflects the worst-case across all accounts.
+    An ``accounts`` array is included when multi-account Google is configured,
+    for backward compatibility with single-account setups the flat fields are
+    preserved.
+
     Returns
     -------
     OAuthStatusResponse
         Aggregated status for all OAuth providers (Google only in v1).
     """
     google_status = await _check_google_credential_status(db_manager=db_manager)
-    return OAuthStatusResponse(google=google_status)
+
+    # Attach accounts list when shared pool is available.
+    accounts_response: list[GoogleAccountResponse] | None = None
+    shared_pool = _get_shared_pool(db_manager)
+    if shared_pool is not None:
+        try:
+            accounts = await list_google_accounts(shared_pool)
+            if accounts:
+                accounts_response = [_account_to_response(a) for a in accounts]
+        except Exception:  # noqa: BLE001
+            pass  # Non-fatal — status still works without account list
+
+    return OAuthStatusResponse(google=google_status, accounts=accounts_response)
 
 
 async def _check_google_credential_status(db_manager: Any = None) -> OAuthCredentialStatus:
@@ -920,12 +1386,16 @@ def _classify_token_refresh_error(response: httpx.Response) -> OAuthCredentialSt
 
 
 # ---------------------------------------------------------------------------
-# Token exchange helper
+# Token exchange and userinfo helpers
 # ---------------------------------------------------------------------------
 
 
 class _TokenExchangeError(Exception):
     """Raised when the authorization code → token exchange fails."""
+
+
+class _UserinfoError(Exception):
+    """Raised when the Google userinfo endpoint call fails."""
 
 
 async def _exchange_code_for_tokens(
@@ -980,6 +1450,40 @@ async def _exchange_code_for_tokens(
         return response.json()
     except json.JSONDecodeError as exc:
         raise _TokenExchangeError(f"Invalid JSON in token response: {exc}") from exc
+
+
+async def _fetch_google_userinfo(access_token: str) -> dict[str, Any]:
+    """Fetch the authenticated user's profile from Google's userinfo endpoint.
+
+    Parameters
+    ----------
+    access_token:
+        A valid Google OAuth access token.
+
+    Returns
+    -------
+    dict
+        Userinfo payload from Google (includes ``email``, ``name``, etc.).
+
+    Raises
+    ------
+    _UserinfoError
+        If the request fails for any reason (HTTP error, network error, JSON error).
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(GOOGLE_USERINFO_URL, headers=headers)
+    except httpx.TransportError as exc:
+        raise _UserinfoError(f"Network error during userinfo call: {exc}") from exc
+
+    if response.status_code != 200:
+        raise _UserinfoError(f"Userinfo endpoint returned HTTP {response.status_code}")
+
+    try:
+        return response.json()
+    except json.JSONDecodeError as exc:
+        raise _UserinfoError(f"Invalid JSON in userinfo response: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
