@@ -578,13 +578,13 @@ function CLIAuthCard() {
 // ---------------------------------------------------------------------------
 
 function accountStatusBadge(
-  status: string,
+  status: GoogleAccount["status"],
 ): { variant: "default" | "secondary" | "destructive" | "outline"; label: string } {
   switch (status) {
     case "active":
       return { variant: "default", label: "Active" };
-    case "disconnected":
-      return { variant: "outline", label: "Disconnected" };
+    case "revoked":
+      return { variant: "destructive", label: "Revoked" };
     case "expired":
       return { variant: "destructive", label: "Expired" };
     default:

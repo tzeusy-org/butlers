@@ -1505,7 +1505,7 @@ export interface GoogleAccount {
   email: string | null;
   display_name: string | null;
   is_primary: boolean;
-  status: string;
+  status: "active" | "revoked" | "expired";
   granted_scopes: string[];
   connected_at: string;
   last_token_refresh_at: string | null;
