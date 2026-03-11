@@ -204,6 +204,19 @@ class TestMatchSenderDomain:
         env = _email_envelope(sender="anyone@anything.com")
         assert _match_sender_domain(env, {"domain": "*", "match": "exact"})
 
+    def test_rfc2822_display_name_exact(self) -> None:
+        """Domain match works when sender has 'Display Name <email>' format."""
+        env = _email_envelope(sender="GitHub <no-reply@github.com>")
+        assert _match_sender_domain(env, {"domain": "github.com", "match": "exact"})
+
+    def test_rfc2822_display_name_suffix(self) -> None:
+        env = _email_envelope(sender="Chase Alerts <alerts@mail.chase.com>")
+        assert _match_sender_domain(env, {"domain": "chase.com", "match": "suffix"})
+
+    def test_rfc2822_no_false_positive(self) -> None:
+        env = _email_envelope(sender="GitHub <no-reply@github.com>")
+        assert not _match_sender_domain(env, {"domain": "gitlab.com", "match": "exact"})
+
 
 # ---------------------------------------------------------------------------
 # sender_address matcher
@@ -251,6 +264,24 @@ class TestMatchSenderAddress:
         """noreply-abc@x.com should match prefix 'noreply'."""
         env = _email_envelope(sender="noreply-abc@x.com")
         assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
+
+    def test_rfc2822_exact_match(self) -> None:
+        """Exact address match works with 'Display Name <email>' format."""
+        env = _email_envelope(sender="GitHub <no-reply@github.com>")
+        assert _match_sender_address(env, {"address": "no-reply@github.com"})
+
+    def test_rfc2822_local_part_prefix(self) -> None:
+        """Local-part prefix works with 'Display Name <email>' format."""
+        env = _email_envelope(sender="GitHub <no-reply@github.com>")
+        assert _match_sender_address(
+            env, {"address": "no-reply", "match": "local_part_prefix"}
+        )
+
+    def test_rfc2822_noreply_prefix(self) -> None:
+        env = _email_envelope(sender="Some Service <noreply@example.com>")
+        assert _match_sender_address(
+            env, {"address": "noreply", "match": "local_part_prefix"}
+        )
 
 
 # ---------------------------------------------------------------------------

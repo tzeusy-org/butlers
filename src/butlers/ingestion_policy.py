@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -122,12 +123,34 @@ class PolicyDecision:
 
 
 # ---------------------------------------------------------------------------
+# Email extraction helper
+# ---------------------------------------------------------------------------
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[\w]+", re.ASCII)
+
+
+def _extract_emails(raw: str) -> list[str]:
+    """Extract all email addresses from a raw sender string.
+
+    Handles RFC 2822 formats like ``"Display Name <user@example.com>"``
+    as well as bare ``user@example.com``.  Returns lowercased matches.
+    """
+    return [m.lower() for m in _EMAIL_RE.findall(raw)]
+
+
+# ---------------------------------------------------------------------------
 # Condition matchers (all 7 rule_types)
 # ---------------------------------------------------------------------------
 
 
 def _sender_domain(address: str) -> str:
-    """Extract lowercase domain from a sender address."""
+    """Extract lowercase domain from a sender address.
+
+    Handles RFC 2822 display-name formats by regex-extracting the email first.
+    """
+    emails = _extract_emails(address)
+    if emails:
+        return emails[0].split("@", 1)[1]
     address = address.strip().lower()
     if "@" in address:
         return address.split("@", 1)[1]
@@ -138,6 +161,9 @@ def _match_sender_domain(envelope: IngestionEnvelope, condition: dict[str, Any])
     """Match sender_domain: exact or suffix against sender_address domain.
 
     Condition schema: {"domain": "chase.com", "match": "exact" | "suffix" | "any"}
+
+    Extracts all email addresses from the sender string so that display-name
+    formats like ``"GitHub <no-reply@github.com>"`` are handled correctly.
     """
     domain_pattern = str(condition.get("domain", "")).strip().lower()
     match_type = str(condition.get("match", "exact")).strip().lower()
@@ -149,14 +175,21 @@ def _match_sender_domain(envelope: IngestionEnvelope, condition: dict[str, Any])
     if match_type == "any" or domain_pattern == "*":
         return True
 
-    sender_domain = _sender_domain(envelope.sender_address)
+    emails = _extract_emails(envelope.sender_address)
+    if not emails:
+        return False
 
-    if match_type == "exact":
-        return sender_domain == domain_pattern
-    if match_type == "suffix":
-        return sender_domain == domain_pattern or sender_domain.endswith(f".{domain_pattern}")
+    for email in emails:
+        domain = email.split("@", 1)[1]
+        if match_type == "exact" and domain == domain_pattern:
+            return True
+        if match_type == "suffix" and (
+            domain == domain_pattern or domain.endswith(f".{domain_pattern}")
+        ):
+            return True
 
-    logger.warning("Unknown sender_domain match type: %r", match_type)
+    if match_type not in ("exact", "suffix"):
+        logger.warning("Unknown sender_domain match type: %r", match_type)
     return False
 
 
@@ -166,6 +199,9 @@ def _match_sender_address(envelope: IngestionEnvelope, condition: dict[str, Any]
     Condition schema:
       Exact:  {"address": "alerts@chase.com"}
       Prefix: {"address": "noreply", "match": "local_part_prefix"}
+
+    Extracts all email addresses from the sender string so that display-name
+    formats like ``"GitHub <no-reply@github.com>"`` are handled correctly.
     """
     target = str(condition.get("address", "")).strip().lower()
     if not target:
@@ -173,12 +209,20 @@ def _match_sender_address(envelope: IngestionEnvelope, condition: dict[str, Any]
     # Catch-all wildcard
     if target == "*":
         return True
-    sender = envelope.sender_address.strip().lower()
+
+    emails = _extract_emails(envelope.sender_address)
+    if not emails:
+        return False
+
     match_mode = str(condition.get("match", "")).strip().lower()
-    if match_mode == "local_part_prefix":
-        local_part = sender.split("@", 1)[0] if "@" in sender else sender
-        return local_part.startswith(target)
-    return sender == target
+    for email in emails:
+        if match_mode == "local_part_prefix":
+            local_part = email.split("@", 1)[0]
+            if local_part.startswith(target):
+                return True
+        elif email == target:
+            return True
+    return False
 
 
 def _match_header_condition(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
