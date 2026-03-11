@@ -76,12 +76,12 @@ class TestUnionColumnSpec:
         assert _EVENT_COLUMNS == expected
 
     def test_ingested_and_filtered_have_same_column_count(self) -> None:
-        """Both UNION branches must produce the same number of columns."""
-        from butlers.core.ingestion_events import _FILTERED_COLS, _INGESTED_COLS
+        """Both UNION branches must produce the same number of columns as the spec."""
+        from butlers.core.ingestion_events import _FILTERED_COLS, _INGESTED_COLS, _UNION_COLUMN_SPEC
 
         ingested_count = len(_INGESTED_COLS.split(","))
         filtered_count = len(_FILTERED_COLS.split(","))
-        assert ingested_count == filtered_count
+        assert ingested_count == filtered_count == len(_UNION_COLUMN_SPEC)
 
     def test_spec_has_no_duplicate_aliases(self) -> None:
         """Each output_alias in _UNION_COLUMN_SPEC must be unique."""
