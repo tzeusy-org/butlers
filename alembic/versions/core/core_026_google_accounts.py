@@ -117,7 +117,7 @@ def upgrade() -> None:
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             entity_id UUID NOT NULL
                 REFERENCES shared.entities(id) ON DELETE CASCADE,
-            email VARCHAR UNIQUE,
+            email VARCHAR,
             display_name VARCHAR,
             is_primary BOOLEAN NOT NULL DEFAULT false,
             granted_scopes TEXT[] NOT NULL DEFAULT '{}',
