@@ -2535,3 +2535,51 @@ class TestCatalogModelResolution:
         data = audit_entries[0]["data"]
         assert data["model"] == "claude-haiku-4-5-20251001"
         assert data["resolution_source"] == "toml_fallback"
+
+    async def test_unknown_runtime_type_from_catalog_falls_back_to_toml(self, tmp_path: Path):
+        """When catalog resolves an unregistered runtime type, falls back to TOML config."""
+        import uuid
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(model="claude-haiku-4-5-20251001")
+
+        captured: dict = {}
+
+        class CapturingAdapter(MockAdapter):
+            async def invoke(
+                self,
+                prompt,
+                system_prompt,
+                mcp_servers,
+                env,
+                max_turns=20,
+                model=None,
+                runtime_args=None,
+                cwd=None,
+                timeout=None,
+            ):
+                captured["model"] = model
+                return "ok", [], None
+
+        adapter = CapturingAdapter()
+        mock_pool = AsyncMock()
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                # Catalog returns an unregistered runtime type
+                return_value=("nonexistent-runtime", "some-model", []),
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            result = await spawner.trigger("prompt", "tick")
+
+        # Should fall back gracefully to TOML model
+        assert result.success is True
+        assert captured["model"] == "claude-haiku-4-5-20251001"
+        assert result.model == "claude-haiku-4-5-20251001"

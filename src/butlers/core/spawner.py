@@ -497,12 +497,12 @@ class Spawner:
             }
 
     def _get_or_create_adapter(self, runtime_type: str) -> RuntimeAdapter:
-        """Return a cached adapter for *runtime_type*, creating one lazily if needed.
+        """Return a cached parent adapter for *runtime_type*, creating one lazily if needed.
 
         The TOML-configured adapter is seeded at construction time.  When the
         catalog resolves a *different* runtime type, this method instantiates a
-        new adapter via ``get_adapter(runtime_type).create_worker()`` and caches
-        it for future calls.
+        new parent adapter via ``get_adapter(runtime_type)`` and caches it.
+        The caller is responsible for calling ``.create_worker()`` on the result.
 
         Parameters
         ----------
@@ -512,7 +512,12 @@ class Spawner:
         Returns
         -------
         RuntimeAdapter
-            A worker-scoped adapter instance for the given runtime type.
+            A parent adapter instance for the given runtime type.
+
+        Raises
+        ------
+        ValueError
+            If no adapter is registered for the given runtime type string.
         """
         if runtime_type in self._adapter_pool:
             return self._adapter_pool[runtime_type]
@@ -526,10 +531,9 @@ class Spawner:
             adapter = adapter_cls(butler_name=self._config.name, log_root=log_root)  # type: ignore[call-arg]
         except TypeError:
             adapter = adapter_cls()
-        worker = adapter.create_worker()
-        self._adapter_pool[runtime_type] = worker
+        self._adapter_pool[runtime_type] = adapter
         logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)
-        return worker
+        return adapter
 
     async def trigger(
         self,
@@ -781,8 +785,23 @@ class Spawner:
             model,
         )
 
-        # Select adapter for the resolved runtime type (lazy instantiation on demand)
-        runtime = self._get_or_create_adapter(resolved_runtime_type).create_worker()
+        # Select adapter for the resolved runtime type (lazy instantiation on demand).
+        # Fall back to the TOML adapter if the catalog resolved an unregistered runtime type.
+        try:
+            runtime = self._get_or_create_adapter(resolved_runtime_type).create_worker()
+        except ValueError:
+            logger.warning(
+                "Catalog resolved unregistered runtime_type=%s for butler=%s; "
+                "falling back to TOML runtime_type=%s",
+                resolved_runtime_type,
+                self._config.name,
+                toml_runtime_type,
+            )
+            resolved_runtime_type = toml_runtime_type
+            model = toml_model
+            catalog_extra_args = []
+            resolution_source = "toml_fallback"
+            runtime = self._get_or_create_adapter(toml_runtime_type).create_worker()
 
         # Merge args: TOML args first, then catalog extra_args appended
         toml_args = list(self._config.runtime.args)
