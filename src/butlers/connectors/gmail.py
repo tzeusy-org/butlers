@@ -128,6 +128,30 @@ class MultiAccountHealthStatus(BaseModel):
 _GMAIL_SCOPE_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 _GMAIL_SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
 
+
+def _redact_email(email: str | None) -> str | None:
+    """Redact an email address for safe inclusion in health responses.
+
+    Shows the first 2 characters of the local part, then ***, then @domain.
+    Examples:
+        "test@gmail.com" → "te***@gmail.com"
+        "a@example.com"  → "a***@example.com"
+        None             → None
+
+    This prevents PII leakage in the unauthenticated /health endpoint.
+    """
+    if email is None:
+        return None
+    at_pos = email.find("@")
+    if at_pos <= 0:
+        # No @ or empty local part — return fully masked string
+        return "***"
+    local = email[:at_pos]
+    domain = email[at_pos:]  # includes the '@'
+    visible = local[:2]
+    return f"{visible}***{domain}"
+
+
 # Default re-scan interval for dynamic account discovery (seconds).
 _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S = 300
 
@@ -605,7 +629,7 @@ class GmailConnectorRuntime:
 
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host="127.0.0.1",
             port=self._config.connector_health_port,
             log_level="warning",
         )
@@ -653,7 +677,7 @@ class GmailConnectorRuntime:
 
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host="127.0.0.1",
             port=self._config.gmail_pubsub_webhook_port,
             log_level="warning",
         )
@@ -3137,7 +3161,7 @@ class GmailAccountLoop:
             account_status = "healthy"
 
         return AccountHealthStatus(
-            email=self.email,
+            email=_redact_email(self.email),
             endpoint_identity=self.endpoint_identity,
             status=account_status,
             last_checkpoint_save_at=last_checkpoint_save_at,
@@ -3389,7 +3413,7 @@ class GmailConnectorManager:
 
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host="127.0.0.1",
             port=self._process_config.connector_health_port,
             log_level="warning",
         )

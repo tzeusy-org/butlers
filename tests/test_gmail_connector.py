@@ -21,6 +21,7 @@ from butlers.connectors.gmail import (
     GmailConnectorRuntime,
     GmailCursor,
     GmailProcessConfig,
+    _redact_email,
     _resolve_gmail_credentials_from_db,
     resolve_gmail_endpoint_identity,
     run_gmail_connector,
@@ -4536,7 +4537,8 @@ class TestGmailAccountLoop:
         )
         health = loop.get_health()
         assert isinstance(health, AccountHealthStatus)
-        assert health.email == "test@example.com"
+        # Email is redacted in health responses to avoid PII leakage
+        assert health.email == "te***@example.com"
         assert health.endpoint_identity == "gmail:user:test@example.com"
         assert health.source_api_connectivity == "unknown"
 
@@ -4793,9 +4795,7 @@ class TestGmailPubsubWebhookTokenResolution:
                 "_resolve_credentials_for_account",
                 new=AsyncMock(return_value=mock_creds),
             ),
-            patch(
-                "butlers.connectors.gmail.GmailAccountLoop", return_value=mock_loop
-            ) as loop_ctor,
+            patch("butlers.connectors.gmail.GmailAccountLoop", return_value=mock_loop) as loop_ctor,
         ):
             await manager._sync_accounts()
 
@@ -4803,3 +4803,69 @@ class TestGmailPubsubWebhookTokenResolution:
         call_kwargs = loop_ctor.call_args[1]
         account_cfg = call_kwargs["config"]
         assert account_cfg.gmail_pubsub_webhook_token == "per-account-token"
+
+
+class TestRedactEmail:
+    """Tests for _redact_email() PII-protection helper."""
+
+    def test_standard_email(self) -> None:
+        """Normal email: first 2 chars of local part visible, rest replaced by ***."""
+        assert _redact_email("test@gmail.com") == "te***@gmail.com"
+
+    def test_long_local_part(self) -> None:
+        """Long local parts show only first 2 chars."""
+        assert _redact_email("alice@example.com") == "al***@example.com"
+
+    def test_single_char_local_part(self) -> None:
+        """Single-char local part: show that 1 char, then ***."""
+        assert _redact_email("a@example.com") == "a***@example.com"
+
+    def test_two_char_local_part(self) -> None:
+        """Exactly-2-char local part: show both chars, then ***."""
+        assert _redact_email("ab@example.com") == "ab***@example.com"
+
+    def test_none_input(self) -> None:
+        """None email passes through as None."""
+        assert _redact_email(None) is None
+
+    def test_no_at_sign(self) -> None:
+        """Malformed email with no @ returns fully masked string."""
+        assert _redact_email("notanemail") == "***"
+
+    def test_at_at_start(self) -> None:
+        """Email starting with @ (empty local part) returns fully masked string."""
+        assert _redact_email("@example.com") == "***"
+
+    def test_domain_preserved(self) -> None:
+        """Full domain is always preserved unmodified."""
+        result = _redact_email("user@sub.domain.org")
+        assert result is not None
+        assert result.endswith("@sub.domain.org")
+
+    def test_subdomain_email(self) -> None:
+        """Subdomain email addresses are handled correctly."""
+        assert _redact_email("bo@work.example.co.uk") == "bo***@work.example.co.uk"
+
+    def test_health_response_redacts_emails(self) -> None:
+        """GmailAccountLoop.get_health() should return redacted email in AccountHealthStatus."""
+        config = GmailConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            connector_endpoint_identity="gmail:user:alice@example.com",
+            gmail_client_id="cid",
+            gmail_client_secret="csec",
+            gmail_refresh_token="rtoken",
+            gmail_poll_interval_s=5,
+        )
+        loop = GmailAccountLoop(
+            email="alice@example.com",
+            config=config,
+            cursor_pool=None,
+        )
+
+        status = loop.get_health()
+
+        # Email must be redacted — raw address must NOT appear
+        assert status.email != "alice@example.com"
+        assert status.email == "al***@example.com"
+        # Domain is still visible so operators can identify the account family
+        assert "@example.com" in (status.email or "")
