@@ -8,6 +8,7 @@ The spawner is responsible for:
 5. Enforcing serial dispatch (one instance at a time per butler)
 6. Logging sessions before and after invocation
 7. Passing the configured model to the SDK when set
+8. Resolving models dynamically from the catalog (with TOML fallback)
 """
 
 from __future__ import annotations
@@ -32,7 +33,8 @@ from butlers.core.audit import write_audit_entry
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.model_routing import Complexity, resolve_model
+from butlers.core.runtimes.base import RuntimeAdapter, get_adapter
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt
@@ -476,6 +478,11 @@ class Spawner:
 
         if runtime is not None:
             self._runtime = runtime
+            # Seed the adapter pool with the injected runtime under the TOML type.
+            # This allows tests to inject a mock without requiring a full adapter registry.
+            self._adapter_pool: dict[str, RuntimeAdapter] = {
+                config.runtime.type: runtime,
+            }
         else:
             # Default: create a ClaudeCodeAdapter with the real SDK query
             from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
@@ -485,6 +492,48 @@ class Spawner:
                 butler_name=config.name,
                 log_root=log_root,
             )
+            self._adapter_pool = {
+                config.runtime.type: self._runtime,
+            }
+
+    def _get_or_create_adapter(self, runtime_type: str) -> RuntimeAdapter:
+        """Return a cached parent adapter for *runtime_type*, creating one lazily if needed.
+
+        The TOML-configured adapter is seeded at construction time.  When the
+        catalog resolves a *different* runtime type, this method instantiates a
+        new parent adapter via ``get_adapter(runtime_type)`` and caches it.
+        The caller is responsible for calling ``.create_worker()`` on the result.
+
+        Parameters
+        ----------
+        runtime_type:
+            The runtime type string (e.g. ``"claude-code"``, ``"codex"``).
+
+        Returns
+        -------
+        RuntimeAdapter
+            A parent adapter instance for the given runtime type.
+
+        Raises
+        ------
+        ValueError
+            If no adapter is registered for the given runtime type string.
+        """
+        if runtime_type in self._adapter_pool:
+            return self._adapter_pool[runtime_type]
+
+        log_root = resolve_log_root(self._config.logging.log_root)
+        adapter_cls = get_adapter(runtime_type)
+        # Adapters may require butler-specific constructor kwargs (e.g. log_root).
+        # We use a best-effort approach: try with known kwargs, fall back to bare
+        # instantiation when the adapter class does not accept them.
+        try:
+            adapter = adapter_cls(butler_name=self._config.name, log_root=log_root)  # type: ignore[call-arg]
+        except TypeError:
+            adapter = adapter_cls()
+        self._adapter_pool[runtime_type] = adapter
+        logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)
+        return adapter
 
     async def trigger(
         self,
@@ -494,6 +543,7 @@ class Spawner:
         max_turns: int = 20,
         parent_context: Context | None = None,
         request_id: str | None = None,
+        complexity: Complexity = Complexity.MEDIUM,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -518,6 +568,10 @@ class Spawner:
         request_id:
             Optional request ID from ingestion request_context (UUIDv7 format).
             For non-ingestion triggers (scheduler, tick), this should be None.
+        complexity:
+            Task complexity tier used to select a model from the catalog.
+            Defaults to ``Complexity.MEDIUM``.  The catalog is queried with this
+            tier; when no catalog entry matches the TOML-configured model is used.
 
         Returns
         -------
@@ -591,7 +645,13 @@ class Spawner:
                 self._metrics.spawner_active_sessions_inc()
                 try:
                     return await self._run(
-                        prompt, trigger_source, context, max_turns, parent_context, request_id
+                        prompt,
+                        trigger_source,
+                        context,
+                        max_turns,
+                        parent_context,
+                        request_id,
+                        complexity,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -665,12 +725,12 @@ class Spawner:
         max_turns: int = 20,
         parent_context: Context | None = None,
         request_id: str | None = None,
+        complexity: Complexity = Complexity.MEDIUM,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
         runtime_session_id: str | None = None
         spawner_result: SpawnerResult | None = None
-        runtime = self._runtime.create_worker()
         runtime_invoked = False
         routing_context = _capture_pipeline_routing_context()
 
@@ -679,8 +739,73 @@ class Spawner:
         if context:
             final_prompt = f"{context}\n\n{prompt}"
 
-        # Read the configured model (defaults to Haiku if not overridden)
-        model = self._config.runtime.model
+        # Resolve model from catalog; fall back to TOML config when unavailable.
+        toml_runtime_type = self._config.runtime.type
+        toml_model = self._config.runtime.model
+        catalog_result = None
+        if self._pool is not None:
+            try:
+                catalog_result = await resolve_model(self._pool, self._config.name, complexity)
+            except Exception:
+                logger.debug(
+                    "Catalog model resolution failed for butler=%s complexity=%s; "
+                    "using TOML config",
+                    self._config.name,
+                    complexity,
+                    exc_info=True,
+                )
+
+        # Only trust the catalog result when it is a properly-typed tuple; fall back to TOML
+        # for any unexpected value (e.g. a MagicMock from a test pool that does not stub
+        # the catalog tables).
+        _catalog_valid = (
+            catalog_result is not None
+            and isinstance(catalog_result, tuple)
+            and len(catalog_result) == 3
+            and isinstance(catalog_result[0], str)
+            and isinstance(catalog_result[1], str)
+            and isinstance(catalog_result[2], list)
+        )
+        if _catalog_valid:
+            assert catalog_result is not None  # narrowing for type checker
+            resolved_runtime_type, model, catalog_extra_args = catalog_result
+            resolution_source = "catalog"
+        else:
+            resolved_runtime_type = toml_runtime_type
+            model = toml_model
+            catalog_extra_args = []
+            resolution_source = "toml_fallback"
+
+        logger.debug(
+            "Model resolution: butler=%s complexity=%s source=%s runtime_type=%s model=%s",
+            self._config.name,
+            complexity,
+            resolution_source,
+            resolved_runtime_type,
+            model,
+        )
+
+        # Select adapter for the resolved runtime type (lazy instantiation on demand).
+        # Fall back to the TOML adapter if the catalog resolved an unregistered runtime type.
+        try:
+            runtime = self._get_or_create_adapter(resolved_runtime_type).create_worker()
+        except ValueError:
+            logger.warning(
+                "Catalog resolved unregistered runtime_type=%s for butler=%s; "
+                "falling back to TOML runtime_type=%s",
+                resolved_runtime_type,
+                self._config.name,
+                toml_runtime_type,
+            )
+            resolved_runtime_type = toml_runtime_type
+            model = toml_model
+            catalog_extra_args = []
+            resolution_source = "toml_fallback"
+            runtime = self._get_or_create_adapter(toml_runtime_type).create_worker()
+
+        # Merge args: TOML args first, then catalog extra_args appended
+        toml_args = list(self._config.runtime.args)
+        merged_args = toml_args + catalog_extra_args
 
         # Get tracer and start butler.llm_session span with parent context
         tracer = trace.get_tracer("butlers")
@@ -714,6 +839,15 @@ class Spawner:
                     trace_id,
                     model=model,
                     request_id=effective_request_id,
+                )
+                logger.debug(
+                    "Session created with model=%s runtime_type=%s complexity=%s source=%s "
+                    "session_id=%s",
+                    model,
+                    resolved_runtime_type,
+                    complexity,
+                    resolution_source,
+                    session_id,
                 )
                 # Set session_id on span
                 span.set_attribute("session_id", str(session_id))
@@ -758,7 +892,6 @@ class Spawner:
 
             # Invoke via runtime adapter
             runtime_invoked = True
-            runtime_args = list(self._config.runtime.args)
             invoke_kwargs: dict[str, Any] = {
                 "prompt": final_prompt,
                 "system_prompt": system_prompt,
@@ -768,8 +901,8 @@ class Spawner:
                 "model": model,
                 "cwd": str(self._config_dir),
             }
-            if runtime_args:
-                invoke_kwargs["runtime_args"] = runtime_args
+            if merged_args:
+                invoke_kwargs["runtime_args"] = merged_args
             result_text, tool_calls, usage = await runtime.invoke(
                 **invoke_kwargs,
             )
@@ -842,6 +975,9 @@ class Spawner:
                     "duration_ms": duration_ms,
                     "tool_calls_count": len(tool_calls),
                     "model": model,
+                    "runtime_type": resolved_runtime_type,
+                    "complexity": str(complexity),
+                    "resolution_source": resolution_source,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                 },
@@ -931,6 +1067,10 @@ class Spawner:
                     "trigger_source": trigger_source,
                     "prompt": final_prompt[:200],
                     "duration_ms": duration_ms,
+                    "model": model,
+                    "runtime_type": resolved_runtime_type,
+                    "complexity": str(complexity),
+                    "resolution_source": resolution_source,
                 },
                 result="error",
                 error=error_msg,
