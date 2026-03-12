@@ -49,7 +49,10 @@ from testcontainers.postgres import PostgresContainer
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
 
+    from butlers.cli_auth.registry import CLIAuthProviderDef
+    from butlers.config import ButlerConfig
     from butlers.daemon import ButlerDaemon
+    from butlers.db import Database
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +243,7 @@ async def butler_ecosystem(
         switchboard_e2e_port = switchboard_base_config.port + E2E_PORT_OFFSET
 
         # Build configs and DB instances per butler
-        butler_configs: dict[str, object] = {}
+        butler_configs: dict[str, tuple[ButlerConfig, Database]] = {}
         for butler_config in butler_configs_raw:
             butler_name = butler_config.name
 
@@ -358,7 +361,7 @@ def _install_sigterm_handler() -> None:
         pass
 
 
-async def _run_all_migrations(db_url: str, butler_configs: list) -> None:
+async def _run_all_migrations(db_url: str, butler_configs: list[ButlerConfig]) -> None:
     """Run core + butler-specific + module migrations for all butlers.
 
     Core migrations create the ``shared`` schema and per-butler schemas.
@@ -513,7 +516,7 @@ async def _validate_auth_tokens() -> None:
 
 def _prompt_for_reauth(
     provider_name: str,
-    provider: object,
+    provider: CLIAuthProviderDef,
     detail: str | None,
 ) -> None:
     """Print interactive re-auth instructions and wait for user confirmation.
