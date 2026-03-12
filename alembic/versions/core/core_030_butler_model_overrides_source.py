@@ -18,8 +18,6 @@ Examples:
 
 from __future__ import annotations
 
-import sqlalchemy as sa
-
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -30,12 +28,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "butler_model_overrides",
-        sa.Column("source", sa.Text(), nullable=True),
-        schema="shared",
+    # Use raw SQL with IF NOT EXISTS because this targets a shared-schema table
+    # and the migration runs once per butler — subsequent runs must be idempotent.
+    op.execute(
+        "ALTER TABLE shared.butler_model_overrides"
+        " ADD COLUMN IF NOT EXISTS source TEXT"
     )
 
 
 def downgrade() -> None:
-    op.drop_column("butler_model_overrides", "source", schema="shared")
+    op.execute(
+        "ALTER TABLE shared.butler_model_overrides"
+        " DROP COLUMN IF EXISTS source"
+    )
