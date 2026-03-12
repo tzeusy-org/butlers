@@ -20,7 +20,7 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=telegram (required)
 - CONNECTOR_CHANNEL=telegram (required)
-- CONNECTOR_ENDPOINT_IDENTITY (required, user-client identity e.g. "telegram:user:123456")
+- CONNECTOR_ENDPOINT_IDENTITY (optional override; auto-inferred from get_me() if omitted)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
@@ -121,9 +121,7 @@ class TelegramUserClientConnectorConfig:
         provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
         channel = os.environ.get("CONNECTOR_CHANNEL", "telegram")
 
-        endpoint_identity = os.environ.get("CONNECTOR_ENDPOINT_IDENTITY")
-        if not endpoint_identity:
-            raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
+        endpoint_identity = os.environ.get("CONNECTOR_ENDPOINT_IDENTITY", "")
 
         backfill_window_str = os.environ.get("CONNECTOR_BACKFILL_WINDOW_H")
         backfill_window_h = int(backfill_window_str) if backfill_window_str else None
@@ -937,6 +935,36 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
             await pool.close()
 
 
+async def _resolve_endpoint_identity(
+    api_id: int,
+    api_hash: str,
+    session_string: str,
+) -> str:
+    """Connect to Telegram and resolve the authenticated user's identity.
+
+    Returns ``telegram:user:<numeric_user_id>`` by calling ``get_me()`` on
+    a temporary Telethon client.  The client is disconnected after the call.
+    """
+    session = StringSession(session_string)
+    client = TelegramClient(session, api_id, api_hash)
+    try:
+        await client.connect()
+        me = await client.get_me()
+        if me is None:
+            raise RuntimeError(
+                "Telegram user-client connector: get_me() returned None — "
+                "session may be expired or revoked"
+            )
+        user_id = me.id
+        logger.info(
+            "Resolved Telegram endpoint identity from get_me()",
+            extra={"user_id": user_id, "username": getattr(me, "username", None)},
+        )
+        return f"telegram:user:{user_id}"
+    finally:
+        await client.disconnect()
+
+
 async def run_telegram_user_client_connector() -> None:
     """CLI entry point for running Telegram user-client connector.
 
@@ -944,6 +972,9 @@ async def run_telegram_user_client_connector() -> None:
     TELEGRAM_USER_SESSION) are resolved exclusively from owner entity_info
     in the database.  Non-credential configuration (SWITCHBOARD_MCP_URL,
     CONNECTOR_* env vars) is read from environment variables.
+
+    The endpoint identity is auto-inferred from ``get_me()`` unless
+    ``CONNECTOR_ENDPOINT_IDENTITY`` is explicitly set.
     """
     configure_logging(level="INFO", butler_name="telegram-user-client")
 
@@ -968,11 +999,20 @@ async def run_telegram_user_client_connector() -> None:
             f"Telegram user-client connector: invalid TELEGRAM_API_ID from contact_info: {exc}"
         ) from exc
 
+    api_hash = db_creds["TELEGRAM_API_HASH"]
+    session_string = db_creds["TELEGRAM_USER_SESSION"]
+
+    # Step 3: Resolve endpoint identity — infer from get_me() unless env override is set.
+    endpoint_identity = config.endpoint_identity
+    if not endpoint_identity:
+        endpoint_identity = await _resolve_endpoint_identity(api_id, api_hash, session_string)
+
     config = replace(
         config,
         telegram_api_id=api_id,
-        telegram_api_hash=db_creds["TELEGRAM_API_HASH"],
-        telegram_user_session=db_creds["TELEGRAM_USER_SESSION"],
+        telegram_api_hash=api_hash,
+        telegram_user_session=session_string,
+        endpoint_identity=endpoint_identity,
     )
 
     # Create cursor pool for DB-backed checkpoint persistence.
