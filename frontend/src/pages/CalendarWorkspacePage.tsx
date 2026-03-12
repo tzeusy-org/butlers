@@ -1629,15 +1629,15 @@ export default function CalendarWorkspacePage() {
                 </div>
               </div>
             ) : range === "week" || range === "day" ? (
-              <div className="space-y-2">
-                <div className={cn("grid gap-2 text-xs font-medium text-muted-foreground", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
+              <div className="flex flex-col" style={{ minHeight: "calc(100vh - 320px)" }}>
+                <div className={cn("grid gap-1 text-xs font-medium text-muted-foreground mb-1", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
                   {weekDays.map((day) => (
                     <div key={format(day, "yyyy-MM-dd")} className="px-2">
                       {format(day, "EEE")}
                     </div>
                   ))}
                 </div>
-                <div className={cn("grid gap-2", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
+                <div className={cn("grid gap-1 flex-1", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
                   {weekDays.map((day) => {
                     const key = format(day, "yyyy-MM-dd");
                     const dayEntries = entriesByDay.get(key) ?? [];
@@ -1654,8 +1654,7 @@ export default function CalendarWorkspacePage() {
                           }
                         }}
                         className={cn(
-                          "rounded-md border border-border p-2 cursor-pointer hover:border-primary/50 transition-colors",
-                          range === "day" && "min-h-[200px]",
+                          "rounded-md border border-border p-2 cursor-pointer hover:border-primary/50 transition-colors overflow-hidden",
                           isToday(day) && "ring-2 ring-primary/50",
                         )}
                       >
