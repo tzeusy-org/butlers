@@ -402,9 +402,16 @@ function buildRequestId(action: CalendarWorkspaceUserMutationAction): string {
 
 function defaultFormWindow(anchor: Date): { startAtLocal: string; endAtLocal: string } {
   const start = new Date(anchor);
-  start.setMinutes(0, 0, 0);
-  if (start.getTime() < Date.now()) {
-    start.setHours(start.getHours() + 1);
+  // If the caller provided an explicit time (hours or minutes set), use it as-is.
+  // Otherwise round to the next whole hour, bumping forward if in the past.
+  const hasExplicitTime = start.getHours() !== 0 || start.getMinutes() !== 0;
+  if (!hasExplicitTime) {
+    start.setMinutes(0, 0, 0);
+    if (start.getTime() < Date.now()) {
+      start.setHours(start.getHours() + 1);
+    }
+  } else {
+    start.setSeconds(0, 0);
   }
   const end = new Date(start.getTime() + 30 * 60 * 1_000);
   return {
@@ -1718,7 +1725,15 @@ export default function CalendarWorkspacePage() {
                           className={cn("relative border-l border-border", isToday(day) && "bg-primary/5")}
                           role="button"
                           tabIndex={0}
-                          onClick={() => view === "user" && openUserCreateDialog(day)}
+                          onClick={(evt) => {
+                            if (view !== "user") return;
+                            const rect = evt.currentTarget.getBoundingClientRect();
+                            const yPx = evt.clientY - rect.top;
+                            const snappedMin = Math.floor((yPx / HOUR_HEIGHT_PX) * 60 / 30) * 30;
+                            const clickedDate = new Date(day);
+                            clickedDate.setHours(Math.floor(snappedMin / 60), snappedMin % 60, 0, 0);
+                            openUserCreateDialog(clickedDate);
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
