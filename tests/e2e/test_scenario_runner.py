@@ -103,11 +103,41 @@ def _scenario_id(scenario: Scenario) -> str:
     return f"{scenario.id}[{tags_str}]"
 
 
-def _build_scenario_list(tag_filter: str | None) -> list[Scenario]:
-    """Return scenarios, optionally filtered by tag."""
-    if tag_filter is None:
-        return ALL_SCENARIOS
-    return [s for s in ALL_SCENARIOS if tag_filter in s.tags]
+def _envelope_for_dimension(scenario: Scenario, dimension: str) -> dict[str, Any]:
+    """Return a copy of the scenario envelope with a dimension-scoped idempotency key.
+
+    Each test dimension (routing, tool_calls, db_assertions) must inject its own
+    envelope so that the ``ingest_v1`` deduplication logic treats them as distinct
+    requests.  Without this, the second and third test functions that exercise the
+    same scenario will receive ``duplicate=True`` from ``ingest_v1``, causing
+    session polling to be skipped and tool-call / DB-assertion checks to fail
+    vacuously.
+
+    The dimension suffix is appended to the ``control.idempotency_key`` so that
+    each dimension injects a fresh, independently trackable request while keeping
+    the rest of the envelope content identical.
+
+    Parameters
+    ----------
+    scenario:
+        Source scenario whose envelope to copy.
+    dimension:
+        Short dimension identifier (e.g. ``"routing"``, ``"tool_calls"``,
+        ``"db_assertions"``, ``"dedup"``).
+
+    Returns
+    -------
+    dict
+        A shallow-copied envelope dict with the idempotency_key scoped to the
+        given dimension.
+    """
+    import copy
+
+    envelope = copy.deepcopy(scenario.envelope)
+    control = envelope.setdefault("control", {})
+    base_key = control.get("idempotency_key") or scenario.id
+    control["idempotency_key"] = f"{base_key}:{dimension}"
+    return envelope
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +397,8 @@ async def _run_scenario(
     scenario: Scenario,
     butler_ecosystem: ButlerEcosystem,
     cost_tracker: CostTracker,
+    *,
+    envelope_override: dict[str, Any] | None = None,
 ) -> ScenarioResult:
     """Execute a single scenario and return a ScenarioResult.
 
@@ -378,6 +410,20 @@ async def _run_scenario(
     5. Verify tool calls via set containment.
     6. Execute DB assertions (non-fatal per assertion).
     7. Record token usage in cost_tracker.
+
+    Parameters
+    ----------
+    scenario:
+        Scenario definition.
+    butler_ecosystem:
+        Provisioned butler ecosystem with running daemons and DB pools.
+    cost_tracker:
+        Accumulates token usage for cost reporting.
+    envelope_override:
+        When provided, inject this envelope instead of ``scenario.envelope``.
+        Use ``_envelope_for_dimension()`` to produce a dimension-scoped copy so
+        that multiple test functions for the same scenario each get independent
+        ingest requests (avoids ``duplicate=True`` cross-dimension collisions).
 
     Returns
     -------
@@ -405,11 +451,15 @@ async def _run_scenario(
         )
 
     # Step 1: Inject envelope via ingest_v1 at the Switchboard boundary.
+    # Use envelope_override when provided (e.g. dimension-scoped key from
+    # _envelope_for_dimension) so that different test functions for the same
+    # scenario each produce an independent ingest request.
+    envelope_to_inject = envelope_override if envelope_override is not None else scenario.envelope
     logger.info("[%s] Injecting envelope via ingest_v1()", scenario.id)
     try:
         response: IngestAcceptedResponse = await ingest_v1(
             switchboard_pool,
-            scenario.envelope,
+            envelope_to_inject,
         )
     except Exception as exc:
         duration_ms = int((time.monotonic() - t0) * 1000)
@@ -567,7 +617,12 @@ async def test_scenario_routing(
     if scenario.expected_routing is None:
         pytest.skip(f"Scenario {scenario.id!r} has no expected_routing — skipping routing test")
 
-    result = await _run_scenario(scenario, butler_ecosystem, cost_tracker)
+    result = await _run_scenario(
+        scenario,
+        butler_ecosystem,
+        cost_tracker,
+        envelope_override=_envelope_for_dimension(scenario, "routing"),
+    )
 
     if result.error:
         pytest.fail(f"Scenario {scenario.id!r} error: {result.error}")
@@ -613,7 +668,12 @@ async def test_scenario_tool_calls(
     if scenario_tag_filter is not None and scenario_tag_filter not in scenario.tags:
         pytest.skip(f"Scenario {scenario.id!r} does not match tag filter {scenario_tag_filter!r}")
 
-    result = await _run_scenario(scenario, butler_ecosystem, cost_tracker)
+    result = await _run_scenario(
+        scenario,
+        butler_ecosystem,
+        cost_tracker,
+        envelope_override=_envelope_for_dimension(scenario, "tool_calls"),
+    )
 
     if result.error:
         pytest.fail(f"Scenario {scenario.id!r} error: {result.error}")
@@ -680,7 +740,12 @@ async def test_scenario_db_assertions(
         f"Side-effect scenario {scenario.id!r} must have expected_routing set"
     )
 
-    result = await _run_scenario(scenario, butler_ecosystem, cost_tracker)
+    result = await _run_scenario(
+        scenario,
+        butler_ecosystem,
+        cost_tracker,
+        envelope_override=_envelope_for_dimension(scenario, "db_assertions"),
+    )
 
     if result.error:
         pytest.fail(f"Scenario {scenario.id!r} error: {result.error}")
@@ -731,13 +796,20 @@ async def test_scenario_deduplication(
     if switchboard_pool is None:
         pytest.skip("switchboard pool not available")
 
-    # First injection — should be accepted fresh
-    resp1 = await ingest_v1(switchboard_pool, scenario.envelope)
+    # First injection — should be accepted fresh (not a duplicate).
+    # Use a dimension-scoped envelope so that prior test-function runs (routing,
+    # tool_calls) do not pollute the DB with the same dedupe_key.
+    dedup_envelope = _envelope_for_dimension(scenario, "dedup")
+    resp1 = await ingest_v1(switchboard_pool, dedup_envelope)
     assert resp1.status == "accepted"
     assert resp1.request_id is not None
+    assert resp1.duplicate is False, (
+        f"Expected first injection to be fresh for {scenario.id!r}, but got duplicate=True. "
+        "Ensure the test DB is clean (or that dimension-scoped envelopes are used consistently)."
+    )
 
     # Second injection with identical envelope — must be a duplicate
-    resp2 = await ingest_v1(switchboard_pool, scenario.envelope)
+    resp2 = await ingest_v1(switchboard_pool, dedup_envelope)
     assert resp2.duplicate is True, (
         f"Expected duplicate=True on second injection of {scenario.id!r}"
     )
