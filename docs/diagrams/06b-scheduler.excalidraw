@@ -625,10 +625,6 @@
         {
           "id": "arrow_start_to_sleep",
           "type": "arrow"
-        },
-        {
-          "id": "arrow_loop_back",
-          "type": "arrow"
         }
       ],
       "link": null,
@@ -4949,7 +4945,7 @@
       "y": 1950,
       "width": 240,
       "height": 80,
-      "text": "Message Buffer\n(core/buffer.py)\nHot path: asyncio.Queue\nCold path: DB scanner (30s)\nPriority tiers: high > interactive > default",
+      "text": "Message Buffer\n(core/buffer.py)\nHot path: asyncio.Queue\nCold path: DB scanner (30s)\nPriority tiers: high_priority > interactive > default",
       "originalText": "Message Buffer\n(core/buffer.py)\nHot path: asyncio.Queue\nCold path: DB scanner (30s)\nPriority tiers: high > interactive > default",
       "fontSize": 11,
       "fontFamily": 3,
@@ -5335,7 +5331,7 @@
       "y": 2185,
       "width": 380,
       "height": 240,
-      "text": "id              UUID (PK)\nname            text (unique)\ncron            text  e.g. \"0 */6 * * *\"\ndispatch_mode   'prompt' | 'job'\nprompt          text | NULL\njob_name        text | NULL\njob_args        JSONB | NULL\ncomplexity      'low'|'medium'|'high'\nsource          'toml' | 'db'\nenabled         bool\nnext_run_at     timestamptz\nlast_run_at     timestamptz | NULL\nlast_result     JSONB | NULL\ntimezone        text (default 'UTC')\nstart_at        timestamptz | NULL\nend_at          timestamptz | NULL\nuntil_at        timestamptz | NULL\ndisplay_title   text | NULL\ncalendar_event_id text | NULL",
+      "text": "id              UUID (PK)\nname            text (unique)\ncron            text  e.g. \"0 */6 * * *\"\ndispatch_mode   'prompt' | 'job'\nprompt          text | NULL\njob_name        text | NULL\njob_args        JSONB | NULL\ncomplexity      'low'|'medium'|'high'\nsource          'toml' | 'db'\nenabled         bool\nnext_run_at     timestamptz\nlast_run_at     timestamptz | NULL\nlast_result     JSONB | NULL\ntimezone        text (default 'UTC')\nstart_at        timestamptz | NULL\nend_at          timestamptz | NULL\nuntil_at        timestamptz | NULL\ndisplay_title   text | NULL\ncalendar_event_id text | NULL\ncreated_at       timestamptz\nupdated_at       timestamptz",
       "originalText": "id              UUID (PK)\nname            text (unique)\ncron            text  e.g. \"0 */6 * * *\"\ndispatch_mode   'prompt' | 'job'\nprompt          text | NULL\njob_name        text | NULL\njob_args        JSONB | NULL\ncomplexity      'low'|'medium'|'high'\nsource          'toml' | 'db'\nenabled         bool\nnext_run_at     timestamptz\nlast_run_at     timestamptz | NULL\nlast_result     JSONB | NULL\ntimezone        text (default 'UTC')\nstart_at        timestamptz | NULL\nend_at          timestamptz | NULL\nuntil_at        timestamptz | NULL\ndisplay_title   text | NULL\ncalendar_event_id text | NULL",
       "fontSize": 11,
       "fontFamily": 3,
