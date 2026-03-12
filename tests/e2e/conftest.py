@@ -28,6 +28,9 @@ Teardown (try/finally):
   All butler daemons are stopped, database pools are closed, and the
   PostgreSQL container is removed — regardless of whether the session
   passed, failed, or was interrupted (KeyboardInterrupt/SIGTERM).
+
+CLI options:
+- --scenarios=<tag>: Filter scenarios to those tagged with <tag> (e.g., smoke)
 """
 
 from __future__ import annotations
@@ -62,6 +65,44 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 E2E_PORT_OFFSET = 11000
+
+
+# ---------------------------------------------------------------------------
+# CLI option: --scenarios for tag-based scenario filtering
+# ---------------------------------------------------------------------------
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the --scenarios CLI option for tag-based scenario filtering.
+
+    Usage:
+        pytest tests/e2e/ --scenarios=smoke
+        pytest tests/e2e/ --scenarios=health
+
+    When specified, only scenarios whose ``tags`` list contains the given
+    value will be executed. When omitted, all scenarios run.
+    """
+    parser.addoption(
+        "--scenarios",
+        action="store",
+        default=None,
+        metavar="TAG",
+        help=(
+            "Run only E2E scenarios tagged with TAG. "
+            "Example: --scenarios=smoke runs only smoke-tagged scenarios. "
+            "Multiple tags are not supported; use pytest -k for compound filtering."
+        ),
+    )
+
+
+@pytest.fixture(scope="session")
+def scenario_tag_filter(request: pytest.FixtureRequest) -> str | None:
+    """Return the --scenarios tag filter from the CLI, or None if not set.
+
+    Used by the scenario runner to filter the scenario corpus at
+    collection time.
+    """
+    return request.config.getoption("--scenarios")
 
 
 # ---------------------------------------------------------------------------
