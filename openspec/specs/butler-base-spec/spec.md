@@ -218,7 +218,7 @@ The spawner generates ephemeral MCP configurations and invokes LLM CLI runtimes 
 - **AND** no undeclared environment variables leak from the host to the runtime subprocess
 
 #### Scenario: Runtime adapter selection
-- **WHEN** `butler.toml` specifies `[runtime] type = "codex"` (or `"claude-code"`, `"gemini"`)
+- **WHEN** `butler.toml` specifies `[runtime] type = "codex"` (or `"claude"`, `"gemini"`)
 - **THEN** the corresponding adapter is used: CodexAdapter (GPT models), ClaudeCodeAdapter (Claude models), GeminiAdapter (Gemini models)
 - **AND** each adapter implements `async invoke(prompt, system_prompt, mcp_servers, env, ...)` returning `(result_text, tool_calls, usage_dict)`
 
@@ -259,7 +259,7 @@ The `butler.toml` file declares butler identity, runtime, database, modules, sch
 - **WHEN** `[butler.runtime]` and `[runtime]` sections are present
 - **THEN** `butler.runtime.model` specifies the LLM model for runtime instances
 - **AND** `butler.runtime.max_concurrent_sessions` controls spawner concurrency
-- **AND** `runtime.type` selects the adapter (`codex`, `claude-code`, `gemini`)
+- **AND** `runtime.type` selects the adapter (`codex`, `claude`, `gemini`)
 
 #### Scenario: Database configuration
 - **WHEN** `[butler.db]` specifies `name = "butlers"` and `schema = "{butler-name}"`

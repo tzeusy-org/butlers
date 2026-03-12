@@ -814,9 +814,12 @@ class OpenCodeAdapter(RuntimeAdapter):
 
             cmd.append(prompt)
 
-            # Inject OPENCODE_CONFIG into subprocess env
+            # Inject OPENCODE_CONFIG into subprocess env only when we have
+            # MCP servers or instructions to override — otherwise let OpenCode
+            # use its own config so provider auth/keys are preserved.
             subprocess_env = dict(env) if env else {}
-            subprocess_env["OPENCODE_CONFIG"] = str(config_path)
+            if mcp_servers or instructions_path:
+                subprocess_env["OPENCODE_CONFIG"] = str(config_path)
 
             cmd_for_log = " ".join(cmd[:4]) + " ..."
             logger.debug("Invoking OpenCode CLI: %s", cmd_for_log)

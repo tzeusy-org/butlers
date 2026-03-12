@@ -507,7 +507,7 @@ class Spawner:
         Parameters
         ----------
         runtime_type:
-            The runtime type string (e.g. ``"claude-code"``, ``"codex"``).
+            The runtime type string (e.g. ``"claude"``, ``"codex"``).
 
         Returns
         -------

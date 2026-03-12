@@ -2,7 +2,7 @@
 
 Today every butler has a single model hardcoded in `butler.toml` under `[butler.runtime].model` (currently `gpt-5.1` across the fleet). The spawner reads this once and passes it through to the `RuntimeAdapter.invoke()` call. There is no mechanism to vary the model based on task characteristics, and no way to change model assignments without editing TOML files and restarting daemons.
 
-The system already supports four runtime adapters (claude-code, codex, gemini, opencode) and the spawner's `invoke()` signature already accepts `model` and `runtime_args` as parameters — so the plumbing for multi-model invocation exists. What's missing is the **decision layer**: who picks the model, based on what, and how is that configuration managed.
+The system already supports four runtime adapters (claude, codex, gemini, opencode) and the spawner's `invoke()` signature already accepts `model` and `runtime_args` as parameters — so the plumbing for multi-model invocation exists. What's missing is the **decision layer**: who picks the model, based on what, and how is that configuration managed.
 
 ## Goals / Non-Goals
 
@@ -30,7 +30,7 @@ The system already supports four runtime adapters (claude-code, codex, gemini, o
 |--------|------|-------|
 | `id` | `uuid` PK | |
 | `alias` | `text` UNIQUE | Human-readable name, e.g. `claude-opus-4`, `gpt-5.4-high` |
-| `runtime_type` | `text` NOT NULL | Maps to adapter registry: `claude-code`, `codex`, `gemini`, `opencode` |
+| `runtime_type` | `text` NOT NULL | Maps to adapter registry: `claude`, `codex`, `gemini`, `opencode` |
 | `model_id` | `text` NOT NULL | Actual model string passed to adapter, e.g. `claude-opus-4-0-20250514` |
 | `extra_args` | `jsonb` DEFAULT `[]` | Additional CLI args, e.g. `["--config", "model_reasoning_effort=high"]` |
 | `complexity_tier` | `text` NOT NULL | One of `trivial`, `medium`, `high`, `extra_high` |
@@ -137,9 +137,9 @@ The dashboard UI presents this as an alias editor:
 
 | Alias | Runtime | Model ID | Extra Args | Tier |
 |-------|---------|----------|------------|------|
-| `claude-haiku` | `claude-code` | `claude-haiku-4-5-20251001` | `[]` | `trivial` |
-| `claude-sonnet` | `claude-code` | `claude-sonnet-4-6` | `[]` | `medium` |
-| `claude-opus` | `claude-code` | `claude-opus-4-6` | `[]` | `high` |
+| `claude-haiku` | `claude` | `claude-haiku-4-5-20251001` | `[]` | `trivial` |
+| `claude-sonnet` | `claude` | `claude-sonnet-4-6` | `[]` | `medium` |
+| `claude-opus` | `claude` | `claude-opus-4-6` | `[]` | `high` |
 | `gpt-5.1` | `codex` | `gpt-5.1` | `[]` | `medium` |
 | `gpt-5.3-spark` | `codex` | `gpt-5.3-codex-spark` | `[]` | `trivial` |
 | `gpt-5.4` | `codex` | `gpt-5.4` | `[]` | `high` |

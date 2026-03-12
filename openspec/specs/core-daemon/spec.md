@@ -49,7 +49,7 @@ The daemon implements a phased startup with 17 steps (as documented in the daemo
 At startup the daemon verifies the configured runtime adapter's CLI binary is available on PATH via `shutil.which()`.
 
 #### Scenario: Missing runtime binary
-- **WHEN** the configured runtime type's binary (e.g., `claude` for `claude-code`) is not found on PATH
+- **WHEN** the configured runtime type's binary (e.g., `claude` for `claude`) is not found on PATH
 - **THEN** the daemon logs a warning but continues startup (binary check is advisory)
 
 ### Requirement: Graceful Shutdown Contract

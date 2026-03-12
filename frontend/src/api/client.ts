@@ -140,6 +140,7 @@ import type {
   ModelCatalogEntry,
   ModelCatalogCreate,
   ModelCatalogUpdate,
+  ModelTestResult,
   ButlerModelOverride,
   ButlerModelOverrideUpsert,
   ResolveModelResponse,
@@ -2480,6 +2481,16 @@ export function updateModelCatalogEntry(
       method: "PUT",
       body: JSON.stringify(body),
     },
+  );
+}
+
+/** POST /api/settings/models/{id}/test — test a model config */
+export function testModelCatalogEntry(
+  id: string,
+): Promise<ApiResponse<ModelTestResult>> {
+  return apiFetch<ApiResponse<ModelTestResult>>(
+    `/settings/models/${encodeURIComponent(id)}/test`,
+    { method: "POST" },
   );
 }
 

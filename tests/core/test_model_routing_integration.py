@@ -189,7 +189,7 @@ async def _insert_catalog_entry(
     pool: asyncpg.Pool,
     *,
     alias: str,
-    runtime_type: str = "claude-code",
+    runtime_type: str = "claude",
     model_id: str,
     complexity_tier: str = "medium",
     enabled: bool = True,
@@ -294,7 +294,7 @@ async def test_trigger_high_complexity_resolves_catalog_model(
         await _insert_catalog_entry(
             pool,
             alias="opus-high",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-opus-4-20250514",
             complexity_tier="high",
             priority=1,
@@ -408,7 +408,7 @@ async def test_trigger_complexity_tier_is_respected(
         await _insert_catalog_entry(
             pool,
             alias="opus-high-only",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-opus-4-20250514",
             complexity_tier="high",
             priority=1,
@@ -459,7 +459,7 @@ async def test_trigger_catalog_priority_ordering(
         await _insert_catalog_entry(
             pool,
             alias="preferred-high",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-preferred-4",
             complexity_tier="high",
             priority=5,
@@ -467,7 +467,7 @@ async def test_trigger_catalog_priority_ordering(
         await _insert_catalog_entry(
             pool,
             alias="fallback-high",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-fallback-4",
             complexity_tier="high",
             priority=50,
@@ -609,7 +609,7 @@ async def test_scheduler_high_complexity_resolves_catalog_model_in_session(
         await _insert_catalog_entry(
             pool,
             alias="scheduler-high-opus",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-opus-4-e2e",
             complexity_tier="high",
             priority=1,

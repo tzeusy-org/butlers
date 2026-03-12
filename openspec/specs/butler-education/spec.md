@@ -14,7 +14,7 @@ The education butler SHALL be configured with the correct port, description, mod
 
 - **WHEN** the education butler is running
 - **THEN** it operates on port 40107 with description "Personalized tutor with spaced repetition, mind maps, and adaptive learning"
-- **AND** it uses the `claude-code` runtime type with model `claude-opus-4-6`
+- **AND** it uses the `claude` runtime type with model `claude-opus-4-6`
 - **AND** it permits a maximum of 3 concurrent sessions
 
 #### Scenario: Model tier rationale is enforced by configuration
@@ -22,7 +22,7 @@ The education butler SHALL be configured with the correct port, description, mod
 - **WHEN** the `butler.toml` is loaded
 - **THEN** the `[butler.runtime]` section MUST specify `model = "claude-opus-4-6"`
 - **AND** no smaller or alternative model alias SHALL appear in the configuration
-- **AND** the `[runtime]` section MUST specify `type = "claude-code"`
+- **AND** the `[runtime]` section MUST specify `type = "claude"`
 
 #### Scenario: Runtime section exists alongside butler runtime section
 

@@ -18,7 +18,7 @@ The system SHALL maintain a `shared.model_catalog` table as the canonical regist
 
 #### Scenario: Valid runtime types
 - **WHEN** a catalog entry specifies a `runtime_type`
-- **THEN** the value MUST correspond to a registered runtime adapter (e.g. `claude-code`, `codex`, `gemini`, `opencode`)
+- **THEN** the value MUST correspond to a registered runtime adapter (e.g. `claude`, `codex`, `gemini`, `opencode`)
 
 #### Scenario: Extra args format
 - **WHEN** `extra_args` is provided
@@ -94,9 +94,9 @@ The system SHALL seed the model catalog with sensible defaults on first migratio
 
 | Alias | Runtime | Model ID | Extra Args | Tier | Priority |
 |-------|---------|----------|------------|------|----------|
-| `claude-haiku` | `claude-code` | `claude-haiku-4-5-20251001` | `[]` | `trivial` | 0 |
-| `claude-sonnet` | `claude-code` | `claude-sonnet-4-6` | `[]` | `medium` | 0 |
-| `claude-opus` | `claude-code` | `claude-opus-4-6` | `[]` | `high` | 0 |
+| `claude-haiku` | `claude` | `claude-haiku-4-5-20251001` | `[]` | `trivial` | 0 |
+| `claude-sonnet` | `claude` | `claude-sonnet-4-6` | `[]` | `medium` | 0 |
+| `claude-opus` | `claude` | `claude-opus-4-6` | `[]` | `high` | 0 |
 | `gpt-5.1` | `codex` | `gpt-5.1` | `[]` | `medium` | 10 |
 | `gpt-5.3-spark` | `codex` | `gpt-5.3-codex-spark` | `[]` | `trivial` | 0 |
 | `gpt-5.4` | `codex` | `gpt-5.4` | `[]` | `high` | 10 |

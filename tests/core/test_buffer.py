@@ -959,7 +959,7 @@ class TestDaemonIntegration:
         mock_spawner.trigger = AsyncMock()
 
         # MockAdapter must accept **kwargs because daemon calls
-        # adapter_cls(butler_name=..., log_root=...) for claude-code runtimes.
+        # adapter_cls(butler_name=..., log_root=...) for claude runtimes.
         class _MockAdapterInstance:
             binary_name = "claude"
 

@@ -1,6 +1,6 @@
 ## Context
 
-The runtime adapter registry (`src/butlers/core/runtimes/`) provides three adapters: `claude-code` (in-process SDK), `codex` (subprocess), and `gemini` (subprocess). OpenCode is a Go-based AI CLI that supports multiple providers through a unified interface. The `opencode` npm package is already installed in the Docker image. OpenCode exposes two programmatic interfaces: a CLI (`opencode run --format json`) and a JS/TS SDK. Since the butler codebase is Python, the subprocess CLI approach (matching Codex/Gemini patterns) is the natural fit.
+The runtime adapter registry (`src/butlers/core/runtimes/`) provides three adapters: `claude` (in-process SDK), `codex` (subprocess), and `gemini` (subprocess). OpenCode is a Go-based AI CLI that supports multiple providers through a unified interface. The `opencode` npm package is already installed in the Docker image. OpenCode exposes two programmatic interfaces: a CLI (`opencode run --format json`) and a JS/TS SDK. Since the butler codebase is Python, the subprocess CLI approach (matching Codex/Gemini patterns) is the natural fit.
 
 Key OpenCode CLI characteristics discovered during research:
 - Headless mode: `opencode run [message] --format json`

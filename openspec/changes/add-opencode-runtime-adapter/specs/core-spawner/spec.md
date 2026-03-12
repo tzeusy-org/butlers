@@ -1,10 +1,10 @@
 ## MODIFIED Requirements
 
 ### Requirement: Multi-Runtime Adapter Support
-The spawner delegates to a `RuntimeAdapter` abstract base class. Four concrete adapters are registered: `claude-code` (ClaudeCodeAdapter via Claude Agent SDK), `codex` (CodexAdapter via subprocess), `gemini` (GeminiAdapter via subprocess), and `opencode` (OpenCodeAdapter via subprocess). Each adapter implements `invoke()`, `build_config_file()`, `parse_system_prompt_file()`, `binary_name`, `create_worker()`, and `reset()`.
+The spawner delegates to a `RuntimeAdapter` abstract base class. Four concrete adapters are registered: `claude` (ClaudeCodeAdapter via Claude Agent SDK), `codex` (CodexAdapter via subprocess), `gemini` (GeminiAdapter via subprocess), and `opencode` (OpenCodeAdapter via subprocess). Each adapter implements `invoke()`, `build_config_file()`, `parse_system_prompt_file()`, `binary_name`, `create_worker()`, and `reset()`.
 
 #### Scenario: Claude Code adapter invocation
-- **WHEN** the butler's runtime type is `claude-code`
+- **WHEN** the butler's runtime type is `claude`
 - **THEN** the ClaudeCodeAdapter builds `McpSSEServerConfig`/`McpHttpServerConfig` objects and calls `claude_agent_sdk.query()` asynchronously
 - **AND** parses `ResultMessage` and `ToolUseBlock` from the response stream
 

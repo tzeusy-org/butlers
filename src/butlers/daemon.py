@@ -1346,7 +1346,7 @@ class ButlerDaemon:
         # 10. Create Spawner with runtime adapter (verify binary on PATH)
         adapter_cls = get_adapter(self.config.runtime.type)
         # ClaudeCodeAdapter accepts butler_name/log_root for CC stderr capture
-        if self.config.runtime.type == "claude-code":
+        if self.config.runtime.type == "claude":
             runtime = adapter_cls(butler_name=self.config.name, log_root=log_root)
         else:
             runtime = adapter_cls()

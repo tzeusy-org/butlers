@@ -11,12 +11,14 @@ import {
   listModelCatalog,
   listButlerModelOverrides,
   resolveButlerModel,
+  testModelCatalogEntry,
   updateModelCatalogEntry,
   upsertButlerModelOverrides,
 } from "@/api/index.ts";
 import type {
   ModelCatalogCreate,
   ModelCatalogUpdate,
+  ModelTestResult,
   ButlerModelOverrideUpsert,
 } from "@/api/types.ts";
 
@@ -52,6 +54,13 @@ export function useUpdateModelCatalogEntry() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["model-catalog"] });
     },
+  });
+}
+
+/** Mutation to test a catalog entry by spawning a minimal LLM session. */
+export function useTestModelCatalogEntry() {
+  return useMutation({
+    mutationFn: (id: string) => testModelCatalogEntry(id),
   });
 }
 

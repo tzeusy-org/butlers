@@ -19,15 +19,14 @@ Creates the database foundation for dynamic model routing:
   3. Adds complexity column (TEXT, nullable, DEFAULT 'medium') to
      scheduled_tasks for tier-aware dispatch.
 
-  4. Seeds 12 default catalog entries (idempotent via ON CONFLICT DO NOTHING):
-     claude-haiku, claude-sonnet, claude-opus, gpt-5.1, gpt-5.3-spark,
-     gpt-5.4, gpt-5.4-high, gemini-2.5-flash, gemini-2.5-pro,
-     minimax-m2.5, glm-5, kimi-k2.5.
+  4. Seeds default catalog entries from model_catalog_defaults.toml
+     (idempotent via ON CONFLICT DO NOTHING).
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from alembic import op
 
@@ -39,29 +38,17 @@ depends_on = None
 
 _COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high")
 
-# Default seed entries: (alias, runtime_type, model_id, extra_args, complexity_tier, priority)
-_SEED_ENTRIES = [
-    ("claude-haiku", "claude-code", "claude-haiku-4-5-20251001", [], "trivial", 0),
-    ("claude-sonnet", "claude-code", "claude-sonnet-4-6", [], "medium", 0),
-    ("claude-opus", "claude-code", "claude-opus-4-6", [], "high", 0),
-    ("gpt-5.1", "codex", "gpt-5.1", [], "medium", 10),
-    ("gpt-5.3-spark", "codex", "gpt-5.3-codex-spark", [], "trivial", 0),
-    ("gpt-5.4", "codex", "gpt-5.4", [], "high", 10),
-    # gpt-5.4-high: same model_id as gpt-5.4 but with reasoning effort flag
-    (
-        "gpt-5.4-high",
-        "codex",
-        "gpt-5.4",
-        ["--config", "model_reasoning_effort=high"],
-        "extra_high",
-        0,
-    ),
-    ("gemini-2.5-flash", "gemini", "gemini-2.5-flash", [], "trivial", 10),
-    ("gemini-2.5-pro", "gemini", "gemini-2.5-pro", [], "high", 10),
-    ("minimax-m2.5", "opencode", "minimax/MiniMax-M2.5", [], "medium", 20),
-    ("glm-5", "opencode", "zhipu/GLM-5", [], "medium", 20),
-    ("kimi-k2.5", "opencode", "moonshot/Kimi-K2.5", [], "high", 20),
-]
+
+def _load_seed_entries() -> list[dict]:
+    """Load default model catalog entries from model_catalog_defaults.toml."""
+    import tomllib  # noqa: PLC0415
+
+    defaults_path = Path(__file__).resolve().parents[3] / "model_catalog_defaults.toml"
+    if not defaults_path.exists():
+        return []
+    with open(defaults_path, "rb") as f:
+        data = tomllib.load(f)
+    return data.get("models", [])
 
 
 def upgrade() -> None:
@@ -125,31 +112,34 @@ def upgrade() -> None:
     """)
 
     # -------------------------------------------------------------------------
-    # 4. Seed 12 default catalog entries (idempotent)
+    # 4. Seed default catalog entries from model_catalog_defaults.toml (idempotent)
     # -------------------------------------------------------------------------
     import sqlalchemy  # noqa: PLC0415
 
-    seed_sql = sqlalchemy.text(
-        "INSERT INTO shared.model_catalog"
-        " (alias, runtime_type, model_id, extra_args, complexity_tier, priority)"
-        " VALUES"
-        " (:alias, :runtime_type, :model_id,"
-        " CAST(:extra_args AS jsonb), :complexity_tier, :priority)"
-        " ON CONFLICT (alias) DO NOTHING"
-    )
-    seed_params = []
-    for alias, runtime_type, model_id, extra_args, complexity_tier, priority in _SEED_ENTRIES:
-        seed_params.append(
-            {
-                "alias": alias,
-                "runtime_type": runtime_type,
-                "model_id": model_id,
-                "extra_args": json.dumps(extra_args),
-                "complexity_tier": complexity_tier,
-                "priority": priority,
-            }
+    seed_entries = _load_seed_entries()
+    if seed_entries:
+        seed_sql = sqlalchemy.text(
+            "INSERT INTO shared.model_catalog"
+            " (alias, runtime_type, model_id, extra_args,"
+            "  complexity_tier, priority, enabled)"
+            " VALUES"
+            " (:alias, :runtime_type, :model_id,"
+            " CAST(:extra_args AS jsonb), :complexity_tier, :priority, :enabled)"
+            " ON CONFLICT (alias) DO NOTHING"
         )
-    op.get_bind().execute(seed_sql, seed_params)
+        seed_params = [
+            {
+                "alias": entry["alias"],
+                "runtime_type": entry["runtime_type"],
+                "model_id": entry["model_id"],
+                "extra_args": json.dumps(entry.get("extra_args", [])),
+                "complexity_tier": entry.get("complexity_tier", "medium"),
+                "priority": entry.get("priority", 0),
+                "enabled": entry.get("enabled", True),
+            }
+            for entry in seed_entries
+        ]
+        op.get_bind().execute(seed_sql, seed_params)
 
 
 def downgrade() -> None:

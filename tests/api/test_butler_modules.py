@@ -56,7 +56,7 @@ def _make_roster_with_modules(
         f'description = "Test butler"\n'
         f'[butler.db]\nname = "butlers"\nschema = "{name}"\n'
         f"[runtime]\n"
-        f'type = "claude-code"\n'
+        f'type = "claude"\n'
         f"{mod_sections}"
     )
     return butler_dir
@@ -71,7 +71,7 @@ def _make_roster_no_modules(tmp_path: Path, name: str = "bare", port: int = 4010
         f'description = "Bare butler"\n'
         f'[butler.db]\nname = "butlers"\nschema = "{name}"\n'
         f"[runtime]\n"
-        f'type = "claude-code"\n'
+        f'type = "claude"\n'
     )
     return butler_dir
 

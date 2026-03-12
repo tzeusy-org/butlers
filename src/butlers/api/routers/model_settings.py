@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 from uuid import UUID
 
@@ -110,6 +111,15 @@ class ResolveModelResponse(BaseModel):
     model_id: str | None = None
     extra_args: list[str] = Field(default_factory=list)
     resolved: bool
+
+
+class ModelTestResult(BaseModel):
+    """Response from the model test endpoint."""
+
+    success: bool
+    reply: str | None = None
+    error: str | None = None
+    duration_ms: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +225,7 @@ async def list_catalog_entries(
                 WHEN 'extra_high' THEN 4
                 ELSE 5
             END,
-            priority ASC,
+            priority DESC,
             alias ASC
         """
     )
@@ -521,7 +531,7 @@ async def resolve_model_preview(
             COALESCE(bmo.enabled, mc.enabled) = true
             AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
         ORDER BY
-            COALESCE(bmo.priority, mc.priority) ASC,
+            COALESCE(bmo.priority, mc.priority) DESC,
             mc.created_at ASC
         LIMIT 1
         """,
@@ -548,3 +558,110 @@ async def resolve_model_preview(
             resolved=True,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/settings/models/{entry_id}/test — test a model config
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.post(
+    "/{entry_id}/test",
+    response_model=ApiResponse[ModelTestResult],
+)
+async def test_catalog_entry(
+    entry_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ModelTestResult]:
+    """Spawn a minimal LLM session to verify the model config works.
+
+    Sends a simple prompt with no MCP servers and returns the reply.
+    """
+    pool = _shared_pool(db)
+    row = await pool.fetchrow(
+        """
+        SELECT runtime_type, model_id, extra_args
+        FROM shared.model_catalog
+        WHERE id = $1
+        """,
+        entry_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Catalog entry not found")
+
+    runtime_type = row["runtime_type"]
+    model_id = row["model_id"]
+    extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
+
+    try:
+        from butlers.core.runtimes.base import get_adapter
+
+        adapter_cls = get_adapter(runtime_type)
+        adapter = adapter_cls()
+    except ValueError as exc:
+        return ApiResponse[ModelTestResult](
+            data=ModelTestResult(success=False, error=str(exc))
+        )
+
+    import os
+
+    t0 = time.monotonic()
+    try:
+        result_text, _, _ = await adapter.invoke(
+            prompt="Reply with exactly: OK",
+            system_prompt="You are a test assistant. Reply concisely.",
+            mcp_servers={},
+            env=dict(os.environ),
+            max_turns=1,
+            model=model_id,
+            runtime_args=extra_args or None,
+            timeout=30,
+        )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        if not result_text or not result_text.strip():
+            # Surface process-level diagnostics for subprocess-based adapters
+            proc_info = getattr(adapter, "last_process_info", None)
+            stderr_hint = ""
+            if isinstance(proc_info, dict):
+                stderr_raw = proc_info.get("stderr", "")
+                exit_code = proc_info.get("exit_code")
+                if stderr_raw:
+                    stderr_hint = f" stderr: {stderr_raw[:1000]}"
+                if exit_code and exit_code != 0:
+                    stderr_hint = f" (exit code {exit_code}){stderr_hint}"
+            error_msg = f"Model returned an empty response{stderr_hint}"
+            logger.warning(
+                "Model test empty response for %s/%s: %s", runtime_type, model_id, error_msg
+            )
+            return ApiResponse[ModelTestResult](
+                data=ModelTestResult(
+                    success=False,
+                    error=error_msg,
+                    duration_ms=duration_ms,
+                )
+            )
+        return ApiResponse[ModelTestResult](
+            data=ModelTestResult(
+                success=True,
+                reply=result_text.strip(),
+                duration_ms=duration_ms,
+            )
+        )
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        proc_info = getattr(adapter, "last_process_info", None)
+        stderr_hint = ""
+        if isinstance(proc_info, dict):
+            stderr_raw = proc_info.get("stderr", "")
+            if stderr_raw:
+                stderr_hint = f" | stderr: {stderr_raw[:1000]}"
+        logger.warning(
+            "Model test failed for %s/%s: %s%s", runtime_type, model_id, exc, stderr_hint
+        )
+        return ApiResponse[ModelTestResult](
+            data=ModelTestResult(
+                success=False,
+                error=f"{exc}{stderr_hint}",
+                duration_ms=duration_ms,
+            )
+        )

@@ -53,7 +53,7 @@ def _make_butler_dir(
         f'description = "Test butler"\n'
         f'[butler.db]\nname = "butlers"\nschema = "{name}"\n'
         f"[runtime]\n"
-        f'type = "claude-code"\n'
+        f'type = "claude"\n'
         f"{mod_sections}"
     )
     return butler_dir

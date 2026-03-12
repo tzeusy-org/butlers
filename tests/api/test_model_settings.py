@@ -40,7 +40,7 @@ def _make_catalog_row(
     *,
     entry_id: uuid.UUID | None = None,
     alias: str = "claude-sonnet",
-    runtime_type: str = "claude-code",
+    runtime_type: str = "claude",
     model_id: str = "claude-sonnet-4-6",
     extra_args: list[str] | None = None,
     complexity_tier: str = "medium",
@@ -252,7 +252,7 @@ class TestCreateCatalogEntry:
                 "/api/settings/models",
                 json={
                     "alias": "claude-sonnet",
-                    "runtime_type": "claude-code",
+                    "runtime_type": "claude",
                     "model_id": "claude-sonnet-4-6",
                     "complexity_tier": "medium",
                 },
@@ -630,7 +630,7 @@ class TestDeleteButlerModelOverride:
 class TestResolveModelPreview:
     async def test_returns_resolved_model(self, app):
         row = {
-            "runtime_type": "claude-code",
+            "runtime_type": "claude",
             "model_id": "claude-sonnet-4-6",
             "extra_args": "[]",
         }
@@ -649,7 +649,7 @@ class TestResolveModelPreview:
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["resolved"] is True
-        assert data["runtime_type"] == "claude-code"
+        assert data["runtime_type"] == "claude"
         assert data["model_id"] == "claude-sonnet-4-6"
         assert data["complexity"] == "medium"
         assert data["butler_name"] == "general"
@@ -674,7 +674,7 @@ class TestResolveModelPreview:
 
     async def test_defaults_to_medium_complexity(self, app):
         row = {
-            "runtime_type": "claude-code",
+            "runtime_type": "claude",
             "model_id": "claude-sonnet-4-6",
             "extra_args": "[]",
         }

@@ -1,0 +1,111 @@
+# NOTE: This file is only used for initial database setup (bootstrap).
+# Changes here will NOT affect an existing database — use the Settings UI
+# or the API to modify the model catalog after first setup.
+
+[[models]]
+alias = "claude-haiku"
+runtime_type = "claude"
+model_id = "claude-haiku-4-5-20251001"
+extra_args = []
+complexity_tier = "trivial"
+priority = 10
+enabled = false
+
+[[models]]
+alias = "claude-sonnet"
+runtime_type = "claude"
+model_id = "claude-sonnet-4-6"
+extra_args = []
+complexity_tier = "medium"
+priority = 10
+enabled = false
+
+[[models]]
+alias = "claude-opus"
+runtime_type = "claude"
+model_id = "claude-opus-4-6"
+extra_args = []
+complexity_tier = "high"
+priority = 10
+enabled = false
+
+[[models]]
+alias = "gpt-5.1"
+runtime_type = "codex"
+model_id = "gpt-5.1"
+extra_args = []
+complexity_tier = "trivial"
+priority = 25
+enabled = true
+
+[[models]]
+alias = "gpt-5.3-spark"
+runtime_type = "codex"
+model_id = "gpt-5.3-codex-spark"
+extra_args = []
+complexity_tier = "medium"
+priority = 20
+enabled = true
+
+[[models]]
+alias = "gpt-5.4"
+runtime_type = "codex"
+model_id = "gpt-5.4"
+extra_args = []
+complexity_tier = "high"
+priority = 0
+enabled = true
+
+[[models]]
+alias = "gpt-5.4-high"
+runtime_type = "codex"
+model_id = "gpt-5.4"
+extra_args = ["--config", "model_reasoning_effort=high"]
+complexity_tier = "extra_high"
+priority = 0
+enabled = true
+
+[[models]]
+alias = "gemini-2.5-flash"
+runtime_type = "gemini"
+model_id = "gemini-2.5-flash"
+extra_args = []
+complexity_tier = "trivial"
+priority = 10
+enabled = false
+
+[[models]]
+alias = "gemini-2.5-pro"
+runtime_type = "gemini"
+model_id = "gemini-2.5-pro"
+extra_args = []
+complexity_tier = "high"
+priority = 10
+enabled = false
+
+[[models]]
+alias = "minimax-m2.5"
+runtime_type = "opencode"
+model_id = "opencode-go/minimax-m2.5"
+extra_args = []
+complexity_tier = "medium"
+priority = 20
+enabled = true
+
+[[models]]
+alias = "glm-5"
+runtime_type = "opencode"
+model_id = "opencode-go/glm-5"
+extra_args = []
+complexity_tier = "medium"
+priority = 20
+enabled = true
+
+[[models]]
+alias = "kimi-k2.5"
+runtime_type = "opencode"
+model_id = "opencode-go/kimi-k2.5"
+extra_args = []
+complexity_tier = "high"
+priority = 20
+enabled = true

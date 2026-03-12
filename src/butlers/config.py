@@ -81,7 +81,7 @@ class RuntimeConfig:
     parsing), so each CLI token should be a separate list entry.
     """
 
-    type: str = "claude-code"
+    type: str = "claude"
     model: str | None = DEFAULT_MODEL
     max_concurrent_sessions: int = 1
     max_queued_sessions: int = 100
@@ -739,7 +739,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
 
     # --- [runtime] section ---
     runtime_section = data.get("runtime", {})
-    runtime_type = runtime_section.get("type", "claude-code")
+    runtime_type = runtime_section.get("type", "claude")
 
     # Validate runtime type early (fail fast at config load time)
     try:

@@ -335,11 +335,16 @@ async def test_api_key(
         proc = await asyncio.create_subprocess_exec(
             *provider_def.test_command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
         )
-        raw_output, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-        output = _strip_ansi(raw_output.decode(errors="replace")).strip()[:200]
+        raw_stdout, raw_stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        stdout_text = _strip_ansi(raw_stdout.decode(errors="replace")).strip()
+        stderr_text = _strip_ansi(raw_stderr.decode(errors="replace")).strip()
+        # Prefer stdout for pattern matching; include stderr in detail for diagnostics
+        output = stdout_text[:200]
+        if not output and stderr_text:
+            output = stderr_text[:200]
 
         if proc.returncode == 0:
             if provider_def.test_ok_pattern and provider_def.test_ok_pattern.search(output):

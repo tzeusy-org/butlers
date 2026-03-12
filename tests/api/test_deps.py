@@ -218,12 +218,12 @@ class TestDiscoverButlers:
         (sb_dir / "butler.toml").write_text(
             '[butler]\nname = "switchboard"\nport = 40100\n'
             'description = "Routes messages"\n'
-            '[runtime]\ntype = "claude-code"\n'
+            '[runtime]\ntype = "claude"\n'
         )
         gen_dir = tmp_path / "general"
         gen_dir.mkdir()
         (gen_dir / "butler.toml").write_text(
-            '[butler]\nname = "general"\nport = 40101\n[runtime]\ntype = "claude-code"\n'
+            '[butler]\nname = "general"\nport = 40101\n[runtime]\ntype = "claude"\n'
         )
         # Create a non-butler dir (no toml)
         (tmp_path / "random-dir").mkdir()
@@ -264,7 +264,7 @@ class TestDiscoverButlers:
             d = tmp_path / name
             d.mkdir()
             (d / "butler.toml").write_text(
-                f'[butler]\nname = "{name}"\nport = {port}\n[runtime]\ntype = "claude-code"\n'
+                f'[butler]\nname = "{name}"\nport = {port}\n[runtime]\ntype = "claude"\n'
             )
 
         result = discover_butlers(roster_dir=tmp_path)
@@ -277,7 +277,7 @@ class TestDiscoverButlers:
         (d / "butler.toml").write_text(
             '[butler]\nname = "mybutler"\nport = 40100\n'
             'description = "My awesome butler"\n'
-            '[runtime]\ntype = "claude-code"\n'
+            '[runtime]\ntype = "claude"\n'
         )
 
         result = discover_butlers(roster_dir=tmp_path)
@@ -291,7 +291,7 @@ class TestDiscoverButlers:
         (d / "butler.toml").write_text(
             '[butler]\nname = "general"\nport = 40101\n'
             '[butler.db]\nname = "butlers"\nschema = "general"\n'
-            '[runtime]\ntype = "claude-code"\n'
+            '[runtime]\ntype = "claude"\n'
         )
 
         result = discover_butlers(roster_dir=tmp_path)
@@ -307,7 +307,7 @@ class TestDiscoverButlers:
         (d / "butler.toml").write_text(
             '[butler]\nname = "general"\nport = 40101\n'
             '[butler.db]\nname = "butlers"\nschema = "general"\n'
-            '[runtime]\ntype = "claude-code"\n'
+            '[runtime]\ntype = "claude"\n'
             '[modules.calendar]\nprovider = "google"\n'
             "[modules.memory]\n"
         )
@@ -324,7 +324,7 @@ class TestDiscoverButlers:
         (d / "butler.toml").write_text(
             '[butler]\nname = "education"\nport = 40107\n'
             '[butler.db]\nname = "butlers"\nschema = "education"\n'
-            '[runtime]\ntype = "claude-code"\n'
+            '[runtime]\ntype = "claude"\n'
         )
 
         result = discover_butlers(roster_dir=tmp_path)
@@ -427,7 +427,7 @@ class TestFastAPIDependencies:
             d = tmp_path / "test-butler"
             d.mkdir()
             (d / "butler.toml").write_text(
-                '[butler]\nname = "test-butler"\nport = 8500\n[runtime]\ntype = "claude-code"\n'
+                '[butler]\nname = "test-butler"\nport = 8500\n[runtime]\ntype = "claude"\n'
             )
 
             mgr, configs = init_dependencies(roster_dir=tmp_path)
@@ -457,7 +457,7 @@ class TestFastAPIDependencies:
             d = tmp_path / "sb"
             d.mkdir()
             (d / "butler.toml").write_text(
-                '[butler]\nname = "sb"\nport = 40100\n[runtime]\ntype = "claude-code"\n'
+                '[butler]\nname = "sb"\nport = 40100\n[runtime]\ntype = "claude"\n'
             )
             init_dependencies(roster_dir=tmp_path)
 

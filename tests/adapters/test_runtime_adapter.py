@@ -197,8 +197,8 @@ def test_full_adapter_parse_system_prompt_file(tmp_path: Path):
 
 
 def test_get_adapter_claude_code():
-    """get_adapter('claude-code') returns ClaudeCodeAdapter."""
-    cls = get_adapter("claude-code")
+    """get_adapter('claude') returns ClaudeCodeAdapter."""
+    cls = get_adapter("claude")
     assert cls is ClaudeCodeAdapter
 
 
@@ -228,7 +228,7 @@ def test_get_adapter_unknown_raises():
 
 def test_get_adapter_error_lists_available():
     """The ValueError message includes the available adapter types."""
-    with pytest.raises(ValueError, match="claude-code") as exc_info:
+    with pytest.raises(ValueError, match="claude") as exc_info:
         get_adapter("nope")
     msg = str(exc_info.value)
     assert "codex" in msg

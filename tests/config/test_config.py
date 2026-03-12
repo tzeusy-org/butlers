@@ -592,7 +592,7 @@ def test_missing_port(tmp_path: Path):
 
 
 def test_runtime_default_to_claude_code(tmp_path: Path):
-    """When [runtime] section is missing, default to claude-code."""
+    """When [runtime] section is missing, default to claude."""
     toml = """\
 [butler]
 name = "runtimebot"
@@ -601,23 +601,23 @@ port = 7003
     config_dir = _write_toml(tmp_path, toml)
     cfg = load_config(config_dir)
 
-    assert cfg.runtime.type == "claude-code"
+    assert cfg.runtime.type == "claude"
 
 
 def test_runtime_explicit_claude_code(tmp_path: Path):
-    """Parse [runtime] section with explicit type = 'claude-code'."""
+    """Parse [runtime] section with explicit type = 'claude'."""
     toml = """\
 [butler]
 name = "ccbot"
 port = 7004
 
 [runtime]
-type = "claude-code"
+type = "claude"
 """
     config_dir = _write_toml(tmp_path, toml)
     cfg = load_config(config_dir)
 
-    assert cfg.runtime.type == "claude-code"
+    assert cfg.runtime.type == "claude"
 
 
 def test_runtime_codex(tmp_path: Path):

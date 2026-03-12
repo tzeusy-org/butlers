@@ -51,7 +51,7 @@ The dashboard settings page SHALL include a model catalog management section wit
 
 #### Scenario: Create model alias dialog
 - **WHEN** the operator clicks "Add Model"
-- **THEN** a dialog opens with fields: Alias (text input), Runtime Type (dropdown of registered adapters: `claude-code`, `codex`, `gemini`, `opencode`), Model ID (text input), Extra Args (key-value editor with "Add arg" button, or raw JSON toggle), Complexity Tier (dropdown: trivial, medium, high, extra_high), Priority (numeric input, default 0), Enabled (toggle, default true)
+- **THEN** a dialog opens with fields: Alias (text input), Runtime Type (dropdown of registered adapters: `claude`, `codex`, `gemini`, `opencode`), Model ID (text input), Extra Args (key-value editor with "Add arg" button, or raw JSON toggle), Complexity Tier (dropdown: trivial, medium, high, extra_high), Priority (numeric input, default 0), Enabled (toggle, default true)
 
 #### Scenario: Extra args key-value editor
 - **WHEN** the operator edits extra args in key-value mode
@@ -64,7 +64,7 @@ The dashboard settings page SHALL include a model catalog management section wit
 - **WHEN** the operator clicks "Add Model"
 - **THEN** a "Use template" dropdown offers pre-configured templates:
   - "Codex with reasoning effort" pre-fills runtime=codex, extra_args=`["--config", "model_reasoning_effort=high"]`
-  - "Claude with extended thinking" pre-fills runtime=claude-code, extra_args appropriate for extended thinking
+  - "Claude with extended thinking" pre-fills runtime=claude, extra_args appropriate for extended thinking
 - **AND** selecting a template populates the form fields, which remain editable
 
 #### Scenario: Edit catalog entry

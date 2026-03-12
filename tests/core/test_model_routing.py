@@ -113,7 +113,7 @@ async def _insert_catalog_entry(
     pool: asyncpg.Pool,
     *,
     alias: str,
-    runtime_type: str = "claude-code",
+    runtime_type: str = "claude",
     model_id: str = "test-model",
     complexity_tier: str = "medium",
     enabled: bool = True,
@@ -205,7 +205,7 @@ async def test_resolve_global_only(postgres_container: Any) -> None:
         await _insert_catalog_entry(
             pool,
             alias="sonnet",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-sonnet-4",
             complexity_tier="medium",
             priority=10,
@@ -215,7 +215,7 @@ async def test_resolve_global_only(postgres_container: Any) -> None:
 
         assert result is not None
         runtime_type, model_id, extra_args = result
-        assert runtime_type == "claude-code"
+        assert runtime_type == "claude"
         assert model_id == "claude-sonnet-4"
         assert extra_args == []
 
@@ -229,7 +229,7 @@ async def test_resolve_global_only_wrong_tier_returns_none(postgres_container: A
         await _insert_catalog_entry(
             pool,
             alias="haiku",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-haiku-4",
             complexity_tier="trivial",
             priority=5,
@@ -249,7 +249,7 @@ async def test_resolve_override_disable(postgres_container: Any) -> None:
         entry_id = await _insert_catalog_entry(
             pool,
             alias="sonnet",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-sonnet-4",
             complexity_tier="medium",
             priority=10,
@@ -280,7 +280,7 @@ async def test_resolve_tier_remap(postgres_container: Any) -> None:
         entry_id = await _insert_catalog_entry(
             pool,
             alias="sonnet",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-sonnet-4",
             complexity_tier="medium",
             priority=10,
@@ -313,7 +313,7 @@ async def test_resolve_priority_override(postgres_container: Any) -> None:
         haiku_id = await _insert_catalog_entry(
             pool,
             alias="haiku",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-haiku-4",
             complexity_tier="medium",
             priority=5,
@@ -321,7 +321,7 @@ async def test_resolve_priority_override(postgres_container: Any) -> None:
         await _insert_catalog_entry(
             pool,
             alias="sonnet",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-sonnet-4",
             complexity_tier="medium",
             priority=20,
@@ -366,7 +366,7 @@ async def test_resolve_tie_breaking_by_created_at(postgres_container: Any) -> No
             INSERT INTO shared.model_catalog
                 (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
             VALUES
-                ('first',  'claude-code', 'model-first',  'medium', 10,
+                ('first',  'claude', 'model-first',  'medium', 10,
                  '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'),
                 ('second', 'codex',       'model-second', 'medium', 10,
                  '2026-01-02 00:00:00+00', '2026-01-02 00:00:00+00')
@@ -388,7 +388,7 @@ async def test_resolve_returns_extra_args(postgres_container: Any) -> None:
             INSERT INTO shared.model_catalog
                 (alias, runtime_type, model_id, complexity_tier, priority, extra_args)
             VALUES
-                ('opus', 'claude-code', 'claude-opus-4', 'extra_high', 1,
+                ('opus', 'claude', 'claude-opus-4', 'extra_high', 1,
                  '["--config", "model_reasoning_effort=high"]'::jsonb)
         """)
 
@@ -407,7 +407,7 @@ async def test_resolve_accepts_string_tier(postgres_container: Any) -> None:
         await _insert_catalog_entry(
             pool,
             alias="haiku",
-            runtime_type="claude-code",
+            runtime_type="claude",
             model_id="claude-haiku-4",
             complexity_tier="trivial",
             priority=1,

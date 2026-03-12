@@ -223,5 +223,4 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         return content
 
 
-# Register the real Claude Code adapter (replaces the stub in base.py)
-register_adapter("claude-code", ClaudeCodeAdapter)
+register_adapter("claude", ClaudeCodeAdapter)

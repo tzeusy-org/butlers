@@ -2,7 +2,7 @@
 
 Defines the abstract interface that all runtime adapters must implement,
 plus a registry/factory function that maps runtime type strings
-(e.g. 'claude-code', 'codex', 'gemini') to adapter classes.
+(e.g. 'claude', 'codex', 'gemini') to adapter classes.
 """
 
 from __future__ import annotations
@@ -162,7 +162,7 @@ def get_adapter(type_str: str) -> type[RuntimeAdapter]:
     ----------
     type_str:
         One of the registered runtime type strings
-        (e.g. 'claude-code', 'codex', 'gemini').
+        (e.g. 'claude', 'codex', 'gemini').
 
     Returns
     -------

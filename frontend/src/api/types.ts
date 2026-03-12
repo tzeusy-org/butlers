@@ -2300,6 +2300,14 @@ export interface ButlerModelOverrideUpsert {
   complexity_tier?: ComplexityTier | null;
 }
 
+/** Response from the model test endpoint. */
+export interface ModelTestResult {
+  success: boolean;
+  reply: string | null;
+  error: string | null;
+  duration_ms: number;
+}
+
 /** Response from the resolve-model preview endpoint. */
 export interface ResolveModelResponse {
   butler_name: string;

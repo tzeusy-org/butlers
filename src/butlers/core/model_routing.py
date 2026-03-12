@@ -15,7 +15,7 @@ For a given ``butler_name`` and ``complexity_tier``:
 3. Effective priority: ``COALESCE(bmo.priority, mc.priority)``
 4. Effective tier:     ``COALESCE(bmo.complexity_tier, mc.complexity_tier)``
 5. Filter: effective enabled = true AND effective tier = $complexity_tier.
-6. Order by effective priority ASC, then mc.created_at ASC (stable tie-break).
+6. Order by effective priority DESC, then mc.created_at ASC (stable tie-break).
 7. Return the first row as (runtime_type, model_id, extra_args), or None if
    no matching entries exist.
 """
@@ -54,7 +54,7 @@ WHERE
     COALESCE(bmo.enabled, mc.enabled) = true
     AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
 ORDER BY
-    COALESCE(bmo.priority, mc.priority) ASC,
+    COALESCE(bmo.priority, mc.priority) DESC,
     mc.created_at ASC
 LIMIT 1
 """

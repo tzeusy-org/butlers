@@ -195,7 +195,7 @@ name = "butlers"
 schema = "{name}"
 
 [runtime]
-type = "claude-code"
+type = "claude"
 """
 
 _BUTLER_TOML_WITH_MODULES = """\
@@ -209,7 +209,7 @@ name = "butlers"
 schema = "{name}"
 
 [runtime]
-type = "claude-code"
+type = "claude"
 
 {modules_section}
 """
@@ -225,7 +225,7 @@ name = "butlers"
 schema = "{name}"
 
 [runtime]
-type = "claude-code"
+type = "claude"
 
 [[butler.schedule]]
 name = "morning-check"

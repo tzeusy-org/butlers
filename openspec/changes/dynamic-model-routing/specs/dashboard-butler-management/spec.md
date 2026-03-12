@@ -42,7 +42,7 @@ The trigger tab allows operators to manually spawn a session for a butler with c
 
 #### Scenario: Resolved model preview
 - **WHEN** the operator selects a complexity level
-- **THEN** below the dropdown, a muted text line shows the resolved model (e.g. "Will use: claude-sonnet via claude-code")
+- **THEN** below the dropdown, a muted text line shows the resolved model (e.g. "Will use: claude-sonnet via claude")
 - **AND** the preview updates reactively when complexity selection changes
 
 #### Scenario: Skill pre-fill from query parameter

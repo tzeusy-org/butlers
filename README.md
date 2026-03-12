@@ -237,13 +237,13 @@ Butlers spawn ephemeral LLM CLI instances to reason and act. Each butler declare
 
 | Runtime type | CLI binary | Install | Authenticate |
 | ------------ | ---------- | ------- | ------------ |
-| `claude-code` (default) | `claude` | `npm install -g @anthropic-ai/claude-code` | Dashboard Settings > CLI Runtime Authentication |
+| `claude` (default) | `claude` | `npm install -g @anthropic-ai/claude-code` | Dashboard Settings > CLI Runtime Authentication |
 | `codex` | `codex` | `npm install -g @openai/codex` | Dashboard Settings > CLI Runtime Authentication |
 | `gemini` | `gemini` | `npm install -g @anthropic-ai/gemini-cli` | Dashboard Settings > CLI Runtime Authentication |
 
 The daemon verifies the configured binary is on `PATH` at startup and will fail fast if it's missing.
 
-Most butlers default to `claude-code`. If you only plan to use the default runtime, you only need `claude` installed.
+Most butlers default to `claude`. If you only plan to use the default runtime, you only need `claude` installed.
 
 ### CLI Runtime Authentication
 
@@ -351,7 +351,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-The Dockerfile builds an image with Python 3.12, Node.js 22, the `claude-code` CLI, and `uv`. The entrypoint is:
+The Dockerfile builds an image with Python 3.12, Node.js 22, the `claude` CLI, and `uv`. The entrypoint is:
 
 ```
 uv run butlers run --config /app/butler-config/butler.toml

@@ -2087,7 +2087,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude-code", "claude-opus-4-20250514", []),
+                return_value=("claude", "claude-opus-4-20250514", []),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2233,7 +2233,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude-code", "claude-opus-4-20250514", ["--catalog-arg", "val"]),
+                return_value=("claude", "claude-opus-4-20250514", ["--catalog-arg", "val"]),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2283,7 +2283,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude-code", "claude-opus-4-20250514", ["--catalog-only"]),
+                return_value=("claude", "claude-opus-4-20250514", ["--catalog-only"]),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2327,7 +2327,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude-code", "claude-opus-4-20250514", []),
+                return_value=("claude", "claude-opus-4-20250514", []),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2354,7 +2354,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude-code", "some-model", []),
+                return_value=("claude", "some-model", []),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2453,7 +2453,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude-code", "claude-opus-4-20250514", []),
+                return_value=("claude", "claude-opus-4-20250514", []),
             ),
         ):
             import uuid
@@ -2489,7 +2489,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude-code", "claude-opus-4-20250514", []),
+                return_value=("claude", "claude-opus-4-20250514", []),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2498,7 +2498,7 @@ class TestCatalogModelResolution:
         assert len(audit_entries) == 1
         data = audit_entries[0]["data"]
         assert data["model"] == "claude-opus-4-20250514"
-        assert data["runtime_type"] == "claude-code"
+        assert data["runtime_type"] == "claude"
         assert data["complexity"] == "high"
         assert data["resolution_source"] == "catalog"
 

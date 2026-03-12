@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { ChevronDown, ChevronUp, Loader2, FlaskConical, Check, X } from "lucide-react";
 import { toast } from "sonner";
 
-import type { ComplexityTier, ModelCatalogCreate, ModelCatalogEntry } from "@/api/types.ts";
+import type { ComplexityTier, ModelCatalogCreate, ModelCatalogEntry, ModelTestResult } from "@/api/types.ts";
 import { ComplexityBadge, COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,6 +44,7 @@ import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
   useModelCatalog,
+  useTestModelCatalogEntry,
   useUpdateModelCatalogEntry,
 } from "@/hooks/use-model-catalog.ts";
 
@@ -75,7 +77,7 @@ const MODEL_PRESETS: ModelPreset[] = [
   {
     label: "Claude 3.7 Sonnet",
     values: {
-      runtime_type: "claude-code",
+      runtime_type: "claude",
       model_id: "claude-sonnet-4-5",
       extra_args_raw: "[]",
     },
@@ -83,7 +85,7 @@ const MODEL_PRESETS: ModelPreset[] = [
   {
     label: "Claude 3.7 Sonnet (extended thinking)",
     values: {
-      runtime_type: "claude-code",
+      runtime_type: "claude",
       model_id: "claude-sonnet-4-5",
       extra_args_raw: JSON.stringify(["--thinking", "extended"], null, 2),
     },
@@ -107,7 +109,7 @@ interface ModelFormValues {
 function defaultFormValues(entry?: ModelCatalogEntry | null): ModelFormValues {
   return {
     alias: entry?.alias ?? "",
-    runtime_type: entry?.runtime_type ?? "claude-code",
+    runtime_type: entry?.runtime_type ?? "claude",
     model_id: entry?.model_id ?? "",
     extra_args_raw: entry ? JSON.stringify(entry.extra_args, null, 2) : "[]",
     complexity_tier: entry?.complexity_tier ?? "medium",
@@ -276,7 +278,7 @@ function ModelFormFields({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="claude-code">claude-code</SelectItem>
+              <SelectItem value="claude">claude</SelectItem>
               <SelectItem value="codex">codex</SelectItem>
               <SelectItem value="opencode">opencode</SelectItem>
             </SelectContent>
@@ -341,7 +343,7 @@ function ModelFormFields({
             placeholder="0"
             disabled={isSubmitting}
           />
-          <p className="text-xs text-muted-foreground">Lower = higher priority.</p>
+          <p className="text-xs text-muted-foreground">Higher = higher priority.</p>
         </div>
       </div>
 
@@ -459,11 +461,14 @@ export function ModelCatalogCard() {
   const createMutation = useCreateModelCatalogEntry();
   const updateMutation = useUpdateModelCatalogEntry();
   const deleteMutation = useDeleteModelCatalogEntry();
+  const testMutation = useTestModelCatalogEntry();
 
   const [formOpen, setFormOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<ModelCatalogEntry | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelCatalogEntry | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
+  const [testResults, setTestResults] = useState<Record<string, ModelTestResult>>({});
 
   function handleAddClick() {
     setEditingEntry(null);
@@ -478,6 +483,46 @@ export function ModelCatalogCard() {
   function handleDeleteClick(entry: ModelCatalogEntry) {
     setDeleteTarget(entry);
     setDeleteDialogOpen(true);
+  }
+
+  function handleTestClick(entry: ModelCatalogEntry) {
+    setTestingIds((prev) => new Set(prev).add(entry.id));
+    setTestResults((prev) => {
+      const next = { ...prev };
+      delete next[entry.id];
+      return next;
+    });
+    testMutation.mutate(entry.id, {
+      onSuccess: (resp) => {
+        setTestResults((prev) => ({ ...prev, [entry.id]: resp.data }));
+        if (resp.data.success) {
+          toast.success(
+            `Sent 'Reply with exactly: OK'; ${entry.alias} responded with '${resp.data.reply}' in ${resp.data.duration_ms}ms`,
+          );
+        } else {
+          toast.error(`${entry.alias} failed: ${resp.data.error}`);
+        }
+      },
+      onError: (err) => {
+        setTestResults((prev) => ({
+          ...prev,
+          [entry.id]: {
+            success: false,
+            reply: null,
+            error: err instanceof Error ? err.message : "Unknown error",
+            duration_ms: 0,
+          },
+        }));
+        toast.error(`Test failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      },
+      onSettled: () => {
+        setTestingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(entry.id);
+          return next;
+        });
+      },
+    });
   }
 
   function handleToggleEnabled(entry: ModelCatalogEntry) {
@@ -589,98 +634,166 @@ export function ModelCatalogCard() {
               No models in the catalog yet. Add one to get started.
             </p>
           ) : (
-            <div className="space-y-4">
-              {grouped.map(({ tier, entries: tierEntries }) => (
-                <div key={tier}>
-                  <div className="mb-2 flex items-center gap-2">
-                    <ComplexityBadge tier={tier} />
-                    <span className="text-xs text-muted-foreground">
-                      {tierEntries.length} model{tierEntries.length !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Alias</TableHead>
-                        <TableHead>Runtime</TableHead>
-                        <TableHead>Model ID</TableHead>
-                        <TableHead>Extra Args</TableHead>
-                        <TableHead>Priority</TableHead>
-                        <TableHead>Enabled</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {tierEntries.map((entry) => (
-                        <TableRow key={entry.id}>
-                          <TableCell className="font-medium">
-                            {entry.alias}
-                          </TableCell>
-                          <TableCell>
-                            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                              {entry.runtime_type}
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Alias</TableHead>
+                  <TableHead>Runtime</TableHead>
+                  <TableHead>Model ID</TableHead>
+                  <TableHead>Extra Args</TableHead>
+                  <TableHead>Priority</TableHead>
+                  <TableHead>Enabled</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {grouped.map(({ tier, entries: tierEntries }) => (
+                  <>
+                    <TableRow key={`tier-${tier}`} className="hover:bg-transparent">
+                      <TableCell colSpan={7} className="py-2 px-0">
+                        <div className="flex items-center gap-2">
+                          <ComplexityBadge tier={tier} />
+                          <span className="text-xs text-muted-foreground">
+                            {tierEntries.length} model{tierEntries.length !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    {tierEntries.map((entry) => (
+                      <TableRow key={entry.id}>
+                        <TableCell className="font-medium">
+                          {entry.alias}
+                        </TableCell>
+                        <TableCell>
+                          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                            {entry.runtime_type}
+                          </code>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">
+                          {entry.model_id}
+                        </TableCell>
+                        <TableCell className="max-w-xs">
+                          {entry.extra_args.length > 0 ? (
+                            <code className="text-xs text-muted-foreground truncate block">
+                              {entry.extra_args.join(" ")}
                             </code>
-                          </TableCell>
-                          <TableCell className="font-mono text-xs text-muted-foreground">
-                            {entry.model_id}
-                          </TableCell>
-                          <TableCell className="max-w-xs">
-                            {entry.extra_args.length > 0 ? (
-                              <code className="text-xs text-muted-foreground truncate block">
-                                {entry.extra_args.join(" ")}
-                              </code>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">&mdash;</span>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            {entry.priority}
-                          </TableCell>
-                          <TableCell>
-                            <button
-                              type="button"
-                              onClick={() => handleToggleEnabled(entry)}
-                              className="cursor-pointer"
-                              title={
-                                entry.enabled ? "Click to disable" : "Click to enable"
-                              }
-                              disabled={updateMutation.isPending}
-                            >
-                              {entry.enabled ? (
-                                <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-                                  On
-                                </Badge>
-                              ) : (
-                                <Badge variant="secondary">Off</Badge>
-                              )}
-                            </button>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex justify-end gap-1">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleEditClick(entry)}
+                          ) : (
+                            <span className="text-xs text-muted-foreground">&mdash;</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-muted-foreground tabular-nums w-6 text-right">
+                              {entry.priority}
+                            </span>
+                            <div className="flex flex-col">
+                              <button
+                                type="button"
+                                className="p-0 h-3.5 w-3.5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-30"
+                                title="Increase priority (+5)"
+                                disabled={updateMutation.isPending}
+                                onClick={() =>
+                                  updateMutation.mutate(
+                                    { id: entry.id, body: { priority: entry.priority + 5 } },
+                                    {
+                                      onError: (err) =>
+                                        toast.error(`Failed: ${err instanceof Error ? err.message : "Unknown error"}`),
+                                    },
+                                  )
+                                }
                               >
-                                Edit
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="text-destructive hover:bg-destructive/10"
-                                onClick={() => handleDeleteClick(entry)}
+                                <ChevronUp className="h-3 w-3" />
+                              </button>
+                              <button
+                                type="button"
+                                className="p-0 h-3.5 w-3.5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-30"
+                                title="Decrease priority (-5)"
+                                disabled={updateMutation.isPending}
+                                onClick={() =>
+                                  updateMutation.mutate(
+                                    { id: entry.id, body: { priority: entry.priority - 5 } },
+                                    {
+                                      onError: (err) =>
+                                        toast.error(`Failed: ${err instanceof Error ? err.message : "Unknown error"}`),
+                                    },
+                                  )
+                                }
                               >
-                                Delete
-                              </Button>
+                                <ChevronDown className="h-3 w-3" />
+                              </button>
                             </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              ))}
-            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleEnabled(entry)}
+                            className="cursor-pointer"
+                            title={
+                              entry.enabled ? "Click to disable" : "Click to enable"
+                            }
+                            disabled={updateMutation.isPending}
+                          >
+                            {entry.enabled ? (
+                              <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
+                                On
+                              </Badge>
+                            ) : (
+                              <Badge variant="secondary">Off</Badge>
+                            )}
+                          </button>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleTestClick(entry)}
+                              disabled={testingIds.has(entry.id)}
+                              title={
+                                testResults[entry.id]
+                                  ? testResults[entry.id].success
+                                    ? `OK (${testResults[entry.id].duration_ms}ms): ${testResults[entry.id].reply}`
+                                    : `Failed: ${testResults[entry.id].error}`
+                                  : "Send a test message to verify this model works"
+                              }
+                            >
+                              {testingIds.has(entry.id) ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : testResults[entry.id] ? (
+                                testResults[entry.id].success ? (
+                                  <Check className="h-3.5 w-3.5 text-emerald-600" />
+                                ) : (
+                                  <X className="h-3.5 w-3.5 text-destructive" />
+                                )
+                              ) : (
+                                <FlaskConical className="h-3.5 w-3.5" />
+                              )}
+                              Test
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleEditClick(entry)}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="text-destructive hover:bg-destructive/10"
+                              onClick={() => handleDeleteClick(entry)}
+                            >
+                              Delete
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </>
+                ))}
+              </TableBody>
+            </Table>
           )}
         </CardContent>
       </Card>
