@@ -23,7 +23,7 @@ This skill provides the complete classification and routing reference for the Sw
 - When quoting or paraphrasing user content in a routed `prompt`, wrap that content in `<user_message>...</user_message>` tags.
 - Route only to names listed under `Available butlers` in the active prompt context.
 - For multi-domain messages, call the appropriate tool once per domain with the most relevant butler first.
-- If uncertain, route to `general`.
+- **General is a last-resort fallback only.** Route to `general` ONLY when NO specialist butler matches. If any specialist butler is routed to, do NOT also route to `general`.
 - After routing, return a brief text summary of routing decisions.
 
 ## Available Butlers
@@ -33,7 +33,7 @@ This skill provides the complete classification and routing reference for the Sw
 - **health**: Medications, measurements, conditions, symptoms, exercise, diet, nutrition
 - **travel**: Flight bookings, hotel reservations, car rentals, trip itineraries, travel documents
 - **education**: Personalized tutoring, quizzes, spaced repetition, learning progress
-- **general**: Catch-all for anything that does not fit a specialist
+- **general**: Last-resort fallback — only when no specialist butler matches
 
 **Note:** `messenger` is NOT a valid target for `route_to_butler`. For outbound delivery (sending emails or telegram messages), use the `notify` tool directly.
 
@@ -133,10 +133,12 @@ Use the `notify` tool (NOT `route_to_butler`) when the message is an explicit re
 
 ### General Classification
 
-Route to general when:
+**General is a last-resort fallback, NOT a co-route target.** Route to general ONLY when:
 
-- The message is unsure or does not fit a specialist domain
-- The message is a list, task, note, or reminder without clear specialist context
+- No specialist butler matches the message at all
+- The message is entirely ambiguous with no domain signals
+
+Do NOT route to general alongside specialist butlers. If any part of a multi-domain message matches a specialist, route each part to its specialist — do not add a general route for leftover fragments. Only route to general when the entire message fails to match any specialist.
 
 ---
 
@@ -146,10 +148,11 @@ Route to general when:
 - **Finance vs travel**: Finance should not capture travel itineraries unless the primary intent is billing/refund/payment resolution
 - **Travel vs general**: Travel wins tie-breaks when explicit booking, itinerary, or flight semantics are present
 - **Travel vs finance**: Travel should not capture financial transactions for travel services — those go to finance unless the primary intent is itinerary/booking, not expense tracking
-- **Education vs general**: Education wins tie-breaks when explicit learning, teaching, or quizzing intent is present ("teach me", "quiz me", "what do I know about"). Education also wins for any short factual/conceptual question ("What is X?", "How does Y work?") about a technical, scientific, historical, or academic topic that does not belong to a specialist domain (health/finance/travel/relationship). General is the catch-all for tasks, reminders, and queries that are clearly non-educational.
+- **Education vs general**: Education wins tie-breaks when explicit learning, teaching, or quizzing intent is present ("teach me", "quiz me", "what do I know about"). Education also wins for any short factual/conceptual question ("What is X?", "How does Y work?") about a technical, scientific, historical, or academic topic that does not belong to a specialist domain (health/finance/travel/relationship).
 - **Education vs general (conversation continuity)**: When the prior message was a quiz question, technical explanation, or active lesson, treat the follow-up as education even if it lacks explicit learning framing.
 - **Education vs health**: Education should NOT capture health questions that are factual lookups without tutoring intent (e.g., "what does metformin do?" — health, not education; "teach me about diabetes" — education)
 - **Education vs calendar**: "review" without educational context (e.g., "review my calendar") MUST NOT route to education
+- **General as fallback only**: General MUST NOT be routed alongside any specialist butler. If finance, health, travel, education, or relationship is routed to, general is excluded. General only receives messages where zero specialists match.
 - **Ambiguous commerce/relationship**: Defer to Switchboard confidence policy and fallback routing contract
 
 ---
@@ -173,9 +176,9 @@ Route to general when:
 ### LOW confidence (<40%)
 
 - No clear domain signals
-- Highly ambiguous or multi-domain
+- Highly ambiguous with no specialist match
 - Insufficient context to classify
-- **Action:** Default to general butler (catch-all)
+- **Action:** Default to general butler (only when no specialist was routed to)
 
 ---
 
@@ -233,7 +236,7 @@ For outbound email or telegram delivery, call the `notify` tool instead of `rout
 
 - **Single-domain message**: Call `route_to_butler` once for the target butler
 - **Multi-domain message**: Call `route_to_butler` once per domain, each with a focused sub-prompt
-- **Ambiguous message**: Call `route_to_butler` for `general`
+- **Ambiguous message (no specialist matched)**: Call `route_to_butler` for `general`
 
 ### Self-Contained Sub-Prompts
 
@@ -443,6 +446,7 @@ Do NOT decompose when:
 2. **Unclear boundaries**: You cannot clearly separate concerns between domains
 3. **Ambiguous intent**: The user's intent is unclear or requires clarification
 4. **Interdependent actions**: The actions require cross-butler coordination that decomposition would break
+5. **Would require general alongside specialists**: Never decompose in a way that sends one fragment to general and others to specialists — absorb the general-bound fragment into the closest specialist instead
 
 ### Context Preservation in Sub-Prompts
 
@@ -466,17 +470,18 @@ Input: "Remind me to take my blood pressure meds at 8am daily, and text my siste
 ]
 ```
 
-**Example B: Relationship + Health + General**
+**Example B: Relationship + Health (general excluded — specialists absorb leftover)**
 
 Input: "Schedule a dinner with Mom next Friday, log my weight as 185 lbs, and remind me to backup my computer this weekend"
 
 ```json
 [
-  {"butler": "relationship", "prompt": "Schedule a dinner with Mom next Friday"},
-  {"butler": "health", "prompt": "Log weight measurement: 185 lbs"},
-  {"butler": "general", "prompt": "Set a reminder to backup computer this weekend"}
+  {"butler": "relationship", "prompt": "Schedule a dinner with Mom next Friday. Also set a reminder to backup computer this weekend."},
+  {"butler": "health", "prompt": "Log weight measurement: 185 lbs"}
 ]
 ```
+
+Note: The "backup computer" reminder has no specialist domain, but since specialists are already being routed to, it is absorbed by the closest specialist (relationship, which handles reminders) rather than adding a general route. General is only used when zero specialists match the entire message.
 
 **Example C: Complex multi-domain with context**
 
