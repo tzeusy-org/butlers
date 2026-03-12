@@ -55,7 +55,7 @@ name = "environment-report"
 cron = "5 21 * * 0"
 dispatch_mode = "prompt"
 prompt = """
-Generate and send a daily home environment report for the user. Check current temperature,
+Generate and send a weekly home environment report for the user. Check current temperature,
 humidity, air quality, lighting levels, and other environmental metrics. Compare against
 user's comfort preferences and alert if any readings are outside acceptable ranges. Provide
 actionable recommendations (e.g., "humidity is low, consider running humidifier"). Deliver via
