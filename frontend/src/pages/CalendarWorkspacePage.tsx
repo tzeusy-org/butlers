@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDays,
   addMonths,
   addWeeks,
+  differenceInMinutes,
   format,
+  getHours,
+  getMinutes,
   isSameMonth,
   isToday,
   isValid,
@@ -477,6 +480,13 @@ function newButlerRequestId(prefix: string): string {
   return `calendar-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Height of each hour row in the time-axis grid (px). */
+const HOUR_HEIGHT_PX = 60;
+/** Hour labels 0–23 for the y-axis. */
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+/** Default scroll-to hour when the time grid first mounts. */
+const DEFAULT_SCROLL_HOUR = 7;
+
 /** Maximum recurring instances of the same parent event to show per day per lane or grid cell. */
 const RECURRING_INSTANCE_CAP = 10;
 
@@ -641,6 +651,7 @@ export default function CalendarWorkspacePage() {
     useState<ButlerEventDialogMode>("create");
   const [butlerEventDraft, setButlerEventDraft] = useState<ButlerEventDraft | null>(null);
   const [editingButlerEntry, setEditingButlerEntry] = useState<UnifiedCalendarEntry | null>(null);
+  const timeGridRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -702,6 +713,13 @@ export default function CalendarWorkspacePage() {
       }
     }
   }, [selectedCalendarId, selectedSourceKey, userSources, view]);
+
+  // Scroll time grid to default hour when it mounts or the range/anchor changes
+  useEffect(() => {
+    if ((range === "week" || range === "day") && timeGridRef.current) {
+      timeGridRef.current.scrollTop = DEFAULT_SCROLL_HOUR * HOUR_HEIGHT_PX;
+    }
+  }, [range, anchor]);
 
   const entries = useMemo(() => {
     const rows = workspaceQuery.data?.data.entries ?? [];
@@ -1630,61 +1648,121 @@ export default function CalendarWorkspacePage() {
               </div>
             ) : range === "week" || range === "day" ? (
               <div className="flex flex-col flex-1 min-h-0">
-                <div className={cn("grid gap-1 text-xs font-medium text-muted-foreground mb-1", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
+                {/* Column headers */}
+                <div className={cn("grid text-xs font-medium text-muted-foreground mb-1", range === "week" ? "grid-cols-[3rem_repeat(7,1fr)]" : "grid-cols-[3rem_1fr]")}>
+                  <div />{/* spacer for y-axis gutter */}
                   {weekDays.map((day) => (
-                    <div key={format(day, "yyyy-MM-dd")} className="px-2">
-                      {format(day, "EEE")}
+                    <div key={format(day, "yyyy-MM-dd")} className={cn("px-2 text-center", isToday(day) && "text-primary font-semibold")}>
+                      {format(day, "EEE d")}
                     </div>
                   ))}
                 </div>
-                <div className={cn("grid gap-1 flex-1 min-h-0", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
-                  {weekDays.map((day) => {
-                    const key = format(day, "yyyy-MM-dd");
-                    const dayEntries = entriesByDay.get(key) ?? [];
-                    return (
-                      <div
-                        key={key}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => view === "user" && openUserCreateDialog(day)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            if (view === "user") openUserCreateDialog(day);
-                          }
-                        }}
-                        className={cn(
-                          "rounded-md border border-border p-2 cursor-pointer hover:border-primary/50 transition-colors overflow-hidden",
-                          isToday(day) && "ring-2 ring-primary/50",
-                        )}
-                      >
-                        <p className={cn("text-xs font-medium", isToday(day) && "text-primary")}>{format(day, "d MMM")}</p>
-                        <div className="mt-1 space-y-1">
-                          {capLaneEntriesByDay(dayEntries, RECURRING_INSTANCE_CAP).map((item) =>
-                            isOverflowSentinel(item) ? (
+
+                {/* All-day events row */}
+                {(() => {
+                  const hasAllDay = weekDays.some((day) => {
+                    const dayEntries = entriesByDay.get(format(day, "yyyy-MM-dd")) ?? [];
+                    return dayEntries.some((e) => e.all_day);
+                  });
+                  if (!hasAllDay) return null;
+                  return (
+                    <div className={cn("grid border-b border-border mb-1 pb-1", range === "week" ? "grid-cols-[3rem_repeat(7,1fr)]" : "grid-cols-[3rem_1fr]")}>
+                      <div className="text-[10px] text-muted-foreground pr-1 text-right pt-0.5">all day</div>
+                      {weekDays.map((day) => {
+                        const key = format(day, "yyyy-MM-dd");
+                        const allDayEntries = (entriesByDay.get(key) ?? []).filter((e) => e.all_day);
+                        return (
+                          <div key={key} className="px-0.5 space-y-0.5">
+                            {allDayEntries.map((entry) => (
                               <p
-                                key={item.sentinelKey}
-                                className="text-[11px] text-muted-foreground"
+                                key={entry.entry_id}
+                                className="truncate rounded bg-primary/15 px-1 py-0.5 text-[11px]"
+                                title={entry.title}
                               >
-                                ... and {item.hiddenCount} more instance{item.hiddenCount === 1 ? "" : "s"}
+                                {entry.title}
                               </p>
-                            ) : (
-                              <p
-                                key={item.entry_id}
-                                className="truncate rounded bg-accent/50 px-1 py-0.5 text-xs"
-                                title={`${formatEntryWindow(item)} — ${item.title}`}
-                              >
-                                {item.all_day ? "" : format(new Date(item.start_at), "HH:mm") + " "}{item.title}
-                              </p>
-                            )
-                          )}
-                          {dayEntries.length === 0 ? (
-                            <p className="text-[11px] text-muted-foreground">&nbsp;</p>
-                          ) : null}
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
+                {/* Scrollable time grid */}
+                <div
+                  ref={timeGridRef}
+                  className="flex-1 min-h-0 overflow-y-auto"
+                >
+                  <div className={cn("grid", range === "week" ? "grid-cols-[3rem_repeat(7,1fr)]" : "grid-cols-[3rem_1fr]")} style={{ height: 24 * HOUR_HEIGHT_PX }}>
+                    {/* Y-axis hour labels */}
+                    <div className="relative">
+                      {HOURS.map((h) => (
+                        <div
+                          key={h}
+                          className="absolute right-1 text-[10px] text-muted-foreground leading-none -translate-y-1/2"
+                          style={{ top: h * HOUR_HEIGHT_PX }}
+                        >
+                          {h === 0 ? "" : format(new Date(2000, 0, 1, h), "h a")}
                         </div>
-                      </div>
-                    );
-                  })}
+                      ))}
+                    </div>
+
+                    {/* Day columns */}
+                    {weekDays.map((day) => {
+                      const key = format(day, "yyyy-MM-dd");
+                      const dayEntries = (entriesByDay.get(key) ?? []).filter((e) => !e.all_day);
+                      return (
+                        <div
+                          key={key}
+                          className={cn("relative border-l border-border", isToday(day) && "bg-primary/5")}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => view === "user" && openUserCreateDialog(day)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              if (view === "user") openUserCreateDialog(day);
+                            }
+                          }}
+                        >
+                          {/* Hour gridlines */}
+                          {HOURS.map((h) => (
+                            <div
+                              key={h}
+                              className="absolute left-0 right-0 border-t border-border/40"
+                              style={{ top: h * HOUR_HEIGHT_PX }}
+                            />
+                          ))}
+
+                          {/* Timed events */}
+                          {dayEntries.map((entry) => {
+                            const s = new Date(entry.start_at);
+                            const e = new Date(entry.end_at);
+                            const topMin = getHours(s) * 60 + getMinutes(s);
+                            const durationMin = Math.max(differenceInMinutes(e, s), 15);
+                            const topPx = (topMin / 60) * HOUR_HEIGHT_PX;
+                            const heightPx = (durationMin / 60) * HOUR_HEIGHT_PX;
+                            return (
+                              <div
+                                key={entry.entry_id}
+                                className="absolute left-0.5 right-0.5 rounded bg-accent/70 border border-accent px-1 py-0.5 overflow-hidden cursor-pointer hover:bg-accent transition-colors"
+                                style={{ top: topPx, height: heightPx, minHeight: 16 }}
+                                title={`${formatEntryWindow(entry)} — ${entry.title}`}
+                              >
+                                <p className="text-[11px] font-medium truncate">{entry.title}</p>
+                                {heightPx >= 32 && (
+                                  <p className="text-[10px] text-muted-foreground truncate">
+                                    {format(s, "h:mm a")} – {format(e, "h:mm a")}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             ) : entries.length === 0 ? (
