@@ -484,8 +484,8 @@ function newButlerRequestId(prefix: string): string {
 const HOUR_HEIGHT_PX = 60;
 /** Hour labels 0–23 for the y-axis. */
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
-/** Default scroll-to hour when the time grid first mounts. */
-const DEFAULT_SCROLL_HOUR = 7;
+/** Default scroll-to position (in hours) when the time grid first mounts. */
+const DEFAULT_SCROLL_HOUR = 7.5;
 
 /** Maximum recurring instances of the same parent event to show per day per lane or grid cell. */
 const RECURRING_INSTANCE_CAP = 10;
@@ -1310,7 +1310,7 @@ export default function CalendarWorkspacePage() {
   const canCreateUserEvents = view === "user" && writableCalendars.length > 0;
 
   return (
-    <div className="flex flex-col min-h-full gap-6">
+    <div className="flex flex-col h-full overflow-hidden gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Calendar Workspace</h1>
@@ -1482,8 +1482,8 @@ export default function CalendarWorkspacePage() {
         </CardContent>
       </Card>
 
-      <Card className="flex flex-col flex-1 min-h-0">
-          <CardHeader>
+      <Card className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          <CardHeader className="shrink-0">
             <CardTitle>{windowLabel(range, start, end)}</CardTitle>
             <CardDescription>
               {view === "user" ? "User calendar view" : "Butler lane view"} • {range} mode
@@ -1603,7 +1603,7 @@ export default function CalendarWorkspacePage() {
                     </div>
                   ))}
                 </div>
-                <div className="grid grid-cols-7 grid-rows-6 gap-1 flex-1 min-h-0">
+                <div className="grid grid-cols-7 grid-rows-6 gap-1 flex-1 min-h-0 overflow-y-auto">
                   {monthDays.map((day) => {
                     const key = format(day, "yyyy-MM-dd");
                     const dayEntries = entriesByDay.get(key) ?? [];
