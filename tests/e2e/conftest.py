@@ -73,14 +73,26 @@ E2E_PORT_OFFSET = 11000
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the --scenarios CLI option for tag-based scenario filtering.
+    """Register E2E CLI options for scenario filtering and benchmark mode.
 
-    Usage:
-        pytest tests/e2e/ --scenarios=smoke
-        pytest tests/e2e/ --scenarios=health
+    Options
+    -------
+    --scenarios TAG:
+        Run only scenarios tagged with TAG (e.g. ``--scenarios=smoke``).
+        When omitted, all scenarios run.
 
-    When specified, only scenarios whose ``tags`` list contains the given
-    value will be executed. When omitted, all scenarios run.
+    --benchmark:
+        Activate benchmark mode.  Scenarios are run for each model in the
+        ``--benchmark-models`` list (or ``E2E_BENCHMARK_MODELS`` env var).
+        Results are accumulated without hard assertion failures; scorecards
+        are generated at session end.  Fails with a clear error if no model
+        list is provided.
+
+    --benchmark-models MODEL_LIST:
+        Comma-separated list of model IDs to benchmark (e.g.
+        ``--benchmark-models=claude-sonnet-4-5,gpt-4o``).  Can also be set
+        via the ``E2E_BENCHMARK_MODELS`` environment variable.  CLI value
+        takes precedence over the environment variable.
     """
     parser.addoption(
         "--scenarios",
@@ -93,6 +105,29 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "Multiple tags are not supported; use pytest -k for compound filtering."
         ),
     )
+    parser.addoption(
+        "--benchmark",
+        action="store_true",
+        default=False,
+        help=(
+            "Activate benchmark mode: iterate over --benchmark-models "
+            "(or E2E_BENCHMARK_MODELS env var), pinning each model in turn "
+            "and running the full scenario corpus.  Results are accumulated "
+            "without hard assertion failures and scorecards are generated "
+            "at session end.  Requires --benchmark-models or E2E_BENCHMARK_MODELS."
+        ),
+    )
+    parser.addoption(
+        "--benchmark-models",
+        action="store",
+        default=None,
+        metavar="MODEL_LIST",
+        help=(
+            "Comma-separated list of model IDs for benchmark mode "
+            "(e.g. claude-sonnet-4-5-20250514,gpt-4o).  "
+            "Falls back to E2E_BENCHMARK_MODELS env var when not provided."
+        ),
+    )
 
 
 @pytest.fixture(scope="session")
@@ -103,6 +138,51 @@ def scenario_tag_filter(request: pytest.FixtureRequest) -> str | None:
     collection time.
     """
     return request.config.getoption("--scenarios")
+
+
+@pytest.fixture(scope="session")
+def benchmark_mode(request: pytest.FixtureRequest) -> bool:
+    """Return True when --benchmark flag was passed on the CLI.
+
+    When True, the scenario runner collects results without hard assertion
+    failures and the benchmark harness generates scorecards at session end.
+    """
+    return bool(request.config.getoption("--benchmark"))
+
+
+@pytest.fixture(scope="session")
+def benchmark_models(request: pytest.FixtureRequest) -> list[str] | None:
+    """Return the list of models to benchmark, or None if not in benchmark mode.
+
+    Reads ``--benchmark-models`` (CLI) or ``E2E_BENCHMARK_MODELS`` (env var),
+    with CLI taking precedence.  Returns ``None`` if benchmark mode is not
+    active.
+
+    Raises
+    ------
+    pytest.UsageError
+        When ``--benchmark`` is set but no model list is provided via either
+        the CLI option or the environment variable.
+    """
+    from tests.e2e.benchmark import resolve_benchmark_models  # noqa: PLC0415
+
+    is_benchmark = bool(request.config.getoption("--benchmark"))
+    if not is_benchmark:
+        return None
+
+    cli_value: str | None = request.config.getoption("--benchmark-models")
+    models = resolve_benchmark_models(cli_value)
+
+    if not models:
+        raise pytest.UsageError(
+            "Benchmark mode requires a model list.  "
+            "Provide one via --benchmark-models=<model1>,<model2> "
+            "or set the E2E_BENCHMARK_MODELS environment variable.\n"
+            "Example: pytest tests/e2e/ --benchmark "
+            "--benchmark-models=claude-sonnet-4-5-20250514,gpt-4o"
+        )
+
+    return models
 
 
 # ---------------------------------------------------------------------------
