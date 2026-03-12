@@ -19,7 +19,7 @@ import pytest
 from fastmcp import Client as MCPClient
 
 from tests.e2e.conftest import ButlerEcosystem, CostTracker
-from tests.e2e.scenarios import ALL_SCENARIOS, DbAssertion, E2EScenario
+from tests.e2e.scenarios import ALL_SCENARIOS, DbAssertion, Scenario
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.e2e
 # ---------------------------------------------------------------------------
 
 
-def _scenario_id(scenario: E2EScenario) -> str:
+def _scenario_id(scenario: Scenario) -> str:
     """Generate pytest ID from scenario.id and tags."""
     tags_str = "-".join(sorted(scenario.tags)) if scenario.tags else "untagged"
     return f"{scenario.id}[{tags_str}]"
@@ -112,24 +112,24 @@ async def _execute_db_assertion(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", SIDE_EFFECT_SCENARIOS, ids=_scenario_id)
 async def test_scenario_side_effects(
-    scenario: E2EScenario,
+    scenario: Scenario,
     butler_ecosystem: ButlerEcosystem,
     cost_tracker: CostTracker,
 ) -> None:
     """Trigger butler spawner and validate DB assertions.
 
     For each scenario with db_assertions:
-    1. Determine target butler from expected_butler
+    1. Determine target butler from expected_routing
     2. Call execute_prompt() via butler's MCP client to trigger spawner
     3. Wait for execution to complete
     4. Execute all db_assertions and validate results
     5. Track LLM usage in cost_tracker
     """
-    assert scenario.expected_butler is not None, (
-        f"Side-effect scenario {scenario.id} must have expected_butler set"
+    assert scenario.expected_routing is not None, (
+        f"Side-effect scenario {scenario.id} must have expected_routing set"
     )
 
-    target_butler = scenario.expected_butler
+    target_butler = scenario.expected_routing
     daemon = butler_ecosystem.butlers.get(target_butler)
     assert daemon is not None, f"Butler {target_butler} not found in ecosystem"
 
@@ -144,10 +144,10 @@ async def test_scenario_side_effects(
     )
 
     async with MCPClient(url) as client:
-        # Trigger spawner via execute_prompt tool
+        # Trigger spawner via execute_prompt tool — pass envelope as JSON payload
         result = await client.call_tool(
             "execute_prompt",
-            {"prompt": scenario.input_prompt},
+            {"prompt": scenario.envelope.get("payload", {}).get("normalized_text", "")},
         )
 
         logger.info("Spawner completed for %s: %s", scenario.id, result)
