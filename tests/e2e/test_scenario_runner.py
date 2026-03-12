@@ -29,16 +29,19 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from tests.e2e.conftest import ButlerEcosystem, CostTracker
 from tests.e2e.scenarios import ALL_SCENARIOS, DbAssertion, Scenario
 
+if TYPE_CHECKING:
+    from tests.e2e.benchmark import BenchmarkResult
+
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e]
 
 
 # ---------------------------------------------------------------------------
@@ -592,19 +595,120 @@ async def _run_scenario(
 
 
 # ---------------------------------------------------------------------------
+# Benchmark mode helpers
+# ---------------------------------------------------------------------------
+
+
+def _record_benchmark_entry(
+    scenario: Scenario,
+    result: ScenarioResult,
+    benchmark_result: BenchmarkResult | None,
+) -> None:
+    """Record a ScenarioResult into the session BenchmarkResult accumulator.
+
+    Only called when benchmark mode is active.  When ``benchmark_result`` is
+    None (no accumulator available), a warning is logged and the call is a no-op.
+
+    The model name is read from the ``E2E_CURRENT_MODEL`` environment variable
+    which is set by the benchmark loop in ``conftest.pytest_sessionfinish``.
+    When that variable is not set, ``"unknown"`` is used as the model key.
+    """
+    import os  # noqa: PLC0415
+
+    from tests.e2e.benchmark import BenchmarkEntry  # noqa: PLC0415
+
+    if benchmark_result is None:
+        logger.warning("[benchmark] benchmark_result accumulator is None — entry not recorded")
+        return
+
+    model = os.environ.get("E2E_CURRENT_MODEL", "unknown")
+
+    routing_passed = False
+    routing_expected: str | None = scenario.expected_routing
+    routing_actual: str | None = None
+    if result.routing is not None:
+        routing_actual = result.routing.actual
+        routing_passed = result.routing.passed
+
+    tc_passed = True
+    tc_expected: list[str] = scenario.expected_tool_calls
+    tc_actual: list[str] = []
+    if result.tool_calls is not None:
+        tc_passed = result.tool_calls.passed
+        tc_actual = result.tool_calls.actual_names
+
+    entry = BenchmarkEntry(
+        model=model,
+        scenario_id=scenario.id,
+        routing_passed=routing_passed,
+        routing_expected=routing_expected,
+        routing_actual=routing_actual,
+        tool_calls_passed=tc_passed,
+        tool_calls_expected=tc_expected,
+        tool_calls_actual=tc_actual,
+        input_tokens=0,
+        output_tokens=0,
+        duration_ms=result.duration_ms,
+        timed_out=result.timed_out,
+        error=result.error,
+    )
+    benchmark_result.record(entry)
+
+
+def _log_routing_outcome(scenario: Scenario, result: ScenarioResult) -> None:
+    """Log routing outcome for benchmark mode (no assertion)."""
+    if result.routing is None:
+        return
+    status = "PASS" if result.routing.passed else "FAIL"
+    logger.info(
+        "[%s] benchmark routing %s: expected=%s actual=%s (duration=%dms)",
+        scenario.id,
+        status,
+        result.routing.expected,
+        result.routing.actual,
+        result.duration_ms,
+    )
+
+
+def _log_tool_call_outcome(scenario: Scenario, result: ScenarioResult) -> None:
+    """Log tool-call outcome for benchmark mode (no assertion)."""
+    if result.tool_calls is None:
+        return
+    status = "PASS" if result.tool_calls.passed else "FAIL"
+    logger.info(
+        "[%s] benchmark tool-calls %s: actual=%s missing=%s (duration=%dms)",
+        scenario.id,
+        status,
+        result.tool_calls.actual_names,
+        result.tool_calls.missing if not result.tool_calls.passed else [],
+        result.duration_ms,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Pytest test functions
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
+@pytest.mark.routing_accuracy
 @pytest.mark.parametrize("scenario", ALL_SCENARIOS, ids=_scenario_id)
 async def test_scenario_routing(
     scenario: Scenario,
     butler_ecosystem: ButlerEcosystem,
     cost_tracker: CostTracker,
     scenario_tag_filter: str | None,
+    benchmark_mode: bool,
+    benchmark_result: BenchmarkResult | None,
 ) -> None:
     """Inject envelope via ingest_v1() and verify routing (triage_target).
+
+    In validate mode (default, no ``--benchmark``): hard assertion — test fails
+    immediately on routing mismatch.
+
+    In benchmark mode (``--benchmark``): result is recorded in the session-scoped
+    ``benchmark_result`` accumulator without hard failures.  Scorecards are
+    generated at session end via ``pytest_sessionfinish``.
 
     Skips scenarios that have no ``expected_routing``.
     When ``--scenarios`` tag filter is set, scenarios not matching the tag
@@ -625,12 +729,30 @@ async def test_scenario_routing(
     )
 
     if result.error:
+        if benchmark_mode:
+            _record_benchmark_entry(scenario, result, benchmark_result)
+            logger.warning(
+                "[%s] benchmark: error recorded (no hard fail): %s", scenario.id, result.error
+            )
+            return
         pytest.fail(f"Scenario {scenario.id!r} error: {result.error}")
 
     if result.timed_out:
+        if benchmark_mode:
+            _record_benchmark_entry(scenario, result, benchmark_result)
+            logger.warning("[%s] benchmark: timeout recorded (no hard fail)", scenario.id)
+            return
         pytest.skip(f"Scenario {scenario.id!r} timed out — recording as skip")
 
     assert result.routing is not None, "routing result expected"
+
+    if benchmark_mode:
+        # Accumulate without hard failure
+        _record_benchmark_entry(scenario, result, benchmark_result)
+        _log_routing_outcome(scenario, result)
+        return
+
+    # Validate mode: hard assertion
     assert result.routing.passed, (
         f"Routing mismatch for {scenario.id!r}: "
         f"expected={result.routing.expected!r} "
@@ -646,6 +768,7 @@ async def test_scenario_routing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.tool_accuracy
 @pytest.mark.parametrize(
     "scenario",
     [s for s in ALL_SCENARIOS if s.expected_tool_calls],
@@ -656,13 +779,22 @@ async def test_scenario_tool_calls(
     butler_ecosystem: ButlerEcosystem,
     cost_tracker: CostTracker,
     scenario_tag_filter: str | None,
+    benchmark_mode: bool,
+    benchmark_result: BenchmarkResult | None,
 ) -> None:
     """Inject envelope and verify expected tool calls appear in the session.
+
+    In validate mode (default, no ``--benchmark``): hard assertion — fails
+    immediately if any expected tool was not called.
+
+    In benchmark mode (``--benchmark``): result is accumulated without hard
+    failures.  Scorecards are generated at session end.
 
     Uses set containment: scenario passes if all expected tools were called,
     even if additional tools were also called.
 
-    Scenarios that time out are recorded as skip (not hard-fail).
+    Scenarios that time out are recorded as skip (validate) or accumulated
+    with timed_out=True (benchmark).
     """
     # Tag filter
     if scenario_tag_filter is not None and scenario_tag_filter not in scenario.tags:
@@ -676,22 +808,38 @@ async def test_scenario_tool_calls(
     )
 
     if result.error:
+        if benchmark_mode:
+            _record_benchmark_entry(scenario, result, benchmark_result)
+            logger.warning(
+                "[%s] benchmark: error recorded (no hard fail): %s", scenario.id, result.error
+            )
+            return
         pytest.fail(f"Scenario {scenario.id!r} error: {result.error}")
 
     if result.timed_out:
-        # Record partial tool-call data in the log and skip (don't fail)
         partial_calls = result.tool_calls.actual_names if result.tool_calls else []
         logger.warning(
             "[%s] TIMEOUT — partial tool calls captured: %s",
             scenario.id,
             partial_calls,
         )
+        if benchmark_mode:
+            _record_benchmark_entry(scenario, result, benchmark_result)
+            logger.warning("[%s] benchmark: timeout recorded (no hard fail)", scenario.id)
+            return
         pytest.skip(
             f"Scenario {scenario.id!r} timed out after {scenario.timeout_seconds}s "
             f"(partial tool calls: {partial_calls})"
         )
 
     assert result.tool_calls is not None, "tool_calls result expected"
+
+    if benchmark_mode:
+        _record_benchmark_entry(scenario, result, benchmark_result)
+        _log_tool_call_outcome(scenario, result)
+        return
+
+    # Validate mode: hard assertion
     assert result.tool_calls.passed, (
         f"Tool-call mismatch for {scenario.id!r}: "
         f"missing={result.tool_calls.missing!r}, "

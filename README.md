@@ -494,6 +494,132 @@ Docker flake triage under parallel quality gates:
 - Teardown-race class: `did not receive an exit event` occurs during container removal and is handled by bounded teardown retry.
 - Use `make test-qg-serial` as a diagnostic fallback when host contention is high and startup-timeout failures persist.
 
+## E2E Testing
+
+The E2E test suite validates complete message lifecycle: envelope ingestion → classification → butler dispatch → tool execution. It runs against a real ephemeral ecosystem (PostgreSQL testcontainer + all butler daemons).
+
+### Prerequisites
+
+```bash
+docker info                 # Docker daemon running
+echo $ANTHROPIC_API_KEY     # API key set
+which claude                # claude CLI on PATH
+uv sync --dev               # Python dependencies installed
+```
+
+> **WARNING — Token Burn**: E2E tests spawn real LLM calls via the Claude API. Each full suite run typically consumes several thousand tokens per scenario. Use `--scenarios=smoke` to restrict to smoke-tagged scenarios for minimal cost during development.
+
+### Run Commands
+
+```bash
+# Validate mode (default) — hard fail on first routing or tool-call mismatch
+make test-e2e-validate
+
+# Benchmark mode — iterate over models, accumulate results, generate scorecards
+make test-e2e-benchmark BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o
+
+# Full E2E suite (validate mode, verbose)
+make test-e2e
+
+# Smoke scenarios only (faster, lower token cost)
+uv run pytest tests/e2e/ -v -s --scenarios=smoke
+
+# Single butler domain
+uv run pytest tests/e2e/ -v -s -k "health"
+
+# Specific marker
+uv run pytest tests/e2e/ -v -s -m "e2e and routing_accuracy"
+```
+
+### Modes
+
+#### Validate Mode (default)
+
+The default mode runs scenarios using the current model configuration. Each test asserts hard failures on the first routing or tool-call mismatch:
+
+- Routing mismatch → `pytest.fail()` — stops the test immediately
+- Tool-call mismatch → `pytest.fail()` — stops the test immediately
+- Timeout → `pytest.skip()` — skips gracefully
+
+Use validate mode for:
+- CI checks to guard against regressions
+- Pre-merge validation of routing and tool-call accuracy
+
+#### Benchmark Mode
+
+Activated with `--benchmark`. Runs the full scenario corpus for each model in the model list:
+
+```bash
+# Via Makefile
+make test-e2e-benchmark BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o
+
+# Via pytest directly
+uv run pytest tests/e2e/ --benchmark --benchmark-models=claude-sonnet-4-5,gpt-4o -v -s
+
+# Via environment variable
+E2E_BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o pytest tests/e2e/ --benchmark -v -s
+```
+
+In benchmark mode:
+- Results are accumulated per `(model, scenario_id)` — no hard assertion failures
+- The model is pinned via catalog overrides at priority=999 (crash-safe cleanup via `try/finally`)
+- Scorecards are generated at session end via the `pytest_sessionfinish` hook
+
+### Configuration
+
+| CLI option / Env var | Default | Description |
+|---|---|---|
+| `--scenarios=TAG` | all | Run only scenarios tagged with TAG (e.g. `--scenarios=smoke`) |
+| `--benchmark` | off | Activate benchmark mode |
+| `--benchmark-models=LIST` | — | Comma-separated model IDs for benchmark mode |
+| `E2E_BENCHMARK_MODELS` | — | Environment variable fallback for `--benchmark-models` |
+
+### Scorecard Output
+
+Scorecards are written to `.tmp/e2e-scorecards/<timestamp>/` after a benchmark run:
+
+```
+.tmp/e2e-scorecards/20260312-143000/
+├── summary.md                         # Cross-model comparison table
+├── claude-sonnet-4-5/
+│   ├── routing-scorecard.md           # Routing accuracy + per-tag breakdown + confusion matrix
+│   ├── tool-call-scorecard.md         # Tool-call accuracy + per-butler breakdown
+│   ├── cost-summary.md                # Per-scenario token usage + estimated cost
+│   └── raw-results.json               # Machine-readable per-scenario results (schema v1.0)
+└── gpt-4o/
+    └── ...
+```
+
+The output directory path is printed to stdout after generation.
+
+### Pytest Markers
+
+| Marker | Description |
+|---|---|
+| `e2e` | All E2E tests — require `ANTHROPIC_API_KEY`, `claude` binary, and Docker |
+| `benchmark` | Benchmark mode tests |
+| `routing_accuracy` | Routing accuracy tests — verify `triage_target` matches `expected_routing` |
+| `tool_accuracy` | Tool-call accuracy tests — verify expected tool names are called |
+
+### File Layout
+
+```
+tests/e2e/
+├── __init__.py                    # Package marker
+├── conftest.py                    # Session fixtures: phased bootstrap, benchmark accumulator
+├── benchmark.py                   # Model pinning, benchmark runner, result accumulator
+├── scoring.py                     # Scoring engine: routing/tool-call scorecards
+├── reporting.py                   # Scorecard file writer
+├── scenarios.py                   # Declarative scenario registry (Scenario dataclass)
+├── envelopes.py                   # email_envelope() / telegram_envelope() factories
+├── baselines.json                 # Baseline accuracy targets per scenario
+├── test_scenario_runner.py        # Parametrized routing + tool-call runner
+├── test_ecosystem_health.py       # Smoke tests (no LLM calls)
+└── test_*.py                      # Domain-specific tests (contracts, security, etc.)
+```
+
+See `docs/tests/e2e/README.md` for architecture details and the full document index.
+
 ## Tech Stack
 
 Python 3.12+ · FastMCP · Claude Agent SDK · PostgreSQL · asyncpg · Docker · asyncio · OpenTelemetry · Alembic · Click · Pydantic

@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from butlers.config import ButlerConfig
     from butlers.daemon import ButlerDaemon
     from butlers.db import Database
+    from tests.e2e.benchmark import BenchmarkResult
 
 logger = logging.getLogger(__name__)
 
@@ -872,3 +873,122 @@ def cost_tracker() -> Iterator[CostTracker]:
     tracker = CostTracker()
     yield tracker
     tracker.print_summary()
+
+
+# ---------------------------------------------------------------------------
+# Benchmark result accumulator (session-scoped)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def benchmark_result(benchmark_mode: bool) -> BenchmarkResult | None:
+    """Session-scoped BenchmarkResult accumulator.
+
+    Returns a ``BenchmarkResult`` instance when benchmark mode is active,
+    or ``None`` in validate mode.  All benchmark test functions record their
+    results here; scorecards are generated from this accumulator at session
+    end by ``pytest_sessionfinish``.
+    """
+    if not benchmark_mode:
+        return None
+
+    from tests.e2e.benchmark import BenchmarkResult  # noqa: PLC0415
+
+    return BenchmarkResult()
+
+
+# ---------------------------------------------------------------------------
+# Session finish hook — generates scorecards in benchmark mode
+# ---------------------------------------------------------------------------
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # noqa: ARG001
+    """Generate benchmark scorecards at session end when in benchmark mode.
+
+    Called automatically by pytest after all tests complete.  In benchmark mode,
+    this hook:
+    1. Retrieves the session-scoped ``benchmark_result`` accumulator.
+    2. Computes scorecards for all models via ``compute_all_scorecards()``.
+    3. Writes all scorecard files to ``.tmp/e2e-scorecards/<timestamp>/``.
+
+    In validate mode (default), this hook is a no-op.
+    """
+    config = session.config
+
+    # Check benchmark mode via stored option (not fixture — hooks can't use fixtures).
+    try:
+        is_benchmark = bool(config.getoption("--benchmark"))
+    except ValueError:
+        # Option not registered (e.g. running outside of E2E test tree)
+        return
+
+    if not is_benchmark:
+        return
+
+    # Retrieve accumulated results from the session fixture cache.
+    # Use the internal fixture manager to retrieve the session-scoped fixture.
+    try:
+        fixturemanager = session._fixturemanager  # type: ignore[attr-defined]
+        deflist = fixturemanager.getfixturedefs("benchmark_result", nodeid="")
+        if not deflist:
+            logger.warning(
+                "[sessionfinish] benchmark_result fixture not found — skipping scorecards"
+            )
+            return
+    except Exception:
+        logger.warning(
+            "[sessionfinish] Could not access fixture manager — skipping scorecards",
+            exc_info=True,
+        )
+        return
+
+    # Access the cached fixture value from the session-scope cache.
+    # Walk session items to find an item that requested benchmark_result.
+    try:
+        results_value = None
+        for item in session.items:
+            try:
+                cached = item.funcargs.get("benchmark_result")
+                if cached is not None:
+                    results_value = cached
+                    break
+            except AttributeError:
+                continue
+
+        if results_value is None:
+            logger.warning("[sessionfinish] No benchmark results accumulated — skipping scorecards")
+            return
+    except Exception:
+        logger.warning(
+            "[sessionfinish] Could not retrieve benchmark results — skipping scorecards",
+            exc_info=True,
+        )
+        return
+
+    try:
+        from tests.e2e.reporting import generate_scorecards  # noqa: PLC0415
+        from tests.e2e.scenarios import ALL_SCENARIOS  # noqa: PLC0415
+        from tests.e2e.scoring import compute_all_scorecards, load_pricing  # noqa: PLC0415
+
+        scenario_tags = {s.id: s.tags for s in ALL_SCENARIOS}
+        scenario_routing = {s.id: s.expected_routing for s in ALL_SCENARIOS}
+        pricing = load_pricing()
+
+        scorecards = compute_all_scorecards(
+            results_value,
+            scenario_tags=scenario_tags,
+            scenario_routing=scenario_routing,
+            pricing=pricing,
+        )
+
+        if not scorecards:
+            logger.info(
+                "[sessionfinish] No models in benchmark results — skipping scorecard generation"
+            )
+            return
+
+        output_dir = generate_scorecards(results_value, scorecards)
+        print(f"\n[E2E Benchmark] Scorecards written to: {output_dir}")
+        logger.info("[sessionfinish] Benchmark scorecards generated: %s", output_dir)
+    except Exception:
+        logger.error("[sessionfinish] Failed to generate scorecards", exc_info=True)

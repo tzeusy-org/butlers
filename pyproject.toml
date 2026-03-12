@@ -85,6 +85,9 @@ markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "integration: Integration tests — require Docker (testcontainers)",
     "e2e: End-to-end tests — require authenticated CLI runtime, claude binary, and Docker",
+    "benchmark: Benchmark mode tests — iterate over models, accumulate results, generate scorecards",
+    "routing_accuracy: E2E routing accuracy tests — verify triage_target matches expected_routing",
+    "tool_accuracy: E2E tool-call accuracy tests — verify expected tool names are called",
     "nightly: Long-running tests excluded from default CI (run with -m nightly)",
 ]
 filterwarnings = [
