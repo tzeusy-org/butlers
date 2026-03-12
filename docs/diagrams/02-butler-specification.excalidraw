@@ -295,7 +295,7 @@
       "type": "rectangle",
       "id": "core_bg",
       "x": 60, "y": 280,
-      "width": 1300, "height": 320,
+      "width": 1300, "height": 400,
       "strokeColor": "#1e3a5f", "backgroundColor": "#dbeafe",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
       "roughness": 0, "opacity": 100, "angle": 0,
@@ -936,7 +936,7 @@
     {
       "type": "line",
       "id": "divider_after_core",
-      "x": 60, "y": 625,
+      "x": 60, "y": 705,
       "width": 1880, "height": 0,
       "strokeColor": "#1e3a5f", "backgroundColor": "transparent",
       "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "dashed",
@@ -949,7 +949,7 @@
     {
       "type": "text",
       "id": "modules_section_label",
-      "x": 60, "y": 635,
+      "x": 60, "y": 715,
       "width": 400, "height": 24,
       "text": "MODULES RING — opt-in per butler (register_tools / migrations / on_startup / on_shutdown)",
       "originalText": "MODULES RING — opt-in per butler (register_tools / migrations / on_startup / on_shutdown)",
@@ -965,7 +965,7 @@
     {
       "type": "rectangle",
       "id": "mod_email",
-      "x": 80, "y": 668,
+      "x": 80, "y": 748,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -978,7 +978,7 @@
     {
       "type": "text",
       "id": "mod_email_text",
-      "x": 90, "y": 680,
+      "x": 90, "y": 760,
       "width": 135, "height": 30,
       "text": "Email\nIMAP/SMTP",
       "originalText": "Email\nIMAP/SMTP",
@@ -994,7 +994,7 @@
     {
       "type": "rectangle",
       "id": "mod_telegram",
-      "x": 250, "y": 668,
+      "x": 250, "y": 748,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1007,7 +1007,7 @@
     {
       "type": "text",
       "id": "mod_telegram_text",
-      "x": 260, "y": 680,
+      "x": 260, "y": 760,
       "width": 135, "height": 30,
       "text": "Telegram\nsend/reply, output-only",
       "originalText": "Telegram\nsend/reply, output-only",
@@ -1023,7 +1023,7 @@
     {
       "type": "rectangle",
       "id": "mod_calendar",
-      "x": 420, "y": 668,
+      "x": 420, "y": 748,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1036,7 +1036,7 @@
     {
       "type": "text",
       "id": "mod_calendar_text",
-      "x": 430, "y": 680,
+      "x": 430, "y": 760,
       "width": 135, "height": 30,
       "text": "Calendar\nGoogle Cal OAuth",
       "originalText": "Calendar\nGoogle Cal OAuth",
@@ -1052,7 +1052,7 @@
     {
       "type": "rectangle",
       "id": "mod_pipeline",
-      "x": 590, "y": 668,
+      "x": 590, "y": 748,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1065,7 +1065,7 @@
     {
       "type": "text",
       "id": "mod_pipeline_text",
-      "x": 600, "y": 680,
+      "x": 600, "y": 760,
       "width": 135, "height": 30,
       "text": "Pipeline\nmsg classification/routing",
       "originalText": "Pipeline\nmsg classification/routing",
@@ -1081,7 +1081,7 @@
     {
       "type": "rectangle",
       "id": "mod_contacts",
-      "x": 760, "y": 668,
+      "x": 760, "y": 748,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1094,7 +1094,7 @@
     {
       "type": "text",
       "id": "mod_contacts_text",
-      "x": 770, "y": 680,
+      "x": 770, "y": 760,
       "width": 135, "height": 30,
       "text": "Contacts\nGoogle Contacts sync",
       "originalText": "Contacts\nGoogle Contacts sync",
@@ -1110,7 +1110,7 @@
     {
       "type": "rectangle",
       "id": "mod_mailbox",
-      "x": 930, "y": 668,
+      "x": 930, "y": 748,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1123,7 +1123,7 @@
     {
       "type": "text",
       "id": "mod_mailbox_text",
-      "x": 940, "y": 680,
+      "x": 940, "y": 760,
       "width": 135, "height": 30,
       "text": "Mailbox\ninter-butler queue, 5 tools",
       "originalText": "Mailbox\ninter-butler queue, 5 tools",
@@ -1139,7 +1139,7 @@
     {
       "type": "rectangle",
       "id": "mod_approvals",
-      "x": 1100, "y": 668,
+      "x": 1100, "y": 748,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1152,7 +1152,7 @@
     {
       "type": "text",
       "id": "mod_approvals_text",
-      "x": 1110, "y": 680,
+      "x": 1110, "y": 760,
       "width": 135, "height": 30,
       "text": "Approvals\n13+ tools, sensitivity",
       "originalText": "Approvals\n13+ tools, sensitivity",
@@ -1168,7 +1168,7 @@
     {
       "type": "rectangle",
       "id": "mod_memory",
-      "x": 1270, "y": 668,
+      "x": 1270, "y": 748,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1181,7 +1181,7 @@
     {
       "type": "text",
       "id": "mod_memory_text",
-      "x": 1280, "y": 680,
+      "x": 1280, "y": 760,
       "width": 135, "height": 30,
       "text": "Memory\nEden/Mid/Long-Term",
       "originalText": "Memory\nEden/Mid/Long-Term",
@@ -1197,7 +1197,7 @@
     {
       "type": "rectangle",
       "id": "mod_home_assistant",
-      "x": 80, "y": 735,
+      "x": 80, "y": 815,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#d1fae5",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1210,7 +1210,7 @@
     {
       "type": "text",
       "id": "mod_home_assistant_text",
-      "x": 90, "y": 747,
+      "x": 90, "y": 827,
       "width": 135, "height": 30,
       "text": "Home Assistant\nHA automation",
       "originalText": "Home Assistant\nHA automation",
@@ -1226,7 +1226,7 @@
     {
       "type": "rectangle",
       "id": "mod_education",
-      "x": 250, "y": 735,
+      "x": 250, "y": 815,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#d1fae5",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1239,7 +1239,7 @@
     {
       "type": "text",
       "id": "mod_education_text",
-      "x": 260, "y": 747,
+      "x": 260, "y": 827,
       "width": 135, "height": 30,
       "text": "Education\ncurriculum, mind maps",
       "originalText": "Education\ncurriculum, mind maps",
@@ -1255,7 +1255,7 @@
     {
       "type": "rectangle",
       "id": "mod_finance",
-      "x": 420, "y": 735,
+      "x": 420, "y": 815,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#d1fae5",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1268,7 +1268,7 @@
     {
       "type": "text",
       "id": "mod_finance_text",
-      "x": 430, "y": 747,
+      "x": 430, "y": 827,
       "width": 135, "height": 30,
       "text": "Finance\nbudget, portfolio tools",
       "originalText": "Finance\nbudget, portfolio tools",
@@ -1284,7 +1284,7 @@
     {
       "type": "rectangle",
       "id": "mod_general",
-      "x": 590, "y": 735,
+      "x": 590, "y": 815,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#d1fae5",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1297,7 +1297,7 @@
     {
       "type": "text",
       "id": "mod_general_text",
-      "x": 600, "y": 747,
+      "x": 600, "y": 827,
       "width": 135, "height": 30,
       "text": "General\nnotes, collections",
       "originalText": "General\nnotes, collections",
@@ -1313,7 +1313,7 @@
     {
       "type": "rectangle",
       "id": "mod_health",
-      "x": 760, "y": 735,
+      "x": 760, "y": 815,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#d1fae5",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1326,7 +1326,7 @@
     {
       "type": "text",
       "id": "mod_health_text",
-      "x": 770, "y": 747,
+      "x": 770, "y": 827,
       "width": 135, "height": 30,
       "text": "Health\nmeds, conditions, nutrition",
       "originalText": "Health\nmeds, conditions, nutrition",
@@ -1342,7 +1342,7 @@
     {
       "type": "rectangle",
       "id": "mod_relationship",
-      "x": 930, "y": 735,
+      "x": 930, "y": 815,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#d1fae5",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1355,7 +1355,7 @@
     {
       "type": "text",
       "id": "mod_relationship_text",
-      "x": 940, "y": 747,
+      "x": 940, "y": 827,
       "width": 135, "height": 30,
       "text": "Relationship\nCRM, interactions",
       "originalText": "Relationship\nCRM, interactions",
@@ -1371,7 +1371,7 @@
     {
       "type": "rectangle",
       "id": "mod_messenger",
-      "x": 1100, "y": 735,
+      "x": 1100, "y": 815,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#d1fae5",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1384,7 +1384,7 @@
     {
       "type": "text",
       "id": "mod_messenger_text",
-      "x": 1110, "y": 747,
+      "x": 1110, "y": 827,
       "width": 135, "height": 30,
       "text": "Messenger\nTelegram/Email delivery",
       "originalText": "Messenger\nTelegram/Email delivery",
@@ -1400,7 +1400,7 @@
     {
       "type": "rectangle",
       "id": "mod_switchboard",
-      "x": 1270, "y": 735,
+      "x": 1270, "y": 815,
       "width": 155, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#d1fae5",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1413,7 +1413,7 @@
     {
       "type": "text",
       "id": "mod_switchboard_text",
-      "x": 1280, "y": 747,
+      "x": 1280, "y": 827,
       "width": 135, "height": 30,
       "text": "Switchboard\nrouting, classification",
       "originalText": "Switchboard\nrouting, classification",
@@ -1429,7 +1429,7 @@
     {
       "type": "line",
       "id": "divider_after_modules",
-      "x": 60, "y": 800,
+      "x": 60, "y": 950,
       "width": 1880, "height": 0,
       "strokeColor": "#1e3a5f", "backgroundColor": "transparent",
       "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "dashed",
@@ -1442,7 +1442,7 @@
     {
       "type": "text",
       "id": "module_interface_label",
-      "x": 60, "y": 812,
+      "x": 60, "y": 962,
       "width": 300, "height": 22,
       "text": "MODULE INTERFACE (modules/base.py)",
       "originalText": "MODULE INTERFACE (modules/base.py)",
@@ -1458,7 +1458,7 @@
     {
       "type": "rectangle",
       "id": "module_interface_bg",
-      "x": 60, "y": 836,
+      "x": 60, "y": 986,
       "width": 520, "height": 120,
       "strokeColor": "#1e3a5f", "backgroundColor": "#f0f9ff",
       "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
@@ -1470,7 +1470,7 @@
     {
       "type": "text",
       "id": "module_interface_text",
-      "x": 80, "y": 845,
+      "x": 80, "y": 995,
       "width": 480, "height": 105,
       "text": "register_tools(mcp, config, db)  — add MCP tools to FastMCP server\nmigration_revisions()           — Alembic branch label for module migrations\non_startup(config, db, credential_store)  — async init after dependency resolution\non_shutdown()                   — async cleanup during butler shutdown\ntool_metadata()                 — sensitivity metadata (ToolMeta) per tool name",
       "originalText": "register_tools(mcp, config, db)  — add MCP tools to FastMCP server\nmigration_revisions()           — Alembic branch label for module migrations\non_startup(config, db, credential_store)  — async init after dependency resolution\non_shutdown()                   — async cleanup during butler shutdown\ntool_metadata()                 — sensitivity metadata (ToolMeta) per tool name",
@@ -1486,7 +1486,7 @@
     {
       "type": "text",
       "id": "spawn_seq_label",
-      "x": 620, "y": 812,
+      "x": 620, "y": 962,
       "width": 380, "height": 22,
       "text": "EPHEMERAL LLM SPAWNING SEQUENCE",
       "originalText": "EPHEMERAL LLM SPAWNING SEQUENCE",
@@ -1502,7 +1502,7 @@
     {
       "type": "line",
       "id": "spawn_timeline_line",
-      "x": 640, "y": 846,
+      "x": 640, "y": 996,
       "width": 0, "height": 100,
       "strokeColor": "#64748b", "backgroundColor": "transparent",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1515,7 +1515,7 @@
     {
       "type": "ellipse",
       "id": "spawn_dot1",
-      "x": 634, "y": 842,
+      "x": 634, "y": 992,
       "width": 12, "height": 12,
       "strokeColor": "#c2410c", "backgroundColor": "#fed7aa",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1527,7 +1527,7 @@
     {
       "type": "text",
       "id": "spawn_step1",
-      "x": 660, "y": 840,
+      "x": 660, "y": 990,
       "width": 580, "height": 20,
       "text": "1. Trigger arrives (external MCP call or scheduler due task)",
       "originalText": "1. Trigger arrives (external MCP call or scheduler due task)",
@@ -1543,7 +1543,7 @@
     {
       "type": "ellipse",
       "id": "spawn_dot2",
-      "x": 634, "y": 862,
+      "x": 634, "y": 1012,
       "width": 12, "height": 12,
       "strokeColor": "#6d28d9", "backgroundColor": "#ddd6fe",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1555,7 +1555,7 @@
     {
       "type": "text",
       "id": "spawn_step2",
-      "x": 660, "y": 860,
+      "x": 660, "y": 1010,
       "width": 580, "height": 20,
       "text": "2. Spawner generates ephemeral MCP config (locked to this butler)",
       "originalText": "2. Spawner generates ephemeral MCP config (locked to this butler)",
@@ -1571,7 +1571,7 @@
     {
       "type": "ellipse",
       "id": "spawn_dot3",
-      "x": 634, "y": 882,
+      "x": 634, "y": 1032,
       "width": 12, "height": 12,
       "strokeColor": "#6d28d9", "backgroundColor": "#ddd6fe",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1583,7 +1583,7 @@
     {
       "type": "text",
       "id": "spawn_step3",
-      "x": 660, "y": 880,
+      "x": 660, "y": 1030,
       "width": 580, "height": 20,
       "text": "3. Runtime adapter invoked (codex / claude_code / gemini)",
       "originalText": "3. Runtime adapter invoked (codex / claude_code / gemini)",
@@ -1599,7 +1599,7 @@
     {
       "type": "ellipse",
       "id": "spawn_dot4",
-      "x": 634, "y": 902,
+      "x": 634, "y": 1052,
       "width": 12, "height": 12,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1611,7 +1611,7 @@
     {
       "type": "text",
       "id": "spawn_step4",
-      "x": 660, "y": 900,
+      "x": 660, "y": 1050,
       "width": 580, "height": 20,
       "text": "4. LLM CLI calls butler MCP tools, runs skills, returns",
       "originalText": "4. LLM CLI calls butler MCP tools, runs skills, returns",
@@ -1627,7 +1627,7 @@
     {
       "type": "ellipse",
       "id": "spawn_dot5",
-      "x": 634, "y": 922,
+      "x": 634, "y": 1072,
       "width": 12, "height": 12,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1639,7 +1639,7 @@
     {
       "type": "text",
       "id": "spawn_step5",
-      "x": 660, "y": 920,
+      "x": 660, "y": 1070,
       "width": 580, "height": 20,
       "text": "5. Session logged to core/sessions.py, result returned",
       "originalText": "5. Session logged to core/sessions.py, result returned",
@@ -1655,7 +1655,7 @@
     {
       "type": "text",
       "id": "config_tree_label",
-      "x": 1300, "y": 812,
+      "x": 1300, "y": 962,
       "width": 380, "height": 22,
       "text": "CONFIG DIRECTORY (roster/{butler-name}/)",
       "originalText": "CONFIG DIRECTORY (roster/{butler-name}/)",
@@ -1671,7 +1671,7 @@
     {
       "type": "rectangle",
       "id": "config_tree_bg",
-      "x": 1300, "y": 836,
+      "x": 1300, "y": 986,
       "width": 440, "height": 120,
       "strokeColor": "#1e3a5f", "backgroundColor": "#f0f9ff",
       "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
@@ -1683,7 +1683,7 @@
     {
       "type": "text",
       "id": "config_tree_text",
-      "x": 1315, "y": 844,
+      "x": 1315, "y": 994,
       "width": 415, "height": 105,
       "text": "roster/{butler-name}/\n├── MANIFESTO.md       public identity & purpose\n├── CLAUDE.md          butler personality / system prompt\n├── AGENTS.md          runtime agent notes\n├── butler.toml        identity, schedule, modules config\n├── api/               router.py + models.py (optional)\n├── .agents/skills/    skill scripts (SKILL.md per skill)\n└── .claude -> .agents Claude Code compatibility symlink",
       "originalText": "roster/{butler-name}/\n├── MANIFESTO.md       public identity & purpose\n├── CLAUDE.md          butler personality / system prompt\n├── AGENTS.md          runtime agent notes\n├── butler.toml        identity, schedule, modules config\n├── api/               router.py + models.py (optional)\n├── .agents/skills/    skill scripts (SKILL.md per skill)\n└── .claude -> .agents Claude Code compatibility symlink",
@@ -1699,7 +1699,7 @@
     {
       "type": "text",
       "id": "mcp_sse_label",
-      "x": 60, "y": 970,
+      "x": 60, "y": 1120,
       "width": 400, "height": 22,
       "text": "MCP TOOL REGISTRATION FLOW (FastMCP SSE/Streamable per butler)",
       "originalText": "MCP TOOL REGISTRATION FLOW (FastMCP SSE/Streamable per butler)",
@@ -1715,7 +1715,7 @@
     {
       "type": "rectangle",
       "id": "mcp_module_box",
-      "x": 60, "y": 1000,
+      "x": 60, "y": 1150,
       "width": 160, "height": 50,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1728,7 +1728,7 @@
     {
       "type": "text",
       "id": "mcp_module_text",
-      "x": 70, "y": 1017,
+      "x": 70, "y": 1167,
       "width": 140, "height": 20,
       "text": "Module.register_tools()",
       "originalText": "Module.register_tools()",
@@ -1744,7 +1744,7 @@
     {
       "type": "arrow",
       "id": "mcp_arrow1",
-      "x": 220, "y": 1025,
+      "x": 220, "y": 1175,
       "width": 80, "height": 0,
       "strokeColor": "#047857", "backgroundColor": "transparent",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1760,7 +1760,7 @@
     {
       "type": "rectangle",
       "id": "mcp_fastmcp_box",
-      "x": 300, "y": 1000,
+      "x": 300, "y": 1150,
       "width": 160, "height": 50,
       "strokeColor": "#1e3a5f", "backgroundColor": "#3b82f6",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1773,7 +1773,7 @@
     {
       "type": "text",
       "id": "mcp_fastmcp_text",
-      "x": 310, "y": 1017,
+      "x": 310, "y": 1167,
       "width": 140, "height": 20,
       "text": "FastMCP Server",
       "originalText": "FastMCP Server",
@@ -1789,7 +1789,7 @@
     {
       "type": "arrow",
       "id": "mcp_arrow2",
-      "x": 460, "y": 1025,
+      "x": 460, "y": 1175,
       "width": 80, "height": 0,
       "strokeColor": "#1e3a5f", "backgroundColor": "transparent",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1805,7 +1805,7 @@
     {
       "type": "rectangle",
       "id": "mcp_sse_box",
-      "x": 540, "y": 1000,
+      "x": 540, "y": 1150,
       "width": 200, "height": 50,
       "strokeColor": "#b45309", "backgroundColor": "#fef3c7",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1818,7 +1818,7 @@
     {
       "type": "text",
       "id": "mcp_sse_text",
-      "x": 550, "y": 1015,
+      "x": 550, "y": 1165,
       "width": 180, "height": 22,
       "text": "SSE / HTTP Streamable\nendpoint per butler",
       "originalText": "SSE / HTTP Streamable\nendpoint per butler",
@@ -1834,7 +1834,7 @@
     {
       "type": "arrow",
       "id": "mcp_arrow3",
-      "x": 740, "y": 1025,
+      "x": 740, "y": 1175,
       "width": 80, "height": 0,
       "strokeColor": "#b45309", "backgroundColor": "transparent",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1850,7 +1850,7 @@
     {
       "type": "ellipse",
       "id": "mcp_llm_box",
-      "x": 820, "y": 998,
+      "x": 820, "y": 1148,
       "width": 160, "height": 54,
       "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
       "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
@@ -1863,7 +1863,7 @@
     {
       "type": "text",
       "id": "mcp_llm_text",
-      "x": 830, "y": 1014,
+      "x": 830, "y": 1164,
       "width": 140, "height": 22,
       "text": "LLM CLI Instance",
       "originalText": "LLM CLI Instance",
@@ -1875,6 +1875,244 @@
       "seed": 100272, "version": 1, "versionNonce": 100273,
       "isDeleted": false, "groupIds": [], "boundElements": null,
       "link": null, "locked": false, "containerId": "mcp_llm_box", "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle",
+      "id": "core_model_routing",
+      "x": 480, "y": 540,
+      "width": 180, "height": 50,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#93c5fd",
+      "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300001, "version": 1, "versionNonce": 300002,
+      "isDeleted": false, "groupIds": [],
+      "boundElements": [{"id": "core_model_routing_text", "type": "text"}],
+      "link": null, "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text",
+      "id": "core_model_routing_text",
+      "x": 490, "y": 551,
+      "width": 160, "height": 30,
+      "text": "Model Routing\n(core/model_routing.py)",
+      "originalText": "Model Routing\n(core/model_routing.py)",
+      "fontSize": 12, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300003, "version": 1, "versionNonce": 300004,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": "core_model_routing", "lineHeight": 1.25
+    },
+    {
+      "type": "text",
+      "id": "core_model_routing_detail",
+      "x": 480, "y": 594,
+      "width": 180, "height": 20,
+      "text": "model catalog, cost routing, overrides",
+      "originalText": "model catalog, cost routing, overrides",
+      "fontSize": 10, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "top",
+      "strokeColor": "#64748b", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300005, "version": 1, "versionNonce": 300006,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle",
+      "id": "core_ingestion_events",
+      "x": 680, "y": 540,
+      "width": 200, "height": 50,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#93c5fd",
+      "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300007, "version": 1, "versionNonce": 300008,
+      "isDeleted": false, "groupIds": [],
+      "boundElements": [{"id": "core_ingestion_events_text", "type": "text"}],
+      "link": null, "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text",
+      "id": "core_ingestion_events_text",
+      "x": 690, "y": 551,
+      "width": 180, "height": 30,
+      "text": "Ingestion Events\n(core/ingestion_events.py)",
+      "originalText": "Ingestion Events\n(core/ingestion_events.py)",
+      "fontSize": 12, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300009, "version": 1, "versionNonce": 300010,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": "core_ingestion_events", "lineHeight": 1.25
+    },
+    {
+      "type": "text",
+      "id": "core_ingestion_events_detail",
+      "x": 680, "y": 594,
+      "width": 200, "height": 20,
+      "text": "structured ingestion event types",
+      "originalText": "structured ingestion event types",
+      "fontSize": 10, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "top",
+      "strokeColor": "#64748b", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300011, "version": 1, "versionNonce": 300012,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle",
+      "id": "core_session_process_logs",
+      "x": 900, "y": 540,
+      "width": 200, "height": 50,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#93c5fd",
+      "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300013, "version": 1, "versionNonce": 300014,
+      "isDeleted": false, "groupIds": [],
+      "boundElements": [{"id": "core_session_process_logs_text", "type": "text"}],
+      "link": null, "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text",
+      "id": "core_session_process_logs_text",
+      "x": 910, "y": 551,
+      "width": 180, "height": 30,
+      "text": "Session Process Logs\n(core/session_process_logs.py)",
+      "originalText": "Session Process Logs\n(core/session_process_logs.py)",
+      "fontSize": 11, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300015, "version": 1, "versionNonce": 300016,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": "core_session_process_logs", "lineHeight": 1.25
+    },
+    {
+      "type": "text",
+      "id": "core_session_process_logs_detail",
+      "x": 900, "y": 594,
+      "width": 200, "height": 20,
+      "text": "raw stdout/stderr capture per session",
+      "originalText": "raw stdout/stderr capture per session",
+      "fontSize": 10, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "top",
+      "strokeColor": "#64748b", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300017, "version": 1, "versionNonce": 300018,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle",
+      "id": "core_utils",
+      "x": 1120, "y": 540,
+      "width": 155, "height": 50,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#93c5fd",
+      "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300019, "version": 1, "versionNonce": 300020,
+      "isDeleted": false, "groupIds": [],
+      "boundElements": [{"id": "core_utils_text", "type": "text"}],
+      "link": null, "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text",
+      "id": "core_utils_text",
+      "x": 1130, "y": 553,
+      "width": 135, "height": 25,
+      "text": "Utils (core/utils.py)",
+      "originalText": "Utils (core/utils.py)",
+      "fontSize": 12, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300021, "version": 1, "versionNonce": 300022,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": "core_utils", "lineHeight": 1.25
+    },
+    {
+      "type": "text",
+      "id": "core_utils_detail",
+      "x": 1120, "y": 594,
+      "width": 155, "height": 20,
+      "text": "shared helpers, retry utils",
+      "originalText": "shared helpers, retry utils",
+      "fontSize": 10, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "top",
+      "strokeColor": "#64748b", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300023, "version": 1, "versionNonce": 300024,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle",
+      "id": "mod_metrics_mod",
+      "x": 80, "y": 883,
+      "width": 155, "height": 50,
+      "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
+      "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300025, "version": 1, "versionNonce": 300026,
+      "isDeleted": false, "groupIds": [],
+      "boundElements": [{"id": "mod_metrics_mod_text", "type": "text"}],
+      "link": null, "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text",
+      "id": "mod_metrics_mod_text",
+      "x": 90, "y": 895,
+      "width": 135, "height": 30,
+      "text": "Metrics (module)\nPrometheus exporter",
+      "originalText": "Metrics (module)\nPrometheus exporter",
+      "fontSize": 12, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300027, "version": 1, "versionNonce": 300028,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": "mod_metrics_mod", "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle",
+      "id": "mod_registry",
+      "x": 250, "y": 883,
+      "width": 155, "height": 50,
+      "strokeColor": "#047857", "backgroundColor": "#a7f3d0",
+      "fillStyle": "solid", "strokeWidth": 2, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300029, "version": 1, "versionNonce": 300030,
+      "isDeleted": false, "groupIds": [],
+      "boundElements": [{"id": "mod_registry_text", "type": "text"}],
+      "link": null, "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text",
+      "id": "mod_registry_text",
+      "x": 260, "y": 895,
+      "width": 135, "height": 30,
+      "text": "Registry\n(modules/registry.py)",
+      "originalText": "Registry\n(modules/registry.py)",
+      "fontSize": 12, "fontFamily": 3,
+      "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent",
+      "fillStyle": "solid", "strokeWidth": 1, "strokeStyle": "solid",
+      "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 300031, "version": 1, "versionNonce": 300032,
+      "isDeleted": false, "groupIds": [], "boundElements": null,
+      "link": null, "locked": false, "containerId": "mod_registry", "lineHeight": 1.25
     }
   ],
   "appState": {
