@@ -1292,7 +1292,7 @@ export default function CalendarWorkspacePage() {
   const canCreateUserEvents = view === "user" && writableCalendars.length > 0;
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col min-h-full gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Calendar Workspace</h1>
@@ -1464,14 +1464,14 @@ export default function CalendarWorkspacePage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="flex flex-col flex-1 min-h-0">
           <CardHeader>
             <CardTitle>{windowLabel(range, start, end)}</CardTitle>
             <CardDescription>
               {view === "user" ? "User calendar view" : "Butler lane view"} • {range} mode
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="flex flex-col flex-1 min-h-0 space-y-4">
             {workspaceQuery.isLoading ? (
               <p className="text-sm text-muted-foreground">Loading calendar workspace...</p>
             ) : workspaceQuery.isError ? (
@@ -1577,7 +1577,7 @@ export default function CalendarWorkspacePage() {
                 )}
               </div>
             ) : range === "month" ? (
-              <div className="flex flex-col" style={{ minHeight: "calc(100vh - 320px)" }}>
+              <div className="flex flex-col flex-1 min-h-0">
                 <div className="grid grid-cols-7 gap-1 text-xs font-medium text-muted-foreground mb-1">
                   {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
                     <div key={label} className="px-2">
@@ -1585,7 +1585,7 @@ export default function CalendarWorkspacePage() {
                     </div>
                   ))}
                 </div>
-                <div className="grid grid-cols-7 grid-rows-6 gap-1 flex-1">
+                <div className="grid grid-cols-7 grid-rows-6 gap-1 flex-1 min-h-0">
                   {monthDays.map((day) => {
                     const key = format(day, "yyyy-MM-dd");
                     const dayEntries = entriesByDay.get(key) ?? [];
@@ -1629,7 +1629,7 @@ export default function CalendarWorkspacePage() {
                 </div>
               </div>
             ) : range === "week" || range === "day" ? (
-              <div className="flex flex-col" style={{ minHeight: "calc(100vh - 320px)" }}>
+              <div className="flex flex-col flex-1 min-h-0">
                 <div className={cn("grid gap-1 text-xs font-medium text-muted-foreground mb-1", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
                   {weekDays.map((day) => (
                     <div key={format(day, "yyyy-MM-dd")} className="px-2">
@@ -1637,7 +1637,7 @@ export default function CalendarWorkspacePage() {
                     </div>
                   ))}
                 </div>
-                <div className={cn("grid gap-1 flex-1", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
+                <div className={cn("grid gap-1 flex-1 min-h-0", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
                   {weekDays.map((day) => {
                     const key = format(day, "yyyy-MM-dd");
                     const dayEntries = entriesByDay.get(key) ?? [];
