@@ -1577,15 +1577,15 @@ export default function CalendarWorkspacePage() {
                 )}
               </div>
             ) : range === "month" ? (
-              <div className="space-y-2">
-                <div className="grid grid-cols-7 gap-2 text-xs font-medium text-muted-foreground">
+              <div className="flex flex-col" style={{ minHeight: "calc(100vh - 320px)" }}>
+                <div className="grid grid-cols-7 gap-1 text-xs font-medium text-muted-foreground mb-1">
                   {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
                     <div key={label} className="px-2">
                       {label}
                     </div>
                   ))}
                 </div>
-                <div className="grid grid-cols-7 gap-2">
+                <div className="grid grid-cols-7 grid-rows-6 gap-1 flex-1">
                   {monthDays.map((day) => {
                     const key = format(day, "yyyy-MM-dd");
                     const dayEntries = entriesByDay.get(key) ?? [];
@@ -1602,7 +1602,7 @@ export default function CalendarWorkspacePage() {
                           }
                         }}
                         className={cn(
-                          "rounded-md border border-border p-2 cursor-pointer hover:border-primary/50 transition-colors",
+                          "rounded-md border border-border p-2 cursor-pointer hover:border-primary/50 transition-colors min-h-[5.5rem] overflow-hidden",
                           !isSameMonth(day, start) && "bg-muted/30 text-muted-foreground",
                         )}
                       >
