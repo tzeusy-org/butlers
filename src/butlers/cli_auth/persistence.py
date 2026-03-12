@@ -14,6 +14,7 @@ Category: ``cli-auth``.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
@@ -86,7 +87,25 @@ async def restore_tokens(store: CredentialStore) -> dict[str, bool]:
 
         try:
             provider.token_path.parent.mkdir(parents=True, exist_ok=True)
-            provider.token_path.write_text(content, encoding="utf-8")
+
+            # Multiple providers may share the same token_path (e.g.
+            # opencode-openai and opencode-go both use auth.json). Merge
+            # the restored JSON into any existing file content so that one
+            # provider's restore doesn't clobber another's credentials.
+            final_content = content
+            if provider.token_path.exists():
+                try:
+                    existing = json.loads(
+                        provider.token_path.read_text(encoding="utf-8")
+                    )
+                    restored = json.loads(content)
+                    if isinstance(existing, dict) and isinstance(restored, dict):
+                        existing.update(restored)
+                        final_content = json.dumps(existing, indent=2)
+                except (json.JSONDecodeError, ValueError):
+                    pass  # Not JSON — fall back to full overwrite
+
+            provider.token_path.write_text(final_content, encoding="utf-8")
             provider.token_path.chmod(0o600)
             logger.info(
                 "CLI auth restore: wrote token for %s to %s",
