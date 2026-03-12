@@ -418,8 +418,10 @@ def _build_routing_prompt(
     prompt_parts = [
         "Please use the /message-triage skill to analyze the following message and route "
         "relevant components to the appropriate butler(s) by calling the `route_to_butler` "
-        "tool on your configured MCP.\n\n"
-        "IMPORTANT: You MUST call your MCP's route_to_butler to AT LEAST ONE Butler.\n\n"
+        "or `notify` tools on your configured MCP.\n\n"
+        "IMPORTANT: You MUST call at least one routing tool (`route_to_butler` or `notify`).\n"
+        "For outbound email/telegram delivery, use the `notify` tool — do NOT route to "
+        "butler='messenger' via route_to_butler.\n\n"
         "For each route_to_butler call, set the `complexity` parameter based on how much "
         "reasoning the target butler will need:\n"
         "- trivial: simple lookups, status checks, factual one-liners\n"
