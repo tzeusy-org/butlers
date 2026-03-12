@@ -678,9 +678,7 @@ class TestDrainReplayPending:
         # Should not raise — outer exception is swallowed with a warning log
         await drain_replay_pending(mock_pool, "gmail", "gmail:user:x@example.com", submit_fn)
 
-    async def test_outer_db_error_logs_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_outer_db_error_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         mock_pool = MagicMock()
         mock_acquire_ctx = AsyncMock()
         mock_acquire_ctx.__aenter__ = AsyncMock(side_effect=OSError("DB unreachable"))

@@ -273,9 +273,7 @@ def _is_missing_table_or_schema_error(exc: Exception) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_entity_refresh_token(
-    pool: asyncpg.Pool, entity_id: uuid.UUID
-) -> str | None:
+async def _resolve_entity_refresh_token(pool: asyncpg.Pool, entity_id: uuid.UUID) -> str | None:
     """Fetch the refresh token from entity_info for the given companion entity."""
     try:
         async with _pool_acquire(pool) as conn:
@@ -317,9 +315,7 @@ async def _upsert_entity_refresh_token(
         )
 
 
-async def _delete_entity_refresh_token(
-    pool: asyncpg.Pool, entity_id: uuid.UUID
-) -> bool:
+async def _delete_entity_refresh_token(pool: asyncpg.Pool, entity_id: uuid.UUID) -> bool:
     """Delete the refresh token entity_info row for the given companion entity."""
     async with _pool_acquire(pool) as conn:
         result = await conn.execute(
@@ -631,19 +627,19 @@ async def delete_google_credentials(
 
     if delete_all:
         # Delete app credentials from butler_secrets.
-        results.extend([
-            await store.delete(KEY_CLIENT_ID),
-            await store.delete(KEY_CLIENT_SECRET),
-            await store.delete(KEY_SCOPES),
-        ])
+        results.extend(
+            [
+                await store.delete(KEY_CLIENT_ID),
+                await store.delete(KEY_CLIENT_SECRET),
+                await store.delete(KEY_SCOPES),
+            ]
+        )
 
         # Delete ALL refresh tokens across all companion entities (bulk DELETE).
         if pool is not None:
             try:
                 async with _pool_acquire(pool) as conn:
-                    rows = await conn.fetch(
-                        "SELECT entity_id FROM shared.google_accounts"
-                    )
+                    rows = await conn.fetch("SELECT entity_id FROM shared.google_accounts")
                     entity_ids = [row["entity_id"] for row in rows]
                     if entity_ids:
                         delete_result = await conn.execute(
@@ -656,9 +652,7 @@ async def delete_google_credentials(
                         deleted_count = int(delete_result.split()[-1]) if delete_result else 0
                         results.append(deleted_count > 0)
                     # Update all accounts to revoked.
-                    await conn.execute(
-                        "UPDATE shared.google_accounts SET status = 'revoked'"
-                    )
+                    await conn.execute("UPDATE shared.google_accounts SET status = 'revoked'")
             except Exception as exc:  # noqa: BLE001
                 if not _is_missing_table_or_schema_error(exc):
                     raise
@@ -806,8 +800,7 @@ async def _resolve_account_entity_id(
         async with _pool_acquire(pool) as conn:
             if account is None:
                 row = await conn.fetchrow(
-                    "SELECT entity_id FROM shared.google_accounts"
-                    " WHERE is_primary = true LIMIT 1"
+                    "SELECT entity_id FROM shared.google_accounts WHERE is_primary = true LIMIT 1"
                 )
             elif isinstance(account, uuid.UUID):
                 row = await conn.fetchrow(

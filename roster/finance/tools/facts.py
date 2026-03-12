@@ -34,6 +34,7 @@ on the facts table, returning the same shape as the original spending_summary().
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -140,6 +141,7 @@ async def _store_fact(
     valid_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
     permanence: str = "stable",
+    idempotency_key: str | None = None,
 ) -> uuid.UUID:
     from butlers.modules.memory.storage import store_fact
 
@@ -155,6 +157,7 @@ async def _store_fact(
         entity_id=entity_id,
         valid_at=valid_at,
         metadata=metadata or {},
+        idempotency_key=idempotency_key,
     )
 
 
@@ -264,6 +267,20 @@ async def record_transaction_fact(
     if metadata:
         fact_metadata.update(metadata)
 
+    # Build a transaction-specific idempotency key that distinguishes
+    # different transactions sharing the same timestamp and predicate.
+    idem_parts = "|".join(
+        [
+            str(owner_entity_id) if owner_entity_id else "",
+            predicate,
+            posted_at.isoformat(),
+            merchant,
+            _str_amount(stored_amount),
+            currency.upper(),
+        ]
+    )
+    txn_idempotency_key = hashlib.sha256(idem_parts.encode()).hexdigest()[:32]
+
     fact_id = await _store_fact(
         pool,
         subject="owner",
@@ -274,6 +291,7 @@ async def record_transaction_fact(
         valid_at=posted_at,
         metadata=fact_metadata,
         permanence="stable",
+        idempotency_key=txn_idempotency_key,
     )
 
     return _transaction_fact_to_dict(

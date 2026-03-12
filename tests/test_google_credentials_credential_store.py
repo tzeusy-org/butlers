@@ -341,9 +341,7 @@ class TestStoreGoogleCredentialsWithCredentialStore:
                 refresh_token="rtoken",
             )
 
-        mock_owner_upsert.assert_awaited_once_with(
-            ci_pool, CONTACT_INFO_REFRESH_TOKEN, "rtoken"
-        )
+        mock_owner_upsert.assert_awaited_once_with(ci_pool, CONTACT_INFO_REFRESH_TOKEN, "rtoken")
 
 
 # ---------------------------------------------------------------------------
@@ -708,9 +706,7 @@ class TestDeleteGoogleCredentialsWithCredentialStore:
         # Simulate google_accounts returning two rows via acquire context manager.
         # The bulk DELETE returns "DELETE 2" meaning two entity_info rows removed.
         row1, row2 = MagicMock(), MagicMock()
-        row1.__getitem__ = MagicMock(
-            side_effect=lambda k: _ENTITY_ID if k == "entity_id" else None
-        )
+        row1.__getitem__ = MagicMock(side_effect=lambda k: _ENTITY_ID if k == "entity_id" else None)
         row2.__getitem__ = MagicMock(
             side_effect=lambda k: _ENTITY_ID_2 if k == "entity_id" else None
         )
@@ -1026,7 +1022,7 @@ class TestResolveGoogleAccountEntity:
 
     async def test_returns_none_when_table_missing(self) -> None:
         pool = _make_acquire_pool(
-            fetchrow_side_effect=Exception("relation \"shared.google_accounts\" does not exist")
+            fetchrow_side_effect=Exception('relation "shared.google_accounts" does not exist')
         )
 
         result = await resolve_google_account_entity(pool)
@@ -1041,7 +1037,7 @@ class TestResolveGoogleAccountEntity:
 class TestListGoogleAccountEntities:
     async def test_returns_empty_list_when_table_missing(self) -> None:
         pool = _make_acquire_pool(
-            fetch_side_effect=Exception("relation \"shared.google_accounts\" does not exist")
+            fetch_side_effect=Exception('relation "shared.google_accounts" does not exist')
         )
 
         result = await list_google_account_entities(pool)
@@ -1062,10 +1058,12 @@ class TestListGoogleAccountEntities:
             row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
             return row
 
-        pool = _make_acquire_pool(fetch_return=[
-            _make_row(_ACCOUNT_ID_1, "alice@gmail.com", _ENTITY_ID, True),
-            _make_row(_ACCOUNT_ID_2, "work@gmail.com", _ENTITY_ID_2, False),
-        ])
+        pool = _make_acquire_pool(
+            fetch_return=[
+                _make_row(_ACCOUNT_ID_1, "alice@gmail.com", _ENTITY_ID, True),
+                _make_row(_ACCOUNT_ID_2, "work@gmail.com", _ENTITY_ID_2, False),
+            ]
+        )
 
         result = await list_google_account_entities(pool)
         assert len(result) == 2

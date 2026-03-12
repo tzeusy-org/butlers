@@ -222,14 +222,17 @@ class TestDeleteGoogleCredentials:
 
     async def test_returns_false_when_no_row(self) -> None:
         store = _make_credential_store(delete_returns=False)
-        with patch(
-            "butlers.google_credentials._resolve_account_entity_id",
-            new_callable=AsyncMock,
-            return_value=None,
-        ), patch(
-            "butlers.google_credentials.delete_owner_entity_info",
-            new_callable=AsyncMock,
-            return_value=False,
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.google_credentials.delete_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
         ):
             result = await delete_google_credentials(store, pool=MagicMock())
         assert result is False

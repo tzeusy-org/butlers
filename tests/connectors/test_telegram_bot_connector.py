@@ -659,9 +659,7 @@ async def test_webhook_mode_registration(connector: TelegramBotConnector) -> Non
             "butlers.connectors.health_socket.make_health_socket",
             return_value=Mock(),
         ),
-        patch.object(
-            connector._http_client, "post", return_value=mock_response
-        ) as mock_post,
+        patch.object(connector._http_client, "post", return_value=mock_response) as mock_post,
     ):
         await connector.start_webhook()
 
