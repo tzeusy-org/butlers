@@ -932,7 +932,12 @@ class TestCheckpointIntegration:
         mock_load.assert_not_awaited()
 
     async def test_checkpoint_db_error_is_fail_open(self) -> None:
-        """If save_voice_checkpoint raises, the pipeline continues without crashing."""
+        """If save_voice_checkpoint raises, the pipeline continues without corrupting metrics.
+
+        The save is intentionally outside the ingest try/except, so a checkpoint
+        DB error is caught by its own guard and must NOT be recorded as an ingest
+        failure.  The ingest submission itself succeeds normally.
+        """
         mock_mcp = AsyncMock()
         mock_mcp.call_tool = AsyncMock(return_value={"status": "accepted"})
         mock_pool = MagicMock()
@@ -956,11 +961,15 @@ class TestCheckpointIntegration:
                 new_callable=AsyncMock,
                 side_effect=Exception("DB connection error"),
             ),
+            patch.object(
+                connector._connector_metrics, "record_ingest_submission"
+            ) as mock_record_ingest,
         ):
             # Should not raise despite save_voice_checkpoint failing
-            # (fail-open is handled inside save_voice_checkpoint itself)
-            # We test that a save failure still doesn't crash _process_segment
             await connector._process_segment(spec, segment, MagicMock())
 
-        # Ingest was still called successfully before the checkpoint save error
+        # Ingest succeeded — call_tool was awaited once
         mock_mcp.call_tool.assert_awaited_once()
+        # Ingest status must be recorded as success (not "error") — checkpoint
+        # failure must not pollute ingest metrics
+        mock_record_ingest.assert_called_once_with("success")

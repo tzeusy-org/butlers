@@ -551,16 +551,6 @@ class LiveListenerConnector:
             self._connector_metrics.record_ingest_submission(status)
             ll_metrics.inc_segments("transcribed")
 
-            # Persist checkpoint after successful submission (accepted or duplicate)
-            if self._db_pool is not None:
-                await save_voice_checkpoint(
-                    self._db_pool,
-                    mic,
-                    last_utterance_ts=unix_ms,
-                    session_id=session.session_id,
-                    session_last_ts=session.session_last_ts_ms,
-                )
-
         except Exception as exc:
             submission_elapsed = time.monotonic() - submission_start
             ll_metrics.observe_stage_latency("submission", submission_elapsed)
@@ -568,6 +558,23 @@ class LiveListenerConnector:
             self._connector_metrics.record_error(type(exc).__name__.lower(), "ingest_submit")
             logger.warning("live-listener: ingest submission failed for mic=%s: %s", mic, exc)
             return
+
+        # Persist checkpoint after successful submission (accepted or duplicate).
+        # Kept outside the ingest try/except so a checkpoint DB error never
+        # pollutes ingest metrics or logs.
+        if self._db_pool is not None:
+            try:
+                await save_voice_checkpoint(
+                    self._db_pool,
+                    mic,
+                    last_utterance_ts=unix_ms,
+                    session_id=session.session_id,
+                    session_last_ts=session.session_last_ts_ms,
+                )
+            except Exception:
+                logger.exception(
+                    "live-listener: unexpected error saving checkpoint for mic=%s", mic
+                )
 
         # Record e2e latency
         e2e_elapsed = time.monotonic() - e2e_start
