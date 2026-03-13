@@ -67,7 +67,7 @@ The transcription service (faster-whisper) is hosted separately and is not part 
 
 **Configuration:**
 ```
-LIVE_LISTENER_TRANSCRIPTION_URL=tcp://localhost:10300  # Wyoming default
+LIVE_LISTENER_TRANSCRIPTION_URL=tcp://wyoming-faster-whisper.parrot-hen.ts.net:10300  # wyoming namespace on tailnet
 LIVE_LISTENER_TRANSCRIPTION_PROTOCOL=wyoming  # or "websocket", "http"
 ```
 
