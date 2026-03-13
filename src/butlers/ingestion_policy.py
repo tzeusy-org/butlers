@@ -334,6 +334,28 @@ def _match_channel_id(envelope: IngestionEnvelope, condition: dict[str, Any]) ->
     return envelope.raw_key.strip() == target
 
 
+def _match_mic_id(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
+    """Match mic_id: case-insensitive string equality against raw_key (voice connector device name).
+
+    Condition schema: {"mic_id": "kitchen"}
+
+    The ``raw_key`` for voice connectors is the device name lowercased by
+    :func:`butlers.connectors.live_listener.filter_gate.extract_mic_key` per
+    the connector-source-filter-enforcement spec requirement
+    *"the key value is always lowercase"*.  The condition ``mic_id`` value is
+    also lowercased here for defensive correctness.
+
+    Supports the ``"*"`` wildcard to match all mics.
+    """
+    target = str(condition.get("mic_id", "")).strip().lower()
+    if not target:
+        return False
+    # Catch-all wildcard
+    if target == "*":
+        return True
+    return envelope.raw_key.strip().lower() == target
+
+
 # Map rule_type → matcher function
 _MATCHERS: dict[str, Any] = {
     "sender_domain": _match_sender_domain,
@@ -343,6 +365,7 @@ _MATCHERS: dict[str, Any] = {
     "substring": _match_substring,
     "chat_id": _match_chat_id,
     "channel_id": _match_channel_id,
+    "mic_id": _match_mic_id,
 }
 
 
