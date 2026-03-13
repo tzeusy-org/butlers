@@ -33,6 +33,12 @@ logger = logging.getLogger(__name__)
 
 _CONNECTOR_TYPE = "live-listener"
 
+# GAP-3: track rule IDs that have already received a one-time WARNING for
+# having a source_key_type other than "mic_id".  This set persists for the
+# lifetime of the process (per-evaluator, per rule ID) so the warning fires
+# exactly once, regardless of how many times the rules are refreshed.
+_warned_non_mic_id_rule_ids: set[str] = set()
+
 
 def build_filter_scope(device_name: str) -> str:
     """Return the ingestion policy scope string for a mic pipeline.
@@ -74,6 +80,36 @@ def create_filter_evaluator(
         db_pool=db_pool,
         refresh_interval_s=refresh_interval_s,
     )
+
+
+def warn_non_mic_id_rules(evaluator: IngestionPolicyEvaluator) -> None:
+    """Emit a one-time WARNING for each loaded rule whose ``rule_type`` is not ``mic_id``.
+
+    The live-listener connector only understands ``source_key_type="mic_id"`` rules.
+    Any other rule type loaded into the evaluator's scope will never match a voice
+    utterance and should be flagged so operators can correct mis-configured rules.
+
+    Per spec: "filters with any other source_key_type are skipped with a one-time
+    WARNING log per filter ID."
+
+    Call this after :meth:`~butlers.ingestion_policy.IngestionPolicyEvaluator.ensure_loaded`
+    to emit the warnings as soon as rules are known.
+
+    Args:
+        evaluator: The per-mic evaluator whose loaded rules should be inspected.
+    """
+    for rule in evaluator.rules:
+        rule_type = rule.get("rule_type", "")
+        rule_id = str(rule.get("id", "")) or None
+        if rule_type != "mic_id" and rule_id and rule_id not in _warned_non_mic_id_rule_ids:
+            _warned_non_mic_id_rule_ids.add(rule_id)
+            logger.warning(
+                "live-listener: filter rule id=%s has source_key_type=%r which is not "
+                "'mic_id'; rule will be skipped for voice utterances (scope=%s)",
+                rule_id,
+                rule_type,
+                evaluator.scope,
+            )
 
 
 def extract_mic_key(device_name: str) -> str:
