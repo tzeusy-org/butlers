@@ -1027,6 +1027,7 @@ class TestIngestionPolicyIntegration:
             connect_calls.append("connect")
 
         mock_tg_client.start = fake_tg_start
+        mock_tg_client.get_dialogs = AsyncMock(return_value=[])
         mock_tg_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError())
 
         with (

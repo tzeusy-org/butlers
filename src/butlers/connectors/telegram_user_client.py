@@ -264,6 +264,11 @@ class TelegramUserClientConnector:
             await self._telegram_client.start()
             logger.info("Connected to Telegram as user-client")
 
+            # Force Telethon to sync internal update state (pts/date/seq).
+            # Without this, StringSession clients may not receive real-time
+            # NewMessage events because the update gap is unknown.
+            await self._telegram_client.get_dialogs(limit=1)
+
             # Optional: bounded backfill on startup
             if self._config.backfill_window_h:
                 await self._perform_backfill()
