@@ -79,9 +79,13 @@ def create_filter_evaluator(
 def extract_mic_key(device_name: str) -> str:
     """Extract the ``mic_id`` key value for filter evaluation.
 
-    The key value is the device name exactly as configured in
-    ``LIVE_LISTENER_DEVICES`` (the ``"name"`` field).  This matches the
-    ``source_key_type="mic_id"`` condition schema ``{"mic_id": "<device_name>"}``.
+    The key value is the device name normalised to **lowercase** as required
+    by the connector-source-filter-enforcement spec:
+
+        *"the key value is always lowercase"*
+
+    This matches the ``source_key_type="mic_id"`` condition schema
+    ``{"mic_id": "<device_name>"}``.
 
     Args:
         device_name: The device name from LIVE_LISTENER_DEVICES config.
@@ -90,7 +94,7 @@ def extract_mic_key(device_name: str) -> str:
         The key value to pass to
         :meth:`~butlers.ingestion_policy.IngestionPolicyEvaluator.evaluate`.
     """
-    return device_name
+    return device_name.lower()
 
 
 def evaluate_voice_filter(

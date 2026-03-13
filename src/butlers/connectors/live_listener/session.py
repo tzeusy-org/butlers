@@ -110,7 +110,8 @@ class ConversationSession:
 
         # Always update the last-seen timestamp
         self._session_last_ts_ms = utterance_unix_ms
-        return self._session_id  # type: ignore[return-value]
+        assert self._session_id is not None  # always set in the branches above
+        return self._session_id
 
     # ------------------------------------------------------------------
     # Checkpoint restore

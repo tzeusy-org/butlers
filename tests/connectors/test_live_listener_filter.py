@@ -72,13 +72,20 @@ def test_build_filter_scope_different_mics_different_scopes() -> None:
 
 
 def test_extract_mic_key_returns_device_name() -> None:
-    """mic_id key extraction should return the device name as-is."""
+    """mic_id key extraction should return the device name lowercased."""
     assert extract_mic_key("kitchen") == "kitchen"
 
 
 def test_extract_mic_key_preserves_hyphens_and_digits() -> None:
     """Device names with hyphens and digits should be preserved."""
     assert extract_mic_key("living-room-2") == "living-room-2"
+
+
+def test_extract_mic_key_normalizes_to_lowercase() -> None:
+    """Per spec: mic_id key value is always lowercase (case-normalised)."""
+    assert extract_mic_key("Kitchen") == "kitchen"
+    assert extract_mic_key("BEDROOM") == "bedroom"
+    assert extract_mic_key("Living-Room-2") == "living-room-2"
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +316,44 @@ def test_match_mic_id_pass_through_action() -> None:
     decision = evaluator.evaluate(envelope)
     assert decision.action == "pass_through"
     assert decision.allowed is True
+
+
+def test_match_mic_id_case_insensitive() -> None:
+    """mic_id matching is case-insensitive: raw_key and condition value are both lowercased."""
+    # Rule stores lowercase "kitchen" (as configured via UI/API)
+    evaluator = _make_evaluator_with_rules(
+        [
+            {
+                "id": "rule-1",
+                "rule_type": "mic_id",
+                "condition": {"mic_id": "kitchen"},
+                "action": "block",
+                "priority": 0,
+                "name": "block-kitchen",
+            }
+        ]
+    )
+
+    # raw_key comes from extract_mic_key which lowercases, so "Kitchen" → "kitchen"
+    envelope = IngestionEnvelope(source_channel="voice", raw_key="kitchen")
+    decision = evaluator.evaluate(envelope)
+    assert decision.action == "block", "Lowercase raw_key should match lowercase rule condition"
+
+    # Simulate a misconfigured rule condition with mixed case — still matches
+    evaluator_mixed = _make_evaluator_with_rules(
+        [
+            {
+                "id": "rule-2",
+                "rule_type": "mic_id",
+                "condition": {"mic_id": "Kitchen"},
+                "action": "block",
+                "priority": 0,
+                "name": "block-kitchen-mixed",
+            }
+        ]
+    )
+    decision_mixed = evaluator_mixed.evaluate(envelope)
+    assert decision_mixed.action == "block", "Mixed-case rule condition should still match"
 
 
 # ---------------------------------------------------------------------------
