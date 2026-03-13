@@ -9,6 +9,14 @@ Modules:
 - ``vad``: VAD state machine, segment bounds, Silero ONNX wrapper
 - ``metrics``: Voice-specific Prometheus counters and histograms
 - ``config``: Environment variable configuration
+- ``transcription``: Protocol-agnostic transcription client (Wyoming/WebSocket/HTTP)
+
+Env vars:
+    LIVE_LISTENER_TRANSCRIPTION_URL: Transcription service URL (required).
+        For Wyoming: tcp://host:10300. For WS: ws://host:port/path. For HTTP: http://host:port.
+    LIVE_LISTENER_TRANSCRIPTION_PROTOCOL: "wyoming" | "websocket" | "http" (default: "wyoming")
+    LIVE_LISTENER_LANGUAGE: Language hint for transcription (default: "en")
+    LIVE_LISTENER_MIN_CONFIDENCE: Minimum confidence threshold (default: 0.3)
 """
 
 __all__ = [
@@ -16,9 +24,25 @@ __all__ = [
     "VadStateMachine",
     "LiveListenerConfig",
     "LiveListenerMetrics",
+    "TranscriptionClient",
+    "TranscriptionResult",
+    "TranscriptionProtocol",
+    "WyomingTranscriptionClient",
+    "WebSocketTranscriptionClient",
+    "HttpTranscriptionClient",
+    "create_transcription_client",
 ]
 
 from butlers.connectors.live_listener.audio import MicPipeline
 from butlers.connectors.live_listener.config import LiveListenerConfig
 from butlers.connectors.live_listener.metrics import LiveListenerMetrics
+from butlers.connectors.live_listener.transcription import (
+    HttpTranscriptionClient,
+    TranscriptionClient,
+    TranscriptionProtocol,
+    TranscriptionResult,
+    WebSocketTranscriptionClient,
+    WyomingTranscriptionClient,
+    create_transcription_client,
+)
 from butlers.connectors.live_listener.vad import VadStateMachine
