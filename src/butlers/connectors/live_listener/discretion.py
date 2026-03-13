@@ -326,7 +326,7 @@ class DiscretionEvaluator:
                 ),
                 timeout=self._config.timeout_s,
             )
-        except TimeoutError:
+        except (TimeoutError, httpx.TimeoutException):
             logger.warning(
                 "Discretion LLM timed out after %.1fs for mic=%s utterance=%r — defaulting FORWARD",
                 self._config.timeout_s,
