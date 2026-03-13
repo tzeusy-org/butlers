@@ -71,6 +71,7 @@ from butlers.connectors.live_listener.envelope import (
 from butlers.connectors.live_listener.filter_gate import (
     create_filter_evaluator,
     evaluate_voice_filter,
+    warn_non_mic_id_rules,
 )
 from butlers.connectors.live_listener.metrics import LiveListenerMetrics
 from butlers.connectors.live_listener.session import ConversationSession
@@ -360,6 +361,11 @@ class LiveListenerConnector:
             db_pool=self._db_pool,
         )
 
+        # GAP-4: perform initial filter load before audio capture begins (per spec).
+        await filter_evaluator.ensure_loaded()
+        # GAP-3: warn once per rule ID for any non-mic_id rule type in this scope.
+        warn_non_mic_id_rules(filter_evaluator)
+
         logger.info("live-listener: opening mic pipeline for mic=%s", mic)
 
         # Capture the running event loop here (safe: we're inside an async method).
@@ -378,9 +384,7 @@ class LiveListenerConnector:
 
             for seg in segments:
                 # Schedule async processing without blocking the PortAudio callback thread
-                loop.call_soon_threadsafe(
-                    self._schedule_segment, spec, seg, filter_evaluator
-                )
+                loop.call_soon_threadsafe(self._schedule_segment, spec, seg, filter_evaluator)
 
         mic_pipeline = MicPipeline(spec=spec, config=self._config, on_frame=on_frame)
 
