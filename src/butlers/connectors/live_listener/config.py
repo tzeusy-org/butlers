@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -81,6 +82,9 @@ class LiveListenerConfig:
     # --- Session ---
     session_gap_s: int = 120
 
+    # --- VAD model ---
+    vad_model_path: str = ""
+
     # --- Reconnection backoff ---
     reconnect_base_s: float = 1.0
     reconnect_max_s: float = 60.0
@@ -146,12 +150,17 @@ class LiveListenerConfig:
             v = os.environ.get(key, "").strip()
             return int(v) if v else default
 
+        vad_model_path = os.environ.get("LIVE_LISTENER_VAD_MODEL_PATH", "").strip()
+        if not vad_model_path:
+            vad_model_path = _find_silero_vad_model()
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             devices=devices,
             transcription_url=transcription_url,
             provider=provider,
             channel=channel,
+            vad_model_path=vad_model_path,
             vad_onset_threshold=_float("LIVE_LISTENER_VAD_ONSET_THRESHOLD", 0.5),
             vad_offset_threshold=_float("LIVE_LISTENER_VAD_OFFSET_THRESHOLD", 0.3),
             vad_onset_frames=_int("LIVE_LISTENER_VAD_ONSET_FRAMES", 3),
@@ -174,3 +183,14 @@ class LiveListenerConfig:
     def endpoint_identity_for_mic(self, mic_name: str) -> str:
         """Build the endpoint identity string for a given mic name."""
         return f"live-listener:mic:{mic_name}"
+
+
+def _find_silero_vad_model() -> str:
+    """Search common locations for the Silero VAD ONNX model."""
+    candidates = [
+        Path.home() / ".cache/torch/hub/snakers4_silero-vad_master/files/silero_vad.onnx",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+    return ""

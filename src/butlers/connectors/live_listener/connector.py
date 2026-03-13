@@ -17,6 +17,7 @@ Optional:
   CONNECTOR_HEALTH_PORT        HTTP port for /health and /metrics (default: 40091)
   CONNECTOR_HEARTBEAT_INTERVAL_S  Heartbeat interval in seconds (default: 120)
   CONNECTOR_HEARTBEAT_ENABLED  Enable/disable heartbeat (default: true)
+  LIVE_LISTENER_VAD_MODEL_PATH         Path to Silero VAD ONNX model (auto-detected if unset)
   LIVE_LISTENER_VAD_ONSET_THRESHOLD
   LIVE_LISTENER_VAD_OFFSET_THRESHOLD
   LIVE_LISTENER_VAD_ONSET_FRAMES
@@ -369,7 +370,7 @@ class LiveListenerConnector:
             min_segment_ms=self._config.min_segment_ms,
             max_segment_ms=self._config.max_segment_ms,
         )
-        silero = SileroVad()  # no model_path → returns 0.0 (silence) until model loaded
+        silero = SileroVad(model_path=self._config.vad_model_path or None)
         vad = VadStateMachine(config=vad_config, model=silero, mic_name=mic)
         vad.load()
 
