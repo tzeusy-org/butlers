@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import type {
   CLIAuthHealthState,
@@ -29,7 +29,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -49,12 +48,11 @@ import {
   useTestCLIAuthApiKey,
 } from "@/hooks/use-cli-auth";
 import {
-  useDeleteGoogleCredentials,
   useDisconnectAccount,
   useGoogleAccounts,
+  useGoogleAccountsHealth,
   useGoogleCredentialStatus,
   useSetPrimaryAccount,
-  useUpsertGoogleCredentials,
 } from "@/hooks/use-secrets";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { RECENT_SEARCHES_KEY } from "@/lib/local-settings";
@@ -114,150 +112,6 @@ function healthBadgeLabel(state: OAuthCredentialState): string {
     default:
       return state;
   }
-}
-
-function PresenceRow({
-  label,
-  present,
-  value,
-}: {
-  label: string;
-  present: boolean;
-  value?: string | null;
-}) {
-  return (
-    <div className="flex items-center justify-between py-2 border-b border-border last:border-0">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <div className="flex items-center gap-2">
-        {value && (
-          <span className="text-sm font-mono text-foreground">{value}</span>
-        )}
-        <Badge variant={present ? "default" : "outline"}>
-          {present ? "Configured" : "Not set"}
-        </Badge>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// App credentials input form (client_id + client_secret)
-// ---------------------------------------------------------------------------
-
-function AppCredentialsForm() {
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const upsertMutation = useUpsertGoogleCredentials();
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setSaved(false);
-    try {
-      await upsertMutation.mutateAsync({ client_id: clientId.trim(), client_secret: clientSecret.trim() });
-      setClientId("");
-      setClientSecret("");
-      setSaved(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save credentials.");
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-3">
-      <div className="space-y-1">
-        <Label htmlFor="google-client-id">Client ID</Label>
-        <Input
-          id="google-client-id"
-          type="text"
-          placeholder="Enter Google OAuth client ID"
-          value={clientId}
-          onChange={(e) => { setClientId(e.target.value); setSaved(false); }}
-          autoComplete="off"
-          required
-        />
-      </div>
-      <div className="space-y-1">
-        <Label htmlFor="google-client-secret">Client Secret</Label>
-        <Input
-          id="google-client-secret"
-          type="password"
-          placeholder="Enter Google OAuth client secret"
-          value={clientSecret}
-          onChange={(e) => { setClientSecret(e.target.value); setSaved(false); }}
-          autoComplete="new-password"
-          required
-        />
-      </div>
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {saved && (
-        <p className="text-sm text-green-600 dark:text-green-400">
-          App credentials saved successfully.
-        </p>
-      )}
-      <Button
-        type="submit"
-        size="sm"
-        disabled={upsertMutation.isPending || !clientId.trim() || !clientSecret.trim()}
-      >
-        {upsertMutation.isPending ? "Saving..." : "Save app credentials"}
-      </Button>
-    </form>
-  );
-}
-
-function DeleteCredentialsDialog() {
-  const [open, setOpen] = useState(false);
-  const deleteMutation = useDeleteGoogleCredentials();
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleDelete() {
-    setError(null);
-    try {
-      await deleteMutation.mutateAsync();
-      setOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete credentials.");
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="destructive" size="sm">
-          Delete credentials
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Delete Google credentials?</DialogTitle>
-          <DialogDescription>
-            This will permanently remove all stored Google OAuth credentials
-            (client_id, client_secret, and refresh token) from the database.
-            The butler will no longer be able to access Google services until
-            credentials are re-configured and the OAuth flow is re-run.
-          </DialogDescription>
-        </DialogHeader>
-        {error && (
-          <p className="text-sm text-destructive">{error}</p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={handleDelete}
-            disabled={deleteMutation.isPending}
-          >
-            {deleteMutation.isPending ? "Deleting..." : "Delete credentials"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +391,7 @@ function CLIAuthCard() {
   const isError = providersQuery.isError;
 
   return (
-    <Card>
+    <Card id="cli-auth-card">
       <CardHeader>
         <CardTitle>CLI Runtime Authentication</CardTitle>
         <CardDescription>
@@ -787,8 +641,7 @@ function GoogleAccountsSection() {
           <div>
             <CardTitle>Google OAuth</CardTitle>
             <CardDescription>
-              Configure Google OAuth credentials and manage connected Google accounts for
-              Calendars, Emails, and Contacts.
+              Manage connected Google accounts for Calendars, Emails, and Contacts.
             </CardDescription>
           </div>
           {isLoading ? (
@@ -803,42 +656,6 @@ function GoogleAccountsSection() {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* App credentials (shared across all accounts) */}
-        <div className="space-y-2">
-          <p className="text-sm font-medium">
-            {canStartOAuth ? "Update app credentials" : "Configure app credentials"}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Enter your Google OAuth app credentials from the{" "}
-            <a
-              href="https://console.cloud.google.com/apis/credentials"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline underline-offset-2"
-            >
-              Google Cloud Console
-            </a>
-            . These are shared across all connected accounts.
-          </p>
-          {isLoading ? (
-            <div className="space-y-2">
-              <Skeleton className="h-8 w-full" />
-              <Skeleton className="h-8 w-full" />
-            </div>
-          ) : (
-            <>
-              <PresenceRow label="Client ID" present={credStatus?.client_id_configured ?? false} />
-              <PresenceRow
-                label="Client Secret"
-                present={credStatus?.client_secret_configured ?? false}
-              />
-            </>
-          )}
-          <AppCredentialsForm />
-        </div>
-
-        <div className="border-t border-border" />
-
         {/* Connected accounts list */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
@@ -858,7 +675,11 @@ function GoogleAccountsSection() {
           </div>
           {!canStartOAuth && !isLoading && (
             <p className="text-xs text-muted-foreground">
-              Save app credentials above before connecting accounts.
+              Configure app credentials in{" "}
+              <a href="/butlers/secrets" className="underline underline-offset-2">
+                Secrets
+              </a>{" "}
+              before connecting accounts.
             </p>
           )}
           {isError ? (
@@ -888,21 +709,81 @@ function GoogleAccountsSection() {
           )}
         </div>
 
-        <div className="border-t border-border" />
-
-        {/* Danger zone */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-destructive">Danger zone</p>
-            <p className="text-xs text-muted-foreground">
-              Delete all stored Google OAuth credentials (client_id, client_secret). This cannot be
-              undone.
-            </p>
-          </div>
-          <DeleteCredentialsDialog />
-        </div>
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Expired auth warning banner
+// ---------------------------------------------------------------------------
+
+function ExpiredAuthBanner() {
+  const accountsQuery = useGoogleAccounts();
+  const accounts = accountsQuery.data ?? [];
+  const providersQuery = useCLIAuthProviders();
+  const providers = providersQuery.data ?? [];
+
+  // Fetch per-account token health for all Google accounts
+  const accountHealthResults = useGoogleAccountsHealth(accounts.map((a) => a.id));
+
+  // Google accounts where token probe failed
+  const expiredGoogleAccounts = accounts.filter((_account, i) => {
+    const status = accountHealthResults[i]?.data;
+    return status && !status.token_valid && status.has_refresh_token;
+  });
+
+  // OAuth-based CLI providers (device-code) that are not authenticated
+  const expiredCLIProviders = providers.filter(
+    (p) => p.auth_mode === "device_code" && p.health === "not_authenticated",
+  );
+
+  if (expiredGoogleAccounts.length === 0 && expiredCLIProviders.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-destructive bg-destructive/10 p-4 space-y-3">
+      <p className="text-sm font-semibold text-destructive">
+        OAuth tokens need re-authorization
+      </p>
+      {expiredGoogleAccounts.map((account) => {
+        const reAuthUrl = getGoogleOAuthStartUrl({
+          accountHint: account.email ?? undefined,
+          forceConsent: true,
+        });
+        return (
+          <div key={account.id} className="flex items-center justify-between gap-2">
+            <p className="text-sm text-destructive">
+              <span className="font-medium">{account.email ?? account.id}</span>{" "}
+              — Google token expired
+            </p>
+            <a href={reAuthUrl} target="_blank" rel="noopener noreferrer">
+              <Button variant="destructive" size="sm">
+                Re-authorize
+              </Button>
+            </a>
+          </div>
+        );
+      })}
+      {expiredCLIProviders.map((provider) => (
+        <div key={provider.name} className="flex items-center justify-between gap-2">
+          <p className="text-sm text-destructive">
+            <span className="font-medium">{provider.display_name}</span>{" "}
+            — token expired
+          </p>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() =>
+              document.getElementById("cli-auth-card")?.scrollIntoView({ behavior: "smooth" })
+            }
+          >
+            Re-authenticate
+          </Button>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -937,6 +818,8 @@ export default function SettingsPage() {
           Local dashboard preferences for this browser.
         </p>
       </div>
+
+      <ExpiredAuthBanner />
 
       <Card>
         <CardHeader>

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   deleteGoogleCredentials,
   deleteSecret,
@@ -113,6 +113,17 @@ export function useSetPrimaryAccount() {
       queryClient.invalidateQueries({ queryKey: googleAccountsKeys.all });
       queryClient.invalidateQueries({ queryKey: secretsKeys.oauthStatus() });
     },
+  });
+}
+
+/** Batch-fetch per-account token health for all Google accounts. */
+export function useGoogleAccountsHealth(accountIds: string[]) {
+  return useQueries({
+    queries: accountIds.map((id) => ({
+      queryKey: googleAccountsKeys.status(id),
+      queryFn: () => getAccountStatus(id),
+      retry: false,
+    })),
   });
 }
 
