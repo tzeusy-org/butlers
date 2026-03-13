@@ -52,8 +52,7 @@ _SYSTEM_PROMPT = (
     "FORWARD if the utterance is a question, request, command, or anything "
     "that sounds like it is directed at an assistant. "
     "IGNORE for background conversation, ambient noise transcriptions, TV/radio "
-    "chatter, or utterances clearly not directed at an assistant.\n"
-    "/no_think"
+    "chatter, or utterances clearly not directed at an assistant."
 )
 
 _USER_PROMPT_TEMPLATE = """\
@@ -232,7 +231,7 @@ async def _call_llm(
         KeyError / ValueError: on unexpected response shape.
     """
     base_url = llm_url.rstrip("/") if llm_url else "http://localhost:11434/v1"
-    model = llm_model if llm_model else "haiku"
+    model = llm_model if llm_model else "gemma3:4b"
 
     payload = {
         "model": model,
