@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.connectors.live_listener.checkpoint import VoiceCheckpoint
 from butlers.connectors.live_listener.config import LiveListenerConfig, MicDeviceSpec
 from butlers.connectors.live_listener.connector import LiveListenerConnector, MicPipelineState
 from butlers.connectors.live_listener.discretion import DiscretionResult
@@ -699,3 +700,267 @@ class TestMetricsInstrumentation:
         mock_inc_discretion.assert_called_once_with("forward")
         # E2E latency recorded
         mock_e2e.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint integration
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointIntegration:
+    """Verify checkpoint save/load wiring in connector lifecycle."""
+
+    def _make_full_connector(
+        self,
+        mock_mcp: AsyncMock,
+        mock_pool: MagicMock,
+    ) -> LiveListenerConnector:
+        """Build connector with both mcp_client and db_pool set."""
+        cfg = _make_config()
+        c = LiveListenerConnector(config=cfg, mcp_client=mock_mcp, db_pool=mock_pool)
+        return c
+
+    def _setup_mic_pipeline(self, connector: LiveListenerConnector, mic: str = "kitchen") -> None:
+        """Manually wire per-mic pipeline components (normally done in start())."""
+        connector._sessions[mic] = ConversationSession(device_name=mic)
+        connector._ll_metrics[mic] = LiveListenerMetrics(mic=mic)
+        connector._mic_states[mic] = MicPipelineState(mic)
+        connector._mic_states[mic].connected = True
+
+    def _make_mock_tx(self, text: str = "hello world") -> AsyncMock:
+        mock_tx = AsyncMock()
+        mock_tx.healthy = True
+        mock_tx.transcribe = AsyncMock(
+            return_value=TranscriptionResult(
+                text=text, confidence=0.9, language="en", duration_s=1.0
+            )
+        )
+        return mock_tx
+
+    def _make_mock_disc(self, verdict: str = "FORWARD") -> AsyncMock:
+        mock_disc = AsyncMock()
+        mock_disc.evaluate = AsyncMock(
+            return_value=DiscretionResult(verdict=verdict, reason="ok", is_fail_open=False)
+        )
+        return mock_disc
+
+    async def test_checkpoint_saved_after_successful_ingest(self) -> None:
+        """save_voice_checkpoint is called after accepted ingest submission."""
+        mock_mcp = AsyncMock()
+        mock_mcp.call_tool = AsyncMock(return_value={"status": "accepted"})
+        mock_pool = MagicMock()
+
+        connector = self._make_full_connector(mock_mcp, mock_pool)
+        mic = "kitchen"
+        self._setup_mic_pipeline(connector, mic)
+        connector._transcription_clients[mic] = self._make_mock_tx()
+        connector._discretion_evaluators[mic] = self._make_mock_disc()
+
+        spec = MicDeviceSpec(name=mic, device="hw:0")
+        segment = _make_speech_segment(mic_name=mic)
+
+        with (
+            patch(
+                "butlers.connectors.live_listener.connector.evaluate_voice_filter",
+                return_value=MagicMock(allowed=True),
+            ),
+            patch(
+                "butlers.connectors.live_listener.connector.save_voice_checkpoint",
+                new_callable=AsyncMock,
+            ) as mock_save,
+        ):
+            await connector._process_segment(spec, segment, MagicMock())
+
+        mock_save.assert_awaited_once()
+        call_kwargs = mock_save.call_args
+        # First positional arg is pool, second is mic name
+        assert call_kwargs[0][0] is mock_pool
+        assert call_kwargs[0][1] == mic
+        # last_utterance_ts should be an int (unix_ms)
+        assert isinstance(call_kwargs[1]["last_utterance_ts"], int)
+
+    async def test_checkpoint_saved_after_duplicate_ingest(self) -> None:
+        """save_voice_checkpoint is also called when Switchboard returns 'duplicate'."""
+        mock_mcp = AsyncMock()
+        mock_mcp.call_tool = AsyncMock(return_value={"status": "duplicate"})
+        mock_pool = MagicMock()
+
+        connector = self._make_full_connector(mock_mcp, mock_pool)
+        mic = "kitchen"
+        self._setup_mic_pipeline(connector, mic)
+        connector._transcription_clients[mic] = self._make_mock_tx()
+        connector._discretion_evaluators[mic] = self._make_mock_disc()
+
+        spec = MicDeviceSpec(name=mic, device="hw:0")
+        segment = _make_speech_segment(mic_name=mic)
+
+        with (
+            patch(
+                "butlers.connectors.live_listener.connector.evaluate_voice_filter",
+                return_value=MagicMock(allowed=True),
+            ),
+            patch(
+                "butlers.connectors.live_listener.connector.save_voice_checkpoint",
+                new_callable=AsyncMock,
+            ) as mock_save,
+        ):
+            await connector._process_segment(spec, segment, MagicMock())
+
+        mock_save.assert_awaited_once()
+
+    async def test_checkpoint_not_saved_when_ingest_fails(self) -> None:
+        """save_voice_checkpoint is NOT called when ingest submission raises."""
+        mock_mcp = AsyncMock()
+        mock_mcp.call_tool = AsyncMock(side_effect=ConnectionError("switchboard down"))
+        mock_pool = MagicMock()
+
+        connector = self._make_full_connector(mock_mcp, mock_pool)
+        mic = "kitchen"
+        self._setup_mic_pipeline(connector, mic)
+        connector._transcription_clients[mic] = self._make_mock_tx()
+        connector._discretion_evaluators[mic] = self._make_mock_disc()
+
+        spec = MicDeviceSpec(name=mic, device="hw:0")
+        segment = _make_speech_segment(mic_name=mic)
+
+        with (
+            patch(
+                "butlers.connectors.live_listener.connector.evaluate_voice_filter",
+                return_value=MagicMock(allowed=True),
+            ),
+            patch(
+                "butlers.connectors.live_listener.connector.save_voice_checkpoint",
+                new_callable=AsyncMock,
+            ) as mock_save,
+        ):
+            await connector._process_segment(spec, segment, MagicMock())
+
+        mock_save.assert_not_awaited()
+
+    async def test_checkpoint_not_saved_when_no_db_pool(self) -> None:
+        """save_voice_checkpoint is NOT called when db_pool is None."""
+        mock_mcp = AsyncMock()
+        mock_mcp.call_tool = AsyncMock(return_value={"status": "accepted"})
+
+        cfg = _make_config()
+        connector = LiveListenerConnector(config=cfg, mcp_client=mock_mcp)  # no db_pool
+        mic = "kitchen"
+        self._setup_mic_pipeline(connector, mic)
+        connector._transcription_clients[mic] = self._make_mock_tx()
+        connector._discretion_evaluators[mic] = self._make_mock_disc()
+
+        spec = MicDeviceSpec(name=mic, device="hw:0")
+        segment = _make_speech_segment(mic_name=mic)
+
+        with (
+            patch(
+                "butlers.connectors.live_listener.connector.evaluate_voice_filter",
+                return_value=MagicMock(allowed=True),
+            ),
+            patch(
+                "butlers.connectors.live_listener.connector.save_voice_checkpoint",
+                new_callable=AsyncMock,
+            ) as mock_save,
+        ):
+            await connector._process_segment(spec, segment, MagicMock())
+
+        mock_save.assert_not_awaited()
+
+    async def test_start_loads_checkpoint_and_restores_session(self) -> None:
+        """On start(), checkpoint is loaded and session.restore() is called with its state."""
+        mock_mcp = AsyncMock()
+        mock_pool = MagicMock()
+
+        ckpt = VoiceCheckpoint(
+            last_utterance_ts=1_700_000_000_000,
+            session_id="voice:kitchen:1700000000000",
+            session_last_ts=1_700_000_000_000,
+        )
+
+        cfg = _make_config()
+        connector = LiveListenerConnector(config=cfg, mcp_client=mock_mcp, db_pool=mock_pool)
+
+        with (
+            patch(
+                "butlers.connectors.live_listener.connector.load_voice_checkpoint",
+                new_callable=AsyncMock,
+                return_value=ckpt,
+            ) as mock_load,
+            patch.object(connector, "_start_health_server"),
+            patch.object(connector, "_start_heartbeat"),
+            patch.object(connector, "_run_mic_pipeline", new_callable=AsyncMock),
+            patch(
+                "butlers.connectors.live_listener.connector.create_transcription_client"
+            ) as mock_create_tx,
+        ):
+            mock_tx_instance = AsyncMock()
+            mock_tx_instance.connect = AsyncMock()
+            mock_create_tx.return_value = mock_tx_instance
+            await connector.start()
+
+        mock_load.assert_awaited_once_with(mock_pool, "kitchen")
+
+        # Session state should be restored from checkpoint
+        session = connector._sessions["kitchen"]
+        assert session.session_id == "voice:kitchen:1700000000000"
+        assert session.session_last_ts_ms == 1_700_000_000_000
+
+    async def test_start_no_checkpoint_load_when_no_db_pool(self) -> None:
+        """load_voice_checkpoint is NOT called when db_pool is None."""
+        mock_mcp = AsyncMock()
+
+        cfg = _make_config()
+        connector = LiveListenerConnector(config=cfg, mcp_client=mock_mcp)  # no db_pool
+
+        with (
+            patch(
+                "butlers.connectors.live_listener.connector.load_voice_checkpoint",
+                new_callable=AsyncMock,
+            ) as mock_load,
+            patch.object(connector, "_start_health_server"),
+            patch.object(connector, "_start_heartbeat"),
+            patch.object(connector, "_run_mic_pipeline", new_callable=AsyncMock),
+            patch(
+                "butlers.connectors.live_listener.connector.create_transcription_client"
+            ) as mock_create_tx,
+        ):
+            mock_tx_instance = AsyncMock()
+            mock_tx_instance.connect = AsyncMock()
+            mock_create_tx.return_value = mock_tx_instance
+            await connector.start()
+
+        mock_load.assert_not_awaited()
+
+    async def test_checkpoint_db_error_is_fail_open(self) -> None:
+        """If save_voice_checkpoint raises, the pipeline continues without crashing."""
+        mock_mcp = AsyncMock()
+        mock_mcp.call_tool = AsyncMock(return_value={"status": "accepted"})
+        mock_pool = MagicMock()
+
+        connector = self._make_full_connector(mock_mcp, mock_pool)
+        mic = "kitchen"
+        self._setup_mic_pipeline(connector, mic)
+        connector._transcription_clients[mic] = self._make_mock_tx()
+        connector._discretion_evaluators[mic] = self._make_mock_disc()
+
+        spec = MicDeviceSpec(name=mic, device="hw:0")
+        segment = _make_speech_segment(mic_name=mic)
+
+        with (
+            patch(
+                "butlers.connectors.live_listener.connector.evaluate_voice_filter",
+                return_value=MagicMock(allowed=True),
+            ),
+            patch(
+                "butlers.connectors.live_listener.connector.save_voice_checkpoint",
+                new_callable=AsyncMock,
+                side_effect=Exception("DB connection error"),
+            ),
+        ):
+            # Should not raise despite save_voice_checkpoint failing
+            # (fail-open is handled inside save_voice_checkpoint itself)
+            # We test that a save failure still doesn't crash _process_segment
+            await connector._process_segment(spec, segment, MagicMock())
+
+        # Ingest was still called successfully before the checkpoint save error
+        mock_mcp.call_tool.assert_awaited_once()

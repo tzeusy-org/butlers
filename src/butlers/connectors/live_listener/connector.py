@@ -58,6 +58,10 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.live_listener.checkpoint import (
+    load_voice_checkpoint,
+    save_voice_checkpoint,
+)
 from butlers.connectors.live_listener.config import LiveListenerConfig, MicDeviceSpec
 from butlers.connectors.live_listener.discretion import (
     DiscretionConfig,
@@ -220,10 +224,16 @@ class LiveListenerConnector:
             )
 
             # Session tracker
-            self._sessions[mic] = ConversationSession(
+            session = ConversationSession(
                 device_name=mic,
                 session_gap_s=self._config.session_gap_s,
             )
+            self._sessions[mic] = session
+
+            # Restore session state from checkpoint (fail-open: no-op if unavailable)
+            if self._db_pool is not None:
+                ckpt = await load_voice_checkpoint(self._db_pool, mic)
+                session.restore(ckpt.session_id, ckpt.session_last_ts)
 
             # Metrics
             self._ll_metrics[mic] = LiveListenerMetrics(mic=mic)
@@ -378,9 +388,7 @@ class LiveListenerConnector:
 
             for seg in segments:
                 # Schedule async processing without blocking the PortAudio callback thread
-                loop.call_soon_threadsafe(
-                    self._schedule_segment, spec, seg, filter_evaluator
-                )
+                loop.call_soon_threadsafe(self._schedule_segment, spec, seg, filter_evaluator)
 
         mic_pipeline = MicPipeline(spec=spec, config=self._config, on_frame=on_frame)
 
@@ -542,6 +550,16 @@ class LiveListenerConnector:
                     status = "duplicate"
             self._connector_metrics.record_ingest_submission(status)
             ll_metrics.inc_segments("transcribed")
+
+            # Persist checkpoint after successful submission (accepted or duplicate)
+            if self._db_pool is not None:
+                await save_voice_checkpoint(
+                    self._db_pool,
+                    mic,
+                    last_utterance_ts=unix_ms,
+                    session_id=session.session_id,
+                    session_last_ts=session.session_last_ts_ms,
+                )
 
         except Exception as exc:
             submission_elapsed = time.monotonic() - submission_start
