@@ -86,7 +86,7 @@ def _valid_notify_payload() -> dict[str, Any]:
 def test_ingest_v1_valid_envelope() -> None:
     envelope = IngestEnvelopeV1.model_validate(_valid_ingest_payload())
     assert envelope.schema_version == "ingest.v1"
-    assert envelope.source.channel == "telegram"
+    assert envelope.source.channel == "telegram_bot"
     assert envelope.payload.normalized_text == "ping"
 
 
