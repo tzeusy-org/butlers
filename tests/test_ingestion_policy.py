@@ -463,9 +463,9 @@ class TestMicIdRuleTypeKnown:
 
         assert "mic_id" in _KNOWN_RULE_TYPES
 
-    def test_unregistered_mic_id_rule_is_skipped(self) -> None:
-        """mic_id rules loaded into the evaluator fall through to pass_through
-        when no matcher is registered (no crash, graceful skip)."""
+    def test_mic_id_rule_matches_device_name(self) -> None:
+        """mic_id rules are evaluated by the _match_mic_id matcher and produce
+        the configured action when the device name matches."""
         evaluator = IngestionPolicyEvaluator(
             scope="connector:live-listener:mic:kitchen", db_pool=None
         )
@@ -479,8 +479,27 @@ class TestMicIdRuleTypeKnown:
                 priority=1,
             ),
         ]
-        # mic_id has no registered matcher yet; rule is skipped, result is pass_through
+        # mic_id matcher is now registered; matching device name → block
         decision = evaluator.evaluate(_voice_envelope(mic_id="kitchen"))
+        assert decision.action == "block"
+        assert decision.matched_rule_type == "mic_id"
+
+    def test_mic_id_rule_no_match_on_different_device(self) -> None:
+        """mic_id rules do not match a different device name (pass_through)."""
+        evaluator = IngestionPolicyEvaluator(
+            scope="connector:live-listener:mic:kitchen", db_pool=None
+        )
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = [
+            _rule(
+                id="id-mic",
+                rule_type="mic_id",
+                condition={"mic_id": "kitchen"},
+                action="block",
+                priority=1,
+            ),
+        ]
+        decision = evaluator.evaluate(_voice_envelope(mic_id="bedroom"))
         assert decision.action == "pass_through"
 
 
