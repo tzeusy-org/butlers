@@ -815,7 +815,7 @@ tmux send-keys -t "$PANE_TELEGRAM_BOT" \
   "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} uv run python -m butlers.connectors.telegram_bot" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} uv run python -m butlers.connectors.telegram_user_client" Enter
+  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram \${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:+CONNECTOR_ENDPOINT_IDENTITY=\$TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY} uv run python -m butlers.connectors.telegram_user_client" Enter
 
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)
