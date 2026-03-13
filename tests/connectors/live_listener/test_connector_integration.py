@@ -684,7 +684,18 @@ class TestMetricsInstrumentation:
             "butlers.connectors.live_listener.connector.evaluate_voice_filter",
             return_value=MagicMock(allowed=True),
         ):
-            await connector._process_segment(spec, segment, MagicMock())
+            with (
+                patch.object(ll_metrics, "inc_segments") as mock_inc_segments,
+                patch.object(ll_metrics, "inc_discretion") as mock_inc_discretion,
+                patch.object(ll_metrics, "observe_e2e_latency") as mock_e2e,
+            ):
+                await connector._process_segment(spec, segment, MagicMock())
 
         # The ingest tool should have been called
         mock_mcp.call_tool.assert_awaited_once()
+        # Metrics: segment counted as transcribed
+        mock_inc_segments.assert_called_once_with("transcribed")
+        # Discretion verdict recorded as forward
+        mock_inc_discretion.assert_called_once_with("forward")
+        # E2E latency recorded
+        mock_e2e.assert_called_once()

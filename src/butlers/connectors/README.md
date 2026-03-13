@@ -113,20 +113,26 @@ python -m butlers.connectors.live_listener.connector
 
 ### Common Device Configurations
 
+Single default system microphone:
 ```json
-// Single default system microphone
 [{"name": "main", "device": "default"}]
+```
 
-// Named USB microphone (substring match against PortAudio device list)
+Named USB microphone (substring match against PortAudio device list):
+```json
 [{"name": "kitchen", "device": "USB Audio Device"}]
+```
 
-// Multiple microphones by PortAudio index
+Multiple microphones by PortAudio index:
+```json
 [
   {"name": "kitchen", "device": 0},
   {"name": "bedroom", "device": 2}
 ]
+```
 
-// Multiple named microphones
+Multiple named microphones:
+```json
 [
   {"name": "kitchen", "device": "USB PnP Sound Device: Audio"},
   {"name": "office",  "device": "Microphone (Realtek High Definition Audio)"}

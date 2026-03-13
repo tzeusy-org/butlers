@@ -47,7 +47,11 @@ import os
 import time
 from datetime import UTC, datetime
 from threading import Thread
-from typing import Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import asyncpg
 
 import uvicorn
 from fastapi import FastAPI
@@ -55,7 +59,11 @@ from prometheus_client import REGISTRY, generate_latest
 
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.config import LiveListenerConfig, MicDeviceSpec
-from butlers.connectors.live_listener.discretion import DiscretionConfig, DiscretionEvaluator
+from butlers.connectors.live_listener.discretion import (
+    DiscretionConfig,
+    DiscretionEvaluator,
+    DiscretionResult,
+)
 from butlers.connectors.live_listener.envelope import (
     build_voice_envelope,
     unix_ms_from_datetime,
@@ -127,7 +135,7 @@ class LiveListenerConnector:
     def __init__(
         self,
         config: LiveListenerConfig,
-        db_pool: Any | None = None,
+        db_pool: asyncpg.Pool | None = None,
         mcp_client: CachedMCPClient | None = None,
     ) -> None:
         self._config = config
@@ -439,7 +447,7 @@ class LiveListenerConnector:
             decision = evaluate_voice_filter(filter_evaluator, spec.name)
         except Exception as exc:
             logger.warning("live-listener: filter gate error for mic=%s: %s (fail-open)", mic, exc)
-            decision = type("_Decision", (), {"allowed": True})()  # fail-open
+            decision = SimpleNamespace(allowed=True)  # fail-open
 
         if not decision.allowed:
             ll_metrics.inc_segments("discarded_silence")  # reuse "discarded_silence" for filtered
@@ -462,8 +470,6 @@ class LiveListenerConnector:
             self._mic_states[mic].discretion_healthy = False
             logger.warning("live-listener: discretion error for mic=%s: %s (fail-open)", mic, exc)
             # fail-open: treat as FORWARD
-            from butlers.connectors.live_listener.discretion import DiscretionResult
-
             disc_result = DiscretionResult(
                 verdict="FORWARD",
                 reason=f"fail-open: {type(exc).__name__}",
