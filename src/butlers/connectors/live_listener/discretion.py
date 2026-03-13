@@ -231,7 +231,7 @@ async def _call_llm(
         KeyError / ValueError: on unexpected response shape.
     """
     base_url = llm_url.rstrip("/") if llm_url else "http://localhost:11434/v1"
-    model = llm_model if llm_model else "gemma3:4b"
+    model = llm_model if llm_model else "gemma3:12b"
 
     payload = {
         "model": model,
