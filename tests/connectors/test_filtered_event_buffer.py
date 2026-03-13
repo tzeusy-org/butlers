@@ -296,7 +296,7 @@ class TestFlush:
 
         pool.execute.assert_awaited_once()
         sql_arg = pool.execute.call_args[0][0]
-        assert "connectors_filtered_events_ensure_partition" in sql_arg
+        assert "connectors.connectors_filtered_events_ensure_partition" in sql_arg
 
     async def test_flush_empty_does_not_call_ensure_partition(self) -> None:
         """flush() on an empty buffer is a no-op — ensure_partition is not called."""

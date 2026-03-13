@@ -31,7 +31,7 @@ def upgrade() -> None:
     # Replace ensure_partition function to also create next month's partition
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition(
+        CREATE OR REPLACE FUNCTION connectors.connectors_filtered_events_ensure_partition(
             reference_ts TIMESTAMPTZ DEFAULT now()
         ) RETURNS TEXT
         LANGUAGE plpgsql
@@ -79,14 +79,14 @@ def upgrade() -> None:
     )
 
     # Ensure current and next month partitions exist now
-    op.execute("SELECT connectors_filtered_events_ensure_partition(now())")
+    op.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
 
 
 def downgrade() -> None:
     # Restore single-month version from core_027
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition(
+        CREATE OR REPLACE FUNCTION connectors.connectors_filtered_events_ensure_partition(
             reference_ts TIMESTAMPTZ DEFAULT now()
         ) RETURNS TEXT
         LANGUAGE plpgsql

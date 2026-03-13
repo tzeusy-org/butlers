@@ -327,7 +327,9 @@ class FilteredEventBuffer:
             # an autocommit connection (pool.execute, not inside a transaction)
             # so that DDL is immediately durable even if the batch INSERT below
             # fails or is retried.
-            await pool.execute("SELECT connectors_filtered_events_ensure_partition(now())")
+            await pool.execute(
+                "SELECT connectors.connectors_filtered_events_ensure_partition(now())"
+            )
 
             async with pool.acquire() as conn:
                 await conn.executemany(_INSERT_SQL, rows_to_flush)
