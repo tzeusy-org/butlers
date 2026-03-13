@@ -383,7 +383,9 @@ class VadStateMachine:
         """Finalise the current segment buffer and return a SpeechSegment.
 
         Returns None when the segment is below ``min_segment_ms`` (noise discard).
-        Transitions back to SILENCE state and resets the segment buffer.
+        On a natural offset, transitions to SILENCE. On a force-split, the state
+        machine remains in SPEAKING so the second half of the utterance is captured
+        without requiring a new onset transition.
         """
         st = self._st
         cfg = self._config
@@ -392,12 +394,16 @@ class VadStateMachine:
         duration_ms = len(st.segment_frames) * FRAME_MS
         onset_frame_index = st.speech_onset_frame_index
 
-        # Reset segment buffer and transition to SILENCE
-        st.state = VadState.SILENCE
+        # Reset segment buffer for the next segment (or force-split continuation).
         st.segment_frames = []
-        st.onset_count = 0
-        st.offset_count = 0
         self._model.reset_state()
+
+        # On natural speech offset, transition to SILENCE.
+        # On force-split, remain in SPEAKING so the second half is captured.
+        if not forced_split:
+            st.state = VadState.SILENCE
+            st.onset_count = 0
+            st.offset_count = 0
 
         if duration_ms < cfg.min_segment_ms:
             logger.debug(

@@ -359,7 +359,6 @@ class MicPipeline:
         self._stream: Any | None = None  # sounddevice.InputStream
         self._consumer_task: asyncio.Task | None = None
         self._running = False
-        self._reconnect_event = asyncio.Event()
 
     # ------------------------------------------------------------------
     # Public API

@@ -219,6 +219,9 @@ class TestSegmentDurationBounds:
         # The force-split should have produced a segment
         force_splits = [s for s in segments if s.forced_split]
         assert len(force_splits) >= 1, f"Expected force-split, got segments={segments}"
+        assert vad.state == VadState.SPEAKING, (
+            "VAD should remain in SPEAKING state after a force-split"
+        )  # noqa: E501
 
     def test_force_split_segment_marked(self) -> None:
         """Force-split segments have forced_split=True."""
