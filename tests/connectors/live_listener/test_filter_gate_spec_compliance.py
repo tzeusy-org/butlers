@@ -6,6 +6,7 @@ GAP-4: Initial filter load before audio capture (ensure_loaded called in _pipeli
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -189,8 +190,6 @@ class TestEnsureLoadedBeforeAudioCapture:
             async def __aexit__(self, *args: Any) -> None:
                 pass
 
-        import asyncio
-
         with (
             patch(
                 "butlers.connectors.live_listener.connector.create_filter_evaluator",
@@ -259,8 +258,6 @@ class TestEnsureLoadedBeforeAudioCapture:
 
             async def __aexit__(self, *args: Any) -> None:
                 pass
-
-        import asyncio
 
         with (
             patch(
