@@ -68,7 +68,7 @@ class TestGmailConnectorConfig:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_PROVIDER", "gmail")
         monkeypatch.setenv("CONNECTOR_CHANNEL", "email")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "8")
 
@@ -91,8 +91,7 @@ class TestGmailConnectorConfig:
         """Test config loading fails with missing required env vars."""
         # Clear all required env vars
         monkeypatch.delenv("SWITCHBOARD_MCP_URL", raising=False)
-        monkeypatch.delenv("CONNECTOR_ENDPOINT_IDENTITY", raising=False)
-        # Should raise for missing SWITCHBOARD_MCP_URL or CONNECTOR_ENDPOINT_IDENTITY
+        # Should raise for missing SWITCHBOARD_MCP_URL
         with pytest.raises((KeyError, ValueError)):
             GmailConnectorConfig.from_env(
                 gmail_client_id="client-id",
@@ -103,7 +102,7 @@ class TestGmailConnectorConfig:
     def test_from_env_invalid_integer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test config loading fails with invalid integer values."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "invalid")
 
@@ -117,7 +116,7 @@ class TestGmailConnectorConfig:
     def test_from_env_requires_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Config loading fails when DB-injected credentials are empty."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         with pytest.raises(ValueError, match="DB-resolved Gmail credentials missing"):
             GmailConnectorConfig.from_env(
@@ -1067,7 +1066,7 @@ class TestGmailPubSubConfig:
     def test_pubsub_config_enabled_with_topic(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub config when enabled with topic."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/my-project/topics/gmail-push")
@@ -1088,7 +1087,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub config fails when enabled without topic."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
 
@@ -1102,7 +1101,7 @@ class TestGmailPubSubConfig:
     def test_pubsub_config_custom_webhook_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub config with custom webhook settings."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/my-project/topics/gmail-push")
@@ -1121,7 +1120,7 @@ class TestGmailPubSubConfig:
     def test_pubsub_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub is disabled by default."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         config = GmailConnectorConfig.from_env(
             gmail_client_id="client-id",
@@ -1135,7 +1134,7 @@ class TestGmailPubSubConfig:
     def test_pubsub_webhook_token_configuration(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test webhook token is loaded from environment."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/test/topics/gmail")
@@ -2181,7 +2180,7 @@ class TestGmailConnectorConfigCredentialInjection:
     ) -> None:
         """Config uses injected values even when env credential vars are present."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_CLIENT_ID", "legacy-client-id")
         monkeypatch.setenv("GMAIL_CLIENT_SECRET", "legacy-secret")
@@ -2201,7 +2200,7 @@ class TestGmailConnectorConfigCredentialInjection:
     def test_explicit_credentials_must_be_non_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Injected credentials are required and validated as non-empty."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         with pytest.raises(ValueError, match="DB-resolved Gmail credentials missing"):
             GmailConnectorConfig.from_env(
@@ -3020,7 +3019,7 @@ class TestBackfillConfig:
     def test_backfill_disabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_ENABLED=false disables backfill."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_ENABLED", "false")
 
@@ -3034,7 +3033,7 @@ class TestBackfillConfig:
     def test_backfill_poll_interval_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_POLL_INTERVAL_S is parsed from env."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "120")
 
@@ -3048,7 +3047,7 @@ class TestBackfillConfig:
     def test_backfill_progress_interval_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_PROGRESS_INTERVAL is parsed from env."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "25")
 
@@ -3062,7 +3061,7 @@ class TestBackfillConfig:
     def test_backfill_poll_interval_invalid_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-integer CONNECTOR_BACKFILL_POLL_INTERVAL_S raises ValueError."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "notanint")
 
@@ -3080,7 +3079,7 @@ class TestBackfillConfig:
     ) -> None:
         """Non-integer CONNECTOR_BACKFILL_PROGRESS_INTERVAL raises ValueError."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "bad")
 

@@ -724,7 +724,7 @@ class TestGmailConnectorConfigLabelPolicy:
 
     def test_env_label_include_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
         monkeypatch.setenv("GMAIL_LABEL_INCLUDE", "INBOX,IMPORTANT")
         monkeypatch.setenv("GMAIL_LABEL_EXCLUDE", "SPAM,TRASH")
 
@@ -742,7 +742,7 @@ class TestGmailConnectorConfigLabelPolicy:
 
     def test_env_user_email_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         from butlers.connectors.gmail import GmailConnectorConfig

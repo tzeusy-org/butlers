@@ -189,7 +189,7 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
 
         required_non_creds = {
             "SWITCHBOARD_MCP_URL": "http://localhost:9000/mcp",
-            "CONNECTOR_ENDPOINT_IDENTITY": "gmail:user:test@gmail.com",
+            "GMAIL_USER_EMAIL": "test@gmail.com",
         }
         env = {
             **required_non_creds,
@@ -213,7 +213,7 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
 
         required_non_creds = {
             "SWITCHBOARD_MCP_URL": "http://localhost:9000/mcp",
-            "CONNECTOR_ENDPOINT_IDENTITY": "gmail:user:test@gmail.com",
+            "GMAIL_USER_EMAIL": "test@gmail.com",
         }
         env = {
             **required_non_creds,
@@ -237,7 +237,7 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
 
         required_non_creds = {
             "SWITCHBOARD_MCP_URL": "http://localhost:9000/mcp",
-            "CONNECTOR_ENDPOINT_IDENTITY": "gmail:user:test@gmail.com",
+            "GMAIL_USER_EMAIL": "test@gmail.com",
         }
 
         with mock.patch.dict("os.environ", required_non_creds, clear=True):

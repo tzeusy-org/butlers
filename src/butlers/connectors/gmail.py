@@ -18,7 +18,6 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=gmail (required)
 - CONNECTOR_CHANNEL=email (required)
-- CONNECTOR_ENDPOINT_IDENTITY (required, e.g. "gmail:user:alice@gmail.com")
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40082)
 - DATABASE_URL or POSTGRES_* (DB connectivity for credential lookup; defaults apply if unset)
@@ -391,7 +390,9 @@ class GmailConnectorConfig(BaseModel):
             "switchboard_mcp_url": os.environ["SWITCHBOARD_MCP_URL"],
             "connector_provider": os.environ.get("CONNECTOR_PROVIDER", "gmail"),
             "connector_channel": os.environ.get("CONNECTOR_CHANNEL", "email"),
-            "connector_endpoint_identity": os.environ["CONNECTOR_ENDPOINT_IDENTITY"],
+            "connector_endpoint_identity": (
+                f"gmail:user:{gmail_user_email}" if gmail_user_email else ""
+            ),
             "connector_max_inflight": max_inflight,
             "connector_health_port": health_port,
             "gmail_watch_renew_interval_s": watch_renew_interval,
@@ -3773,8 +3774,8 @@ async def run_gmail_connector() -> None:
     """Run the multi-account Gmail connector manager (async entrypoint).
 
     Discovers all active Google accounts with Gmail scopes from shared.google_accounts
-    and manages independent ingestion loops per account. Does not require
-    CONNECTOR_ENDPOINT_IDENTITY — identity is derived per-account from the email address.
+    and manages independent ingestion loops per account. Identity is derived per-account
+    from the email address (``gmail:user:<email>``).
     Runs in idle/degraded mode if no qualifying accounts are found at startup.
     """
     configure_logging(level="INFO", butler_name="gmail")
@@ -3822,7 +3823,7 @@ def main() -> None:
     """CLI entrypoint for Gmail connector.
 
     Discovers and manages all Gmail-scoped Google accounts from shared.google_accounts.
-    Does not require GMAIL_ACCOUNT or CONNECTOR_ENDPOINT_IDENTITY env vars.
+    Identity is derived per-account from the email address.
     """
     asyncio.run(run_gmail_connector())
 

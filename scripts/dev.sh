@@ -768,7 +768,7 @@ _build_gmail_pane_cmd() {
 
   if [ "$SKIP_OAUTH_CHECK" = "true" ] || _has_google_creds; then
     # Credentials available — start connector with DB-first lookup enabled.
-    printf '%s' "${gmail_cmd_base} && POSTGRES_HOST=${POSTGRES_HOST} POSTGRES_PORT=${POSTGRES_PORT} POSTGRES_USER=${POSTGRES_USER} CONNECTOR_BUTLER_DB_NAME=${gmail_creds_db} CONNECTOR_BUTLER_DB_SCHEMA=${gmail_creds_schema} BUTLER_SHARED_DB_NAME=${gmail_creds_db} BUTLER_SHARED_DB_SCHEMA=${gmail_creds_schema} CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} uv run python -m butlers.connectors.gmail"
+    printf '%s' "${gmail_cmd_base} && POSTGRES_HOST=${POSTGRES_HOST} POSTGRES_PORT=${POSTGRES_PORT} POSTGRES_USER=${POSTGRES_USER} CONNECTOR_BUTLER_DB_NAME=${gmail_creds_db} CONNECTOR_BUTLER_DB_SCHEMA=${gmail_creds_schema} BUTLER_SHARED_DB_NAME=${gmail_creds_db} BUTLER_SHARED_DB_SCHEMA=${gmail_creds_schema} CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email uv run python -m butlers.connectors.gmail"
     return 0
   fi
 
@@ -815,7 +815,7 @@ tmux send-keys -t "$PANE_TELEGRAM_BOT" \
   "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram uv run python -m butlers.connectors.telegram_bot" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram uv run python -m butlers.connectors.telegram_user_client" Enter
+  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_user_client uv run python -m butlers.connectors.telegram_user_client" Enter
 
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)
