@@ -41,6 +41,7 @@ from butlers.connectors.live_listener.checkpoint import (
     save_voice_checkpoint,
 )
 from butlers.connectors.live_listener.config import LiveListenerConfig
+from butlers.connectors.live_listener.connector import LiveListenerConnector
 from butlers.connectors.live_listener.envelope import (
     build_voice_envelope,
     endpoint_identity,
@@ -69,6 +70,8 @@ from butlers.connectors.live_listener.transcription import (
 from butlers.connectors.live_listener.vad import VadStateMachine
 
 __all__ = [
+    # connector entrypoint
+    "LiveListenerConnector",
     # audio/vad/config/metrics (original)
     "MicPipeline",
     "VadStateMachine",

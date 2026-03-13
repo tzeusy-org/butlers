@@ -94,6 +94,92 @@ Each Telegram update is normalized with:
 This stable key enables safe retries and crash recovery. Duplicate submissions
 return the same canonical `request_id` from Switchboard.
 
+## Live Listener Connector
+
+Captures ambient audio from local microphones, transcribes speech via a
+faster-whisper service, applies LLM-based discretion filtering, and submits
+actionable utterances to the Switchboard as `ingest.v1` envelopes.
+
+### Quick Start
+
+```bash
+# Minimal setup — one microphone via Wyoming transcription
+export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
+export LIVE_LISTENER_DEVICES='[{"name": "kitchen", "device": "default"}]'
+export LIVE_LISTENER_TRANSCRIPTION_URL="tcp://localhost:10300"
+
+python -m butlers.connectors.live_listener.connector
+```
+
+### Common Device Configurations
+
+Single default system microphone:
+```json
+[{"name": "main", "device": "default"}]
+```
+
+Named USB microphone (substring match against PortAudio device list):
+```json
+[{"name": "kitchen", "device": "USB Audio Device"}]
+```
+
+Multiple microphones by PortAudio index:
+```json
+[
+  {"name": "kitchen", "device": 0},
+  {"name": "bedroom", "device": 2}
+]
+```
+
+Multiple named microphones:
+```json
+[
+  {"name": "kitchen", "device": "USB PnP Sound Device: Audio"},
+  {"name": "office",  "device": "Microphone (Realtek High Definition Audio)"}
+]
+```
+
+### Configuration
+
+Required environment variables:
+- `SWITCHBOARD_MCP_URL`: SSE endpoint URL for Switchboard MCP server
+- `LIVE_LISTENER_DEVICES`: JSON list of mic device specs
+- `LIVE_LISTENER_TRANSCRIPTION_URL`: Transcription service URL
+  - Wyoming: `tcp://host:10300`
+  - WebSocket: `ws://host:port/transcribe`
+  - HTTP: `http://host:port/transcribe`
+
+Optional:
+- `CONNECTOR_HEALTH_PORT`: HTTP port for `/health` and `/metrics` (default: 40091)
+- `LIVE_LISTENER_TRANSCRIPTION_PROTOCOL`: `wyoming` | `websocket` | `http` (default: `wyoming`)
+- `LIVE_LISTENER_LANGUAGE`: BCP-47 language hint (default: `en`)
+- `LIVE_LISTENER_MIN_CONFIDENCE`: Minimum transcription confidence (default: `0.3`)
+- `LIVE_LISTENER_VAD_ONSET_THRESHOLD`: VAD onset threshold (default: `0.5`)
+- `LIVE_LISTENER_VAD_OFFSET_THRESHOLD`: VAD offset threshold (default: `0.3`)
+- `LIVE_LISTENER_SESSION_GAP_S`: Silence gap (seconds) that starts a new session (default: `120`)
+- `LIVE_LISTENER_DISCRETION_LLM_URL`: LLM endpoint for discretion filter (default: local Ollama)
+- `LIVE_LISTENER_DISCRETION_LLM_MODEL`: LLM model name (default: `haiku`)
+
+### Health
+
+The health server listens on `CONNECTOR_HEALTH_PORT` (default: 40091):
+- `GET /health` — JSON health state: `healthy`, `degraded`, or `error`
+- `GET /metrics` — Prometheus metrics in text format
+
+Health state derivation:
+- `error` — no audio devices are capturing (all failed or none configured)
+- `degraded` — any mic has a failed device, transcription is unreachable, or discretion LLM is unreachable
+- `healthy` — all mic pipelines active and all services responsive
+
+### Prometheus Metrics
+
+Voice-specific metrics (in addition to standard `ConnectorMetrics`):
+- `connector_live_listener_segments_total{mic, outcome}` — speech segments processed
+- `connector_live_listener_discretion_total{mic, verdict}` — discretion verdicts
+- `connector_live_listener_transcription_failures_total{mic, error_type}` — transcription failures
+- `connector_live_listener_e2e_latency_seconds{mic}` — end-to-end pipeline latency
+- `connector_live_listener_stage_latency_seconds{mic, stage}` — per-stage latency
+
 ## Testing
 
 ```bash
