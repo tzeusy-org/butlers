@@ -58,6 +58,10 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.live_listener.checkpoint import (
+    load_voice_checkpoint,
+    save_voice_checkpoint,
+)
 from butlers.connectors.live_listener.config import LiveListenerConfig, MicDeviceSpec
 from butlers.connectors.live_listener.discretion import (
     DiscretionConfig,
@@ -221,10 +225,16 @@ class LiveListenerConnector:
             )
 
             # Session tracker
-            self._sessions[mic] = ConversationSession(
+            session = ConversationSession(
                 device_name=mic,
                 session_gap_s=self._config.session_gap_s,
             )
+            self._sessions[mic] = session
+
+            # Restore session state from checkpoint (fail-open: no-op if unavailable)
+            if self._db_pool is not None:
+                ckpt = await load_voice_checkpoint(self._db_pool, mic)
+                session.restore(ckpt.session_id, ckpt.session_last_ts)
 
             # Metrics
             self._ll_metrics[mic] = LiveListenerMetrics(mic=mic)
@@ -554,6 +564,23 @@ class LiveListenerConnector:
             self._connector_metrics.record_error(type(exc).__name__.lower(), "ingest_submit")
             logger.warning("live-listener: ingest submission failed for mic=%s: %s", mic, exc)
             return
+
+        # Persist checkpoint after successful submission (accepted or duplicate).
+        # Kept outside the ingest try/except so a checkpoint DB error never
+        # pollutes ingest metrics or logs.
+        if self._db_pool is not None:
+            try:
+                await save_voice_checkpoint(
+                    self._db_pool,
+                    mic,
+                    last_utterance_ts=unix_ms,
+                    session_id=session.session_id,
+                    session_last_ts=session.session_last_ts_ms,
+                )
+            except Exception:
+                logger.exception(
+                    "live-listener: unexpected error saving checkpoint for mic=%s", mic
+                )
 
         # Record e2e latency
         e2e_elapsed = time.monotonic() - e2e_start
