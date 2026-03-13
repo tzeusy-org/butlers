@@ -125,7 +125,7 @@ describe("TimelineTab — StatusBadge rendering", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -234,7 +234,7 @@ describe("TimelineTab — Replay button interaction", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -280,7 +280,7 @@ describe("TimelineTab — Replay button interaction", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -308,7 +308,7 @@ describe("TimelineTab — Replay button interaction", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -372,12 +372,12 @@ describe("TimelineTab — Status filter", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the status filter dropdown", () => {
+  it("renders the status filter checkboxes", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -385,6 +385,10 @@ describe("TimelineTab — Status filter", () => {
 
     const filterEl = container.querySelector("[data-testid='status-filter']");
     expect(filterEl).not.toBeNull();
+    // Should have checkbox labels for each status
+    expect(filterEl!.textContent).toContain("Ingested");
+    expect(filterEl!.textContent).toContain("Filtered");
+    expect(filterEl!.textContent).toContain("Error");
   });
 });
 
@@ -427,7 +431,7 @@ describe("TimelineTab — filtered events non-expandable", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -452,7 +456,7 @@ describe("TimelineTab — filtered events non-expandable", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -477,7 +481,7 @@ describe("TimelineTab — filtered events non-expandable", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );

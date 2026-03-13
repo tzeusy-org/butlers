@@ -24,13 +24,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -530,55 +525,81 @@ function EventRowSkeleton() {
 // Status filter options
 // ---------------------------------------------------------------------------
 
-const STATUS_FILTER_OPTIONS: Array<{ value: IngestionEventStatus | "all"; label: string }> = [
-  { value: "all", label: "All statuses" },
-  { value: "ingested", label: "Ingested" },
-  { value: "filtered", label: "Filtered" },
-  { value: "error", label: "Error" },
-  { value: "replay_pending", label: "Replay Pending" },
-  { value: "replay_complete", label: "Replay Complete" },
-  { value: "replay_failed", label: "Replay Failed" },
-];
-
-// ---------------------------------------------------------------------------
-// TimelineTab
-// ---------------------------------------------------------------------------
-
-interface TimelineTabProps {
-  isActive: boolean;
-}
-
-// Valid values for the URL `status` query parameter
-const VALID_STATUS_PARAMS = new Set<string>([
-  "all",
+const ALL_STATUSES: IngestionEventStatus[] = [
   "ingested",
   "filtered",
   "error",
   "replay_pending",
   "replay_complete",
   "replay_failed",
-]);
+];
 
-export function TimelineTab({ isActive }: TimelineTabProps) {
+const STATUS_LABELS: Record<IngestionEventStatus, string> = {
+  ingested: "Ingested",
+  filtered: "Filtered",
+  error: "Error",
+  replay_pending: "Replay Pending",
+  replay_complete: "Replay Complete",
+  replay_failed: "Replay Failed",
+};
+
+/** Default: all statuses except "filtered". */
+const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered");
+
+// ---------------------------------------------------------------------------
+// TimelineTab
+// ---------------------------------------------------------------------------
+
+const PAGE_SIZE = 50;
+
+interface TimelineTabProps {
+  isActive: boolean;
+  /** Override the default enabled statuses (for testing). */
+  defaultStatuses?: IngestionEventStatus[];
+}
+
+export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const expandedId = searchParams.get("expanded");
-  const rawStatus = searchParams.get("status") ?? "all";
-  const statusFilter = VALID_STATUS_PARAMS.has(rawStatus)
-    ? (rawStatus as IngestionEventStatus | "all")
-    : "all";
+
+  // Multi-select status filter — default: all except "filtered"
+  const [enabledStatuses, setEnabledStatuses] = useState<Set<IngestionEventStatus>>(
+    () => new Set(defaultStatuses ?? DEFAULT_STATUSES),
+  );
 
   // Optimistic overrides: map of event id → overridden status
   const [optimisticOverrides, setOptimisticOverrides] = useState<
     Map<string, IngestionEventStatus>
   >(new Map());
 
-  const filters = statusFilter !== "all" ? { status: statusFilter } : {};
+  // Pagination state — accumulate events from multiple pages
+  const [loadedEvents, setLoadedEvents] = useState<IngestionEventSummary[]>([]);
+  const [offset, setOffset] = useState(0);
+
+  // Fetch all events from backend (no status filter — filter client-side)
+  const filters = { limit: PAGE_SIZE, offset };
   const { data: eventsResp, isLoading, isError } = useIngestionEvents(
     filters,
     { enabled: isActive },
   );
 
-  const rawEvents = eventsResp?.data ?? [];
+  const rawPageEvents = eventsResp?.data ?? [];
+  const totalCount = eventsResp?.meta?.total ?? 0;
+  const hasMore = eventsResp?.meta?.has_more ?? false;
+
+  // Accumulate loaded pages into a single list
+  useEffect(() => {
+    if (rawPageEvents.length === 0) return;
+    if (offset === 0) {
+      // First page (or filter changed) — replace
+      setLoadedEvents(rawPageEvents);
+    } else {
+      // Subsequent page — append
+      setLoadedEvents((prev) => [...prev, ...rawPageEvents]);
+    }
+  }, [rawPageEvents, offset]);
+
+  const rawEvents = offset === 0 ? rawPageEvents : loadedEvents;
 
   // Evict stale optimistic overrides: once the server returns a status other
   // than replay_pending for an event we overrode, the server has caught up and
@@ -597,10 +618,13 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
   }, [rawEvents]);
 
   // Apply optimistic overrides so replayed events immediately show replay_pending
-  const events: IngestionEventSummary[] = rawEvents.map((e) => {
+  const allEvents: IngestionEventSummary[] = rawEvents.map((e) => {
     const override = optimisticOverrides.get(e.id);
     return override ? { ...e, status: override } : e;
   });
+
+  // Client-side status filtering
+  const events = allEvents.filter((e) => enabledStatuses.has(e.status));
 
   const handleToggle = useCallback(
     (id: string) => {
@@ -617,21 +641,24 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
     [setSearchParams],
   );
 
-  const handleStatusFilterChange = useCallback(
-    (value: string) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        if (value === "all") {
-          next.delete("status");
+  const handleStatusToggle = useCallback(
+    (status: IngestionEventStatus) => {
+      setEnabledStatuses((prev) => {
+        const next = new Set(prev);
+        if (next.has(status)) {
+          next.delete(status);
         } else {
-          next.set("status", value);
+          next.add(status);
         }
-        next.delete("expanded"); // Clear expansion when filter changes
         return next;
       });
     },
-    [setSearchParams],
+    [],
   );
+
+  const handleLoadMore = useCallback(() => {
+    setOffset((prev) => prev + PAGE_SIZE);
+  }, []);
 
   const handleOptimisticUpdate = useCallback(
     (id: string, newStatus: IngestionEventStatus) => {
@@ -650,24 +677,24 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle>Ingestion Events</CardTitle>
-            {/* Status filter */}
-            <div className="flex items-center gap-2">
+            {/* Status filter checkboxes */}
+            <div className="flex items-center gap-3" data-testid="status-filter">
               <span className="text-sm text-muted-foreground">Status:</span>
-              <Select
-                value={statusFilter}
-                onValueChange={handleStatusFilterChange}
-              >
-                <SelectTrigger size="sm" className="w-44" data-testid="status-filter">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUS_FILTER_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {ALL_STATUSES.map((status) => (
+                <div key={status} className="flex items-center gap-1.5">
+                  <Checkbox
+                    id={`status-${status}`}
+                    checked={enabledStatuses.has(status)}
+                    onCheckedChange={() => handleStatusToggle(status)}
+                  />
+                  <Label
+                    htmlFor={`status-${status}`}
+                    className="text-sm font-normal cursor-pointer"
+                  >
+                    {STATUS_LABELS[status]}
+                  </Label>
+                </div>
+              ))}
             </div>
           </div>
         </CardHeader>
@@ -694,7 +721,7 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading ? (
+                {isLoading && offset === 0 ? (
                   Array.from({ length: 5 }).map((_, i) => (
                     <EventRowSkeleton key={i} />
                   ))
@@ -720,6 +747,25 @@ export function TimelineTab({ isActive }: TimelineTabProps) {
                 )}
               </TableBody>
             </Table>
+          )}
+          {/* Pagination footer */}
+          {(events.length > 0 || hasMore) && (
+            <div className="flex items-center justify-between border-t pt-3 mt-2 px-2">
+              <span className="text-xs text-muted-foreground">
+                Showing {events.length}{enabledStatuses.size < ALL_STATUSES.length ? ` (filtered from ${allEvents.length})` : ""} of {totalCount} events
+              </span>
+              {hasMore && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLoadMore}
+                  disabled={isLoading}
+                >
+                  {isLoading ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
+                  Load More
+                </Button>
+              )}
+            </div>
           )}
         </CardContent>
       </Card>

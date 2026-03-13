@@ -45,14 +45,21 @@ class TimelineEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class TimelineMeta(BaseModel):
+    """Pagination metadata for timeline responses."""
+
+    cursor: str | None = None
+    has_more: bool = False
+
+
 class TimelineResponse(BaseModel):
     """Cursor-paginated timeline response.
 
     Uses ``before`` timestamp cursor for efficient descending pagination.
-    The ``next_cursor`` field contains the ISO timestamp to pass as the
-    ``before`` parameter for the next page, or ``None`` when there are no
-    more results.
+    The ``meta.cursor`` field contains the ISO timestamp to pass as the
+    ``before`` parameter for the next page. ``meta.has_more`` indicates
+    whether additional pages exist.
     """
 
     data: list[TimelineEvent]
-    next_cursor: str | None = None
+    meta: TimelineMeta = Field(default_factory=TimelineMeta)

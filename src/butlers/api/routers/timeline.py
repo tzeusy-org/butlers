@@ -18,7 +18,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 
 from butlers.api.db import DatabaseManager
-from butlers.api.models.timeline import TimelineEvent, TimelineResponse
+from butlers.api.models.timeline import TimelineEvent, TimelineMeta, TimelineResponse
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +100,8 @@ async def list_timeline(
     by timestamp descending.
 
     Cursor-based pagination: pass ``before`` (ISO timestamp) to fetch
-    the next page. The response includes ``next_cursor`` for the
-    subsequent page.
+    the next page. The response includes ``meta.cursor`` for the
+    subsequent page and ``meta.has_more`` to indicate if more exist.
     """
     # Determine which event sources to query
     want_sessions = event_type is None or "session" in event_type or "error" in event_type
@@ -182,12 +182,12 @@ async def list_timeline(
     # --- Merge and sort ---
     events.sort(key=lambda e: e.timestamp, reverse=True)
 
-    # Apply limit + compute next_cursor
+    # Apply limit + compute pagination metadata
     has_more = len(events) > limit
     page = events[:limit]
 
-    next_cursor: str | None = None
+    cursor: str | None = None
     if has_more and page:
-        next_cursor = page[-1].timestamp.isoformat()
+        cursor = page[-1].timestamp.isoformat()
 
-    return TimelineResponse(data=page, next_cursor=next_cursor)
+    return TimelineResponse(data=page, meta=TimelineMeta(cursor=cursor, has_more=has_more))

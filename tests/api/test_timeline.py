@@ -124,8 +124,8 @@ def _app_with_mock_db(
 
 
 class TestTimelineResponseStructure:
-    async def test_returns_data_and_cursor(self, app):
-        """Response must have 'data' array and 'next_cursor' field."""
+    async def test_returns_data_and_meta(self, app):
+        """Response must have 'data' array and 'meta' envelope."""
         _app_with_mock_db(app, fan_out_results=[{}])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -136,7 +136,9 @@ class TestTimelineResponseStructure:
         body = resp.json()
         assert "data" in body
         assert isinstance(body["data"], list)
-        assert "next_cursor" in body
+        assert "meta" in body
+        assert "cursor" in body["meta"]
+        assert "has_more" in body["meta"]
 
     async def test_empty_timeline(self, app):
         """When no events exist, return empty data with null cursor."""
@@ -149,7 +151,8 @@ class TestTimelineResponseStructure:
         assert resp.status_code == 200
         body = resp.json()
         assert body["data"] == []
-        assert body["next_cursor"] is None
+        assert body["meta"]["cursor"] is None
+        assert body["meta"]["has_more"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +286,7 @@ class TestEventMerging:
 
 class TestTimelinePagination:
     async def test_pagination_with_limit(self, app):
-        """When more events exist than limit, next_cursor should be set."""
+        """When more events exist than limit, meta.cursor should be set."""
         rows = [
             _make_session_row(
                 session_id=uuid4(),
@@ -303,10 +306,11 @@ class TestTimelinePagination:
         assert resp.status_code == 200
         body = resp.json()
         assert len(body["data"]) == 3
-        assert body["next_cursor"] is not None
+        assert body["meta"]["cursor"] is not None
+        assert body["meta"]["has_more"] is True
 
     async def test_no_cursor_when_all_returned(self, app):
-        """When all events fit in the limit, next_cursor should be null."""
+        """When all events fit in the limit, meta.cursor should be null."""
         rows = [_make_session_row(session_id=uuid4(), prompt=f"task {i}") for i in range(2)]
 
         _app_with_mock_db(app, fan_out_results=[{"atlas": rows}])
@@ -319,7 +323,8 @@ class TestTimelinePagination:
         assert resp.status_code == 200
         body = resp.json()
         assert len(body["data"]) == 2
-        assert body["next_cursor"] is None
+        assert body["meta"]["cursor"] is None
+        assert body["meta"]["has_more"] is False
 
     async def test_before_cursor_is_passed_to_query(self, app):
         """The 'before' parameter should filter events by timestamp."""
