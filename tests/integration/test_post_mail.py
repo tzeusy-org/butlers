@@ -203,7 +203,7 @@ async def test_post_mail_success_logs_routing(pool):
         pool,
         target_butler="logged",
         sender="sender_bot",
-        sender_channel="telegram",
+        sender_channel="telegram_bot",
         body="Hi",
         call_fn=mock_call,
     )

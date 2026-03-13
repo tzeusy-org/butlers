@@ -280,7 +280,7 @@ class TestIngestReactionNonTelegram:
     """Non-Telegram messages must not trigger any Telegram reactions."""
 
     async def test_react_for_ingest_is_not_called_for_email(self) -> None:
-        """Email messages (source_channel != 'telegram') do not invoke react_for_ingest.
+        """Email messages (source_channel != 'telegram_bot') do not invoke react_for_ingest.
 
         This test verifies the behavioral contract: the caller in daemon.py
         must guard the react_for_ingest call with a channel check.
@@ -296,7 +296,7 @@ class TestIngestReactionNonTelegram:
 
         # Simulate what the daemon does: check channel before calling react_for_ingest
         channel = "email"
-        if channel == "telegram":
+        if channel == "telegram_bot":
             await mod.react_for_ingest(
                 external_thread_id="123:456",
                 reaction=REACTION_IN_PROGRESS,

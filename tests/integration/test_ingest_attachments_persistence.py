@@ -68,7 +68,7 @@ def _build_ingest_envelope(
     envelope = {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": "telegram",
+            "channel": "telegram_bot",
             "provider": "telegram",
             "endpoint_identity": "bot_test",
         },

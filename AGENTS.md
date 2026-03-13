@@ -690,7 +690,7 @@ make test-qg
 ### Dev bootstrap connector env-file contract
 - `dev.sh` connectors window runs three connector processes: Telegram bot, Telegram user-client, and Gmail.
 - Each connector pane may source a local-only env file under `secrets/connectors/` (`telegram_bot`, `telegram_user_client`, `gmail`) using `set -a` so values only affect that pane process.
-- Connector identity env overrides should be per-connector (`TELEGRAM_BOT_CONNECTOR_*`, `TELEGRAM_USER_CONNECTOR_*`, `GMAIL_CONNECTOR_*`) to avoid shared `CONNECTOR_ENDPOINT_IDENTITY` collisions. Cursor state is DB-backed (no file path env var needed).
+- Connector endpoint identity is auto-resolved at startup (telegram bot: `getMe`, telegram user: `get_me()`, gmail: `google_accounts.email`, discord: `/users/@me`). No manual identity env var needed. Cursor state is DB-backed (no file path env var needed).
 
 ### Dev script location + process-clear contract
 - Canonical bootstrap implementation now lives at `scripts/dev.sh`; repository-root `dev.sh` is a compatibility shim that delegates to `scripts/dev.sh`.
@@ -756,7 +756,7 @@ make test-qg
 
 ### Telegram connector DB-first startup contract
 - `run_telegram_bot_connector()` and `run_telegram_user_client_connector()` must not hard-fail on missing credential env vars when DB credentials are available; if `from_env()` fails only due missing creds and DB lookup succeeded, build config from required non-credential env vars plus DB-resolved secrets.
-- Keep required non-credential startup env checks explicit in DB-fallback path (`SWITCHBOARD_MCP_URL`, `CONNECTOR_ENDPOINT_IDENTITY`).
+- Endpoint identity is auto-resolved at startup via API calls (not env vars). Only `SWITCHBOARD_MCP_URL` is required as a non-credential env var.
 - Regression coverage lives in `tests/connectors/test_telegram_bot_connector.py::test_run_telegram_bot_connector_uses_db_token_when_env_missing` and `tests/connectors/test_telegram_user_client.py::test_run_telegram_user_client_connector_uses_db_credentials_when_env_missing`.
 
 ### OAuth/dev messaging DB-first contract

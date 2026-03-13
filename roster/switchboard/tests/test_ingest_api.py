@@ -193,7 +193,7 @@ def _make_telegram_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": "telegram",
+            "channel": "telegram_bot",
             "provider": "telegram",
             "endpoint_identity": bot_id,
         },
@@ -280,7 +280,7 @@ class TestIngestV1Basic:
         assert row is not None
         assert row["lifecycle_state"] == "accepted"
         assert row["normalized_text"] == "Test message"
-        assert json.loads(row["request_context"])["source_channel"] == "telegram"
+        assert json.loads(row["request_context"])["source_channel"] == "telegram_bot"
         assert json.loads(row["request_context"])["source_endpoint_identity"] == "test_bot"
         assert json.loads(row["request_context"])["source_sender_identity"] == "user_alice"
 
@@ -415,7 +415,7 @@ class TestIngestV1Validation:
     async def test_invalid_channel_provider_pair_rejected(self, pool: asyncpg.Pool) -> None:
         """Invalid channel-provider combinations are rejected."""
         envelope = _make_telegram_envelope()
-        envelope["source"]["channel"] = "telegram"
+        envelope["source"]["channel"] = "telegram_bot"
         envelope["source"]["provider"] = "gmail"  # mismatched provider
 
         with pytest.raises(ValueError, match="Invalid ingest.v1 envelope"):
@@ -438,7 +438,7 @@ class TestIngestV1DedupeKeyComputation:
         envelope = IngestEnvelopeV1(
             schema_version="ingest.v1",
             source=IngestSourceV1(
-                channel="telegram",
+                channel="telegram_bot",
                 provider="telegram",
                 endpoint_identity="bot_test",
             ),
@@ -453,7 +453,7 @@ class TestIngestV1DedupeKeyComputation:
 
         dedupe_key = _compute_dedupe_key(envelope)
         assert dedupe_key.startswith("idem:")
-        assert "telegram" in dedupe_key
+        assert "telegram_bot" in dedupe_key
         assert "bot_test" in dedupe_key
         assert "my-key-123" in dedupe_key
 
@@ -462,7 +462,7 @@ class TestIngestV1DedupeKeyComputation:
         envelope = IngestEnvelopeV1(
             schema_version="ingest.v1",
             source=IngestSourceV1(
-                channel="telegram",
+                channel="telegram_bot",
                 provider="telegram",
                 endpoint_identity="bot_test",
             ),
@@ -477,7 +477,7 @@ class TestIngestV1DedupeKeyComputation:
 
         dedupe_key = _compute_dedupe_key(envelope)
         assert dedupe_key.startswith("event:")
-        assert "telegram" in dedupe_key
+        assert "telegram_bot" in dedupe_key
         assert "bot_test" in dedupe_key
         assert "update_456" in dedupe_key
 
@@ -529,7 +529,7 @@ class TestIngestV1RequestContext:
         ctx = json.loads(row["request_context"])
         assert ctx["request_id"] == str(result.request_id)
         assert "received_at" in ctx
-        assert ctx["source_channel"] == "telegram"
+        assert ctx["source_channel"] == "telegram_bot"
         assert ctx["source_endpoint_identity"] == "ctx_bot"
         assert ctx["source_sender_identity"] == "user_frank"
         assert ctx["source_thread_identity"] == "thread_42"

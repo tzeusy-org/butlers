@@ -322,7 +322,7 @@ class TestNotifyReactContract:
             },
             "request_context": {
                 "request_id": "01916b9d-1234-7000-abcd-123456789abc",
-                "source_channel": "telegram",
+                "source_channel": "telegram_bot",
                 "source_endpoint_identity": "test",
                 "source_sender_identity": "user123",
                 "source_thread_identity": "123:456",
@@ -365,7 +365,7 @@ class TestNotifyReactContract:
             },
             "request_context": {
                 "request_id": "01916b9d-1234-7000-abcd-123456789abc",
-                "source_channel": "telegram",
+                "source_channel": "telegram_bot",
                 "source_endpoint_identity": "test",
                 "source_sender_identity": "user123",
                 # Missing source_thread_identity
@@ -390,7 +390,7 @@ class TestNotifyReactContract:
             },
             "request_context": {
                 "request_id": "01916b9d-1234-7000-abcd-123456789abc",
-                "source_channel": "telegram",
+                "source_channel": "telegram_bot",
                 "source_endpoint_identity": "test",
                 "source_sender_identity": "user123",
                 "source_thread_identity": "123:456",

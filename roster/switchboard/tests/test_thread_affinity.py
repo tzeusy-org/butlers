@@ -170,7 +170,9 @@ class TestCheckOverride:
 class TestLookupNonEmailChannel:
     async def test_telegram_returns_miss_no_thread_id(self) -> None:
         pool = _mock_pool()
-        result = await lookup_thread_affinity(pool, "some-thread", "telegram", settings=_settings())
+        result = await lookup_thread_affinity(
+            pool, "some-thread", "telegram_bot", settings=_settings()
+        )
         assert result.outcome == AffinityOutcome.MISS_NO_THREAD_ID
         pool.fetch.assert_not_called()
 
@@ -488,7 +490,11 @@ class TestIngestPipelineIntegration:
 
         payload = {
             "schema_version": "ingest.v1",
-            "source": {"channel": "telegram", "provider": "telegram", "endpoint_identity": "bot"},
+            "source": {
+                "channel": "telegram_bot",
+                "provider": "telegram",
+                "endpoint_identity": "bot",
+            },
             "event": {"external_event_id": "msg-1", "observed_at": "2026-02-23T00:00:00Z"},
             "sender": {"identity": "user123"},
             "payload": {"raw": {}, "normalized_text": "Hello"},
@@ -503,7 +509,7 @@ class TestIngestPipelineIntegration:
         decision = _run_policy_evaluation(
             payload,
             evaluator,
-            source_channel="telegram",
+            source_channel="telegram_bot",
             thread_affinity_target=None,
         )
         assert decision.action == "pass_through"

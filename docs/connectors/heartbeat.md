@@ -59,7 +59,7 @@ Connectors submit `connector.heartbeat.v1` payloads to the Switchboard via MCP t
 
 **connector** (required):
 - `connector_type`: Canonical connector type name. Must match the connector's `CONNECTOR_PROVIDER` env var value.
-- `endpoint_identity`: The receiving identity this connector serves. Must match `CONNECTOR_ENDPOINT_IDENTITY`.
+- `endpoint_identity`: The receiving identity this connector serves. Auto-resolved at startup (see `docs/connectors/interface.md` section 9).
 - `instance_id`: Stable UUID for this process instance, generated at startup. Allows distinguishing restarts and multiple instances of the same connector type.
 - `version`: Optional. Connector software version for operational visibility.
 

@@ -35,11 +35,11 @@ You are the Travel Butler — a travel logistics and itinerary intelligence spec
 
 ## Interactive Response Mode
 
-When processing messages that originated from Telegram or other user-facing channels, you should respond interactively. This mode is activated when a REQUEST CONTEXT JSON block is present in your context and contains a `source_channel` field (e.g., `telegram`, `email`).
+When processing messages that originated from Telegram or other user-facing channels, you should respond interactively. This mode is activated when a REQUEST CONTEXT JSON block is present in your context and contains a `source_channel` field (e.g., `telegram_bot`, `email`).
 
 ### Detection
 
-Check the context for a REQUEST CONTEXT JSON block. If present and its `source_channel` is a user-facing channel (`telegram`, `email`), engage interactive response mode.
+Check the context for a REQUEST CONTEXT JSON block. If present and its `source_channel` is a user-facing channel (`telegram_bot`, `email`), engage interactive response mode.
 
 ### Response Mode Selection
 

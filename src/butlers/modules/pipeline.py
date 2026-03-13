@@ -99,7 +99,7 @@ async def _load_realtime_history(
     time_cutoff = received_at - timedelta(minutes=max_time_window_minutes)
 
     telegram_chat_id: str | None = None
-    if source_channel == "telegram":
+    if source_channel in ("telegram_bot", "telegram_user_client"):
         match = _TELEGRAM_CHAT_MESSAGE_RE.fullmatch(source_thread_identity)
         if match is not None:
             telegram_chat_id = match.group("chat_id")
@@ -800,14 +800,21 @@ class MessagePipeline:
         source_channel = source_metadata.get("channel", "unknown").strip().lower() or "unknown"
         endpoint_identity = cls._source_endpoint_identity(args, source_metadata)
         scoped_endpoint_identity = endpoint_identity
-        if not scoped_endpoint_identity.startswith(f"{source_channel}:"):
+        transport = source_channel.split("_")[0]
+        if not (
+            scoped_endpoint_identity.startswith(f"{source_channel}:")
+            or scoped_endpoint_identity.startswith(f"{transport}:")
+        ):
             scoped_endpoint_identity = f"{source_channel}:{endpoint_identity}"
         external_event_id = cls._external_event_id(args, source_metadata)
         caller_idempotency_key = cls._string_or_none(
             args.get("idempotency_key") or args.get("ingress_idempotency_key")
         )
 
-        if source_channel == "telegram" and external_event_id is not None:
+        if (
+            source_channel in ("telegram_bot", "telegram_user_client")
+            and external_event_id is not None
+        ):
             return (
                 f"{scoped_endpoint_identity}:update:{external_event_id}",
                 "telegram_update_id_endpoint",

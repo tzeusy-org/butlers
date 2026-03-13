@@ -35,8 +35,9 @@ Base connector vars (from the interface contract):
 - `SWITCHBOARD_MCP_URL` (required; SSE endpoint for Switchboard MCP server)
 - `CONNECTOR_PROVIDER=telegram` (required)
 - `CONNECTOR_CHANNEL=telegram` (required)
-- `CONNECTOR_ENDPOINT_IDENTITY` (required)
 - `CONNECTOR_MAX_INFLIGHT` (optional, recommended default `8`)
+
+Endpoint identity is auto-resolved at startup via Telegram `getMe()` (e.g. `telegram:bot:@mybot`).
 
 Polling-specific vars:
 - `CONNECTOR_POLL_INTERVAL_S` (required for polling mode)

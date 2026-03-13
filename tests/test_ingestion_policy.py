@@ -97,7 +97,7 @@ def _email_envelope(
 def _telegram_envelope(*, chat_id: str = "12345") -> IngestionEnvelope:
     return IngestionEnvelope(
         sender_address="",
-        source_channel="telegram",
+        source_channel="telegram_bot",
         raw_key=chat_id,
     )
 
@@ -1274,7 +1274,7 @@ class TestIngestionPolicyMetrics:
     def test_record_pass_through_latency_histogram(self) -> None:
         m = IngestionPolicyMetrics(scope="global")
         m.record_pass_through(
-            source_channel="telegram",
+            source_channel="telegram_bot",
             reason="no rule matched",
             latency_ms=0.8,
         )
@@ -1291,7 +1291,7 @@ class TestIngestionPolicyMetrics:
         m.record_match(
             rule_type="chat_id",
             action="block",
-            source_channel="telegram",
+            source_channel="telegram_bot",
             latency_ms=0.1,
         )
         data = self._metrics_map()

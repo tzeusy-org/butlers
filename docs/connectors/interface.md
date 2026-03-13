@@ -184,9 +184,14 @@ Reference connector runtime config (recommended naming):
 - `SWITCHBOARD_MCP_URL` (required): SSE endpoint URL for Switchboard MCP server (e.g. `http://localhost:40100/sse`).
 - `CONNECTOR_PROVIDER` (required): provider name (`telegram`, `gmail`, `imap`, etc.).
 - `CONNECTOR_CHANNEL` (required): canonical channel value (`telegram`, `email`, etc.).
-- `CONNECTOR_ENDPOINT_IDENTITY` (required): receiving identity (bot id, mailbox, client id).
 - `CONNECTOR_POLL_INTERVAL_S` (required for polling sources): poll interval seconds.
 - `CONNECTOR_MAX_INFLIGHT` (optional, default recommended: `8`): ingest concurrency cap.
+
+Endpoint identity is auto-resolved at startup by each connector — no env var is needed:
+- Telegram bot: `getMe()` -> `telegram:bot:@username`
+- Telegram user client: `get_me()` -> `telegram:user:@username`
+- Gmail: `google_accounts.email` -> `gmail:user:email`
+- Discord: `/users/@me` -> `discord:user:@username`
 
 Provider-specific credentials (examples):
 - Telegram bot token env var(s).

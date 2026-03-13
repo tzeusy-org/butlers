@@ -41,8 +41,8 @@ async def test_ingest_deduplication(switchboard_pool: Pool) -> None:
     envelope_payload = {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": "telegram",
-            "provider": "telegram",
+            "channel": "telegram_bot",
+            "provider": "telegram_bot",
             "endpoint_identity": "test-endpoint-123",
         },
         "event": {

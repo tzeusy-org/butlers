@@ -46,8 +46,9 @@ Base connector variables:
 - `SWITCHBOARD_MCP_URL` (required; SSE endpoint for Switchboard MCP server)
 - `CONNECTOR_PROVIDER=discord` (required)
 - `CONNECTOR_CHANNEL=discord` (required)
-- `CONNECTOR_ENDPOINT_IDENTITY` (required)
 - `CONNECTOR_MAX_INFLIGHT` (optional, default `8`)
+
+Endpoint identity is auto-resolved at startup via Discord `/users/@me` (e.g. `discord:user:@username`).
 
 Discord auth/config variables (candidate set, v2 WIP):
 - `DISCORD_CLIENT_ID`
@@ -74,7 +75,7 @@ Resilience behavior:
 
 ## 6. Idempotency and Ordering
 Idempotency key guidance:
-- Primary key: Discord message/event id + `CONNECTOR_ENDPOINT_IDENTITY`.
+- Primary key: Discord message/event id + auto-resolved endpoint identity.
 - Treat accepted duplicates as success.
 
 Ordering guidance:

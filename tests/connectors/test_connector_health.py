@@ -25,7 +25,7 @@ class TestTelegramBotConnectorHealth:
         return TelegramBotConnectorConfig(
             switchboard_mcp_url="http://localhost:40100/sse",
             provider="telegram",
-            channel="telegram",
+            channel="telegram_bot",
             endpoint_identity="telegram:bot:test_bot",
             telegram_token="test-telegram-token",
             poll_interval_s=1.0,

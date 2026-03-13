@@ -414,7 +414,7 @@ def _make_ingestion_envelope(
     raw_key = ""
     if source_channel == "email":
         raw_key = sender_address
-    elif source_channel in ("telegram",):
+    elif source_channel in ("telegram_bot", "telegram_user_client"):
         raw_key = str(source.get("endpoint_identity") or "")
     elif source_channel in ("discord",):
         raw_key = str(source.get("endpoint_identity") or "")

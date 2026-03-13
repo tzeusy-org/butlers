@@ -16,7 +16,7 @@ The Telegram bot connector bridges a Telegram bot account into the butler ecosys
 
 #### Scenario: Connector identity
 - **WHEN** the Telegram bot connector starts
-- **THEN** `source.channel="telegram"`, `source.provider="telegram"`, and `source.endpoint_identity` identifies the receiving bot (e.g., bot username or configured bot ID)
+- **THEN** `source.channel="telegram_bot"`, `source.provider="telegram"`, and `source.endpoint_identity` identifies the receiving bot (e.g., bot username or configured bot ID)
 
 ### Requirement: Update Retrieval Modes
 The connector supports two modes: polling for development and webhook for production.
@@ -39,7 +39,7 @@ Each Telegram update is normalized to the canonical `ingest.v1` envelope.
 #### Scenario: Field mapping
 - **WHEN** a Telegram update is normalized
 - **THEN** the mapping is:
-  - `source.channel` = `"telegram"`
+  - `source.channel` = `"telegram_bot"`
   - `source.provider` = `"telegram"`
   - `source.endpoint_identity` = receiving bot identity
   - `event.external_event_id` = Telegram `update_id`
@@ -146,7 +146,8 @@ Configuration via environment variables with base connector variables plus Teleg
 
 #### Scenario: Required variables
 - **WHEN** the Telegram bot connector starts
-- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram`, `CONNECTOR_ENDPOINT_IDENTITY` must be set
+- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram_bot` must be set
+- **AND** `endpoint_identity` is auto-resolved at startup via the Telegram Bot API `getMe()` call (e.g., `"telegram:bot:<bot_username>"`)
 - **AND** `CONNECTOR_POLL_INTERVAL_S` is required for polling mode
 
 #### Scenario: Telegram credential variables

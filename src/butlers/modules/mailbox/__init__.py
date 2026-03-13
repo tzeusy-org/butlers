@@ -23,7 +23,15 @@ from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
 
-KNOWN_CHANNELS = {"mcp", "telegram", "email", "api", "scheduler", "system"}
+KNOWN_CHANNELS = {
+    "mcp",
+    "telegram_bot",
+    "telegram_user_client",
+    "email",
+    "api",
+    "scheduler",
+    "system",
+}
 VALID_STATUSES = {"unread", "read", "actioned", "archived"}
 
 

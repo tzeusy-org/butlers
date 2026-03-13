@@ -23,7 +23,6 @@ Environment variables:
 - SWITCHBOARD_MCP_URL (required): SSE endpoint for Switchboard MCP server
 - CONNECTOR_PROVIDER=discord (required)
 - CONNECTOR_CHANNEL=discord (required)
-- CONNECTOR_ENDPOINT_IDENTITY (required; e.g. "discord:user:<user_id>")
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40084)
 - DISCORD_BOT_TOKEN (required; Discord bot token resolved from env or DB)
@@ -51,7 +50,7 @@ import logging
 import os
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
@@ -192,10 +191,6 @@ class DiscordUserConnectorConfig:
         provider = os.environ.get("CONNECTOR_PROVIDER", "discord")
         channel = os.environ.get("CONNECTOR_CHANNEL", "discord")
 
-        endpoint_identity = os.environ.get("CONNECTOR_ENDPOINT_IDENTITY")
-        if not endpoint_identity:
-            raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
-
         discord_bot_token = os.environ.get("DISCORD_BOT_TOKEN")
         if not discord_bot_token:
             raise ValueError("DISCORD_BOT_TOKEN environment variable is required")
@@ -218,7 +213,6 @@ class DiscordUserConnectorConfig:
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
             channel=channel,
-            endpoint_identity=endpoint_identity,
             discord_bot_token=discord_bot_token,
             guild_allowlist=guild_allowlist,
             channel_allowlist=channel_allowlist,
@@ -1222,15 +1216,55 @@ class DiscordUserConnector:
             logger.exception("Failed to save checkpoint to DB")
 
 
+async def _resolve_discord_endpoint_identity(token: str) -> str:
+    """Resolve the bot identity from the Discord API via ``/users/@me``.
+
+    Returns ``discord:user:@<username>`` (or ``discord:user:<id>`` if no
+    username is available).
+
+    Raises:
+        RuntimeError: If the API call fails or returns no usable identity.
+    """
+    url = "https://discord.com/api/v10/users/@me"
+    headers = {"Authorization": f"Bot {token}"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with session.get(url, headers=headers, timeout=timeout) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                username = data.get("username")
+                user_id = data.get("id")
+                if username:
+                    identity = f"discord:user:@{username}"
+                elif user_id:
+                    identity = f"discord:user:{user_id}"
+                else:
+                    raise RuntimeError("Discord connector: /users/@me returned no username or id")
+                logger.info("Discord connector: resolved endpoint_identity=%s", identity)
+                return identity
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            f"Discord connector: failed to resolve endpoint identity: {exc}"
+        ) from exc
+
+
 async def run_discord_user_connector() -> None:
     """CLI entry point for running Discord user connector.
 
     Reads configuration from environment variables and runs the connector
-    in gateway mode until interrupted.
+    in gateway mode until interrupted. Endpoint identity is auto-resolved
+    from the Discord API.
     """
     configure_logging(level="INFO", butler_name="discord-user")
 
     config = DiscordUserConnectorConfig.from_env()
+
+    # Auto-resolve endpoint identity from Discord API.
+    resolved_identity = await _resolve_discord_endpoint_identity(config.discord_bot_token)
+    config = replace(config, endpoint_identity=resolved_identity)
 
     # Create cursor pool for DB-backed checkpoint persistence.
     from butlers.connectors.cursor_store import create_cursor_pool_from_env

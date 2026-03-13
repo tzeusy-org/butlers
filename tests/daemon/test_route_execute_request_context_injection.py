@@ -180,7 +180,7 @@ def _route_request_context(
     *,
     source_endpoint_identity: str = "switchboard",
     source_sender_identity: str = "health",
-    source_channel: str = "telegram",
+    source_channel: str = "telegram_bot",
     source_thread_identity: str | None = "12345",
     request_id: str = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
 ) -> dict[str, Any]:
@@ -214,7 +214,7 @@ class TestRouteExecuteRequestContextInjection:
         daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
 
         request_ctx = _route_request_context(
-            source_channel="telegram",
+            source_channel="telegram_bot",
             source_thread_identity="98765",
             source_sender_identity="user123",
             request_id="018f6f4e-5b3b-7b2d-9c2f-aaaaaabbbbbb",
@@ -362,7 +362,7 @@ class TestRouteExecuteRequestContextInjection:
         daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
 
         request_ctx = _route_request_context(
-            source_channel="telegram",
+            source_channel="telegram_bot",
             source_thread_identity="thread-999",
             source_sender_identity="sender-888",
             source_endpoint_identity="switchboard",
@@ -405,7 +405,7 @@ class TestRouteExecuteRequestContextInjection:
 
         # Verify all fields are present
         assert parsed_ctx["request_id"] == "018f6f4e-5b3b-7b2d-9c2f-ccccccdddddd"
-        assert parsed_ctx["source_channel"] == "telegram"
+        assert parsed_ctx["source_channel"] == "telegram_bot"
         assert parsed_ctx["source_thread_identity"] == "thread-999"
         assert parsed_ctx["source_sender_identity"] == "sender-888"
         assert parsed_ctx["source_endpoint_identity"] == "switchboard"
@@ -427,7 +427,7 @@ class TestRouteExecuteRequestContextInjection:
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram"),
+            request_context=_route_request_context(source_channel="telegram_bot"),
             input={"prompt": "Track medication."},
         )
 
@@ -459,7 +459,7 @@ class TestRouteExecuteRequestContextInjection:
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram"),
+            request_context=_route_request_context(source_channel="telegram_bot"),
             input={"prompt": "Follow up with the user."},
         )
 
@@ -532,7 +532,7 @@ class TestRouteExecuteConversationHistoryInjection:
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram"),
+            request_context=_route_request_context(source_channel="telegram_bot"),
             input={"prompt": "When should I take it?", "conversation_history": history_text},
         )
 
@@ -565,7 +565,7 @@ class TestRouteExecuteConversationHistoryInjection:
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram"),
+            request_context=_route_request_context(source_channel="telegram_bot"),
             input={
                 "prompt": "Reply.",
                 "context": "Extra context here",
@@ -628,7 +628,7 @@ class TestRouteExecuteConversationHistoryInjection:
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram"),
+            request_context=_route_request_context(source_channel="telegram_bot"),
             input={"prompt": "Do something.", "conversation_history": None},
         )
 
@@ -655,7 +655,7 @@ class TestRouteExecuteConversationHistoryInjection:
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram"),
+            request_context=_route_request_context(source_channel="telegram_bot"),
             input={"prompt": "Do something.", "conversation_history": ""},
         )
 

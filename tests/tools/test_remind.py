@@ -289,7 +289,7 @@ class TestRemindTool:
         task_id = uuid4()
         ctx = {
             "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "switchboard",
             "source_sender_identity": "health",
             "source_thread_identity": "12345",

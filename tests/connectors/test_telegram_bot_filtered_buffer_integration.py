@@ -35,7 +35,7 @@ def bot_config() -> TelegramBotConnectorConfig:
     return TelegramBotConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
-        channel="telegram",
+        channel="telegram_bot",
         endpoint_identity="test_bot",
         telegram_token="test-token",
         poll_interval_s=0.1,
@@ -351,14 +351,14 @@ class TestFlushAfterPollCycle:
         # Record a filtered event to give flush something to do
         connector._filtered_event_buffer.record(
             external_message_id="flush-test",
-            source_channel="telegram",
+            source_channel="telegram_bot",
             sender_identity="111222333",
             subject_or_preview="Hello",
             filter_reason=FilteredEventBuffer.reason_policy_rule(
                 "connector_rule", "block", "chat_id"
             ),
             full_payload=FilteredEventBuffer.full_payload(
-                channel="telegram",
+                channel="telegram_bot",
                 provider="telegram",
                 endpoint_identity="test_bot",
                 external_event_id="flush-test",
@@ -388,12 +388,12 @@ class TestFlushAfterPollCycle:
         connector = TelegramBotConnector(bot_config, db_pool=None, cursor_pool=MagicMock())
         connector._filtered_event_buffer.record(
             external_message_id="noop-test",
-            source_channel="telegram",
+            source_channel="telegram_bot",
             sender_identity="111",
             subject_or_preview=None,
             filter_reason="connector_rule:block:chat_id",
             full_payload=FilteredEventBuffer.full_payload(
-                channel="telegram",
+                channel="telegram_bot",
                 provider="telegram",
                 endpoint_identity="test_bot",
                 external_event_id="noop-test",
@@ -426,7 +426,7 @@ class TestReplayDrain:
         """Build a mock asyncpg row for connectors.filtered_events."""
         if payload is None:
             payload = FilteredEventBuffer.full_payload(
-                channel="telegram",
+                channel="telegram_bot",
                 provider="telegram",
                 endpoint_identity="test_bot",
                 external_event_id=external_message_id,
@@ -564,7 +564,7 @@ class TestReplayDrain:
     ) -> None:
         """Drain handles full_payload when asyncpg returns a dict (native JSONB codec)."""
         payload_dict = FilteredEventBuffer.full_payload(
-            channel="telegram",
+            channel="telegram_bot",
             provider="telegram",
             endpoint_identity="test_bot",
             external_event_id="dict-payload-001",

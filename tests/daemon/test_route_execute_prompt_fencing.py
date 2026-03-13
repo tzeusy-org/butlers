@@ -260,7 +260,7 @@ class TestRouteExecutePromptFencing:
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram"),
+            request_context=_route_request_context(source_channel="telegram_bot"),
             input={"prompt": "Hello from telegram"},
         )
 
@@ -288,7 +288,7 @@ class TestRouteExecutePromptFencing:
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram"),
+            request_context=_route_request_context(source_channel="telegram_bot"),
             input={"prompt": "Hello from telegram"},
         )
 

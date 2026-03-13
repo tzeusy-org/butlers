@@ -51,13 +51,13 @@
 - [ ] 7.1 Create `GmailConnectorManager` class — top-level orchestrator that discovers accounts from `shared.google_accounts`, spawns/stops `GmailAccountLoop` instances, and manages the lifecycle dict keyed by account email.
 - [ ] 7.2 Create `GmailAccountLoop` class — encapsulates per-account state: credentials, cursor, label filters, watch subscription, backfill state. Runs as an independent asyncio task within the single process.
 - [ ] 7.3 Implement account discovery at startup: query `shared.google_accounts WHERE status = 'active'` and filter to accounts with `gmail.modify` or `gmail.readonly` in `granted_scopes`. Spawn a loop per qualifying account.
-- [ ] 7.4 Implement per-account credential resolution: each `GmailAccountLoop` resolves its own refresh token via `resolve_google_credentials(store, account=<email>)` and derives `CONNECTOR_ENDPOINT_IDENTITY` as `gmail:user:<email>`.
+- [ ] 7.4 Implement per-account credential resolution: each `GmailAccountLoop` resolves its own refresh token via `resolve_google_credentials(store, account=<email>)` and auto-resolves `endpoint_identity` as `gmail:user:<email>`.
 - [ ] 7.5 Implement per-account config overrides via `google_accounts.metadata.gmail` — label_include, label_exclude, poll_interval_s, pubsub_enabled, pubsub_topic. Fall back to process-level env var defaults.
 - [ ] 7.6 Implement per-account error isolation: loop-level try/except with independent backoff/retry. A failed loop does not affect other loops.
 - [ ] 7.7 Implement dynamic account discovery: periodic re-scan at `GMAIL_ACCOUNT_RESCAN_INTERVAL_S` (default 300). Spawn loops for new accounts, gracefully stop loops for removed/revoked accounts.
 - [ ] 7.8 Add `connector_reload_accounts` MCP tool (and SIGHUP handler) to trigger immediate re-scan.
 - [ ] 7.9 Update health endpoint to aggregate per-account health: worst-case overall status, per-account status array with email, endpoint_identity, status, timestamps, errors.
-- [ ] 7.10 Remove `CONNECTOR_ENDPOINT_IDENTITY` from required env vars (now derived per-account). Remove `GMAIL_ACCOUNT` env var (replaced by DB discovery).
+- [x] 7.10 `CONNECTOR_ENDPOINT_IDENTITY` env var removed — identity is auto-resolved per-account at startup (`gmail:user:{email}` from `shared.google_accounts`). Remove `GMAIL_ACCOUNT` env var (replaced by DB discovery).
 - [ ] 7.11 Update tests in `test_gmail_connector.py`: multi-account discovery, per-account isolation, dynamic add/remove, degraded startup with no qualifying accounts, per-account config overrides.
 
 ## 8. Calendar Module (Account Selection)

@@ -181,7 +181,7 @@ def _route_request_context(
     *,
     source_endpoint_identity: str = "switchboard",
     source_sender_identity: str = "health",
-    source_channel: str = "telegram",
+    source_channel: str = "telegram_bot",
     source_thread_identity: str | None = "12345",
     request_id: str = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
 ) -> dict[str, Any]:

@@ -212,7 +212,8 @@ All connectors share a common set of environment variables defining identity, tr
 
 #### Scenario: Required base environment variables
 - **WHEN** a connector starts
-- **THEN** `SWITCHBOARD_MCP_URL` (Switchboard SSE endpoint), `CONNECTOR_PROVIDER` (e.g., `gmail`, `telegram`), `CONNECTOR_CHANNEL` (e.g., `email`, `telegram`), and `CONNECTOR_ENDPOINT_IDENTITY` (unique instance identity) must be set
+- **THEN** `SWITCHBOARD_MCP_URL` (Switchboard SSE endpoint), `CONNECTOR_PROVIDER` (e.g., `gmail`, `telegram`), and `CONNECTOR_CHANNEL` (e.g., `email`, `telegram`) must be set
+- **AND** each connector auto-resolves its `endpoint_identity` at startup (e.g., by calling the provider's "get me" API) rather than requiring it as an env var
 - **AND** checkpoint persistence is DB-backed via `cursor_store` (no file path env var needed)
 
 #### Scenario: Optional environment variables
@@ -230,7 +231,7 @@ All connectors send periodic heartbeats to the Switchboard for liveness tracking
 
 #### Scenario: Connector identity block
 - **WHEN** the `connector` section is populated
-- **THEN** it contains: `connector_type` (e.g., `"gmail"`, `"telegram_bot"`, `"telegram_user_client"`), `endpoint_identity` (matching `CONNECTOR_ENDPOINT_IDENTITY`), `instance_id` (UUID4, stable per process lifetime — a new ID indicates restart), `version` (optional software version)
+- **THEN** it contains: `connector_type` (e.g., `"gmail"`, `"telegram_bot"`, `"telegram_user_client"`), `endpoint_identity` (auto-resolved at startup), `instance_id` (UUID4, stable per process lifetime — a new ID indicates restart), `version` (optional software version)
 
 #### Scenario: Health status block
 - **WHEN** the `status` section is populated

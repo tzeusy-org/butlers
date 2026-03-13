@@ -400,13 +400,13 @@ class TestRoutingContextLifecycle:
             dispatch_fn=AsyncMock(),
         )
         pipeline._set_routing_context(
-            source_metadata={"channel": "telegram"},
+            source_metadata={"channel": "telegram_bot"},
             request_context={"request_id": "abc"},
             request_id="req-1",
         )
         ctx = _routing_ctx_var.get()
         assert ctx is not None
-        assert ctx["source_metadata"] == {"channel": "telegram"}
+        assert ctx["source_metadata"] == {"channel": "telegram_bot"}
         assert ctx["request_context"] == {"request_id": "abc"}
         assert ctx["request_id"] == "req-1"
         # Cleanup
@@ -417,7 +417,7 @@ class TestRoutingContextLifecycle:
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
         )
-        _routing_ctx_var.set({"source_metadata": {"channel": "telegram"}})
+        _routing_ctx_var.set({"source_metadata": {"channel": "telegram_bot"}})
         pipeline._clear_routing_context()
         assert _routing_ctx_var.get() is None
 
@@ -428,7 +428,7 @@ class TestRoutingContextLifecycle:
         )
         # Should not raise
         pipeline._set_routing_context(
-            source_metadata={"channel": "telegram"},
+            source_metadata={"channel": "telegram_bot"},
             request_id="req-1",
         )
         # Cleanup
@@ -454,7 +454,7 @@ class TestRoutingContextLifecycle:
             dispatch_fn=AsyncMock(),
         )
         pipeline._set_routing_context(
-            source_metadata={"channel": "telegram"},
+            source_metadata={"channel": "telegram_bot"},
             request_id="req-1",
         )
         ctx = _routing_ctx_var.get()
@@ -987,7 +987,7 @@ class TestIngressDeduplication:
                 "source_endpoint_identity": "telegram:bot-main",
                 "external_event_id": "4321",
             },
-            source_metadata={"channel": "telegram", "identity": "bot", "tool_name": "tool"},
+            source_metadata={"channel": "telegram_bot", "identity": "bot", "tool_name": "tool"},
             message_text="hello",
             received_at=datetime(2026, 2, 13, 12, 0, tzinfo=UTC),
         )
@@ -1070,7 +1070,7 @@ class TestIngressDeduplication:
 
         tool_args = {
             "source": "telegram",
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "telegram:bot-main",
             "external_event_id": "99",
             "chat_id": "7",
@@ -1433,13 +1433,13 @@ class TestPipelineModule:
         tool_fn = registered["pipeline.process"]
         await tool_fn(
             message_text="hello",
-            source_channel="telegram",
+            source_channel="telegram_bot",
             source_identity="bot-main",
         )
 
         _, call_kwargs = fake_pipeline.process.call_args
         tool_args = call_kwargs.get("tool_args", {})
-        assert tool_args.get("source_channel") == "telegram"
+        assert tool_args.get("source_channel") == "telegram_bot"
         assert tool_args.get("source_identity") == "bot-main"
 
     async def test_register_tools_accepts_dict_config(self):

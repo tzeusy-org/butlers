@@ -24,6 +24,7 @@ The user client connector exists to give butlers passive awareness of the user's
 - **THEN** the bot connector handles user↔bot interactive messaging (inbound + outbound via Messenger)
 - **AND** the user client connector provides passive, readonly ingestion of the user's broader Telegram activity
 - **AND** each has a distinct `endpoint_identity` (e.g., `"telegram:bot:mybot"` vs `"telegram:user:123456"`)
+- **AND** each uses a distinct `source.channel` (`"telegram"` for bot, `"telegram_user_client"` for user client) so ingestion policy and routing can trivially distinguish the two flows
 
 #### Scenario: Relationship to TelegramContactsProvider
 - **WHEN** the Contacts module is configured with a Telegram provider
@@ -78,7 +79,7 @@ Each user-client message is normalized to the canonical `ingest.v1` envelope.
 #### Scenario: Field mapping
 - **WHEN** a user-client message is normalized
 - **THEN** the mapping is:
-  - `source.channel` = `"telegram"`
+  - `source.channel` = `"telegram_user_client"`
   - `source.provider` = `"telegram"`
   - `source.endpoint_identity` = `"telegram:user:<account_id>"` (the user's Telegram account, NOT the bot)
   - `event.external_event_id` = Telegram `message.id`
@@ -153,7 +154,8 @@ Because this connector reads a user's personal Telegram messages, strict privacy
 
 #### Scenario: Required variables
 - **WHEN** the Telegram user client connector starts
-- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram`, `CONNECTOR_ENDPOINT_IDENTITY` (user-client identity) must be set
+- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram_user_client` must be set
+- **AND** `endpoint_identity` is auto-resolved at startup via the Telethon `get_me()` call (e.g., `"telegram:user:<account_id>"`)
 - **AND** `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_USER_SESSION` must be resolvable
 
 #### Scenario: Optional variables

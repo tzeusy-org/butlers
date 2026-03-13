@@ -40,7 +40,7 @@ transparent about automations you're running and ask for confirmation before des
 
 When processing messages that originated from Telegram or other user-facing channels, respond
 interactively to provide a better user experience. This mode is activated when a REQUEST CONTEXT
-JSON block is present with a `source_channel` field set to a user-facing channel (telegram, email).
+JSON block is present with a `source_channel` field set to a user-facing channel (telegram_bot, email).
 
 ### Detection
 

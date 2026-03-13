@@ -41,7 +41,7 @@ def _make_event_row(
     *,
     event_id: str | None = None,
     received_at: datetime | None = None,
-    source_channel: str = "telegram",
+    source_channel: str = "telegram_bot",
     source_provider: str | None = "telegram",
     triage_decision: str = "accepted",
     triage_target: str | None = "atlas",
@@ -220,7 +220,7 @@ class TestListIngestionEvents:
 
     async def test_returns_event_summaries(self, app):
         """Events from shared pool should appear in data list."""
-        row = _make_event_row(event_id=_REQUEST_ID, source_channel="telegram")
+        row = _make_event_row(event_id=_REQUEST_ID, source_channel="telegram_bot")
 
         mock_pool = AsyncMock()
         mock_pool.fetchval = AsyncMock(return_value=1)
@@ -239,7 +239,7 @@ class TestListIngestionEvents:
         assert len(body["data"]) == 1
         event = body["data"][0]
         assert event["id"] == _REQUEST_ID
-        assert event["source_channel"] == "telegram"
+        assert event["source_channel"] == "telegram_bot"
 
     async def test_pagination_params_forwarded(self, app):
         """Limit and offset query params should be accepted without error."""
@@ -262,7 +262,10 @@ class TestListIngestionEvents:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/ingestion/events", params={"source_channel": "telegram"})
+            resp = await client.get(
+                "/api/ingestion/events",
+                params={"source_channel": "telegram_bot"},
+            )
 
         assert resp.status_code == 200
 
@@ -382,7 +385,7 @@ class TestGetIngestionEvent:
         """Event detail should include all expected fields."""
         row = _make_event_row(
             event_id=_REQUEST_ID,
-            source_channel="telegram",
+            source_channel="telegram_bot",
             triage_decision="rejected",
             triage_target=None,
         )
@@ -400,7 +403,7 @@ class TestGetIngestionEvent:
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["id"] == _REQUEST_ID
-        assert data["source_channel"] == "telegram"
+        assert data["source_channel"] == "telegram_bot"
         assert data["triage_decision"] == "rejected"
         assert data["triage_target"] is None
 

@@ -70,7 +70,6 @@ Base connector variables:
 - `SWITCHBOARD_MCP_URL` (required; SSE endpoint for Switchboard MCP server)
 - `CONNECTOR_PROVIDER=gmail` (required)
 - `CONNECTOR_CHANNEL=email` (required)
-- `CONNECTOR_ENDPOINT_IDENTITY` (required)
 - `CONNECTOR_MAX_INFLIGHT` (optional, recommended default `8`)
 
 Gmail API auth variables (OAuth-based, DB-managed):
@@ -115,12 +114,12 @@ Security requirements:
 Multiple Gmail connectors can run concurrently and are expected to be isolated per mailbox and/or policy slice.
 
 Concurrency model:
-- Each running connector instance MUST have a unique `CONNECTOR_ENDPOINT_IDENTITY`.
+- Each running connector instance has a unique auto-resolved endpoint identity (derived from `google_accounts.email`, e.g. `gmail:user:alice@gmail.com`).
 - Each instance has its own DB-backed cursor (keyed by provider + endpoint identity).
 - Each instance MAY use different label filters (for example one connector for `INBOX`, another for `finance` labels).
 
 Required uniqueness boundary:
-- `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, CONNECTOR_ENDPOINT_IDENTITY, external_event_id)`
+- `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, endpoint_identity, external_event_id)`
 
 Operational guidance:
 - Run one daemon process per Gmail account by default.

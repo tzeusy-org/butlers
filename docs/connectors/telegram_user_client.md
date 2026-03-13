@@ -52,8 +52,9 @@ Base connector variables (shared contract):
 - `SWITCHBOARD_MCP_URL` (required; SSE endpoint for Switchboard MCP server)
 - `CONNECTOR_PROVIDER=telegram` (required)
 - `CONNECTOR_CHANNEL=telegram` (required)
-- `CONNECTOR_ENDPOINT_IDENTITY` (required, user-client identity)
 - `CONNECTOR_MAX_INFLIGHT` (optional, recommended default `8`)
+
+Endpoint identity is auto-resolved at startup via Telethon `get_me()` (e.g. `telegram:user:@username`).
 
 State/checkpoint variables:
 - Cursor is DB-backed (keyed by provider + endpoint identity), no file path needed.
@@ -97,7 +98,7 @@ Operational controls:
 
 ## 7. Idempotency, Ordering, and Resume
 Idempotency:
-- Use stable Telegram event/message identity + `CONNECTOR_ENDPOINT_IDENTITY`.
+- Use stable Telegram event/message identity + auto-resolved endpoint identity.
 - Duplicate accepted ingest responses are success, not failures.
 
 Ordering:

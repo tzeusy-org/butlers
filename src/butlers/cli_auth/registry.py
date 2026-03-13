@@ -164,7 +164,6 @@ _register(
             "json",
             "--model",
             "opencode-go/minimax-m2.5",
-
             "respond with ok",
         ],
         test_ok_pattern=re.compile(r"(?:ok|OK|Ok)", re.IGNORECASE),

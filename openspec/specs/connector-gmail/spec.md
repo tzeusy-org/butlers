@@ -330,12 +330,12 @@ Multiple Gmail connector instances can run concurrently for different accounts o
 
 #### Scenario: Per-account isolation
 - **WHEN** multiple Gmail connectors run
-- **THEN** each has a unique `CONNECTOR_ENDPOINT_IDENTITY` and its own DB-backed cursor (keyed by provider + endpoint identity)
+- **THEN** each auto-resolves a unique `endpoint_identity` from its authenticated account and maintains its own DB-backed cursor (keyed by provider + endpoint identity)
 - **AND** each may use different label filters (e.g., one for INBOX, another for finance labels)
 
 #### Scenario: Uniqueness boundary
 - **WHEN** deduplication is evaluated
-- **THEN** the boundary is `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, CONNECTOR_ENDPOINT_IDENTITY, external_event_id)`
+- **THEN** the boundary is `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, endpoint_identity, external_event_id)`
 
 #### Scenario: Horizontal replicas
 - **WHEN** multiple instances share the same endpoint identity
@@ -346,7 +346,8 @@ Multiple Gmail connector instances can run concurrently for different accounts o
 
 #### Scenario: Required variables
 - **WHEN** the Gmail connector starts
-- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=gmail`, `CONNECTOR_CHANNEL=email`, `CONNECTOR_ENDPOINT_IDENTITY` must be set
+- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=gmail`, `CONNECTOR_CHANNEL=email` must be set
+- **AND** `endpoint_identity` is auto-resolved at startup from the authenticated Gmail account (e.g., `"gmail:user:alice@gmail.com"`)
 - **AND** database connectivity (`DATABASE_URL` or `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_USER`/`POSTGRES_PASSWORD`) must be configured for OAuth credential resolution
 
 #### Scenario: Pub/Sub variables (optional)

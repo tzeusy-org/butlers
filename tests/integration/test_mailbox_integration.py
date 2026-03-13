@@ -174,7 +174,7 @@ class TestMailboxPost:
         result = await mod._mailbox_post(
             mailbox_pool,
             sender="alice",
-            sender_channel="telegram",
+            sender_channel="telegram_bot",
             body="Hello from Alice",
             subject="Greetings",
             priority=1,
@@ -188,7 +188,7 @@ class TestMailboxPost:
         row = await mailbox_pool.fetchrow("SELECT * FROM mailbox WHERE id = $1", msg_id)
         assert row is not None
         assert row["sender"] == "alice"
-        assert row["sender_channel"] == "telegram"
+        assert row["sender_channel"] == "telegram_bot"
         assert row["subject"] == "Greetings"
         body = json.loads(row["body"]) if isinstance(row["body"], str) else row["body"]
         assert body == {"text": "Hello from Alice"}
@@ -268,7 +268,7 @@ class TestMailboxList:
         from butlers.modules.mailbox import MailboxModule
 
         mod = MailboxModule()
-        await mod._mailbox_post(mailbox_pool, "alice", "telegram", "from alice")
+        await mod._mailbox_post(mailbox_pool, "alice", "telegram_bot", "from alice")
         await mod._mailbox_post(mailbox_pool, "bob", "mcp", "from bob")
         await mod._mailbox_post(mailbox_pool, "alice", "email", "also from alice")
 
@@ -572,7 +572,7 @@ class TestPostMail:
             switchboard_pool,
             target_butler="no-mailbox-butler",
             sender="alice",
-            sender_channel="telegram",
+            sender_channel="telegram_bot",
             body="This should fail",
         )
 
@@ -601,7 +601,7 @@ class TestPostMail:
             switchboard_pool,
             target_butler="target-butler",
             sender="alice",
-            sender_channel="telegram",
+            sender_channel="telegram_bot",
             body="Hello from Alice via Telegram",
             subject="Hi there",
             priority=1,
@@ -611,7 +611,7 @@ class TestPostMail:
 
         # Verify sender identity is preserved exactly
         assert received_args["sender"] == "alice"
-        assert received_args["sender_channel"] == "telegram"
+        assert received_args["sender_channel"] == "telegram_bot"
         assert received_args["body"] == "Hello from Alice via Telegram"
         assert received_args["subject"] == "Hi there"
         assert received_args["priority"] == 1

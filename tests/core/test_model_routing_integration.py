@@ -449,20 +449,20 @@ async def test_trigger_catalog_priority_ordering(
     postgres_container: Any,
     tmp_path: Path,
 ) -> None:
-    """Lower priority number wins when multiple catalog entries match the tier.
+    """Higher priority number wins when multiple catalog entries match the tier.
 
     Inserts two entries for 'high' tier with different priorities and verifies
-    that the lower-priority-numbered entry is selected.
+    that the higher-priority-numbered entry is selected (DESC ordering).
     """
     async with _make_pool(postgres_container) as pool:
-        # Lower priority number = higher preference
+        # Higher priority number = higher preference (ORDER BY priority DESC)
         await _insert_catalog_entry(
             pool,
             alias="preferred-high",
             runtime_type="claude",
             model_id="claude-preferred-4",
             complexity_tier="high",
-            priority=5,
+            priority=50,
         )
         await _insert_catalog_entry(
             pool,
@@ -470,7 +470,7 @@ async def test_trigger_catalog_priority_ordering(
             runtime_type="claude",
             model_id="claude-fallback-4",
             complexity_tier="high",
-            priority=50,
+            priority=5,
         )
 
         config_dir = tmp_path / "config-priority"
@@ -490,7 +490,7 @@ async def test_trigger_catalog_priority_ordering(
 
         assert result.success is True
         assert result.model == "claude-preferred-4", (
-            f"Expected lower-priority-number entry 'claude-preferred-4', got '{result.model}'"
+            f"Expected higher-priority-number entry 'claude-preferred-4', got '{result.model}'"
         )
 
 
@@ -782,7 +782,7 @@ def _valid_route_payload() -> dict[str, Any]:
         "request_context": {
             "request_id": _VALID_UUID7,
             "received_at": "2026-02-18T10:00:00Z",
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "switchboard-bot",
             "source_sender_identity": "user-123",
         },

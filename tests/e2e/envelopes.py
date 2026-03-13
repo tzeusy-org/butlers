@@ -182,7 +182,7 @@ def telegram_envelope(
     --------
     >>> env = telegram_envelope(chat_id=12345, text="I ran 5km this morning")
     >>> env["source"]["channel"]
-    'telegram'
+    'telegram_bot'
     >>> env["source"]["provider"]
     'telegram'
     >>> "tg:12345:" in env["control"]["idempotency_key"]
@@ -243,7 +243,7 @@ def telegram_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": "telegram",
+            "channel": "telegram_bot",
             "provider": "telegram",
             "endpoint_identity": endpoint_identity,
         },

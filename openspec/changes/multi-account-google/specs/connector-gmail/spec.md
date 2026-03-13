@@ -18,7 +18,7 @@ The Gmail connector runs as a single process that discovers and manages all conn
 #### Scenario: Per-account connector identity
 - **WHEN** a watch/poll loop runs for account `work@gmail.com`
 - **THEN** `source.channel="email"`, `source.provider="gmail"`, and `source.endpoint_identity = "gmail:user:work@gmail.com"`
-- **AND** the endpoint identity is derived from the account email, not from a process-level env var
+- **AND** the endpoint identity is auto-resolved per-account from the authenticated email, not from an env var
 
 #### Scenario: Per-account scope validation
 - **WHEN** the connector evaluates a Google account for loop creation
@@ -89,7 +89,7 @@ Multiple Gmail connector processes can still run concurrently for horizontal sca
 
 #### Scenario: Uniqueness boundary
 - **WHEN** deduplication is evaluated
-- **THEN** the boundary is `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, CONNECTOR_ENDPOINT_IDENTITY, external_event_id)`
+- **THEN** the boundary is `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, endpoint_identity, external_event_id)`
 
 #### Scenario: Horizontal replicas
 - **WHEN** multiple process instances share the same endpoint identity for the same account
@@ -108,7 +108,7 @@ Multiple Gmail connector processes can still run concurrently for horizontal sca
 #### Scenario: Required variables
 - **WHEN** the Gmail connector starts
 - **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=gmail`, `CONNECTOR_CHANNEL=email` must be set
-- **AND** `CONNECTOR_ENDPOINT_IDENTITY` is NOT required at the process level (derived per-account)
+- **AND** `endpoint_identity` is auto-resolved per-account at startup from the authenticated email (not set via env var)
 - **AND** database connectivity (`DATABASE_URL` or `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_USER`/`POSTGRES_PASSWORD`) must be configured for account discovery and credential resolution
 
 #### Scenario: Process-level default variables (optional)

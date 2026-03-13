@@ -1034,7 +1034,37 @@ async def test_invoke_success():
 
 
 async def test_invoke_sets_opencode_config_env_var():
-    """invoke() injects OPENCODE_CONFIG env var pointing to temp config file."""
+    """invoke() injects OPENCODE_CONFIG env var pointing to temp config file.
+
+    OPENCODE_CONFIG is only set when there are MCP servers or a system prompt
+    to inject — otherwise OpenCode uses its own config for provider auth.
+    """
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="do something",
+            system_prompt="",
+            mcp_servers={"my-butler": {"url": "http://localhost:9100/mcp"}},
+            env={"PATH": "/usr/bin"},
+        )
+
+    call_kwargs = mock_sub.call_args[1]
+    env = call_kwargs["env"]
+    assert "OPENCODE_CONFIG" in env
+    # The value should be a path ending in opencode.jsonc
+    assert env["OPENCODE_CONFIG"].endswith("opencode.jsonc")
+
+
+async def test_invoke_skips_opencode_config_when_no_servers_or_prompt():
+    """invoke() does NOT set OPENCODE_CONFIG when there are no MCP servers and no prompt.
+
+    This lets OpenCode use its own config so provider auth/keys are preserved.
+    """
     adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
 
     mock_proc = AsyncMock()
@@ -1051,9 +1081,7 @@ async def test_invoke_sets_opencode_config_env_var():
 
     call_kwargs = mock_sub.call_args[1]
     env = call_kwargs["env"]
-    assert "OPENCODE_CONFIG" in env
-    # The value should be a path ending in opencode.jsonc
-    assert env["OPENCODE_CONFIG"].endswith("opencode.jsonc")
+    assert "OPENCODE_CONFIG" not in env
 
 
 async def test_invoke_config_contains_mcp_servers():
@@ -1145,7 +1173,11 @@ async def test_invoke_config_includes_instructions_when_system_prompt():
 
 
 async def test_invoke_no_instructions_when_no_system_prompt():
-    """invoke() config has no instructions key when system_prompt is empty."""
+    """invoke() config has no instructions key when system_prompt is empty.
+
+    We must provide MCP servers so that OPENCODE_CONFIG is actually set
+    (the adapter skips config injection when there are no servers and no prompt).
+    """
     adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
     captured_config: list[dict] = []
 
@@ -1172,7 +1204,7 @@ async def test_invoke_no_instructions_when_no_system_prompt():
         await adapter.invoke(
             prompt="test",
             system_prompt="",
-            mcp_servers={},
+            mcp_servers={"my-butler": {"url": "http://localhost:9100/mcp"}},
             env={},
         )
 
@@ -1352,7 +1384,11 @@ async def test_invoke_binary_not_found():
 
 
 async def test_invoke_passes_env_to_subprocess():
-    """invoke() passes caller env vars (plus OPENCODE_CONFIG) to subprocess."""
+    """invoke() passes caller env vars (plus OPENCODE_CONFIG) to subprocess.
+
+    OPENCODE_CONFIG is injected only when MCP servers or a system prompt are
+    provided, so we pass a server entry to trigger the injection.
+    """
     adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
 
     mock_proc = AsyncMock()
@@ -1365,7 +1401,7 @@ async def test_invoke_passes_env_to_subprocess():
         await adapter.invoke(
             prompt="test",
             system_prompt="",
-            mcp_servers={},
+            mcp_servers={"my-butler": {"url": "http://localhost:9100/mcp"}},
             env=caller_env,
         )
 

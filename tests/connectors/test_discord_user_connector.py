@@ -214,7 +214,6 @@ class TestDiscordUserConnectorConfig:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_PROVIDER", "discord")
         monkeypatch.setenv("CONNECTOR_CHANNEL", "discord")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "discord:user:123")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "my-bot-token")
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "4")
         monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40090")
@@ -226,7 +225,7 @@ class TestDiscordUserConnectorConfig:
         assert config.switchboard_mcp_url == "http://localhost:40100/sse"
         assert config.provider == "discord"
         assert config.channel == "discord"
-        assert config.endpoint_identity == "discord:user:123"
+        assert config.endpoint_identity == ""  # auto-resolved later via /users/@me
         assert config.discord_bot_token == "my-bot-token"
         assert config.max_inflight == 4
         assert config.health_port == 40090
@@ -239,17 +238,9 @@ class TestDiscordUserConnectorConfig:
         with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
             DiscordUserConnectorConfig.from_env()
 
-    def test_from_env_missing_endpoint_identity(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Missing CONNECTOR_ENDPOINT_IDENTITY raises ValueError."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.delenv("CONNECTOR_ENDPOINT_IDENTITY", raising=False)
-        with pytest.raises(ValueError, match="CONNECTOR_ENDPOINT_IDENTITY"):
-            DiscordUserConnectorConfig.from_env()
-
     def test_from_env_missing_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Missing DISCORD_BOT_TOKEN raises ValueError."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "discord:user:123")
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
         with pytest.raises(ValueError, match="DISCORD_BOT_TOKEN"):
             DiscordUserConnectorConfig.from_env()
@@ -257,7 +248,6 @@ class TestDiscordUserConnectorConfig:
     def test_from_env_empty_allowlists(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Empty allowlists mean no filtering (all guilds/channels allowed)."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "discord:user:123")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "token")
         monkeypatch.delenv("DISCORD_GUILD_ALLOWLIST", raising=False)
         monkeypatch.delenv("DISCORD_CHANNEL_ALLOWLIST", raising=False)
@@ -270,7 +260,6 @@ class TestDiscordUserConnectorConfig:
     def test_default_provider_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default provider and channel are 'discord'."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "discord:user:123")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "token")
         monkeypatch.delenv("CONNECTOR_PROVIDER", raising=False)
         monkeypatch.delenv("CONNECTOR_CHANNEL", raising=False)
@@ -1131,7 +1120,6 @@ class TestRunDiscordUserConnector:
     ) -> None:
         """run_discord_user_connector loads config from env and starts connector."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "discord:user:999")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
 
         mock_connector = AsyncMock()
@@ -1142,6 +1130,10 @@ class TestRunDiscordUserConnector:
         mock_pool.close = AsyncMock()
 
         with (
+            patch(
+                "butlers.connectors.discord_user._resolve_discord_endpoint_identity",
+                new=AsyncMock(return_value="discord:user:@testbot"),
+            ),
             patch(
                 "butlers.connectors.discord_user.DiscordUserConnector",
                 return_value=mock_connector,

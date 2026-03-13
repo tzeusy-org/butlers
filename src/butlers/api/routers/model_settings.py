@@ -599,9 +599,7 @@ async def test_catalog_entry(
         adapter_cls = get_adapter(runtime_type)
         adapter = adapter_cls()
     except ValueError as exc:
-        return ApiResponse[ModelTestResult](
-            data=ModelTestResult(success=False, error=str(exc))
-        )
+        return ApiResponse[ModelTestResult](data=ModelTestResult(success=False, error=str(exc)))
 
     import os
 

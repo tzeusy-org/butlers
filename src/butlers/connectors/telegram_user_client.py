@@ -19,7 +19,7 @@ Key behaviors:
 Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=telegram (required)
-- CONNECTOR_CHANNEL=telegram (required)
+- CONNECTOR_CHANNEL=telegram_user_client (required)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
@@ -87,7 +87,7 @@ class TelegramUserClientConnectorConfig:
 
     # Connector identity
     provider: str = "telegram"
-    channel: str = "telegram"
+    channel: str = "telegram_user_client"
     endpoint_identity: str = field(default="")
 
     # Telegram user-client credentials (MTProto)
@@ -118,7 +118,7 @@ class TelegramUserClientConnectorConfig:
             raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
         provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
-        channel = os.environ.get("CONNECTOR_CHANNEL", "telegram")
+        channel = os.environ.get("CONNECTOR_CHANNEL", "telegram_user_client")
 
         backfill_window_str = os.environ.get("CONNECTOR_BACKFILL_WINDOW_H")
         backfill_window_h = int(backfill_window_str) if backfill_window_str else None
@@ -525,7 +525,7 @@ class TelegramUserClientConnector:
                         chat_id = str(val)
                         break
         return IngestionEnvelope(
-            source_channel="telegram",
+            source_channel="telegram_user_client",
             raw_key=chat_id,
         )
 
@@ -600,7 +600,7 @@ class TelegramUserClientConnector:
         """Normalize Telegram user-client message to canonical ingest.v1 format.
 
         Mapping (from docs/connectors/telegram_user_client.md):
-        - source.channel: "telegram"
+        - source.channel: "telegram_user_client"
         - source.provider: "telegram"
         - source.endpoint_identity: user-client identity
         - event.external_event_id: message.id

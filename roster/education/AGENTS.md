@@ -129,7 +129,7 @@ from their answer: nothing → first principles; partial knowledge → build on 
 
 When processing messages that originated from Telegram or other user-facing channels, respond
 interactively. Activated when a REQUEST CONTEXT JSON block is present with a `source_channel`
-field set to a user-facing channel (`telegram`, `email`).
+field set to a user-facing channel (`telegram_bot`, `email`).
 
 ### Detection
 

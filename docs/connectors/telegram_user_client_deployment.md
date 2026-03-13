@@ -67,7 +67,7 @@ export SWITCHBOARD_MCP_URL="http://switchboard:40100/sse"  # Use http://localhos
 # Connector identity
 export CONNECTOR_PROVIDER="telegram"
 export CONNECTOR_CHANNEL="telegram"
-export CONNECTOR_ENDPOINT_IDENTITY="telegram:user:YOUR_USER_ID"
+# Endpoint identity is auto-resolved at startup via get_me() (e.g. telegram:user:@username)
 
 # Telegram user-client credentials are managed via owner contact_info
 # (types: telegram_api_id, telegram_api_hash, telegram_user_session).
@@ -154,7 +154,7 @@ services:
       SWITCHBOARD_MCP_URL: http://switchboard:40100/sse
       CONNECTOR_PROVIDER: telegram
       CONNECTOR_CHANNEL: telegram
-      CONNECTOR_ENDPOINT_IDENTITY: telegram:user:${TELEGRAM_USER_ID}
+      # Endpoint identity is auto-resolved at startup via get_me()
       # Telegram user-client credentials come from owner contact_info (dashboard).
       # No secret files needed for TELEGRAM_API_ID/HASH/SESSION.
       CONNECTOR_MAX_INFLIGHT: "8"

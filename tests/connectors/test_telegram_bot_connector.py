@@ -29,7 +29,7 @@ def mock_config() -> TelegramBotConnectorConfig:
     return TelegramBotConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
-        channel="telegram",
+        channel="telegram_bot",
         endpoint_identity="test_bot",
         telegram_token="test-telegram-token",
         poll_interval_s=0.1,
@@ -76,7 +76,7 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test loading configuration from environment variables."""
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
     monkeypatch.setenv("CONNECTOR_PROVIDER", "telegram")
-    monkeypatch.setenv("CONNECTOR_CHANNEL", "telegram")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "telegram_bot")
     monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "telegram-token")
     monkeypatch.setenv("CONNECTOR_POLL_INTERVAL_S", "2.5")
     monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "4")
@@ -85,7 +85,7 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert config.switchboard_mcp_url == "http://localhost:40100/sse"
     assert config.provider == "telegram"
-    assert config.channel == "telegram"
+    assert config.channel == "telegram_bot"
     assert config.endpoint_identity == ""  # auto-resolved later via getMe
     assert config.telegram_token == "telegram-token"
     assert config.poll_interval_s == 2.5
@@ -117,7 +117,7 @@ def test_normalize_to_ingest_v1_basic_message(
     envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
 
     assert envelope["schema_version"] == "ingest.v1"
-    assert envelope["source"]["channel"] == "telegram"
+    assert envelope["source"]["channel"] == "telegram_bot"
     assert envelope["source"]["provider"] == "telegram"
     assert envelope["source"]["endpoint_identity"] == "test_bot"
     assert envelope["event"]["external_event_id"] == "12345"
@@ -1373,7 +1373,7 @@ def test_build_ingestion_envelope_private_chat() -> None:
     }
     envelope = TelegramBotConnector._build_ingestion_envelope(update)
     assert envelope.raw_key == "987654321"
-    assert envelope.source_channel == "telegram"
+    assert envelope.source_channel == "telegram_bot"
 
 
 def test_build_ingestion_envelope_group_chat() -> None:
@@ -1759,9 +1759,7 @@ class TestRunTelegramConnectorIdentityResolution:
         used_config = ctor.call_args.args[0]
         assert used_config.endpoint_identity == "telegram:bot:@my_real_bot"
 
-    async def test_raises_when_resolution_fails(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_raises_when_resolution_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """run_telegram_bot_connector should propagate RuntimeError on resolution failure."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")

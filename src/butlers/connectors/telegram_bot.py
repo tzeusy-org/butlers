@@ -12,7 +12,7 @@ downstream responsibilities of the Switchboard after ingest acceptance.
 Environment Variables (from docs/connectors/telegram_bot.md):
     SWITCHBOARD_MCP_URL: SSE endpoint URL for Switchboard MCP server (required)
     CONNECTOR_PROVIDER: "telegram" (required)
-    CONNECTOR_CHANNEL: "telegram" (required)
+    CONNECTOR_CHANNEL: "telegram_bot" (required)
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
@@ -142,7 +142,7 @@ class TelegramBotConnectorConfig:
 
     # Connector identity
     provider: str = "telegram"
-    channel: str = "telegram"
+    channel: str = "telegram_bot"
     endpoint_identity: str = field(default="")
 
     # Telegram credentials
@@ -168,7 +168,7 @@ class TelegramBotConnectorConfig:
             raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
         provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
-        channel = os.environ.get("CONNECTOR_CHANNEL", "telegram")
+        channel = os.environ.get("CONNECTOR_CHANNEL", "telegram_bot")
 
         telegram_token = os.environ.get("BUTLER_TELEGRAM_TOKEN")
         if not telegram_token:
@@ -870,7 +870,7 @@ class TelegramBotConnector:
                     chat_id = str(chat["id"])
                     break
         return IngestionEnvelope(
-            source_channel="telegram",
+            source_channel="telegram_bot",
             raw_key=chat_id,
         )
 
@@ -881,7 +881,7 @@ class TelegramBotConnector:
         non-message updates like callback_query/inline_query).
 
         Mapping (from docs/connectors/telegram_bot.md):
-        - source.channel: "telegram"
+        - source.channel: "telegram_bot"
         - source.provider: "telegram"
         - source.endpoint_identity: receiving bot identity
         - event.external_event_id: update_id
@@ -1224,9 +1224,7 @@ async def resolve_telegram_endpoint_identity(token: str) -> str:
                         identity,
                     )
                     return identity
-            raise RuntimeError(
-                "Telegram bot connector: getMe response missing username/first_name"
-            )
+            raise RuntimeError("Telegram bot connector: getMe response missing username/first_name")
     except RuntimeError:
         raise
     except Exception as exc:
@@ -1274,7 +1272,7 @@ async def run_telegram_bot_connector() -> None:
         config = TelegramBotConnectorConfig(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=os.environ.get("CONNECTOR_PROVIDER", "telegram"),
-            channel=os.environ.get("CONNECTOR_CHANNEL", "telegram"),
+            channel=os.environ.get("CONNECTOR_CHANNEL", "telegram_bot"),
             telegram_token=db_token,
             poll_interval_s=float(os.environ.get("CONNECTOR_POLL_INTERVAL_S", "1.0")),
             webhook_url=os.environ.get("CONNECTOR_WEBHOOK_URL"),

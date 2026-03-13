@@ -812,7 +812,7 @@ _pipe_pane_to_log "$PANE_GMAIL" "${LOGS_RUN_DIR}/connectors/gmail.log"
 sleep 0.3
 
 tmux send-keys -t "$PANE_TELEGRAM_BOT" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram uv run python -m butlers.connectors.telegram_bot" Enter
+  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_bot uv run python -m butlers.connectors.telegram_bot" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
   "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_user_client uv run python -m butlers.connectors.telegram_user_client" Enter

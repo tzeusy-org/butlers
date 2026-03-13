@@ -21,7 +21,9 @@ from pydantic_core import PydanticCustomError
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
-SourceChannel = Literal["telegram", "slack", "email", "api", "mcp", "voice"]
+SourceChannel = Literal[
+    "telegram_bot", "telegram_user_client", "slack", "email", "api", "mcp", "voice"
+]
 SourceProvider = Literal["telegram", "slack", "gmail", "imap", "internal", "live-listener"]
 NotifyChannel = Literal["telegram", "email", "sms", "chat"]
 NotifyIntent = Literal["send", "reply", "react"]
@@ -29,7 +31,8 @@ PolicyTier = Literal["default", "interactive", "high_priority"]
 IngestionTier = Literal["full", "metadata"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
 _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = {
-    "telegram": frozenset({"telegram"}),
+    "telegram_bot": frozenset({"telegram"}),
+    "telegram_user_client": frozenset({"telegram"}),
     "slack": frozenset({"slack"}),
     "email": frozenset({"gmail", "imap"}),
     "api": frozenset({"internal"}),

@@ -74,7 +74,7 @@ def test_runtime_session_routing_context_roundtrip():
     set_runtime_session_routing_context(
         "sess-ctx",
         {
-            "source_metadata": {"channel": "telegram", "identity": "telegram:bot-main"},
+            "source_metadata": {"channel": "telegram_bot", "identity": "telegram:bot-main"},
             "request_context": {"source_sender_identity": "user-123"},
             "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
         },
@@ -87,5 +87,5 @@ def test_runtime_session_routing_context_roundtrip():
         clear_runtime_session_routing_context("sess-ctx")
 
     assert isinstance(ctx, dict)
-    assert ctx["source_metadata"]["channel"] == "telegram"
+    assert ctx["source_metadata"]["channel"] == "telegram_bot"
     assert ctx["request_context"]["source_sender_identity"] == "user-123"

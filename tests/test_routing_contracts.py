@@ -20,7 +20,7 @@ def _build_valid_ingest_envelope(
     text: str = "Test message",
     idempotency_key: str | None = None,
     schema_version: str = "ingest.v1",
-    channel: str = "telegram",
+    channel: str = "telegram_bot",
     provider: str = "telegram",
     endpoint_identity: str = "bot_test",
     sender_identity: str = "user123",
@@ -306,7 +306,7 @@ def test_existing_tests_still_pass():
     parsed = parse_ingest_envelope(envelope)
 
     assert parsed.schema_version == "ingest.v1"
-    assert parsed.source.channel == "telegram"
+    assert parsed.source.channel == "telegram_bot"
     assert parsed.payload.normalized_text == "Log weight 80kg"
     assert parsed.payload.attachments is None  # Default value
 
@@ -381,7 +381,7 @@ def _build_valid_route_envelope(
     context: str | None = None,
     conversation_history: str | None = None,
     schema_version: str = "route.v1",
-    source_channel: str = "telegram",
+    source_channel: str = "telegram_bot",
     request_id: str | None = None,
 ) -> dict:
     """Build a well-formed RouteEnvelopeV1 dict for testing."""

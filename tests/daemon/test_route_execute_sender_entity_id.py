@@ -178,7 +178,7 @@ def _base_request_context(
     ctx: dict[str, Any] = {
         "request_id": "018f6f4e-5b3b-7b2d-9c2f-aabbccddee00",
         "received_at": "2026-03-10T00:00:00Z",
-        "source_channel": "telegram",
+        "source_channel": "telegram_bot",
         "source_endpoint_identity": "switchboard",
         "source_sender_identity": "owner",
         "source_thread_identity": "12345",

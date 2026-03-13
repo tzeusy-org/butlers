@@ -179,7 +179,15 @@ class TestKnownChannels:
     """Verify the KNOWN_CHANNELS set."""
 
     def test_contains_expected_channels(self):
-        expected = {"mcp", "telegram", "email", "api", "scheduler", "system"}
+        expected = {
+            "mcp",
+            "telegram_bot",
+            "telegram_user_client",
+            "email",
+            "api",
+            "scheduler",
+            "system",
+        }
         assert KNOWN_CHANNELS == expected
 
 
@@ -333,7 +341,7 @@ class TestMailboxPost:
     async def test_post_with_all_fields(self, mailbox: MailboxModule, pool):
         result = await mailbox._post(
             sender="butler-b",
-            sender_channel="telegram",
+            sender_channel="telegram_bot",
             body="Full message body",
             subject="Important Subject",
             priority=5,
@@ -343,7 +351,7 @@ class TestMailboxPost:
         row = await pool.fetchrow("SELECT * FROM mailbox WHERE id = $1", msg_id)
         assert row is not None
         assert row["sender"] == "butler-b"
-        assert row["sender_channel"] == "telegram"
+        assert row["sender_channel"] == "telegram_bot"
         assert row["subject"] == "Important Subject"
         assert row["body"] == "Full message body"
         assert row["priority"] == 5

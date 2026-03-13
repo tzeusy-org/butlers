@@ -10,7 +10,7 @@ They verify:
 
 Acceptance criteria verified:
 1. email_envelope() produces valid ingest.v1 with source.channel='email'
-2. telegram_envelope() produces valid ingest.v1 with source.channel='telegram'
+2. telegram_envelope() produces valid ingest.v1 with source.channel='telegram_bot'
 3. email_envelope with thread_id sets event.external_thread_id
 4. Unified Scenario dataclass has all required fields
 5. 20-30 scenarios authored
@@ -217,7 +217,7 @@ class TestTelegramEnvelope:
 
     def test_source_channel_is_telegram(self) -> None:
         env = telegram_envelope(chat_id=12345, text="Hello")
-        assert env["source"]["channel"] == "telegram"
+        assert env["source"]["channel"] == "telegram_bot"
 
     def test_source_provider_is_telegram(self) -> None:
         env = telegram_envelope(chat_id=12345, text="Hello")
@@ -300,7 +300,7 @@ class TestTelegramEnvelope:
     def test_group_chat_negative_id(self) -> None:
         """Negative chat IDs (group chats) are supported."""
         env = telegram_envelope(chat_id=-100123456, text="Group message")
-        assert env["source"]["channel"] == "telegram"
+        assert env["source"]["channel"] == "telegram_bot"
         raw = env["payload"]["raw"]
         assert raw["message"]["chat"]["id"] == -100123456
 
@@ -337,7 +337,7 @@ class TestEnvelopeContractCompliance:
 
         env = telegram_envelope(chat_id=12345, text="I ran 5km this morning")
         parsed = parse_ingest_envelope(env)
-        assert parsed.source.channel == "telegram"
+        assert parsed.source.channel == "telegram_bot"
         assert parsed.source.provider == "telegram"
 
     def test_email_with_thread_id_passes_validation(self) -> None:
@@ -455,7 +455,9 @@ class TestScenarioCorpus:
     def test_telegram_scenarios_tagged_with_telegram(self) -> None:
         """All telegram scenarios have the 'telegram' tag."""
         tg_scenarios = [
-            s for s in ALL_SCENARIOS if s.envelope.get("source", {}).get("channel") == "telegram"
+            s
+            for s in ALL_SCENARIOS
+            if s.envelope.get("source", {}).get("channel") == "telegram_bot"
         ]
         for s in tg_scenarios:
             assert "telegram" in s.tags, f"Telegram scenario {s.id} missing 'telegram' tag"

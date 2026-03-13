@@ -465,7 +465,7 @@ class TestPipelineHistoryIntegration:
             message_text="Hello",
             tool_name="ingest",
             tool_args={
-                "source_channel": "telegram",
+                "source_channel": "telegram_bot",
                 "chat_id": "123",
                 "request_id": str(uuid.uuid4()),
             },

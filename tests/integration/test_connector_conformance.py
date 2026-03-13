@@ -36,7 +36,7 @@ def telegram_config() -> TelegramBotConnectorConfig:
     return TelegramBotConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
-        channel="telegram",
+        channel="telegram_bot",
         endpoint_identity="test_bot",
         telegram_token="test-telegram-token",
         poll_interval_s=0.1,
@@ -120,7 +120,7 @@ class TestTelegramConnectorConformance:
 
             # Verify envelope conforms to ingest.v1 contract
             assert envelope["schema_version"] == "ingest.v1"
-            assert envelope["source"]["channel"] == "telegram"
+            assert envelope["source"]["channel"] == "telegram_bot"
             assert envelope["source"]["provider"] == "telegram"
             assert envelope["source"]["endpoint_identity"] == "test_bot"
             assert envelope["event"]["external_event_id"] == "12345"

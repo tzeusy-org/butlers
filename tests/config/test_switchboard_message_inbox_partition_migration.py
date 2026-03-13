@@ -165,7 +165,7 @@ def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
                     {
                         "request_id": "migration-test-request",
                         "received_at": "2026-02-14T00:00:00+00:00",
-                        "source_channel": "telegram",
+                        "source_channel": "telegram_bot",
                         "source_endpoint_identity": "telegram:bot",
                         "source_sender_identity": "user-123",
                     }

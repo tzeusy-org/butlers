@@ -87,7 +87,7 @@ async def test_validate_notify_valid_reply():
         },
         "request_context": {
             "request_id": str(uuid.uuid4()),
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "bot_endpoint",
             "source_sender_identity": "user123",
         },

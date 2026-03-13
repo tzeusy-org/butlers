@@ -535,7 +535,7 @@ def test_notify_v1_parse_reply_intent_with_context() -> None:
         recipient="user-chat-789",
         request_context={
             "request_id": request_id,
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "bot-123",
             "source_sender_identity": "user-789",
             "source_thread_identity": "thread-456",
@@ -564,7 +564,7 @@ def test_notify_v1_parse_react_intent_requires_emoji() -> None:
         },
         "request_context": {
             "request_id": request_id,
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "bot-123",
             "source_sender_identity": "user-789",
             "source_thread_identity": "thread-456",
@@ -594,7 +594,7 @@ def test_notify_v1_parse_react_intent_with_emoji() -> None:
         },
         "request_context": {
             "request_id": request_id,
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "bot-123",
             "source_sender_identity": "user-789",
             "source_thread_identity": "thread-456",
@@ -649,7 +649,7 @@ async def test_notify_v1_delivery_logged_on_failed_route(
         recipient="test-user-999",
         request_context={
             "request_id": request_id,
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "bot-health",
             "source_sender_identity": "health",
         },
@@ -737,7 +737,7 @@ async def test_notify_v1_full_delivery_via_messenger(
         recipient="test-telegram-user",
         request_context={
             "request_id": request_id,
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "bot-health",
             "source_sender_identity": "health-butler",
         },

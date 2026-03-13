@@ -359,7 +359,7 @@ class TestRouteToButlerAcceptedStatusPassthrough:
 
         token = _routing_ctx_var.set(
             {
-                "source_metadata": {"channel": "telegram", "identity": "user-123"},
+                "source_metadata": {"channel": "telegram_bot", "identity": "user-123"},
                 "request_context": {"source_thread_identity": "chat-456"},
                 "request_id": "unknown",
             }
@@ -399,13 +399,13 @@ class TestRouteToButlerAcceptedStatusPassthrough:
             runtime_session_id,
             {
                 "source_metadata": {
-                    "channel": "telegram",
+                    "channel": "telegram_bot",
                     "identity": "telegram:bot-main",
                     "tool_name": "ingest",
                 },
                 "request_context": {
                     "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
-                    "source_channel": "telegram",
+                    "source_channel": "telegram_bot",
                     "source_sender_identity": "123456789",
                     "source_thread_identity": "123456789:999",
                 },
@@ -420,7 +420,7 @@ class TestRouteToButlerAcceptedStatusPassthrough:
             clear_runtime_session_routing_context(runtime_session_id)
 
         assert result["status"] == "accepted"
-        assert captured_envelope["request_context"]["source_channel"] == "telegram"
+        assert captured_envelope["request_context"]["source_channel"] == "telegram_bot"
         assert captured_envelope["request_context"]["source_sender_identity"] == "123456789"
         assert captured_envelope["request_context"]["source_thread_identity"] == "123456789:999"
 

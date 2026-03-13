@@ -923,7 +923,7 @@ class TestDeliverNotifyRouting:
             "request_context": {
                 "request_id": "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa",
                 "received_at": "2026-02-13T12:00:00+00:00",
-                "source_channel": "telegram",
+                "source_channel": "telegram_bot",
                 "source_endpoint_identity": "switchboard-bot",
                 "source_sender_identity": "user-123",
                 "source_thread_identity": "chat-123",
@@ -986,7 +986,7 @@ class TestDeliverNotifyRouting:
             "request_context": {
                 "request_id": original_request_id,
                 "received_at": "2026-02-13T12:00:00+00:00",
-                "source_channel": "telegram",
+                "source_channel": "telegram_bot",
                 "source_endpoint_identity": "telegram:BigButlerBot",
                 "source_sender_identity": "user-123",
                 "source_thread_identity": "chat-123",
@@ -1314,7 +1314,7 @@ class TestWriteOutboundMessageInbox:
                 },
                 "request_context": {
                     "request_id": _make_uuid7(),
-                    "source_channel": "telegram",
+                    "source_channel": "telegram_bot",
                     "source_endpoint_identity": "telegram:bot",
                     "source_sender_identity": "user456",
                     # No source_thread_identity
@@ -1349,7 +1349,7 @@ class TestWriteOutboundMessageInbox:
                 },
                 "request_context": {
                     "request_id": _make_uuid7(),
-                    "source_channel": "telegram",
+                    "source_channel": "telegram_bot",
                     "source_endpoint_identity": "telegram:bot",
                     "source_sender_identity": "user123",
                     "source_thread_identity": "12345678:999",
@@ -1408,7 +1408,7 @@ class TestWriteOutboundMessageInbox:
                 },
                 "request_context": {
                     "request_id": _make_uuid7(),
-                    "source_channel": "telegram",
+                    "source_channel": "telegram_bot",
                     "source_endpoint_identity": "telegram:bot",
                     "source_sender_identity": "user789",
                     "source_thread_identity": "99999:1234",

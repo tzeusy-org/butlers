@@ -76,7 +76,7 @@ async def _insert_message(
     sender: str,
     thread_identity: str,
     received_at: datetime,
-    channel: str = "telegram",
+    channel: str = "telegram_bot",
 ) -> None:
     """Insert a v2-schema message_inbox row."""
     # Ensure the monthly partition exists (mirrors production ingestion behaviour).
@@ -229,7 +229,7 @@ async def test_realtime_history_telegram_groups_message_scoped_thread_ids(switch
             sender="user1",
             thread_identity=f"{chat_id}:101",
             received_at=now - timedelta(minutes=6),
-            channel="telegram",
+            channel="telegram_bot",
         )
         await _insert_outbound_message(
             pool,
@@ -237,7 +237,7 @@ async def test_realtime_history_telegram_groups_message_scoped_thread_ids(switch
             origin_butler="general",
             thread_identity=f"{chat_id}:102",
             received_at=now - timedelta(minutes=5),
-            channel="telegram",
+            channel="telegram_bot",
         )
         await _insert_message(
             pool,
@@ -245,14 +245,14 @@ async def test_realtime_history_telegram_groups_message_scoped_thread_ids(switch
             sender="user2",
             thread_identity=f"-100{uuid.uuid4().int % 10_000_000:07d}:201",
             received_at=now - timedelta(minutes=4),
-            channel="telegram",
+            channel="telegram_bot",
         )
 
         messages = await _load_realtime_history(
             pool,
             current_thread,
             now,
-            source_channel="telegram",
+            source_channel="telegram_bot",
         )
 
         assert len(messages) == 2
@@ -343,7 +343,7 @@ async def test_conversation_history_telegram(switchboard_dsn):
             received_at=now - timedelta(minutes=5),
         )
 
-        result = await _load_conversation_history(pool, "telegram", thread, now)
+        result = await _load_conversation_history(pool, "telegram_bot", thread, now)
 
         assert "## Recent Conversation History" in result
         assert "previous message" in result
@@ -379,7 +379,7 @@ async def _insert_outbound_message(
     origin_butler: str,
     thread_identity: str,
     received_at: datetime,
-    channel: str = "telegram",
+    channel: str = "telegram_bot",
 ) -> None:
     """Insert an outbound (direction='outbound') message_inbox row."""
     import json

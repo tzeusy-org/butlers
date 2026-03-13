@@ -34,7 +34,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     env_vars = {
         "SWITCHBOARD_MCP_URL": "http://localhost:40100/sse",
         "CONNECTOR_PROVIDER": "telegram",
-        "CONNECTOR_CHANNEL": "telegram",
+        "CONNECTOR_CHANNEL": "telegram_user_client",
         "TELEGRAM_API_ID": "12345",
         "TELEGRAM_API_HASH": "test-hash",
         "TELEGRAM_USER_SESSION": "test-session-string",
@@ -51,7 +51,7 @@ def config() -> TelegramUserClientConnectorConfig:
     return TelegramUserClientConnectorConfig(
         switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
-        channel="telegram",
+        channel="telegram_user_client",
         endpoint_identity="telegram:user:123456",
         telegram_api_id=12345,
         telegram_api_hash="test-hash",
@@ -80,7 +80,7 @@ class TestTelegramUserClientConnectorConfig:
 
         assert config.switchboard_mcp_url == "http://localhost:40100/sse"
         assert config.provider == "telegram"
-        assert config.channel == "telegram"
+        assert config.channel == "telegram_user_client"
         assert config.endpoint_identity == ""
         # Credentials are not read from env — they come from DB only
         assert config.telegram_api_id == 0
@@ -289,7 +289,7 @@ class TestTelegramUserClientConnector:
         envelope = await connector._normalize_to_ingest_v1(mock_message)
 
         assert envelope["schema_version"] == "ingest.v1"
-        assert envelope["source"]["channel"] == "telegram"
+        assert envelope["source"]["channel"] == "telegram_user_client"
         assert envelope["source"]["provider"] == "telegram"
         assert envelope["source"]["endpoint_identity"] == "telegram:user:123456"
         assert envelope["event"]["external_event_id"] == "12345"
@@ -308,7 +308,7 @@ class TestTelegramUserClientConnector:
         envelope = {
             "schema_version": "ingest.v1",
             "source": {
-                "channel": "telegram",
+                "channel": "telegram_user_client",
                 "provider": "telegram",
                 "endpoint_identity": "telegram:user:123456",
             },
@@ -349,7 +349,7 @@ class TestTelegramUserClientConnector:
         envelope: dict[str, Any] = {
             "schema_version": "ingest.v1",
             "source": {
-                "channel": "telegram",
+                "channel": "telegram_user_client",
                 "provider": "telegram",
                 "endpoint_identity": "telegram:user:123456",
             },
@@ -385,7 +385,11 @@ class TestTelegramUserClientConnector:
 
         envelope: dict[str, Any] = {
             "schema_version": "ingest.v1",
-            "source": {"channel": "telegram", "provider": "telegram", "endpoint_identity": "x"},
+            "source": {
+                "channel": "telegram_user_client",
+                "provider": "telegram",
+                "endpoint_identity": "x",
+            },
             "event": {"external_event_id": "1", "observed_at": datetime.now(UTC).isoformat()},
             "sender": {"identity": "1"},
             "payload": {"raw": {}, "normalized_text": "test"},
@@ -836,7 +840,7 @@ class TestBuildIngestionEnvelope:
         msg.chat_id = 987654321
         envelope = TelegramUserClientConnector._build_ingestion_envelope(msg)
         assert envelope.raw_key == "987654321"
-        assert envelope.source_channel == "telegram"
+        assert envelope.source_channel == "telegram_user_client"
 
     def test_extracts_negative_chat_id_for_groups(self) -> None:
         """Returns negative chat_id string for group/channel chats."""

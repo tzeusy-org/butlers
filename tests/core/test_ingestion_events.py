@@ -130,7 +130,7 @@ def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "received_at": datetime.now(UTC),
-        "source_channel": "telegram",
+        "source_channel": "telegram_bot",
         "source_provider": None,
         "source_endpoint_identity": "bot@example.com",
         "source_sender_identity": "user123",
@@ -248,11 +248,11 @@ class TestIngestionEventGet:
     async def test_returns_dict_when_row_found(self) -> None:
         from butlers.core.ingestion_events import ingestion_event_get
 
-        row = _make_event_record(source_channel="telegram")
+        row = _make_event_record(source_channel="telegram_bot")
         pool = _FakePool(fetchrow_result=row)
         result = await ingestion_event_get(pool, uuid.uuid4())
         assert result is not None
-        assert result["source_channel"] == "telegram"
+        assert result["source_channel"] == "telegram_bot"
 
     async def test_queries_shared_ingestion_events(self) -> None:
         from butlers.core.ingestion_events import ingestion_event_get
@@ -394,11 +394,11 @@ class TestIngestionEventGetUnifiedLookup:
         """source_channel must be present in the filtered event result."""
         from butlers.core.ingestion_events import ingestion_event_get
 
-        filtered_row = _make_filtered_event_record(source_channel="telegram")
+        filtered_row = _make_filtered_event_record(source_channel="telegram_bot")
         pool = _FakePool(fetchrow_results=[None, filtered_row])
         result = await ingestion_event_get(pool, uuid.uuid4())
         assert result is not None
-        assert result["source_channel"] == "telegram"
+        assert result["source_channel"] == "telegram_bot"
 
     async def test_filtered_event_id_is_string(self) -> None:
         """The id in the filtered event result must be a string."""
@@ -511,13 +511,13 @@ class TestIngestionEventsList:
 
         rows = [
             _make_event_record(source_channel="email"),
-            _make_event_record(source_channel="telegram"),
+            _make_event_record(source_channel="telegram_bot"),
         ]
         pool = _FakePool(fetch_results=rows)
         result = await ingestion_events_list(pool)
         assert len(result) == 2
         channels = {r["source_channel"] for r in result}
-        assert channels == {"email", "telegram"}
+        assert channels == {"email", "telegram_bot"}
 
     async def test_default_limit_offset_passed_to_query(self) -> None:
         from butlers.core.ingestion_events import ingestion_events_list
@@ -548,10 +548,10 @@ class TestIngestionEventsList:
         from butlers.core.ingestion_events import ingestion_events_list
 
         pool = _FakePool(fetch_results=[])
-        await ingestion_events_list(pool, source_channel="telegram")
+        await ingestion_events_list(pool, source_channel="telegram_bot")
         _, sql, args = pool.calls[0]
         assert "source_channel" in sql
-        assert args[0] == "telegram"
+        assert args[0] == "telegram_bot"
 
     async def test_source_channel_filter_passes_channel_as_first_arg(self) -> None:
         from butlers.core.ingestion_events import ingestion_events_list
@@ -636,9 +636,9 @@ class TestIngestionEventsCount:
         from butlers.core.ingestion_events import ingestion_events_count
 
         pool = _FakePool(fetchval_result=0)
-        await ingestion_events_count(pool, source_channel="telegram")
+        await ingestion_events_count(pool, source_channel="telegram_bot")
         _, _, args = pool.calls[0]
-        assert args == ("telegram",)
+        assert args == ("telegram_bot",)
 
     async def test_status_ingested_queries_only_ingestion_events(self) -> None:
         from butlers.core.ingestion_events import ingestion_events_count
@@ -673,12 +673,12 @@ class TestIngestionEventsCount:
         from butlers.core.ingestion_events import ingestion_events_count
 
         pool = _FakePool(fetchval_result=2)
-        await ingestion_events_count(pool, status="filtered", source_channel="telegram")
+        await ingestion_events_count(pool, status="filtered", source_channel="telegram_bot")
         _, sql, args = pool.calls[0]
         assert "connectors.filtered_events" in sql
         assert "source_channel" in sql
         assert "filtered" in args
-        assert "telegram" in args
+        assert "telegram_bot" in args
 
     async def test_status_error_queries_filtered_events(self) -> None:
         """status='error' (non-ingested) should query filtered_events."""

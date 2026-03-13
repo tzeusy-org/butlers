@@ -345,7 +345,7 @@ class TestIngestionTierBackwardCompatibility:
         envelope = {
             "schema_version": "ingest.v1",
             "source": {
-                "channel": "telegram",
+                "channel": "telegram_bot",
                 "provider": "telegram",
                 "endpoint_identity": "legacy_bot",
             },

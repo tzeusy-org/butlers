@@ -4,7 +4,7 @@ Butlers stores Google OAuth credentials in two places: app credentials (client_i
 
 The `shared.entity_info` table has a `UNIQUE(entity_id, type)` constraint. Since there's one owner entity and one `google_oauth_refresh` type, only one refresh token can exist. The OAuth flow overwrites the token on re-auth.
 
-The Contacts module already has a `(provider, account_id)` keying concept in its sync state store, and the Gmail connector already supports multiple concurrent instances with unique `CONNECTOR_ENDPOINT_IDENTITY`. The multi-account plumbing partially exists — the blocker is credential storage and resolution.
+The Contacts module already has a `(provider, account_id)` keying concept in its sync state store, and the Gmail connector already supports multiple concurrent instances with unique auto-resolved `endpoint_identity` values. The multi-account plumbing partially exists — the blocker is credential storage and resolution.
 
 ## Goals / Non-Goals
 
@@ -120,7 +120,7 @@ account = "work@gmail.com"
 **Architecture:**
 - `GmailConnectorManager` is the top-level orchestrator. It holds a dict of `GmailAccountLoop` instances keyed by account email.
 - Each `GmailAccountLoop` owns: its own `GmailConnectorConfig` (with account-specific credentials), its own cursor, its own label filters (from `google_accounts.metadata` or shared config), and its own history/watch state.
-- `CONNECTOR_ENDPOINT_IDENTITY` is derived per-account as `gmail:user:<email>` — one identity per loop, not one per process.
+- `endpoint_identity` is auto-resolved per-account as `gmail:user:<email>` — one identity per loop, not one per process.
 - Account discovery happens at startup and can be re-triggered via a `connector_reload_accounts` MCP tool or SIGHUP signal. New accounts start a loop; removed/revoked accounts gracefully stop theirs.
 - Health endpoint aggregates per-account health: overall status is the worst-case across loops.
 

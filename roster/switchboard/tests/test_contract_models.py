@@ -28,7 +28,7 @@ def _valid_ingest_payload() -> dict[str, Any]:
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": "telegram",
+            "channel": "telegram_bot",
             "provider": "telegram",
             "endpoint_identity": "switchboard-bot",
         },
@@ -54,7 +54,7 @@ def _valid_route_payload() -> dict[str, Any]:
         "request_context": {
             "request_id": _VALID_UUID7,
             "received_at": now,
-            "source_channel": "telegram",
+            "source_channel": "telegram_bot",
             "source_endpoint_identity": "switchboard-bot",
             "source_sender_identity": "user-123",
             "source_thread_identity": "chat-456",
@@ -147,7 +147,7 @@ def test_notify_telegram_reply_requires_source_thread_identity() -> None:
     payload["delivery"]["intent"] = "reply"
     payload["request_context"] = {
         "request_id": _VALID_UUID7,
-        "source_channel": "telegram",
+        "source_channel": "telegram_bot",
         "source_endpoint_identity": "switchboard-bot",
         "source_sender_identity": "user-123",
     }
@@ -302,7 +302,7 @@ def test_request_context_lineage_immutability_enforced() -> None:
     original_payload = {
         "request_id": _VALID_UUID7,
         "received_at": datetime.now(UTC).isoformat(),
-        "source_channel": "telegram",
+        "source_channel": "telegram_bot",
         "source_endpoint_identity": "switchboard-bot",
         "source_sender_identity": "user-123",
     }
@@ -327,7 +327,7 @@ def test_request_context_lineage_allows_optional_extension() -> None:
     original_payload = {
         "request_id": _VALID_UUID7,
         "received_at": datetime.now(UTC).isoformat(),
-        "source_channel": "telegram",
+        "source_channel": "telegram_bot",
         "source_endpoint_identity": "switchboard-bot",
         "source_sender_identity": "user-123",
     }
@@ -478,7 +478,7 @@ class TestIngestionTierContract:
         payload = {
             "schema_version": "ingest.v1",
             "source": {
-                "channel": "telegram",
+                "channel": "telegram_bot",
                 "provider": "telegram",
                 "endpoint_identity": "bot_legacy",
             },

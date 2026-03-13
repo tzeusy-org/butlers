@@ -95,9 +95,7 @@ async def restore_tokens(store: CredentialStore) -> dict[str, bool]:
             final_content = content
             if provider.token_path.exists():
                 try:
-                    existing = json.loads(
-                        provider.token_path.read_text(encoding="utf-8")
-                    )
+                    existing = json.loads(provider.token_path.read_text(encoding="utf-8"))
                     restored = json.loads(content)
                     if isinstance(existing, dict) and isinstance(restored, dict):
                         existing.update(restored)

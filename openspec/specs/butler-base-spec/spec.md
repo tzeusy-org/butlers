@@ -316,7 +316,7 @@ Each butler's `CLAUDE.md` is loaded as the system prompt for every runtime insta
 - **AND** no other system prompt sources are injected
 
 #### Scenario: Interactive response mode
-- **WHEN** a runtime instance receives a REQUEST CONTEXT JSON block with a `source_channel` field (e.g., `telegram`, `email`)
+- **WHEN** a runtime instance receives a REQUEST CONTEXT JSON block with a `source_channel` field (e.g., `telegram_bot`, `email`)
 - **THEN** it engages interactive response mode as defined in the butler's CLAUDE.md
 - **AND** selects from response styles: React (emoji only), Affirm (acknowledgment), Follow-up (clarifying question), Answer (substantive response), or React+Reply (emoji + response)
 

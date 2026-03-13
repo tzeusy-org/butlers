@@ -164,13 +164,22 @@ _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "No bot <-> user telegram chat has been configured - please add a "
     "telegram_chat_id entity_info entry on the owner entity via the dashboard"
 )
-_INTERACTIVE_ROUTE_CHANNELS: frozenset[str] = frozenset({"telegram", "whatsapp"})
+_INTERACTIVE_ROUTE_CHANNELS: frozenset[str] = frozenset({"telegram_bot", "whatsapp"})
+
+# Source channel → notify (delivery) channel mapping.
+# Source channels identify where a message came from (ingestion);
+# notify channels identify the outbound delivery mechanism.
+_SOURCE_TO_NOTIFY_CHANNEL: dict[str, str] = {
+    "telegram_bot": "telegram",
+}
 
 
 def _build_interactive_route_guidance(source_channel: str) -> str | None:
     """Return interactive-channel delivery guidance for route.execute contexts."""
     if source_channel not in _INTERACTIVE_ROUTE_CHANNELS:
         return None
+
+    notify_channel = _SOURCE_TO_NOTIFY_CHANNEL.get(source_channel, source_channel)
 
     return (
         "INTERACTIVE DATA SOURCE:\n"
@@ -179,7 +188,7 @@ def _build_interactive_route_guidance(source_channel: str) -> str | None:
         "Please use the /routed-message-safety skill for fenced-content handling and "
         "the /butler-notifications skill for notify() argument/intent details.\n"
         "IMPORTANT: You MUST use the notify() tool on your MCP to send your response:\n"
-        f'- channel="{source_channel}"\n'
+        f'- channel="{notify_channel}"\n'
         '- intent="reply" for contextual responses\n'
         '- intent="react" with emoji for quick acknowledgments (telegram only)\n'
         "- Pass the request_context from above as the request_context parameter\n"
@@ -1522,8 +1531,8 @@ class ButlerDaemon:
             if ref.triage_target is not None:
                 request_context["triage_target"] = ref.triage_target
 
-            # Fire 👀 reaction before pipeline processing (telegram only).
-            if channel == "telegram" and telegram_mod is not None:
+            # Fire 👀 reaction before pipeline processing (telegram_bot only).
+            if channel == "telegram_bot" and telegram_mod is not None:
                 react_fn = getattr(telegram_mod, "react_for_ingest", None)
                 if callable(react_fn):
                     try:
@@ -1565,8 +1574,8 @@ class ButlerDaemon:
                     ref.request_id,
                 )
 
-            # Fire ✅ or 👾 reaction after pipeline processing (telegram only).
-            if channel == "telegram" and telegram_mod is not None:
+            # Fire ✅ or 👾 reaction after pipeline processing (telegram_bot only).
+            if channel == "telegram_bot" and telegram_mod is not None:
                 react_fn = getattr(telegram_mod, "react_for_ingest", None)
                 if callable(react_fn):
                     terminal_reaction = REACTION_FAILURE if routing_failed else REACTION_SUCCESS
@@ -3082,10 +3091,10 @@ class ButlerDaemon:
                 if triage_target is not None:
                     request_context["triage_target"] = triage_target
 
-                # Resolve TelegramModule for reaction lifecycle (telegram-only).
+                # Resolve TelegramModule for reaction lifecycle (telegram_bot-only).
                 _telegram_mod = (
                     next((m for m in daemon._active_modules if m.name == "telegram"), None)
-                    if channel == "telegram"
+                    if channel == "telegram_bot"
                     else None
                 )
 
@@ -4005,7 +4014,7 @@ class ButlerDaemon:
               "message": "Done. I logged it.",
               "request_context": {
                 "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
-                "source_channel": "telegram",
+                "source_channel": "telegram_bot",
                 "source_endpoint_identity": "switchboard",
                 "source_sender_identity": "health",
                 "source_thread_identity": "12345"

@@ -36,7 +36,7 @@ def _build_valid_ingest_envelope(
     text: str = "Test message",
     idempotency_key: str | None = None,
     schema_version: str = "ingest.v1",
-    channel: str = "telegram",
+    channel: str = "telegram_bot",
     provider: str = "telegram",
     endpoint_identity: str = "bot_test",
     sender_identity: str = "user123",
@@ -86,7 +86,7 @@ def test_valid_ingest_envelope_accepted():
     parsed = parse_ingest_envelope(envelope)
 
     assert parsed.schema_version == "ingest.v1"
-    assert parsed.source.channel == "telegram"
+    assert parsed.source.channel == "telegram_bot"
     assert parsed.source.provider == "telegram"
     assert parsed.payload.normalized_text == "Log weight 80kg"
 
@@ -104,7 +104,7 @@ def test_wrong_schema_version_rejected():
 
 def test_invalid_channel_provider_pair_rejected():
     """Invalid channel/provider combinations should be rejected."""
-    envelope = _build_valid_ingest_envelope(channel="telegram", provider="gmail")
+    envelope = _build_valid_ingest_envelope(channel="telegram_bot", provider="gmail")
 
     with pytest.raises(ValidationError) as exc_info:
         parse_ingest_envelope(envelope)

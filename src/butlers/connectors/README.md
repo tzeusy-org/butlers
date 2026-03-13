@@ -24,15 +24,22 @@ Connector transport compatibility note:
 - Runtime sessions launched by butler spawners use `/mcp`; this is a separate
   transport path and does not require connector URL changes.
 
+## Endpoint Identity
+
+Each connector auto-resolves its identity at startup from the authenticated
+account — no manual env var configuration needed:
+
+- **Telegram bot:** `getMe` API → `telegram:bot:@<username>`
+- **Telegram user client:** Telethon `get_me()` → `telegram:user:@<username>`
+- **Gmail:** derived from `shared.google_accounts.email` → `gmail:user:<email>`
+- **Discord:** `/users/@me` API → `discord:user:@<username>`
+
 ## Telegram Bot Connector
 
 ### Running in Polling Mode (Dev)
 
 ```bash
 export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
-export CONNECTOR_PROVIDER="telegram"
-export CONNECTOR_CHANNEL="telegram"
-export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"
 export BUTLER_TELEGRAM_TOKEN="your-telegram-bot-token"
 export CONNECTOR_POLL_INTERVAL_S="1.0"
 
@@ -43,17 +50,14 @@ python -m butlers.connectors.telegram_bot
 
 ```bash
 export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
-export CONNECTOR_PROVIDER="telegram"
-export CONNECTOR_CHANNEL="telegram"
-export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"
 export BUTLER_TELEGRAM_TOKEN="your-telegram-bot-token"
 export CONNECTOR_WEBHOOK_URL="https://yourdomain.com/telegram/webhook"
 
 python -m butlers.connectors.telegram_bot
 ```
 
-In webhook mode, the connector registers the webhook with Telegram and exits. 
-Incoming updates should be POSTed to your webhook endpoint and processed via 
+In webhook mode, the connector registers the webhook with Telegram and exits.
+Incoming updates should be POSTed to your webhook endpoint and processed via
 `connector.process_webhook_update(update)`.
 
 ### Configuration
@@ -62,7 +66,6 @@ See `docs/connectors/telegram_bot.md` for full configuration reference.
 
 Required environment variables:
 - `SWITCHBOARD_MCP_URL`: SSE endpoint URL for Switchboard MCP server
-- `CONNECTOR_ENDPOINT_IDENTITY`: Bot username or ID
 - `BUTLER_TELEGRAM_TOKEN`: Telegram bot token
 
 Polling mode requires:
@@ -80,7 +83,7 @@ In polling mode, the connector persists a checkpoint to the DB with the last
 processed `update_id`. On restart, it resumes from the checkpoint to ensure
 at-least-once delivery semantics.
 
-Switchboard ingest deduplication ensures exactly-once effect at the canonical 
+Switchboard ingest deduplication ensures exactly-once effect at the canonical
 request layer even with connector replays.
 
 ### Idempotency
@@ -88,7 +91,7 @@ request layer even with connector replays.
 Each Telegram update is normalized with:
 - `control.idempotency_key`: `telegram:<endpoint_identity>:<update_id>`
 
-This stable key enables safe retries and crash recovery. Duplicate submissions 
+This stable key enables safe retries and crash recovery. Duplicate submissions
 return the same canonical `request_id` from Switchboard.
 
 ## Testing

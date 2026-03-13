@@ -460,7 +460,7 @@ def test_list_pending_contacts_returns_needs_disambiguation(app):
                     "notes": None,
                     "company": None,
                     "job_title": None,
-                    "metadata": {"needs_disambiguation": True, "source_channel": "telegram"},
+                    "metadata": {"needs_disambiguation": True, "source_channel": "telegram_bot"},
                     "created_at": _NOW,
                     "updated_at": _NOW,
                     "roles": [],
@@ -507,10 +507,10 @@ def test_confirm_contact_removes_needs_disambiguation(app):
         fetchrow_side_effect=[
             {
                 "id": cid,
-                "metadata": {"needs_disambiguation": True, "source_channel": "telegram"},
+                "metadata": {"needs_disambiguation": True, "source_channel": "telegram_bot"},
             },
             # get_contact refetch after confirm
-            _contact_row(cid, metadata={"source_channel": "telegram"}),
+            _contact_row(cid, metadata={"source_channel": "telegram_bot"}),
             None,  # birthday
             None,  # address
         ],

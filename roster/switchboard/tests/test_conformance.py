@@ -188,7 +188,7 @@ class TestIngressToCompletion:
                 request_id,
                 json.dumps(
                     {
-                        "source_channel": "telegram",
+                        "source_channel": "telegram_bot",
                         "source_sender_identity": "test_user",
                     }
                 ),
@@ -272,7 +272,7 @@ class TestIngressToCompletion:
                 request_id,
                 json.dumps(
                     {
-                        "source_channel": "telegram",
+                        "source_channel": "telegram_bot",
                         "source_sender_identity": "test_user",
                     }
                 ),
@@ -363,7 +363,7 @@ class TestPartialFailureHandling:
                 request_id,
                 json.dumps(
                     {
-                        "source_channel": "telegram",
+                        "source_channel": "telegram_bot",
                         "source_sender_identity": "test_user",
                     }
                 ),
@@ -434,7 +434,7 @@ class TestTimeoutScenarios:
                 request_id,
                 json.dumps(
                     {
-                        "source_channel": "telegram",
+                        "source_channel": "telegram_bot",
                         "source_sender_identity": "test_user",
                         "timeout_budget_ms": 5000,
                     }
@@ -475,7 +475,7 @@ class TestTimeoutScenarios:
                 last_retry_at=None,
                 original_payload={"content": "Timeout test"},
                 request_context={
-                    "source_channel": "telegram",
+                    "source_channel": "telegram_bot",
                     "timeout_budget_ms": 5000,
                 },
                 error_details={"timeout_ms": 5000},
@@ -516,7 +516,7 @@ class TestDeadLetterReplay:
                 failed_request_id,
                 json.dumps(
                     {
-                        "source_channel": "telegram",
+                        "source_channel": "telegram_bot",
                         "source_sender_identity": "test_user",
                     }
                 ),
@@ -536,7 +536,7 @@ class TestDeadLetterReplay:
                 last_retry_at=None,  # Could be datetime.now(UTC) but not needed
                 original_payload={"content": "Failed message"},
                 request_context={
-                    "source_channel": "telegram",
+                    "source_channel": "telegram_bot",
                     "source_sender_identity": "test_user",
                 },
                 error_details={"error": "Service unavailable"},

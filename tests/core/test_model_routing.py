@@ -309,7 +309,7 @@ async def test_resolve_tier_remap(postgres_container: Any) -> None:
 async def test_resolve_priority_override(postgres_container: Any) -> None:
     """Override lowers priority so a different entry wins for that butler."""
     async with _make_pool(postgres_container) as pool:
-        # Two global entries for 'medium'; haiku has higher priority (lower number)
+        # Two global entries for 'medium'; sonnet has higher priority (higher number = preferred)
         haiku_id = await _insert_catalog_entry(
             pool,
             alias="haiku",
@@ -327,12 +327,12 @@ async def test_resolve_priority_override(postgres_container: Any) -> None:
             priority=20,
         )
 
-        # Without override, haiku wins (priority 5 < 20)
+        # Without override, sonnet wins (priority 20 > 5; higher number = higher priority)
         global_result = await resolve_model(pool, "general", Complexity.MEDIUM)
         assert global_result is not None
-        assert global_result[1] == "claude-haiku-4"
+        assert global_result[1] == "claude-sonnet-4"
 
-        # messenger butler: push haiku to priority 100 (higher number = lower preference)
+        # messenger butler: boost haiku to priority 100 (higher number = higher preference)
         await _insert_override(
             pool,
             butler_name="messenger",
@@ -343,7 +343,7 @@ async def test_resolve_priority_override(postgres_container: Any) -> None:
 
         messenger_result = await resolve_model(pool, "messenger", Complexity.MEDIUM)
         assert messenger_result is not None
-        assert messenger_result[1] == "claude-sonnet-4"
+        assert messenger_result[1] == "claude-haiku-4"
 
 
 @pytest.mark.integration
