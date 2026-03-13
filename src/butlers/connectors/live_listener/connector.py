@@ -171,6 +171,9 @@ class LiveListenerConnector:
         # Pipeline tasks (one per mic)
         self._pipeline_tasks: dict[str, asyncio.Task] = {}
 
+        # Background segment-processing tasks (fire-and-forget; held to prevent GC)
+        self._background_tasks: set[asyncio.Task] = set()
+
         # Health server
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
@@ -359,6 +362,12 @@ class LiveListenerConnector:
 
         logger.info("live-listener: opening mic pipeline for mic=%s", mic)
 
+        # Capture the running event loop here (safe: we're inside an async method).
+        # The PortAudio callback thread has no event loop of its own; using
+        # get_running_loop() in the async context avoids the deprecated
+        # get_event_loop() call and ensures we always target the correct loop.
+        loop = asyncio.get_running_loop()
+
         def on_frame(frame: bytes) -> None:
             """Synchronous frame callback; dispatches to VAD and queues segments."""
             vad_start = time.monotonic()
@@ -369,7 +378,7 @@ class LiveListenerConnector:
 
             for seg in segments:
                 # Schedule async processing without blocking the PortAudio callback thread
-                asyncio.get_event_loop().call_soon_threadsafe(
+                loop.call_soon_threadsafe(
                     self._schedule_segment, spec, seg, filter_evaluator
                 )
 
@@ -391,11 +400,17 @@ class LiveListenerConnector:
         segment: SpeechSegment,
         filter_evaluator: Any,
     ) -> None:
-        """Schedule async segment processing from the event loop thread."""
-        asyncio.create_task(
+        """Schedule async segment processing from the event loop thread.
+
+        Holds a strong reference to the created task to prevent it from being
+        garbage-collected before completion (Python asyncio GC caveat).
+        """
+        task = asyncio.create_task(
             self._process_segment(spec, segment, filter_evaluator),
             name=f"segment-{spec.name}",
         )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _process_segment(
         self,
