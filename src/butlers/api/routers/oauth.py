@@ -167,6 +167,9 @@ GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 _DEFAULT_REDIRECT_URI = "http://localhost:40200/api/oauth/google/callback"
 _DEFAULT_SCOPES = " ".join(
     [
+        "openid",
+        "email",
+        "profile",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/calendar",
