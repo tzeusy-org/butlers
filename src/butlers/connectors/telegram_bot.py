@@ -13,7 +13,6 @@ Environment Variables (from docs/connectors/telegram_bot.md):
     SWITCHBOARD_MCP_URL: SSE endpoint URL for Switchboard MCP server (required)
     CONNECTOR_PROVIDER: "telegram" (required)
     CONNECTOR_CHANNEL: "telegram" (required)
-    CONNECTOR_ENDPOINT_IDENTITY: Bot username or configured bot ID (required)
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
@@ -171,10 +170,6 @@ class TelegramBotConnectorConfig:
         provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
         channel = os.environ.get("CONNECTOR_CHANNEL", "telegram")
 
-        endpoint_identity = os.environ.get("CONNECTOR_ENDPOINT_IDENTITY")
-        if not endpoint_identity:
-            raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
-
         telegram_token = os.environ.get("BUTLER_TELEGRAM_TOKEN")
         if not telegram_token:
             raise ValueError("BUTLER_TELEGRAM_TOKEN environment variable is required")
@@ -191,7 +186,6 @@ class TelegramBotConnectorConfig:
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
             channel=channel,
-            endpoint_identity=endpoint_identity,
             telegram_token=telegram_token,
             poll_interval_s=poll_interval_s,
             webhook_url=webhook_url,
@@ -1204,18 +1198,14 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
             await pool.close()
 
 
-async def resolve_telegram_endpoint_identity(token: str, env_fallback: str) -> str:
-    """Resolve the bot username from the Telegram Bot API for use as endpoint_identity.
+async def resolve_telegram_endpoint_identity(token: str) -> str:
+    """Resolve the bot identity from the Telegram Bot API via ``getMe``.
 
-    Calls the Telegram ``getMe`` method to retrieve the bot's username. Falls back
-    to ``env_fallback`` if the API call fails for any reason.
+    Returns ``telegram:bot:@<username>`` (or ``telegram:bot:@<first_name>``
+    if the bot has no username set).
 
-    Args:
-        token: Telegram bot token.
-        env_fallback: Value to return if auto-resolution fails.
-
-    Returns:
-        The bot username (e.g. ``my_bot``) if successful, otherwise ``env_fallback``.
+    Raises:
+        RuntimeError: If the API call fails or returns no usable identity.
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1228,24 +1218,21 @@ async def resolve_telegram_endpoint_identity(token: str, env_fallback: str) -> s
                 result = data.get("result", {})
                 username = result.get("username") or result.get("first_name", "")
                 if username:
+                    identity = f"telegram:bot:@{username}"
                     logger.info(
-                        "Telegram connector: auto-resolved endpoint_identity=%s from bot account",
-                        username,
+                        "Telegram bot connector: resolved endpoint_identity=%s",
+                        identity,
                     )
-                    return username
-            logger.warning(
-                "Telegram connector: getMe response missing username; "
-                "falling back to env var endpoint_identity=%s",
-                env_fallback,
+                    return identity
+            raise RuntimeError(
+                "Telegram bot connector: getMe response missing username/first_name"
             )
+    except RuntimeError:
+        raise
     except Exception as exc:
-        logger.warning(
-            "Telegram connector: failed to auto-resolve endpoint_identity (%s); "
-            "falling back to env var value=%s",
-            exc,
-            env_fallback,
-        )
-    return env_fallback
+        raise RuntimeError(
+            f"Telegram bot connector: failed to resolve endpoint identity: {exc}"
+        ) from exc
 
 
 async def run_telegram_bot_connector() -> None:
@@ -1281,9 +1268,6 @@ async def run_telegram_bot_connector() -> None:
 
     if not env_config_ok:
         assert db_token is not None
-        endpoint_identity = os.environ.get("CONNECTOR_ENDPOINT_IDENTITY")
-        if not endpoint_identity:
-            raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
         switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL")
         if not switchboard_mcp_url:
             raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
@@ -1291,7 +1275,6 @@ async def run_telegram_bot_connector() -> None:
             switchboard_mcp_url=switchboard_mcp_url,
             provider=os.environ.get("CONNECTOR_PROVIDER", "telegram"),
             channel=os.environ.get("CONNECTOR_CHANNEL", "telegram"),
-            endpoint_identity=endpoint_identity,
             telegram_token=db_token,
             poll_interval_s=float(os.environ.get("CONNECTOR_POLL_INTERVAL_S", "1.0")),
             webhook_url=os.environ.get("CONNECTOR_WEBHOOK_URL"),
@@ -1306,18 +1289,8 @@ async def run_telegram_bot_connector() -> None:
     assert config is not None
 
     # Step 4: Auto-resolve endpoint_identity from the authenticated bot account.
-    # This replaces the static env var default (e.g. "telegram:user:dev") with the
-    # actual bot username returned by the Telegram getMe API.
-    resolved_identity = await resolve_telegram_endpoint_identity(
-        token=config.telegram_token,
-        env_fallback=config.endpoint_identity,
-    )
-    if resolved_identity != config.endpoint_identity:
-        config = replace(config, endpoint_identity=resolved_identity)
-        logger.info(
-            "Telegram bot connector: updated endpoint_identity to resolved value: %s",
-            resolved_identity,
-        )
+    resolved_identity = await resolve_telegram_endpoint_identity(token=config.telegram_token)
+    config = replace(config, endpoint_identity=resolved_identity)
 
     # Create cursor pool for DB-backed checkpoint persistence.
     from butlers.connectors.cursor_store import create_cursor_pool_from_env

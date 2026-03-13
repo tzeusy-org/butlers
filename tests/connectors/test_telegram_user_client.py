@@ -88,14 +88,6 @@ class TestTelegramUserClientConnectorConfig:
         assert config.telegram_user_session == ""
         assert config.max_inflight == 8
 
-    def test_from_env_respects_explicit_endpoint_identity(
-        self, mock_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """CONNECTOR_ENDPOINT_IDENTITY env var is respected as override when set."""
-        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:user:override")
-        config = TelegramUserClientConnectorConfig.from_env()
-        assert config.endpoint_identity == "telegram:user:override"
-
     def test_from_env_missing_required_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that missing required fields raise ValueError."""
         # Missing SWITCHBOARD_MCP_URL
@@ -711,9 +703,8 @@ class TestResolveTelegramUserCredentialsFromDb:
 async def test_run_connector_infers_endpoint_identity_from_get_me(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When CONNECTOR_ENDPOINT_IDENTITY is not set, identity is inferred from get_me()."""
+    """Identity is always inferred from get_me()."""
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-    monkeypatch.delenv("CONNECTOR_ENDPOINT_IDENTITY", raising=False)
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.delenv("TELEGRAM_API_ID", raising=False)
     monkeypatch.delenv("TELEGRAM_API_HASH", raising=False)
@@ -761,61 +752,37 @@ async def test_run_connector_infers_endpoint_identity_from_get_me(
     mock_connector.start.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_run_connector_respects_explicit_endpoint_identity_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When CONNECTOR_ENDPOINT_IDENTITY is set, get_me() is NOT called."""
-    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
-    monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:user:explicit")
-    monkeypatch.setenv("POSTGRES_HOST", "localhost")
-
-    mock_connector = MagicMock()
-    mock_connector.start = AsyncMock()
-    mock_connector.stop = AsyncMock()
-
-    mock_pool = MagicMock()
-    mock_pool.close = AsyncMock()
-
-    with (
-        patch(
-            "butlers.connectors.telegram_user_client._resolve_telegram_user_credentials_from_db",
-            new=AsyncMock(
-                return_value={
-                    "TELEGRAM_API_ID": "12345",
-                    "TELEGRAM_API_HASH": "db-hash",
-                    "TELEGRAM_USER_SESSION": "db-session",
-                }
-            ),
-        ),
-        patch(
-            "butlers.connectors.telegram_user_client._resolve_endpoint_identity",
-            new=AsyncMock(side_effect=AssertionError("should not be called")),
-        ),
-        patch("butlers.connectors.telegram_user_client.configure_logging"),
-        patch(
-            "butlers.connectors.telegram_user_client.TelegramUserClientConnector",
-            return_value=mock_connector,
-        ) as cls,
-        patch(
-            "butlers.connectors.cursor_store.create_cursor_pool_from_env",
-            new=AsyncMock(return_value=mock_pool),
-        ),
-    ):
-        await run_telegram_user_client_connector()
-
-    passed_config = cls.call_args[0][0]
-    assert passed_config.endpoint_identity == "telegram:user:explicit"
-
-
 class TestResolveEndpointIdentity:
     """Tests for _resolve_endpoint_identity."""
 
     async def test_returns_user_id_from_get_me(self) -> None:
-        """Returns telegram:user:<id> from get_me() response."""
+        """Returns telegram:user:@<username> from get_me() response."""
         mock_me = MagicMock()
         mock_me.id = 999111
         mock_me.username = "testuser"
+
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock()
+        mock_client.get_me = AsyncMock(return_value=mock_me)
+        mock_client.disconnect = AsyncMock()
+
+        with (
+            patch(
+                "butlers.connectors.telegram_user_client.TelegramClient",
+                return_value=mock_client,
+            ),
+            patch("butlers.connectors.telegram_user_client.StringSession"),
+        ):
+            result = await _resolve_endpoint_identity(12345, "hash", "session")
+
+        assert result == "telegram:user:@testuser"
+        mock_client.disconnect.assert_awaited_once()
+
+    async def test_falls_back_to_numeric_id_without_username(self) -> None:
+        """Falls back to telegram:user:<id> when username is None."""
+        mock_me = MagicMock()
+        mock_me.id = 999111
+        mock_me.username = None
 
         mock_client = MagicMock()
         mock_client.connect = AsyncMock()
