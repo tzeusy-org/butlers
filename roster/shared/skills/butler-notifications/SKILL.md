@@ -15,6 +15,9 @@ Call `notify()` to send responses back to the user via the channel they messaged
   - Reply/react `request_context` MUST include: `request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`.
   - For Telegram reply/react, `request_context.source_thread_identity` is also required.
 
+**DO NOT REPLY to `telegram_user_client` ingestions.**
+If `request_context.source_channel` is `"telegram_user_client"`, you MUST NOT call `notify()` with intent "reply" or "send". These are passively captured messages — the user did not message a butler, so replying would be unexpected and incorrect. You may still process/store the content, but do not send any response back. Only `telegram_bot` (and other direct-message channels) should trigger replies.
+
 **Optional parameters:**
 - `intent`: One of "send", "reply", "react"
   - Use "reply" when responding in context of the incoming message
