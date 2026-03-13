@@ -36,6 +36,11 @@ dependencies = [
 [project.optional-dependencies]
 connectors = [
 ]
+live-listener = [
+    "sounddevice>=0.4.6",
+    "onnxruntime>=1.17.0",
+    "numpy>=1.26.0",
+]
 
 [dependency-groups]
 dev = [
