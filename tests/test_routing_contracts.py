@@ -312,6 +312,62 @@ def test_existing_tests_still_pass():
 
 
 # ---------------------------------------------------------------------------
+# Voice channel / live-listener provider tests  [bu-wjzb.1]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_voice_live_listener_channel_provider_accepted():
+    """voice channel with live-listener provider should be a valid pairing."""
+    envelope = _build_valid_ingest_envelope(
+        channel="voice",
+        provider="live-listener",
+        endpoint_identity="live-listener:mic:kitchen",
+    )
+    parsed = parse_ingest_envelope(envelope)
+
+    assert parsed.source.channel == "voice"
+    assert parsed.source.provider == "live-listener"
+    assert parsed.source.endpoint_identity == "live-listener:mic:kitchen"
+
+
+@pytest.mark.unit
+def test_voice_channel_with_invalid_provider_rejected():
+    """voice channel paired with a non-live-listener provider should fail validation."""
+    from pydantic import ValidationError
+
+    envelope = _build_valid_ingest_envelope(
+        channel="voice",
+        provider="internal",
+        endpoint_identity="some-endpoint",
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+
+    errors = exc_info.value.errors()
+    assert any(e["type"] == "invalid_source_provider" for e in errors)
+
+
+@pytest.mark.unit
+def test_live_listener_provider_with_non_voice_channel_rejected():
+    """live-listener provider paired with a non-voice channel should fail validation."""
+    from pydantic import ValidationError
+
+    envelope = _build_valid_ingest_envelope(
+        channel="api",
+        provider="live-listener",
+        endpoint_identity="some-endpoint",
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+
+    errors = exc_info.value.errors()
+    assert any(e["type"] == "invalid_source_provider" for e in errors)
+
+
+# ---------------------------------------------------------------------------
 # RouteInputV1 conversation_history Field Tests
 # ---------------------------------------------------------------------------
 

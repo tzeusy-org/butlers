@@ -1,8 +1,8 @@
 """Unit tests for the unified IngestionPolicyEvaluator.
 
 Covers:
-- All 7 rule_type matchers (sender_domain, sender_address, header_condition,
-  mime_type, substring, chat_id, channel_id)
+- All 8 rule_type matchers (sender_domain, sender_address, header_condition,
+  mime_type, substring, chat_id, channel_id, mic_id)
 - First-match-wins evaluation order
 - No-match returns pass_through
 - Catch-all wildcard conditions (from whitelist migration)
@@ -439,6 +439,49 @@ class TestMatchChannelId:
     def test_catchall_wildcard(self) -> None:
         env = _discord_envelope(channel_id="987654321098765432")
         assert _match_channel_id(env, {"channel_id": "*"})
+
+
+# ---------------------------------------------------------------------------
+# mic_id rule_type recognized by _KNOWN_RULE_TYPES  [bu-wjzb.1]
+# ---------------------------------------------------------------------------
+
+
+def _voice_envelope(*, mic_id: str = "kitchen") -> IngestionEnvelope:
+    """Build a minimal voice/live-listener IngestionEnvelope for mic_id tests."""
+    return IngestionEnvelope(
+        source_channel="voice",
+        raw_key=mic_id,
+    )
+
+
+class TestMicIdRuleTypeKnown:
+    """mic_id must be in _KNOWN_RULE_TYPES so rules are not skipped on load."""
+
+    def test_mic_id_rule_not_skipped_during_load(self) -> None:
+        """A rule with rule_type='mic_id' should survive the load-time validation check."""
+        from butlers.ingestion_policy import _KNOWN_RULE_TYPES
+
+        assert "mic_id" in _KNOWN_RULE_TYPES
+
+    def test_unregistered_mic_id_rule_is_skipped(self) -> None:
+        """mic_id rules loaded into the evaluator fall through to pass_through
+        when no matcher is registered (no crash, graceful skip)."""
+        evaluator = IngestionPolicyEvaluator(
+            scope="connector:live-listener:mic:kitchen", db_pool=None
+        )
+        evaluator._last_loaded_at = time.monotonic()
+        evaluator._rules = [
+            _rule(
+                id="id-mic",
+                rule_type="mic_id",
+                condition={"mic_id": "kitchen"},
+                action="block",
+                priority=1,
+            ),
+        ]
+        # mic_id has no registered matcher yet; rule is skipped, result is pass_through
+        decision = evaluator.evaluate(_voice_envelope(mic_id="kitchen"))
+        assert decision.action == "pass_through"
 
 
 # ---------------------------------------------------------------------------

@@ -21,8 +21,8 @@ from pydantic_core import PydanticCustomError
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
-SourceChannel = Literal["telegram", "slack", "email", "api", "mcp"]
-SourceProvider = Literal["telegram", "slack", "gmail", "imap", "internal"]
+SourceChannel = Literal["telegram", "slack", "email", "api", "mcp", "voice"]
+SourceProvider = Literal["telegram", "slack", "gmail", "imap", "internal", "live-listener"]
 NotifyChannel = Literal["telegram", "email", "sms", "chat"]
 NotifyIntent = Literal["send", "reply", "react"]
 PolicyTier = Literal["default", "interactive", "high_priority"]
@@ -34,6 +34,7 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "email": frozenset({"gmail", "imap"}),
     "api": frozenset({"internal"}),
     "mcp": frozenset({"internal"}),
+    "voice": frozenset({"live-listener"}),
 }
 _THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(

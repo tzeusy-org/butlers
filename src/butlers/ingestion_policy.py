@@ -50,6 +50,7 @@ _KNOWN_RULE_TYPES = frozenset(
         "substring",
         "chat_id",
         "channel_id",
+        "mic_id",
     }
 )
 
