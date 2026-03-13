@@ -64,7 +64,8 @@ class TestHistoryStrategy:
 
     def test_realtime_channels(self):
         """Real-time messaging channels use realtime strategy."""
-        assert HISTORY_STRATEGY["telegram"] == "realtime"
+        assert HISTORY_STRATEGY["telegram_bot"] == "realtime"
+        assert HISTORY_STRATEGY["telegram_user_client"] == "realtime"
         assert HISTORY_STRATEGY["whatsapp"] == "realtime"
         assert HISTORY_STRATEGY["slack"] == "realtime"
         assert HISTORY_STRATEGY["discord"] == "realtime"
@@ -386,7 +387,7 @@ class TestLoadConversationHistory:
         now = datetime.now(UTC)
         mock_realtime.return_value = []
 
-        await _load_conversation_history(mock_pool, "telegram", "chat123", now)
+        await _load_conversation_history(mock_pool, "telegram_bot", "chat123", now)
 
         mock_realtime.assert_called_once()
         assert mock_realtime.call_args[0][0] == mock_pool
@@ -475,7 +476,7 @@ class TestPipelineHistoryIntegration:
         mock_load_history.assert_called_once()
         call_args = mock_load_history.call_args[0]
         assert call_args[0] == mock_pool
-        assert call_args[1] == "telegram"
+        assert call_args[1] == "telegram_bot"
         assert call_args[2] == "123"  # thread identity from chat_id
 
         # Verify history was passed to prompt builder

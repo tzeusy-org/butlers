@@ -93,7 +93,12 @@ def _make_butler_toml(
 
 
 def _patch_infra(butler_name: str = "health"):
-    mock_pool = AsyncMock()
+    mock_conn = AsyncMock()
+    mock_pool = MagicMock()
+    acquire_ctx = AsyncMock()
+    acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+    acquire_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_pool.acquire.return_value = acquire_ctx
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
@@ -183,7 +188,7 @@ def _route_request_context(
     *,
     source_endpoint_identity: str = "switchboard",
     source_sender_identity: str = "health",
-    source_channel: str = "telegram",
+    source_channel: str = "telegram_bot",
     request_id: str = _REQUEST_ID,
 ) -> dict[str, Any]:
     return {

@@ -66,7 +66,8 @@ class HistoryConfig:
 # Channel strategy mapping
 HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
     # Real-time messaging channels
-    "telegram": "realtime",
+    "telegram_bot": "realtime",
+    "telegram_user_client": "realtime",
     "whatsapp": "realtime",
     "slack": "realtime",
     "discord": "realtime",
