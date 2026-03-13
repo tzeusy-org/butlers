@@ -334,6 +334,23 @@ def _match_channel_id(envelope: IngestionEnvelope, condition: dict[str, Any]) ->
     return envelope.raw_key.strip() == target
 
 
+def _match_mic_id(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
+    """Match mic_id: exact string equality against raw_key (voice connector device name).
+
+    Condition schema: {"mic_id": "kitchen"}
+
+    The ``raw_key`` for voice connectors is set to the device name as configured
+    in ``LIVE_LISTENER_DEVICES``.  Supports the ``"*"`` wildcard to match all mics.
+    """
+    target = str(condition.get("mic_id", "")).strip()
+    if not target:
+        return False
+    # Catch-all wildcard
+    if target == "*":
+        return True
+    return envelope.raw_key.strip() == target
+
+
 # Map rule_type → matcher function
 _MATCHERS: dict[str, Any] = {
     "sender_domain": _match_sender_domain,
@@ -343,6 +360,7 @@ _MATCHERS: dict[str, Any] = {
     "substring": _match_substring,
     "chat_id": _match_chat_id,
     "channel_id": _match_channel_id,
+    "mic_id": _match_mic_id,
 }
 
 
