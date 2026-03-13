@@ -52,7 +52,8 @@ _SYSTEM_PROMPT = (
     "FORWARD if the utterance is a question, request, command, or anything "
     "that sounds like it is directed at an assistant. "
     "IGNORE for background conversation, ambient noise transcriptions, TV/radio "
-    "chatter, or utterances clearly not directed at an assistant."
+    "chatter, or utterances clearly not directed at an assistant.\n"
+    "/no_think"
 )
 
 _USER_PROMPT_TEMPLATE = """\

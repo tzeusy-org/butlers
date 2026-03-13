@@ -3,6 +3,7 @@
 Exports:
 - connector_live_listener_segments_total{mic, outcome}
 - connector_live_listener_discretion_total{mic, verdict}
+- connector_live_listener_prefilter_total{mic, reason}
 - connector_live_listener_transcription_failures_total{mic, error_type}
 - connector_live_listener_discretion_failures_total{mic, error_type}
 - connector_live_listener_transcription_discarded_total{mic, reason}
@@ -44,6 +45,13 @@ discretion_failures_total = Counter(
     "Total discretion LLM call failures",
     labelnames=["mic", "error_type"],
 )
+
+prefilter_total = Counter(
+    "connector_live_listener_prefilter_total",
+    "Total pre-filter evaluations, by reason",
+    labelnames=["mic", "reason"],
+)
+"""reason: passed | fragment | burst | duplicate | disabled"""
 
 transcription_discarded_total = Counter(
     "connector_live_listener_transcription_discarded_total",
@@ -109,6 +117,15 @@ class LiveListenerMetrics:
             verdict: One of ``forward``, ``ignore``, ``error_forward``.
         """
         discretion_total.labels(mic=self._mic, verdict=verdict).inc()
+
+    def inc_prefilter(self, reason: str) -> None:
+        """Increment pre-filter counter.
+
+        Args:
+            reason: One of ``passed``, ``fragment``, ``burst``,
+                    ``duplicate``, ``disabled``.
+        """
+        prefilter_total.labels(mic=self._mic, reason=reason).inc()
 
     def inc_transcription_failure(self, error_type: str) -> None:
         """Increment transcription failure counter."""

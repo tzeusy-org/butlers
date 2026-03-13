@@ -78,6 +78,7 @@ from butlers.connectors.live_listener.filter_gate import (
     warn_non_mic_id_rules,
 )
 from butlers.connectors.live_listener.metrics import LiveListenerMetrics
+from butlers.connectors.live_listener.prefilter import PreFilter, PreFilterConfig
 from butlers.connectors.live_listener.session import ConversationSession
 from butlers.connectors.live_listener.transcription import (
     TranscriptionClient,
@@ -170,6 +171,7 @@ class LiveListenerConnector:
         # Per-mic pipeline components (built in start())
         self._transcription_clients: dict[str, TranscriptionClient] = {}
         self._discretion_evaluators: dict[str, DiscretionEvaluator] = {}
+        self._prefilters: dict[str, PreFilter] = {}
         self._sessions: dict[str, ConversationSession] = {}
         self._ll_metrics: dict[str, LiveListenerMetrics] = {}
 
@@ -222,6 +224,12 @@ class LiveListenerConnector:
             self._discretion_evaluators[mic] = DiscretionEvaluator(
                 mic_name=mic,
                 config=discretion_config,
+            )
+
+            # Pre-filter (heuristic gate before discretion LLM)
+            self._prefilters[mic] = PreFilter(
+                mic_name=mic,
+                config=PreFilterConfig.from_env(),
             )
 
             # Session tracker
@@ -489,6 +497,15 @@ class LiveListenerConnector:
         if not decision.allowed:
             ll_metrics.inc_segments("discarded_silence")  # reuse "discarded_silence" for filtered
             return
+
+        # --- Pre-filter (heuristic gate before expensive discretion LLM) ---
+        prefilter = self._prefilters.get(mic)
+        if prefilter is not None:
+            pf_result = prefilter.evaluate(result.text, timestamp=time.time())
+            ll_metrics.inc_prefilter(pf_result.reason)
+            if not pf_result.allowed:
+                ll_metrics.inc_segments("prefiltered")
+                return
 
         # --- Discretion ---
         evaluator = self._discretion_evaluators.get(mic)
