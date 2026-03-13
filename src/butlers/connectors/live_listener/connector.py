@@ -99,7 +99,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HEALTH_PORT = 40091
 
 # Connector identity constants
-CONNECTOR_TYPE = "live-listener"
+CONNECTOR_TYPE = "live_listener"
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +393,10 @@ class LiveListenerConnector:
             ll_metrics.observe_stage_latency("vad", vad_elapsed)
 
             for seg in segments:
+                logger.info(
+                    "live-listener: VAD segment mic=%s duration=%.0fms forced_split=%s",
+                    mic, seg.duration_ms, seg.forced_split,
+                )
                 # Schedule async processing without blocking the PortAudio callback thread
                 loop.call_soon_threadsafe(self._schedule_segment, spec, seg, filter_evaluator)
 
@@ -470,6 +474,10 @@ class LiveListenerConnector:
             return
 
         self._mic_states[mic].transcription_healthy = True
+        logger.info(
+            "live-listener: transcription mic=%s confidence=%.2f text=%r",
+            mic, result.confidence, result.text,
+        )
 
         # --- Filter gate ---
         try:

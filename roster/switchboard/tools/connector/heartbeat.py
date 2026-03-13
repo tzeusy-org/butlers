@@ -31,7 +31,7 @@ NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 ConnectorState = Literal["healthy", "degraded", "error"]
 
 # Known valid connector types that can register via heartbeat
-VALID_CONNECTOR_TYPES = {"telegram_bot", "telegram_user_client", "gmail", "discord_user"}
+VALID_CONNECTOR_TYPES = {"telegram_bot", "telegram_user_client", "gmail", "discord_user", "live_listener"}
 
 
 class ConnectorIdentityV1(BaseModel):

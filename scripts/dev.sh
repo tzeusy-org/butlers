@@ -2,7 +2,7 @@
 # Bootstrap a full Butlers dev environment in tmux.
 # Creates three windows:
 #   backend     — butlers up (starts after OAuth gate; includes module pollers)
-#   connectors  — telegram bot connector (top-left) + gmail connector (top-right) + telegram user-client connector (bottom)
+#   connectors  — telegram bot (top-left) + gmail (top-right) + telegram user-client (bottom-left) + live-listener (bottom-right)
 #   dashboard   — dashboard API (top) + Vite frontend (bottom)
 #   NOTE: Contacts sync runs as a module-internal poller in butlers up; there is
 #   no standalone contacts connector process.
@@ -78,6 +78,7 @@ ENV_LOADER="export \$(grep -v '^#' /secrets/.dev.env | xargs -d '\n') && export 
 TELEGRAM_BOT_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/telegram_bot"
 TELEGRAM_USER_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/telegram_user_client"
 GMAIL_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/gmail"
+LIVE_LISTENER_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/live_listener"
 LOGS_ROOT="${PROJECT_DIR}/logs"
 LOGS_RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOGS_RUN_DIR="${LOGS_ROOT}/${LOGS_RUN_ID}"
@@ -804,9 +805,11 @@ echo "Layer 1b: Starting Telegram connectors..."
 PANE_TELEGRAM_BOT=$(tmux new-window -t "$SESSION:" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_TELEGRAM_USER=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -v -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_GMAIL=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -h -c "$PROJECT_DIR" -P -F '#{pane_id}')
+PANE_LIVE_LISTENER=$(tmux split-window -t "$PANE_TELEGRAM_USER" -h -c "$PROJECT_DIR" -P -F '#{pane_id}')
 _pipe_pane_to_log "$PANE_TELEGRAM_BOT" "${LOGS_RUN_DIR}/connectors/telegram_bot.log"
 _pipe_pane_to_log "$PANE_TELEGRAM_USER" "${LOGS_RUN_DIR}/connectors/telegram_user_client.log"
 _pipe_pane_to_log "$PANE_GMAIL" "${LOGS_RUN_DIR}/connectors/gmail.log"
+_pipe_pane_to_log "$PANE_LIVE_LISTENER" "${LOGS_RUN_DIR}/connectors/live_listener.log"
 # Give newly split panes a moment to finish shell init before send-keys.
 # Without this, tmux can occasionally drop early keystrokes on fast reruns.
 sleep 0.3
@@ -816,6 +819,9 @@ tmux send-keys -t "$PANE_TELEGRAM_BOT" \
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
   "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_user_client uv run python -m butlers.connectors.telegram_user_client" Enter
+
+tmux send-keys -t "$PANE_LIVE_LISTENER" \
+  "${ENV_LOADER} && if [ -f \"$LIVE_LISTENER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$LIVE_LISTENER_CONNECTOR_ENV_FILE\" && set +a; fi && uv sync --extra live-listener -q && CONNECTOR_PROVIDER=live-listener CONNECTOR_CHANNEL=voice LIVE_LISTENER_DEVICES='[{\"name\":\"webcam\",\"device\":\"hw:2,0\"}]' CONNECTOR_HEALTH_PORT=40091 uv run python -m butlers.connectors.live_listener" Enter
 
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)
