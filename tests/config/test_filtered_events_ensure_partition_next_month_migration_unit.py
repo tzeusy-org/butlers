@@ -56,7 +56,7 @@ def test_upgrade_replaces_ensure_partition_function():
     module = _load_migration()
     source = inspect.getsource(module.upgrade)
 
-    assert "CREATE OR REPLACE FUNCTION connectors.connectors_filtered_events_ensure_partition" in source
+    assert "CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition" in source
 
 
 def test_upgrade_creates_current_month_partition():
@@ -99,7 +99,7 @@ def test_upgrade_calls_ensure_partition_after_definition():
     source = inspect.getsource(module.upgrade)
 
     # Ensure the function is called to create partitions at migration time
-    assert "connectors.connectors_filtered_events_ensure_partition(now())" in source
+    assert "connectors_filtered_events_ensure_partition(now())" in source
 
 
 def test_upgrade_function_remains_idempotent():
@@ -119,7 +119,7 @@ def test_downgrade_restores_single_month_function():
     module = _load_migration()
     source = inspect.getsource(module.downgrade)
 
-    assert "CREATE OR REPLACE FUNCTION connectors.connectors_filtered_events_ensure_partition" in source
+    assert "CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition" in source
 
 
 def test_downgrade_single_month_only():

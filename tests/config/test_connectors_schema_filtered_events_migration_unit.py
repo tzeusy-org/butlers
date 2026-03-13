@@ -126,8 +126,8 @@ def test_upgrade_ensures_current_and_next_month_partitions():
     module = _load_migration()
     source = inspect.getsource(module.upgrade)
 
-    assert "connectors.connectors_filtered_events_ensure_partition(now())" in source
-    assert "connectors.connectors_filtered_events_ensure_partition(now() + INTERVAL '1 month')" in source
+    assert "connectors_filtered_events_ensure_partition(now())" in source
+    assert "connectors_filtered_events_ensure_partition(now() + INTERVAL '1 month')" in source
 
 
 def test_upgrade_grants_connector_writer_role():
@@ -165,4 +165,4 @@ def test_downgrade_drops_partition_function():
     module = _load_migration()
     source = inspect.getsource(module.downgrade)
 
-    assert "DROP FUNCTION IF EXISTS connectors.connectors_filtered_events_ensure_partition" in source
+    assert "DROP FUNCTION IF EXISTS connectors_filtered_events_ensure_partition" in source

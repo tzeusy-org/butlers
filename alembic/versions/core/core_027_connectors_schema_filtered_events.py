@@ -130,7 +130,7 @@ def upgrade() -> None:
     # 4. Partition management function
     # -------------------------------------------------------------------------
     op.execute("""
-        CREATE OR REPLACE FUNCTION connectors.connectors_filtered_events_ensure_partition(
+        CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition(
             reference_ts TIMESTAMPTZ DEFAULT now()
         ) RETURNS TEXT
         LANGUAGE plpgsql
@@ -159,10 +159,8 @@ def upgrade() -> None:
     """)
 
     # Create initial partitions for current month and next month.
-    op.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
-    op.execute(
-        "SELECT connectors.connectors_filtered_events_ensure_partition(now() + INTERVAL '1 month')"
-    )
+    op.execute("SELECT connectors_filtered_events_ensure_partition(now())")
+    op.execute("SELECT connectors_filtered_events_ensure_partition(now() + INTERVAL '1 month')")
 
     # -------------------------------------------------------------------------
     # 5. Grants for connector_writer role (best-effort; skipped if role absent)
@@ -203,6 +201,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    _drop = "DROP FUNCTION IF EXISTS connectors.connectors_filtered_events_ensure_partition"
-    op.execute(f"{_drop}(TIMESTAMPTZ)")
+    op.execute("DROP FUNCTION IF EXISTS connectors_filtered_events_ensure_partition(TIMESTAMPTZ)")
     op.execute("DROP SCHEMA IF EXISTS connectors CASCADE")
