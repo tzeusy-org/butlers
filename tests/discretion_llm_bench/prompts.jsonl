@@ -1,0 +1,168 @@
+{"id":"fwd-direct-001","text":"Hey, what time is my dentist appointment?","expected":"FORWARD","category":"direct_question","context":["And now back to our sponsor, NordVPN","Use code PODCAST for 20 percent off"]}
+{"id":"fwd-direct-002","text":"What's the weather like today?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-003","text":"How many calories are in a banana?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-004","text":"What's the capital of France?","expected":"FORWARD","category":"direct_question","context":["Welcome back to the geography quiz show","Our next contestant is from Ohio"]}
+{"id":"fwd-direct-005","text":"When does the grocery store close?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-006","text":"How do I get to the airport from here?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-007","text":"What year was the Eiffel Tower built?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-008","text":"Who won the last World Cup?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-009","text":"What's the exchange rate for euros to dollars?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-010","text":"Is the pharmacy open on Sundays?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-011","text":"What's the recipe for banana bread?","expected":"FORWARD","category":"direct_question","context":["Today on Bake Off we're making something special","Paul Hollywood is looking particularly stern"]}
+{"id":"fwd-direct-012","text":"How long does it take to drive to Portland?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-013","text":"What movies are playing tonight?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-014","text":"Can you check if I have any new emails?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-direct-015","text":"What's the square root of 144?","expected":"FORWARD","category":"direct_question","context":[]}
+{"id":"fwd-cmd-001","text":"Turn off the kitchen lights","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-002","text":"Set a timer for 10 minutes","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-003","text":"Play some jazz music","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-004","text":"Remind me to call mom at 5 PM","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-005","text":"Add milk to the shopping list","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-006","text":"Lock the front door","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-007","text":"Turn the thermostat down to 68","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-008","text":"Send a message to Sarah saying I'll be late","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-009","text":"Cancel my 3 o'clock meeting","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-010","text":"Read me the news headlines","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-011","text":"Set an alarm for 7 AM tomorrow","expected":"FORWARD","category":"command","context":["And that's all for today's morning show","See you tomorrow bright and early"]}
+{"id":"fwd-cmd-012","text":"Open the garage door","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-013","text":"Start the robot vacuum","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-014","text":"Translate good morning to Japanese","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-cmd-015","text":"Pause the music","expected":"FORWARD","category":"command","context":[]}
+{"id":"fwd-req-001","text":"Can you look up flights to Tokyo for next week?","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-002","text":"I need help planning a birthday party for Saturday","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-003","text":"Could you summarize the last email from my boss?","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-004","text":"Help me draft a response to that client email","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-005","text":"I'd like to order pizza from Domino's","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-006","text":"Can you find a plumber near me?","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-007","text":"I need to book a table for four at an Italian restaurant","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-008","text":"Please check my calendar for tomorrow","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-009","text":"Help me figure out why my code isn't compiling","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-req-010","text":"Can you tell me about the side effects of ibuprofen?","expected":"FORWARD","category":"request","context":[]}
+{"id":"fwd-sched-001","text":"What do I have on my calendar today?","expected":"FORWARD","category":"schedule","context":[]}
+{"id":"fwd-sched-002","text":"Move my 2 PM meeting to 3 PM","expected":"FORWARD","category":"schedule","context":[]}
+{"id":"fwd-sched-003","text":"When is my next flight?","expected":"FORWARD","category":"schedule","context":[]}
+{"id":"fwd-sched-004","text":"Do I have anything scheduled for this weekend?","expected":"FORWARD","category":"schedule","context":[]}
+{"id":"fwd-sched-005","text":"Block off Friday afternoon for focused work","expected":"FORWARD","category":"schedule","context":[]}
+{"id":"fwd-context-001","text":"Hey what time is it?","expected":"FORWARD","category":"context_switch","context":["Subscribe to our channel for more great content","Don't forget to hit the notification bell"]}
+{"id":"fwd-context-002","text":"Can you turn the volume down?","expected":"FORWARD","category":"context_switch","context":["And the score is now 3 to 2","What an incredible play by the forward"]}
+{"id":"fwd-context-003","text":"Remind me to buy eggs","expected":"FORWARD","category":"context_switch","context":["Next up we have a lovely chocolate soufflé","You'll need four eggs and some dark chocolate"]}
+{"id":"fwd-context-004","text":"What's the temperature outside?","expected":"FORWARD","category":"context_switch","context":["Temperatures are expected to reach 95 degrees this weekend","Stay hydrated and wear sunscreen"]}
+{"id":"fwd-context-005","text":"Call an Uber for me","expected":"FORWARD","category":"context_switch","context":["The Uber driver was so nice","She gave us water bottles and everything"]}
+{"id":"fwd-context-006","text":"How much time is left on the laundry?","expected":"FORWARD","category":"context_switch","context":["In this next segment we'll talk about household tips","First let's discuss how to properly sort your laundry"]}
+{"id":"fwd-context-007","text":"Order more dog food","expected":"FORWARD","category":"context_switch","context":["This premium dog food contains real chicken","Your dog will love the taste"]}
+{"id":"fwd-context-008","text":"Is my package out for delivery?","expected":"FORWARD","category":"context_switch","context":["Amazon reported record delivery times this quarter","The company is investing in drone delivery"]}
+{"id":"fwd-context-009","text":"Put that on my to-do list","expected":"FORWARD","category":"context_switch","context":["The top 10 productivity hacks you need to know","Number one is always keep a to-do list"]}
+{"id":"fwd-context-010","text":"Schedule a vet appointment for next Tuesday","expected":"FORWARD","category":"context_switch","context":["Today we're looking at the top 10 dog breeds","Golden retrievers are known for their friendly nature"]}
+{"id":"ign-podcast-001","text":"And now back to our sponsor, NordVPN","expected":"IGNORE","category":"podcast","context":[]}
+{"id":"ign-podcast-002","text":"Use code PODCAST for 20 percent off","expected":"IGNORE","category":"podcast","context":["And now back to our sponsor, NordVPN"]}
+{"id":"ign-podcast-003","text":"So that's what I think about the whole situation","expected":"IGNORE","category":"podcast","context":["I mean it's just crazy when you think about it","Like who would even do that"]}
+{"id":"ign-podcast-004","text":"Welcome back to the Joe Rogan Experience","expected":"IGNORE","category":"podcast","context":[]}
+{"id":"ign-podcast-005","text":"Before we get started, a quick word from our sponsors","expected":"IGNORE","category":"podcast","context":["Hey everybody welcome to the show","We've got an amazing guest today"]}
+{"id":"ign-podcast-006","text":"That's a great point and I think you're absolutely right","expected":"IGNORE","category":"podcast","context":["The thing about machine learning is","It's not actually intelligent in the way people think"]}
+{"id":"ign-podcast-007","text":"We'll be right back after this short break","expected":"IGNORE","category":"podcast","context":["And that wraps up our first segment"]}
+{"id":"ign-podcast-008","text":"If you enjoy this podcast please leave us a five star review","expected":"IGNORE","category":"podcast","context":["That's all for today's episode","Thanks for listening everyone"]}
+{"id":"ign-podcast-009","text":"Let's jump right into our main topic for today","expected":"IGNORE","category":"podcast","context":["Welcome back to Tech Talk Daily","I'm your host James Williams"]}
+{"id":"ign-podcast-010","text":"I couldn't agree more, that's exactly what happened","expected":"IGNORE","category":"podcast","context":["The market just went crazy after the announcement","Everyone was scrambling to sell their positions"]}
+{"id":"ign-podcast-011","text":"And that brings us to the end of today's episode","expected":"IGNORE","category":"podcast","context":["So to summarize what we've talked about","Crypto is still volatile but showing promise"]}
+{"id":"ign-podcast-012","text":"Remember to subscribe and hit that notification bell","expected":"IGNORE","category":"podcast","context":["Thanks for watching everyone","We post new videos every Tuesday and Thursday"]}
+{"id":"ign-podcast-013","text":"So my guest today is a bestselling author","expected":"IGNORE","category":"podcast","context":["Welcome to another episode of Book Club Radio"]}
+{"id":"ign-podcast-014","text":"You can find all the links in the show notes","expected":"IGNORE","category":"podcast","context":["We talked about so many great resources today"]}
+{"id":"ign-podcast-015","text":"That's hilarious, I can't believe that actually happened","expected":"IGNORE","category":"podcast","context":["So there I was in the middle of the jungle","And this monkey just grabs my sandwich"]}
+{"id":"ign-tv-001","text":"Previously on Breaking Bad","expected":"IGNORE","category":"tv_movie","context":[]}
+{"id":"ign-tv-002","text":"I am the one who knocks","expected":"IGNORE","category":"tv_movie","context":["Who are you talking to right now","Who is it you think you see"]}
+{"id":"ign-tv-003","text":"Winter is coming","expected":"IGNORE","category":"tv_movie","context":["The Starks have always been the wardens of the north"]}
+{"id":"ign-tv-004","text":"That's what she said","expected":"IGNORE","category":"tv_movie","context":["I need you to stay late tonight","This project is really big and hard"]}
+{"id":"ign-tv-005","text":"Tune in next week for the exciting conclusion","expected":"IGNORE","category":"tv_movie","context":["Will our hero survive","Find out next time"]}
+{"id":"ign-tv-006","text":"Coming up after the break, our exclusive interview","expected":"IGNORE","category":"tv_movie","context":["You're watching Channel 5 News at 10"]}
+{"id":"ign-tv-007","text":"The tribe has spoken","expected":"IGNORE","category":"tv_movie","context":["It's time to vote","Please bring me your torch"]}
+{"id":"ign-tv-008","text":"For just 19.99 you can get the complete set","expected":"IGNORE","category":"tv_movie","context":["But wait there's more","Order now and we'll double your offer"]}
+{"id":"ign-tv-009","text":"And the winner of this season's competition is","expected":"IGNORE","category":"tv_movie","context":["After months of fierce competition","It all comes down to this moment"]}
+{"id":"ign-tv-010","text":"Live from New York, it's Saturday night","expected":"IGNORE","category":"tv_movie","context":[]}
+{"id":"ign-news-001","text":"Breaking news, the president has signed the new bill into law","expected":"IGNORE","category":"news","context":[]}
+{"id":"ign-news-002","text":"In other news, the stock market rallied today","expected":"IGNORE","category":"news","context":["The Dow Jones closed up 300 points"]}
+{"id":"ign-news-003","text":"Our correspondent is live on the scene","expected":"IGNORE","category":"news","context":["A major fire has broken out downtown","Emergency services are responding"]}
+{"id":"ign-news-004","text":"Traffic is backed up on the interstate due to construction","expected":"IGNORE","category":"news","context":["And now for your morning traffic report"]}
+{"id":"ign-news-005","text":"Tomorrow's forecast calls for scattered showers","expected":"IGNORE","category":"news","context":["Looking at the weather map","A cold front is moving in from the west"]}
+{"id":"ign-news-006","text":"This has been a Channel 7 news special report","expected":"IGNORE","category":"news","context":["That's all for our coverage of the election results"]}
+{"id":"ign-news-007","text":"The mayor released a statement earlier today","expected":"IGNORE","category":"news","context":["Tensions are rising at city hall","The budget vote is expected tomorrow"]}
+{"id":"ign-news-008","text":"Scientists have discovered a new species in the deep ocean","expected":"IGNORE","category":"news","context":["And now in science news"]}
+{"id":"ign-news-009","text":"The national team has qualified for the World Cup","expected":"IGNORE","category":"news","context":["In sports tonight"]}
+{"id":"ign-news-010","text":"Authorities are asking residents to shelter in place","expected":"IGNORE","category":"news","context":["A severe thunderstorm warning has been issued"]}
+{"id":"ign-music-001","text":"Never gonna give you up, never gonna let you down","expected":"IGNORE","category":"music","context":[]}
+{"id":"ign-music-002","text":"I will always love you","expected":"IGNORE","category":"music","context":["And I hope life treats you kind","And I hope you have all you've dreamed of"]}
+{"id":"ign-music-003","text":"We are the champions, my friends","expected":"IGNORE","category":"music","context":["And we'll keep on fighting till the end"]}
+{"id":"ign-music-004","text":"Is this the real life, is this just fantasy","expected":"IGNORE","category":"music","context":[]}
+{"id":"ign-music-005","text":"Shake it off, shake it off","expected":"IGNORE","category":"music","context":["Players gonna play play play play play","Haters gonna hate hate hate hate hate"]}
+{"id":"ign-music-006","text":"Hello from the other side","expected":"IGNORE","category":"music","context":["I must have called a thousand times"]}
+{"id":"ign-music-007","text":"Don't stop believing, hold on to that feeling","expected":"IGNORE","category":"music","context":["Streetlight people living just to find emotion"]}
+{"id":"ign-music-008","text":"Baby one more time","expected":"IGNORE","category":"music","context":["My loneliness is killing me","And I must confess I still believe"]}
+{"id":"ign-music-009","text":"I got a feeling that tonight's gonna be a good night","expected":"IGNORE","category":"music","context":[]}
+{"id":"ign-music-010","text":"Let it go, let it go, can't hold it back anymore","expected":"IGNORE","category":"music","context":["The snow glows white on the mountain tonight"]}
+{"id":"ign-convo-001","text":"Yeah I was thinking we could go to that new Italian place","expected":"IGNORE","category":"background_convo","context":["What should we do for dinner tonight","I don't know what do you feel like"]}
+{"id":"ign-convo-002","text":"Did you see what Karen posted on Facebook?","expected":"IGNORE","category":"background_convo","context":["Oh my God you won't believe this"]}
+{"id":"ign-convo-003","text":"I told him he should just quit and find a new job","expected":"IGNORE","category":"background_convo","context":["Mike has been complaining about work again","His boss is just impossible"]}
+{"id":"ign-convo-004","text":"No way, that's insane","expected":"IGNORE","category":"background_convo","context":["You won't believe what happened at school today","Tommy got sent to the principal's office"]}
+{"id":"ign-convo-005","text":"Pass me the salt please","expected":"IGNORE","category":"background_convo","context":["This chicken is really good","Thanks I used a new recipe"]}
+{"id":"ign-convo-006","text":"I think the game starts at 7","expected":"IGNORE","category":"background_convo","context":["Are you going to watch the game tonight","Yeah definitely"]}
+{"id":"ign-convo-007","text":"She said she'd be here by noon","expected":"IGNORE","category":"background_convo","context":["Where's Jennifer","She's running late as usual"]}
+{"id":"ign-convo-008","text":"That movie was absolutely terrible","expected":"IGNORE","category":"background_convo","context":["What did you think of the movie","I didn't really like it"]}
+{"id":"ign-convo-009","text":"We should probably head out soon before traffic gets bad","expected":"IGNORE","category":"background_convo","context":["What time do we need to leave"]}
+{"id":"ign-convo-010","text":"I can't believe how expensive groceries have gotten","expected":"IGNORE","category":"background_convo","context":["Eggs are like five dollars now","Everything has gone up"]}
+{"id":"ign-ad-001","text":"Head and shoulders clinically proven to fight dandruff","expected":"IGNORE","category":"advertisement","context":[]}
+{"id":"ign-ad-002","text":"Save big this Black Friday at Walmart","expected":"IGNORE","category":"advertisement","context":["The holidays are just around the corner"]}
+{"id":"ign-ad-003","text":"Ask your doctor if Humira is right for you","expected":"IGNORE","category":"advertisement","context":["Side effects may include headache and nausea"]}
+{"id":"ign-ad-004","text":"The all new Toyota Camry, let's go places","expected":"IGNORE","category":"advertisement","context":[]}
+{"id":"ign-ad-005","text":"Download the app today and get your first month free","expected":"IGNORE","category":"advertisement","context":["With Spotify Premium you get ad free music"]}
+{"id":"ign-ad-006","text":"Call 1-800-588-2300 Empire today","expected":"IGNORE","category":"advertisement","context":[]}
+{"id":"ign-ad-007","text":"Apply directly to the forehead","expected":"IGNORE","category":"advertisement","context":["Head On apply directly to the forehead","Head On apply directly to the forehead"]}
+{"id":"ign-ad-008","text":"Like a good neighbor, State Farm is there","expected":"IGNORE","category":"advertisement","context":[]}
+{"id":"ign-ad-009","text":"Nationwide is on your side","expected":"IGNORE","category":"advertisement","context":[]}
+{"id":"ign-ad-010","text":"I'm lovin it, ba da ba ba ba","expected":"IGNORE","category":"advertisement","context":[]}
+{"id":"ign-sport-001","text":"And he shoots, he scores, what a goal!","expected":"IGNORE","category":"sports","context":["The ball is passed to Messi","He's running down the right side"]}
+{"id":"ign-sport-002","text":"That's a three pointer from downtown","expected":"IGNORE","category":"sports","context":["Curry brings the ball up the court","He pulls up from way behind the arc"]}
+{"id":"ign-sport-003","text":"And it's a home run, the crowd goes wild","expected":"IGNORE","category":"sports","context":["Two outs bottom of the ninth","Full count on the batter"]}
+{"id":"ign-sport-004","text":"The referee calls a foul on the play","expected":"IGNORE","category":"sports","context":["There's contact at the rim","Let's see the replay"]}
+{"id":"ign-sport-005","text":"And they're off and running in the Kentucky Derby","expected":"IGNORE","category":"sports","context":["The horses are in the starting gate"]}
+{"id":"ign-game-001","text":"Enemy spotted, take cover","expected":"IGNORE","category":"videogame","context":["Reloading","Watch your six"]}
+{"id":"ign-game-002","text":"Mission complete, returning to base","expected":"IGNORE","category":"videogame","context":["All hostiles eliminated","Area is secure"]}
+{"id":"ign-game-003","text":"Victory royale, we won!","expected":"IGNORE","category":"videogame","context":["There's only two squads left","Stay in the circle"]}
+{"id":"ign-game-004","text":"First blood, an ally has been slain","expected":"IGNORE","category":"videogame","context":[]}
+{"id":"ign-game-005","text":"You need to collect more resources before building","expected":"IGNORE","category":"videogame","context":["Not enough wood","Try harvesting those trees over there"]}
+{"id":"ign-audiobook-001","text":"Chapter seven, in which our hero faces a difficult choice","expected":"IGNORE","category":"audiobook","context":["The forest grew darker as she walked deeper","Strange sounds echoed from every direction"]}
+{"id":"ign-audiobook-002","text":"It was the best of times, it was the worst of times","expected":"IGNORE","category":"audiobook","context":[]}
+{"id":"ign-audiobook-003","text":"He looked at her across the room and knew everything had changed","expected":"IGNORE","category":"audiobook","context":["The party was in full swing","Music filled the grand ballroom"]}
+{"id":"ign-audiobook-004","text":"The detective examined the crime scene carefully","expected":"IGNORE","category":"audiobook","context":["Something didn't add up","The window was locked from the inside"]}
+{"id":"ign-audiobook-005","text":"And so she set off on her journey, not knowing what lay ahead","expected":"IGNORE","category":"audiobook","context":["She packed her bags in silence","There was nothing left for her here"]}
+{"id":"ign-noise-001","text":"Uh huh yeah okay","expected":"IGNORE","category":"filler","context":[]}
+{"id":"ign-noise-002","text":"Mm hmm","expected":"IGNORE","category":"filler","context":[]}
+{"id":"ign-noise-003","text":"La la la la la","expected":"IGNORE","category":"filler","context":[]}
+{"id":"ign-noise-004","text":"One two three four five six seven eight","expected":"IGNORE","category":"filler","context":[]}
+{"id":"ign-noise-005","text":"Testing testing one two three","expected":"IGNORE","category":"filler","context":[]}
+{"id":"fwd-short-001","text":"Stop","expected":"FORWARD","category":"short_command","context":["Playing your workout playlist","Up next is Eye of the Tiger"]}
+{"id":"fwd-short-002","text":"Help","expected":"FORWARD","category":"short_command","context":[]}
+{"id":"fwd-short-003","text":"What?","expected":"FORWARD","category":"short_command","context":["Your package has been delivered to the front porch"]}
+{"id":"fwd-short-004","text":"Yes","expected":"FORWARD","category":"short_command","context":["Would you like me to set that reminder?"]}
+{"id":"fwd-short-005","text":"No, cancel that","expected":"FORWARD","category":"short_command","context":["Setting timer for 30 minutes"]}
+{"id":"fwd-followup-001","text":"And what about tomorrow?","expected":"FORWARD","category":"followup","context":["Your calendar for today shows a meeting at 2 PM"]}
+{"id":"fwd-followup-002","text":"Send that to Sarah too","expected":"FORWARD","category":"followup","context":["Email sent to John with the project update"]}
+{"id":"fwd-followup-003","text":"Make it 15 minutes instead","expected":"FORWARD","category":"followup","context":["Timer set for 10 minutes"]}
+{"id":"fwd-followup-004","text":"Actually change that to Thursday","expected":"FORWARD","category":"followup","context":["Reminder set for Wednesday at 3 PM"]}
+{"id":"fwd-followup-005","text":"What else is on there?","expected":"FORWARD","category":"followup","context":["Your shopping list has milk and bread"]}
+{"id":"fwd-multi-001","text":"What time is it and do I have any meetings?","expected":"FORWARD","category":"multi_intent","context":[]}
+{"id":"fwd-multi-002","text":"Turn off the lights and set the alarm","expected":"FORWARD","category":"multi_intent","context":[]}
+{"id":"fwd-multi-003","text":"Check the weather and remind me to bring an umbrella","expected":"FORWARD","category":"multi_intent","context":[]}
+{"id":"fwd-polite-001","text":"Hey could you please look up that recipe I was asking about earlier?","expected":"FORWARD","category":"polite_request","context":[]}
+{"id":"fwd-polite-002","text":"Would you mind checking if the store is still open?","expected":"FORWARD","category":"polite_request","context":[]}
+{"id":"fwd-polite-003","text":"Sorry to bother you but what's 15 percent of 85?","expected":"FORWARD","category":"polite_request","context":[]}
+{"id":"fwd-polite-004","text":"Thanks, now can you also check my email?","expected":"FORWARD","category":"polite_request","context":["Here are your calendar events for today"]}
+{"id":"fwd-polite-005","text":"Excuse me, what did you say the weather was?","expected":"FORWARD","category":"polite_request","context":["Today's forecast is partly cloudy with a high of 72"]}
+{"id":"ign-ambient-001","text":"Oh that smells so good","expected":"IGNORE","category":"ambient","context":["I think dinner is almost ready","The oven timer should go off soon"]}
+{"id":"ign-ambient-002","text":"Be careful it's hot","expected":"IGNORE","category":"ambient","context":["Can you grab that pan","Use the oven mitts"]}
+{"id":"ign-ambient-003","text":"Look at that sunset it's beautiful","expected":"IGNORE","category":"ambient","context":[]}
+{"id":"ign-ambient-004","text":"I need to take the dog out","expected":"IGNORE","category":"ambient","context":["The dog is scratching at the door again"]}
+{"id":"ign-ambient-005","text":"Where did I put my keys","expected":"IGNORE","category":"ambient","context":["I'm going to be late","Have you seen my wallet"]}
+{"id":"ign-ambient-006","text":"The baby is finally asleep","expected":"IGNORE","category":"ambient","context":["Shh don't be so loud","She was fussy all afternoon"]}
+{"id":"ign-ambient-007","text":"Ugh this traffic is ridiculous","expected":"IGNORE","category":"ambient","context":[]}
+{"id":"ign-ambient-008","text":"Good boy, sit, good boy","expected":"IGNORE","category":"ambient","context":[]}
+{"id":"ign-ambient-009","text":"I love this song","expected":"IGNORE","category":"ambient","context":[]}
+{"id":"ign-ambient-010","text":"Bless you","expected":"IGNORE","category":"ambient","context":["Achoo"]}

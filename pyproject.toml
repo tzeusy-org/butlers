@@ -86,7 +86,7 @@ testpaths = ["tests", "roster"]
 # --dist loadfile: keeps tests from the same file on the same worker so that
 #   module-scoped fixtures (e.g. shared FastAPI app, module-scoped DB pools)
 #   are not torn down and recreated across workers mid-module.
-addopts = "--import-mode=importlib -m 'not nightly' -n 3 --dist loadfile"
+addopts = "--import-mode=importlib -m 'not nightly and not discretion_bench' -n 3 --dist loadfile --ignore=tests/discretion_llm_bench"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "integration: Integration tests — require Docker (testcontainers)",
@@ -95,6 +95,7 @@ markers = [
     "routing_accuracy: E2E routing accuracy tests — verify triage_target matches expected_routing",
     "tool_accuracy: E2E tool-call accuracy tests — verify expected tool names are called",
     "nightly: Long-running tests excluded from default CI (run with -m nightly)",
+    "discretion_bench: Discretion LLM benchmarks — require live Ollama endpoint (run with -m discretion_bench)",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here
