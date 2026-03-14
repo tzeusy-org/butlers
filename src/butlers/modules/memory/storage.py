@@ -1535,10 +1535,16 @@ async def run_decay_sweep(pool: Pool) -> dict:
 
 
 async def purge_superseded_facts(pool: Pool, *, older_than_days: int = 7) -> dict:
-    """Delete superseded facts older than a threshold.
+    """Delete superseded facts and orphaned machine-generated facts.
 
     Superseded facts are dead weight — they are never queried. This function
     removes them to reclaim disk space and keep index sizes manageable.
+
+    Also purges ``ha_state`` facts regardless of validity. These are
+    machine-generated HA entity snapshots that should not persist — HA state
+    is always available in real-time via the HA API. Any surviving active
+    ``ha_state`` facts are zombies left over from when the snapshot loop was
+    disabled.
 
     Args:
         pool: asyncpg connection pool.
@@ -1547,7 +1553,8 @@ async def purge_superseded_facts(pool: Pool, *, older_than_days: int = 7) -> dic
             short-term forensics.
 
     Returns:
-        dict with key ``deleted`` (number of rows removed).
+        dict with keys ``deleted`` (superseded rows removed) and
+        ``deleted_ha_state`` (ha_state rows removed).
     """
     result = await pool.execute(
         "DELETE FROM facts "
@@ -1555,6 +1562,13 @@ async def purge_superseded_facts(pool: Pool, *, older_than_days: int = 7) -> dic
         "AND created_at < now() - make_interval(days => $1)",
         older_than_days,
     )
-    # asyncpg execute returns status string like "DELETE 42"
     deleted = int(result.split()[-1]) if result else 0
-    return {"deleted": deleted}
+
+    # Purge orphaned ha_state facts — machine-generated snapshots that should
+    # not persist now that the snapshot loop is disabled.
+    ha_result = await pool.execute(
+        "DELETE FROM facts WHERE predicate = 'ha_state'",
+    )
+    deleted_ha = int(ha_result.split()[-1]) if ha_result else 0
+
+    return {"deleted": deleted, "deleted_ha_state": deleted_ha}
