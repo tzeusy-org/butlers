@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1492,3 +1492,370 @@ class TestGracefulShutdownFlush:
 
         assert scanner_task.cancelled()
         assert connector._flush_scanner_task is None
+
+
+# ---------------------------------------------------------------------------
+# Helper for history/reply-to tests (separate from _make_mock_message above,
+# which is used by TestChatBuffering and needs different fields)
+# ---------------------------------------------------------------------------
+
+
+def _make_history_msg(
+    msg_id: int,
+    date: datetime | None = None,
+    reply_to_msg_id: int | None = None,
+    text: str = "hello",
+) -> MagicMock:
+    """Build a minimal mock Telegram message for history/reply-to tests."""
+    msg = MagicMock()
+    msg.id = msg_id
+    msg.date = date or datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    msg.reply_to_msg_id = reply_to_msg_id
+    msg.message = text
+    return msg
+
+
+class TestFetchConversationHistory:
+    """Tests for TelegramUserClientConnector._fetch_conversation_history."""
+
+    async def test_returns_buffered_messages_when_no_telegram_client(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Returns only buffered messages when Telegram client is not initialised."""
+        connector = TelegramUserClientConnector(config)
+        connector._telegram_client = None
+
+        buffered = [_make_history_msg(1), _make_history_msg(2)]
+        result = await connector._fetch_conversation_history("chat123", buffered)
+
+        assert [m.id for m in result] == [1, 2]
+
+    async def test_merges_history_and_buffered_deduplicates_and_sorts(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """History + buffered messages are merged, deduplicated, and sorted by ID."""
+        connector = TelegramUserClientConnector(config)
+
+        buffered = [_make_history_msg(5), _make_history_msg(6)]
+        history_msgs = [
+            _make_history_msg(3),
+            _make_history_msg(4),
+            _make_history_msg(5),  # duplicate of buffered[0]
+        ]
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=history_msgs)
+        connector._telegram_client = mock_client
+
+        result = await connector._fetch_conversation_history("chat123", buffered)
+
+        assert [m.id for m in result] == [3, 4, 5, 6]
+
+    async def test_offset_date_is_bounded_by_time_window(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """offset_date passed to get_messages is HISTORY_TIME_WINDOW_M before oldest msg."""
+        import dataclasses
+
+        config = dataclasses.replace(config, history_time_window_m=30)
+        connector = TelegramUserClientConnector(config)
+
+        oldest_date = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        buffered = [
+            _make_history_msg(10, date=datetime(2024, 1, 1, 12, 30, 0, tzinfo=UTC)),
+            _make_history_msg(11, date=oldest_date),  # oldest
+        ]
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[])
+        connector._telegram_client = mock_client
+
+        await connector._fetch_conversation_history("chat123", buffered)
+
+        call_kwargs = mock_client.get_messages.call_args
+        offset_date_passed = call_kwargs[1]["offset_date"]
+        expected_offset = oldest_date - timedelta(minutes=30)
+        assert offset_date_passed == expected_offset
+
+    async def test_uses_history_max_messages_limit(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """limit kwarg passed to get_messages equals _history_max_messages."""
+        import dataclasses
+
+        config = dataclasses.replace(config, history_max_messages=42)
+        connector = TelegramUserClientConnector(config)
+
+        buffered = [_make_history_msg(1)]
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[])
+        connector._telegram_client = mock_client
+
+        await connector._fetch_conversation_history("chat123", buffered)
+
+        call_kwargs = mock_client.get_messages.call_args
+        assert call_kwargs[1]["limit"] == 42
+
+    async def test_flood_wait_error_returns_only_buffered(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """FloodWaitError causes fail-open: returns buffered messages only."""
+        connector = TelegramUserClientConnector(config)
+
+        buffered = [_make_history_msg(7), _make_history_msg(8)]
+
+        mock_client = MagicMock()
+        # Simulate FloodWaitError via generic exception (Telethon may not be installed)
+        mock_client.get_messages = AsyncMock(side_effect=RuntimeError("FLOOD_WAIT_X"))
+        connector._telegram_client = mock_client
+
+        result = await connector._fetch_conversation_history("chat123", buffered)
+
+        assert [m.id for m in result] == [7, 8]
+
+    async def test_any_fetch_error_returns_only_buffered(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Any exception from get_messages causes fail-open fallback."""
+        connector = TelegramUserClientConnector(config)
+
+        buffered = [_make_history_msg(3)]
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(side_effect=OSError("network error"))
+        connector._telegram_client = mock_client
+
+        result = await connector._fetch_conversation_history("chat123", buffered)
+
+        assert len(result) == 1
+        assert result[0].id == 3
+
+    async def test_uses_default_history_config_when_attributes_absent(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Uses config defaults: limit=50, window=30m."""
+        connector = TelegramUserClientConnector(config)
+        # config fixture uses default values: history_max_messages=50, history_time_window_m=30
+
+        buffered = [_make_history_msg(1)]
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[])
+        connector._telegram_client = mock_client
+
+        await connector._fetch_conversation_history("chat123", buffered)
+
+        call_kwargs = mock_client.get_messages.call_args
+        assert call_kwargs[1]["limit"] == 50
+
+    async def test_empty_buffered_messages_still_fetches_history(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """History fetch works even when buffered_messages is empty (no oldest_date)."""
+        connector = TelegramUserClientConnector(config)
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[_make_history_msg(99)])
+        connector._telegram_client = mock_client
+
+        result = await connector._fetch_conversation_history("chat123", [])
+
+        assert len(result) == 1
+        assert result[0].id == 99
+
+    async def test_result_sorted_ascending_by_id(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Merged result is always sorted ascending by message ID."""
+        connector = TelegramUserClientConnector(config)
+
+        buffered = [_make_history_msg(10)]
+        history_msgs = [_make_history_msg(8), _make_history_msg(5), _make_history_msg(12)]
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=history_msgs)
+        connector._telegram_client = mock_client
+
+        result = await connector._fetch_conversation_history("chat123", buffered)
+
+        assert [m.id for m in result] == [5, 8, 10, 12]
+
+
+# ---------------------------------------------------------------------------
+# _resolve_reply_tos tests
+# ---------------------------------------------------------------------------
+
+
+class TestResolveReplyTos:
+    """Tests for TelegramUserClientConnector._resolve_reply_tos."""
+
+    async def test_returns_context_unchanged_when_no_telegram_client(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Returns context_messages unchanged when Telegram client is not initialised."""
+        connector = TelegramUserClientConnector(config)
+        connector._telegram_client = None
+
+        context = [_make_history_msg(1), _make_history_msg(2)]
+        buffered = [_make_history_msg(3, reply_to_msg_id=99)]
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        assert [m.id for m in result] == [1, 2]
+
+    async def test_no_reply_ids_returns_context_unchanged(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Returns context unchanged when no buffered messages have reply_to_msg_id."""
+        connector = TelegramUserClientConnector(config)
+
+        mock_client = MagicMock()
+        connector._telegram_client = mock_client
+
+        context = [_make_history_msg(1)]
+        buffered = [_make_history_msg(2)]  # no reply_to_msg_id
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        assert [m.id for m in result] == [1]
+        mock_client.get_messages.assert_not_called()
+
+    async def test_skips_reply_ids_already_in_context(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Does not fetch reply-to messages that are already in context_messages."""
+        connector = TelegramUserClientConnector(config)
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock()
+        connector._telegram_client = mock_client
+
+        context = [_make_history_msg(5), _make_history_msg(10)]
+        buffered = [_make_history_msg(20, reply_to_msg_id=5)]  # 5 already in context
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        # No fetch needed — 5 is already present
+        mock_client.get_messages.assert_not_called()
+        assert [m.id for m in result] == [5, 10]
+
+    async def test_fetches_missing_reply_to_message(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Fetches a reply-to message not in context and appends it."""
+        connector = TelegramUserClientConnector(config)
+
+        fetched_reply = _make_history_msg(42)
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=fetched_reply)
+        connector._telegram_client = mock_client
+
+        context = [_make_history_msg(50)]
+        buffered = [_make_history_msg(60, reply_to_msg_id=42)]
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        mock_client.get_messages.assert_awaited_once_with("chat123", ids=42)
+        assert 42 in [m.id for m in result]
+        assert 50 in [m.id for m in result]
+
+    async def test_fetch_error_is_logged_and_skipped(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """A fetch error for a reply-to message is logged at DEBUG and skipped (fail-open)."""
+        connector = TelegramUserClientConnector(config)
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(side_effect=OSError("fetch failed"))
+        connector._telegram_client = mock_client
+
+        context = [_make_history_msg(1)]
+        buffered = [_make_history_msg(2, reply_to_msg_id=99)]
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        # 99 was not fetched — result only contains original context
+        assert [m.id for m in result] == [1]
+
+    async def test_result_sorted_ascending_by_id(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Result including fetched reply-tos is sorted ascending by ID."""
+        connector = TelegramUserClientConnector(config)
+
+        fetched_reply = _make_history_msg(3)
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=fetched_reply)
+        connector._telegram_client = mock_client
+
+        context = [_make_history_msg(10), _make_history_msg(7)]
+        buffered = [_make_history_msg(15, reply_to_msg_id=3)]
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        assert [m.id for m in result] == [3, 7, 10]
+
+    async def test_single_level_only_no_recursive_chain(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Only the first-level reply is resolved; no recursive chasing."""
+        connector = TelegramUserClientConnector(config)
+
+        # The fetched reply itself has a reply_to_msg_id (chained reply)
+        fetched_reply = _make_history_msg(30, reply_to_msg_id=99)
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=fetched_reply)
+        connector._telegram_client = mock_client
+
+        context = [_make_history_msg(50)]
+        buffered = [_make_history_msg(60, reply_to_msg_id=30)]
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        # get_messages called exactly once — for msg 30, not recursively for 99
+        assert mock_client.get_messages.await_count == 1
+        call_args = mock_client.get_messages.call_args
+        assert call_args[1]["ids"] == 30
+        assert 30 in [m.id for m in result]
+        assert 99 not in [m.id for m in result]
+
+    async def test_handles_get_messages_returning_list(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """get_messages returning a list (not a single message) is handled correctly."""
+        connector = TelegramUserClientConnector(config)
+
+        fetched_list = [_make_history_msg(20)]
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=fetched_list)
+        connector._telegram_client = mock_client
+
+        context = [_make_history_msg(30)]
+        buffered = [_make_history_msg(40, reply_to_msg_id=20)]
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        assert 20 in [m.id for m in result]
+
+    async def test_handles_none_reply_message(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """If get_messages returns None (message deleted/missing), it is skipped."""
+        connector = TelegramUserClientConnector(config)
+
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=None)
+        connector._telegram_client = mock_client
+
+        context = [_make_history_msg(1)]
+        buffered = [_make_history_msg(2, reply_to_msg_id=77)]
+
+        result = await connector._resolve_reply_tos("chat123", buffered, context)
+
+        # None result means message not found; original context returned unchanged
+        assert [m.id for m in result] == [1]

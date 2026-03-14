@@ -805,6 +805,147 @@ class TelegramUserClientConnector:
             return str(text)[:200]
         return None
 
+    async def _fetch_conversation_history(
+        self,
+        chat_id: Any,
+        buffered_messages: list[Any],
+    ) -> list[Any]:
+        """Fetch surrounding conversation history for a batch of buffered messages.
+
+        Fetches up to ``self._history_max_messages`` (default 50) recent messages
+        from ``chat_id``, with the look-back window starting at least
+        ``self._history_time_window_m`` (default 30) minutes before the oldest
+        buffered message.
+
+        The returned list is the union of fetched history and the buffered messages,
+        deduplicated by message ID and sorted ascending by ID.  If the Telethon
+        ``get_messages()`` call fails (including ``FloodWaitError``), the method
+        logs a warning and returns only the buffered messages (fail-open).
+
+        Args:
+            chat_id: Telethon-compatible chat entity (string, int, or peer).
+            buffered_messages: Messages already in the flush buffer.
+
+        Returns:
+            Merged, deduplicated, ID-ascending list of context messages.
+        """
+        if not self._telegram_client:
+            return list(buffered_messages)
+
+        history_max = self._config.history_max_messages
+        history_window_m = self._config.history_time_window_m
+
+        # Determine the offset_date: look back from the oldest buffered message.
+        oldest_date: datetime | None = None
+        for msg in buffered_messages:
+            msg_date = getattr(msg, "date", None)
+            if msg_date is not None:
+                if oldest_date is None or msg_date < oldest_date:
+                    oldest_date = msg_date
+
+        if oldest_date is not None:
+            offset_date = oldest_date - timedelta(minutes=history_window_m)
+        else:
+            offset_date = datetime.now(UTC) - timedelta(minutes=history_window_m)
+
+        try:
+            history: list[Any] = await self._telegram_client.get_messages(
+                chat_id,
+                limit=history_max,
+                offset_date=offset_date,
+            )
+        except Exception as exc:
+            # FloodWaitError and all other errors: fail-open, proceed without history.
+            logger.warning(
+                "Failed to fetch conversation history for chat %s, proceeding without context: %s",
+                chat_id,
+                exc,
+            )
+            return list(buffered_messages)
+
+        # Merge and deduplicate by message ID.
+        seen: set[int] = set()
+        merged: list[Any] = []
+        for msg in list(history) + list(buffered_messages):
+            msg_id = getattr(msg, "id", None)
+            if msg_id is None or msg_id in seen:
+                continue
+            seen.add(msg_id)
+            merged.append(msg)
+
+        # Sort ascending by message ID.
+        merged.sort(key=lambda m: getattr(m, "id", 0))
+        return merged
+
+    async def _resolve_reply_tos(
+        self,
+        chat_id: Any,
+        buffered_messages: list[Any],
+        context_messages: list[Any],
+    ) -> list[Any]:
+        """Fetch replied-to messages not already present in the context window.
+
+        For each buffered message that has ``reply_to_msg_id`` set, this method
+        checks whether the referenced message is already in ``context_messages``.
+        If not, it fetches it via ``client.get_messages(chat, ids=mid)`` and
+        appends it to the returned list.
+
+        Only single-level resolution is performed — no recursive chain following.
+
+        Fetch errors for individual reply-to messages are logged at DEBUG level
+        and skipped (fail-open).
+
+        Args:
+            chat_id: Telethon-compatible chat entity.
+            buffered_messages: The flush buffer (new messages).
+            context_messages: Already-resolved context (history + buffered).
+
+        Returns:
+            A new list containing all ``context_messages`` plus any successfully
+            fetched reply-to messages, sorted ascending by message ID.
+        """
+        if not self._telegram_client:
+            return list(context_messages)
+
+        # Collect reply_to IDs referenced by buffered messages.
+        reply_ids: set[int] = set()
+        for msg in buffered_messages:
+            rid = getattr(msg, "reply_to_msg_id", None)
+            if rid is not None:
+                reply_ids.add(rid)
+
+        if not reply_ids:
+            return list(context_messages)
+
+        # Filter out IDs already present in context_messages.
+        present_ids: set[int] = {getattr(m, "id", None) for m in context_messages} - {None}
+        missing_ids = reply_ids - present_ids
+
+        if not missing_ids:
+            return list(context_messages)
+
+        result: list[Any] = list(context_messages)
+        for mid in missing_ids:
+            try:
+                reply_msg = await self._telegram_client.get_messages(chat_id, ids=mid)
+                if reply_msg is not None:
+                    # get_messages(ids=...) may return a list or a single message.
+                    if isinstance(reply_msg, list):
+                        result.extend(m for m in reply_msg if m is not None)
+                    else:
+                        result.append(reply_msg)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to fetch reply-to message %s in chat %s: %s",
+                    mid,
+                    chat_id,
+                    exc,
+                )
+
+        # Sort ascending by message ID.
+        result.sort(key=lambda m: getattr(m, "id", 0))
+        return result
+
     async def _flush_and_drain(self) -> None:
         """Flush filtered event buffer then drain up to 10 replay-pending rows.
 
