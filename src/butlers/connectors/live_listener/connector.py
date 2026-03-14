@@ -58,17 +58,17 @@ import uvicorn
 from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 
+from butlers.connectors.discretion import (
+    DiscretionConfig,
+    DiscretionEvaluator,
+    DiscretionResult,
+)
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
     load_voice_checkpoint,
     save_voice_checkpoint,
 )
 from butlers.connectors.live_listener.config import LiveListenerConfig, MicDeviceSpec
-from butlers.connectors.live_listener.discretion import (
-    DiscretionConfig,
-    DiscretionEvaluator,
-    DiscretionResult,
-)
 from butlers.connectors.live_listener.envelope import (
     build_voice_envelope,
     unix_ms_from_datetime,
@@ -206,7 +206,7 @@ class LiveListenerConnector:
         )
 
         # Build per-mic components
-        discretion_config = DiscretionConfig()
+        discretion_config = DiscretionConfig(env_prefix="LIVE_LISTENER_")
         for spec in self._config.devices:
             mic = spec.name
 
@@ -223,7 +223,7 @@ class LiveListenerConnector:
 
             # Discretion evaluator
             self._discretion_evaluators[mic] = DiscretionEvaluator(
-                mic_name=mic,
+                source_name=mic,
                 config=discretion_config,
             )
 
@@ -759,7 +759,17 @@ async def run_connector() -> None:
         logger.error("live-listener: switchboard not ready: %s", exc)
         raise SystemExit(1) from exc
 
-    connector = LiveListenerConnector(config=config)
+    # Create DB pool for ingestion policy evaluation and checkpoint persistence.
+    from butlers.connectors.cursor_store import create_cursor_pool_from_env
+
+    try:
+        db_pool = await create_cursor_pool_from_env()
+        logger.info("live-listener: DB pool created for filter gate and checkpoints")
+    except Exception as exc:
+        logger.error("live-listener: failed to create DB pool: %s", exc)
+        raise SystemExit(1) from exc
+
+    connector = LiveListenerConnector(config=config, db_pool=db_pool)
 
     try:
         await connector.run_forever()
@@ -767,6 +777,8 @@ async def run_connector() -> None:
         logger.info("live-listener: received keyboard interrupt, shutting down")
     finally:
         await connector.stop()
+        if db_pool is not None:
+            await db_pool.close()
 
 
 if __name__ == "__main__":

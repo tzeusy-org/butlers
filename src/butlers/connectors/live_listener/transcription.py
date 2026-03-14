@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import socket
 import wave
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -260,6 +261,18 @@ class WyomingTranscriptionClient(TranscriptionClient):
         """Open a TCP connection to the Wyoming service."""
         try:
             self._reader, self._writer = await asyncio.open_connection(self._host, self._port)
+            # Enable TCP keepalive to detect dead connections before the next
+            # transcribe() call, avoiding the idle-timeout-then-fail pattern.
+            sock = self._writer.get_extra_info("socket")
+            if sock is not None:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                # Linux-specific: probe after 15s idle, every 5s, 3 probes before drop
+                if hasattr(socket, "TCP_KEEPIDLE"):
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 15)
+                if hasattr(socket, "TCP_KEEPINTVL"):
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+                if hasattr(socket, "TCP_KEEPCNT"):
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
             self._healthy = True
             self._backoff = _BACKOFF_INITIAL
             logger.debug(
