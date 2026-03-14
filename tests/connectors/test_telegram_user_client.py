@@ -2253,6 +2253,53 @@ class TestFlushChatBufferPipeline:
         # Checkpoint must NOT have advanced
         assert connector._last_message_id is None
 
+    async def test_policy_blocked_skips_fetch_conversation_history(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Connector-scope policy block must skip Telegram API calls entirely."""
+        from butlers.ingestion_policy import PolicyDecision
+
+        connector, mock_client = self._make_connector_with_mocks(config)
+
+        # Block via connector-scope policy
+        connector._ingestion_policy.evaluate = MagicMock(
+            return_value=PolicyDecision(action="block", reason="blocked")
+        )
+
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(1)]
+        connector._chat_buffers["chat1"] = buf
+
+        await connector._flush_chat_buffer("chat1")
+
+        # _fetch_conversation_history calls get_messages; it must NOT be called.
+        mock_client.get_messages.assert_not_called()
+
+    async def test_global_policy_skip_skips_fetch_conversation_history(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Global-scope policy skip must skip Telegram API calls entirely."""
+        from butlers.ingestion_policy import PolicyDecision
+
+        connector, mock_client = self._make_connector_with_mocks(config)
+
+        # Pass connector-scope, block at global-scope
+        connector._ingestion_policy.evaluate = MagicMock(
+            return_value=PolicyDecision(action="pass_through", reason="ok")
+        )
+        connector._global_ingestion_policy.evaluate = MagicMock(
+            return_value=PolicyDecision(action="skip", reason="global skip")
+        )
+
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(2)]
+        connector._chat_buffers["chat1"] = buf
+
+        await connector._flush_chat_buffer("chat1")
+
+        # No Telegram network call should have been made.
+        mock_client.get_messages.assert_not_called()
+
 
 class TestChatBufferCapDefault:
     """Verify force-flush triggers at the default 200-message cap."""
