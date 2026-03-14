@@ -2224,3 +2224,61 @@ class TestFlushChatBufferPipeline:
         connector, _ = self._make_connector_with_mocks(config)
         # Should not raise
         await connector._flush_chat_buffer("nonexistent_chat")
+
+    async def test_pipeline_checkpoint_not_advanced_on_submit_failure(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Checkpoint is NOT advanced when batch submission raises an exception.
+
+        Spec requirement: 'Checkpoint not advanced on failure — the checkpoint
+        is NOT advanced, and the buffered messages remain available for retry.'
+        Note: the buffer IS cleared (atomic swap before network calls), but the
+        checkpoint (last_message_id) must not advance.
+        """
+        connector, _ = self._make_connector_with_mocks(config)
+        connector._last_message_id = None  # no prior checkpoint
+
+        async def failing_submit(env: dict) -> None:
+            raise RuntimeError("Switchboard unavailable")
+
+        connector._submit_to_ingest = failing_submit  # type: ignore[method-assign]
+
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(100), _make_batch_msg(200)]
+        connector._chat_buffers["chat_fail"] = buf
+
+        # Exception is caught internally — _flush_chat_buffer must not propagate
+        await connector._flush_chat_buffer("chat_fail")
+
+        # Checkpoint must NOT have advanced
+        assert connector._last_message_id is None
+
+
+class TestChatBufferCapDefault:
+    """Verify force-flush triggers at the default 200-message cap."""
+
+    async def test_buffer_force_flushes_at_default_cap_of_200(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Force-flush fires when buffer reaches the default cap (200 messages)."""
+        # config fixture uses default buffer_max_messages=200
+        connector = TelegramUserClientConnector(config)
+
+        flush_calls: list[str] = []
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            # Don't call original — no real Telegram client; just track the call
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+
+        # Buffer 199 messages — no flush yet
+        for i in range(1, 200):
+            await connector._buffer_message(_make_mock_message(i, chat_id=9000))
+
+        assert flush_calls == [], "No flush expected before cap is reached"
+
+        # 200th message should trigger force-flush
+        await connector._buffer_message(_make_mock_message(200, chat_id=9000))
+
+        assert flush_calls == ["9000"], "Force-flush expected at cap=200"
