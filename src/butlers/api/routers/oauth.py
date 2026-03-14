@@ -671,6 +671,19 @@ async def oauth_google_callback(
     )
     logger.info("Scope granted: %s", scope)
 
+    # Notify the Gmail connector to reload accounts immediately so it picks up the
+    # new/updated refresh token without waiting for the next periodic rescan.
+    gmail_health_port = int(os.environ.get("GMAIL_CONNECTOR_HEALTH_PORT", "40082"))
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            await client.post(f"http://127.0.0.1:{gmail_health_port}/reload")
+        logger.info("Gmail connector reload triggered on port %s", gmail_health_port)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Gmail connector reload ping failed (port %s) — may not be running yet",
+            gmail_health_port,
+        )
+
     success_payload = OAuthCallbackSuccess(
         success=True,
         message="OAuth bootstrap complete. Credentials persisted to database.",
