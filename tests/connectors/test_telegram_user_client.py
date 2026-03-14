@@ -1859,3 +1859,368 @@ class TestResolveReplyTos:
 
         # None result means message not found; original context returned unchanged
         assert [m.id for m in result] == [1]
+
+
+# ---------------------------------------------------------------------------
+# _build_batch_envelope tests
+# ---------------------------------------------------------------------------
+
+
+def _make_batch_msg(
+    msg_id: int,
+    sender_id: int = 42,
+    text: str = "hello",
+    date: datetime | None = None,
+    reply_to_msg_id: int | None = None,
+) -> MagicMock:
+    """Build a mock message suitable for batch envelope tests."""
+    m = MagicMock()
+    m.id = msg_id
+    m.sender_id = sender_id
+    m.message = text
+    m.date = date or datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
+    m.reply_to_msg_id = reply_to_msg_id
+    return m
+
+
+class TestBuildBatchEnvelope:
+    """Tests for TelegramUserClientConnector._build_batch_envelope."""
+
+    def test_schema_version(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Envelope has schema_version 'ingest.v1'."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1)]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        assert envelope["schema_version"] == "ingest.v1"
+
+    def test_sender_identity_is_multiple(self, config: TelegramUserClientConnectorConfig) -> None:
+        """sender.identity is 'multiple' for batch envelopes."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1), _make_batch_msg(2, sender_id=99)]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        assert envelope["sender"]["identity"] == "multiple"
+
+    def test_external_event_id_format(self, config: TelegramUserClientConnectorConfig) -> None:
+        """event.external_event_id = 'batch:<chat_id>:<min_id>-<max_id>'."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(10), _make_batch_msg(20), _make_batch_msg(15)]
+        envelope = connector._build_batch_envelope("chat99", buffered, buffered)
+        assert envelope["event"]["external_event_id"] == "batch:chat99:10-20"
+
+    def test_external_thread_id_is_chat_id(self, config: TelegramUserClientConnectorConfig) -> None:
+        """event.external_thread_id equals the chat_id."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(5)]
+        envelope = connector._build_batch_envelope("chat42", buffered, buffered)
+        assert envelope["event"]["external_thread_id"] == "chat42"
+
+    def test_idempotency_key_format(self, config: TelegramUserClientConnectorConfig) -> None:
+        """control.idempotency_key = 'tg_batch:<chat_id>:<min_id>:<max_id>'."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(3), _make_batch_msg(7)]
+        envelope = connector._build_batch_envelope("chatX", buffered, buffered)
+        assert envelope["control"]["idempotency_key"] == "tg_batch:chatX:3:7"
+
+    def test_normalized_text_contains_only_new_messages(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """normalized_text contains only the buffered (new) messages, not history-only ones."""
+        connector = TelegramUserClientConnector(config)
+        new1 = _make_batch_msg(5, sender_id=10, text="new message one")
+        new2 = _make_batch_msg(6, sender_id=20, text="new message two")
+        history_only = _make_batch_msg(1, sender_id=99, text="old history")
+        buffered = [new1, new2]
+        context = [history_only, new1, new2]
+        envelope = connector._build_batch_envelope("chat1", buffered, context)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "new message one" in normalized
+        assert "new message two" in normalized
+        assert "old history" not in normalized
+
+    def test_normalized_text_uses_sender_prefix(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Each line in normalized_text has '[sender_id]: message' format."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1, sender_id=42, text="hi there")]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "[42]: hi there" in normalized
+
+    def test_normalized_text_sorted_by_message_id(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """New messages in normalized_text appear in ascending message ID order."""
+        connector = TelegramUserClientConnector(config)
+        # Insert out of order
+        buffered = [_make_batch_msg(3, text="third"), _make_batch_msg(1, text="first")]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert normalized.index("first") < normalized.index("third")
+
+    def test_conversation_history_contains_all_context(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """conversation_history includes both history-only and new messages."""
+        connector = TelegramUserClientConnector(config)
+        hist = _make_batch_msg(1, text="history")
+        new1 = _make_batch_msg(5, text="new")
+        buffered = [new1]
+        context = [hist, new1]
+        envelope = connector._build_batch_envelope("chat1", buffered, context)
+        history = envelope["payload"]["conversation_history"]
+        ids_in_history = [e["message_id"] for e in history]
+        assert 1 in ids_in_history
+        assert 5 in ids_in_history
+
+    def test_is_new_flag_distinguishes_buffered_from_history(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """is_new=True for buffered messages, False for history-only messages."""
+        connector = TelegramUserClientConnector(config)
+        hist = _make_batch_msg(1, text="history")
+        new1 = _make_batch_msg(5, text="new")
+        buffered = [new1]
+        context = [hist, new1]
+        envelope = connector._build_batch_envelope("chat1", buffered, context)
+        history = envelope["payload"]["conversation_history"]
+        by_id = {e["message_id"]: e for e in history}
+        assert by_id[1]["is_new"] is False
+        assert by_id[5]["is_new"] is True
+
+    def test_conversation_history_entry_fields(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Each conversation_history entry has the required fields."""
+        connector = TelegramUserClientConnector(config)
+        msg_date = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
+        msg = _make_batch_msg(7, sender_id=55, text="test text", date=msg_date, reply_to_msg_id=3)
+        envelope = connector._build_batch_envelope("chat1", [msg], [msg])
+        entry = envelope["payload"]["conversation_history"][0]
+        assert entry["message_id"] == 7
+        assert entry["sender_id"] == 55
+        assert entry["text"] == "test text"
+        assert entry["timestamp"] == msg_date.isoformat()
+        assert entry["reply_to"] == 3
+
+    def test_conversation_history_sorted_ascending(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """conversation_history entries are ordered by message_id ascending."""
+        connector = TelegramUserClientConnector(config)
+        context = [_make_batch_msg(10), _make_batch_msg(5), _make_batch_msg(8)]
+        buffered = context[:1]  # doesn't matter for sort test
+        envelope = connector._build_batch_envelope("chat1", buffered, context)
+        ids = [e["message_id"] for e in envelope["payload"]["conversation_history"]]
+        assert ids == sorted(ids)
+
+    def test_raw_payload_is_empty_dict(self, config: TelegramUserClientConnectorConfig) -> None:
+        """payload.raw is an empty dict for batch envelopes (too large to include)."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1)]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        assert envelope["payload"]["raw"] == {}
+
+    def test_source_fields_from_config(self, config: TelegramUserClientConnectorConfig) -> None:
+        """source fields are populated from the connector config."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1)]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        assert envelope["source"]["channel"] == config.channel
+        assert envelope["source"]["provider"] == config.provider
+        assert envelope["source"]["endpoint_identity"] == config.endpoint_identity
+
+    def test_timestamp_none_for_missing_date(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """timestamp is None (not a fake current time) when msg.date is absent."""
+        connector = TelegramUserClientConnector(config)
+        msg = _make_batch_msg(1, date=None)
+        msg.date = None  # explicitly clear after helper sets it
+        envelope = connector._build_batch_envelope("chat1", [msg], [msg])
+        entry = envelope["payload"]["conversation_history"][0]
+        assert entry["timestamp"] is None
+
+
+# ---------------------------------------------------------------------------
+# _flush_chat_buffer (full pipeline) tests
+# ---------------------------------------------------------------------------
+
+
+class TestFlushChatBufferPipeline:
+    """Tests for the full _flush_chat_buffer pipeline (bu-jjhd implementation)."""
+
+    def _make_connector_with_mocks(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> tuple[TelegramUserClientConnector, MagicMock]:
+        """Create a connector with a mock Telegram client."""
+        connector = TelegramUserClientConnector(config)
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[])
+        connector._telegram_client = mock_client
+        return connector, mock_client
+
+    async def test_pipeline_submits_envelope_to_ingest(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Full pipeline builds and submits a batch envelope."""
+        connector, _ = self._make_connector_with_mocks(config)
+
+        # Stub _submit_to_ingest
+        submitted: list[dict] = []
+
+        async def fake_submit(env: dict) -> None:
+            submitted.append(env)
+
+        connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
+
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(10, text="hello")]
+        connector._chat_buffers["chat1"] = buf
+
+        await connector._flush_chat_buffer("chat1")
+
+        assert len(submitted) == 1
+        assert submitted[0]["schema_version"] == "ingest.v1"
+        assert submitted[0]["sender"]["identity"] == "multiple"
+
+    async def test_pipeline_advances_checkpoint_after_submit(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Checkpoint advances to max message ID after successful submission."""
+        connector, _ = self._make_connector_with_mocks(config)
+
+        async def fake_submit(env: dict) -> None:
+            pass
+
+        connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
+
+        with patch.object(connector, "_save_checkpoint", new_callable=AsyncMock) as mock_save:
+            buf = ChatBuffer()
+            buf.messages = [_make_batch_msg(5), _make_batch_msg(15), _make_batch_msg(10)]
+            connector._chat_buffers["chat1"] = buf
+
+            await connector._flush_chat_buffer("chat1")
+
+            # Checkpoint should be advanced to 15 (max ID)
+            assert connector._last_message_id == 15
+            mock_save.assert_called_once()
+
+    async def test_pipeline_clears_buffer_atomically(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Buffer is cleared before network calls (atomic swap)."""
+        connector, _ = self._make_connector_with_mocks(config)
+
+        async def fake_submit(env: dict) -> None:
+            pass
+
+        connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
+
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(1)]
+        connector._chat_buffers["chat1"] = buf
+
+        await connector._flush_chat_buffer("chat1")
+
+        # Buffer is empty after flush
+        assert connector._chat_buffers["chat1"].messages == []
+
+    async def test_pipeline_skips_when_buffer_empty(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """No submission occurs when the buffer is empty."""
+        connector, _ = self._make_connector_with_mocks(config)
+
+        submitted: list[dict] = []
+
+        async def fake_submit(env: dict) -> None:
+            submitted.append(env)
+
+        connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
+
+        buf = ChatBuffer()
+        buf.messages = []  # empty buffer
+        connector._chat_buffers["chat1"] = buf
+
+        await connector._flush_chat_buffer("chat1")
+
+        assert submitted == []
+
+    async def test_pipeline_policy_blocked_records_filtered_event(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Policy-blocked batches are recorded as filtered events."""
+        from butlers.ingestion_policy import PolicyDecision
+
+        connector, _ = self._make_connector_with_mocks(config)
+
+        # Block via ingestion policy (action="block" → allowed=False)
+        connector._ingestion_policy.evaluate = MagicMock(
+            return_value=PolicyDecision(action="block", reason="test block")
+        )
+
+        submitted: list[dict] = []
+
+        async def fake_submit(env: dict) -> None:
+            submitted.append(env)
+
+        connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
+
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(1)]
+        connector._chat_buffers["chat1"] = buf
+
+        await connector._flush_chat_buffer("chat1")
+
+        # Nothing submitted
+        assert submitted == []
+
+    async def test_pipeline_discretion_ignore_records_filtered_event(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Discretion IGNORE verdict records a filtered event and skips submission."""
+        from butlers.connectors.discretion import DiscretionResult
+        from butlers.ingestion_policy import PolicyDecision
+
+        connector, _ = self._make_connector_with_mocks(config)
+
+        # Pass policy (action="pass_through" → allowed=True)
+        connector._ingestion_policy.evaluate = MagicMock(
+            return_value=PolicyDecision(action="pass_through", reason="ok")
+        )
+        connector._global_ingestion_policy.evaluate = MagicMock(
+            return_value=PolicyDecision(action="pass_through", reason="ok")
+        )
+
+        # Configure discretion to IGNORE
+        connector._discretion_config.llm_url = "http://localhost:9999/llm"
+        mock_discretion = MagicMock()
+        mock_discretion.evaluate = AsyncMock(
+            return_value=DiscretionResult(verdict="IGNORE", reason="test")
+        )
+        connector._discretion_evaluators["chat1"] = mock_discretion
+
+        submitted: list[dict] = []
+
+        async def fake_submit(env: dict) -> None:
+            submitted.append(env)
+
+        connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
+
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(1, text="some text")]
+        connector._chat_buffers["chat1"] = buf
+
+        await connector._flush_chat_buffer("chat1")
+
+        # Nothing submitted
+        assert submitted == []
+
+    async def test_pipeline_noop_for_unknown_chat(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """No error when flushing a chat_id that has no buffer."""
+        connector, _ = self._make_connector_with_mocks(config)
+        # Should not raise
+        await connector._flush_chat_buffer("nonexistent_chat")

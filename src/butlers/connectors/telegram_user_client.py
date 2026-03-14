@@ -532,29 +532,299 @@ class TelegramUserClientConnector:
         await asyncio.gather(*(self._flush_chat_buffer(chat_id) for chat_id in chat_ids))
 
     async def _flush_chat_buffer(self, chat_id: str) -> None:
-        """Flush a single chat's buffer.
+        """Flush a single chat's buffer through the full batch pipeline.
 
-        STUB IMPLEMENTATION (bu-jwlc): logs the flush and clears the buffer.
-        The real pipeline (history fetch, batch envelope, policy/discretion,
-        Switchboard submission) is implemented in bead bu-jjhd.
+        Pipeline:
+        a. Atomically swap buffer (take messages, reset list).
+        b. Fetch surrounding conversation history.
+        c. Resolve reply-to messages not already in history.
+        d. Build batch ingest.v1 envelope.
+        e. Evaluate ingestion policy (connector + global scope).
+        f. Evaluate discretion on concatenated normalized_text.
+        g. Submit batch envelope via _submit_to_ingest().
+        h. Advance checkpoint to max message ID among buffered messages.
+        i. Record filtered events for policy/discretion rejections.
         """
         buf = self._chat_buffers.get(chat_id)
         if buf is None:
             return
 
         async with buf.lock:
-            messages = buf.messages
-            if not messages:
+            if not buf.messages:
                 return
-            # Atomically swap: take the accumulated messages and reset the list.
+            # a. Atomically swap: take the accumulated messages and reset the list.
+            buffered_messages = buf.messages
             buf.messages = []
             buf.last_flush_ts = time.monotonic()
 
         logger.info(
             "Flushing %d messages for chat %s",
-            len(messages),
+            len(buffered_messages),
             chat_id,
         )
+
+        try:
+            # b. Fetch surrounding conversation history.
+            context_messages = await self._fetch_conversation_history(chat_id, buffered_messages)
+
+            # c. Resolve reply-to messages not already in context.
+            context_messages = await self._resolve_reply_tos(
+                chat_id, buffered_messages, context_messages
+            )
+
+            # d. Build batch ingest.v1 envelope.
+            envelope = self._build_batch_envelope(chat_id, buffered_messages, context_messages)
+
+            # e. Evaluate ingestion policy (connector scope — block/pass_through).
+            _ip_envelope = IngestionEnvelope(
+                source_channel="telegram_user_client",
+                raw_key=chat_id,
+            )
+            _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
+            if not _ip_decision.allowed:
+                logger.debug(
+                    "Ingestion policy blocked batch for chat %s: action=%s reason=%s",
+                    chat_id,
+                    _ip_decision.action,
+                    _ip_decision.reason,
+                )
+                min_id = min(m.id for m in buffered_messages)
+                max_id = max(m.id for m in buffered_messages)
+                batch_event_id = f"batch:{chat_id}:{min_id}-{max_id}"
+                self._filtered_event_buffer.record(
+                    external_message_id=batch_event_id,
+                    source_channel=self._config.channel,
+                    sender_identity="multiple",
+                    subject_or_preview=None,
+                    filter_reason=FilteredEventBuffer.reason_policy_rule(
+                        "connector_rule",
+                        "block",
+                        _ip_decision.matched_rule_type or "unknown",
+                    ),
+                    full_payload=FilteredEventBuffer.full_payload(
+                        channel=self._config.channel,
+                        provider=self._config.provider,
+                        endpoint_identity=self._config.endpoint_identity,
+                        external_event_id=batch_event_id,
+                        external_thread_id=chat_id,
+                        observed_at=datetime.now(UTC).isoformat(),
+                        sender_identity="multiple",
+                        raw={},
+                    ),
+                )
+                await self._flush_and_drain()
+                return
+
+            # e (continued). Evaluate global ingestion policy (skip/metadata_only/...).
+            _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
+            if _gp_decision.action == "skip":
+                logger.debug(
+                    "Global ingestion policy skipped batch for chat %s: reason=%s",
+                    chat_id,
+                    _gp_decision.reason,
+                )
+                min_id = min(m.id for m in buffered_messages)
+                max_id = max(m.id for m in buffered_messages)
+                batch_event_id = f"batch:{chat_id}:{min_id}-{max_id}"
+                self._filtered_event_buffer.record(
+                    external_message_id=batch_event_id,
+                    source_channel=self._config.channel,
+                    sender_identity="multiple",
+                    subject_or_preview=None,
+                    filter_reason=FilteredEventBuffer.reason_policy_rule(
+                        "global_rule",
+                        "skip",
+                        _gp_decision.matched_rule_type or "unknown",
+                    ),
+                    full_payload=FilteredEventBuffer.full_payload(
+                        channel=self._config.channel,
+                        provider=self._config.provider,
+                        endpoint_identity=self._config.endpoint_identity,
+                        external_event_id=batch_event_id,
+                        external_thread_id=chat_id,
+                        observed_at=datetime.now(UTC).isoformat(),
+                        sender_identity="multiple",
+                        raw={},
+                    ),
+                )
+                await self._flush_and_drain()
+                return
+
+            # f. Evaluate discretion on concatenated normalized_text of new messages only.
+            normalized_text: str = envelope["payload"]["normalized_text"]
+            if self._discretion_config.llm_url and normalized_text:
+                if chat_id not in self._discretion_evaluators:
+                    self._discretion_evaluators[chat_id] = DiscretionEvaluator(
+                        source_name=f"tg:{chat_id}",
+                        config=self._discretion_config,
+                    )
+                d_result = await self._discretion_evaluators[chat_id].evaluate(
+                    normalized_text, weight=1.0
+                )
+                if d_result.verdict == "IGNORE":
+                    logger.debug(
+                        "Discretion IGNORE for batch in chat %s",
+                        chat_id,
+                    )
+                    batch_event_id = envelope["event"]["external_event_id"]
+                    self._filtered_event_buffer.record(
+                        external_message_id=batch_event_id,
+                        source_channel=self._config.channel,
+                        sender_identity="multiple",
+                        subject_or_preview=normalized_text[:200] if normalized_text else None,
+                        filter_reason="discretion:IGNORE",
+                        full_payload=FilteredEventBuffer.full_payload(
+                            channel=self._config.channel,
+                            provider=self._config.provider,
+                            endpoint_identity=self._config.endpoint_identity,
+                            external_event_id=batch_event_id,
+                            external_thread_id=chat_id,
+                            observed_at=datetime.now(UTC).isoformat(),
+                            sender_identity="multiple",
+                            raw={},
+                        ),
+                    )
+                    await self._flush_and_drain()
+                    return
+
+            # g. Submit via _submit_to_ingest().
+            await self._submit_to_ingest(envelope)
+
+            # Flush filtered event buffer after successful submission.
+            await self._flush_and_drain()
+
+            # h. Advance checkpoint to max(msg.id for msg in buffered_messages).
+            max_id = max(m.id for m in buffered_messages)
+            if self._last_message_id is None or max_id > self._last_message_id:
+                self._last_message_id = max_id
+                await self._save_checkpoint()
+
+        except Exception as exc:
+            logger.exception(
+                "Failed to flush chat buffer for chat %s",
+                chat_id,
+                extra={"endpoint_identity": self._config.endpoint_identity},
+            )
+            # i. Record error event for the batch failure.
+            min_id_str = str(min((m.id for m in buffered_messages), default=0))
+            max_id_str = str(max((m.id for m in buffered_messages), default=0))
+            batch_event_id = f"batch:{chat_id}:{min_id_str}-{max_id_str}"
+            self._filtered_event_buffer.record(
+                external_message_id=batch_event_id,
+                source_channel=self._config.channel,
+                sender_identity="multiple",
+                subject_or_preview=None,
+                filter_reason=FilteredEventBuffer.reason_submission_error(),
+                full_payload=FilteredEventBuffer.full_payload(
+                    channel=self._config.channel,
+                    provider=self._config.provider,
+                    endpoint_identity=self._config.endpoint_identity,
+                    external_event_id=batch_event_id,
+                    external_thread_id=chat_id,
+                    observed_at=datetime.now(UTC).isoformat(),
+                    sender_identity="multiple",
+                    raw={},
+                ),
+                status="error",
+                error_detail=str(exc),
+            )
+            await self._flush_and_drain()
+
+    def _build_batch_envelope(
+        self,
+        chat_id: str,
+        buffered_messages: list[Any],
+        context_messages: list[Any],
+    ) -> dict[str, Any]:
+        """Build an ingest.v1 batch envelope for a flushed chat buffer.
+
+        The envelope contains:
+        - event.external_event_id: "batch:<chat_id>:<min_id>-<max_id>"
+        - sender.identity: "multiple" (batch contains multiple senders)
+        - payload.normalized_text: concatenated NEW messages with sender prefixes
+        - payload.conversation_history: ordered list of all context messages
+        - control.idempotency_key: "tg_batch:<chat_id>:<min_id>:<max_id>"
+
+        Args:
+            chat_id: The chat identifier string.
+            buffered_messages: The new (flush buffer) messages.
+            context_messages: All context messages (history + buffered), sorted by ID.
+
+        Returns:
+            ingest.v1 envelope dict.
+        """
+        buffered_ids: set[int] = {getattr(m, "id", None) for m in buffered_messages} - {None}
+
+        # Determine min/max message IDs from the buffered (new) messages.
+        msg_ids = [getattr(m, "id", 0) for m in buffered_messages]
+        min_id = min(msg_ids) if msg_ids else 0
+        max_id = max(msg_ids) if msg_ids else 0
+
+        # Build normalized_text: concatenate NEW messages only, with sender prefixes.
+        new_messages_sorted = sorted(
+            (m for m in buffered_messages if getattr(m, "id", None) is not None),
+            key=lambda m: m.id,
+        )
+        text_parts: list[str] = []
+        for msg in new_messages_sorted:
+            sender_id = self._extract_sender_identity(msg)
+            text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
+            text_parts.append(f"[{sender_id}]: {text}")
+        normalized_text = "\n".join(text_parts)
+
+        # Build conversation_history: all context messages, sorted ascending by ID.
+        conversation_history: list[dict[str, Any]] = []
+        for msg in sorted(context_messages, key=lambda m: getattr(m, "id", 0)):
+            msg_id = getattr(msg, "id", None)
+            sender_id = getattr(msg, "sender_id", None)
+            text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
+            msg_date = getattr(msg, "date", None)
+            if msg_date is None:
+                logger.warning(
+                    "Message %s in chat %s has no date; timestamp will be null in envelope",
+                    msg_id,
+                    chat_id,
+                )
+            timestamp = msg_date.isoformat() if msg_date is not None else None
+            reply_to = getattr(msg, "reply_to_msg_id", None)
+            conversation_history.append(
+                {
+                    "message_id": msg_id,
+                    "sender_id": sender_id,
+                    "text": text,
+                    "timestamp": timestamp,
+                    "is_new": msg_id in buffered_ids,
+                    "reply_to": reply_to,
+                }
+            )
+
+        flush_timestamp = datetime.now(UTC).isoformat()
+
+        return {
+            "schema_version": "ingest.v1",
+            "source": {
+                "channel": self._config.channel,
+                "provider": self._config.provider,
+                "endpoint_identity": self._config.endpoint_identity,
+            },
+            "event": {
+                "external_event_id": f"batch:{chat_id}:{min_id}-{max_id}",
+                "external_thread_id": chat_id,
+                "observed_at": flush_timestamp,
+            },
+            "sender": {
+                "identity": "multiple",
+            },
+            "payload": {
+                "raw": {},
+                "normalized_text": normalized_text,
+                "conversation_history": conversation_history,
+            },
+            "control": {
+                "idempotency_key": f"tg_batch:{chat_id}:{min_id}:{max_id}",
+                "policy_tier": "default",
+            },
+        }
 
     # -------------------------------------------------------------------------
     # Internal: Message processing
