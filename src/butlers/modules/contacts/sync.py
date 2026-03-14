@@ -1208,11 +1208,9 @@ class ContactsSyncEngine:
         try:
             if effective_mode == "incremental":
                 try:
-                    contacts, next_cursor, provider_total = (
-                        await self._collect_incremental(
-                            account_id=account_id,
-                            cursor=cursor,
-                        )
+                    contacts, next_cursor, provider_total = await self._collect_incremental(
+                        account_id=account_id,
+                        cursor=cursor,
                     )
                 except ContactsSyncTokenExpiredError:
                     logger.warning(
