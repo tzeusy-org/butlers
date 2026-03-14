@@ -11,6 +11,7 @@ import logging
 import re
 from datetime import UTC, datetime
 
+import anyio
 from fastapi import APIRouter, Depends
 
 from butlers.api.db import DatabaseManager
@@ -191,31 +192,40 @@ async def _check_butler_reachability(
     mgr: MCPClientManager,
     info: ButlerConnectionInfo,
 ) -> Issue | None:
-    """Check if a butler is reachable. Returns an Issue if not."""
-    try:
-        client = await asyncio.wait_for(
-            mgr.get_client(info.name),
-            timeout=_STATUS_TIMEOUT_S,
-        )
-        await asyncio.wait_for(client.ping(), timeout=_STATUS_TIMEOUT_S)
-        return None
-    except (ButlerUnreachableError, TimeoutError):
-        return Issue(
-            severity="critical",
-            type="unreachable",
-            butler=info.name,
-            description=f"Butler '{info.name}' is not responding",
-            link=f"/butlers/{info.name}",
-        )
-    except Exception:
-        logger.warning("Unexpected error checking butler %s", info.name, exc_info=True)
-        return Issue(
-            severity="critical",
-            type="unreachable",
-            butler=info.name,
-            description=f"Butler '{info.name}' check failed unexpectedly",
-            link=f"/butlers/{info.name}",
-        )
+    """Check if a butler is reachable. Returns an Issue if not.
+
+    Retries once on stale-connection errors (evicts the cached client first).
+    """
+    for attempt in range(2):
+        try:
+            client = await asyncio.wait_for(
+                mgr.get_client(info.name),
+                timeout=_STATUS_TIMEOUT_S,
+            )
+            await asyncio.wait_for(client.ping(), timeout=_STATUS_TIMEOUT_S)
+            return None
+        except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+            await mgr.invalidate_client(info.name)
+            if attempt == 0:
+                continue
+        except (ButlerUnreachableError, TimeoutError):
+            break
+        except Exception:
+            logger.warning("Unexpected error checking butler %s", info.name, exc_info=True)
+            return Issue(
+                severity="critical",
+                type="unreachable",
+                butler=info.name,
+                description=f"Butler '{info.name}' check failed unexpectedly",
+                link=f"/butlers/{info.name}",
+            )
+    return Issue(
+        severity="critical",
+        type="unreachable",
+        butler=info.name,
+        description=f"Butler '{info.name}' is not responding",
+        link=f"/butlers/{info.name}",
+    )
 
 
 @router.get("", response_model=ApiResponse[list[Issue]])

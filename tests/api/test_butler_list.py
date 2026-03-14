@@ -138,6 +138,62 @@ class TestProbeButler:
         assert result.name == "flaky"
         assert result.status == "down"
 
+    async def test_probe_stale_connection_retries_and_recovers(self, app):
+        """Stale ClosedResourceError triggers eviction + retry; succeeds on retry."""
+        import anyio
+
+        info = ButlerConnectionInfo(name="stale", port=8500)
+        stale_client = _make_mock_client()
+        stale_client.ping = AsyncMock(side_effect=anyio.ClosedResourceError())
+        fresh_client = _make_mock_client()
+
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(side_effect=[stale_client, fresh_client])
+        mgr.invalidate_client = AsyncMock()
+
+        result = await _probe_butler(mgr, info)
+
+        assert result.status == "ok"
+        mgr.invalidate_client.assert_called_once_with("stale")
+        assert mgr.get_client.call_count == 2
+
+    async def test_probe_stale_connection_still_down_after_retry(self, app):
+        """Both attempts hit ClosedResourceError -> status='down'."""
+        import anyio
+
+        info = ButlerConnectionInfo(name="dead", port=8600)
+        client1 = _make_mock_client()
+        client1.ping = AsyncMock(side_effect=anyio.ClosedResourceError())
+        client2 = _make_mock_client()
+        client2.ping = AsyncMock(side_effect=anyio.ClosedResourceError())
+
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(side_effect=[client1, client2])
+        mgr.invalidate_client = AsyncMock()
+
+        result = await _probe_butler(mgr, info)
+
+        assert result.status == "down"
+        assert mgr.invalidate_client.call_count == 2
+
+    async def test_probe_broken_resource_retries(self, app):
+        """BrokenResourceError also triggers eviction + retry."""
+        import anyio
+
+        info = ButlerConnectionInfo(name="broken-pipe", port=8700)
+        stale_client = _make_mock_client()
+        stale_client.ping = AsyncMock(side_effect=anyio.BrokenResourceError())
+        fresh_client = _make_mock_client()
+
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(side_effect=[stale_client, fresh_client])
+        mgr.invalidate_client = AsyncMock()
+
+        result = await _probe_butler(mgr, info)
+
+        assert result.status == "ok"
+        mgr.invalidate_client.assert_called_once_with("broken-pipe")
+
 
 # ---------------------------------------------------------------------------
 # Full endpoint integration tests (ASGI transport, mocked deps)

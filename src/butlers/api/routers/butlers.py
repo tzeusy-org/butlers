@@ -73,6 +73,9 @@ def _get_db_manager() -> DatabaseManager:
 # ---------------------------------------------------------------------------
 
 
+_STALE_CONNECTION_ERRORS = (anyio.ClosedResourceError, anyio.BrokenResourceError)
+
+
 async def _probe_butler(
     mgr: MCPClientManager,
     info: ButlerConnectionInfo,
@@ -82,23 +85,39 @@ async def _probe_butler(
     Attempts to connect via the MCP client and call ``ping()``.  If the
     butler responds, ``status`` is ``"ok"``.  Any failure (connection
     refused, timeout, unexpected error) results in ``status: "down"``.
+
+    On stale-connection errors (``ClosedResourceError``, ``BrokenResourceError``)
+    the cached client is evicted and a single retry is attempted with a fresh
+    connection before reporting the butler as down.
     """
-    try:
-        client = await asyncio.wait_for(
-            mgr.get_client(info.name),
-            timeout=_STATUS_TIMEOUT_S,
-        )
-        await asyncio.wait_for(client.ping(), timeout=_STATUS_TIMEOUT_S)
-        status = "ok"
-    except ButlerUnreachableError:
-        logger.debug("Butler %s is unreachable", info.name)
-        status = "down"
-    except (TimeoutError, anyio.ClosedResourceError, anyio.BrokenResourceError):
-        logger.debug("Butler %s is unreachable (connection lost or timed out)", info.name)
-        status = "down"
-    except Exception:
-        logger.warning("Unexpected error probing butler %s", info.name, exc_info=True)
-        status = "down"
+    for attempt in range(2):
+        try:
+            client = await asyncio.wait_for(
+                mgr.get_client(info.name),
+                timeout=_STATUS_TIMEOUT_S,
+            )
+            await asyncio.wait_for(client.ping(), timeout=_STATUS_TIMEOUT_S)
+            status = "ok"
+            break
+        except ButlerUnreachableError:
+            logger.debug("Butler %s is unreachable", info.name)
+            status = "down"
+            break
+        except _STALE_CONNECTION_ERRORS:
+            await mgr.invalidate_client(info.name)
+            if attempt == 0:
+                logger.debug("Butler %s: stale connection, retrying with fresh client", info.name)
+                continue
+            logger.debug("Butler %s is unreachable after reconnect attempt", info.name)
+            status = "down"
+        except TimeoutError:
+            logger.debug("Butler %s timed out", info.name)
+            status = "down"
+            break
+        except Exception:
+            logger.warning("Unexpected error probing butler %s", info.name, exc_info=True)
+            status = "down"
+            break
 
     return ButlerSummary(
         name=info.name,
@@ -289,16 +308,26 @@ def _discover_skills(butler_dir: Path) -> list[str]:
 
 
 async def _get_live_status(name: str, mcp_manager: MCPClientManager) -> str:
-    """Attempt to determine a butler's live status via MCP ping."""
-    try:
-        client = await mcp_manager.get_client(name)
-        await client.ping()
-        return "online"
-    except ButlerUnreachableError:
-        return "offline"
-    except Exception:
-        logger.warning("Unexpected error pinging butler %s", name, exc_info=True)
-        return "offline"
+    """Attempt to determine a butler's live status via MCP ping.
+
+    Retries once on stale-connection errors (evicts the cached client first).
+    """
+    for attempt in range(2):
+        try:
+            client = await mcp_manager.get_client(name)
+            await client.ping()
+            return "online"
+        except _STALE_CONNECTION_ERRORS:
+            await mcp_manager.invalidate_client(name)
+            if attempt == 0:
+                continue
+            return "offline"
+        except ButlerUnreachableError:
+            return "offline"
+        except Exception:
+            logger.warning("Unexpected error pinging butler %s", name, exc_info=True)
+            return "offline"
+    return "offline"
 
 
 # ---------------------------------------------------------------------------

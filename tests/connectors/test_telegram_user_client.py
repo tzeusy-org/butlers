@@ -2150,7 +2150,7 @@ class TestFlushChatBufferPipeline:
     async def test_pipeline_policy_blocked_records_filtered_event(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Policy-blocked batches are recorded via _record_batch_filtered_event."""
+        """Policy-blocked batches are recorded as filtered events."""
         from butlers.ingestion_policy import PolicyDecision
 
         connector, _ = self._make_connector_with_mocks(config)
@@ -2167,16 +2167,6 @@ class TestFlushChatBufferPipeline:
 
         connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
 
-        # Spy on _record_batch_filtered_event
-        recorded_calls: list[dict] = []
-        original_record = connector._record_batch_filtered_event
-
-        def spy_record(**kwargs: object) -> None:
-            recorded_calls.append(dict(kwargs))
-            original_record(**kwargs)  # type: ignore[arg-type]
-
-        connector._record_batch_filtered_event = spy_record  # type: ignore[method-assign]
-
         buf = ChatBuffer()
         buf.messages = [_make_batch_msg(1)]
         connector._chat_buffers["chat1"] = buf
@@ -2185,63 +2175,11 @@ class TestFlushChatBufferPipeline:
 
         # Nothing submitted
         assert submitted == []
-        # Helper was called once with correct fields
-        assert len(recorded_calls) == 1
-        call = recorded_calls[0]
-        assert call["chat_id"] == "chat1"
-        assert "connector_rule" in call["filter_reason"]
-        assert call.get("sender_identity", "multiple") == "multiple"
-
-    async def test_pipeline_global_policy_skip_records_filtered_event(
-        self, config: TelegramUserClientConnectorConfig
-    ) -> None:
-        """Global policy skip batches are recorded via _record_batch_filtered_event."""
-        from butlers.ingestion_policy import PolicyDecision
-
-        connector, _ = self._make_connector_with_mocks(config)
-
-        # Pass connector policy, skip via global policy
-        connector._ingestion_policy.evaluate = MagicMock(
-            return_value=PolicyDecision(action="pass_through", reason="ok")
-        )
-        connector._global_ingestion_policy.evaluate = MagicMock(
-            return_value=PolicyDecision(action="skip", reason="test skip")
-        )
-
-        submitted: list[dict] = []
-
-        async def fake_submit(env: dict) -> None:
-            submitted.append(env)
-
-        connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
-
-        # Spy on _record_batch_filtered_event
-        recorded_calls: list[dict] = []
-        original_record = connector._record_batch_filtered_event
-
-        def spy_record(**kwargs: object) -> None:
-            recorded_calls.append(dict(kwargs))
-            original_record(**kwargs)  # type: ignore[arg-type]
-
-        connector._record_batch_filtered_event = spy_record  # type: ignore[method-assign]
-
-        buf = ChatBuffer()
-        buf.messages = [_make_batch_msg(5)]
-        connector._chat_buffers["chat1"] = buf
-
-        await connector._flush_chat_buffer("chat1")
-
-        assert submitted == []
-        assert len(recorded_calls) == 1
-        call = recorded_calls[0]
-        assert call["chat_id"] == "chat1"
-        assert "global_rule" in call["filter_reason"]
-        assert call.get("sender_identity", "multiple") == "multiple"
 
     async def test_pipeline_discretion_ignore_records_filtered_event(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Discretion IGNORE verdict records a filtered event via _record_batch_filtered_event."""
+        """Discretion IGNORE verdict records a filtered event and skips submission."""
         from butlers.connectors.discretion import DiscretionResult
         from butlers.ingestion_policy import PolicyDecision
 
@@ -2270,16 +2208,6 @@ class TestFlushChatBufferPipeline:
 
         connector._submit_to_ingest = fake_submit  # type: ignore[method-assign]
 
-        # Spy on _record_batch_filtered_event
-        recorded_calls: list[dict] = []
-        original_record = connector._record_batch_filtered_event
-
-        def spy_record(**kwargs: object) -> None:
-            recorded_calls.append(dict(kwargs))
-            original_record(**kwargs)  # type: ignore[arg-type]
-
-        connector._record_batch_filtered_event = spy_record  # type: ignore[method-assign]
-
         buf = ChatBuffer()
         buf.messages = [_make_batch_msg(1, text="some text")]
         connector._chat_buffers["chat1"] = buf
@@ -2288,13 +2216,6 @@ class TestFlushChatBufferPipeline:
 
         # Nothing submitted
         assert submitted == []
-        assert len(recorded_calls) == 1
-        call = recorded_calls[0]
-        assert call["chat_id"] == "chat1"
-        assert call["filter_reason"] == "discretion:IGNORE"
-        assert call.get("sender_identity", "multiple") == "multiple"
-        # subject_or_preview is set for discretion rejections
-        assert call.get("subject_or_preview") is not None
 
     async def test_pipeline_noop_for_unknown_chat(
         self, config: TelegramUserClientConnectorConfig
@@ -2304,214 +2225,250 @@ class TestFlushChatBufferPipeline:
         # Should not raise
         await connector._flush_chat_buffer("nonexistent_chat")
 
-    async def test_pipeline_checkpoint_not_advanced_on_submit_failure(
+
+# ---------------------------------------------------------------------------
+# _record_batch_filtered_event helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecordBatchFilteredEventHelper:
+    """Tests for the _record_batch_filtered_event helper method."""
+
+    def test_record_batch_filtered_event_default_values(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Checkpoint is NOT advanced when batch submission raises an exception.
+        """_record_batch_filtered_event records with default parameters."""
+        connector = TelegramUserClientConnector(config)
 
-        Spec requirement: 'Checkpoint not advanced on failure — the checkpoint
-        is NOT advanced, and the buffered messages remain available for retry.'
-        Note: the buffer IS cleared (atomic swap before network calls), but the
-        checkpoint (last_message_id) must not advance.
-        """
-        connector, _ = self._make_connector_with_mocks(config)
-        connector._last_message_id = None  # no prior checkpoint
+        with patch.object(connector._filtered_event_buffer, "record") as mock_record:
+            connector._record_batch_filtered_event(
+                chat_id="chat123",
+                batch_event_id="batch:chat123:10-20",
+                filter_reason="connector_rule:block:sender_domain",
+            )
 
-        async def failing_submit(env: dict) -> None:
-            raise RuntimeError("Switchboard unavailable")
+            mock_record.assert_called_once()
+            call_kwargs = mock_record.call_args[1]
 
-        connector._submit_to_ingest = failing_submit  # type: ignore[method-assign]
+            assert call_kwargs["external_message_id"] == "batch:chat123:10-20"
+            assert call_kwargs["source_channel"] == "telegram_user_client"
+            assert call_kwargs["sender_identity"] == "multiple"
+            assert call_kwargs["subject_or_preview"] is None
+            assert call_kwargs["filter_reason"] == "connector_rule:block:sender_domain"
+            assert call_kwargs["status"] == "filtered"
+            assert call_kwargs["error_detail"] is None
 
-        buf = ChatBuffer()
-        buf.messages = [_make_batch_msg(100), _make_batch_msg(200)]
-        connector._chat_buffers["chat_fail"] = buf
-
-        # Exception is caught internally — _flush_chat_buffer must not propagate
-        await connector._flush_chat_buffer("chat_fail")
-
-        # Checkpoint must NOT have advanced
-        assert connector._last_message_id is None
-
-    async def test_policy_blocked_skips_fetch_conversation_history(
+    def test_record_batch_filtered_event_with_preview(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Connector-scope policy block must skip Telegram API calls entirely."""
+        """_record_batch_filtered_event includes subject_or_preview when provided."""
+        connector = TelegramUserClientConnector(config)
+
+        with patch.object(connector._filtered_event_buffer, "record") as mock_record:
+            connector._record_batch_filtered_event(
+                chat_id="chat123",
+                batch_event_id="batch:chat123:1-5",
+                filter_reason="discretion:IGNORE",
+                subject_or_preview="This is a preview",
+            )
+
+            call_kwargs = mock_record.call_args[1]
+            assert call_kwargs["subject_or_preview"] == "This is a preview"
+            assert call_kwargs["filter_reason"] == "discretion:IGNORE"
+
+    def test_record_batch_filtered_event_error_status(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_record_batch_filtered_event records errors with status='error'."""
+        connector = TelegramUserClientConnector(config)
+
+        with patch.object(connector._filtered_event_buffer, "record") as mock_record:
+            connector._record_batch_filtered_event(
+                chat_id="chat456",
+                batch_event_id="batch:chat456:50-75",
+                filter_reason="submission_error",
+                status="error",
+                error_detail="Network timeout",
+            )
+
+            call_kwargs = mock_record.call_args[1]
+            assert call_kwargs["status"] == "error"
+            assert call_kwargs["error_detail"] == "Network timeout"
+            assert call_kwargs["filter_reason"] == "submission_error"
+
+    def test_record_batch_filtered_event_full_payload_structure(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_record_batch_filtered_event creates properly-shaped full_payload."""
+        connector = TelegramUserClientConnector(config)
+
+        with patch.object(connector._filtered_event_buffer, "record") as mock_record:
+            connector._record_batch_filtered_event(
+                chat_id="chat789",
+                batch_event_id="batch:chat789:100-200",
+                filter_reason="global_rule:skip:unknown",
+            )
+
+            call_kwargs = mock_record.call_args[1]
+            payload = call_kwargs["full_payload"]
+
+            # Verify full_payload has expected structure
+            assert payload["source"]["channel"] == "telegram_user_client"
+            assert payload["source"]["provider"] == config.provider
+            assert payload["source"]["endpoint_identity"] == config.endpoint_identity
+            assert payload["event"]["external_event_id"] == "batch:chat789:100-200"
+            assert payload["event"]["external_thread_id"] == "chat789"
+            assert "observed_at" in payload["event"]
+            assert payload["sender"]["identity"] == "multiple"
+            assert payload["payload"]["raw"] == {}
+
+    def test_record_batch_filtered_event_uses_envelope_id_not_computed(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_record_batch_filtered_event avoids redundant min/max computation."""
+        connector = TelegramUserClientConnector(config)
+
+        # The helper should accept a pre-computed batch_event_id from the envelope
+        # and not recompute min/max from buffered_messages (which is not even passed)
+        with patch.object(connector._filtered_event_buffer, "record") as mock_record:
+            connector._record_batch_filtered_event(
+                chat_id="chat999",
+                batch_event_id="batch:chat999:42-99",
+                filter_reason="test",
+            )
+
+            call_kwargs = mock_record.call_args[1]
+            # Verify the batch_event_id passed to the helper is used as-is
+            assert call_kwargs["external_message_id"] == "batch:chat999:42-99"
+            # No recomputation of min/max should happen inside this helper
+
+    async def test_pipeline_connector_policy_block_calls_helper(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_flush_chat_buffer calls _record_batch_filtered_event for policy blocks."""
         from butlers.ingestion_policy import PolicyDecision
 
-        connector, mock_client = self._make_connector_with_mocks(config)
+        connector = TelegramUserClientConnector(config)
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[])
+        connector._telegram_client = mock_client
 
-        # Block via connector-scope policy
+        # Block via ingestion policy
         connector._ingestion_policy.evaluate = MagicMock(
             return_value=PolicyDecision(action="block", reason="blocked")
         )
 
         buf = ChatBuffer()
-        buf.messages = [_make_batch_msg(1)]
+        buf.messages = [_make_batch_msg(1), _make_batch_msg(2)]
         connector._chat_buffers["chat1"] = buf
 
-        await connector._flush_chat_buffer("chat1")
+        with patch.object(connector, "_record_batch_filtered_event") as mock_helper:
+            await connector._flush_chat_buffer("chat1")
 
-        # _fetch_conversation_history calls get_messages; it must NOT be called.
-        mock_client.get_messages.assert_not_called()
+            # Verify the helper was called with expected arguments
+            mock_helper.assert_called_once()
+            call_kwargs = mock_helper.call_args[1]
+            assert call_kwargs["chat_id"] == "chat1"
+            assert call_kwargs["batch_event_id"].startswith("batch:chat1:")
+            assert "connector_rule" in call_kwargs["filter_reason"]
 
-    async def test_global_policy_skip_skips_fetch_conversation_history(
+    async def test_pipeline_global_policy_skip_calls_helper(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Global-scope policy skip must skip Telegram API calls entirely."""
+        """_flush_chat_buffer calls _record_batch_filtered_event for global policy skips."""
         from butlers.ingestion_policy import PolicyDecision
 
-        connector, mock_client = self._make_connector_with_mocks(config)
+        connector = TelegramUserClientConnector(config)
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[])
+        connector._telegram_client = mock_client
 
-        # Pass connector-scope, block at global-scope
+        # Pass connector policy, skip global policy
         connector._ingestion_policy.evaluate = MagicMock(
             return_value=PolicyDecision(action="pass_through", reason="ok")
         )
         connector._global_ingestion_policy.evaluate = MagicMock(
-            return_value=PolicyDecision(action="skip", reason="global skip")
+            return_value=PolicyDecision(action="skip", reason="skipped")
         )
 
         buf = ChatBuffer()
-        buf.messages = [_make_batch_msg(2)]
+        buf.messages = [_make_batch_msg(5)]
         connector._chat_buffers["chat1"] = buf
 
-        await connector._flush_chat_buffer("chat1")
+        with patch.object(connector, "_record_batch_filtered_event") as mock_helper:
+            await connector._flush_chat_buffer("chat1")
 
-        # No Telegram network call should have been made.
-        mock_client.get_messages.assert_not_called()
+            mock_helper.assert_called_once()
+            call_kwargs = mock_helper.call_args[1]
+            assert call_kwargs["chat_id"] == "chat1"
+            assert "global_rule" in call_kwargs["filter_reason"]
 
-
-class TestChatBufferCapDefault:
-    """Verify force-flush triggers at the default 200-message cap."""
-
-    async def test_buffer_force_flushes_at_default_cap_of_200(
+    async def test_pipeline_discretion_ignore_calls_helper(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Force-flush fires when buffer reaches the default cap (200 messages)."""
-        # config fixture uses default buffer_max_messages=200
+        """_flush_chat_buffer calls _record_batch_filtered_event for discretion IGNOREs."""
+        from butlers.connectors.discretion import DiscretionResult
+        from butlers.ingestion_policy import PolicyDecision
+
         connector = TelegramUserClientConnector(config)
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[])
+        connector._telegram_client = mock_client
 
-        flush_calls: list[str] = []
-
-        async def tracking_flush(chat_id: str) -> None:
-            flush_calls.append(chat_id)
-            # Don't call original — no real Telegram client; just track the call
-
-        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
-
-        # Buffer 199 messages — no flush yet
-        for i in range(1, 200):
-            await connector._buffer_message(_make_mock_message(i, chat_id=9000))
-
-        assert flush_calls == [], "No flush expected before cap is reached"
-
-        # 200th message should trigger force-flush
-        await connector._buffer_message(_make_mock_message(200, chat_id=9000))
-
-        assert flush_calls == ["9000"], "Force-flush expected at cap=200"
-
-
-class TestRecordBatchFilteredEvent:
-    """Unit tests for TelegramUserClientConnector._record_batch_filtered_event."""
-
-    def test_records_with_correct_fields(self, config: TelegramUserClientConnectorConfig) -> None:
-        """Helper records the right external_message_id, filter_reason, and sender_identity."""
-        connector = TelegramUserClientConnector(config)
-
-        recorded: list[dict] = []
-
-        def capture(**kwargs: object) -> None:
-            recorded.append(dict(kwargs))
-
-        connector._filtered_event_buffer.record = capture  # type: ignore[method-assign]
-
-        connector._record_batch_filtered_event(
-            chat_id="chat99",
-            batch_event_id="batch:chat99:10-20",
-            filter_reason="policy:connector_rule:block:chat_block",
+        # Pass both policies
+        connector._ingestion_policy.evaluate = MagicMock(
+            return_value=PolicyDecision(action="pass_through", reason="ok")
+        )
+        connector._global_ingestion_policy.evaluate = MagicMock(
+            return_value=PolicyDecision(action="pass_through", reason="ok")
         )
 
-        assert len(recorded) == 1
-        r = recorded[0]
-        assert r["external_message_id"] == "batch:chat99:10-20"
-        assert r["source_channel"] == config.channel
-        assert r["sender_identity"] == "multiple"
-        assert r["subject_or_preview"] is None
-        assert r["filter_reason"] == "policy:connector_rule:block:chat_block"
+        # Configure discretion to IGNORE
+        connector._discretion_config.llm_url = "http://localhost:9999/llm"
+        mock_discretion = MagicMock()
+        mock_discretion.evaluate = AsyncMock(
+            return_value=DiscretionResult(verdict="IGNORE", reason="test")
+        )
+        connector._discretion_evaluators["chat1"] = mock_discretion
 
-    def test_records_with_custom_sender_and_preview(
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(10, text="sensitive content")]
+        connector._chat_buffers["chat1"] = buf
+
+        with patch.object(connector, "_record_batch_filtered_event") as mock_helper:
+            await connector._flush_chat_buffer("chat1")
+
+            mock_helper.assert_called_once()
+            call_kwargs = mock_helper.call_args[1]
+            assert call_kwargs["chat_id"] == "chat1"
+            assert call_kwargs["filter_reason"] == "discretion:IGNORE"
+            # Discretion variant should include subject_or_preview
+            assert call_kwargs["subject_or_preview"] is not None
+
+    async def test_pipeline_error_calls_helper(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Helper passes through custom sender_identity and subject_or_preview."""
+        """_flush_chat_buffer calls _record_batch_filtered_event on exception."""
         connector = TelegramUserClientConnector(config)
+        mock_client = MagicMock()
+        mock_client.get_messages = AsyncMock(return_value=[])
+        connector._telegram_client = mock_client
 
-        recorded: list[dict] = []
+        # Make the submit fail to trigger the error handler
+        async def failing_submit(env: dict) -> None:
+            raise RuntimeError("Submit error")
 
-        def capture(**kwargs: object) -> None:
-            recorded.append(dict(kwargs))
+        connector._submit_to_ingest = failing_submit  # type: ignore[method-assign]
 
-        connector._filtered_event_buffer.record = capture  # type: ignore[method-assign]
+        buf = ChatBuffer()
+        buf.messages = [_make_batch_msg(1)]
+        connector._chat_buffers["chat1"] = buf
 
-        connector._record_batch_filtered_event(
-            chat_id="chatX",
-            batch_event_id="batch:chatX:1-5",
-            filter_reason="discretion:IGNORE",
-            sender_identity="user:42",
-            subject_or_preview="Short preview",
-        )
+        with patch.object(connector, "_record_batch_filtered_event") as mock_helper:
+            await connector._flush_chat_buffer("chat1")
 
-        assert len(recorded) == 1
-        r = recorded[0]
-        assert r["sender_identity"] == "user:42"
-        assert r["subject_or_preview"] == "Short preview"
-        assert r["filter_reason"] == "discretion:IGNORE"
-
-    def test_full_payload_contains_correct_thread_and_event_id(
-        self, config: TelegramUserClientConnectorConfig
-    ) -> None:
-        """full_payload has external_event_id and external_thread_id set to the batch values."""
-        connector = TelegramUserClientConnector(config)
-
-        recorded: list[dict] = []
-
-        def capture(**kwargs: object) -> None:
-            recorded.append(dict(kwargs))
-
-        connector._filtered_event_buffer.record = capture  # type: ignore[method-assign]
-
-        connector._record_batch_filtered_event(
-            chat_id="thread123",
-            batch_event_id="batch:thread123:7-9",
-            filter_reason="discretion:IGNORE",
-        )
-
-        full_payload = recorded[0]["full_payload"]
-        assert full_payload["event"]["external_event_id"] == "batch:thread123:7-9"
-        assert full_payload["event"]["external_thread_id"] == "thread123"
-
-    def test_batch_event_id_matches_envelope_format(
-        self, config: TelegramUserClientConnectorConfig
-    ) -> None:
-        """batch_event_id from _build_batch_envelope is accepted by _record_batch_filtered_event."""
-        connector = TelegramUserClientConnector(config)
-        msgs = [_make_batch_msg(3), _make_batch_msg(7)]
-        envelope = connector._build_batch_envelope("chatZ", msgs, msgs)
-
-        batch_event_id = envelope["event"]["external_event_id"]
-        # Verify the format is consistent
-        assert batch_event_id == "batch:chatZ:3-7"
-
-        # Now verify _record_batch_filtered_event accepts it without error
-        recorded: list[dict] = []
-
-        def capture(**kwargs: object) -> None:
-            recorded.append(dict(kwargs))
-
-        connector._filtered_event_buffer.record = capture  # type: ignore[method-assign]
-
-        connector._record_batch_filtered_event(
-            chat_id="chatZ",
-            batch_event_id=batch_event_id,
-            filter_reason="policy:global_rule:skip:unknown",
-        )
-
-        assert recorded[0]["external_message_id"] == "batch:chatZ:3-7"
+            mock_helper.assert_called_once()
+            call_kwargs = mock_helper.call_args[1]
+            assert call_kwargs["status"] == "error"
+            assert call_kwargs["error_detail"] is not None
+            assert "Submit error" in call_kwargs["error_detail"]

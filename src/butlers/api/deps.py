@@ -166,6 +166,10 @@ class MCPClientManager:
             except Exception:
                 logger.warning("Error closing client for butler: %s", butler_name, exc_info=True)
 
+    async def invalidate_client(self, butler_name: str) -> None:
+        """Evict a cached client, e.g. after a stale-connection error."""
+        await self._close_client(butler_name)
+
     async def close(self) -> None:
         """Close all managed client connections."""
         names = list(self._clients.keys())

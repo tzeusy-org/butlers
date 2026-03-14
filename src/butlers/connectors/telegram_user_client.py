@@ -68,7 +68,7 @@ from butlers.credential_store import (
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
-from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator, PolicyDecision
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -531,16 +531,59 @@ class TelegramUserClientConnector:
         logger.info("Flushing all %d chat buffers (%s)", len(chat_ids), reason)
         await asyncio.gather(*(self._flush_chat_buffer(chat_id) for chat_id in chat_ids))
 
+    def _record_batch_filtered_event(
+        self,
+        chat_id: str,
+        batch_event_id: str,
+        filter_reason: str,
+        sender_identity: str = "multiple",
+        subject_or_preview: str | None = None,
+        status: str = "filtered",
+        error_detail: str | None = None,
+    ) -> None:
+        """Record a filtered or errored batch event in the filtered event buffer.
+
+        This helper centralizes the duplicated logic of recording batch events
+        across policy rejections, discretion rejections, and error cases.
+
+        Args:
+            chat_id: The chat identifier (used as external_thread_id).
+            batch_event_id: The batch event ID (e.g. "batch:<chat_id>:<min_id>-<max_id>").
+            filter_reason: Reason for filtering (e.g. policy rule or discretion verdict).
+            sender_identity: Sender identity string (default "multiple" for batches).
+            subject_or_preview: Optional subject or preview text.
+            status: Row status; default "filtered", use "error" for processing failures.
+            error_detail: Optional exception message or validation error text.
+        """
+        self._filtered_event_buffer.record(
+            external_message_id=batch_event_id,
+            source_channel=self._config.channel,
+            sender_identity=sender_identity,
+            subject_or_preview=subject_or_preview,
+            filter_reason=filter_reason,
+            full_payload=FilteredEventBuffer.full_payload(
+                channel=self._config.channel,
+                provider=self._config.provider,
+                endpoint_identity=self._config.endpoint_identity,
+                external_event_id=batch_event_id,
+                external_thread_id=chat_id,
+                observed_at=datetime.now(UTC).isoformat(),
+                sender_identity=sender_identity,
+                raw={},
+            ),
+            status=status,
+            error_detail=error_detail,
+        )
+
     async def _flush_chat_buffer(self, chat_id: str) -> None:
         """Flush a single chat's buffer through the full batch pipeline.
 
         Pipeline:
         a. Atomically swap buffer (take messages, reset list).
-        b. Evaluate ingestion policy (connector + global scope) — before any
-           Telegram API calls so blocked chats skip network I/O entirely.
-        c. Fetch surrounding conversation history.
-        d. Resolve reply-to messages not already in history.
-        e. Build batch ingest.v1 envelope.
+        b. Fetch surrounding conversation history.
+        c. Resolve reply-to messages not already in history.
+        d. Build batch ingest.v1 envelope.
+        e. Evaluate ingestion policy (connector + global scope).
         f. Evaluate discretion on concatenated normalized_text.
         g. Submit batch envelope via _submit_to_ingest().
         h. Advance checkpoint to max message ID among buffered messages.
@@ -564,61 +607,65 @@ class TelegramUserClientConnector:
             chat_id,
         )
 
-        # b. Evaluate ingestion policy before any Telegram API calls so that
-        # policy-blocked chats do not consume Telegram rate-limit quota.
-        # source_channel and chat_id are already known at this point.
-        _ip_envelope = IngestionEnvelope(
-            source_channel="telegram_user_client",
-            raw_key=chat_id,
-        )
-
-        async def _record_policy_rejection(decision: PolicyDecision, scope: str) -> None:
-            """Log and record a filtered event for a policy-rejected batch."""
-            logger.debug(
-                "Ingestion policy (%s) %s batch for chat %s: reason=%s",
-                scope,
-                decision.action,
-                chat_id,
-                decision.reason,
-            )
-            min_id = min(m.id for m in buffered_messages)
-            max_id = max(m.id for m in buffered_messages)
-            batch_event_id = f"batch:{chat_id}:{min_id}-{max_id}"
-            self._record_batch_filtered_event(
-                chat_id=chat_id,
-                batch_event_id=batch_event_id,
-                filter_reason=FilteredEventBuffer.reason_policy_rule(
-                    f"{scope}_rule",
-                    decision.action,
-                    decision.matched_rule_type or "unknown",
-                ),
-            )
-            await self._flush_and_drain()
-
-        # b1. Connector-scope policy (block/pass_through).
-        _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
-        if not _ip_decision.allowed:
-            await _record_policy_rejection(_ip_decision, "connector")
-            return
-
-        # b2. Global ingestion policy (skip/metadata_only/...).
-        _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
-        if _gp_decision.action == "skip":
-            await _record_policy_rejection(_gp_decision, "global")
-            return
-
         try:
-            # c. Fetch surrounding conversation history.
+            # b. Fetch surrounding conversation history.
             context_messages = await self._fetch_conversation_history(chat_id, buffered_messages)
 
-            # d. Resolve reply-to messages not already in context.
+            # c. Resolve reply-to messages not already in context.
             context_messages = await self._resolve_reply_tos(
                 chat_id, buffered_messages, context_messages
             )
 
-            # e. Build batch ingest.v1 envelope.
+            # d. Build batch ingest.v1 envelope.
             envelope = self._build_batch_envelope(chat_id, buffered_messages, context_messages)
-            batch_event_id: str = envelope["event"]["external_event_id"]
+
+            # Extract batch event ID from the envelope (already computed there).
+            batch_event_id = envelope["event"]["external_event_id"]
+
+            # e. Evaluate ingestion policy (connector scope — block/pass_through).
+            _ip_envelope = IngestionEnvelope(
+                source_channel="telegram_user_client",
+                raw_key=chat_id,
+            )
+            _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
+            if not _ip_decision.allowed:
+                logger.debug(
+                    "Ingestion policy blocked batch for chat %s: action=%s reason=%s",
+                    chat_id,
+                    _ip_decision.action,
+                    _ip_decision.reason,
+                )
+                self._record_batch_filtered_event(
+                    chat_id=chat_id,
+                    batch_event_id=batch_event_id,
+                    filter_reason=FilteredEventBuffer.reason_policy_rule(
+                        "connector_rule",
+                        "block",
+                        _ip_decision.matched_rule_type or "unknown",
+                    ),
+                )
+                await self._flush_and_drain()
+                return
+
+            # e (continued). Evaluate global ingestion policy (skip/metadata_only/...).
+            _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
+            if _gp_decision.action == "skip":
+                logger.debug(
+                    "Global ingestion policy skipped batch for chat %s: reason=%s",
+                    chat_id,
+                    _gp_decision.reason,
+                )
+                self._record_batch_filtered_event(
+                    chat_id=chat_id,
+                    batch_event_id=batch_event_id,
+                    filter_reason=FilteredEventBuffer.reason_policy_rule(
+                        "global_rule",
+                        "skip",
+                        _gp_decision.matched_rule_type or "unknown",
+                    ),
+                )
+                await self._flush_and_drain()
+                return
 
             # f. Evaluate discretion on concatenated normalized_text of new messages only.
             normalized_text: str = envelope["payload"]["normalized_text"]
@@ -667,71 +714,14 @@ class TelegramUserClientConnector:
             min_id_str = str(min((m.id for m in buffered_messages), default=0))
             max_id_str = str(max((m.id for m in buffered_messages), default=0))
             batch_event_id = f"batch:{chat_id}:{min_id_str}-{max_id_str}"
-            self._filtered_event_buffer.record(
-                external_message_id=batch_event_id,
-                source_channel=self._config.channel,
-                sender_identity="multiple",
-                subject_or_preview=None,
+            self._record_batch_filtered_event(
+                chat_id=chat_id,
+                batch_event_id=batch_event_id,
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
-                full_payload=FilteredEventBuffer.full_payload(
-                    channel=self._config.channel,
-                    provider=self._config.provider,
-                    endpoint_identity=self._config.endpoint_identity,
-                    external_event_id=batch_event_id,
-                    external_thread_id=chat_id,
-                    observed_at=datetime.now(UTC).isoformat(),
-                    sender_identity="multiple",
-                    raw={},
-                ),
                 status="error",
                 error_detail=str(exc),
             )
             await self._flush_and_drain()
-
-    def _record_batch_filtered_event(
-        self,
-        *,
-        chat_id: str,
-        batch_event_id: str,
-        filter_reason: str,
-        sender_identity: str = "multiple",
-        subject_or_preview: str | None = None,
-    ) -> None:
-        """Record a filtered-event entry for a batch that was rejected.
-
-        Centralises the boilerplate shared by the three rejection branches in
-        ``_flush_chat_buffer`` (connector-scope policy block, global policy
-        skip, and discretion IGNORE) so each branch only needs to supply the
-        varying fields.
-
-        Args:
-            chat_id: The chat identifier string (used as ``external_thread_id``).
-            batch_event_id: Pre-computed batch event ID, typically
-                ``envelope["event"]["external_event_id"]``.
-            filter_reason: Reason string — use the ``FilteredEventBuffer.reason_*``
-                helpers or a plain string such as ``"discretion:IGNORE"``.
-            sender_identity: Sender identity string; defaults to ``"multiple"``
-                for batch rejections.
-            subject_or_preview: Optional short preview of the batch content
-                (e.g. truncated ``normalized_text``).
-        """
-        self._filtered_event_buffer.record(
-            external_message_id=batch_event_id,
-            source_channel=self._config.channel,
-            sender_identity=sender_identity,
-            subject_or_preview=subject_or_preview,
-            filter_reason=filter_reason,
-            full_payload=FilteredEventBuffer.full_payload(
-                channel=self._config.channel,
-                provider=self._config.provider,
-                endpoint_identity=self._config.endpoint_identity,
-                external_event_id=batch_event_id,
-                external_thread_id=chat_id,
-                observed_at=datetime.now(UTC).isoformat(),
-                sender_identity=sender_identity,
-                raw={},
-            ),
-        )
 
     def _build_batch_envelope(
         self,
