@@ -336,19 +336,13 @@ class DiscretionConfig:
             self._env("DISCRETION_WINDOW_SIZE", str(_DEFAULT_WINDOW_SIZE), env_prefix)
         )
         self.window_seconds = float(
-            self._env(
-                "DISCRETION_WINDOW_SECONDS", str(_DEFAULT_WINDOW_SECONDS), env_prefix
-            )
+            self._env("DISCRETION_WINDOW_SECONDS", str(_DEFAULT_WINDOW_SECONDS), env_prefix)
         )
         self.weight_bypass = float(
-            self._env(
-                "DISCRETION_WEIGHT_BYPASS", str(_DEFAULT_WEIGHT_BYPASS), env_prefix
-            )
+            self._env("DISCRETION_WEIGHT_BYPASS", str(_DEFAULT_WEIGHT_BYPASS), env_prefix)
         )
         self.weight_fail_open = float(
-            self._env(
-                "DISCRETION_WEIGHT_FAIL_OPEN", str(_DEFAULT_WEIGHT_FAIL_OPEN), env_prefix
-            )
+            self._env("DISCRETION_WEIGHT_FAIL_OPEN", str(_DEFAULT_WEIGHT_FAIL_OPEN), env_prefix)
         )
 
     @staticmethod
@@ -415,9 +409,7 @@ class DiscretionEvaluator:
             ...
     """
 
-    def __init__(
-        self, source_name: str, config: DiscretionConfig | None = None
-    ) -> None:
+    def __init__(self, source_name: str, config: DiscretionConfig | None = None) -> None:
         self._source = source_name
         self._config = config or DiscretionConfig()
         self._window = ContextWindow(
@@ -495,8 +487,7 @@ class DiscretionEvaluator:
             )
         except (TimeoutError, httpx.TimeoutException):
             logger.warning(
-                "Discretion LLM timed out after %.1fs for source=%s "
-                "(weight=%.2f) — defaulting %s",
+                "Discretion LLM timed out after %.1fs for source=%s (weight=%.2f) — defaulting %s",
                 self._config.timeout_s,
                 self._source,
                 weight,
@@ -509,8 +500,7 @@ class DiscretionEvaluator:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Discretion LLM error for source=%s (weight=%.2f): %s "
-                "— defaulting %s",
+                "Discretion LLM error for source=%s (weight=%.2f): %s — defaulting %s",
                 self._source,
                 weight,
                 exc,
@@ -526,8 +516,7 @@ class DiscretionEvaluator:
             verdict, reason = _parse_verdict(raw)
         except ValueError:
             logger.warning(
-                "Discretion LLM unparseable response for source=%s: %r "
-                "— defaulting %s",
+                "Discretion LLM unparseable response for source=%s: %r — defaulting %s",
                 self._source,
                 raw[:200],
                 fail_verdict,

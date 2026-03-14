@@ -330,7 +330,8 @@ Core API response models for the connectors dashboard and API endpoints.
 
 #### Scenario: ConnectorDetail model
 - **WHEN** a connector detail response is serialized
-- **THEN** it extends ConnectorSummary with: `instance_id`, `registered_via`, `checkpoint`, `counters`
+- **THEN** it extends ConnectorSummary with: `instance_id`, `registered_via`, `checkpoint`, `counters`, `settings`
+- **AND** `settings` is an optional JSONB dict containing runtime-configurable connector settings (e.g. discretion thresholds)
 
 #### Scenario: ConnectorStats model
 - **WHEN** a statistics response is serialized
@@ -339,6 +340,70 @@ Core API response models for the connectors dashboard and API endpoints.
 #### Scenario: ConnectorFanoutEntry model
 - **WHEN** a fanout response is serialized
 - **THEN** it includes: `connector_type`, `endpoint_identity`, `targets` (butler_name → message_count)
+
+### Requirement: Connector Settings API
+Runtime-configurable connector settings are stored in `connector_registry.settings` (JSONB) and managed via a dashboard API endpoint.
+
+#### Scenario: Settings storage
+- **WHEN** a connector has runtime-configurable settings
+- **THEN** they are stored in the `settings` JSONB column of `connector_registry`
+- **AND** NULL means no settings overrides; non-NULL holds a JSON object
+- **AND** settings are shallow-merged on update (top-level keys replaced, not deep-merged)
+
+#### Scenario: Settings update API
+- **WHEN** a PATCH request is sent to `/connectors/{connector_type}/{endpoint_identity}/settings`
+- **THEN** the body `{"settings": {...}}` is shallow-merged into the existing settings
+- **AND** the updated `ConnectorEntry` is returned
+- **AND** settings take effect on next connector restart (same semantics as cursor updates)
+
+#### Scenario: Discretion settings schema
+- **WHEN** a connector uses the shared discretion layer
+- **THEN** its `settings.discretion` object may contain: `weight_bypass` (float, default 1.0), `weight_fail_open` (float, default 0.5)
+- **AND** these thresholds are editable from the connector detail page in the dashboard
+
+### Requirement: Shared Discretion Layer
+An LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE). Used by connectors that need noise filtering before Switchboard ingestion.
+
+#### Scenario: Discretion module location
+- **WHEN** a connector integrates the discretion layer
+- **THEN** it imports from `butlers.connectors.discretion` (shared module, not connector-specific)
+- **AND** it uses `DiscretionConfig(env_prefix="{CONNECTOR_PREFIX}")` for per-connector env var resolution with fallback to `CONNECTOR_DISCRETION_*`
+
+#### Scenario: Discretion environment variables
+- **WHEN** a connector uses the discretion layer
+- **THEN** the following env vars are read (with `{PREFIX}` per connector, fallback to `CONNECTOR_`): `{PREFIX}DISCRETION_LLM_URL`, `{PREFIX}DISCRETION_LLM_MODEL` (default: `gemma3:12b`), `{PREFIX}DISCRETION_TIMEOUT_S` (default: 3.0), `{PREFIX}DISCRETION_WINDOW_SIZE` (default: 10), `{PREFIX}DISCRETION_WINDOW_SECONDS` (default: 300), `{PREFIX}DISCRETION_WEIGHT_BYPASS` (default: 1.0), `{PREFIX}DISCRETION_WEIGHT_FAIL_OPEN` (default: 0.5)
+
+#### Scenario: Fail-open by default
+- **WHEN** the discretion LLM call fails (timeout, connection error, malformed response)
+- **THEN** the default behaviour depends on the sender's weight: weight >= `weight_fail_open` threshold → FORWARD (fail-open), weight < threshold → IGNORE (fail-closed)
+
+### Requirement: Identity-Based Discretion Weight
+The discretion layer supports sender-relationship weighting that controls bypass and fail behaviour.
+
+#### Scenario: Weight tiers
+- **WHEN** a sender's identity is resolved via `shared.contact_info → shared.contacts → shared.entities`
+- **THEN** the weight is determined by the entity's roles: `owner` → 1.0, `family` or `close-friends` → 0.9, known contact (any role) → 0.7, unknown sender (no contact match) → 0.3
+
+#### Scenario: Weight bypass
+- **WHEN** the sender's weight >= `weight_bypass` threshold (default 1.0)
+- **THEN** the discretion LLM is skipped entirely and the message always FORWARDs
+- **AND** the message is still appended to the context window for future evaluations
+
+#### Scenario: Weight fail behaviour
+- **WHEN** the sender's weight >= `weight_fail_open` threshold (default 0.5)
+- **THEN** LLM errors default to FORWARD (fail-open)
+- **WHEN** the sender's weight < `weight_fail_open` threshold
+- **THEN** LLM errors default to IGNORE (fail-closed)
+
+#### Scenario: ContactWeightResolver
+- **WHEN** a connector has database access
+- **THEN** it uses `ContactWeightResolver(db_pool)` to resolve sender identity to a weight
+- **AND** results are cached in-memory with a configurable TTL (default 5 minutes)
+- **AND** DB errors return the `unknown` tier weight (fail-safe)
+
+#### Scenario: Voice connectors without identity
+- **WHEN** a connector has no sender identity (e.g. live-listener with ambient audio)
+- **THEN** all messages use weight=1.0 (owner-equivalent, preserving fail-open behaviour)
 
 ### Requirement: Authentication and Token Management
 Connector authentication with the Switchboard uses bearer tokens with scope enforcement.

@@ -291,9 +291,7 @@ class TestDiscretionEvaluatorHappyPath:
             "butlers.connectors.discretion._call_llm",
             new=AsyncMock(return_value="IGNORE"),
         ):
-            result = await evaluator.evaluate(
-                "Yeah I know right, it was crazy", weight=0.7
-            )
+            result = await evaluator.evaluate("Yeah I know right, it was crazy", weight=0.7)
         assert result.verdict == "IGNORE"
         assert result.reason == ""
         assert result.is_fail_open is False
@@ -475,7 +473,7 @@ class TestDiscretionEvaluatorWindowIntegration:
         ):
             await evaluator.evaluate("good morning")
 
-        assert evaluator.window.entries[0].source =="bedroom"
+        assert evaluator.window.entries[0].source == "bedroom"
 
     async def test_timestamp_stored_in_window(self, config: DiscretionConfig) -> None:
         evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
@@ -520,9 +518,7 @@ class TestDiscretionEvaluatorWeight:
         assert result.is_fail_open is False
         mock.assert_not_called()
 
-    async def test_weight_bypass_still_appends_to_window(
-        self, config: DiscretionConfig
-    ) -> None:
+    async def test_weight_bypass_still_appends_to_window(self, config: DiscretionConfig) -> None:
         """Bypassed messages should still appear in context window."""
         evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
         with patch(
@@ -561,9 +557,7 @@ class TestDiscretionEvaluatorWeight:
         assert result.is_fail_open is False
         assert "fail-closed" in result.reason
 
-    async def test_low_weight_timeout_fails_closed(
-        self, config: DiscretionConfig
-    ) -> None:
+    async def test_low_weight_timeout_fails_closed(self, config: DiscretionConfig) -> None:
         """Timeout with low weight should fail-closed."""
         import asyncio
 
@@ -583,9 +577,7 @@ class TestDiscretionEvaluatorWeight:
         assert "fail-closed" in result.reason
         assert "timeout" in result.reason
 
-    async def test_low_weight_parse_error_fails_closed(
-        self, config: DiscretionConfig
-    ) -> None:
+    async def test_low_weight_parse_error_fails_closed(self, config: DiscretionConfig) -> None:
         """Parse error with low weight should fail-closed."""
         evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
         with patch(
@@ -598,9 +590,7 @@ class TestDiscretionEvaluatorWeight:
         assert "fail-closed" in result.reason
         assert "parse_error" in result.reason
 
-    async def test_low_weight_normal_verdict_still_honored(
-        self, config: DiscretionConfig
-    ) -> None:
+    async def test_low_weight_normal_verdict_still_honored(self, config: DiscretionConfig) -> None:
         """When LLM succeeds, weight doesn't override the verdict."""
         evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
         with patch(
@@ -631,9 +621,7 @@ class TestContactWeightResolver:
         weight = await resolver.resolve("telegram", "123")
         assert weight == 1.0
 
-    async def test_family_gets_inner_circle_weight(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_family_gets_inner_circle_weight(self, mock_pool: AsyncMock) -> None:
         from butlers.connectors.discretion import ContactWeightResolver
 
         mock_pool.fetchrow.return_value = {"roles": ["family"]}
@@ -641,9 +629,7 @@ class TestContactWeightResolver:
         weight = await resolver.resolve("telegram", "456")
         assert weight == 0.9
 
-    async def test_close_friends_gets_inner_circle_weight(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_close_friends_gets_inner_circle_weight(self, mock_pool: AsyncMock) -> None:
         from butlers.connectors.discretion import ContactWeightResolver
 
         mock_pool.fetchrow.return_value = {"roles": ["close-friends"]}
@@ -651,9 +637,7 @@ class TestContactWeightResolver:
         weight = await resolver.resolve("telegram", "789")
         assert weight == 0.9
 
-    async def test_known_contact_gets_known_weight(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_known_contact_gets_known_weight(self, mock_pool: AsyncMock) -> None:
         from butlers.connectors.discretion import ContactWeightResolver
 
         mock_pool.fetchrow.return_value = {"roles": []}
@@ -661,9 +645,7 @@ class TestContactWeightResolver:
         weight = await resolver.resolve("telegram", "111")
         assert weight == 0.7
 
-    async def test_unknown_sender_gets_unknown_weight(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_unknown_sender_gets_unknown_weight(self, mock_pool: AsyncMock) -> None:
         from butlers.connectors.discretion import ContactWeightResolver
 
         mock_pool.fetchrow.return_value = None
@@ -671,9 +653,7 @@ class TestContactWeightResolver:
         weight = await resolver.resolve("telegram", "999")
         assert weight == 0.3
 
-    async def test_db_error_returns_unknown_weight(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_db_error_returns_unknown_weight(self, mock_pool: AsyncMock) -> None:
         from butlers.connectors.discretion import ContactWeightResolver
 
         mock_pool.fetchrow.side_effect = RuntimeError("connection lost")
@@ -681,9 +661,7 @@ class TestContactWeightResolver:
         weight = await resolver.resolve("telegram", "123")
         assert weight == 0.3
 
-    async def test_cache_prevents_repeated_queries(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_cache_prevents_repeated_queries(self, mock_pool: AsyncMock) -> None:
         from butlers.connectors.discretion import ContactWeightResolver
 
         mock_pool.fetchrow.return_value = {"roles": ["owner"]}

@@ -34,9 +34,7 @@ def _collect_latencies(
     errors = 0
     for entry in prompts:
         prompt = build_prompt(entry)
-        result = call_discretion(
-            prompt, ollama_url=ollama_url, model=model, timeout=timeout
-        )
+        result = call_discretion(prompt, ollama_url=ollama_url, model=model, timeout=timeout)
         if result["error"]:
             errors += 1
         else:
@@ -122,9 +120,7 @@ def test_cold_start(
     entry = prompts[0]
     prompt = build_prompt(entry)
 
-    result = call_discretion(
-        prompt, ollama_url=ollama_url, model=model_name, timeout=30.0
-    )
+    result = call_discretion(prompt, ollama_url=ollama_url, model=model_name, timeout=30.0)
 
     assert result["error"] is None, f"Cold start failed: {result['error']}"
 

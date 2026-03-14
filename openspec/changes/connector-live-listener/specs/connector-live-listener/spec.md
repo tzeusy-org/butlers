@@ -144,19 +144,25 @@ The connector sends speech audio to an external faster-whisper service and recei
 - **AND** `connector_live_listener_transcription_discarded_total{mic, reason}` is incremented (reason: `"empty"` or `"low_confidence"`)
 
 ### Requirement: Discretion Layer
-An LLM-based filter evaluates transcribed utterances in context and decides whether they warrant butler attention.
+The live-listener uses the shared discretion layer (`butlers.connectors.discretion`) to evaluate transcribed utterances in context and decide whether they warrant butler attention. See `connector-base-spec` for the full shared discretion contract.
+
+#### Scenario: Shared discretion module
+- **WHEN** the live-listener connector uses the discretion layer
+- **THEN** it imports from `butlers.connectors.discretion` (shared module)
+- **AND** it uses `DiscretionConfig(env_prefix="LIVE_LISTENER_")` for per-connector env var resolution
 
 #### Scenario: Sliding context window
 - **WHEN** an utterance is transcribed
 - **THEN** it is appended to a per-mic sliding context window
 - **AND** the window retains the last `LIVE_LISTENER_DISCRETION_WINDOW_SIZE` utterances (default: 10) or utterances within the last `LIVE_LISTENER_DISCRETION_WINDOW_SECONDS` (default: 300), whichever produces fewer entries
-- **AND** each entry in the window includes: transcribed text, timestamp, and mic name
+- **AND** each entry in the window includes: transcribed text, timestamp, and source name (mic name)
 
-#### Scenario: Discretion evaluation
+#### Scenario: Discretion evaluation with weight
 - **WHEN** a new utterance is added to the context window
 - **THEN** the discretion layer sends the context window plus the latest utterance to the configured LLM
 - **AND** the LLM MUST respond with a structured verdict: `FORWARD` (with a one-line reason) or `IGNORE`
-- **AND** the LLM call uses `LIVE_LISTENER_DISCRETION_LLM_MODEL` (default: fastest available model) and `LIVE_LISTENER_DISCRETION_LLM_URL` (default: butler ecosystem's configured LLM endpoint)
+- **AND** the LLM call uses `LIVE_LISTENER_DISCRETION_LLM_MODEL` (default: `gemma3:12b`) and `LIVE_LISTENER_DISCRETION_LLM_URL`
+- **AND** all voice utterances use `weight=1.0` (no sender identity available for ambient audio), meaning the LLM is always called and failures always fail-open
 
 #### Scenario: Discretion verdicts
 - **WHEN** the discretion LLM responds `FORWARD`
@@ -167,7 +173,7 @@ An LLM-based filter evaluates transcribed utterances in context and decides whet
 
 #### Scenario: Discretion layer failure
 - **WHEN** the discretion LLM call fails (timeout, connection error, malformed response)
-- **THEN** the connector MUST default to `FORWARD` (fail-open — prefer false positives over missed requests)
+- **THEN** the connector defaults to `FORWARD` (fail-open, because voice weight=1.0 >= weight_fail_open threshold)
 - **AND** `connector_live_listener_discretion_failures_total{mic, error_type}` is incremented
 - **AND** the failed evaluation is logged at WARNING level
 

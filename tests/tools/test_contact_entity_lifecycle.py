@@ -65,6 +65,7 @@ contact_update = _contacts_mod.contact_update
 contact_merge = _contacts_mod.contact_merge
 _build_canonical_name = _contacts_mod._build_canonical_name
 _build_entity_aliases = _contacts_mod._build_entity_aliases
+_infer_entity_type = _contacts_mod._infer_entity_type
 
 entity_merge = _entities_mod.entity_merge
 
@@ -199,6 +200,34 @@ class TestBuildEntityAliases:
 
 
 # ---------------------------------------------------------------------------
+# _infer_entity_type
+# ---------------------------------------------------------------------------
+
+
+class TestInferEntityType:
+    def test_person_with_names(self):
+        assert _infer_entity_type("Alice", "Smith", None) == "person"
+
+    def test_person_with_names_and_company(self):
+        assert _infer_entity_type("Alice", "Smith", "Acme Corp") == "person"
+
+    def test_organization_no_names_with_company(self):
+        assert _infer_entity_type(None, None, "Acme Corp") == "organization"
+
+    def test_organization_blank_names_with_company(self):
+        assert _infer_entity_type("", "", "Some Clinic") == "organization"
+
+    def test_person_no_names_no_company(self):
+        assert _infer_entity_type(None, None, None) == "person"
+
+    def test_person_first_only(self):
+        assert _infer_entity_type("Alice", None, None) == "person"
+
+    def test_person_last_only_with_company(self):
+        assert _infer_entity_type(None, "Smith", "Acme") == "person"
+
+
+# ---------------------------------------------------------------------------
 # contact_create + entity bridge
 # ---------------------------------------------------------------------------
 
@@ -237,6 +266,40 @@ class TestContactCreateEntityBridge:
             mock_create.assert_awaited_once()
             # entity_id UPDATE was called (second fetchrow call)
             assert pool.fetchrow.call_count == 2
+
+    async def test_organization_entity_type_inferred_from_company(self):
+        """contact_create with company but no names creates an organization entity."""
+        contact_row = _make_contact_row(first_name="", last_name="")
+        contact_row["name"] = "Acme Corp"
+        contact_row["company"] = "Acme Corp"
+        contact_row_with_entity = dict(contact_row, entity_id=ENTITY_UUID)
+
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                _asyncpg_record(contact_row),
+                _asyncpg_record(contact_row_with_entity),
+            ]
+        )
+        memory_pool = AsyncMock()
+
+        with (
+            patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
+            patch.object(_contacts_mod, "_log_activity", AsyncMock()),
+            patch.object(
+                _contacts_mod,
+                "_sync_entity_create",
+                AsyncMock(return_value=str(ENTITY_UUID)),
+            ) as mock_create,
+        ):
+            await contact_create(
+                pool,
+                company="Acme Corp",
+                memory_pool=memory_pool,
+            )
+            mock_create.assert_awaited_once()
+            call_kwargs = mock_create.call_args
+            assert call_kwargs.kwargs["entity_type"] == "organization"
 
     async def test_entity_create_failure_is_fail_open(self):
         """contact_create succeeds even when entity_create raises."""

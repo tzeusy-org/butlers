@@ -404,7 +404,9 @@ class LiveListenerConnector:
             for seg in segments:
                 logger.info(
                     "live-listener: VAD segment mic=%s duration=%.0fms forced_split=%s",
-                    mic, seg.duration_ms, seg.forced_split,
+                    mic,
+                    seg.duration_ms,
+                    seg.forced_split,
                 )
                 # Schedule async processing without blocking the PortAudio callback thread
                 loop.call_soon_threadsafe(self._schedule_segment, spec, seg, filter_evaluator)
@@ -485,7 +487,9 @@ class LiveListenerConnector:
         self._mic_states[mic].transcription_healthy = True
         logger.info(
             "live-listener: transcription mic=%s confidence=%.2f text=%r",
-            mic, result.confidence, result.text,
+            mic,
+            result.confidence,
+            result.text,
         )
 
         # --- Filter gate ---

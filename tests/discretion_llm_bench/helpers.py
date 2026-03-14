@@ -20,9 +20,7 @@ def build_prompt(entry: dict) -> str:
     """Build a discretion prompt from a test fixture entry."""
     context = entry.get("context", [])
     if context:
-        context_lines = "\n".join(
-            f"[{i + 1}] (webcam) {line}" for i, line in enumerate(context)
-        )
+        context_lines = "\n".join(f"[{i + 1}] (webcam) {line}" for i, line in enumerate(context))
     else:
         context_lines = "(none)"
 

@@ -153,7 +153,9 @@ def _parse_new_fact(raw: dict, errors: list[str]) -> NewFact | None:
         tags = []
 
     entity_id_raw = raw.get("entity_id")
-    entity_id = entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
+    entity_id = (
+        entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
+    )
 
     return NewFact(
         subject=subject,
@@ -198,7 +200,9 @@ def _parse_updated_fact(raw: dict, errors: list[str]) -> UpdatedFact | None:
     permanence = _validate_permanence(raw.get("permanence", "standard"))
 
     entity_id_raw = raw.get("entity_id")
-    entity_id = entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
+    entity_id = (
+        entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
+    )
 
     return UpdatedFact(
         target_id=target_id,

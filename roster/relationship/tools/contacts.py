@@ -90,12 +90,30 @@ def _build_entity_aliases(
     return aliases
 
 
+def _infer_entity_type(
+    first_name: str | None,
+    last_name: str | None,
+    company: str | None,
+) -> str:
+    """Infer entity type from contact fields.
+
+    If the contact has no personal name but has a company/org name, treat it as
+    an organization.  Otherwise default to person.
+    """
+    has_personal_name = bool((first_name or "").strip() or (last_name or "").strip())
+    has_company = bool((company or "").strip())
+    if not has_personal_name and has_company:
+        return "organization"
+    return "person"
+
+
 async def _sync_entity_create(
     memory_pool: asyncpg.Pool,
     first_name: str | None,
     last_name: str | None,
     nickname: str | None,
     tenant_id: str,
+    entity_type: str = "person",
 ) -> str | None:
     """Create a memory entity for a new contact. Returns entity_id or None on failure."""
     from butlers.modules.memory.tools.entities import entity_create
@@ -106,7 +124,7 @@ async def _sync_entity_create(
         result = await entity_create(
             memory_pool,
             canonical_name,
-            "person",
+            entity_type,
             tenant_id=tenant_id,
             aliases=aliases,
         )
@@ -239,6 +257,9 @@ async def contact_create(
             last_name=result.get("last_name"),
             nickname=result.get("nickname"),
             tenant_id=memory_tenant_id,
+            entity_type=_infer_entity_type(
+                result.get("first_name"), result.get("last_name"), result.get("company")
+            ),
         )
         if entity_id is not None:
             updated_row = await pool.fetchrow(

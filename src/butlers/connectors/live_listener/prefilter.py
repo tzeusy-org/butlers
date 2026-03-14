@@ -109,9 +109,7 @@ class PreFilterConfig:
             burst_window_s=_float(
                 "LIVE_LISTENER_PREFILTER_BURST_WINDOW_S", _DEFAULT_BURST_WINDOW_S
             ),
-            burst_max_rate=_int(
-                "LIVE_LISTENER_PREFILTER_BURST_MAX_RATE", _DEFAULT_BURST_MAX_RATE
-            ),
+            burst_max_rate=_int("LIVE_LISTENER_PREFILTER_BURST_MAX_RATE", _DEFAULT_BURST_MAX_RATE),
             burst_resume_pct=_float(
                 "LIVE_LISTENER_PREFILTER_BURST_RESUME_PCT", _DEFAULT_BURST_RESUME_PCT
             ),

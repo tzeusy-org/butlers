@@ -150,6 +150,36 @@ Because this connector reads a user's personal Telegram messages, strict privacy
 - **THEN** it is strictly ingestion-only — it never sends messages, replies, or performs any write action on the user's Telegram account
 - **AND** outbound messaging goes through the Telegram Bot connector and Messenger butler
 
+### Requirement: Discretion Layer Integration
+The Telegram user client connector uses the shared discretion layer (`butlers.connectors.discretion`) with identity-based weight resolution to filter noise before Switchboard ingestion.
+
+#### Scenario: Discretion gate position
+- **WHEN** a message passes the ingestion policy gates (connector-scope and global-scope)
+- **THEN** the discretion layer evaluates the message text before normalization and Switchboard submission
+- **AND** the discretion gate is only active when `TELEGRAM_USER_DISCRETION_LLM_URL` is configured (non-empty)
+
+#### Scenario: Per-chat evaluators
+- **WHEN** the connector processes messages from multiple chats
+- **THEN** each chat ID gets its own `DiscretionEvaluator` instance with an independent context window
+- **AND** evaluators are lazily created on first message from each chat
+- **AND** the evaluator source name is `"tg:{chat_id}"`
+
+#### Scenario: Identity-based weight resolution
+- **WHEN** a message is evaluated by the discretion layer
+- **THEN** the connector resolves the sender's weight via `ContactWeightResolver` using `(type="telegram", value=sender_id)`
+- **AND** the weight maps sender roles to tiers: owner=1.0 (bypass LLM), family/close-friends=0.9, known contact=0.7, unknown sender=0.3
+- **AND** if the weight resolver has no DB access or the sender ID is unknown, weight defaults to 1.0
+
+#### Scenario: Discretion IGNORE handling
+- **WHEN** the discretion layer returns `IGNORE`
+- **THEN** the message is recorded in `FilteredEventBuffer` with `filter_reason="discretion:IGNORE"` and not submitted to Switchboard
+- **AND** the full message payload is preserved in the filtered event for dashboard visibility
+
+#### Scenario: Discretion environment variables
+- **WHEN** the connector starts
+- **THEN** discretion is configured via: `TELEGRAM_USER_DISCRETION_LLM_URL` (Ollama endpoint), `TELEGRAM_USER_DISCRETION_LLM_MODEL` (default: `gemma3:12b`), `TELEGRAM_USER_DISCRETION_TIMEOUT_S` (default: 3.0), `TELEGRAM_USER_DISCRETION_WINDOW_SIZE` (default: 10), `TELEGRAM_USER_DISCRETION_WINDOW_SECONDS` (default: 300), `TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS` (default: 1.0), `TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN` (default: 0.5)
+- **AND** all variables fall back to `CONNECTOR_DISCRETION_*` if the prefixed var is not set
+
 ### Requirement: Environment Variables
 
 #### Scenario: Required variables

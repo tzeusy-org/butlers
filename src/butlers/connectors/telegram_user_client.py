@@ -475,9 +475,7 @@ class TelegramUserClientConnector:
 
                 # 3. Discretion layer: LLM-based FORWARD/IGNORE filter.
                 #    Only evaluated when the LLM URL is configured.
-                msg_text = getattr(message, "message", None) or getattr(
-                    message, "text", None
-                )
+                msg_text = getattr(message, "message", None) or getattr(message, "text", None)
                 if self._discretion_config.llm_url and msg_text:
                     chat_id_str = self._extract_chat_id(message) or "unknown"
                     if chat_id_str not in self._discretion_evaluators:
@@ -489,9 +487,7 @@ class TelegramUserClientConnector:
                     sender_id = self._extract_sender_identity(message)
                     sender_weight = 1.0
                     if self._weight_resolver and sender_id != "unknown":
-                        sender_weight = await self._weight_resolver.resolve(
-                            "telegram", sender_id
-                        )
+                        sender_weight = await self._weight_resolver.resolve("telegram", sender_id)
                     d_result = await self._discretion_evaluators[chat_id_str].evaluate(
                         msg_text, weight=sender_weight
                     )
@@ -515,11 +511,7 @@ class TelegramUserClientConnector:
                                 external_thread_id=self._extract_chat_id(message),
                                 observed_at=datetime.now(UTC).isoformat(),
                                 sender_identity=self._extract_sender_identity(message),
-                                raw=(
-                                    message.to_dict()
-                                    if hasattr(message, "to_dict")
-                                    else {}
-                                ),
+                                raw=(message.to_dict() if hasattr(message, "to_dict") else {}),
                             ),
                         )
                         await self._flush_and_drain()

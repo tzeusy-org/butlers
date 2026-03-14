@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC
 
@@ -121,16 +122,12 @@ def _sort_rows_by_created_at(rows: list[object]) -> list[object]:
     return sorted(rows, key=lambda row: row["created_at"], reverse=True)
 
 
-async def _resolve_entity_names(
-    db: DatabaseManager, facts: list[Fact]
-) -> list[Fact]:
+async def _resolve_entity_names(db: DatabaseManager, facts: list[Fact]) -> list[Fact]:
     """Batch-resolve entity_id → canonical_name for a list of Facts."""
     entity_ids = {f.entity_id for f in facts if f.entity_id}
     if not entity_ids:
         return facts
     pool = _any_pool(db)
-    import uuid as _uuid
-
     rows = await pool.fetch(
         "SELECT id, canonical_name FROM shared.entities WHERE id = ANY($1)",
         [_uuid.UUID(eid) for eid in entity_ids],

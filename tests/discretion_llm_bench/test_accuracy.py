@@ -26,16 +26,12 @@ from .helpers import build_prompt, call_discretion
 pytestmark = pytest.mark.discretion_bench
 
 
-def _run_all(
-    prompts: list[dict], ollama_url: str, model: str, timeout: float
-) -> list[dict]:
+def _run_all(prompts: list[dict], ollama_url: str, model: str, timeout: float) -> list[dict]:
     """Run all prompts and collect results."""
     results = []
     for entry in prompts:
         prompt = build_prompt(entry)
-        result = call_discretion(
-            prompt, ollama_url=ollama_url, model=model, timeout=timeout
-        )
+        result = call_discretion(prompt, ollama_url=ollama_url, model=model, timeout=timeout)
         result["id"] = entry["id"]
         result["expected"] = entry["expected"]
         result["category"] = entry["category"]
@@ -59,8 +55,8 @@ def _print_report(results: list[dict], model: str) -> None:
     print(f"  Total prompts:  {total}")
     print(f"  Errors:         {len(errors)}")
     print(f"  Evaluated:      {len(evaluated)}")
-    print(f"  Correct:        {len(correct)} ({len(correct)/len(evaluated)*100:.1f}%)")
-    print(f"  Wrong:          {len(wrong)} ({len(wrong)/len(evaluated)*100:.1f}%)")
+    print(f"  Correct:        {len(correct)} ({len(correct) / len(evaluated) * 100:.1f}%)")
+    print(f"  Wrong:          {len(wrong)} ({len(wrong) / len(evaluated) * 100:.1f}%)")
     print(f"  Unparseable:    {len(unparseable)}")
 
     # Confusion matrix
@@ -132,9 +128,7 @@ def test_overall_accuracy(
     accuracy = len(correct) / len(evaluated) if evaluated else 0
 
     # Minimum accuracy threshold — adjust as models improve
-    assert accuracy >= 0.70, (
-        f"Overall accuracy {accuracy:.1%} below 70% threshold for {model_name}"
-    )
+    assert accuracy >= 0.70, f"Overall accuracy {accuracy:.1%} below 70% threshold for {model_name}"
 
 
 def test_forward_recall(
@@ -152,9 +146,7 @@ def test_forward_recall(
 
     # Forward recall is critical — missing a real command is worse than
     # forwarding noise (which the butler can still ignore).
-    assert recall >= 0.85, (
-        f"FORWARD recall {recall:.1%} below 85% threshold for {model_name}"
-    )
+    assert recall >= 0.85, f"FORWARD recall {recall:.1%} below 85% threshold for {model_name}"
 
 
 def test_ignore_precision(
