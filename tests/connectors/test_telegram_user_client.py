@@ -1426,24 +1426,31 @@ class TestGracefulShutdownFlush:
 
         assert sorted(flush_calls) == ["100", "200", "300"]
 
-    async def test_flush_all_buffers_skips_empty(
+    async def test_flush_all_buffers_calls_flush_for_empty_buffer(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """_flush_all_buffers does not call _flush_chat_buffer for empty buffers."""
+        """_flush_all_buffers calls _flush_chat_buffer for every registered chat,
+        including empty ones.  _flush_chat_buffer is itself a no-op for empty
+        buffers, so no messages are lost and no errors are raised."""
         connector = TelegramUserClientConnector(config)
         buf = ChatBuffer()
         buf.messages = []
         connector._chat_buffers["empty_chat"] = buf
 
         flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
 
         async def tracking_flush(chat_id: str) -> None:
             flush_calls.append(chat_id)
+            await original_flush(chat_id)
 
         connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
         await connector._flush_all_buffers()
 
-        assert flush_calls == []
+        # _flush_all_buffers now delegates empty-check to _flush_chat_buffer
+        assert flush_calls == ["empty_chat"]
+        # Buffer remains empty — no messages were produced
+        assert connector._chat_buffers["empty_chat"].messages == []
 
     async def test_stop_flushes_all_buffers(
         self, config: TelegramUserClientConnectorConfig

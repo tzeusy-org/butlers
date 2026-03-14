@@ -525,14 +525,11 @@ class TelegramUserClientConnector:
     async def _flush_all_buffers(self, reason: str = "force") -> None:
         """Force-flush all non-empty chat buffers (called on shutdown)."""
         chat_ids = list(self._chat_buffers.keys())
-        non_empty = [
-            c for c in chat_ids if self._chat_buffers.get(c) and self._chat_buffers[c].messages
-        ]
-        if not non_empty:
+        if not chat_ids:
             return
-        logger.info("Flushing all %d non-empty chat buffers (%s)", len(non_empty), reason)
-        for chat_id in non_empty:
-            await self._flush_chat_buffer(chat_id)
+
+        logger.info("Flushing all %d chat buffers (%s)", len(chat_ids), reason)
+        await asyncio.gather(*(self._flush_chat_buffer(chat_id) for chat_id in chat_ids))
 
     async def _flush_chat_buffer(self, chat_id: str) -> None:
         """Flush a single chat's buffer.
