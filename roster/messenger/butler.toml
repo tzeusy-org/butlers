@@ -36,6 +36,7 @@ enabled = false
 token_env = "BUTLER_TELEGRAM_TOKEN"
 
 [modules.email]
+send_tools = true
 
 [modules.email.user]
 enabled = false
@@ -53,6 +54,9 @@ default_risk_tier = "medium"
 risk_tier = "medium"
 
 [modules.approvals.gated_tools.email_send_message]
+risk_tier = "medium"
+
+[modules.approvals.gated_tools.email_reply_to_thread]
 risk_tier = "medium"
 
 [modules.approvals.gated_tools.notify]

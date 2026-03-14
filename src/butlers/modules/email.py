@@ -80,13 +80,20 @@ class EmailBotCredentialsConfig(BaseModel):
 
 
 class EmailConfig(BaseModel):
-    """Configuration for the Email module."""
+    """Configuration for the Email module.
+
+    By default only read/search tools are registered (``send_tools = false``).
+    Set ``send_tools = true`` in butler.toml to enable ``email_send_message``
+    and ``email_reply_to_thread``.  Only the Messenger butler should enable
+    send tools — all other butlers use ``notify()`` for outbound delivery.
+    """
 
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
     use_tls: bool = True
+    send_tools: bool = False
     user: EmailUserCredentialsConfig = Field(default_factory=EmailUserCredentialsConfig)
     bot: EmailBotCredentialsConfig = Field(default_factory=EmailBotCredentialsConfig)
     model_config = ConfigDict(extra="forbid")
@@ -131,24 +138,32 @@ class EmailModule(Module):
         return None  # No custom tables needed
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register email MCP tools."""
+        """Register email MCP tools.
+
+        Send/reply tools are only registered when ``send_tools = true`` in
+        the module config.  This ensures that only the Messenger butler
+        (which has approval gates) can send outbound emails directly.
+        All other butlers use ``notify()`` for outbound delivery.
+        """
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
         module = self  # capture for closures
 
-        @mcp.tool()
-        async def email_send_message(to: str, subject: str, body: str) -> dict:
-            """Send an email via SMTP."""
-            return await module._send_email(to, subject, body)
+        if self._config.send_tools:
 
-        @mcp.tool()
-        async def email_reply_to_thread(
-            to: str,
-            thread_id: str,
-            body: str,
-            subject: str | None = None,
-        ) -> dict:
-            """Reply to an email thread."""
-            return await module._reply_to_thread(to, thread_id, body, subject)
+            @mcp.tool()
+            async def email_send_message(to: str, subject: str, body: str) -> dict:
+                """Send an email via SMTP."""
+                return await module._send_email(to, subject, body)
+
+            @mcp.tool()
+            async def email_reply_to_thread(
+                to: str,
+                thread_id: str,
+                body: str,
+                subject: str | None = None,
+            ) -> dict:
+                """Reply to an email thread."""
+                return await module._reply_to_thread(to, thread_id, body, subject)
 
         @mcp.tool()
         async def email_search_inbox(query: str) -> list[dict]:

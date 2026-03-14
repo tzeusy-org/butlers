@@ -4210,6 +4210,68 @@ class ButlerDaemon:
                     "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,
                 }
 
+            # Validate email recipients against known contacts.
+            # This prevents LLM-hallucinated addresses from reaching delivery.
+            if channel == "email" and resolved_recipient is not None and contact_id is None:
+                pool = daemon.db.pool if daemon.db is not None else None
+                if pool is not None:
+                    from butlers.identity import resolve_contact_by_channel
+
+                    known_contact = await resolve_contact_by_channel(
+                        pool,
+                        "email",
+                        resolved_recipient,
+                    )
+                    if known_contact is None:
+                        import datetime as _dt
+
+                        from butlers.modules.approvals.models import ActionStatus
+
+                        _park_id = uuid.uuid4()
+                        _now = _dt.datetime.now(_dt.UTC)
+                        _expires = _now + _dt.timedelta(hours=72)
+                        _park_summary = (
+                            f"notify() rejected: email recipient {resolved_recipient!r} "
+                            f"is not a known contact. Message: {message!r}"
+                        )
+                        await pool.execute(
+                            "INSERT INTO pending_actions "
+                            "(id, tool_name, tool_args, agent_summary, session_id, "
+                            "status, requested_at, expires_at) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                            _park_id,
+                            "notify",
+                            json.dumps(
+                                {
+                                    "channel": channel,
+                                    "message": message,
+                                    "recipient": resolved_recipient,
+                                    "intent": intent,
+                                }
+                            ),
+                            _park_summary,
+                            None,
+                            ActionStatus.PENDING.value,
+                            _now,
+                            _expires,
+                        )
+                        logger.warning(
+                            "notify() rejected unknown email recipient %r "
+                            "(parked as pending_action %s)",
+                            resolved_recipient,
+                            _park_id,
+                        )
+                        return {
+                            "status": "pending_approval",
+                            "error": (
+                                f"Email recipient '{resolved_recipient}' is not a known "
+                                f"contact. The notification has been parked for owner "
+                                f"review. Use contact_id to target known contacts, or "
+                                f"notify via telegram instead."
+                            ),
+                            "pending_action_id": str(_park_id),
+                        }
+
             delivery_message = message if message is not None else ""
             notify_request: dict[str, Any] = {
                 "schema_version": "notify.v1",

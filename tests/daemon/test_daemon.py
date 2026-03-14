@@ -2765,9 +2765,22 @@ class TestNotifyTool:
         mock_client.call_tool = AsyncMock(return_value=mock_call_result)
         daemon.switchboard_client = mock_client
 
-        result = await notify_fn(
-            channel="email", message="Weekly report", recipient="user@example.com"
+        # Mock resolve_contact_by_channel to return a known contact (email validation)
+        from butlers.identity import ResolvedContact
+
+        known = ResolvedContact(
+            contact_id=__import__("uuid").UUID("00000000-0000-0000-0000-ffffffffffff"),
+            name="Test",
+            roles=["owner"],
+            entity_id=None,
         )
+        with patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=known),
+        ):
+            result = await notify_fn(
+                channel="email", message="Weekly report", recipient="user@example.com"
+            )
 
         assert result["status"] == "ok"
 

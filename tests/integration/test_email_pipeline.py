@@ -35,7 +35,7 @@ class TestToolFlows:
             return decorator
 
         mcp.tool = capture_tool
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None)
 
         send_mock = AsyncMock(return_value={"status": "sent"})
         reply_mock = AsyncMock(return_value={"status": "sent", "thread_id": "thread-1"})

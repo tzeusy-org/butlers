@@ -82,6 +82,7 @@ class TestEmailConfig:
         assert cfg.imap_host == "imap.gmail.com"
         assert cfg.imap_port == 993
         assert cfg.use_tls is True
+        assert cfg.send_tools is False
         assert cfg.user.enabled is False
         assert cfg.user.address_env == "USER_EMAIL_ADDRESS"
         assert cfg.user.password_env == "USER_EMAIL_PASSWORD"
@@ -158,18 +159,27 @@ class TestLifecycle:
 class TestRegisterTools:
     """Verify that register_tools creates the expected MCP tools."""
 
-    async def test_registers_four_tools(self):
+    async def test_registers_read_only_tools_by_default(self):
         mod = EmailModule()
         mcp = MagicMock()
-        # mcp.tool() returns a decorator that returns the function unchanged
         mcp.tool.return_value = lambda fn: fn
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
+        # Default: 2 read-only tools (search, read) — send/reply suppressed
+        assert mcp.tool.call_count == 2
+
+    async def test_registers_all_tools_with_send_tools_enabled(self):
+        mod = EmailModule()
+        mcp = MagicMock()
+        mcp.tool.return_value = lambda fn: fn
+
+        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None)
+
         # 4 tools: send, reply, search, read
         assert mcp.tool.call_count == 4
 
-    async def test_tool_decorator_called(self):
+    async def test_read_only_tool_names(self):
         mod = EmailModule()
         mcp = MagicMock()
         registered_tools: dict[str, Any] = {}
@@ -184,6 +194,25 @@ class TestRegisterTools:
         mcp.tool.side_effect = capture_tool
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        expected_tools = {"email_search_inbox", "email_read_message"}
+        assert set(registered_tools) == expected_tools
+
+    async def test_send_tools_enabled_tool_names(self):
+        mod = EmailModule()
+        mcp = MagicMock()
+        registered_tools: dict[str, Any] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool.side_effect = capture_tool
+
+        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None)
 
         expected_tools = {
             "email_send_message",
@@ -207,7 +236,7 @@ class TestRegisterTools:
 
         mcp.tool.side_effect = capture_tool
 
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None)
 
         assert all(name.startswith("email_") for name in registered_tools.keys())
 
@@ -225,7 +254,7 @@ class TestRegisterTools:
 
         mcp.tool.side_effect = capture_tool
 
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None)
 
         import asyncio
 
