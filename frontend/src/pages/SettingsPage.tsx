@@ -821,6 +821,12 @@ export default function SettingsPage() {
 
       <ExpiredAuthBanner />
 
+      <ModelCatalogCard />
+
+      <CLIAuthCard />
+
+      <GoogleAccountsSection />
+
       <Card>
         <CardHeader>
           <CardTitle>Appearance</CardTitle>
@@ -887,12 +893,6 @@ export default function SettingsPage() {
           </Button>
         </CardContent>
       </Card>
-
-      <CLIAuthCard />
-
-      <GoogleAccountsSection />
-
-      <ModelCatalogCard />
     </div>
   );
 }
