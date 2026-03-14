@@ -123,6 +123,7 @@ class TestNewFacts:
             scope="test-butler",
             tags=["preference"],
             source_butler="test-butler",
+            entity_id=None,
             tenant_id="owner",
             request_id=None,
         )
@@ -212,6 +213,7 @@ class TestUpdatedFacts:
             permanence="standard",
             scope="test-butler",
             source_butler="test-butler",
+            entity_id=None,
             tenant_id="owner",
             request_id=None,
         )

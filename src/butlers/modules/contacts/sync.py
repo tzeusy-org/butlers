@@ -273,6 +273,7 @@ class ContactsSyncResult(BaseModel):
     skipped_contacts: int
     deleted_contacts: int
     next_sync_cursor: str
+    provider_total: int | None = None
 
 
 class ContactsProvider(abc.ABC):
@@ -685,11 +686,18 @@ def _parse_google_batch(payload: dict[str, Any]) -> ContactBatch:
             if parsed is not None:
                 contacts.append(parsed)
 
+    # Google People API returns totalPeople/totalItems even for incremental syncs.
+    total_people = payload.get("totalPeople") or payload.get("totalItems")
+    if isinstance(total_people, int):
+        provider_total = total_people
+    else:
+        provider_total = len(contacts) if contacts else None
+
     return ContactBatch(
         contacts=contacts,
         next_page_token=_as_non_empty_string(payload.get("nextPageToken")),
         next_sync_cursor=_as_non_empty_string(payload.get("nextSyncToken")),
-        checkpoint={"total_people": len(contacts)},
+        checkpoint={"total_people": len(contacts), "provider_total": provider_total},
     )
 
 
@@ -1200,9 +1208,11 @@ class ContactsSyncEngine:
         try:
             if effective_mode == "incremental":
                 try:
-                    contacts, next_cursor = await self._collect_incremental(
-                        account_id=account_id,
-                        cursor=cursor,
+                    contacts, next_cursor, provider_total = (
+                        await self._collect_incremental(
+                            account_id=account_id,
+                            cursor=cursor,
+                        )
                     )
                 except ContactsSyncTokenExpiredError:
                     logger.warning(
@@ -1213,15 +1223,20 @@ class ContactsSyncEngine:
                     )
                     effective_mode = "full"
                     state.sync_cursor = None
-                    contacts, next_cursor = await self._collect_full(account_id=account_id)
+                    contacts, next_cursor, provider_total = await self._collect_full(
+                        account_id=account_id,
+                    )
             else:
-                contacts, next_cursor = await self._collect_full(account_id=account_id)
+                contacts, next_cursor, provider_total = await self._collect_full(
+                    account_id=account_id,
+                )
 
             result = await self._apply_changes(
                 contacts=contacts,
                 state=state,
                 next_cursor=next_cursor,
                 mode=effective_mode,
+                provider_total=provider_total,
             )
         except Exception as exc:
             state.last_error = str(exc)[:300]
@@ -1231,36 +1246,42 @@ class ContactsSyncEngine:
         await self._state_store.save(provider=provider_name, account_id=account_id, state=state)
         return result
 
-    async def _collect_full(self, *, account_id: str) -> tuple[list[CanonicalContact], str]:
+    async def _collect_full(
+        self, *, account_id: str
+    ) -> tuple[list[CanonicalContact], str, int | None]:
         page_token: str | None = None
         contacts: list[CanonicalContact] = []
         next_cursor: str | None = None
+        provider_total: int | None = None
 
         while True:
             batch = await self._provider.full_sync(account_id=account_id, page_token=page_token)
             contacts.extend(batch.contacts)
             if batch.next_sync_cursor is not None:
                 next_cursor = batch.next_sync_cursor
+            if batch.checkpoint and isinstance(batch.checkpoint.get("provider_total"), int):
+                provider_total = batch.checkpoint["provider_total"]
             page_token = batch.next_page_token
             if page_token is None:
                 break
 
         if next_cursor is None:
             raise ContactsSyncError("Provider full sync did not return next_sync_cursor")
-        return contacts, next_cursor
+        return contacts, next_cursor, provider_total
 
     async def _collect_incremental(
         self,
         *,
         account_id: str,
         cursor: str | None,
-    ) -> tuple[list[CanonicalContact], str]:
+    ) -> tuple[list[CanonicalContact], str, int | None]:
         if cursor is None:
             raise ContactsSyncError("Incremental sync requires a non-null cursor")
 
         page_token: str | None = None
         contacts: list[CanonicalContact] = []
         next_cursor: str | None = None
+        provider_total: int | None = None
 
         while True:
             batch = await self._provider.incremental_sync(
@@ -1271,13 +1292,15 @@ class ContactsSyncEngine:
             contacts.extend(batch.contacts)
             if batch.next_sync_cursor is not None:
                 next_cursor = batch.next_sync_cursor
+            if batch.checkpoint and isinstance(batch.checkpoint.get("provider_total"), int):
+                provider_total = batch.checkpoint["provider_total"]
             page_token = batch.next_page_token
             if page_token is None:
                 break
 
         if next_cursor is None:
             raise ContactsSyncError("Provider incremental sync did not return next_sync_cursor")
-        return contacts, next_cursor
+        return contacts, next_cursor, provider_total
 
     async def _apply_changes(
         self,
@@ -1286,6 +1309,7 @@ class ContactsSyncEngine:
         state: ContactsSyncState,
         next_cursor: str,
         mode: ContactsSyncMode,
+        provider_total: int | None = None,
     ) -> ContactsSyncResult:
         versions = dict(state.contact_versions)
         applied = 0
@@ -1323,6 +1347,7 @@ class ContactsSyncEngine:
             skipped_contacts=skipped,
             deleted_contacts=deleted,
             next_sync_cursor=next_cursor,
+            provider_total=provider_total,
         )
 
 

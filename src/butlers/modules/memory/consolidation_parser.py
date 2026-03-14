@@ -30,6 +30,7 @@ class NewFact:
     permanence: str = "standard"
     importance: float = 5.0
     tags: list[str] = field(default_factory=list)
+    entity_id: str | None = None
 
 
 @dataclass
@@ -39,6 +40,7 @@ class UpdatedFact:
     predicate: str
     content: str
     permanence: str = "standard"
+    entity_id: str | None = None
 
 
 @dataclass
@@ -150,6 +152,9 @@ def _parse_new_fact(raw: dict, errors: list[str]) -> NewFact | None:
     if not isinstance(tags, list):
         tags = []
 
+    entity_id_raw = raw.get("entity_id")
+    entity_id = entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
+
     return NewFact(
         subject=subject,
         predicate=predicate,
@@ -157,6 +162,7 @@ def _parse_new_fact(raw: dict, errors: list[str]) -> NewFact | None:
         permanence=permanence,
         importance=importance,
         tags=tags,
+        entity_id=entity_id,
     )
 
 
@@ -191,12 +197,16 @@ def _parse_updated_fact(raw: dict, errors: list[str]) -> UpdatedFact | None:
 
     permanence = _validate_permanence(raw.get("permanence", "standard"))
 
+    entity_id_raw = raw.get("entity_id")
+    entity_id = entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
+
     return UpdatedFact(
         target_id=target_id,
         subject=subject,
         predicate=predicate,
         content=content,
         permanence=permanence,
+        entity_id=entity_id,
     )
 
 

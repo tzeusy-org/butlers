@@ -258,7 +258,7 @@ function FactsTab({ butlerScope }: { butlerScope?: string }) {
                         className="text-primary hover:underline"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {f.subject}
+                        {f.entity_name ?? f.subject}
                       </Link>
                     ) : (
                       f.subject

@@ -50,7 +50,9 @@ def _format_facts(facts: list[dict]) -> str:
         pred = f.get("predicate", "?")
         content = f.get("content", "")
         perm = f.get("permanence", "?")
-        lines.append(f"- **{fid}**: [{perm}] {subj} — {pred} — {content}")
+        entity_id = f.get("entity_id")
+        entity_tag = f" (entity_id={entity_id})" if entity_id else ""
+        lines.append(f"- **{fid}**: [{perm}] {subj}{entity_tag} — {pred} — {content}")
     return "\n".join(lines)
 
 

@@ -110,6 +110,7 @@ async def execute_consolidation(
                 scope=effective_scope,
                 tags=fact.tags,
                 source_butler=butler_name,
+                entity_id=uuid.UUID(fact.entity_id) if fact.entity_id else None,
                 tenant_id=tenant_id,
                 request_id=request_id,
             )
@@ -140,6 +141,7 @@ async def execute_consolidation(
                 permanence=fact.permanence,
                 scope=effective_scope,
                 source_butler=butler_name,
+                entity_id=uuid.UUID(fact.entity_id) if fact.entity_id else None,
                 tenant_id=tenant_id,
                 request_id=request_id,
             )

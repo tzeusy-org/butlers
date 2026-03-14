@@ -69,18 +69,31 @@ export default function ContactsPage() {
     try {
       const result = await triggerContactsSync("incremental", provider);
       await refetch();
-      const stats = [
-        result.fetched != null ? `${result.fetched} fetched` : null,
-        result.applied != null ? `${result.applied} applied` : null,
-        result.skipped != null ? `${result.skipped} skipped` : null,
-        result.deleted != null ? `${result.deleted} deleted` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
       const label = provider === "google" ? "Google" : "Telegram";
-      toast.success(
-        result.message ?? (stats ? `${label} sync complete: ${stats}` : `${label} sync complete`),
-      );
+      if (result.message) {
+        toast.success(result.message);
+      } else if (result.applied != null && result.applied > 0) {
+        const total = result.provider_total ?? result.fetched;
+        const totalNote = total != null ? ` (${total} on ${label})` : "";
+        toast.success(
+          `${label} sync: ${result.applied} new/updated, ${result.skipped ?? 0} unchanged${totalNote}`,
+        );
+      } else {
+        const total = result.provider_total ?? result.fetched;
+        if (total != null && total > 0) {
+          toast.success(`${label} sync: ${total} contacts on ${label}, all up to date`);
+        } else {
+          const stats = [
+            result.fetched != null ? `${result.fetched} fetched` : null,
+            result.applied != null ? `${result.applied} applied` : null,
+            result.skipped != null ? `${result.skipped} skipped` : null,
+            result.deleted != null ? `${result.deleted} deleted` : null,
+          ]
+            .filter(Boolean)
+            .join(", ");
+          toast.success(stats ? `${label} sync complete: ${stats}` : `${label} sync complete`);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       const label = provider === "google" ? "Google" : "Telegram";

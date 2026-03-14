@@ -1,10 +1,9 @@
 """Telegram contacts sync provider via Telethon.
 
 Implements ContactsProvider for syncing contacts from the user's Telegram
-account. Uses hash-based change detection: both full_sync and incremental_sync
-fetch the contact list from Telegram, but incremental_sync compares the hash
-of the current list against the cursor and returns an empty batch when nothing
-has changed.
+account. Both full_sync and incremental_sync fetch the full contact list.
+A hash-based cursor tracks whether the overall list has changed.  Per-contact
+deduplication is handled by the sync engine's version hashing.
 """
 
 from __future__ import annotations
@@ -101,9 +100,9 @@ class TelegramContactsProvider(ContactsProvider):
     ``GetContactsRequest(hash=0)``, which returns a ``Contacts`` object
     whose ``.users`` list contains the actual ``User`` objects.
 
-    Uses hash-based cursor: full_sync computes a hash of the contact list and
-    returns it as the cursor; incremental_sync compares the current hash against
-    the cursor and returns an empty batch when unchanged.
+    Uses hash-based cursor: both full_sync and incremental_sync compute a hash
+    of the contact list and return it as the cursor.  The full contact list is
+    always returned so the sync engine can report accurate fetched/skipped counts.
 
     Chat ID enrichment (resolving private chat IDs for each contact) is done
     as a post-sync step by iterating dialogs.
@@ -182,11 +181,11 @@ class TelegramContactsProvider(ContactsProvider):
         cursor: str,
         page_token: str | None = None,
     ) -> ContactBatch:
-        """Fetch contacts only if the list has changed since the last sync.
+        """Fetch contacts and return the full list for per-contact dedup.
 
-        Computes a hash of the current contact list and compares it with the
-        incoming cursor. If the hashes match, returns an empty batch (no changes).
-        If they differ, returns the full contact list with the new hash as cursor.
+        Always returns all contacts so the sync engine can report accurate
+        ``fetched`` / ``skipped`` counts.  Per-contact version hashing in
+        ``_apply_changes`` handles deduplication efficiently.
         """
         del page_token  # Telegram doesn't paginate contacts
 
@@ -203,20 +202,16 @@ class TelegramContactsProvider(ContactsProvider):
 
         if new_cursor == cursor:
             logger.info(
-                "Telegram incremental_sync: no changes detected (account=%s)",
+                "Telegram incremental_sync: %d contacts fetched, no changes (account=%s)",
+                len(contacts),
                 account_id,
             )
-            return ContactBatch(
-                contacts=[],
-                next_page_token=None,
-                next_sync_cursor=new_cursor,
+        else:
+            logger.info(
+                "Telegram incremental_sync: %d contacts fetched, changes detected (account=%s)",
+                len(contacts),
+                account_id,
             )
-
-        logger.info(
-            "Telegram incremental_sync: %d contacts changed (account=%s)",
-            len(contacts),
-            account_id,
-        )
 
         return ContactBatch(
             contacts=contacts,

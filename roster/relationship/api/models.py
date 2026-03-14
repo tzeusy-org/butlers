@@ -250,6 +250,7 @@ class ContactsSyncTriggerResponse(BaseModel):
     applied: int | None = None
     skipped: int | None = None
     deleted: int | None = None
+    provider_total: int | None = None
     summary: dict[str, Any] = Field(default_factory=dict)
     message: str | None = None
 

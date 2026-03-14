@@ -286,15 +286,19 @@ class ContactsModule(Module):
                 logger.exception("contacts_sync_now failed for %s", prov_name)
                 return {"error": f"Sync failed: {exc}", "provider": prov_name, "mode": mode}
 
+            summary: dict[str, Any] = {
+                "fetched": result.fetched_contacts,
+                "applied": result.applied_contacts,
+                "skipped": result.skipped_contacts,
+                "deleted": result.deleted_contacts,
+            }
+            if result.provider_total is not None:
+                summary["provider_total"] = result.provider_total
+
             return {
                 "provider": prov_name,
                 "mode": result.mode,
-                "summary": {
-                    "fetched": result.fetched_contacts,
-                    "applied": result.applied_contacts,
-                    "skipped": result.skipped_contacts,
-                    "deleted": result.deleted_contacts,
-                },
+                "summary": summary,
                 "next_sync_cursor": result.next_sync_cursor,
             }
 

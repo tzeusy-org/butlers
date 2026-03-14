@@ -79,7 +79,7 @@ export default function FactDetailPage() {
         items={[
           { label: "Memory", href: "/memory" },
           { label: "Facts", href: "/memory?tab=facts" },
-          { label: fact?.subject ?? factId ?? "Fact" },
+          { label: fact?.entity_name ?? fact?.subject ?? factId ?? "Fact" },
         ]}
       />
 
@@ -108,7 +108,7 @@ export default function FactDetailPage() {
                     to={`/entities/${fact.entity_id}`}
                     className="text-primary hover:underline"
                   >
-                    {fact.subject}
+                    {fact.entity_name ?? fact.subject}
                   </Link>
                 ) : (
                   fact.subject

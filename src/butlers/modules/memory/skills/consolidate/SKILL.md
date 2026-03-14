@@ -24,11 +24,11 @@ Respond with a JSON block:
 ```json
 {
   "new_facts": [
-    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": []},
-    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "object_entity_id": "<uuid of target entity>"}
+    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>"},
+    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>", "object_entity_id": "<uuid of target entity>"}
   ],
   "updated_facts": [
-    {"target_id": "uuid-of-existing-fact", "subject": "...", "predicate": "...", "content": "...", "permanence": "..."}
+    {"target_id": "uuid-of-existing-fact", "subject": "...", "predicate": "...", "content": "...", "permanence": "...", "entity_id": "<uuid of subject entity>"}
   ],
   "new_rules": [
     {"content": "...", "tags": []}
@@ -53,6 +53,17 @@ Respond with a JSON block:
 - The fact describes an attribute, preference, or state of a single entity
 - The object is a plain value (a string, date, number) rather than another tracked entity
 - Predicates like `birthday`, `preference`, `current_interest`, `lives_in` (city as string) are typically property-facts
+
+## Entity Resolution
+
+Facts should be anchored to resolved entities whenever possible. Look for entity UUIDs in:
+
+1. **Identity preambles** in episode content: `[Source: Owner (contact_id: ..., entity_id: <uuid>)]` — use the `entity_id` as the subject entity.
+2. **Existing facts** in the dedup section: facts shown with `(entity_id=<uuid>)` are already entity-anchored. When updating or confirming these, preserve the same `entity_id`.
+
+Include `"entity_id": "<uuid>"` in your JSON output for any fact whose subject maps to a known entity. This anchors the fact to the entity graph for proper identity resolution, rather than using a free-text subject like "Owner" as the identity key.
+
+If no entity UUID is available for a subject, omit `entity_id` (the system falls back to subject-string keying).
 
 ## Guidelines
 

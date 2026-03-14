@@ -395,6 +395,9 @@ async def trigger_contacts_sync(
     applied = _coerce_count(summary.get("applied")) if isinstance(summary, dict) else None
     skipped = _coerce_count(summary.get("skipped")) if isinstance(summary, dict) else None
     deleted = _coerce_count(summary.get("deleted")) if isinstance(summary, dict) else None
+    provider_total = (
+        _coerce_count(summary.get("provider_total")) if isinstance(summary, dict) else None
+    )
     message = summary.get("message") if isinstance(summary, dict) else None
     if not isinstance(message, str):
         message = None
@@ -406,6 +409,7 @@ async def trigger_contacts_sync(
         applied=applied,
         skipped=skipped,
         deleted=deleted,
+        provider_total=provider_total,
         summary=summary if isinstance(summary, dict) else {},
         message=message,
     )

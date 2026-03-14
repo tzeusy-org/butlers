@@ -217,7 +217,7 @@ class TestTelegramContactsProvider:
         assert batch.next_sync_cursor.startswith("telegram:hash:")
 
     @pytest.mark.asyncio
-    async def test_incremental_sync_returns_empty_when_unchanged(self) -> None:
+    async def test_incremental_sync_returns_all_contacts_when_unchanged(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
             provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
@@ -232,9 +232,9 @@ class TestTelegramContactsProvider:
         full_batch = await provider.full_sync(account_id="default")
         cursor = full_batch.next_sync_cursor
 
-        # Incremental sync with same contacts should return empty batch
+        # Incremental sync with same contacts returns full list for accurate counts
         inc_batch = await provider.incremental_sync(account_id="default", cursor=cursor)
-        assert len(inc_batch.contacts) == 0
+        assert len(inc_batch.contacts) == 2
         assert inc_batch.next_sync_cursor == cursor
 
     @pytest.mark.asyncio

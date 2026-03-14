@@ -945,6 +945,7 @@ export interface ContactsSyncTriggerResponse {
   applied: number | null;
   skipped: number | null;
   deleted: number | null;
+  provider_total: number | null;
   summary: Record<string, unknown>;
   message: string | null;
 }
@@ -1215,6 +1216,7 @@ export interface Fact {
   source_episode_id: string | null;
   supersedes_id: string | null;
   entity_id: string | null;
+  entity_name: string | null;
   validity: string;
   scope: string;
   reference_count: number;

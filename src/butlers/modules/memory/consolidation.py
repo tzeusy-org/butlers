@@ -189,7 +189,7 @@ async def run_consolidation(
             try:
                 # 1. Fetch existing facts and rules for dedup context
                 facts_rows = await pool.fetch(
-                    "SELECT id, subject, predicate, content, permanence "
+                    "SELECT id, subject, predicate, content, permanence, entity_id "
                     "FROM facts "
                     "WHERE validity = 'active' AND source_butler = $1 "
                     "  AND tenant_id = $2 "

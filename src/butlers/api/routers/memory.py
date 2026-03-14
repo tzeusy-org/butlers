@@ -121,6 +121,27 @@ def _sort_rows_by_created_at(rows: list[object]) -> list[object]:
     return sorted(rows, key=lambda row: row["created_at"], reverse=True)
 
 
+async def _resolve_entity_names(
+    db: DatabaseManager, facts: list[Fact]
+) -> list[Fact]:
+    """Batch-resolve entity_id → canonical_name for a list of Facts."""
+    entity_ids = {f.entity_id for f in facts if f.entity_id}
+    if not entity_ids:
+        return facts
+    pool = _any_pool(db)
+    import uuid as _uuid
+
+    rows = await pool.fetch(
+        "SELECT id, canonical_name FROM shared.entities WHERE id = ANY($1)",
+        [_uuid.UUID(eid) for eid in entity_ids],
+    )
+    name_map = {str(r["id"]): r["canonical_name"] for r in rows}
+    for f in facts:
+        if f.entity_id and f.entity_id in name_map:
+            f.entity_name = name_map[f.entity_id]
+    return facts
+
+
 # ---------------------------------------------------------------------------
 # GET /api/memory/stats
 # ---------------------------------------------------------------------------
@@ -407,6 +428,7 @@ async def list_facts(
     rows = merged_rows[offset : offset + limit]
 
     data = [_row_to_fact(r) for r in rows]
+    data = await _resolve_entity_names(db, data)
 
     return PaginatedResponse[Fact](
         data=data,
@@ -444,7 +466,9 @@ async def get_fact(
     if not rows:
         raise HTTPException(status_code=404, detail="Fact not found")
 
-    return ApiResponse[Fact](data=_row_to_fact(rows[0]))
+    fact = _row_to_fact(rows[0])
+    await _resolve_entity_names(db, [fact])
+    return ApiResponse[Fact](data=fact)
 
 
 # ---------------------------------------------------------------------------
