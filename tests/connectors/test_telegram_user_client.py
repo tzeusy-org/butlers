@@ -2030,6 +2030,17 @@ class TestBuildBatchEnvelope:
         assert envelope["source"]["provider"] == config.provider
         assert envelope["source"]["endpoint_identity"] == config.endpoint_identity
 
+    def test_timestamp_none_for_missing_date(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """timestamp is None (not a fake current time) when msg.date is absent."""
+        connector = TelegramUserClientConnector(config)
+        msg = _make_batch_msg(1, date=None)
+        msg.date = None  # explicitly clear after helper sets it
+        envelope = connector._build_batch_envelope("chat1", [msg], [msg])
+        entry = envelope["payload"]["conversation_history"][0]
+        assert entry["timestamp"] is None
+
 
 # ---------------------------------------------------------------------------
 # _flush_chat_buffer (full pipeline) tests

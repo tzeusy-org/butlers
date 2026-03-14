@@ -779,9 +779,13 @@ class TelegramUserClientConnector:
             sender_id = getattr(msg, "sender_id", None)
             text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
             msg_date = getattr(msg, "date", None)
-            timestamp = (
-                msg_date.isoformat() if msg_date is not None else datetime.now(UTC).isoformat()
-            )
+            if msg_date is None:
+                logger.warning(
+                    "Message %s in chat %s has no date; timestamp will be null in envelope",
+                    msg_id,
+                    chat_id,
+                )
+            timestamp = msg_date.isoformat() if msg_date is not None else None
             reply_to = getattr(msg, "reply_to_msg_id", None)
             conversation_history.append(
                 {
