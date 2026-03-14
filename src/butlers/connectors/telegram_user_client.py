@@ -584,25 +584,13 @@ class TelegramUserClientConnector:
             min_id = min(m.id for m in buffered_messages)
             max_id = max(m.id for m in buffered_messages)
             batch_event_id = f"batch:{chat_id}:{min_id}-{max_id}"
-            self._filtered_event_buffer.record(
-                external_message_id=batch_event_id,
-                source_channel=self._config.channel,
-                sender_identity="multiple",
-                subject_or_preview=None,
+            self._record_batch_filtered_event(
+                chat_id=chat_id,
+                batch_event_id=batch_event_id,
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
                     f"{scope}_rule",
                     decision.action,
                     decision.matched_rule_type or "unknown",
-                ),
-                full_payload=FilteredEventBuffer.full_payload(
-                    channel=self._config.channel,
-                    provider=self._config.provider,
-                    endpoint_identity=self._config.endpoint_identity,
-                    external_event_id=batch_event_id,
-                    external_thread_id=chat_id,
-                    observed_at=datetime.now(UTC).isoformat(),
-                    sender_identity="multiple",
-                    raw={},
                 ),
             )
             await self._flush_and_drain()
@@ -630,6 +618,7 @@ class TelegramUserClientConnector:
 
             # e. Build batch ingest.v1 envelope.
             envelope = self._build_batch_envelope(chat_id, buffered_messages, context_messages)
+            batch_event_id: str = envelope["event"]["external_event_id"]
 
             # f. Evaluate discretion on concatenated normalized_text of new messages only.
             normalized_text: str = envelope["payload"]["normalized_text"]
@@ -647,23 +636,11 @@ class TelegramUserClientConnector:
                         "Discretion IGNORE for batch in chat %s",
                         chat_id,
                     )
-                    batch_event_id = envelope["event"]["external_event_id"]
-                    self._filtered_event_buffer.record(
-                        external_message_id=batch_event_id,
-                        source_channel=self._config.channel,
-                        sender_identity="multiple",
-                        subject_or_preview=normalized_text[:200] if normalized_text else None,
+                    self._record_batch_filtered_event(
+                        chat_id=chat_id,
+                        batch_event_id=batch_event_id,
                         filter_reason="discretion:IGNORE",
-                        full_payload=FilteredEventBuffer.full_payload(
-                            channel=self._config.channel,
-                            provider=self._config.provider,
-                            endpoint_identity=self._config.endpoint_identity,
-                            external_event_id=batch_event_id,
-                            external_thread_id=chat_id,
-                            observed_at=datetime.now(UTC).isoformat(),
-                            sender_identity="multiple",
-                            raw={},
-                        ),
+                        subject_or_preview=normalized_text[:200] if normalized_text else None,
                     )
                     await self._flush_and_drain()
                     return
@@ -710,6 +687,51 @@ class TelegramUserClientConnector:
                 error_detail=str(exc),
             )
             await self._flush_and_drain()
+
+    def _record_batch_filtered_event(
+        self,
+        *,
+        chat_id: str,
+        batch_event_id: str,
+        filter_reason: str,
+        sender_identity: str = "multiple",
+        subject_or_preview: str | None = None,
+    ) -> None:
+        """Record a filtered-event entry for a batch that was rejected.
+
+        Centralises the boilerplate shared by the three rejection branches in
+        ``_flush_chat_buffer`` (connector-scope policy block, global policy
+        skip, and discretion IGNORE) so each branch only needs to supply the
+        varying fields.
+
+        Args:
+            chat_id: The chat identifier string (used as ``external_thread_id``).
+            batch_event_id: Pre-computed batch event ID, typically
+                ``envelope["event"]["external_event_id"]``.
+            filter_reason: Reason string — use the ``FilteredEventBuffer.reason_*``
+                helpers or a plain string such as ``"discretion:IGNORE"``.
+            sender_identity: Sender identity string; defaults to ``"multiple"``
+                for batch rejections.
+            subject_or_preview: Optional short preview of the batch content
+                (e.g. truncated ``normalized_text``).
+        """
+        self._filtered_event_buffer.record(
+            external_message_id=batch_event_id,
+            source_channel=self._config.channel,
+            sender_identity=sender_identity,
+            subject_or_preview=subject_or_preview,
+            filter_reason=filter_reason,
+            full_payload=FilteredEventBuffer.full_payload(
+                channel=self._config.channel,
+                provider=self._config.provider,
+                endpoint_identity=self._config.endpoint_identity,
+                external_event_id=batch_event_id,
+                external_thread_id=chat_id,
+                observed_at=datetime.now(UTC).isoformat(),
+                sender_identity=sender_identity,
+                raw={},
+            ),
+        )
 
     def _build_batch_envelope(
         self,
