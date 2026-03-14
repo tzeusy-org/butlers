@@ -28,6 +28,10 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - TELEGRAM_API_HASH (required; resolved from owner entity_info only; from my.telegram.org)
 - TELEGRAM_USER_SESSION (required; resolved from owner entity_info only; session string or
   encrypted file path)
+- TELEGRAM_USER_FLUSH_INTERVAL_S (optional, default 600): seconds between per-chat flushes
+- TELEGRAM_USER_HISTORY_MAX_MESSAGES (optional, default 50): history fetch limit per flush
+- TELEGRAM_USER_HISTORY_TIME_WINDOW_M (optional, default 30): history lookback window (minutes)
+- TELEGRAM_USER_BUFFER_MAX_MESSAGES (optional, default 200): per-chat buffer cap before force-flush
 
 Security requirements:
 - Never commit credentials or session artifacts to version control
@@ -82,6 +86,28 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Chat buffer data structure
+# ---------------------------------------------------------------------------
+
+_FLUSH_SCANNER_INTERVAL_S = 60  # How often the flush scanner wakes up
+
+
+@dataclass
+class ChatBuffer:
+    """Per-chat accumulation buffer for incoming Telegram messages.
+
+    Fields:
+        messages:       Accumulated messages since last flush.
+        last_flush_ts:  Monotonic timestamp of the last flush (or creation).
+        lock:           asyncio.Lock preventing concurrent flush + append for
+                        the same chat.
+    """
+
+    messages: list[Any] = field(default_factory=list)
+    last_flush_ts: float = field(default_factory=time.monotonic)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
 
 @dataclass
 class TelegramUserClientConnectorConfig:
@@ -105,6 +131,12 @@ class TelegramUserClientConnectorConfig:
 
     # Concurrency control
     max_inflight: int = 8
+
+    # Buffering / flush config
+    flush_interval_s: int = 600
+    history_max_messages: int = 50
+    history_time_window_m: int = 30
+    buffer_max_messages: int = 200
 
     @classmethod
     def from_env(cls) -> TelegramUserClientConnectorConfig:
@@ -130,6 +162,11 @@ class TelegramUserClientConnectorConfig:
 
         max_inflight = int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8"))
 
+        flush_interval_s = int(os.environ.get("TELEGRAM_USER_FLUSH_INTERVAL_S", "600"))
+        history_max_messages = int(os.environ.get("TELEGRAM_USER_HISTORY_MAX_MESSAGES", "50"))
+        history_time_window_m = int(os.environ.get("TELEGRAM_USER_HISTORY_TIME_WINDOW_M", "30"))
+        buffer_max_messages = int(os.environ.get("TELEGRAM_USER_BUFFER_MAX_MESSAGES", "200"))
+
         # Credential fields default to empty — must be populated from DB.
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
@@ -140,6 +177,10 @@ class TelegramUserClientConnectorConfig:
             telegram_user_session="",
             backfill_window_h=backfill_window_h,
             max_inflight=max_inflight,
+            flush_interval_s=flush_interval_s,
+            history_max_messages=history_max_messages,
+            history_time_window_m=history_time_window_m,
+            buffer_max_messages=buffer_max_messages,
         )
 
 
@@ -231,6 +272,13 @@ class TelegramUserClientConnector:
             ContactWeightResolver(db_pool) if db_pool is not None else None
         )
 
+        # Per-chat message buffers: chat_id (str) → ChatBuffer.
+        # Messages are accumulated here instead of being submitted immediately.
+        self._chat_buffers: dict[str, ChatBuffer] = {}
+
+        # Background flush scanner task (started in start(), cancelled in stop()).
+        self._flush_scanner_task: asyncio.Task[None] | None = None
+
     async def start(self) -> None:
         """Start the Telegram user-client connector in live-stream mode.
 
@@ -262,6 +310,11 @@ class TelegramUserClientConnector:
         # Start switchboard heartbeat (runs in background)
         self._start_heartbeat()
 
+        # Start flush scanner background task
+        self._flush_scanner_task = asyncio.create_task(
+            self._flush_scanner_loop(), name="tg-flush-scanner"
+        )
+
         self._running = True
         logger.info(
             "Starting Telegram user-client connector",
@@ -290,7 +343,7 @@ class TelegramUserClientConnector:
             @self._telegram_client.on(events.NewMessage)
             async def handle_new_message(event: events.NewMessage.Event) -> None:
                 """Handle new message events from Telegram."""
-                await self._process_message(event.message)
+                await self._buffer_message(event.message)
 
             # Keep running until stopped
             logger.info("Telegram user-client connector running, waiting for messages...")
@@ -310,6 +363,18 @@ class TelegramUserClientConnector:
     async def stop(self) -> None:
         """Stop the connector gracefully."""
         self._running = False
+
+        # Cancel the flush scanner task first
+        if self._flush_scanner_task is not None and not self._flush_scanner_task.done():
+            self._flush_scanner_task.cancel()
+            try:
+                await self._flush_scanner_task
+            except asyncio.CancelledError:
+                pass
+            self._flush_scanner_task = None
+
+        # Force-flush all non-empty chat buffers before disconnecting
+        await self._flush_all_buffers(reason="shutdown")
 
         if self._telegram_client and self._telegram_client.is_connected():
             await self._telegram_client.disconnect()
@@ -376,6 +441,123 @@ class TelegramUserClientConnector:
             else None
         )
         return (cursor, updated_at)
+
+    # -------------------------------------------------------------------------
+    # Internal: Per-chat buffering and flush scanner
+    # -------------------------------------------------------------------------
+
+    async def _buffer_message(self, message: Any) -> None:
+        """Append a single Telegram message to its chat's buffer.
+
+        Extracts the chat_id and creates a ChatBuffer for that chat if one
+        does not already exist.  If the buffer reaches the configured cap
+        (``buffer_max_messages``), a force-flush is triggered immediately to
+        prevent unbounded memory growth.
+        """
+        chat_id = self._extract_chat_id(message)
+        if chat_id is None:
+            logger.warning(
+                "Could not extract chat_id from message, falling back to direct processing",
+                extra={"message_id": getattr(message, "id", None)},
+            )
+            await self._process_message(message)
+            return
+
+        if chat_id not in self._chat_buffers:
+            self._chat_buffers[chat_id] = ChatBuffer()
+
+        buf = self._chat_buffers[chat_id]
+        async with buf.lock:
+            buf.messages.append(message)
+            msg_count = len(buf.messages)
+
+        logger.debug(
+            "Buffered message for chat %s (buffer size: %d)",
+            chat_id,
+            msg_count,
+        )
+
+        # Force-flush if the buffer has hit its cap
+        if msg_count >= self._config.buffer_max_messages:
+            logger.info(
+                "Chat %s buffer reached cap (%d messages), force-flushing",
+                chat_id,
+                msg_count,
+            )
+            await self._flush_chat_buffer(chat_id)
+
+    async def _flush_scanner_loop(self) -> None:
+        """Background task: scan all chat buffers every 60 seconds.
+
+        Flushes any chat whose buffer is non-empty and has exceeded the
+        configured flush interval (``flush_interval_s``).
+        """
+        logger.debug("Flush scanner started (interval=%ds)", _FLUSH_SCANNER_INTERVAL_S)
+        try:
+            while True:
+                await asyncio.sleep(_FLUSH_SCANNER_INTERVAL_S)
+                await self._scan_and_flush()
+        except asyncio.CancelledError:
+            logger.debug("Flush scanner cancelled")
+            raise
+
+    async def _scan_and_flush(self) -> None:
+        """Iterate all chat buffers and flush those whose interval has elapsed."""
+        now = time.monotonic()
+        # Snapshot keys to avoid mutation during iteration
+        chat_ids = list(self._chat_buffers.keys())
+        for chat_id in chat_ids:
+            buf = self._chat_buffers.get(chat_id)
+            if buf is None:
+                continue
+            # Check non-empty without acquiring the lock for the fast path
+            if not buf.messages:
+                continue
+            elapsed = now - buf.last_flush_ts
+            if elapsed >= self._config.flush_interval_s:
+                logger.info(
+                    "Flush interval elapsed for chat %s (elapsed=%.1fs), flushing",
+                    chat_id,
+                    elapsed,
+                )
+                await self._flush_chat_buffer(chat_id)
+
+    async def _flush_all_buffers(self, reason: str = "force") -> None:
+        """Force-flush all non-empty chat buffers (called on shutdown)."""
+        chat_ids = list(self._chat_buffers.keys())
+        non_empty = [
+            c for c in chat_ids if self._chat_buffers.get(c) and self._chat_buffers[c].messages
+        ]
+        if not non_empty:
+            return
+        logger.info("Flushing all %d non-empty chat buffers (%s)", len(non_empty), reason)
+        for chat_id in non_empty:
+            await self._flush_chat_buffer(chat_id)
+
+    async def _flush_chat_buffer(self, chat_id: str) -> None:
+        """Flush a single chat's buffer.
+
+        STUB IMPLEMENTATION (bu-jwlc): logs the flush and clears the buffer.
+        The real pipeline (history fetch, batch envelope, policy/discretion,
+        Switchboard submission) is implemented in bead bu-jjhd.
+        """
+        buf = self._chat_buffers.get(chat_id)
+        if buf is None:
+            return
+
+        async with buf.lock:
+            messages = buf.messages
+            if not messages:
+                return
+            # Atomically swap: take the accumulated messages and reset the list.
+            buf.messages = []
+            buf.last_flush_ts = time.monotonic()
+
+        logger.info(
+            "Flushing %d messages for chat %s",
+            len(messages),
+            chat_id,
+        )
 
     # -------------------------------------------------------------------------
     # Internal: Message processing
