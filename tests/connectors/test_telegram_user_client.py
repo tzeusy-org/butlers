@@ -13,6 +13,7 @@ import pytest
 
 from butlers.connectors.telegram_user_client import (
     TELETHON_AVAILABLE,
+    ChatBuffer,
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
     _resolve_endpoint_identity,
@@ -1054,3 +1055,440 @@ class TestIngestionPolicyIntegration:
         assert combined.index("ensure_loaded") < combined.index("connect") + len(
             ensure_loaded_calls
         )
+
+
+# ---------------------------------------------------------------------------
+# ChatBuffer dataclass tests
+# ---------------------------------------------------------------------------
+
+
+class TestChatBuffer:
+    """Tests for the ChatBuffer dataclass."""
+
+    def test_default_messages_list_is_empty(self) -> None:
+        """ChatBuffer.messages defaults to an empty list."""
+        buf = ChatBuffer()
+        assert buf.messages == []
+
+    def test_default_last_flush_ts_is_recent(self) -> None:
+        """ChatBuffer.last_flush_ts defaults to a recent monotonic timestamp."""
+        before = time.monotonic()
+        buf = ChatBuffer()
+        after = time.monotonic()
+        assert before <= buf.last_flush_ts <= after
+
+    def test_lock_is_asyncio_lock(self) -> None:
+        """ChatBuffer.lock is an asyncio.Lock instance."""
+        buf = ChatBuffer()
+        assert isinstance(buf.lock, asyncio.Lock)
+
+    def test_each_buffer_gets_independent_lock(self) -> None:
+        """Two ChatBuffer instances do not share a lock."""
+        b1 = ChatBuffer()
+        b2 = ChatBuffer()
+        assert b1.lock is not b2.lock
+
+    def test_messages_not_shared_between_instances(self) -> None:
+        """Two ChatBuffer instances do not share the messages list."""
+        b1 = ChatBuffer()
+        b2 = ChatBuffer()
+        b1.messages.append("x")
+        assert b2.messages == []
+
+
+# ---------------------------------------------------------------------------
+# Config: new buffering env vars
+# ---------------------------------------------------------------------------
+
+
+class TestConfigBufferingEnvVars:
+    """TelegramUserClientConnectorConfig reads buffering env vars from environment."""
+
+    def test_defaults_when_env_vars_absent(self, mock_env: dict[str, str]) -> None:
+        """Buffering config uses expected defaults when env vars are not set."""
+        config = TelegramUserClientConnectorConfig.from_env()
+        assert config.flush_interval_s == 600
+        assert config.history_max_messages == 50
+        assert config.history_time_window_m == 30
+        assert config.buffer_max_messages == 200
+
+    def test_reads_flush_interval_from_env(
+        self, mock_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TELEGRAM_USER_FLUSH_INTERVAL_S", "120")
+        config = TelegramUserClientConnectorConfig.from_env()
+        assert config.flush_interval_s == 120
+
+    def test_reads_history_max_messages_from_env(
+        self, mock_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TELEGRAM_USER_HISTORY_MAX_MESSAGES", "25")
+        config = TelegramUserClientConnectorConfig.from_env()
+        assert config.history_max_messages == 25
+
+    def test_reads_history_time_window_from_env(
+        self, mock_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TELEGRAM_USER_HISTORY_TIME_WINDOW_M", "15")
+        config = TelegramUserClientConnectorConfig.from_env()
+        assert config.history_time_window_m == 15
+
+    def test_reads_buffer_max_messages_from_env(
+        self, mock_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TELEGRAM_USER_BUFFER_MAX_MESSAGES", "50")
+        config = TelegramUserClientConnectorConfig.from_env()
+        assert config.buffer_max_messages == 50
+
+
+# ---------------------------------------------------------------------------
+# TelegramUserClientConnector — chat buffering
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_message(
+    msg_id: int = 1,
+    chat_id: int = 1000,
+    sender_id: int = 42,
+    text: str = "hello",
+) -> MagicMock:
+    """Build a minimal mock Telethon message."""
+    m = MagicMock()
+    m.id = msg_id
+    m.chat_id = chat_id
+    m.sender_id = sender_id
+    m.message = text
+    m.to_dict.return_value = {"id": msg_id, "chat_id": chat_id, "message": text}
+    return m
+
+
+class TestChatBuffering:
+    """Tests for _buffer_message, _flush_chat_buffer, and related helpers."""
+
+    def test_chat_buffers_initialized_empty(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Connector starts with an empty _chat_buffers dict."""
+        connector = TelegramUserClientConnector(config)
+        assert connector._chat_buffers == {}
+
+    def test_flush_scanner_task_initialized_none(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Connector starts with _flush_scanner_task = None."""
+        connector = TelegramUserClientConnector(config)
+        assert connector._flush_scanner_task is None
+
+    async def test_buffer_message_creates_chat_buffer(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_buffer_message creates a ChatBuffer for a new chat_id."""
+        connector = TelegramUserClientConnector(config)
+        msg = _make_mock_message(msg_id=10, chat_id=9999)
+
+        await connector._buffer_message(msg)
+
+        assert "9999" in connector._chat_buffers
+        assert len(connector._chat_buffers["9999"].messages) == 1
+
+    async def test_buffer_message_appends_to_existing_buffer(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Subsequent _buffer_message calls append to the same ChatBuffer."""
+        connector = TelegramUserClientConnector(config)
+        for i in range(3):
+            await connector._buffer_message(_make_mock_message(msg_id=i, chat_id=1111))
+        assert len(connector._chat_buffers["1111"].messages) == 3
+
+    async def test_buffer_isolation_between_chats(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Messages for different chats go into independent buffers."""
+        connector = TelegramUserClientConnector(config)
+        await connector._buffer_message(_make_mock_message(chat_id=111))
+        await connector._buffer_message(_make_mock_message(chat_id=222))
+        await connector._buffer_message(_make_mock_message(chat_id=111))
+
+        assert len(connector._chat_buffers["111"].messages) == 2
+        assert len(connector._chat_buffers["222"].messages) == 1
+
+    async def test_buffer_message_falls_back_when_no_chat_id(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_buffer_message falls back to _process_message when chat_id cannot be extracted."""
+        connector = TelegramUserClientConnector(config)
+        # Message with no chat_id and no peer_id
+        msg = MagicMock(spec=[])
+        object.__setattr__(msg, "id", 99)
+
+        process_calls: list[Any] = []
+
+        async def fake_process(m: Any) -> None:
+            process_calls.append(m)
+
+        connector._process_message = fake_process  # type: ignore[method-assign]
+
+        await connector._buffer_message(msg)
+
+        assert process_calls == [msg]
+        assert connector._chat_buffers == {}
+
+    async def test_flush_chat_buffer_clears_messages(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_flush_chat_buffer empties the buffer and updates last_flush_ts."""
+        connector = TelegramUserClientConnector(config)
+        connector._chat_buffers["5555"] = ChatBuffer()
+        connector._chat_buffers["5555"].messages = [_make_mock_message(i, 5555) for i in range(5)]
+        old_flush_ts = connector._chat_buffers["5555"].last_flush_ts
+
+        await connector._flush_chat_buffer("5555")
+
+        buf = connector._chat_buffers["5555"]
+        assert buf.messages == []
+        assert buf.last_flush_ts >= old_flush_ts
+
+    async def test_flush_chat_buffer_noop_when_empty(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_flush_chat_buffer is a no-op when the buffer is already empty."""
+        connector = TelegramUserClientConnector(config)
+        connector._chat_buffers["7777"] = ChatBuffer()
+        old_ts = connector._chat_buffers["7777"].last_flush_ts
+
+        await connector._flush_chat_buffer("7777")
+
+        # last_flush_ts unchanged when buffer was empty (early return)
+        assert connector._chat_buffers["7777"].last_flush_ts == old_ts
+
+    async def test_flush_chat_buffer_noop_for_unknown_chat(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_flush_chat_buffer does nothing for a chat_id that has no buffer."""
+        connector = TelegramUserClientConnector(config)
+        # Should not raise
+        await connector._flush_chat_buffer("nonexistent")
+
+    async def test_buffer_message_force_flushes_on_cap(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Force-flush is triggered when buffer reaches buffer_max_messages."""
+        # Set a very small cap
+        config_low_cap = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url=config.switchboard_mcp_url,
+            provider=config.provider,
+            channel=config.channel,
+            endpoint_identity=config.endpoint_identity,
+            telegram_api_id=config.telegram_api_id,
+            telegram_api_hash=config.telegram_api_hash,
+            telegram_user_session=config.telegram_user_session,
+            buffer_max_messages=3,
+        )
+        connector = TelegramUserClientConnector(config_low_cap)
+
+        flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            await original_flush(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+
+        # First 2 messages — no flush yet
+        await connector._buffer_message(_make_mock_message(1, chat_id=8888))
+        await connector._buffer_message(_make_mock_message(2, chat_id=8888))
+        assert flush_calls == []
+
+        # 3rd message hits the cap → force-flush
+        await connector._buffer_message(_make_mock_message(3, chat_id=8888))
+        assert flush_calls == ["8888"]
+        # Buffer should be empty after flush
+        assert connector._chat_buffers["8888"].messages == []
+
+
+# ---------------------------------------------------------------------------
+# Flush scanner
+# ---------------------------------------------------------------------------
+
+
+class TestFlushScanner:
+    """Tests for _flush_scanner_loop and _scan_and_flush."""
+
+    async def test_scan_and_flush_flushes_overdue_buffer(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_scan_and_flush flushes a chat whose interval has elapsed."""
+        connector = TelegramUserClientConnector(config)
+
+        # Pre-populate a buffer that is "overdue" (last_flush_ts in the past)
+        buf = ChatBuffer()
+        buf.messages = [_make_mock_message(1, chat_id=3333)]
+        buf.last_flush_ts = time.monotonic() - config.flush_interval_s - 10
+        connector._chat_buffers["3333"] = buf
+
+        flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            await original_flush(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+        await connector._scan_and_flush()
+
+        assert "3333" in flush_calls
+
+    async def test_scan_and_flush_skips_non_overdue_buffer(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_scan_and_flush does not flush a chat that was recently flushed."""
+        connector = TelegramUserClientConnector(config)
+
+        buf = ChatBuffer()
+        buf.messages = [_make_mock_message(1, chat_id=4444)]
+        buf.last_flush_ts = time.monotonic()  # just flushed
+        connector._chat_buffers["4444"] = buf
+
+        flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            await original_flush(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+        await connector._scan_and_flush()
+
+        assert "4444" not in flush_calls
+
+    async def test_scan_and_flush_skips_empty_buffer(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_scan_and_flush does not flush a chat with an empty buffer."""
+        connector = TelegramUserClientConnector(config)
+
+        buf = ChatBuffer()
+        buf.messages = []
+        buf.last_flush_ts = time.monotonic() - config.flush_interval_s - 10
+        connector._chat_buffers["5555"] = buf
+
+        flush_calls: list[str] = []
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+        await connector._scan_and_flush()
+
+        assert "5555" not in flush_calls
+
+    async def test_flush_scanner_loop_cancels_cleanly(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_flush_scanner_loop terminates cleanly when cancelled."""
+        connector = TelegramUserClientConnector(config)
+        task = asyncio.create_task(connector._flush_scanner_loop())
+        # Give the loop one tick to enter the sleep
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+# ---------------------------------------------------------------------------
+# Graceful shutdown — flush all buffers
+# ---------------------------------------------------------------------------
+
+
+class TestGracefulShutdownFlush:
+    """Tests for _flush_all_buffers and its invocation from stop()."""
+
+    async def test_flush_all_buffers_flushes_non_empty_buffers(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_flush_all_buffers flushes every non-empty chat buffer."""
+        connector = TelegramUserClientConnector(config)
+        for cid in ["100", "200", "300"]:
+            buf = ChatBuffer()
+            buf.messages = [_make_mock_message(1, chat_id=int(cid))]
+            connector._chat_buffers[cid] = buf
+
+        flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            await original_flush(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+        await connector._flush_all_buffers(reason="test")
+
+        assert sorted(flush_calls) == ["100", "200", "300"]
+
+    async def test_flush_all_buffers_calls_flush_for_empty_buffer(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_flush_all_buffers calls _flush_chat_buffer for every registered chat,
+        including empty ones.  _flush_chat_buffer is itself a no-op for empty
+        buffers, so no messages are lost and no errors are raised."""
+        connector = TelegramUserClientConnector(config)
+        buf = ChatBuffer()
+        buf.messages = []
+        connector._chat_buffers["empty_chat"] = buf
+
+        flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            await original_flush(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+        await connector._flush_all_buffers()
+
+        # _flush_all_buffers now delegates empty-check to _flush_chat_buffer
+        assert flush_calls == ["empty_chat"]
+        # Buffer remains empty — no messages were produced
+        assert connector._chat_buffers["empty_chat"].messages == []
+
+    async def test_stop_flushes_all_buffers(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """stop() force-flushes all non-empty chat buffers before disconnecting."""
+        connector = TelegramUserClientConnector(config)
+        buf = ChatBuffer()
+        buf.messages = [_make_mock_message(1, chat_id=777)]
+        connector._chat_buffers["777"] = buf
+
+        flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            await original_flush(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+
+        # Minimal stop() — no real Telegram client
+        connector._telegram_client = None
+
+        await connector.stop()
+
+        assert "777" in flush_calls
+
+    async def test_stop_cancels_flush_scanner_task(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """stop() cancels the flush scanner task if it is running."""
+        connector = TelegramUserClientConnector(config)
+        connector._telegram_client = None
+
+        # Simulate a running scanner task
+        scanner_task = asyncio.create_task(connector._flush_scanner_loop())
+        connector._flush_scanner_task = scanner_task
+
+        await connector.stop()
+
+        assert scanner_task.cancelled()
+        assert connector._flush_scanner_task is None
