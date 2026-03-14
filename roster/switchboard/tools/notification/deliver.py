@@ -133,12 +133,11 @@ async def _write_outbound_message_inbox(
         return
 
     thread_identity = ctx.source_thread_identity
-    channel = notify_request.delivery.channel
     origin_butler = notify_request.origin_butler
     message_text = notify_request.delivery.message
 
     request_context_payload = {
-        "source_channel": channel,
+        "source_channel": ctx.source_channel,
         "source_endpoint_identity": f"butler:{origin_butler}",
         "source_sender_identity": origin_butler,
         "source_thread_identity": thread_identity,
@@ -173,7 +172,7 @@ async def _write_outbound_message_inbox(
             "Failed to write outbound message to message_inbox",
             extra={
                 "origin_butler": origin_butler,
-                "channel": channel,
+                "channel": ctx.source_channel,
                 "thread_identity": thread_identity,
             },
         )

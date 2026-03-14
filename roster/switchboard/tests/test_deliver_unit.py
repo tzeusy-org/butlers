@@ -1378,6 +1378,7 @@ class TestWriteOutboundMessageInbox:
         import json as _json
 
         req_ctx = _json.loads(pos_args[2])
+        assert req_ctx["source_channel"] == "telegram_bot"
         assert req_ctx["source_thread_identity"] == "12345678:999"
         assert req_ctx["source_sender_identity"] == "relationship"
 
