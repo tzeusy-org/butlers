@@ -55,6 +55,7 @@ import {
   useConnectorDetail,
   useConnectorStats,
   useUpdateConnectorCursor,
+  useUpdateConnectorSettings,
 } from "@/hooks/use-ingestion";
 import type { IngestionPeriod } from "@/api/index.ts";
 
@@ -107,6 +108,20 @@ export default function ConnectorDetailPage() {
     connectorType ?? "",
     endpointIdentity ?? "",
   );
+
+  const settingsMutation = useUpdateConnectorSettings(
+    connectorType ?? "",
+    endpointIdentity ?? "",
+  );
+
+  // Discretion settings state
+  const discretionSettings = (connector?.settings as Record<string, unknown> | null)?.discretion as
+    | Record<string, unknown>
+    | undefined;
+  const currentWeightBypass = (discretionSettings?.weight_bypass as number) ?? 1.0;
+  const currentWeightFailOpen = (discretionSettings?.weight_fail_open as number) ?? 0.5;
+  const [weightBypassDraft, setWeightBypassDraft] = useState<string | null>(null);
+  const [weightFailOpenDraft, setWeightFailOpenDraft] = useState<string | null>(null);
 
   function handleEditClick() {
     setCursorDraft(connector?.checkpoint?.cursor ?? "");
@@ -342,6 +357,125 @@ export default function ConnectorDetailPage() {
                   </p>
                 </div>
               ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Discretion settings card */}
+      {connector && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Discretion Settings</CardTitle>
+            <CardDescription>
+              LLM-based filter thresholds. Changes take effect on next connector restart.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Weight Bypass Threshold
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="inline ml-1 h-3.5 w-3.5 text-muted-foreground/60" />
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-xs">
+                          Senders with weight at or above this value bypass the discretion LLM
+                          entirely (always FORWARD). Default 1.0 = only owner bypasses.
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="1"
+                      value={weightBypassDraft ?? currentWeightBypass}
+                      onChange={(e) => setWeightBypassDraft(e.target.value)}
+                      className="w-24 font-mono text-sm"
+                      data-testid="weight-bypass-input"
+                    />
+                    {weightBypassDraft !== null &&
+                      parseFloat(weightBypassDraft) !== currentWeightBypass && (
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            const val = parseFloat(weightBypassDraft);
+                            if (!isNaN(val)) {
+                              settingsMutation.mutate({
+                                discretion: {
+                                  ...discretionSettings,
+                                  weight_bypass: val,
+                                },
+                              });
+                              setWeightBypassDraft(null);
+                            }
+                          }}
+                          disabled={settingsMutation.isPending}
+                        >
+                          {settingsMutation.isPending ? "Saving..." : "Save"}
+                        </Button>
+                      )}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Fail-Open Threshold
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="inline ml-1 h-3.5 w-3.5 text-muted-foreground/60" />
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-xs">
+                          Senders below this weight fail-closed (LLM errors = IGNORE). Above =
+                          fail-open (LLM errors = FORWARD). Default 0.5.
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="1"
+                      value={weightFailOpenDraft ?? currentWeightFailOpen}
+                      onChange={(e) => setWeightFailOpenDraft(e.target.value)}
+                      className="w-24 font-mono text-sm"
+                      data-testid="weight-fail-open-input"
+                    />
+                    {weightFailOpenDraft !== null &&
+                      parseFloat(weightFailOpenDraft) !== currentWeightFailOpen && (
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            const val = parseFloat(weightFailOpenDraft);
+                            if (!isNaN(val)) {
+                              settingsMutation.mutate({
+                                discretion: {
+                                  ...discretionSettings,
+                                  weight_fail_open: val,
+                                },
+                              });
+                              setWeightFailOpenDraft(null);
+                            }
+                          }}
+                          disabled={settingsMutation.isPending}
+                        >
+                          {settingsMutation.isPending ? "Saving..." : "Save"}
+                        </Button>
+                      )}
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Weight tiers: Owner=1.0, Family/Close-friends=0.9, Known=0.7, Unknown=0.3
+              </p>
             </div>
           </CardContent>
         </Card>

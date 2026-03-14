@@ -69,7 +69,7 @@ def _print_report(results: list[dict], model: str) -> None:
     tn = sum(1 for r in evaluated if r["expected"] == "IGNORE" and r["verdict"] == "IGNORE")
     fn = sum(1 for r in evaluated if r["expected"] == "FORWARD" and r["verdict"] == "IGNORE")
 
-    print(f"\n  Confusion Matrix:")
+    print("\n  Confusion Matrix:")
     print(f"  {'':20s} Predicted FORWARD  Predicted IGNORE")
     print(f"  {'Actual FORWARD':20s} {tp:>17d}  {fn:>16d}")
     print(f"  {'Actual IGNORE':20s} {fp:>17d}  {tn:>16d}")
@@ -89,7 +89,7 @@ def _print_report(results: list[dict], model: str) -> None:
         if r["verdict"] == r["expected"]:
             cat_stats[cat]["correct"] += 1
 
-    print(f"\n  Per-Category Accuracy:")
+    print("\n  Per-Category Accuracy:")
     print(f"  {'Category':25s} {'Correct':>8s} {'Total':>6s} {'Acc':>7s}")
     print(f"  {'-' * 48}")
     for cat in sorted(cat_stats.keys()):

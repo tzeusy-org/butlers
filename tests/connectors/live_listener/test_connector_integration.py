@@ -19,10 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.connectors.discretion import DiscretionResult
 from butlers.connectors.live_listener.checkpoint import VoiceCheckpoint
 from butlers.connectors.live_listener.config import LiveListenerConfig, MicDeviceSpec
 from butlers.connectors.live_listener.connector import LiveListenerConnector, MicPipelineState
-from butlers.connectors.live_listener.discretion import DiscretionResult
 from butlers.connectors.live_listener.metrics import LiveListenerMetrics
 from butlers.connectors.live_listener.session import ConversationSession
 from butlers.connectors.live_listener.transcription import TranscriptionResult

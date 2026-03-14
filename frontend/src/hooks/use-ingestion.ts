@@ -25,6 +25,7 @@ import {
   getIngestionVolume,
   listConnectorSummaries,
   updateConnectorCursor,
+  updateConnectorSettings,
 } from "@/api/index.ts";
 import type { IngestionPeriod } from "@/api/index.ts";
 
@@ -190,6 +191,26 @@ export function useUpdateConnectorCursor(
   return useMutation({
     mutationFn: (cursor: string) =>
       updateConnectorCursor(connectorType, endpointIdentity, cursor),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.connectorDetail(connectorType, endpointIdentity),
+      });
+    },
+  });
+}
+
+/**
+ * Mutation to update connector settings (shallow merge).
+ * Invalidates the connector detail so the page refreshes.
+ */
+export function useUpdateConnectorSettings(
+  connectorType: string,
+  endpointIdentity: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: Record<string, unknown>) =>
+      updateConnectorSettings(connectorType, endpointIdentity, settings),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.connectorDetail(connectorType, endpointIdentity),

@@ -1821,6 +1821,7 @@ export interface ConnectorDetail extends ConnectorSummary {
   registered_via: string;
   checkpoint: ConnectorCheckpoint | null;
   counters: ConnectorCounters | null;
+  settings: Record<string, unknown> | null;
 }
 
 export interface ConnectorCheckpoint {

@@ -49,6 +49,11 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from butlers.connectors.discretion import (
+    ContactWeightResolver,
+    DiscretionConfig,
+    DiscretionEvaluator,
+)
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -216,6 +221,14 @@ class TelegramUserClientConnector:
         self._filtered_event_buffer = FilteredEventBuffer(
             connector_type=config.provider,
             endpoint_identity=config.endpoint_identity,
+        )
+
+        # Discretion layer: LLM-based FORWARD/IGNORE filter per chat.
+        # Weight resolver maps sender → contact role → weight tier.
+        self._discretion_config = DiscretionConfig(env_prefix="TELEGRAM_USER_")
+        self._discretion_evaluators: dict[str, DiscretionEvaluator] = {}
+        self._weight_resolver: ContactWeightResolver | None = (
+            ContactWeightResolver(db_pool) if db_pool is not None else None
         )
 
     async def start(self) -> None:
@@ -459,6 +472,58 @@ class TelegramUserClientConnector:
                     )
                     await self._flush_and_drain()
                     return
+
+                # 3. Discretion layer: LLM-based FORWARD/IGNORE filter.
+                #    Only evaluated when the LLM URL is configured.
+                msg_text = getattr(message, "message", None) or getattr(
+                    message, "text", None
+                )
+                if self._discretion_config.llm_url and msg_text:
+                    chat_id_str = self._extract_chat_id(message) or "unknown"
+                    if chat_id_str not in self._discretion_evaluators:
+                        self._discretion_evaluators[chat_id_str] = DiscretionEvaluator(
+                            source_name=f"tg:{chat_id_str}",
+                            config=self._discretion_config,
+                        )
+                    # Resolve sender weight from contact roles.
+                    sender_id = self._extract_sender_identity(message)
+                    sender_weight = 1.0
+                    if self._weight_resolver and sender_id != "unknown":
+                        sender_weight = await self._weight_resolver.resolve(
+                            "telegram", sender_id
+                        )
+                    d_result = await self._discretion_evaluators[chat_id_str].evaluate(
+                        msg_text, weight=sender_weight
+                    )
+                    if d_result.verdict == "IGNORE":
+                        logger.debug(
+                            "Discretion IGNORE for Telegram message %s in chat %s",
+                            message_id,
+                            chat_id_str,
+                        )
+                        self._filtered_event_buffer.record(
+                            external_message_id=message_id_str,
+                            source_channel=self._config.channel,
+                            sender_identity=self._extract_sender_identity(message),
+                            subject_or_preview=self._extract_preview(message),
+                            filter_reason="discretion:IGNORE",
+                            full_payload=FilteredEventBuffer.full_payload(
+                                channel=self._config.channel,
+                                provider=self._config.provider,
+                                endpoint_identity=self._config.endpoint_identity,
+                                external_event_id=message_id_str,
+                                external_thread_id=self._extract_chat_id(message),
+                                observed_at=datetime.now(UTC).isoformat(),
+                                sender_identity=self._extract_sender_identity(message),
+                                raw=(
+                                    message.to_dict()
+                                    if hasattr(message, "to_dict")
+                                    else {}
+                                ),
+                            ),
+                        )
+                        await self._flush_and_drain()
+                        return
 
                 # Normalize to ingest.v1
                 envelope = await self._normalize_to_ingest_v1(message)

@@ -80,8 +80,9 @@ def _print_report(latencies: list[float], errors: int, model: str) -> None:
         print(f"  {'Max':15s} {max(latencies):>9.0f}ms")
         print(f"  {'Std Dev':15s} {statistics.stdev(latencies):>9.0f}ms" if n > 1 else "")
 
-        over_budget = sum(1 for l in latencies if l > CONNECTOR_TIMEOUT_MS)
-        print(f"\n  Over {CONNECTOR_TIMEOUT_MS:.0f}ms budget: {over_budget}/{n} ({over_budget/n*100:.1f}%)")
+        over_budget = sum(1 for lat in latencies if lat > CONNECTOR_TIMEOUT_MS)
+        pct = over_budget / n * 100
+        print(f"\n  Over {CONNECTOR_TIMEOUT_MS:.0f}ms budget: {over_budget}/{n} ({pct:.1f}%)")
     print(f"{'=' * 70}\n")
 
 
@@ -101,7 +102,8 @@ def test_latency_percentiles(
 
     # p95 must be under the connector's 3s timeout to be viable in production.
     assert p95 <= CONNECTOR_TIMEOUT_MS, (
-        f"p95 latency {p95:.0f}ms exceeds {CONNECTOR_TIMEOUT_MS:.0f}ms connector timeout for {model_name}"
+        f"p95 latency {p95:.0f}ms exceeds {CONNECTOR_TIMEOUT_MS:.0f}ms "
+        f"connector timeout for {model_name}"
     )
 
 

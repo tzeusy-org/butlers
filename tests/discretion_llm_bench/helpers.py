@@ -7,8 +7,10 @@ import time
 import httpx
 
 # Re-use the actual discretion layer's system prompt and template.
-from butlers.connectors.live_listener.discretion import (
-    _SYSTEM_PROMPT,
+from butlers.connectors.discretion import (
+    _DEFAULT_SYSTEM_PROMPT as _SYSTEM_PROMPT,
+)
+from butlers.connectors.discretion import (
     _USER_PROMPT_TEMPLATE,
     _parse_verdict,
 )
@@ -27,7 +29,7 @@ def build_prompt(entry: dict) -> str:
     return _USER_PROMPT_TEMPLATE.format(
         n=len(context),
         context=context_lines,
-        mic="webcam",
+        source="webcam",
         text=entry["text"],
     )
 

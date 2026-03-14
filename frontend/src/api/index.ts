@@ -360,6 +360,7 @@ export {
   getIngestionVolume,
   listConnectorSummaries,
   updateConnectorCursor,
+  updateConnectorSettings,
 } from "./client.ts";
 
 export type {

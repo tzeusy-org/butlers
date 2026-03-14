@@ -2021,6 +2021,7 @@ interface _BackendConnectorEntry {
   today_messages_failed: number;
   checkpoint_cursor: string | null;
   checkpoint_updated_at: string | null;
+  settings: Record<string, unknown> | null;
 }
 
 /** Raw aggregate summary from GET /api/switchboard/connectors/summary. */
@@ -2117,6 +2118,7 @@ function _toConnectorDetail(entry: _BackendConnectorEntry): ConnectorDetail {
       checkpoint_saves: entry.counter_checkpoint_saves,
       dedupe_accepted: entry.counter_dedupe_accepted,
     },
+    settings: entry.settings,
   };
 }
 
@@ -2306,6 +2308,26 @@ export async function updateConnectorCursor(
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cursor }),
+    },
+  );
+  return {
+    ...resp,
+    data: _toConnectorDetail(resp.data),
+  };
+}
+
+/** Update connector settings (shallow merge). */
+export async function updateConnectorSettings(
+  connectorType: string,
+  endpointIdentity: string,
+  settings: Record<string, unknown>,
+): Promise<ApiResponse<ConnectorDetail>> {
+  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
+    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/settings`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings }),
     },
   );
   return {

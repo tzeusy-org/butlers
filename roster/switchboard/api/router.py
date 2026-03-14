@@ -67,6 +67,7 @@ if _spec is not None and _spec.loader is not None:
     RoutingInstructionCreate = _models.RoutingInstructionCreate
     RoutingInstructionUpdate = _models.RoutingInstructionUpdate
     CursorUpdateRequest = _models.CursorUpdateRequest
+    ConnectorSettingsUpdateRequest = _models.ConnectorSettingsUpdateRequest
     validate_condition = _models.validate_condition
     IngestionRule = _models.IngestionRule
     IngestionRuleCreate = _models.IngestionRuleCreate
@@ -765,6 +766,7 @@ def _row_to_connector_entry(r: dict) -> Any:
         checkpoint_updated_at=str(r["checkpoint_updated_at"])
         if r.get("checkpoint_updated_at")
         else None,
+        settings=r.get("settings"),
     )
 
 
@@ -1079,6 +1081,68 @@ async def update_connector_cursor(
         connector_type,
         endpoint_identity,
         body.cursor,
+    )
+    return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
+
+
+# ---------------------------------------------------------------------------
+# PATCH /connectors/{type}/{identity}/settings — update connector settings
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/connectors/{connector_type}/{endpoint_identity}/settings",
+    response_model=ApiResponse[ConnectorEntry],
+)
+async def update_connector_settings(
+    connector_type: str,
+    endpoint_identity: str,
+    body: ConnectorSettingsUpdateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ConnectorEntry]:
+    """Merge new settings into a connector's settings JSONB.
+
+    The body ``settings`` object is shallow-merged with the existing
+    settings (top-level keys are replaced, not deep-merged).
+
+    Note: settings are read on connector startup — changes take effect
+    on the next connector restart.
+    """
+    pool = _pool(db)
+
+    try:
+        row = await pool.fetchrow(
+            "UPDATE connector_registry"
+            " SET settings = COALESCE(settings, '{}'::jsonb) || $3::jsonb"
+            " WHERE connector_type = $1 AND endpoint_identity = $2"
+            " RETURNING *",
+            connector_type,
+            endpoint_identity,
+            json.dumps(body.settings),
+        )
+    except Exception:
+        logger.warning(
+            "Failed to update settings for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    row_dict = dict(row)
+    row_dict.setdefault("today_messages_ingested", 0)
+    row_dict.setdefault("today_messages_failed", 0)
+
+    logger.info(
+        "Updated settings for %s/%s",
+        connector_type,
+        endpoint_identity,
     )
     return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
 

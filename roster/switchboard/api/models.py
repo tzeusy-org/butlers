@@ -112,6 +112,8 @@ class ConnectorEntry(BaseModel):
     # Checkpoint info
     checkpoint_cursor: str | None = None
     checkpoint_updated_at: str | None = None
+    # Runtime-configurable settings (e.g. discretion thresholds)
+    settings: dict | None = None
 
 
 class ConnectorSummary(BaseModel):
@@ -805,3 +807,12 @@ class CursorUpdateRequest(BaseModel):
         if not v:
             raise ValueError("cursor must be non-empty")
         return v
+
+
+class ConnectorSettingsUpdateRequest(BaseModel):
+    """Request body for PATCH /connectors/{type}/{identity}/settings.
+
+    Accepts a partial JSON object that is merged into the existing settings.
+    """
+
+    settings: dict
