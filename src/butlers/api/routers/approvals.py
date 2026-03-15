@@ -512,15 +512,30 @@ async def _dispatch_approved_action(
 ) -> dict | None:
     """Dispatch an approved action via MCP and mark it as executed.
 
-    Tries to call the tool on a running butler daemon. If the daemon is
-    unreachable or the call fails, the action remains in 'approved' state
-    for later retry.
+    For ``notify`` actions, calls the switchboard's ``deliver`` tool directly
+    to bypass the daemon-side email guard (the action was already approved by
+    a human — re-running it through notify() would just re-park it).
+
+    For other tools, calls the tool by name on any available butler daemon.
+
+    If the daemon is unreachable or the call fails, the action remains in
+    'approved' state for later retry.
 
     Returns the updated action dict on success, or None if dispatch failed.
     """
-    # Find a butler daemon to dispatch on — try switchboard first (it has notify),
-    # then fall back to any available butler
-    target_butlers = ["switchboard"] + [n for n in mcp_mgr.butler_names if n != "switchboard"]
+    # For notify actions, call switchboard deliver directly to bypass the
+    # email guard. notify() would re-check the recipient against contacts
+    # and park it again.
+    if tool_name == "notify":
+        dispatch_tool = "deliver"
+        dispatch_args = dict(tool_args)
+        # deliver expects source_butler; notify tool_args don't include it
+        dispatch_args.setdefault("source_butler", "dashboard")
+        target_butlers = ["switchboard"]
+    else:
+        dispatch_tool = tool_name
+        dispatch_args = tool_args
+        target_butlers = ["switchboard"] + [n for n in mcp_mgr.butler_names if n != "switchboard"]
 
     for butler_name in target_butlers:
         try:
@@ -529,7 +544,7 @@ async def _dispatch_approved_action(
                 timeout=_MCP_DISPATCH_TIMEOUT_S,
             )
             mcp_result = await asyncio.wait_for(
-                client.call_tool(tool_name, tool_args),
+                client.call_tool(dispatch_tool, dispatch_args),
                 timeout=_MCP_DISPATCH_TIMEOUT_S,
             )
 
