@@ -29,7 +29,7 @@ class TestUnionColumnSpec:
     """
 
     def test_ingested_cols_exact_content(self) -> None:
-        """_INGESTED_COLS must match the original hardcoded ingestion_events SELECT list."""
+        """_INGESTED_COLS must match the ingestion_events SELECT list."""
         from butlers.core.ingestion_events import _INGESTED_COLS
 
         expected = (
@@ -38,9 +38,9 @@ class TestUnionColumnSpec:
             "source_thread_identity, external_event_id, dedupe_key, "
             "dedupe_strategy, ingestion_tier, policy_tier, "
             "triage_decision, triage_target, "
-            "'ingested'::text AS status, "
+            "status, "
             "NULL::text AS filter_reason, "
-            "NULL::text AS error_detail"
+            "error_detail"
         )
         assert _INGESTED_COLS == expected
 
@@ -63,7 +63,7 @@ class TestUnionColumnSpec:
         assert _FILTERED_COLS == expected
 
     def test_event_columns_exact_content(self) -> None:
-        """_EVENT_COLUMNS must match the original ingestion_events column list for point lookups."""
+        """_EVENT_COLUMNS must match the ingestion_events column list for point lookups."""
         from butlers.core.ingestion_events import _EVENT_COLUMNS
 
         expected = (
@@ -71,7 +71,8 @@ class TestUnionColumnSpec:
             "source_endpoint_identity, source_sender_identity, "
             "source_thread_identity, external_event_id, dedupe_key, "
             "dedupe_strategy, ingestion_tier, policy_tier, "
-            "triage_decision, triage_target"
+            "triage_decision, triage_target, "
+            "status, error_detail"
         )
         assert _EVENT_COLUMNS == expected
 
@@ -640,14 +641,15 @@ class TestIngestionEventsCount:
         _, _, args = pool.calls[0]
         assert args == ("telegram_bot",)
 
-    async def test_status_ingested_queries_only_ingestion_events(self) -> None:
+    async def test_status_ingested_includes_status_filter(self) -> None:
         from butlers.core.ingestion_events import ingestion_events_count
 
         pool = _FakePool(fetchval_result=5)
         await ingestion_events_count(pool, status="ingested")
-        _, sql, _ = pool.calls[0]
+        _, sql, args = pool.calls[0]
         assert "shared.ingestion_events" in sql
-        assert "connectors.filtered_events" not in sql
+        assert "status" in sql
+        assert "ingested" in args
 
     async def test_status_ingested_with_channel(self) -> None:
         from butlers.core.ingestion_events import ingestion_events_count
@@ -657,16 +659,17 @@ class TestIngestionEventsCount:
         _, sql, args = pool.calls[0]
         assert "shared.ingestion_events" in sql
         assert "source_channel" in sql
-        assert args == ("email",)
+        assert args == ("ingested", "email")
 
-    async def test_status_filtered_queries_only_filtered_events(self) -> None:
+    async def test_status_filtered_includes_both_tables(self) -> None:
+        """Always-UNION approach includes both tables; status filter is in outer WHERE."""
         from butlers.core.ingestion_events import ingestion_events_count
 
         pool = _FakePool(fetchval_result=7)
         await ingestion_events_count(pool, status="filtered")
         _, sql, args = pool.calls[0]
         assert "connectors.filtered_events" in sql
-        assert "shared.ingestion_events" not in sql
+        assert "shared.ingestion_events" in sql
         assert "filtered" in args
 
     async def test_status_filtered_with_channel(self) -> None:
@@ -680,8 +683,8 @@ class TestIngestionEventsCount:
         assert "filtered" in args
         assert "telegram_bot" in args
 
-    async def test_status_error_queries_filtered_events(self) -> None:
-        """status='error' (non-ingested) should query filtered_events."""
+    async def test_status_error_includes_status_filter(self) -> None:
+        """status='error' should appear as a bind arg in the WHERE clause."""
         from butlers.core.ingestion_events import ingestion_events_count
 
         pool = _FakePool(fetchval_result=1)
@@ -1087,27 +1090,8 @@ class TestIngestionEventReplayRequest:
         _, sql, _ = pool.calls[0]
         assert "RETURNING" in sql.upper()
 
-    async def test_update_sql_uses_any_for_status_filter(self) -> None:
-        """The UPDATE WHERE clause must use ANY($) to filter replayable statuses."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        pool = _FakePool(fetchrow_result=returning_row)
-        await ingestion_event_replay_request(pool, event_id)
-        _, sql, args = pool.calls[0]
-        assert "ANY" in sql.upper()
-        # The replayable list must be passed as a query parameter
-        replayable_arg = None
-        for arg in args:
-            if isinstance(arg, list):
-                replayable_arg = arg
-                break
-        assert replayable_arg is not None, "Expected a list argument for ANY($)"
-        assert set(replayable_arg) == {"filtered", "error", "replay_failed"}
-
-    async def test_update_targets_connectors_filtered_events(self) -> None:
-        """The UPDATE must target connectors.filtered_events."""
+    async def test_first_update_targets_ingestion_events(self) -> None:
+        """The first UPDATE must target shared.ingestion_events (routing-failed events)."""
         from butlers.core.ingestion_events import ingestion_event_replay_request
 
         event_id = uuid.uuid4()
@@ -1115,7 +1099,29 @@ class TestIngestionEventReplayRequest:
         pool = _FakePool(fetchrow_result=returning_row)
         await ingestion_event_replay_request(pool, event_id)
         _, sql, _ = pool.calls[0]
+        assert "shared.ingestion_events" in sql
+        assert "failed" in sql.lower()
+
+    async def test_fallback_update_targets_filtered_events(self) -> None:
+        """When ingestion_events UPDATE misses, the fallback UPDATE targets filtered_events."""
+        from butlers.core.ingestion_events import ingestion_event_replay_request
+
+        event_id = uuid.uuid4()
+        returning_row = _FakeRecord({"id": event_id})
+        # First fetchrow (ingestion_events UPDATE) misses, first fetchval (status check) None,
+        # second fetchrow (filtered_events UPDATE) hits.
+        pool = _FakePool(
+            fetchrow_results=[None, returning_row],
+            fetchval_result=None,
+        )
+        result = await ingestion_event_replay_request(pool, event_id)
+        assert result["outcome"] == "ok"
+        # The second fetchrow call should target connectors.filtered_events
+        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
+        assert len(fetchrow_calls) == 2
+        _, sql, _ = fetchrow_calls[1]
         assert "connectors.filtered_events" in sql
+        assert "ANY" in sql.upper()
 
     async def test_not_found_when_update_miss_and_no_row(self) -> None:
         """UPDATE returns no row AND follow-up SELECT also returns None → not_found."""
@@ -1128,15 +1134,18 @@ class TestIngestionEventReplayRequest:
         result = await ingestion_event_replay_request(pool, event_id)
         assert result["outcome"] == "not_found"
 
-    async def test_not_found_only_one_fetchval_on_miss(self) -> None:
-        """On the miss path a single fetchval SELECT determines not_found."""
+    async def test_not_found_checks_both_tables(self) -> None:
+        """On the miss path, both tables are checked via fetchval before returning not_found."""
         from butlers.core.ingestion_events import ingestion_event_replay_request
 
         event_id = uuid.uuid4()
         pool = _FakePool(fetchrow_result=None, fetchval_result=None)
         await ingestion_event_replay_request(pool, event_id)
         fetchval_calls = [c for c in pool.calls if c[0] == "fetchval"]
-        assert len(fetchval_calls) == 1
+        assert len(fetchval_calls) == 2
+        # First checks ingestion_events, then filtered_events
+        assert "shared.ingestion_events" in fetchval_calls[0][1]
+        assert "connectors.filtered_events" in fetchval_calls[1][1]
 
     async def test_conflict_when_update_miss_and_row_exists(self) -> None:
         """UPDATE misses (status not replayable) AND SELECT returns current status → conflict."""

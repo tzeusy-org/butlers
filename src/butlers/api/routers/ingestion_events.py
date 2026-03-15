@@ -61,14 +61,21 @@ async def list_ingestion_events(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     source_channel: str | None = Query(None, description="Filter by source channel"),
     status: Literal[
-        "ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"
+        "ingested",
+        "failed",
+        "filtered",
+        "error",
+        "replay_pending",
+        "replay_complete",
+        "replay_failed",
     ]
     | None = Query(
         None,
         description=(
-            "Filter by event status. 'ingested' queries only shared.ingestion_events; "
-            "other values (filtered, error, replay_pending, replay_complete, replay_failed) "
-            "query only connectors.filtered_events. Omit for unified stream."
+            "Filter by event status. 'ingested'/'failed' query shared.ingestion_events; "
+            "'filtered'/'error'/'replay_complete'/'replay_failed' query "
+            "connectors.filtered_events; 'replay_pending' queries both tables. "
+            "Omit for unified stream."
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -182,16 +189,15 @@ async def replay_ingestion_event(
     event_id: str,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict:
-    """Request replay of a filtered or errored event.
+    """Request replay of a failed or filtered event.
 
-    Updates ``connectors.filtered_events`` status to ``replay_pending`` for
-    events currently in ``filtered``, ``error``, or ``replay_failed`` state.
-    Events in ``replay_pending`` or ``replay_complete`` are not replayable
-    (returns 409 Conflict).
+    Checks ``shared.ingestion_events`` first (for routing-failed events with
+    status ``'failed'``), then falls back to ``connectors.filtered_events``
+    (for events with status ``filtered``, ``error``, or ``replay_failed``).
 
     Returns:
         200 — ``{"status": "replay_pending", "id": "<uuid>"}``
-        404 — event not found in ``connectors.filtered_events``
+        404 — event not found in either table
         409 — event exists but is not in a replayable state
     """
     try:
@@ -205,7 +211,7 @@ async def replay_ingestion_event(
         raise HTTPException(status_code=422, detail=f"Invalid event_id: {exc}") from exc
 
     if result["outcome"] == "not_found":
-        raise HTTPException(status_code=404, detail=f"Filtered event '{event_id}' not found")
+        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
 
     if result["outcome"] == "conflict":
         raise HTTPException(

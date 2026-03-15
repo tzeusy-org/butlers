@@ -1568,9 +1568,7 @@ class ButlerDaemon:
                 )
                 if result.classification_error or result.routing_error or result.failed_targets:
                     routing_failed = True
-                    _parts = [
-                        p for p in [result.classification_error, result.routing_error] if p
-                    ]
+                    _parts = [p for p in [result.classification_error, result.routing_error] if p]
                     if result.failed_targets:
                         _parts.append(f"failed_targets: {result.failed_targets}")
                     _routing_error_detail = "; ".join(_parts) if _parts else "routing failed"
@@ -1588,9 +1586,7 @@ class ButlerDaemon:
                 try:
                     from butlers.core.ingestion_events import ingestion_event_mark_failed
 
-                    await ingestion_event_mark_failed(
-                        pool, ref.request_id, _routing_error_detail
-                    )
+                    await ingestion_event_mark_failed(pool, ref.request_id, _routing_error_detail)
                 except Exception:
                     logger.warning(
                         "DurableBuffer: failed to mark ingestion event failed for request_id=%s",
@@ -3187,15 +3183,11 @@ class ButlerDaemon:
                     if result.classification_error or result.routing_error or result.failed_targets:
                         routing_failed = True
                         _parts = [
-                            p
-                            for p in [result.classification_error, result.routing_error]
-                            if p
+                            p for p in [result.classification_error, result.routing_error] if p
                         ]
                         if result.failed_targets:
                             _parts.append(f"failed_targets: {result.failed_targets}")
-                        _routing_error_detail = (
-                            "; ".join(_parts) if _parts else "routing failed"
-                        )
+                        _routing_error_detail = "; ".join(_parts) if _parts else "routing failed"
                 except Exception as _proc_exc:
                     routing_failed = True
                     _routing_error_detail = f"{type(_proc_exc).__name__}: {_proc_exc}"
@@ -3210,9 +3202,7 @@ class ButlerDaemon:
                     try:
                         from butlers.core.ingestion_events import ingestion_event_mark_failed
 
-                        await ingestion_event_mark_failed(
-                            pool, request_id, _routing_error_detail
-                        )
+                        await ingestion_event_mark_failed(pool, request_id, _routing_error_detail)
                     except Exception:
                         logger.warning(
                             "Ingest: failed to mark ingestion event failed for request_id=%s",
