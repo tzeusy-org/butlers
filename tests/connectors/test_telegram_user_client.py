@@ -1095,6 +1095,17 @@ class TestChatBuffer:
         b1.messages.append("x")
         assert b2.messages == []
 
+    def test_chat_title_defaults_to_none(self) -> None:
+        """ChatBuffer.chat_title defaults to None."""
+        buf = ChatBuffer()
+        assert buf.chat_title is None
+
+    def test_chat_title_can_be_set(self) -> None:
+        """ChatBuffer.chat_title can be assigned."""
+        buf = ChatBuffer()
+        buf.chat_title = "My Group"
+        assert buf.chat_title == "My Group"
+
 
 # ---------------------------------------------------------------------------
 # Config: new buffering env vars
@@ -1211,6 +1222,30 @@ class TestChatBuffering:
 
         assert len(connector._chat_buffers["111"].messages) == 2
         assert len(connector._chat_buffers["222"].messages) == 1
+
+    async def test_buffer_message_captures_chat_title_from_message_chat(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_buffer_message populates chat_title from message.chat.title when available."""
+        connector = TelegramUserClientConnector(config)
+        msg = _make_mock_message(chat_id=7777)
+        # Simulate a group chat entity with a title attribute
+        msg.chat = MagicMock()
+        msg.chat.title = "My Group Chat"
+        await connector._buffer_message(msg)
+        assert connector._chat_buffers["7777"].chat_title == "My Group Chat"
+
+    async def test_buffer_message_chat_title_none_for_dm(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_buffer_message leaves chat_title as None for DMs (no title attribute)."""
+        connector = TelegramUserClientConnector(config)
+        msg = _make_mock_message(chat_id=8888)
+        # DM: message.chat has no title (or title is None/falsy)
+        msg.chat = MagicMock()
+        msg.chat.title = None
+        await connector._buffer_message(msg)
+        assert connector._chat_buffers["8888"].chat_title is None
 
     async def test_buffer_message_falls_back_when_no_chat_id(
         self, config: TelegramUserClientConnectorConfig
@@ -1872,14 +1907,31 @@ def _make_batch_msg(
     text: str = "hello",
     date: datetime | None = None,
     reply_to_msg_id: int | None = None,
+    sender_first_name: str | None = None,
+    sender_username: str | None = None,
 ) -> MagicMock:
-    """Build a mock message suitable for batch envelope tests."""
+    """Build a mock message suitable for batch envelope tests.
+
+    By default, ``sender`` is set to ``None`` so that ``_get_sender_display_name``
+    falls back to the raw ``sender_id`` string.  Pass ``sender_first_name`` or
+    ``sender_username`` to simulate a Telethon sender object with display info.
+    """
     m = MagicMock()
     m.id = msg_id
     m.sender_id = sender_id
     m.message = text
     m.date = date or datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
     m.reply_to_msg_id = reply_to_msg_id
+
+    # Control sender attribute explicitly to avoid MagicMock auto-attribute surprises.
+    if sender_first_name is not None or sender_username is not None:
+        mock_sender = MagicMock()
+        mock_sender.first_name = sender_first_name
+        mock_sender.username = sender_username
+        m.sender = mock_sender
+    else:
+        m.sender = None
+
     return m
 
 
@@ -1940,12 +1992,37 @@ class TestBuildBatchEnvelope:
     def test_normalized_text_uses_sender_prefix(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Each line in normalized_text has '[sender_id]: message' format."""
+        """Each line in normalized_text has '[<display_name>]: message' format.
+
+        When no sender object is present, display name falls back to raw sender_id.
+        """
         connector = TelegramUserClientConnector(config)
+        # No sender object → display name falls back to raw sender_id "42"
         buffered = [_make_batch_msg(1, sender_id=42, text="hi there")]
         envelope = connector._build_batch_envelope("chat1", buffered, buffered)
         normalized = envelope["payload"]["normalized_text"]
         assert "[42]: hi there" in normalized
+
+    def test_normalized_text_uses_first_name_when_available(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Lines use first_name from sender object when available."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1, sender_id=42, text="hi there", sender_first_name="Alice")]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "[Alice]: hi there" in normalized
+        assert "[42]" not in normalized
+
+    def test_normalized_text_uses_username_when_no_first_name(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Lines use @username from sender when first_name is absent."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1, sender_id=42, text="yo", sender_username="alice_tg")]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "[@alice_tg]: yo" in normalized
 
     def test_normalized_text_sorted_by_message_id(
         self, config: TelegramUserClientConnectorConfig
@@ -2040,6 +2117,263 @@ class TestBuildBatchEnvelope:
         envelope = connector._build_batch_envelope("chat1", [msg], [msg])
         entry = envelope["payload"]["conversation_history"][0]
         assert entry["timestamp"] is None
+
+
+# ---------------------------------------------------------------------------
+# _build_batch_envelope normalized_text framing tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildBatchEnvelopeFraming:
+    """Tests for the enriched normalized_text framing in _build_batch_envelope."""
+
+    def test_header_contains_chat_id(self, config: TelegramUserClientConnectorConfig) -> None:
+        """normalized_text header includes the chat_id."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1)]
+        envelope = connector._build_batch_envelope("chat999", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "chat999" in normalized
+
+    def test_header_includes_chat_title_when_provided(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """When chat_title is given, normalized_text header includes it."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1)]
+        envelope = connector._build_batch_envelope(
+            "chat42", buffered, buffered, chat_title="My Group Chat"
+        )
+        normalized = envelope["payload"]["normalized_text"]
+        assert "My Group Chat" in normalized
+        assert "chat42" in normalized
+
+    def test_header_degrades_gracefully_without_chat_title(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """When chat_title is None, normalized_text header uses chat_id only (no error)."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1)]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered, chat_title=None)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "chat1" in normalized
+
+    def test_header_includes_time_window_when_multiple_messages(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Header includes oldest→newest timestamps when messages span a time range."""
+        connector = TelegramUserClientConnector(config)
+        dt1 = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
+        dt2 = datetime(2024, 6, 1, 10, 5, 0, tzinfo=UTC)
+        msg1 = _make_batch_msg(1, date=dt1)
+        msg2 = _make_batch_msg(2, date=dt2)
+        buffered = [msg1, msg2]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert dt1.isoformat() in normalized
+        assert dt2.isoformat() in normalized
+
+    def test_header_includes_single_timestamp_when_one_message(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Header includes a single timestamp line when only one message."""
+        connector = TelegramUserClientConnector(config)
+        dt = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
+        msg = _make_batch_msg(1, date=dt)
+        envelope = connector._build_batch_envelope("chat1", [msg], [msg])
+        normalized = envelope["payload"]["normalized_text"]
+        assert dt.isoformat() in normalized
+
+    def test_header_includes_participant_list(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Participant list is present in the header section."""
+        connector = TelegramUserClientConnector(config)
+        msg1 = _make_batch_msg(1, sender_id=10, sender_first_name="Alice")
+        msg2 = _make_batch_msg(2, sender_id=20, sender_first_name="Bob")
+        buffered = [msg1, msg2]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "Alice" in normalized
+        assert "Bob" in normalized
+        assert "Participants:" in normalized
+
+    def test_owner_tagged_in_participant_list(self) -> None:
+        """Owner is tagged '(owner)' in the Participants line."""
+        # endpoint_identity uses numeric format → owner_sender_id is resolvable
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            endpoint_identity="telegram:user:123456",
+        )
+        connector = TelegramUserClientConnector(config)
+        owner_msg = _make_batch_msg(1, sender_id=123456, sender_first_name="Me")
+        other_msg = _make_batch_msg(2, sender_id=999, sender_first_name="Friend")
+        buffered = [owner_msg, other_msg]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "Me (owner)" in normalized
+        assert "Friend" in normalized
+        assert "Friend (owner)" not in normalized
+
+    def test_owner_tagged_in_message_lines(self) -> None:
+        """Owner messages are tagged '(owner)' on each message line."""
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            endpoint_identity="telegram:user:123456",
+        )
+        connector = TelegramUserClientConnector(config)
+        owner_msg = _make_batch_msg(1, sender_id=123456, sender_first_name="Me", text="hello")
+        envelope = connector._build_batch_envelope("chat1", [owner_msg], [owner_msg])
+        normalized = envelope["payload"]["normalized_text"]
+        assert "[Me (owner)]: hello" in normalized
+
+    def test_non_owner_messages_not_tagged(self) -> None:
+        """Non-owner message lines do not get '(owner)' tag."""
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            endpoint_identity="telegram:user:123456",
+        )
+        connector = TelegramUserClientConnector(config)
+        other_msg = _make_batch_msg(1, sender_id=999, sender_first_name="Friend", text="hi")
+        envelope = connector._build_batch_envelope("chat1", [other_msg], [other_msg])
+        normalized = envelope["payload"]["normalized_text"]
+        assert "[Friend]: hi" in normalized
+        assert "(owner)" not in normalized
+
+    def test_owner_tagging_disabled_for_username_identity(self) -> None:
+        """Owner tagging is skipped (graceful degrade) when identity uses @username format."""
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            endpoint_identity="telegram:user:@myusername",
+        )
+        connector = TelegramUserClientConnector(config)
+        msg = _make_batch_msg(1, sender_id=123456, sender_first_name="Someone", text="test")
+        envelope = connector._build_batch_envelope("chat1", [msg], [msg])
+        normalized = envelope["payload"]["normalized_text"]
+        # No owner tagging when numeric ID is unavailable
+        assert "(owner)" not in normalized
+
+    def test_footer_contains_message_count(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Footer includes message count."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1), _make_batch_msg(2), _make_batch_msg(3)]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "3 new" in normalized
+
+    def test_footer_contains_flush_window(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Footer includes flush window timestamp range."""
+        connector = TelegramUserClientConnector(config)
+        dt1 = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
+        dt2 = datetime(2024, 6, 1, 10, 5, 0, tzinfo=UTC)
+        buffered = [_make_batch_msg(1, date=dt1), _make_batch_msg(2, date=dt2)]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        normalized = envelope["payload"]["normalized_text"]
+        assert "Flush window:" in normalized
+
+    def test_conversation_history_unchanged_by_framing(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """conversation_history payload is not affected by normalized_text framing."""
+        connector = TelegramUserClientConnector(config)
+        msg_date = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
+        msg = _make_batch_msg(7, sender_id=55, text="test text", date=msg_date, reply_to_msg_id=3)
+        envelope = connector._build_batch_envelope("chat1", [msg], [msg])
+        entry = envelope["payload"]["conversation_history"][0]
+        # conversation_history remains raw/unchanged
+        assert entry["message_id"] == 7
+        assert entry["sender_id"] == 55
+        assert entry["text"] == "test text"
+        assert entry["timestamp"] == msg_date.isoformat()
+        assert entry["reply_to"] == 3
+
+
+# ---------------------------------------------------------------------------
+# _get_sender_display_name helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetSenderDisplayName:
+    """Tests for TelegramUserClientConnector._get_sender_display_name."""
+
+    def test_returns_first_name_when_present(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Returns sender.first_name when available."""
+        connector = TelegramUserClientConnector(config)
+        msg = _make_batch_msg(1, sender_id=42, sender_first_name="Alice")
+        assert connector._get_sender_display_name(msg) == "Alice"
+
+    def test_returns_username_when_no_first_name(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Returns @username when first_name is absent but username is present."""
+        connector = TelegramUserClientConnector(config)
+        msg = _make_batch_msg(1, sender_id=42, sender_username="alice_tg")
+        assert connector._get_sender_display_name(msg) == "@alice_tg"
+
+    def test_falls_back_to_sender_id_when_no_sender(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Falls back to str(sender_id) when message.sender is None."""
+        connector = TelegramUserClientConnector(config)
+        msg = _make_batch_msg(1, sender_id=42)  # sender=None by default
+        assert connector._get_sender_display_name(msg) == "42"
+
+    def test_returns_unknown_when_no_sender_and_no_sender_id(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Returns 'unknown' when neither sender nor sender_id is available."""
+        connector = TelegramUserClientConnector(config)
+        msg = MagicMock()
+        msg.sender = None
+        msg.sender_id = None
+        assert connector._get_sender_display_name(msg) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# _extract_owner_sender_id helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractOwnerSenderId:
+    """Tests for TelegramUserClientConnector._extract_owner_sender_id."""
+
+    def test_numeric_identity_returns_id_string(self) -> None:
+        """Numeric endpoint_identity yields the numeric ID as a string."""
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost/",
+            endpoint_identity="telegram:user:123456",
+        )
+        connector = TelegramUserClientConnector(config)
+        assert connector._extract_owner_sender_id() == "123456"
+
+    def test_username_identity_returns_none(self) -> None:
+        """@username endpoint_identity returns None (graceful degrade)."""
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost/",
+            endpoint_identity="telegram:user:@myuser",
+        )
+        connector = TelegramUserClientConnector(config)
+        assert connector._extract_owner_sender_id() is None
+
+    def test_empty_identity_returns_none(self) -> None:
+        """Empty endpoint_identity returns None."""
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost/",
+            endpoint_identity="",
+        )
+        connector = TelegramUserClientConnector(config)
+        assert connector._extract_owner_sender_id() is None
+
+    def test_unrecognized_format_returns_none(self) -> None:
+        """Unrecognized identity format returns None."""
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost/",
+            endpoint_identity="other:format:123",
+        )
+        connector = TelegramUserClientConnector(config)
+        assert connector._extract_owner_sender_id() is None
 
 
 # ---------------------------------------------------------------------------
