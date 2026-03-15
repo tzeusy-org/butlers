@@ -1,5 +1,9 @@
 # Source Filter Registry
 
+## SUPERSEDED
+
+This spec is superseded by the unified ingestion-policy system. The `source_filters` and `connector_source_filters` tables have been migrated to `ingestion_rules` by sw_027. This spec is archived for historical reference only.
+
 ## Purpose
 Defines the shared registry of named source filter objects and their connector assignments. Filters are created once and reused across any number of connectors. Each filter specifies a filter mode (blacklist or whitelist), a source key type (the envelope field to match against, e.g. `domain`, `chat_id`), and a list of patterns. The registry is stored in the switchboard DB and managed via a REST API.
 

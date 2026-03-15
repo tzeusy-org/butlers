@@ -1,5 +1,9 @@
 # Connector Source Filter Enforcement
 
+## SUPERSEDED
+
+This spec is superseded by the unified ingestion-policy system. The implementation references the legacy `SourceFilterEvaluator`, but the actual code has migrated to use `IngestionPolicyEvaluator`. This spec is archived for historical reference only.
+
 ## Purpose
 Defines the pre-ingest filter evaluation contract that ALL connectors MUST implement. After normalizing an event but before submitting to the Switchboard, each connector evaluates the message against its active source filters. Messages that fail the filter gate are dropped at the connector with a Prometheus counter increment and never reach the Switchboard or any butler. A shared `SourceFilterEvaluator` module provides the loading, caching, and evaluation logic for all connector types.
 

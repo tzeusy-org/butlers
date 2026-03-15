@@ -1,5 +1,9 @@
 # Dashboard — Connector Filter UI
 
+## SUPERSEDED
+
+This spec is superseded by the unified ingestion-policy system as of the sw_028 refactor. The UI for managing source filter assignments has been consolidated into the unified ingestion rules tab in dashboard-butler-management. This spec is archived for historical reference only.
+
 ## Purpose
 Defines the frontend UI for managing source filter assignments at `/ingestion?tab=connectors`. Each ConnectorCard and the ConnectorDetailPage gain a Filters button that opens an assignment dialog. A separate Manage Filters panel provides CRUD for named filter objects without leaving the connectors page.
 
