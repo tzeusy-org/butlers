@@ -9,6 +9,8 @@ Provides REST API access to the approvals subsystem for dashboard integration:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from uuid import UUID
@@ -17,6 +19,7 @@ import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.models import (
     ApiResponse,
     PaginatedResponse,
@@ -444,8 +447,9 @@ async def approve_action(
     action_id: str,
     request: ApprovalActionApproveRequest = Body(default=ApprovalActionApproveRequest()),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
-    """Approve a pending action and execute it."""
+    """Approve a pending action and dispatch it for execution."""
     try:
         parsed_id = UUID(action_id)
     except ValueError:
@@ -454,6 +458,12 @@ async def approve_action(
     target_pool = await _find_action_pool(db_mgr, parsed_id)
     if target_pool is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    # Read the action before approval so we have tool_name/args for dispatch
+    async with target_pool.acquire() as conn:
+        action_row = await conn.fetchrow(
+            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
+        )
 
     async with target_pool.acquire() as conn:
         result = await approvals_ops.approve_action(
@@ -470,9 +480,101 @@ async def approve_action(
             raise HTTPException(status_code=409, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
 
+    # Dispatch the approved action via MCP call_tool on a running butler
+    if action_row is not None:
+        tool_name = action_row["tool_name"]
+        raw_args = action_row["tool_args"]
+        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+
+        dispatch_result = await _dispatch_approved_action(
+            mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args
+        )
+        if dispatch_result is not None:
+            result = dispatch_result
+
     # Build the ApprovalAction from the result dict
-    action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
-    return ApiResponse(data=action)
+    action_resp = ApprovalAction(
+        **{k: result[k] for k in ApprovalAction.model_fields if k in result}
+    )
+    return ApiResponse(data=action_resp)
+
+
+_MCP_DISPATCH_TIMEOUT_S = 30.0
+
+
+async def _dispatch_approved_action(
+    mcp_mgr: MCPClientManager,
+    db_mgr: DatabaseManager,
+    pool: asyncpg.Pool,
+    action_id: str,
+    tool_name: str,
+    tool_args: dict,
+) -> dict | None:
+    """Dispatch an approved action via MCP and mark it as executed.
+
+    Tries to call the tool on a running butler daemon. If the daemon is
+    unreachable or the call fails, the action remains in 'approved' state
+    for later retry.
+
+    Returns the updated action dict on success, or None if dispatch failed.
+    """
+    # Find a butler daemon to dispatch on — try switchboard first (it has notify),
+    # then fall back to any available butler
+    target_butlers = ["switchboard"] + [n for n in mcp_mgr.butler_names if n != "switchboard"]
+
+    for butler_name in target_butlers:
+        try:
+            client = await asyncio.wait_for(
+                mcp_mgr.get_client(butler_name),
+                timeout=_MCP_DISPATCH_TIMEOUT_S,
+            )
+            mcp_result = await asyncio.wait_for(
+                client.call_tool(tool_name, tool_args),
+                timeout=_MCP_DISPATCH_TIMEOUT_S,
+            )
+
+            # Parse the MCP result
+            exec_result: dict = {"success": True}
+            if mcp_result.content:
+                for block in mcp_result.content:
+                    if hasattr(block, "text"):
+                        try:
+                            exec_result["result"] = json.loads(block.text)
+                        except (json.JSONDecodeError, TypeError):
+                            exec_result["result"] = {"value": block.text}
+                        break
+
+            if mcp_result.is_error:
+                exec_result["success"] = False
+                exec_result["error"] = exec_result.get("result", {}).get(
+                    "error", "MCP tool call returned error"
+                )
+
+            # Mark as executed in DB
+            async with pool.acquire() as conn:
+                final = await approvals_ops.mark_executed(
+                    conn,
+                    action_id=action_id,
+                    execution_result=exec_result,
+                    success=exec_result["success"],
+                )
+            return final
+
+        except Exception:
+            logger.warning(
+                "Failed to dispatch approved action %s via butler %s",
+                action_id,
+                butler_name,
+                exc_info=True,
+            )
+            continue
+
+    logger.warning(
+        "Could not dispatch approved action %s — no reachable butler; "
+        "action remains in 'approved' state for retry",
+        action_id,
+    )
+    return None
 
 
 @router.post("/actions/{action_id}/reject")

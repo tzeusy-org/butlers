@@ -106,29 +106,6 @@ async def approve_action(
         occurred_at=now,
     )
 
-    # Mark as executed immediately (no tool executor in REST context)
-    executed_row = await pool.fetchrow(
-        "UPDATE pending_actions SET status = $1, decided_at = $2 "
-        "WHERE id = $3 AND status = $4 RETURNING *",
-        ActionStatus.EXECUTED.value,
-        now,
-        parsed_id,
-        ActionStatus.APPROVED.value,
-    )
-    if executed_row is None:
-        # Already transitioned by another process — re-read final state
-        executed_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-
-    await record_approval_event(
-        pool,
-        ApprovalEventType.ACTION_EXECUTION_SUCCEEDED,
-        actor=f"system:{actor_id}",
-        action_id=parsed_id,
-        reason="approved via REST API",
-        metadata={"tool_name": action.tool_name},
-        occurred_at=now,
-    )
-
     # Optionally create a standing rule
     rule_dict: dict[str, Any] | None = None
     if create_rule:
@@ -140,13 +117,71 @@ async def approve_action(
         if "error" not in rule_result:
             rule_dict = rule_result
 
-    # Return final state
+    # Return the approved (not yet executed) state.
+    # Callers with access to a tool executor should dispatch execution
+    # and call mark_executed() afterwards; the REST API does this via
+    # MCP call_tool on the appropriate butler daemon.
     final_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
     result = PendingAction.from_row(final_row).to_dict()
     if rule_dict is not None:
         result["created_rule"] = rule_dict
 
     return result
+
+
+async def mark_executed(
+    pool: Any,
+    action_id: str,
+    execution_result: dict[str, Any] | None = None,
+    success: bool = True,
+    actor_id: str = "dashboard:rest-api",
+) -> dict[str, Any]:
+    """Transition an approved action to executed with an execution result.
+
+    Called after the caller has actually dispatched the tool (e.g. via MCP
+    call_tool). Records the execution outcome and audit event.
+
+    Returns the final action dict or ``{"error": "<message>"}``.
+    """
+    try:
+        parsed_id = uuid.UUID(action_id)
+    except ValueError:
+        return {"error": f"Invalid action_id: {action_id}"}
+
+    now = datetime.now(UTC)
+    er_json = json.dumps(execution_result) if execution_result else None
+
+    executed_row = await pool.fetchrow(
+        "UPDATE pending_actions SET status = $1, execution_result = $2, decided_at = $3 "
+        "WHERE id = $4 AND status = $5 RETURNING *",
+        ActionStatus.EXECUTED.value,
+        er_json,
+        now,
+        parsed_id,
+        ActionStatus.APPROVED.value,
+    )
+    if executed_row is None:
+        row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+        if row is None:
+            return {"error": f"Action not found: {action_id}"}
+        return PendingAction.from_row(row).to_dict()
+
+    event_type = (
+        ApprovalEventType.ACTION_EXECUTION_SUCCEEDED
+        if success
+        else ApprovalEventType.ACTION_EXECUTION_FAILED
+    )
+    await record_approval_event(
+        pool,
+        event_type,
+        actor=f"system:{actor_id}",
+        action_id=parsed_id,
+        reason="executed via REST API dispatch",
+        metadata={"tool_name": PendingAction.from_row(executed_row).tool_name},
+        occurred_at=now,
+    )
+
+    return PendingAction.from_row(executed_row).to_dict()
 
 
 # ---------------------------------------------------------------------------

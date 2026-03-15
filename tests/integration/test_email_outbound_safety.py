@@ -430,6 +430,75 @@ class TestNotifyRecipientValidation:
 
         assert result["status"] == "ok"
 
+    async def test_standing_rule_permits_unknown_email(self, butler_dir: Path) -> None:
+        """Unknown email WITH a matching standing rule MUST be allowed through."""
+        from butlers.modules.approvals.models import ApprovalRule
+
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        rule = ApprovalRule(
+            id=uuid.uuid4(),
+            tool_name="notify",
+            arg_constraints={
+                "recipient": {"type": "exact", "value": UNKNOWN_EMAIL},
+                "channel": {"type": "any"},
+                "message": {"type": "any"},
+                "intent": {"type": "any"},
+            },
+            description="Allow emails to unknown@evil.com",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+        )
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=rule),
+            ),
+        ):
+            result = await notify_fn(
+                channel="email",
+                message="Permitted message",
+                recipient=UNKNOWN_EMAIL,
+            )
+
+        assert result["status"] == "ok", (
+            f"Unknown email WITH a standing rule MUST be allowed, got status={result.get('status')}"
+        )
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+
+    async def test_no_standing_rule_still_parks(self, butler_dir: Path) -> None:
+        """Unknown email WITHOUT a standing rule MUST still be parked."""
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await notify_fn(
+                channel="email",
+                message="Should be blocked",
+                recipient=UNKNOWN_EMAIL,
+            )
+
+        assert result["status"] == "pending_approval"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+
     async def test_telegram_channel_not_affected(self, butler_dir: Path) -> None:
         """Telegram recipients MUST NOT be subject to email validation."""
         daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)

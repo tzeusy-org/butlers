@@ -17,7 +17,7 @@ import pytest
 
 from butlers.api import deps as api_deps
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import wire_db_dependencies
+from butlers.api.deps import MCPClientManager, get_mcp_manager, wire_db_dependencies
 from butlers.api.routers.approvals import _clear_table_cache, _get_db_manager
 
 pytestmark = pytest.mark.unit
@@ -171,6 +171,14 @@ def _app_with_mock_db(
         mock_db.butler_names = []
 
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    # Mock MCPClientManager — approve endpoint needs it for dispatch.
+    # Daemons are not running in tests, so get_client raises; dispatch
+    # gracefully falls through and the action stays in 'approved' state.
+    mock_mcp_mgr = MagicMock(spec=MCPClientManager)
+    mock_mcp_mgr.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp_mgr
+
     return app, mock_conn
 
 
@@ -321,23 +329,21 @@ async def test_get_action_invalid_id(app):
 
 @pytest.mark.asyncio
 async def test_approve_action_success(app):
-    """POST /api/approvals/actions/{action_id}/approve approves and returns updated action."""
+    """POST /api/approvals/actions/{action_id}/approve approves and returns action.
+
+    Without a running daemon, the action stays in 'approved' state (no MCP
+    dispatch). The API returns success either way.
+    """
     action_id = uuid4()
     pending = _make_pending_action_record(action_id=action_id, status="pending")
     approved = _make_pending_action_record(action_id=action_id, status="approved")
-    executed = _make_pending_action_record(
-        action_id=action_id,
-        status="executed",
-        decided_by="human:dashboard:rest-api",
-        decided_at=_NOW,
-    )
 
-    # fetchrow calls: initial SELECT, CAS approve RETURNING, CAS execute RETURNING, final SELECT
+    # fetchrow calls: read tool_args, initial SELECT, CAS approve RETURNING, final SELECT
     app, mock_conn = _app_with_mock_db(
         app,
         fetchrow_return=pending,
     )
-    mock_conn.fetchrow = AsyncMock(side_effect=[pending, approved, executed, executed])
+    mock_conn.fetchrow = AsyncMock(side_effect=[pending, pending, approved, approved])
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -347,7 +353,7 @@ async def test_approve_action_success(app):
     assert response.status_code == 200
     data = response.json()
     assert data["data"]["id"] == str(action_id)
-    assert data["data"]["status"] == "executed"
+    assert data["data"]["status"] == "approved"
 
 
 @pytest.mark.asyncio
