@@ -14,15 +14,15 @@ The education butler SHALL be configured with the correct port, description, mod
 
 - **WHEN** the education butler is running
 - **THEN** it operates on port 41107 with description "Personalized tutor with spaced repetition, mind maps, and adaptive learning"
-- **AND** it uses the `claude-code` runtime type with model `claude-opus-4-6`
+- **AND** it uses the `codex` runtime type with model `gpt-5.2`
 - **AND** it permits a maximum of 3 concurrent sessions
 
 #### Scenario: Model tier rationale is enforced by configuration
 
 - **WHEN** the `butler.toml` is loaded
-- **THEN** the `[butler.runtime]` section MUST specify `model = "claude-opus-4-6"`
+- **THEN** the `[butler.runtime]` section MUST specify `model = "gpt-5.2"`
 - **AND** no smaller or alternative model alias SHALL appear in the configuration
-- **AND** the `[runtime]` section MUST specify `type = "claude-code"`
+- **AND** the `[runtime]` section MUST specify `type = "codex"`
 
 #### Scenario: Runtime section exists alongside butler runtime section
 
@@ -294,23 +294,22 @@ The education butler SHALL provide five domain-specific skills plus two shared s
 
 ---
 
-### Requirement: High-Tier Model Selection Rationale
+### Requirement: Model and Runtime Configuration
 
-The education butler SHALL use Claude Opus 4.6 as its model, and this selection SHALL be justified by the pedagogical demands of the domain.
+The education butler SHALL use GPT-5.2 via the Codex runtime for adaptive tutoring. This configuration provides sufficient quality for personalized learning at lower cost than Claude Opus 4.6.
 
-#### Scenario: Model tier is not configurable to a lower tier at runtime
+#### Scenario: Model and runtime selection is enforced
 
 - **WHEN** the education butler spawns an ephemeral session
-- **THEN** the spawner MUST use the model specified in `butler.toml` (`claude-opus-4-6`)
-- **AND** no override mechanism at the session level MUST silently downgrade the model to a smaller tier
+- **THEN** the spawner MUST use the model and runtime specified in `butler.toml` (`gpt-5.2` with `codex` runtime)
+- **AND** no override mechanism at the session level MUST change the configured model or runtime
 
 #### Scenario: Model justification is documented
 
 - **WHEN** the `butler.toml` or adjacent documentation is read
-- **THEN** the rationale for high-tier model selection MUST be traceable: expert domain knowledge, calibrated quiz generation, free-form answer evaluation, and Socratic questioning all require nuanced judgment that smaller models do not reliably provide
+- **THEN** the rationale for GPT-5.2 via Codex MUST be traceable: it provides strong adaptive questioning, quiz generation, and answer evaluation capabilities, delivering sufficient quality for the education domain's requirements while maintaining cost efficiency compared to Claude Opus models
 
-#### Scenario: Cost mitigation strategy complements model tier
+#### Scenario: Cost optimization through architecture and session design
 
 - **WHEN** the education butler operates
-- **THEN** cost is mitigated by: single-concept teaching sessions (~2K output tokens), batched spaced repetition reviews (~500 tokens per review session), and nightly analytics computed as a Python job with zero LLM tokens
-- **AND** the `max_concurrent_sessions = 3` cap in `butler.toml` limits parallel spend
+- **THEN** cost is optimized through: single-concept teaching sessions (~2K output tokens), batched spaced repetition reviews (~500 tokens per review session), nightly analytics computed as a Python job with zero LLM tokens, and the `max_concurrent_sessions = 3` cap in `butler.toml`
