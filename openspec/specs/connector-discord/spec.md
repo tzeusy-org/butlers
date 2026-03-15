@@ -1,5 +1,26 @@
 # Discord User Connector (Draft)
 
+## STATUS: TARGET-STATE (Not Production-Ready)
+
+**This specification describes a v2-only target-state feature that is not yet implemented for production use.**
+
+The Discord user connector is explicitly archived as TARGET-STATE with the following constraints:
+
+- **Status:** Draft WIP, not production-ready
+- **Target Version:** v2-only (requires major architectural changes to core butler infrastructure)
+- **Implementation Status:** Incomplete. The reference implementation (`src/butlers/connectors/discord_user.py`) is a skeleton with missing critical components.
+- **Missing Components:**
+  - Authentication pattern and OAuth flow finalization
+  - Scope validation and least-privilege defaults
+  - User revocation and connector shutdown behavior
+  - Retention and redaction policy implementation
+  - Platform Terms of Service alignment review
+  - Explicit user consent and scope disclosure UI
+  - Full error recovery and retry logic
+  - Production-grade testing and monitoring
+
+**Decision:** Rather than attempting partial implementation, this spec is archived to clarify intent without committing to specific delivery. Future work should validate Discord ToS alignment and user privacy requirements before pursuing implementation.
+
 ## Purpose
 The Discord user connector is a **draft-stage** (v2-only, not production-ready) connector that would ingest user-visible Discord messages — DMs and server contexts — into the butler ecosystem. Like the Telegram User Client connector, its purpose is passive contextualization: giving butlers awareness of life events and conversations happening on Discord without requiring manual upload. This connector is ingestion-only and does not define outbound delivery.
 

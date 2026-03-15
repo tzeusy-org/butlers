@@ -1,16 +1,30 @@
 """Discord User Connector runtime for live ingestion.
 
-DRAFT — v2-only WIP, not production-ready.
+STATUS: TARGET-STATE (Not Production-Ready)
+============================================
 
-This connector implements a Discord user-account ingestion runtime as defined
-in ``docs/connectors/draft_discord.md``. It uses the Discord Gateway (WebSocket)
-to receive real-time message events visible to the linked user account and
-normalizes them to ingest.v1 envelopes for Switchboard routing.
+DRAFT — v2-only WIP, not production-ready. This module is archived as target-state
+and is NOT suitable for production use. Key components are incomplete or stubbed.
+
+INCOMPLETE COMPONENTS:
+- Authentication pattern and OAuth flow finalization
+- Scope validation and least-privilege defaults
+- User revocation and connector shutdown behavior
+- Retention and redaction policy implementation
+- Platform Terms of Service alignment review
+- Explicit user consent and scope disclosure UI
+- Full error recovery and retry logic
+- Production-grade testing and monitoring
+
+This connector implements a Discord user-account ingestion runtime skeleton as
+defined in ``openspec/specs/connector-discord/spec.md``. It uses the Discord
+Gateway (WebSocket) to receive real-time message events visible to the linked
+user account and normalizes them to ingest.v1 envelopes for Switchboard routing.
 
 IMPORTANT: This connector is privacy-sensitive and requires explicit user consent,
-proper credential management, and platform ToS review before deployment.
+proper credential management, and platform ToS review before any production deployment.
 
-Key behaviors:
+Intended Key behaviors (when completed):
 - Discord Gateway WebSocket connection for real-time message events
 - Normalize Discord messages to ingest.v1 format
 - Checkpoint-based resume (track last processed message ID per channel)
@@ -19,7 +33,7 @@ Key behaviors:
 - Heartbeat registration with Switchboard connector registry
 - Optional guild/channel allowlisting for scope control
 
-Environment variables:
+Environment variables (draft):
 - SWITCHBOARD_MCP_URL (required): SSE endpoint for Switchboard MCP server
 - CONNECTOR_PROVIDER=discord (required)
 - CONNECTOR_CHANNEL=discord (required)
