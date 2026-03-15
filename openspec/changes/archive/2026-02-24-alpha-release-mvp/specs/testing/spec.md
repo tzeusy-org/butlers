@@ -447,7 +447,7 @@ E2E infrastructure tests validate the staging environment: PostgreSQL testcontai
 
 #### Scenario: Static port allocation
 - **WHEN** E2E butlers start
-- **THEN** they use the same static ports as production (40100-40106)
+- **THEN** they use the same static ports as production (41100-41106)
 - **AND** if the production stack is running on those ports, the E2E harness fails with `EADDRINUSE`
 
 #### Scenario: Docker requirements check

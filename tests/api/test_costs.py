@@ -36,8 +36,8 @@ pytestmark = pytest.mark.unit
 def _make_configs() -> list[ButlerConnectionInfo]:
     """Return a small set of butler configs for testing."""
     return [
-        ButlerConnectionInfo(name="switchboard", port=40100, description="Routes messages"),
-        ButlerConnectionInfo(name="general", port=40101, description="Catch-all assistant"),
+        ButlerConnectionInfo(name="switchboard", port=41100, description="Routes messages"),
+        ButlerConnectionInfo(name="general", port=41101, description="Catch-all assistant"),
     ]
 
 
@@ -266,7 +266,7 @@ class TestCostSummary:
 
     async def test_summary_calls_registered_sessions_summary_tool(self, app):
         """Summary fan-out should call the daemon-registered sessions_summary tool."""
-        configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+        configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
         pricing = _make_pricing()
         session_stats = {
             "total_sessions": 1,
@@ -332,7 +332,7 @@ class TestCostSummary:
 
     async def test_summary_handles_empty_tool_result(self, app):
         """Butler returning empty tool result contributes zero."""
-        configs = [ButlerConnectionInfo(name="empty", port=40100)]
+        configs = [ButlerConnectionInfo(name="empty", port=41100)]
         pricing = _make_pricing()
 
         mgr = _make_manager_with_responses(
@@ -368,7 +368,7 @@ class TestCostSummary:
 
     async def test_summary_unknown_model_contributes_zero_cost(self, app):
         """A model not in pricing.toml contributes zero cost."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_pricing()
 
         data = {
@@ -403,7 +403,7 @@ class TestCostSummary:
 
     async def test_summary_uses_tiered_pricing_low_tier(self, app):
         """Summary uses low tier when context_tokens is below threshold."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_tiered_pricing()
 
         data = {
@@ -434,7 +434,7 @@ class TestCostSummary:
 
     async def test_summary_uses_tiered_pricing_high_tier(self, app):
         """Summary uses high tier when context_tokens exceeds threshold."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_tiered_pricing()
 
         data = {
@@ -465,7 +465,7 @@ class TestCostSummary:
 
     async def test_summary_includes_cached_input_tokens(self, app):
         """Summary accounts for cached_input_tokens in tiered pricing."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_tiered_pricing()
 
         data = {
@@ -495,7 +495,7 @@ class TestCostSummary:
 
     async def test_summary_falls_back_without_context_tokens(self, app):
         """Without context_tokens, tiered model defaults to lowest tier."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_tiered_pricing()
 
         data = {
@@ -524,7 +524,7 @@ class TestCostSummary:
 
     async def test_summary_logs_tool_contract_failures(self, app, caplog):
         """Unexpected fan-out failures should emit a warning with butler/tool context."""
-        configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+        configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
         pricing = _make_pricing()
 
         mock_client = MagicMock()
@@ -748,7 +748,7 @@ class TestDailyCosts:
 
     async def test_daily_handles_empty_tool_result(self, app):
         """Butler returning empty tool result contributes nothing."""
-        configs = [ButlerConnectionInfo(name="empty", port=40100)]
+        configs = [ButlerConnectionInfo(name="empty", port=41100)]
         pricing = _make_pricing()
 
         mgr = _make_manager_with_responses(
@@ -770,7 +770,7 @@ class TestDailyCosts:
 
     async def test_daily_results_sorted_by_date(self, app):
         """Results are sorted by date ascending even if butler returns unordered."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_pricing()
 
         daily_data = {
@@ -820,7 +820,7 @@ class TestDailyCosts:
 
     async def test_daily_unknown_model_contributes_zero_cost(self, app):
         """A model not in pricing config contributes zero cost."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_pricing()
 
         daily_data = {
@@ -863,7 +863,7 @@ class TestDailyCosts:
 
     async def test_daily_uses_tiered_pricing_with_context(self, app):
         """Daily costs apply tiered pricing when context_tokens is present."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_tiered_pricing()
 
         daily_data = {
@@ -904,7 +904,7 @@ class TestDailyCosts:
 
     async def test_daily_includes_cached_input_tokens(self, app):
         """Daily costs account for cached_input_tokens."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_tiered_pricing()
 
         daily_data = {
@@ -943,7 +943,7 @@ class TestDailyCosts:
 
     async def test_daily_response_validates_as_model(self, app):
         """Daily response items can be parsed as DailyCost models."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_pricing()
 
         daily_data = {
@@ -1225,7 +1225,7 @@ class TestTopSessions:
 
     async def test_top_sessions_handles_empty_tool_result(self, app):
         """Butler returning empty tool result contributes no sessions."""
-        configs = [ButlerConnectionInfo(name="empty", port=40100)]
+        configs = [ButlerConnectionInfo(name="empty", port=41100)]
         pricing = _make_pricing()
 
         mgr = _make_manager_with_responses(
@@ -1244,7 +1244,7 @@ class TestTopSessions:
 
     async def test_top_sessions_unknown_model_contributes_zero_cost(self, app):
         """Sessions with unknown models have zero cost but are still returned."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_pricing()
 
         data = {
@@ -1279,7 +1279,7 @@ class TestTopSessions:
 
     async def test_top_sessions_uses_tiered_pricing(self, app):
         """Top sessions apply tiered pricing with context and cached tokens."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_tiered_pricing()
 
         data = {
@@ -1327,7 +1327,7 @@ class TestTopSessions:
 
     async def test_top_sessions_response_validates_as_model(self, app):
         """Top-sessions response data can be parsed as TopSession models."""
-        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        configs = [ButlerConnectionInfo(name="test", port=41100)]
         pricing = _make_pricing()
 
         data = {

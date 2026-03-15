@@ -74,15 +74,15 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 
 | Butler       | Port  | Type           | Status  |
 |-------------|-------|----------------|---------|
-| switchboard | 40100 | Infrastructure | Active  |
-| general     | 40101 | Domain         | Active  |
-| relationship| 40102 | Domain         | Active  |
-| health      | 40103 | Domain         | Active  |
-| messenger   | 40104 | Infrastructure | Active  |
-| *next*      | 40105+| Domain         | —       |
+| switchboard | 41100 | Infrastructure | Active  |
+| general     | 41101 | Domain         | Active  |
+| relationship| 41102 | Domain         | Active  |
+| health      | 41103 | Domain         | Active  |
+| messenger   | 41104 | Infrastructure | Active  |
+| *next*      | 41105+| Domain         | —       |
 | *(reserved)*| 40199 | Infrastructure | Reserved|
 
-Port 40199 is reserved for infrastructure butlers. New domain butlers should use 40105+.
+Port 40199 is reserved for infrastructure butlers. New domain butlers should use 41105+.
 
 ## Database Isolation
 
@@ -150,7 +150,7 @@ Butlers without external integrations may have no modules at all.
 ```toml
 [butler]
 name = "health"
-port = 40103
+port = 41103
 description = "Health tracking assistant for measurements, medications, diet, food preferences, nutrition, meals, and symptoms"
 
 [butler.runtime]
@@ -223,7 +223,7 @@ full_sync_interval_days = 6
 ```toml
 [butler]
 name = "messenger"
-port = 40104
+port = 41104
 description = "Outbound delivery execution plane for Telegram and Email"
 
 [butler.runtime]
@@ -267,7 +267,7 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 ```toml
 [butler]
 name = "general"
-port = 40101
+port = 41101
 description = "Flexible catch-all assistant for freeform data"
 
 [butler.runtime]

@@ -42,8 +42,8 @@ def _make_mock_client(*, connected: bool = True) -> MagicMock:
 
 class TestButlerConnectionInfo:
     def test_sse_url(self):
-        info = ButlerConnectionInfo(name="switchboard", port=40100)
-        assert info.sse_url == "http://localhost:40100/sse"
+        info = ButlerConnectionInfo(name="switchboard", port=41100)
+        assert info.sse_url == "http://localhost:41100/sse"
 
     def test_sse_url_custom_port(self):
         info = ButlerConnectionInfo(name="general", port=9999)
@@ -67,13 +67,13 @@ class TestButlerConnectionInfo:
 class TestMCPClientManagerRegistration:
     def test_register_and_list_names(self):
         mgr = MCPClientManager()
-        mgr.register("alpha", ButlerConnectionInfo("alpha", 40100))
-        mgr.register("beta", ButlerConnectionInfo("beta", 40101))
+        mgr.register("alpha", ButlerConnectionInfo("alpha", 41100))
+        mgr.register("beta", ButlerConnectionInfo("beta", 41101))
         assert mgr.butler_names == ["alpha", "beta"]
 
     def test_register_overwrites(self, caplog: pytest.LogCaptureFixture):
         mgr = MCPClientManager()
-        info1 = ButlerConnectionInfo("alpha", 40100)
+        info1 = ButlerConnectionInfo("alpha", 41100)
         info2 = ButlerConnectionInfo("alpha", 9999)
         mgr.register("alpha", info1)
         with caplog.at_level(logging.WARNING, logger="butlers.api.deps"):
@@ -110,12 +110,12 @@ class TestMCPClientManagerGetClient:
         mock_client_cls.return_value = mock_client
 
         mgr = MCPClientManager()
-        mgr.register("sb", ButlerConnectionInfo("sb", 40100))
+        mgr.register("sb", ButlerConnectionInfo("sb", 41100))
 
         # First call — creates
         client1 = await mgr.get_client("sb")
         assert client1 is mock_client
-        mock_client_cls.assert_called_once_with("http://localhost:40100/sse", name="dashboard-sb")
+        mock_client_cls.assert_called_once_with("http://localhost:41100/sse", name="dashboard-sb")
         mock_client.__aenter__.assert_called_once()
 
         # Second call — returns cached
@@ -131,7 +131,7 @@ class TestMCPClientManagerGetClient:
         mock_client_cls.side_effect = [old_client, new_client]
 
         mgr = MCPClientManager()
-        mgr.register("sb", ButlerConnectionInfo("sb", 40100))
+        mgr.register("sb", ButlerConnectionInfo("sb", 41100))
 
         # First call — old client
         c1 = await mgr.get_client("sb")
@@ -154,7 +154,7 @@ class TestMCPClientManagerGetClient:
         mock_client_cls.return_value = mock_client
 
         mgr = MCPClientManager()
-        mgr.register("sb", ButlerConnectionInfo("sb", 40100))
+        mgr.register("sb", ButlerConnectionInfo("sb", 41100))
 
         with pytest.raises(ButlerUnreachableError) as exc_info:
             await mgr.get_client("sb")
@@ -176,8 +176,8 @@ class TestMCPClientManagerClose:
         mock_client_cls.side_effect = [client_a, client_b]
 
         mgr = MCPClientManager()
-        mgr.register("a", ButlerConnectionInfo("a", 40100))
-        mgr.register("b", ButlerConnectionInfo("b", 40101))
+        mgr.register("a", ButlerConnectionInfo("a", 41100))
+        mgr.register("b", ButlerConnectionInfo("b", 41101))
 
         await mgr.get_client("a")
         await mgr.get_client("b")
@@ -196,7 +196,7 @@ class TestMCPClientManagerClose:
         mock_client_cls.return_value = mock_client
 
         mgr = MCPClientManager()
-        mgr.register("bad", ButlerConnectionInfo("bad", 40100))
+        mgr.register("bad", ButlerConnectionInfo("bad", 41100))
         await mgr.get_client("bad")
 
         with caplog.at_level(logging.WARNING, logger="butlers.api.deps"):
@@ -216,14 +216,14 @@ class TestDiscoverButlers:
         sb_dir = tmp_path / "switchboard"
         sb_dir.mkdir()
         (sb_dir / "butler.toml").write_text(
-            '[butler]\nname = "switchboard"\nport = 40100\n'
+            '[butler]\nname = "switchboard"\nport = 41100\n'
             'description = "Routes messages"\n'
             '[runtime]\ntype = "claude"\n'
         )
         gen_dir = tmp_path / "general"
         gen_dir.mkdir()
         (gen_dir / "butler.toml").write_text(
-            '[butler]\nname = "general"\nport = 40101\n[runtime]\ntype = "claude"\n'
+            '[butler]\nname = "general"\nport = 41101\n[runtime]\ntype = "claude"\n'
         )
         # Create a non-butler dir (no toml)
         (tmp_path / "random-dir").mkdir()
@@ -275,7 +275,7 @@ class TestDiscoverButlers:
         d = tmp_path / "mybutler"
         d.mkdir()
         (d / "butler.toml").write_text(
-            '[butler]\nname = "mybutler"\nport = 40100\n'
+            '[butler]\nname = "mybutler"\nport = 41100\n'
             'description = "My awesome butler"\n'
             '[runtime]\ntype = "claude"\n'
         )
@@ -289,7 +289,7 @@ class TestDiscoverButlers:
         d = tmp_path / "general"
         d.mkdir()
         (d / "butler.toml").write_text(
-            '[butler]\nname = "general"\nport = 40101\n'
+            '[butler]\nname = "general"\nport = 41101\n'
             '[butler.db]\nname = "butlers"\nschema = "general"\n'
             '[runtime]\ntype = "claude"\n'
         )
@@ -305,7 +305,7 @@ class TestDiscoverButlers:
         d = tmp_path / "general"
         d.mkdir()
         (d / "butler.toml").write_text(
-            '[butler]\nname = "general"\nport = 40101\n'
+            '[butler]\nname = "general"\nport = 41101\n'
             '[butler.db]\nname = "butlers"\nschema = "general"\n'
             '[runtime]\ntype = "claude"\n'
             '[modules.calendar]\nprovider = "google"\n'
@@ -322,7 +322,7 @@ class TestDiscoverButlers:
         d = tmp_path / "education"
         d.mkdir()
         (d / "butler.toml").write_text(
-            '[butler]\nname = "education"\nport = 40107\n'
+            '[butler]\nname = "education"\nport = 41107\n'
             '[butler.db]\nname = "butlers"\nschema = "education"\n'
             '[runtime]\ntype = "claude"\n'
         )
@@ -342,11 +342,11 @@ class TestInitDbManager:
 
         configs = [
             ButlerConnectionInfo(
-                name="general", port=40101, db_name="butlers", db_schema="general"
+                name="general", port=41101, db_name="butlers", db_schema="general"
             ),
             ButlerConnectionInfo(
                 name="switchboard",
-                port=40100,
+                port=41100,
                 db_name="butlers",
                 db_schema="switchboard",
             ),
@@ -457,7 +457,7 @@ class TestFastAPIDependencies:
             d = tmp_path / "sb"
             d.mkdir()
             (d / "butler.toml").write_text(
-                '[butler]\nname = "sb"\nport = 40100\n[runtime]\ntype = "claude"\n'
+                '[butler]\nname = "sb"\nport = 41100\n[runtime]\ntype = "claude"\n'
             )
             init_dependencies(roster_dir=tmp_path)
 

@@ -1,6 +1,6 @@
 [butler]
 name = "health"
-port = 40103
+port = 41103
 description = "Health tracking assistant for measurements, medications, diet, food preferences, nutrition, meals, and symptoms"
 
 [butler.runtime]
@@ -15,7 +15,7 @@ name = "butlers"
 schema = "health"
 
 [butler.switchboard]
-url = "http://localhost:40100/mcp"
+url = "http://localhost:41100/mcp"
 advertise = true
 liveness_ttl_s = 300
 route_contract_min = "route.v1"

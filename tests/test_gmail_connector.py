@@ -32,7 +32,7 @@ from butlers.connectors.gmail import (
 def gmail_config() -> GmailConnectorConfig:
     """Create test Gmail connector config."""
     return GmailConnectorConfig(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:test@example.com",
@@ -65,7 +65,7 @@ class TestGmailConnectorConfig:
 
     def test_from_env_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test successful config loading from environment."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("CONNECTOR_PROVIDER", "gmail")
         monkeypatch.setenv("CONNECTOR_CHANNEL", "email")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
@@ -78,7 +78,7 @@ class TestGmailConnectorConfig:
             gmail_refresh_token="refresh-token",
         )
 
-        assert config.switchboard_mcp_url == "http://localhost:40100/sse"
+        assert config.switchboard_mcp_url == "http://localhost:41100/sse"
         assert config.connector_provider == "gmail"
         assert config.connector_channel == "email"
         assert config.connector_endpoint_identity == "gmail:user:test@example.com"
@@ -101,7 +101,7 @@ class TestGmailConnectorConfig:
 
     def test_from_env_invalid_integer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test config loading fails with invalid integer values."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "invalid")
@@ -115,7 +115,7 @@ class TestGmailConnectorConfig:
 
     def test_from_env_requires_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Config loading fails when DB-injected credentials are empty."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         with pytest.raises(ValueError, match="DB-resolved Gmail credentials missing"):
@@ -133,7 +133,7 @@ class TestRunGmailConnectorStartup:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """run_gmail_connector should create GmailConnectorManager and call start()."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
 
         manager = MagicMock()
         manager.start = AsyncMock()
@@ -1065,7 +1065,7 @@ class TestGmailPubSubConfig:
 
     def test_pubsub_config_enabled_with_topic(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub config when enabled with topic."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
@@ -1086,7 +1086,7 @@ class TestGmailPubSubConfig:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test Pub/Sub config fails when enabled without topic."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
@@ -1100,7 +1100,7 @@ class TestGmailPubSubConfig:
 
     def test_pubsub_config_custom_webhook_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub config with custom webhook settings."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
@@ -1119,7 +1119,7 @@ class TestGmailPubSubConfig:
 
     def test_pubsub_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Pub/Sub is disabled by default."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         config = GmailConnectorConfig.from_env(
@@ -1133,7 +1133,7 @@ class TestGmailPubSubConfig:
 
     def test_pubsub_webhook_token_configuration(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test webhook token is loaded from environment."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
@@ -2179,7 +2179,7 @@ class TestGmailConnectorConfigCredentialInjection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Config uses injected values even when env credential vars are present."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("GMAIL_CLIENT_ID", "legacy-client-id")
@@ -2199,7 +2199,7 @@ class TestGmailConnectorConfigCredentialInjection:
 
     def test_explicit_credentials_must_be_non_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Injected credentials are required and validated as non-empty."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         with pytest.raises(ValueError, match="DB-resolved Gmail credentials missing"):
@@ -2568,7 +2568,7 @@ class TestAttachmentRefsWrite:
     @pytest.fixture
     def gmail_config(self) -> GmailConnectorConfig:
         return GmailConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
             gmail_client_id="cid",
             gmail_client_secret="csec",
@@ -2651,7 +2651,7 @@ class TestOnDemandFetch:
     @pytest.fixture
     def gmail_config(self) -> GmailConnectorConfig:
         return GmailConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
             gmail_client_id="cid",
             gmail_client_secret="csec",
@@ -2868,7 +2868,7 @@ class TestExtractAttachmentsExpanded:
     @pytest.fixture
     def runtime(self) -> GmailConnectorRuntime:
         config = GmailConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
             gmail_client_id="cid",
             gmail_client_secret="csec",
@@ -2991,7 +2991,7 @@ def backfill_runtime() -> GmailConnectorRuntime:
     from butlers.connectors.gmail import BackfillJob  # noqa: F401 (imported for use in tests)
 
     config = GmailConnectorConfig(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:backfill@example.com",
@@ -3018,7 +3018,7 @@ class TestBackfillConfig:
 
     def test_backfill_disabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_ENABLED=false disables backfill."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_ENABLED", "false")
@@ -3032,7 +3032,7 @@ class TestBackfillConfig:
 
     def test_backfill_poll_interval_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_POLL_INTERVAL_S is parsed from env."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "120")
@@ -3046,7 +3046,7 @@ class TestBackfillConfig:
 
     def test_backfill_progress_interval_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CONNECTOR_BACKFILL_PROGRESS_INTERVAL is parsed from env."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "25")
@@ -3060,7 +3060,7 @@ class TestBackfillConfig:
 
     def test_backfill_poll_interval_invalid_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-integer CONNECTOR_BACKFILL_POLL_INTERVAL_S raises ValueError."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "notanint")
@@ -3078,7 +3078,7 @@ class TestBackfillConfig:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Non-integer CONNECTOR_BACKFILL_PROGRESS_INTERVAL raises ValueError."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
 
         monkeypatch.setenv("CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "bad")
@@ -3863,7 +3863,7 @@ class TestCapabilityAdvertisement:
     def test_get_capabilities_returns_backfill_false_when_disabled(self) -> None:
         """_get_capabilities returns {backfill: False} when backfill disabled."""
         config = GmailConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             connector_provider="gmail",
             connector_channel="email",
             connector_endpoint_identity="gmail:user:test@example.com",
@@ -4174,7 +4174,7 @@ class TestGmailProcessConfig:
 
     def test_from_env_minimal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Minimal required env vars should produce a valid config."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         # Clear optional vars to test defaults
         for key in [
             "CONNECTOR_PROVIDER",
@@ -4186,7 +4186,7 @@ class TestGmailProcessConfig:
             monkeypatch.delenv(key, raising=False)
 
         config = GmailProcessConfig.from_env()
-        assert config.switchboard_mcp_url == "http://localhost:40100/sse"
+        assert config.switchboard_mcp_url == "http://localhost:41100/sse"
         assert config.connector_provider == "gmail"
         assert config.connector_channel == "email"
         assert config.connector_max_inflight == 8
@@ -4195,7 +4195,7 @@ class TestGmailProcessConfig:
 
     def test_from_env_custom_rescan_interval(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GMAIL_ACCOUNT_RESCAN_INTERVAL_S should override default."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("GMAIL_ACCOUNT_RESCAN_INTERVAL_S", "120")
         config = GmailProcessConfig.from_env()
         assert config.gmail_account_rescan_interval_s == 120
@@ -4209,7 +4209,7 @@ class TestGmailProcessConfig:
     def test_make_account_config_uses_process_defaults(self) -> None:
         """make_account_config should use process defaults when no metadata overrides."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             gmail_poll_interval_s=90,
             gmail_label_exclude=("SPAM", "TRASH"),
         )
@@ -4228,7 +4228,7 @@ class TestGmailProcessConfig:
     def test_make_account_config_applies_metadata_overrides(self) -> None:
         """Per-account metadata.gmail overrides should take precedence."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             gmail_poll_interval_s=60,
             gmail_label_exclude=("SPAM", "TRASH"),
         )
@@ -4245,7 +4245,7 @@ class TestGmailProcessConfig:
     def test_make_account_config_endpoint_identity_format(self) -> None:
         """Endpoint identity should be gmail:user:<email>."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
         )
         account_config = process_config.make_account_config(
             email="user@domain.com",
@@ -4261,7 +4261,7 @@ class TestGmailConnectorManager:
 
     def _make_process_config(self) -> GmailProcessConfig:
         return GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             gmail_poll_interval_s=5,
             gmail_account_rescan_interval_s=999,
         )
@@ -4507,7 +4507,7 @@ class TestGmailAccountLoop:
 
     def _make_config(self) -> GmailConnectorConfig:
         return GmailConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             connector_endpoint_identity="gmail:user:test@example.com",
             gmail_client_id="cid",
             gmail_client_secret="csec",
@@ -4573,7 +4573,7 @@ class TestRunGmailConnectorIdentityResolution:
     def test_endpoint_identity_derived_from_email(self) -> None:
         """Per-account endpoint_identity should be gmail:user:<email>."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
         )
         config = process_config.make_account_config(
             email="alice@example.com",
@@ -4586,7 +4586,7 @@ class TestRunGmailConnectorIdentityResolution:
     def test_multiple_accounts_have_independent_identities(self) -> None:
         """Each account should have a distinct endpoint_identity."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
         )
         config1 = process_config.make_account_config(
             email="personal@example.com",
@@ -4617,7 +4617,7 @@ class TestGmailPortConflictFix:
         Port 0 lets the OS assign an ephemeral port per runtime.
         """
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             connector_health_port=40082,
         )
         account_config = process_config.make_account_config(
@@ -4635,7 +4635,7 @@ class TestGmailPortConflictFix:
     def test_multiple_account_configs_do_not_share_port(self) -> None:
         """Two configs produced by make_account_config should both use port 0."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             connector_health_port=40082,
         )
         cfg1 = process_config.make_account_config(
@@ -4654,7 +4654,7 @@ class TestGmailReloadEventThreadSafety:
     def test_manager_stores_main_loop_reference(self) -> None:
         """GmailConnectorManager must initialise _main_loop to None before start()."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
         )
         db_pool = MagicMock()
         manager = GmailConnectorManager(
@@ -4666,7 +4666,7 @@ class TestGmailReloadEventThreadSafety:
     async def test_start_captures_running_loop(self) -> None:
         """start() must capture the running event loop into _main_loop."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             gmail_account_rescan_interval_s=9999,
         )
         db_pool = MagicMock()
@@ -4707,7 +4707,7 @@ class TestGmailPubsubWebhookTokenResolution:
         from butlers.google_credentials import GoogleCredentials
 
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
         )
         db_pool = MagicMock()
         manager = GmailConnectorManager(
@@ -4738,7 +4738,7 @@ class TestGmailPubsubWebhookTokenResolution:
         from butlers.google_credentials import GoogleCredentials
 
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
         )
         db_pool = MagicMock()
         manager = GmailConnectorManager(
@@ -4766,7 +4766,7 @@ class TestGmailPubsubWebhookTokenResolution:
     async def test_pubsub_token_propagated_to_make_account_config(self) -> None:
         """pubsub_webhook_token from _resolve_credentials_for_account must reach account config."""
         process_config = GmailProcessConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
         )
         db_pool = MagicMock()
         manager = GmailConnectorManager(
@@ -4848,7 +4848,7 @@ class TestRedactEmail:
     def test_health_response_redacts_emails(self) -> None:
         """GmailAccountLoop.get_health() should return redacted email in AccountHealthStatus."""
         config = GmailConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             connector_endpoint_identity="gmail:user:alice@example.com",
             gmail_client_id="cid",
             gmail_client_secret="csec",

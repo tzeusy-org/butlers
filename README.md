@@ -30,7 +30,7 @@ A personal assistant butler configured in `butler.toml`:
 [butler]
 name = "assistant"
 description = "Personal assistant with email and calendar"
-port = 40101
+port = 41101
 
 [[butler.schedule]]
 name = "morning-briefing"
@@ -101,7 +101,7 @@ graph TB
         Client[MCP Client]
     end
 
-    subgraph Switchboard["Switchboard Butler :40100"]
+    subgraph Switchboard["Switchboard Butler :41100"]
         SRouter[Route Tool]
         SRegistry[Butler Registry]
     end
@@ -109,13 +109,13 @@ graph TB
     Client --> SRouter
     SRouter --> SRegistry
     subgraph Butlers["Domain Butlers"]
-        subgraph General["General :40101"]
+        subgraph General["General :41101"]
             G_MCP[FastMCP Server]
         end
-        subgraph Relationship["Relationship :40102"]
+        subgraph Relationship["Relationship :41102"]
             R_MCP[FastMCP Server]
         end
-        subgraph Health["Health :40103"]
+        subgraph Health["Health :41103"]
             H_MCP[FastMCP Server]
         end
     end
@@ -312,7 +312,7 @@ butlers list
 ```
 
 Access points:
-- Butler MCP servers on their configured ports (40100-40199)
+- Butler MCP servers on their configured ports (41100-41199)
 - Dashboard API on port 40200
 - Grafana Tempo for distributed tracing (external Alloy endpoint)
 
@@ -363,11 +363,11 @@ Each butler service mounts its config directory read-only from `butlers/<name>/`
 
 | Service       | Port | Description                                            |
 | ------------- | ---- | ------------------------------------------------------ |
-| Switchboard   | 40100 | Message router — routes MCP requests to domain butlers |
-| General       | 40101 | Catch-all assistant with collections/entities          |
-| Relationship  | 40102 | Contacts, interactions, gifts, activity feed           |
-| Health        | 40103 | Measurements, medications, conditions, symptoms        |
-| Messenger     | 40104 | Delivery relay — Telegram and email channel outputs    |
+| Switchboard   | 41100 | Message router — routes MCP requests to domain butlers |
+| General       | 41101 | Catch-all assistant with collections/entities          |
+| Relationship  | 41102 | Contacts, interactions, gifts, activity feed           |
+| Health        | 41103 | Measurements, medications, conditions, symptoms        |
+| Messenger     | 41104 | Delivery relay — Telegram and email channel outputs    |
 | Dashboard API | 40200 | Web UI backend for monitoring and managing butlers     |
 | Frontend      | 40173 | Vite dev server (development only)                     |
 | PostgreSQL    | 5432 | Shared database server (one DB, per-butler schemas)    |
@@ -386,7 +386,7 @@ butlers init NAME --port PORT [--dir PATH]   Scaffold a new butler config direct
 ### Scaffolding a New Butler
 
 ```bash
-butlers init mybutler --port 40104
+butlers init mybutler --port 41104
 ```
 
 Creates:

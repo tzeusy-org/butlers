@@ -183,7 +183,7 @@ CREATE INDEX ix_ha_command_log_issued_at ON home.ha_command_log (issued_at);
 
 ### D8: Home butler identity and configuration
 
-**Decision:** Dedicated `home` butler at port 40108, schema `home`, runtime `codex`.
+**Decision:** Dedicated `home` butler at port 41108, schema `home`, runtime `codex`.
 
 **Modules:** `home_assistant`, `memory`, `contacts`, `approvals`
 
@@ -199,7 +199,7 @@ CREATE INDEX ix_ha_command_log_issued_at ON home.ha_command_log (issued_at);
 - `troubleshooting` — diagnosing unavailable devices, connectivity issues
 
 **Rationale:**
-- Port 40108 follows sequential allocation (40107 = education, the last assigned)
+- Port 41108 follows sequential allocation (41107 = education, the last assigned)
 - Codex runtime matches other domain butlers (health, finance, education)
 - Approvals module needed for the ha_call_service sensitivity gating
 - Memory module lets the butler learn patterns ("owner prefers 21°C at bedtime")

@@ -7,7 +7,7 @@ Key existing infrastructure we build on:
 - `capture_tool_call()` / `consume_runtime_session_tool_calls(session_id)` — contextvars-based tool call recording
 - `shared.model_catalog` + `shared.butler_model_overrides` — DB-driven model resolution
 - `sessions` table with `input_tokens`/`output_tokens` columns
-- 9 roster butlers (switchboard, general, relationship, health, messenger, education, finance, travel, home) on ports 40100–40108
+- 9 roster butlers (switchboard, general, relationship, health, messenger, education, finance, travel, home) on ports 41100–41108
 
 ## Goals / Non-Goals
 

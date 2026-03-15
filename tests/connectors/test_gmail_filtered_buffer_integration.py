@@ -33,7 +33,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def gmail_config() -> GmailConnectorConfig:
     return GmailConnectorConfig(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:test@example.com",

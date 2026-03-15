@@ -466,7 +466,7 @@ class TestExtractSignals:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "relationship", "http://localhost:40101/sse")
+        await register_butler(pool, "relationship", "http://localhost:41101/sse")
 
         response = _single_extraction(tool_args={"name": "Eve"})
         result = await extract_signals(
@@ -488,7 +488,7 @@ class TestExtractSignals:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "health", "http://localhost:40102/sse")
+        await register_butler(pool, "health", "http://localhost:41102/sse")
 
         response = _single_extraction(
             sig_type="symptoms",
@@ -515,7 +515,7 @@ class TestExtractSignals:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "relationship", "http://localhost:40101/sse")
+        await register_butler(pool, "relationship", "http://localhost:41101/sse")
 
         response = _single_extraction(
             sig_type="sentiments",
@@ -541,8 +541,8 @@ class TestExtractSignals:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "relationship", "http://localhost:40101/sse")
-        await register_butler(pool, "health", "http://localhost:40102/sse")
+        await register_butler(pool, "relationship", "http://localhost:41101/sse")
+        await register_butler(pool, "health", "http://localhost:41102/sse")
 
         response = _multi_extraction(
             [
@@ -646,7 +646,7 @@ class TestExtractSignals:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "relationship", "http://localhost:40101/sse")
+        await register_butler(pool, "relationship", "http://localhost:41101/sse")
 
         response = _multi_extraction(
             [
@@ -696,7 +696,7 @@ class TestExtractionLogging:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "relationship", "http://localhost:40101/sse")
+        await register_butler(pool, "relationship", "http://localhost:41101/sse")
 
         response = _single_extraction(tool_args={"name": "Hank"})
         await extract_signals(
@@ -720,7 +720,7 @@ class TestExtractionLogging:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "health", "http://localhost:40102/sse")
+        await register_butler(pool, "health", "http://localhost:41102/sse")
 
         response = _single_extraction(
             sig_type="symptoms",
@@ -763,7 +763,7 @@ class TestDispatchFailureHandling:
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
         # Register relationship but NOT health
-        await register_butler(pool, "relationship", "http://localhost:40101/sse")
+        await register_butler(pool, "relationship", "http://localhost:41101/sse")
 
         response = _multi_extraction(
             [
@@ -803,7 +803,7 @@ class TestDispatchFailureHandling:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "relationship", "http://localhost:40101/sse")
+        await register_butler(pool, "relationship", "http://localhost:41101/sse")
 
         response = _single_extraction(tool_args={"name": "Kate"})
 
@@ -843,7 +843,7 @@ class TestCustomSchemas:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "finance", "http://localhost:40103/sse")
+        await register_butler(pool, "finance", "http://localhost:41103/sse")
 
         finance_schema = ExtractorSchema(
             butler_name="finance",
@@ -884,7 +884,7 @@ class TestCustomSchemas:
 
         await pool.execute("DELETE FROM butler_registry")
         await pool.execute("DELETE FROM routing_log")
-        await register_butler(pool, "finance", "http://localhost:40103/sse")
+        await register_butler(pool, "finance", "http://localhost:41103/sse")
 
         finance_schema = ExtractorSchema(
             butler_name="finance",

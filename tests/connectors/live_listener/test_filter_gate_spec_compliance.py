@@ -152,7 +152,7 @@ class TestEnsureLoadedBeforeAudioCapture:
         from butlers.connectors.live_listener.metrics import LiveListenerMetrics
 
         config = LiveListenerConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             devices=[MicDeviceSpec(name="kitchen", device="hw:0")],
             transcription_url="tcp://localhost:10300",
             reconnect_base_s=0.01,
@@ -226,7 +226,7 @@ class TestEnsureLoadedBeforeAudioCapture:
         from butlers.connectors.live_listener.metrics import LiveListenerMetrics
 
         config = LiveListenerConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             devices=[MicDeviceSpec(name="kitchen", device="hw:0")],
             transcription_url="tcp://localhost:10300",
             reconnect_base_s=0.01,

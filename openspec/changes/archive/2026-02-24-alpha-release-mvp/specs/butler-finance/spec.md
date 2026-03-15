@@ -1,7 +1,7 @@
 # Finance Butler Role
 
 ## Purpose
-The Finance butler (port 40105) is a personal finance specialist for receipts, bills, subscriptions, and transaction alerts.
+The Finance butler (port 41105) is a personal finance specialist for receipts, bills, subscriptions, and transaction alerts.
 
 ## ADDED Requirements
 
@@ -10,13 +10,13 @@ The finance butler handles personal finance tracking with precise numeric types 
 
 #### Scenario: Identity and port
 - **WHEN** the finance butler is running
-- **THEN** it operates on port 40105 with description "Personal finance specialist for receipts, bills, subscriptions, and transaction alerts."
+- **THEN** it operates on port 41105 with description "Personal finance specialist for receipts, bills, subscriptions, and transaction alerts."
 - **AND** it uses the `codex` runtime adapter with a maximum of 3 concurrent sessions
 - **AND** its database schema is `finance` within the consolidated `butlers` database
 
 #### Scenario: Switchboard registration
 - **WHEN** the finance butler starts
-- **THEN** it registers with the switchboard at `http://localhost:40100/mcp` with `advertise = true`, `liveness_ttl_s = 300`, and route contract version range `route.v1` to `route.v1`
+- **THEN** it registers with the switchboard at `http://localhost:41100/mcp` with `advertise = true`, `liveness_ttl_s = 300`, and route contract version range `route.v1` to `route.v1`
 
 #### Scenario: Module profile
 - **WHEN** the finance butler starts

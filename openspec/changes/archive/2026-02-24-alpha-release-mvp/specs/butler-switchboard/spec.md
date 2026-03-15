@@ -471,7 +471,7 @@ The switchboard butler has specific runtime, module, and buffer configuration.
 
 #### Scenario: Butler identity and runtime
 - **WHEN** the switchboard butler starts
-- **THEN** it runs on port 40100 with max 3 concurrent sessions
+- **THEN** it runs on port 41100 with max 3 concurrent sessions
 - **AND** the runtime type is `codex` with model `gpt-5.3-codex-spark`
 - **AND** the database schema is `switchboard` in the `butlers` database
 

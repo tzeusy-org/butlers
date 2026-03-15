@@ -34,8 +34,8 @@ pytestmark = pytest.mark.unit
 def _make_configs() -> list[ButlerConnectionInfo]:
     """Return a small set of butler configs for testing."""
     return [
-        ButlerConnectionInfo(name="switchboard", port=40100, description="Routes messages"),
-        ButlerConnectionInfo(name="general", port=40101, description="Catch-all assistant"),
+        ButlerConnectionInfo(name="switchboard", port=41100, description="Routes messages"),
+        ButlerConnectionInfo(name="general", port=41101, description="Catch-all assistant"),
     ]
 
 
@@ -128,7 +128,7 @@ async def test_single_butler_returns_schedule_costs(app):
     mock_client.call_tool = AsyncMock(return_value=_make_tool_result(schedule_data))
     mock_mgr.get_client = AsyncMock(return_value=mock_client)
 
-    configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = _make_pricing
@@ -193,8 +193,8 @@ async def test_multiple_butlers_merged_and_sorted(app):
     mock_mgr.get_client = AsyncMock(side_effect=get_client)
 
     configs = [
-        ButlerConnectionInfo(name="butler-a", port=40100),
-        ButlerConnectionInfo(name="butler-b", port=40101),
+        ButlerConnectionInfo(name="butler-a", port=41100),
+        ButlerConnectionInfo(name="butler-b", port=41101),
     ]
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
@@ -219,7 +219,7 @@ async def test_butler_unreachable_returns_empty(app):
     mock_mgr = MagicMock(spec=MCPClientManager)
     mock_mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("switchboard"))
 
-    configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = _make_pricing
@@ -239,7 +239,7 @@ async def test_timeout_returns_empty(app):
     mock_mgr = MagicMock(spec=MCPClientManager)
     mock_mgr.get_client = AsyncMock(side_effect=TimeoutError)
 
-    configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = _make_pricing
@@ -274,7 +274,7 @@ async def test_zero_runs_avoids_division_by_zero(app):
     mock_client.call_tool = AsyncMock(return_value=_make_tool_result(schedule_data))
     mock_mgr.get_client = AsyncMock(return_value=mock_client)
 
-    configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = _make_pricing
@@ -315,7 +315,7 @@ async def test_cost_estimation_uses_pricing_config(app):
     mock_client.call_tool = AsyncMock(return_value=_make_tool_result(schedule_data))
     mock_mgr.get_client = AsyncMock(return_value=mock_client)
 
-    configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = _make_pricing
@@ -356,7 +356,7 @@ async def test_response_model_validation(app):
     mock_client.call_tool = AsyncMock(return_value=_make_tool_result(schedule_data))
     mock_mgr.get_client = AsyncMock(return_value=mock_client)
 
-    configs = [ButlerConnectionInfo(name="general", port=40101)]
+    configs = [ButlerConnectionInfo(name="general", port=41101)]
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = _make_pricing
@@ -407,7 +407,7 @@ async def test_unknown_model_costs_zero(app):
     mock_client.call_tool = AsyncMock(return_value=_make_tool_result(schedule_data))
     mock_mgr.get_client = AsyncMock(return_value=mock_client)
 
-    configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = _make_pricing

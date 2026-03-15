@@ -39,7 +39,7 @@ account — no manual env var configuration needed:
 ### Running in Polling Mode (Dev)
 
 ```bash
-export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
+export SWITCHBOARD_MCP_URL="http://localhost:41100/sse"
 export BUTLER_TELEGRAM_TOKEN="your-telegram-bot-token"
 export CONNECTOR_POLL_INTERVAL_S="1.0"
 
@@ -49,7 +49,7 @@ python -m butlers.connectors.telegram_bot
 ### Running in Webhook Mode (Prod)
 
 ```bash
-export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
+export SWITCHBOARD_MCP_URL="http://localhost:41100/sse"
 export BUTLER_TELEGRAM_TOKEN="your-telegram-bot-token"
 export CONNECTOR_WEBHOOK_URL="https://yourdomain.com/telegram/webhook"
 
@@ -104,7 +104,7 @@ actionable utterances to the Switchboard as `ingest.v1` envelopes.
 
 ```bash
 # Minimal setup — one microphone via Wyoming transcription
-export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
+export SWITCHBOARD_MCP_URL="http://localhost:41100/sse"
 export LIVE_LISTENER_DEVICES='[{"name": "kitchen", "device": "default"}]'
 export LIVE_LISTENER_TRANSCRIPTION_URL="tcp://localhost:10300"
 

@@ -40,7 +40,7 @@ pytestmark = pytest.mark.unit
 def mock_config() -> DiscordUserConnectorConfig:
     """Create a mock connector configuration."""
     return DiscordUserConnectorConfig(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         provider="discord",
         channel="discord",
         endpoint_identity="discord:user:123456789",
@@ -211,7 +211,7 @@ class TestDiscordUserConnectorConfig:
 
     def test_from_env_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test loading configuration from environment variables."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("CONNECTOR_PROVIDER", "discord")
         monkeypatch.setenv("CONNECTOR_CHANNEL", "discord")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "my-bot-token")
@@ -222,7 +222,7 @@ class TestDiscordUserConnectorConfig:
 
         config = DiscordUserConnectorConfig.from_env()
 
-        assert config.switchboard_mcp_url == "http://localhost:40100/sse"
+        assert config.switchboard_mcp_url == "http://localhost:41100/sse"
         assert config.provider == "discord"
         assert config.channel == "discord"
         assert config.endpoint_identity == ""  # auto-resolved later via /users/@me
@@ -240,14 +240,14 @@ class TestDiscordUserConnectorConfig:
 
     def test_from_env_missing_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Missing DISCORD_BOT_TOKEN raises ValueError."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
         with pytest.raises(ValueError, match="DISCORD_BOT_TOKEN"):
             DiscordUserConnectorConfig.from_env()
 
     def test_from_env_empty_allowlists(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Empty allowlists mean no filtering (all guilds/channels allowed)."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "token")
         monkeypatch.delenv("DISCORD_GUILD_ALLOWLIST", raising=False)
         monkeypatch.delenv("DISCORD_CHANNEL_ALLOWLIST", raising=False)
@@ -259,7 +259,7 @@ class TestDiscordUserConnectorConfig:
 
     def test_default_provider_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default provider and channel are 'discord'."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "token")
         monkeypatch.delenv("CONNECTOR_PROVIDER", raising=False)
         monkeypatch.delenv("CONNECTOR_CHANNEL", raising=False)
@@ -1119,7 +1119,7 @@ class TestRunDiscordUserConnector:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """run_discord_user_connector loads config from env and starts connector."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
 
         mock_connector = AsyncMock()

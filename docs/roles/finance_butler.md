@@ -404,7 +404,7 @@ Strong subject patterns:
 ```toml
 [butler]
 name = "finance"
-port = 40105
+port = 41105
 description = "Personal finance specialist for receipts, bills, subscriptions, and transaction alerts."
 
 [butler.runtime]
@@ -419,7 +419,7 @@ name = "butlers"
 schema = "finance"
 
 [butler.switchboard]
-url = "http://localhost:40100/mcp"
+url = "http://localhost:41100/mcp"
 advertise = true
 liveness_ttl_s = 300
 route_contract_min = "route.v1"

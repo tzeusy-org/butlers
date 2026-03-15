@@ -91,7 +91,7 @@ class TestReadSkills:
 class TestListButlerSkills:
     async def test_returns_404_for_unknown_butler(self, roster_dir):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -107,13 +107,13 @@ class TestListButlerSkills:
         make_butler_dir(
             roster_dir,
             "general",
-            40101,
+            41101,
             skills_with_content={
                 "data-organizer": "# Data Organizer\n\nOrganize your data.",
                 "report-builder": "# Report Builder\n\nBuild reports.",
             },
         )
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -133,7 +133,7 @@ class TestListButlerSkills:
     async def test_returns_empty_list_when_no_skills_dir(self, roster_dir):
         """Returns empty list when butler has no skills/ directory."""
         (roster_dir / "general").mkdir()
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -152,10 +152,10 @@ class TestListButlerSkills:
         make_butler_dir(
             roster_dir,
             "general",
-            40101,
+            41101,
             skills_with_content={"test-skill": content},
         )
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -173,7 +173,7 @@ class TestListButlerSkills:
     async def test_response_wrapped_in_api_response(self, roster_dir):
         """Response follows the standard ApiResponse envelope."""
         (roster_dir / "general").mkdir()
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 

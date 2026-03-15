@@ -121,9 +121,9 @@ def test_build_config_file_writes_codex_json(tmp_path: Path):
 
 def test_infer_mcp_transport_from_url():
     """URL conventions infer expected MCP transport."""
-    assert _infer_mcp_transport_from_url("http://localhost:40100/mcp") == "streamable_http"
-    assert _infer_mcp_transport_from_url("http://localhost:40100/sse") == "sse"
-    assert _infer_mcp_transport_from_url("http://localhost:40100/events") is None
+    assert _infer_mcp_transport_from_url("http://localhost:41100/mcp") == "streamable_http"
+    assert _infer_mcp_transport_from_url("http://localhost:41100/sse") == "sse"
+    assert _infer_mcp_transport_from_url("http://localhost:41100/events") is None
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +580,7 @@ async def test_invoke_nonzero_exit_adds_transport_diagnostics_for_sse_endpoint()
             await adapter.invoke(
                 prompt="test",
                 system_prompt="",
-                mcp_servers={"switchboard": {"url": "http://localhost:40100/sse"}},
+                mcp_servers={"switchboard": {"url": "http://localhost:41100/sse"}},
                 env={},
             )
 

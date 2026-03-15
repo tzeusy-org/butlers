@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 def mock_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Set up mock environment variables for connector config."""
     env_vars = {
-        "SWITCHBOARD_MCP_URL": "http://localhost:40100/sse",
+        "SWITCHBOARD_MCP_URL": "http://localhost:41100/sse",
         "CONNECTOR_PROVIDER": "telegram",
         "CONNECTOR_CHANNEL": "telegram_user_client",
         "TELEGRAM_API_ID": "12345",
@@ -50,7 +50,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 def config() -> TelegramUserClientConnectorConfig:
     """Create a test connector config."""
     return TelegramUserClientConnectorConfig(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         provider="telegram",
         channel="telegram_user_client",
         endpoint_identity="telegram:user:123456",
@@ -79,7 +79,7 @@ class TestTelegramUserClientConnectorConfig:
         """
         config = TelegramUserClientConnectorConfig.from_env()
 
-        assert config.switchboard_mcp_url == "http://localhost:40100/sse"
+        assert config.switchboard_mcp_url == "http://localhost:41100/sse"
         assert config.provider == "telegram"
         assert config.channel == "telegram_user_client"
         assert config.endpoint_identity == ""
@@ -599,7 +599,7 @@ class TestTelegramUserClientConnectorUnit:
         if not TELETHON_AVAILABLE:
             # Verify that trying to create a connector raises an error
             config = TelegramUserClientConnectorConfig(
-                switchboard_mcp_url="http://localhost:40100/sse",
+                switchboard_mcp_url="http://localhost:41100/sse",
                 telegram_api_id=12345,
                 telegram_api_hash="test",
                 telegram_user_session="test",
@@ -709,7 +709,7 @@ async def test_run_connector_infers_endpoint_identity_from_get_me(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Identity is always inferred from get_me()."""
-    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.delenv("TELEGRAM_API_ID", raising=False)
     monkeypatch.delenv("TELEGRAM_API_HASH", raising=False)

@@ -1,7 +1,7 @@
 # Relationship Butler Role
 
 ## Purpose
-The Relationship butler (port 40102) is a personal CRM that manages contacts, relationships, important dates, interactions, gifts, reminders, and loans.
+The Relationship butler (port 41102) is a personal CRM that manages contacts, relationships, important dates, interactions, gifts, reminders, and loans.
 
 ## ADDED Requirements
 
@@ -10,7 +10,7 @@ The relationship butler maintains personal CRM context with 40+ domain tools.
 
 #### Scenario: Identity and port
 - **WHEN** the relationship butler is running
-- **THEN** it operates on port 40102 with description "Personal CRM. Manages contacts, relationships, important dates, interactions, gifts, and reminders."
+- **THEN** it operates on port 41102 with description "Personal CRM. Manages contacts, relationships, important dates, interactions, gifts, and reminders."
 - **AND** it uses the `codex` runtime adapter with a maximum of 3 concurrent sessions
 - **AND** its database schema is `relationship` within the consolidated `butlers` database
 

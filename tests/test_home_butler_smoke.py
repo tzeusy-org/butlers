@@ -87,14 +87,14 @@ class TestHomeButlerConfigDiscovery:
         assert cfg.name == "home"
 
     def test_home_butler_config_has_expected_port(self) -> None:
-        """Home butler is configured on port 40108."""
+        """Home butler is configured on port 41108."""
         from butlers.config import load_config
 
         repo_root = Path(__file__).resolve().parent.parent
         home_config_dir = repo_root / "roster" / "home"
 
         cfg = load_config(home_config_dir)
-        assert cfg.port == 40108
+        assert cfg.port == 41108
 
     def test_home_butler_config_has_home_assistant_module(self) -> None:
         """butler.toml must declare the home_assistant module."""

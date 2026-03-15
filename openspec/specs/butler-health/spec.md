@@ -1,7 +1,7 @@
 # Health Butler Role
 
 ## Purpose
-The Health butler (port 40103) is a health tracking companion for measurements, medications, conditions, symptoms, diet, and nutrition.
+The Health butler (port 41103) is a health tracking companion for measurements, medications, conditions, symptoms, diet, and nutrition.
 
 ## ADDED Requirements
 
@@ -10,7 +10,7 @@ The health butler tracks health data with compound JSONB values and domain-speci
 
 #### Scenario: Identity and port
 - **WHEN** the health butler is running
-- **THEN** it operates on port 40103 with description "Health tracking assistant for measurements, medications, diet, food preferences, nutrition, meals, and symptoms"
+- **THEN** it operates on port 41103 with description "Health tracking assistant for measurements, medications, diet, food preferences, nutrition, meals, and symptoms"
 - **AND** it uses the `codex` runtime adapter with a maximum of 3 concurrent sessions
 - **AND** its database schema is `health` within the consolidated `butlers` database
 

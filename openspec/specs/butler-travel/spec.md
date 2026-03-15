@@ -1,7 +1,7 @@
 # Travel Butler Role
 
 ## Purpose
-The Travel butler (port 40106) is a travel logistics and itinerary intelligence specialist for flights, hotels, car rentals, and trip planning.
+The Travel butler (port 41106) is a travel logistics and itinerary intelligence specialist for flights, hotels, car rentals, and trip planning.
 
 ## ADDED Requirements
 
@@ -10,13 +10,13 @@ The travel butler manages trip lifecycle and booking data with structured contai
 
 #### Scenario: Identity and port
 - **WHEN** the travel butler is running
-- **THEN** it operates on port 40106 with description "Travel logistics and itinerary intelligence specialist for flights, hotels, car rentals, and trip planning."
+- **THEN** it operates on port 41106 with description "Travel logistics and itinerary intelligence specialist for flights, hotels, car rentals, and trip planning."
 - **AND** it uses the `codex` runtime adapter with a maximum of 3 concurrent sessions
 - **AND** its database schema is `travel` within the consolidated `butlers` database
 
 #### Scenario: Switchboard registration
 - **WHEN** the travel butler starts
-- **THEN** it registers with the switchboard at `http://localhost:40100/mcp` with `advertise = true`, `liveness_ttl_s = 300`, and route contract version range `route.v1` to `route.v1`
+- **THEN** it registers with the switchboard at `http://localhost:41100/mcp` with `advertise = true`, `liveness_ttl_s = 300`, and route contract version range `route.v1` to `route.v1`
 
 #### Scenario: Module profile
 - **WHEN** the travel butler starts

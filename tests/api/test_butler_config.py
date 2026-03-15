@@ -20,7 +20,7 @@ pytestmark = pytest.mark.unit
 class TestGetButlerConfig:
     async def test_returns_404_for_unknown_butler(self, roster_dir):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
 
         async with httpx.AsyncClient(
@@ -35,11 +35,11 @@ class TestGetButlerConfig:
         make_butler_dir(
             roster_dir,
             "general",
-            40101,
+            41101,
             claude_md="# Claude instructions\n",
             manifesto_md="# Manifesto\nPurpose statement.\n",
         )
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
 
         async with httpx.AsyncClient(
@@ -52,7 +52,7 @@ class TestGetButlerConfig:
 
         # butler.toml parsed as dict
         assert data["butler_toml"]["butler"]["name"] == "general"
-        assert data["butler_toml"]["butler"]["port"] == 40101
+        assert data["butler_toml"]["butler"]["port"] == 41101
 
         # Markdown files present
         assert data["claude_md"] == "# Claude instructions\n"
@@ -63,12 +63,12 @@ class TestGetButlerConfig:
         make_butler_dir(
             roster_dir,
             "general",
-            40101,
+            41101,
             claude_md="# Claude\n",
             agents_md="# Agents notes\n",
             manifesto_md="# Manifesto\n",
         )
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
 
         async with httpx.AsyncClient(
@@ -84,8 +84,8 @@ class TestGetButlerConfig:
 
     async def test_handles_missing_markdown_files_gracefully(self, roster_dir):
         """Missing markdown files are returned as None."""
-        make_butler_dir(roster_dir, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
 
         async with httpx.AsyncClient(
@@ -106,8 +106,8 @@ class TestGetButlerConfig:
 
     async def test_response_wrapped_in_api_response(self, roster_dir):
         """Response follows the standard ApiResponse envelope."""
-        make_butler_dir(roster_dir, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
 
         async with httpx.AsyncClient(
@@ -138,11 +138,11 @@ class TestGetButlerConfig:
         make_butler_dir(
             roster_dir,
             "general",
-            40101,
+            41101,
             claude_md="# Instructions\n",
             manifesto_md="# Purpose\n",
         )
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
 
         async with httpx.AsyncClient(
@@ -161,7 +161,7 @@ class TestGetButlerConfig:
         make_butler_dir(
             roster_dir,
             "switchboard",
-            40100,
+            41100,
             description="Router",
             modules={
                 "telegram": 'mode = "polling"\n[modules.telegram.user]\nenabled = false\n'
@@ -171,7 +171,7 @@ class TestGetButlerConfig:
                 'password_env = "BUTLER_EMAIL_PASSWORD"',
             },
         )
-        configs = [ButlerConnectionInfo("switchboard", 40100)]
+        configs = [ButlerConnectionInfo("switchboard", 41100)]
         app = make_test_app(roster_dir, configs)
 
         async with httpx.AsyncClient(

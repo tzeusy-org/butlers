@@ -35,7 +35,7 @@ FRAME = b"\x00\x01" * (FRAME_BYTES // 2)  # a valid FRAME_BYTES-length PCM frame
 
 def _make_config(**kwargs: Any) -> LiveListenerConfig:
     base = dict(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         devices=[MicDeviceSpec(name="kitchen", device="hw:0")],
         transcription_url="tcp://localhost:10300",
         reconnect_base_s=0.01,

@@ -1,7 +1,7 @@
 # General Butler Role
 
 ## Purpose
-The General butler (port 40101) is the flexible catch-all assistant for freeform data that does not belong to any specialist domain.
+The General butler (port 41101) is the flexible catch-all assistant for freeform data that does not belong to any specialist domain.
 
 ## ADDED Requirements
 
@@ -10,7 +10,7 @@ The general butler handles ad-hoc user requests without specialist schema assump
 
 #### Scenario: Identity and port
 - **WHEN** the general butler is running
-- **THEN** it operates on port 40101 with description "Flexible catch-all assistant for freeform data"
+- **THEN** it operates on port 41101 with description "Flexible catch-all assistant for freeform data"
 - **AND** it uses the `codex` runtime adapter with a maximum of 3 concurrent sessions
 - **AND** its database schema is `general` within the consolidated `butlers` database
 

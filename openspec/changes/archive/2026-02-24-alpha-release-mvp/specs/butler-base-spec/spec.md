@@ -11,7 +11,7 @@ A butler is a long-lived MCP server daemon backed by a dedicated PostgreSQL sche
 #### Scenario: Butler identity contract
 - **WHEN** a butler daemon starts
 - **THEN** it is uniquely identified by a `name` string (e.g., `"general"`, `"health"`, `"switchboard"`)
-- **AND** it binds a FastMCP SSE server to its assigned port (e.g., 40101)
+- **AND** it binds a FastMCP SSE server to its assigned port (e.g., 41101)
 - **AND** it operates within a single PostgreSQL database (`butlers`) in its own schema (e.g., `general`, `health`)
 - **AND** it also has access to the `shared` schema for cross-butler data (secrets, shared contacts, etc.)
 - **AND** its search_path is set to `[butler_schema, shared, public]` — preventing direct access to other butlers' schemas
@@ -163,7 +163,7 @@ The roster contains two categories of butlers: core butlers that provide essenti
 
 #### Scenario: Core butler — Switchboard
 - **WHEN** the system is running
-- **THEN** the Switchboard butler (port 40100) must be present as the sole entry point for all inbound messages
+- **THEN** the Switchboard butler (port 41100) must be present as the sole entry point for all inbound messages
 - **AND** it classifies incoming messages and routes them to the appropriate domain butler
 - **AND** it maintains the durable ingestion buffer with priority-tiered queuing and crash-recovery scanning
 - **AND** it manages the connector registry (which connectors are active, their health, eligibility)
@@ -172,7 +172,7 @@ The roster contains two categories of butlers: core butlers that provide essenti
 
 #### Scenario: Core butler — Messenger
 - **WHEN** the system is running
-- **THEN** the Messenger butler (port 40104) must be present as the sole owner of outbound channel delivery
+- **THEN** the Messenger butler (port 41104) must be present as the sole owner of outbound channel delivery
 - **AND** it owns all channel egress tools: `telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`
 - **AND** non-messenger butlers that attempt to register channel egress tools have them silently stripped during startup
 - **AND** all other butlers must use the `notify()` core tool which routes delivery requests through Switchboard to Messenger
@@ -184,7 +184,7 @@ The roster contains two categories of butlers: core butlers that provide essenti
 - **AND** it registers with the Switchboard at startup (`[butler.switchboard]` with `advertise = true`)
 - **AND** it launches a heartbeat task and liveness reporter to maintain its registration
 - **AND** it can be added or removed without affecting other butlers' operation
-- **AND** current domain butlers include: General (40101, catch-all), Relationship (40102, personal CRM), Health (40103, health tracking), Finance (40105, personal finance), Travel (40106, trip logistics)
+- **AND** current domain butlers include: General (41101, catch-all), Relationship (41102, personal CRM), Health (41103, health tracking), Finance (41105, personal finance), Travel (41106, trip logistics)
 
 ### Requirement: Spawner and Runtime Adapters
 The spawner generates ephemeral MCP configurations and invokes LLM CLI runtimes as subprocesses. Each runtime adapter translates the common invocation contract into adapter-specific CLI arguments.
@@ -300,11 +300,11 @@ Butler credentials follow a layered resolution strategy: database-first from the
 - **AND** this prevents runtime sessions from accessing credentials they were not granted
 
 ### Requirement: Port Assignment Convention
-Butlers use a contiguous port range starting at 40100, with the dashboard API cleanly separated.
+Butlers use a contiguous port range starting at 41100, with the dashboard API cleanly separated.
 
 #### Scenario: Butler port assignments
 - **WHEN** butlers are running
-- **THEN** ports are assigned as: switchboard=40100, general=40101, relationship=40102, health=40103, messenger=40104, finance=40105, travel=40106
+- **THEN** ports are assigned as: switchboard=41100, general=41101, relationship=41102, health=41103, messenger=41104, finance=41105, travel=41106
 - **AND** the dashboard API runs at port 40200, cleanly separated from the butler MCP port range
 - **AND** new butlers are assigned the next available port in the 401xx range
 

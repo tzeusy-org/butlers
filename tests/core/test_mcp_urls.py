@@ -14,21 +14,21 @@ pytestmark = pytest.mark.unit
 
 
 def test_runtime_mcp_url_uses_streamable_http_path():
-    assert runtime_mcp_url(40103) == "http://localhost:40103/mcp"
+    assert runtime_mcp_url(41103) == "http://localhost:41103/mcp"
 
 
 def test_runtime_mcp_transport_from_url_detects_sse():
-    assert runtime_mcp_transport_from_url("http://localhost:40103/sse") == "sse"
+    assert runtime_mcp_transport_from_url("http://localhost:41103/sse") == "sse"
 
 
 def test_runtime_mcp_transport_from_url_defaults_to_http():
-    assert runtime_mcp_transport_from_url("http://localhost:40103/mcp") == "http"
+    assert runtime_mcp_transport_from_url("http://localhost:41103/mcp") == "http"
 
 
 def test_resolve_runtime_mcp_transport_prefers_explicit_http_alias():
     assert (
         resolve_runtime_mcp_transport(
-            {"url": "http://localhost:40103/sse", "transport": "streamable-http"}
+            {"url": "http://localhost:41103/sse", "transport": "streamable-http"}
         )
         == "http"
     )
@@ -36,10 +36,10 @@ def test_resolve_runtime_mcp_transport_prefers_explicit_http_alias():
 
 def test_resolve_runtime_mcp_transport_prefers_explicit_sse():
     assert (
-        resolve_runtime_mcp_transport({"url": "http://localhost:40103/mcp", "transport": "sse"})
+        resolve_runtime_mcp_transport({"url": "http://localhost:41103/mcp", "transport": "sse"})
         == "sse"
     )
 
 
 def test_resolve_runtime_mcp_transport_falls_back_to_url_inference():
-    assert resolve_runtime_mcp_transport({"url": "http://localhost:40103/sse"}) == "sse"
+    assert resolve_runtime_mcp_transport({"url": "http://localhost:41103/sse"}) == "sse"

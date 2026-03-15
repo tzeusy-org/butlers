@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Home butler (port 40108) is a home automation orchestrator that uses Home Assistant as a glue layer to control and monitor smart home devices (Zigbee, Wi-Fi, Z-Wave), manage scenes and automations, track energy consumption, and maintain awareness of the physical home environment.
+The Home butler (port 41108) is a home automation orchestrator that uses Home Assistant as a glue layer to control and monitor smart home devices (Zigbee, Wi-Fi, Z-Wave), manage scenes and automations, track energy consumption, and maintain awareness of the physical home environment.
 
 ## ADDED Requirements
 
@@ -13,7 +13,7 @@ The home butler operates as a dedicated domain butler for smart-home orchestrati
 #### Scenario: Identity and port
 
 - **WHEN** the home butler is running
-- **THEN** it SHALL operate on port 40108 with description "Home automation orchestrator for smart devices, scenes, energy monitoring, and environmental comfort"
+- **THEN** it SHALL operate on port 41108 with description "Home automation orchestrator for smart devices, scenes, energy monitoring, and environmental comfort"
 - **AND** it SHALL use the `codex` runtime adapter with a maximum of 3 concurrent sessions
 - **AND** its database schema SHALL be `home` within the consolidated `butlers` database
 
@@ -75,7 +75,7 @@ The home butler registers with the Switchboard for cross-butler accessibility.
 #### Scenario: Switchboard advertisement
 
 - **WHEN** the home butler starts
-- **THEN** it SHALL register with the Switchboard at `http://localhost:40100/mcp` with `advertise = true`
+- **THEN** it SHALL register with the Switchboard at `http://localhost:41100/mcp` with `advertise = true`
 - **AND** liveness TTL of 300 seconds
 - **AND** route contract `route.v1`
 

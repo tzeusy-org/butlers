@@ -33,7 +33,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def bot_config() -> TelegramBotConnectorConfig:
     return TelegramBotConnectorConfig(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         provider="telegram",
         channel="telegram_bot",
         endpoint_identity="test_bot",

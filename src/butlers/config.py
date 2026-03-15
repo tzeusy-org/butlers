@@ -666,10 +666,10 @@ def load_config(config_dir: Path) -> ButlerConfig:
     # --- [butler.switchboard] sub-section ---
     switchboard_section = butler_section.get("switchboard", {})
     switchboard_url: str | None = switchboard_section.get("url")
-    # Default: derive from the Switchboard butler's known port (40100)
+    # Default: derive from the Switchboard butler's known port (41100)
     # unless this butler IS the switchboard.
     if switchboard_url is None and name != "switchboard":
-        switchboard_url = "http://localhost:40100/sse"
+        switchboard_url = "http://localhost:41100/sse"
 
     # --- [butler.security] sub-section ---
     security_section = butler_section.get("security", {})

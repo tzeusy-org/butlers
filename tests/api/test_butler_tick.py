@@ -88,7 +88,7 @@ def _create_test_app(
 class TestForceTick:
     async def test_returns_404_for_unknown_butler(self, app):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         _create_test_app(app, configs, mgr)
 
@@ -102,7 +102,7 @@ class TestForceTick:
 
     async def test_successful_tick(self, app):
         """Successful tick returns 200 with success=True and message."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         tick_result = _mock_tick_result("Tick completed successfully")
         mgr = _mock_mcp_manager(tick_result=tick_result)
         _create_test_app(app, configs, mgr)
@@ -121,7 +121,7 @@ class TestForceTick:
 
     async def test_successful_tick_response_model(self, app):
         """Response data can be parsed as TickResponse."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         tick_result = _mock_tick_result("OK")
         mgr = _mock_mcp_manager(tick_result=tick_result)
         _create_test_app(app, configs, mgr)
@@ -138,7 +138,7 @@ class TestForceTick:
 
     async def test_returns_503_when_butler_unreachable(self, app):
         """Returns 503 with error payload when butler is unreachable."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         _create_test_app(app, configs, mgr)
 
@@ -155,7 +155,7 @@ class TestForceTick:
 
     async def test_returns_503_on_timeout(self, app):
         """Returns 503 with error payload when tick request times out."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(timeout=True)
         _create_test_app(app, configs, mgr)
 
@@ -172,7 +172,7 @@ class TestForceTick:
 
     async def test_tick_with_empty_content(self, app):
         """Tick with empty content returns success=True and message=None."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         result = MagicMock()
         result.content = []
         result.is_error = False

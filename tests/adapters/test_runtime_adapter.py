@@ -276,12 +276,12 @@ def test_build_config_file_preserves_streamable_http_urls(
 ):
     """All runtime adapters preserve streamable HTTP MCP endpoint URLs."""
     adapter = adapter_factory()
-    mcp_servers = {"switchboard": {"url": "http://localhost:40100/mcp"}}
+    mcp_servers = {"switchboard": {"url": "http://localhost:41100/mcp"}}
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
 
     assert config_path == tmp_path / expected_filename
     data = json.loads(config_path.read_text())
-    assert data["mcpServers"]["switchboard"]["url"] == "http://localhost:40100/mcp"
+    assert data["mcpServers"]["switchboard"]["url"] == "http://localhost:41100/mcp"
 
 
 def test_opencode_adapter_binary_name():
@@ -293,13 +293,13 @@ def test_opencode_adapter_binary_name():
 def test_opencode_adapter_build_config_file_preserves_url(tmp_path: Path):
     """OpenCodeAdapter.build_config_file() writes opencode.jsonc with correct URL."""
     adapter = OpenCodeAdapter()
-    mcp_servers = {"switchboard": {"url": "http://localhost:40100/mcp"}}
+    mcp_servers = {"switchboard": {"url": "http://localhost:41100/mcp"}}
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
 
     assert config_path == tmp_path / "opencode.jsonc"
     assert config_path.exists()
     data = json.loads(config_path.read_text())
-    assert data["mcp"]["switchboard"]["url"] == "http://localhost:40100/mcp"
+    assert data["mcp"]["switchboard"]["url"] == "http://localhost:41100/mcp"
     assert data["mcp"]["switchboard"]["type"] == "remote"
 
 

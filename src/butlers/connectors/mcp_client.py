@@ -32,7 +32,7 @@ _PROBE_HTTP_TIMEOUT_S: float = 5.0
 def _switchboard_health_url(sse_url: str) -> str:
     """Derive the switchboard health endpoint URL from its SSE endpoint URL.
 
-    Example: ``http://localhost:40100/sse`` → ``http://localhost:40100/health``
+    Example: ``http://localhost:41100/sse`` → ``http://localhost:41100/health``
     """
     parsed = urlparse(sse_url)
     return f"{parsed.scheme}://{parsed.netloc}/health"
@@ -60,7 +60,7 @@ async def wait_for_switchboard_ready(
     ----------
     sse_url:
         The MCP SSE endpoint URL used by the connector (e.g.
-        ``http://localhost:40100/sse``).  The health URL is derived from it.
+        ``http://localhost:41100/sse``).  The health URL is derived from it.
     max_attempts:
         Maximum number of probe attempts before giving up and raising
         ``TimeoutError``.
@@ -134,7 +134,7 @@ class CachedMCPClient:
     Parameters
     ----------
     endpoint_url:
-        SSE endpoint URL of the target MCP server (e.g. ``http://localhost:40100/sse``).
+        SSE endpoint URL of the target MCP server (e.g. ``http://localhost:41100/sse``).
     client_name:
         Human-readable name for logging and MCP session metadata.
     """

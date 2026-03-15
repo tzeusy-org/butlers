@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Port offset: ensures E2E daemons do not collide with a running production
-# stack.  40100 → 51100, etc.
+# stack.  41100 → 51100, etc.
 # ---------------------------------------------------------------------------
 
 E2E_PORT_OFFSET = 11000

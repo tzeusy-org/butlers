@@ -31,7 +31,7 @@ pytestmark = pytest.mark.unit
 FULL_TOML = """\
 [butler]
 name = "jarvis"
-port = 40100
+port = 41100
 description = "Personal assistant butler"
 
 [butler.db]
@@ -99,7 +99,7 @@ def test_load_full_config(tmp_path: Path):
 
     assert isinstance(cfg, ButlerConfig)
     assert cfg.name == "jarvis"
-    assert cfg.port == 40100
+    assert cfg.port == 41100
     assert cfg.description == "Personal assistant butler"
     assert cfg.db_name == "jarvis_db"
 
@@ -1078,16 +1078,16 @@ class TestSwitchboardUrlConfig:
     """Tests for [butler.switchboard] section parsing."""
 
     def test_default_switchboard_url_for_non_switchboard(self, tmp_path: Path):
-        """Non-switchboard butlers default to http://localhost:40100/sse."""
+        """Non-switchboard butlers default to http://localhost:41100/sse."""
         toml = """\
 [butler]
 name = "general"
-port = 40101
+port = 41101
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.switchboard_url == "http://localhost:40100/sse"
+        assert cfg.switchboard_url == "http://localhost:41100/sse"
 
 
 class TestMessengerConfigValidation:
@@ -1098,7 +1098,7 @@ class TestMessengerConfigValidation:
         toml = """\
 [butler]
 name = "messenger"
-port = 40104
+port = 41104
 """
         config_dir = _write_toml(tmp_path, toml)
 
@@ -1110,7 +1110,7 @@ port = 40104
         toml = """\
 [butler]
 name = "messenger"
-port = 40104
+port = 41104
 
 [modules.telegram]
 mode = "polling"
@@ -1126,7 +1126,7 @@ mode = "polling"
         toml = """\
 [butler]
 name = "messenger"
-port = 40104
+port = 41104
 
 [modules.email]
 """
@@ -1141,7 +1141,7 @@ port = 40104
         toml = """\
 [butler]
 name = "messenger"
-port = 40104
+port = 41104
 
 [modules.telegram]
 
@@ -1163,7 +1163,7 @@ enabled = false
         toml = """\
 [butler]
 name = "general"
-port = 40101
+port = 41101
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
@@ -1175,7 +1175,7 @@ port = 40101
         toml = """\
 [butler]
 name = "switchboard"
-port = 40100
+port = 41100
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
@@ -1187,7 +1187,7 @@ port = 40100
         toml = """\
 [butler]
 name = "health"
-port = 40103
+port = 41103
 
 [butler.switchboard]
 url = "http://switchboard.internal:9000/sse"
@@ -1202,15 +1202,15 @@ url = "http://switchboard.internal:9000/sse"
         toml = """\
 [butler]
 name = "switchboard"
-port = 40100
+port = 41100
 
 [butler.switchboard]
-url = "http://other-switchboard:40100/sse"
+url = "http://other-switchboard:41100/sse"
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.switchboard_url == "http://other-switchboard:40100/sse"
+        assert cfg.switchboard_url == "http://other-switchboard:41100/sse"
 
     def test_switchboard_url_env_var_resolution(self, tmp_path: Path, monkeypatch):
         """switchboard_url supports ${ENV_VAR} resolution."""
@@ -1218,15 +1218,15 @@ url = "http://other-switchboard:40100/sse"
         toml = """\
 [butler]
 name = "health"
-port = 40103
+port = 41103
 
 [butler.switchboard]
-url = "http://${SWITCHBOARD_HOST}:40100/sse"
+url = "http://${SWITCHBOARD_HOST}:41100/sse"
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.switchboard_url == "http://sb.prod.internal:40100/sse"
+        assert cfg.switchboard_url == "http://sb.prod.internal:41100/sse"
 
     def test_switchboard_url_in_butler_config_dataclass(self):
         """ButlerConfig dataclass defaults switchboard_url to None."""
@@ -1238,14 +1238,14 @@ url = "http://${SWITCHBOARD_HOST}:40100/sse"
         toml = """\
 [butler]
 name = "health"
-port = 40103
+port = 41103
 
 [butler.switchboard]
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.switchboard_url == "http://localhost:40100/sse"
+        assert cfg.switchboard_url == "http://localhost:41100/sse"
 
 
 # ---------------------------------------------------------------------------

@@ -113,13 +113,13 @@ async def test_register_butler_inserts(pool):
     """register_butler creates a new entry in the registry."""
     from butlers.tools.switchboard import list_butlers, register_butler
 
-    await register_butler(pool, "health", "http://localhost:40101/sse", "Health butler", ["email"])
+    await register_butler(pool, "health", "http://localhost:41101/sse", "Health butler", ["email"])
     butlers = await list_butlers(pool)
     names = [b["name"] for b in butlers]
     assert "health" in names
 
     health = next(b for b in butlers if b["name"] == "health")
-    assert health["endpoint_url"] == "http://localhost:40101/sse"
+    assert health["endpoint_url"] == "http://localhost:41101/sse"
     assert health["description"] == "Health butler"
 
 
@@ -1369,7 +1369,7 @@ async def test_deliver_telegram_success(deliver_pool):
     await deliver_pool.execute("DELETE FROM notifications")
 
     # Register the messenger butler endpoint.
-    await register_butler(deliver_pool, "messenger", "http://localhost:40100/sse", "Messenger", [])
+    await register_butler(deliver_pool, "messenger", "http://localhost:41100/sse", "Messenger", [])
 
     async def mock_call(endpoint_url, tool_name, args):
         return {"ok": True, "message_id": 42}
@@ -1416,7 +1416,7 @@ async def test_deliver_email_success(deliver_pool):
     await deliver_pool.execute("DELETE FROM butler_registry")
     await deliver_pool.execute("DELETE FROM notifications")
 
-    await register_butler(deliver_pool, "messenger", "http://localhost:40100/sse", "Messenger", [])
+    await register_butler(deliver_pool, "messenger", "http://localhost:41100/sse", "Messenger", [])
 
     captured_args: list[dict] = []
 
@@ -1514,7 +1514,7 @@ async def test_deliver_no_butler_with_module(deliver_pool):
     await deliver_pool.execute("DELETE FROM notifications")
 
     # Register a butler without the telegram module
-    await register_butler(deliver_pool, "health", "http://localhost:40101/sse", "Health", ["email"])
+    await register_butler(deliver_pool, "health", "http://localhost:41101/sse", "Health", ["email"])
 
     result = await deliver(
         deliver_pool,
@@ -1543,7 +1543,7 @@ async def test_deliver_route_failure_logs_error(deliver_pool):
     await deliver_pool.execute("DELETE FROM butler_registry")
     await deliver_pool.execute("DELETE FROM notifications")
 
-    await register_butler(deliver_pool, "messenger", "http://localhost:40100/sse")
+    await register_butler(deliver_pool, "messenger", "http://localhost:41100/sse")
 
     async def failing_call(endpoint_url, tool_name, args):
         raise ConnectionError("Telegram API unavailable")
@@ -1586,7 +1586,7 @@ async def test_deliver_logs_to_routing_log(deliver_pool):
     await deliver_pool.execute("DELETE FROM butler_registry")
     await deliver_pool.execute("DELETE FROM routing_log")
 
-    await register_butler(deliver_pool, "messenger", "http://localhost:40100/sse")
+    await register_butler(deliver_pool, "messenger", "http://localhost:41100/sse")
 
     async def mock_call(endpoint_url, tool_name, args):
         return {"ok": True}
@@ -1626,7 +1626,7 @@ async def test_deliver_email_default_subject(deliver_pool):
     await deliver_pool.execute("DELETE FROM butler_registry")
     await deliver_pool.execute("DELETE FROM notifications")
 
-    await register_butler(deliver_pool, "mailer", "http://localhost:40102/sse", "Mailer", ["email"])
+    await register_butler(deliver_pool, "mailer", "http://localhost:41102/sse", "Mailer", ["email"])
 
     captured_args: list[dict] = []
 
@@ -1657,7 +1657,7 @@ async def test_deliver_metadata_stored_in_notification(deliver_pool):
     await deliver_pool.execute("DELETE FROM notifications")
 
     await register_butler(
-        deliver_pool, "switchboard", "http://localhost:40100/sse", "Router", ["telegram"]
+        deliver_pool, "switchboard", "http://localhost:41100/sse", "Router", ["telegram"]
     )
 
     async def mock_call(endpoint_url, tool_name, args):
@@ -1689,10 +1689,10 @@ async def test_deliver_selects_butler_with_matching_module(deliver_pool):
 
     # Register butlers with different modules
     await register_butler(
-        deliver_pool, "emailer", "http://localhost:40102/sse", "Email Butler", ["email"]
+        deliver_pool, "emailer", "http://localhost:41102/sse", "Email Butler", ["email"]
     )
     await register_butler(
-        deliver_pool, "chatter", "http://localhost:40103/sse", "Chat Butler", ["telegram"]
+        deliver_pool, "chatter", "http://localhost:41103/sse", "Chat Butler", ["telegram"]
     )
 
     captured_urls: list[str] = []
@@ -1709,7 +1709,7 @@ async def test_deliver_selects_butler_with_matching_module(deliver_pool):
         recipient="123",
         call_fn=mock_call,
     )
-    assert captured_urls[-1] == "http://localhost:40103/sse"
+    assert captured_urls[-1] == "http://localhost:41103/sse"
 
     # Send via email — should route to emailer
     await deliver(
@@ -1719,7 +1719,7 @@ async def test_deliver_selects_butler_with_matching_module(deliver_pool):
         recipient="user@example.com",
         call_fn=mock_call,
     )
-    assert captured_urls[-1] == "http://localhost:40102/sse"
+    assert captured_urls[-1] == "http://localhost:41102/sse"
 
 
 # ------------------------------------------------------------------
@@ -1732,7 +1732,7 @@ async def test_deliver_creates_span_with_attributes(deliver_pool, otel_provider)
     from butlers.tools.switchboard import deliver, register_butler
 
     await deliver_pool.execute("DELETE FROM butler_registry")
-    await register_butler(deliver_pool, "messenger", "http://localhost:40100/sse")
+    await register_butler(deliver_pool, "messenger", "http://localhost:41100/sse")
 
     async def mock_call(endpoint_url, tool_name, args):
         return {"ok": True}
@@ -1788,7 +1788,7 @@ async def test_deliver_span_error_on_route_failure(deliver_pool, otel_provider):
 
     await deliver_pool.execute("DELETE FROM butler_registry")
     await register_butler(
-        deliver_pool, "switchboard", "http://localhost:40100/sse", "Router", ["telegram"]
+        deliver_pool, "switchboard", "http://localhost:41100/sse", "Router", ["telegram"]
     )
 
     async def failing_call(endpoint_url, tool_name, args):

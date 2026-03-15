@@ -929,7 +929,7 @@ class TestDaemonIntegration:
             [
                 "[butler]",
                 'name = "switchboard"',
-                "port = 40100",
+                "port = 41100",
                 "",
                 "[butler.db]",
                 'name = "butlers"',

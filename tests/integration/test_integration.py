@@ -246,7 +246,7 @@ class TestButlerStartupIntegration:
         initial_session_count = await pool.fetchval("SELECT COUNT(*) FROM sessions")
 
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.config = ButlerConfig(name="switchboard", port=41100)
         daemon.db = MagicMock()
         daemon.db.pool = pool
         daemon.spawner = MagicMock()
@@ -586,10 +586,10 @@ class TestSwitchboardRoutingIntegration:
         from butlers.tools.switchboard import list_butlers, register_butler
 
         await register_butler(
-            pool, "health", "http://localhost:40101/sse", "Health butler", ["email"]
+            pool, "health", "http://localhost:41101/sse", "Health butler", ["email"]
         )
         await register_butler(
-            pool, "general", "http://localhost:40102/sse", "General butler", ["telegram"]
+            pool, "general", "http://localhost:41102/sse", "General butler", ["telegram"]
         )
 
         butlers = await list_butlers(pool)

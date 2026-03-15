@@ -54,7 +54,7 @@ class TestNativeScheduleDispatch:
     async def test_switchboard_job_mode_dispatches_via_registry(self, tmp_path):
         """Job-mode deterministic schedules should dispatch via registry handler."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.config = ButlerConfig(name="switchboard", port=41100)
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()
@@ -85,7 +85,7 @@ class TestNativeScheduleDispatch:
     async def test_non_native_schedule_falls_back_to_spawner(self, tmp_path):
         """Schedules without native handlers should continue using spawner.trigger."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.config = ButlerConfig(name="switchboard", port=41100)
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()
@@ -112,7 +112,7 @@ class TestNativeScheduleDispatch:
     async def test_prompt_dispatch_passes_complexity_to_spawner(self, tmp_path):
         """Complexity parameter must be forwarded to spawner.trigger for prompt-mode tasks."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="general", port=40101)
+        daemon.config = ButlerConfig(name="general", port=41101)
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()
@@ -140,7 +140,7 @@ class TestNativeScheduleDispatch:
     async def test_prompt_dispatch_defaults_complexity_to_medium(self, tmp_path):
         """When complexity is not provided, spawner.trigger receives Complexity.MEDIUM."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="general", port=40101)
+        daemon.config = ButlerConfig(name="general", port=41101)
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()
@@ -163,7 +163,7 @@ class TestNativeScheduleDispatch:
     async def test_job_dispatch_does_not_pass_complexity_to_handler(self, tmp_path):
         """Deterministic job-mode dispatch ignores complexity (handler owns its own resources)."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.config = ButlerConfig(name="switchboard", port=41100)
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()
@@ -193,7 +193,7 @@ class TestNativeScheduleDispatch:
     async def test_unknown_job_mode_raises(self, tmp_path):
         """Unknown deterministic job names fail explicitly."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.config = ButlerConfig(name="switchboard", port=41100)
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()
@@ -214,7 +214,7 @@ class TestNativeScheduleDispatch:
     async def test_blank_job_name_rejected(self, tmp_path):
         """Blank deterministic job names should fail with actionable error."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.config = ButlerConfig(name="switchboard", port=41100)
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()

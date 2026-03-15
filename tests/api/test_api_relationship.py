@@ -211,7 +211,7 @@ def test_contacts_sync_incremental_dispatch(app):
     app = _app_with_mock_db(
         app,
         mcp_manager=mcp_manager,
-        butler_configs=[ButlerConnectionInfo("relationship", 40102)],
+        butler_configs=[ButlerConnectionInfo("relationship", 41102)],
     )
 
     with TestClient(app=app) as client:
@@ -242,7 +242,7 @@ def test_contacts_sync_full_dispatch(app):
     app = _app_with_mock_db(
         app,
         mcp_manager=mcp_manager,
-        butler_configs=[ButlerConnectionInfo("relationship", 40102)],
+        butler_configs=[ButlerConnectionInfo("relationship", 41102)],
     )
 
     with TestClient(app=app) as client:
@@ -268,7 +268,7 @@ def test_contacts_sync_invalid_mode(app):
     app = _app_with_mock_db(
         app,
         mcp_manager=mcp_manager,
-        butler_configs=[ButlerConnectionInfo("relationship", 40102)],
+        butler_configs=[ButlerConnectionInfo("relationship", 41102)],
     )
 
     with TestClient(app=app) as client:
@@ -287,7 +287,7 @@ def test_contacts_sync_credential_error_actionable(app):
     app = _app_with_mock_db(
         app,
         mcp_manager=mcp_manager,
-        butler_configs=[ButlerConnectionInfo("relationship", 40102)],
+        butler_configs=[ButlerConnectionInfo("relationship", 41102)],
     )
 
     with TestClient(app=app) as client:

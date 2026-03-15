@@ -44,15 +44,15 @@ All 9 ports are correct:
 
 | Butler | Diagram | butler.toml | Match |
 |--------|---------|-------------|-------|
-| switchboard | :40100 | 40100 | ✓ |
-| general | :40101 | 40101 | ✓ |
-| relationship | :40102 | 40102 | ✓ |
-| health | :40103 | 40103 | ✓ |
-| messenger | :40104 | 40104 | ✓ |
-| finance | :40105 | 40105 | ✓ |
-| travel | :40106 | 40106 | ✓ |
-| education | :40107 | 40107 | ✓ |
-| home | :40108 | 40108 | ✓ |
+| switchboard | :41100 | 41100 | ✓ |
+| general | :41101 | 41101 | ✓ |
+| relationship | :41102 | 41102 | ✓ |
+| health | :41103 | 41103 | ✓ |
+| messenger | :41104 | 41104 | ✓ |
+| finance | :41105 | 41105 | ✓ |
+| travel | :41106 | 41106 | ✓ |
+| education | :41107 | 41107 | ✓ |
+| home | :41108 | 41108 | ✓ |
 
 ### 2.2 Butler Modules (butler.toml vs diagrams 04a–04g)
 

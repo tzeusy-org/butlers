@@ -88,7 +88,7 @@ class TestListButlerMcpTools:
                 input_schema={"type": "object"},
             ),
         ]
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(tools=tools)
         _create_test_app(app, configs, mgr)
 
@@ -110,7 +110,7 @@ class TestListButlerMcpTools:
 
     async def test_returns_404_for_unknown_butler(self, app):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         _create_test_app(app, configs, mgr)
 
@@ -124,7 +124,7 @@ class TestListButlerMcpTools:
 
     async def test_returns_503_when_unreachable(self, app):
         """Unreachable butler MCP server returns 503."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         _create_test_app(app, configs, mgr)
 
@@ -140,7 +140,7 @@ class TestListButlerMcpTools:
 class TestCallButlerMcpTool:
     async def test_calls_tool_with_arguments(self, app):
         """POST endpoint proxies tool call and returns parsed JSON payload."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         call_result = _mock_call_tool_result('{"ok": true, "value": 123}')
         mgr = _mock_mcp_manager(call_result=call_result)
         _create_test_app(app, configs, mgr)
@@ -169,7 +169,7 @@ class TestCallButlerMcpTool:
 
     async def test_returns_text_when_result_not_json(self, app):
         """Non-JSON tool output is returned as plain text."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         call_result = _mock_call_tool_result("plain-text-result")
         mgr = _mock_mcp_manager(call_result=call_result)
         _create_test_app(app, configs, mgr)
@@ -190,7 +190,7 @@ class TestCallButlerMcpTool:
 
     async def test_returns_404_for_unknown_butler(self, app):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         call_result = _mock_call_tool_result(json.dumps({"ok": True}))
         mgr = _mock_mcp_manager(call_result=call_result)
         _create_test_app(app, configs, mgr)
@@ -208,7 +208,7 @@ class TestCallButlerMcpTool:
 
     async def test_returns_503_when_unreachable(self, app):
         """Unreachable butler MCP server returns 503."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         _create_test_app(app, configs, mgr)
 

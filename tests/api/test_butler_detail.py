@@ -94,7 +94,7 @@ class TestGetLiveStatus:
 class TestGetButlerDetail:
     async def test_returns_404_for_unknown_butler(self, roster_dir):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -107,8 +107,8 @@ class TestGetButlerDetail:
 
     async def test_returns_detail_for_known_butler(self, roster_dir):
         """Known butler returns full detail."""
-        make_butler_dir(roster_dir, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101, description="Test butler")]
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101, description="Test butler")]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -120,7 +120,7 @@ class TestGetButlerDetail:
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["name"] == "general"
-        assert data["port"] == 40101
+        assert data["port"] == 41101
         assert data["description"] == "Test butler"
         assert data["db_name"] == "butlers"
         assert data["status"] == "online"
@@ -130,11 +130,11 @@ class TestGetButlerDetail:
         make_butler_dir(
             roster_dir,
             "switchboard",
-            40100,
+            41100,
             description="Router butler",
             modules={"telegram": 'mode = "polling"', "email": ""},
         )
-        configs = [ButlerConnectionInfo("switchboard", 40100)]
+        configs = [ButlerConnectionInfo("switchboard", 41100)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -151,8 +151,8 @@ class TestGetButlerDetail:
 
     async def test_includes_skills_list(self, roster_dir):
         """Butler detail includes skills discovered from skills/ directory."""
-        make_butler_dir(roster_dir, "general", 40101, skills=["data-organizer", "report-builder"])
-        configs = [ButlerConnectionInfo("general", 40101)]
+        make_butler_dir(roster_dir, "general", 41101, skills=["data-organizer", "report-builder"])
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -170,7 +170,7 @@ class TestGetButlerDetail:
         make_butler_dir(
             roster_dir,
             "health",
-            40103,
+            41103,
             description="Health butler",
             extra_toml=(
                 "[[butler.schedule]]\n"
@@ -179,7 +179,7 @@ class TestGetButlerDetail:
                 'prompt = "Run daily health check"\n'
             ),
         )
-        configs = [ButlerConnectionInfo("health", 40103)]
+        configs = [ButlerConnectionInfo("health", 41103)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -199,7 +199,7 @@ class TestGetButlerDetail:
         make_butler_dir(
             roster_dir,
             "relationship",
-            40104,
+            41104,
             description="Relationship butler",
             extra_toml=(
                 "[[butler.schedule]]\n"
@@ -209,7 +209,7 @@ class TestGetButlerDetail:
                 'job_name = "eligibility_sweep"\n'
             ),
         )
-        configs = [ButlerConnectionInfo("relationship", 40104)]
+        configs = [ButlerConnectionInfo("relationship", 41104)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -226,8 +226,8 @@ class TestGetButlerDetail:
 
     async def test_handles_unreachable_butler(self, roster_dir):
         """Butler detail returns 'offline' status when MCP is unreachable."""
-        make_butler_dir(roster_dir, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=False)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -243,8 +243,8 @@ class TestGetButlerDetail:
 
     async def test_response_wrapped_in_api_response(self, roster_dir):
         """Response follows the standard ApiResponse envelope."""
-        make_butler_dir(roster_dir, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -274,9 +274,9 @@ class TestGetButlerDetail:
 
     async def test_empty_skills_when_no_skills_dir(self, roster_dir):
         """Returns empty skills list when butler has no skills/ directory."""
-        make_butler_dir(roster_dir, "general", 40101)
+        make_butler_dir(roster_dir, "general", 41101)
         # Don't create skills directory
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 
@@ -291,8 +291,8 @@ class TestGetButlerDetail:
 
     async def test_empty_modules_when_no_modules(self, roster_dir):
         """Returns empty modules list when butler has no modules configured."""
-        make_butler_dir(roster_dir, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         app = make_test_app(roster_dir, configs, mgr)
 

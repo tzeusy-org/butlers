@@ -12,10 +12,10 @@
 #   docker compose up -d
 #
 # All butler services will be available on their configured ports:
-#   - switchboard: 40100
-#   - general: 40101
-#   - relationship: 40102
-#   - health: 40103
+#   - switchboard: 41100
+#   - general: 41101
+#   - relationship: 41102
+#   - health: 41103
 #   - heartbeat: 40199
 #   - dashboard-api: 40200
 #
@@ -47,7 +47,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "40100:40100"
+      - "41100:41100"
     volumes:
       - ./butlers/switchboard:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -67,7 +67,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "40101:40101"
+      - "41101:41101"
     volumes:
       - ./butlers/general:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -87,7 +87,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "40102:40102"
+      - "41102:41102"
     volumes:
       - ./butlers/relationship:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -107,7 +107,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "40103:40103"
+      - "41103:41103"
     volumes:
       - ./butlers/health:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]

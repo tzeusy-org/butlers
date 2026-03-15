@@ -126,7 +126,7 @@ class TestInitCommand:
         assert "port = 9100" in toml_text
 
     def test_init_uses_default_port(self, runner, tmp_path):
-        """Test that init works without --port flag, using default 40100."""
+        """Test that init works without --port flag, using default 41100."""
         butlers_dir = tmp_path / "butlers"
         result = runner.invoke(cli, ["init", "mybot", "--dir", str(butlers_dir)])
         assert result.exit_code == 0
@@ -134,7 +134,7 @@ class TestInitCommand:
 
         butler_dir = butlers_dir / "mybot"
         toml_text = (butler_dir / "butler.toml").read_text()
-        assert "port = 40100" in toml_text
+        assert "port = 41100" in toml_text
         assert 'name = "butlers"' in toml_text
         assert 'schema = "mybot"' in toml_text
 

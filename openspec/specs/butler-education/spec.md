@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Education butler (port 40107) is a personalized tutor with spaced repetition, mind maps, and adaptive learning. This spec covers the butler's roster configuration, system prompt, module profile, schedule, skills, switchboard registration, and database identity — the foundational layer on which all other education butler capabilities are built.
+The Education butler (port 41107) is a personalized tutor with spaced repetition, mind maps, and adaptive learning. This spec covers the butler's roster configuration, system prompt, module profile, schedule, skills, switchboard registration, and database identity — the foundational layer on which all other education butler capabilities are built.
 
 ## ADDED Requirements
 
@@ -13,7 +13,7 @@ The education butler SHALL be configured with the correct port, description, mod
 #### Scenario: Identity and port
 
 - **WHEN** the education butler is running
-- **THEN** it operates on port 40107 with description "Personalized tutor with spaced repetition, mind maps, and adaptive learning"
+- **THEN** it operates on port 41107 with description "Personalized tutor with spaced repetition, mind maps, and adaptive learning"
 - **AND** it uses the `claude` runtime type with model `claude-opus-4-6`
 - **AND** it permits a maximum of 3 concurrent sessions
 
@@ -143,7 +143,7 @@ The Switchboard butler SHALL route education-domain requests to the education bu
 #### Scenario: Unambiguous learning intent routes to education butler
 
 - **WHEN** an incoming message contains "teach me Python" or "quiz me on calculus"
-- **THEN** the Switchboard MUST route the message to the education butler at port 40107
+- **THEN** the Switchboard MUST route the message to the education butler at port 41107
 - **AND** it MUST NOT route the message to any other domain butler
 
 #### Scenario: Ambiguous routing defers to user clarification

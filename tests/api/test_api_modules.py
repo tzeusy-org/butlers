@@ -32,7 +32,7 @@ pytestmark = pytest.mark.unit
 def _make_butler_dir(
     tmp_path: Path,
     name: str = "general",
-    port: int = 40101,
+    port: int = 41101,
     modules: dict[str, str] | None = None,
 ) -> Path:
     """Create a butler directory with optional modules in butler.toml."""
@@ -275,7 +275,7 @@ class TestGetModuleStatesViaMCP:
 class TestGetModuleStatesEndpoint:
     async def test_returns_404_for_unknown_butler(self, app, tmp_path: Path):
         """Unknown butler returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         app = _create_test_app(app, tmp_path, configs, mgr)
 
@@ -288,8 +288,8 @@ class TestGetModuleStatesEndpoint:
 
     async def test_returns_503_when_butler_unreachable(self, app, tmp_path: Path):
         """Returns 503 when butler daemon is unreachable."""
-        _make_butler_dir(tmp_path, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         app = _create_test_app(app, tmp_path, configs, mgr)
 
@@ -302,8 +302,8 @@ class TestGetModuleStatesEndpoint:
 
     async def test_returns_module_states_with_correct_schema(self, app, tmp_path: Path):
         """GET returns all modules with correct fields and values."""
-        _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": "", "email": ""})
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101, modules={"telegram": "", "email": ""})
+        configs = [ButlerConnectionInfo("general", 41101)]
         raw_states = {
             "telegram": {
                 "health": "active",
@@ -347,8 +347,8 @@ class TestGetModuleStatesEndpoint:
 
     async def test_response_validates_as_pydantic_model(self, app, tmp_path: Path):
         """Response items can be parsed as ModuleRuntimeStateResponse."""
-        _make_butler_dir(tmp_path, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         raw_states = {
             "telegram": {
                 "health": "active",
@@ -373,8 +373,8 @@ class TestGetModuleStatesEndpoint:
 
     async def test_returns_failed_module_info(self, app, tmp_path: Path):
         """Failed modules are returned with health=failed and failure details."""
-        _make_butler_dir(tmp_path, "general", 40101, modules={"email": ""})
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101, modules={"email": ""})
+        configs = [ButlerConnectionInfo("general", 41101)]
         raw_states = {
             "email": {
                 "health": "failed",
@@ -410,7 +410,7 @@ class TestGetModuleStatesEndpoint:
 class TestSetModuleEnabledEndpoint:
     async def test_returns_404_for_unknown_butler(self, app, tmp_path: Path):
         """Unknown butler returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager()
         app = _create_test_app(app, tmp_path, configs, mgr)
 
@@ -426,8 +426,8 @@ class TestSetModuleEnabledEndpoint:
 
     async def test_returns_503_when_butler_unreachable(self, app, tmp_path: Path):
         """Returns 503 when butler daemon is unreachable."""
-        _make_butler_dir(tmp_path, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         app = _create_test_app(app, tmp_path, configs, mgr)
 
@@ -443,8 +443,8 @@ class TestSetModuleEnabledEndpoint:
 
     async def test_returns_404_for_unknown_module(self, app, tmp_path: Path):
         """Returns 404 when daemon reports module is unknown."""
-        _make_butler_dir(tmp_path, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         set_result = _make_set_enabled_result("error", error="Unknown module: 'nonexistent'")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
         app = _create_test_app(app, tmp_path, configs, mgr)
@@ -461,8 +461,8 @@ class TestSetModuleEnabledEndpoint:
 
     async def test_returns_409_for_unavailable_module(self, app, tmp_path: Path):
         """Returns 409 when daemon reports module is unavailable (failed health)."""
-        _make_butler_dir(tmp_path, "general", 40101, modules={"email": ""})
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101, modules={"email": ""})
+        configs = [ButlerConnectionInfo("general", 41101)]
         set_result = _make_set_enabled_result(
             "error",
             error="Module 'email' is unavailable (health='failed') and cannot be toggled",
@@ -482,8 +482,8 @@ class TestSetModuleEnabledEndpoint:
 
     async def test_enable_module_returns_updated_state(self, app, tmp_path: Path):
         """Successful enable returns the updated module state with enabled=True."""
-        _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101, modules={"telegram": ""})
+        configs = [ButlerConnectionInfo("general", 41101)]
         set_result = _make_set_enabled_result("ok")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
         app = _create_test_app(app, tmp_path, configs, mgr)
@@ -507,8 +507,8 @@ class TestSetModuleEnabledEndpoint:
 
     async def test_disable_module_returns_updated_state(self, app, tmp_path: Path):
         """Successful disable returns the updated module state with enabled=False."""
-        _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101, modules={"telegram": ""})
+        configs = [ButlerConnectionInfo("general", 41101)]
         set_result = _make_set_enabled_result("ok")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
         app = _create_test_app(app, tmp_path, configs, mgr)
@@ -528,8 +528,8 @@ class TestSetModuleEnabledEndpoint:
 
     async def test_response_validates_as_pydantic_model(self, app, tmp_path: Path):
         """Response data can be parsed as ModuleRuntimeStateResponse."""
-        _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101, modules={"telegram": ""})
+        configs = [ButlerConnectionInfo("general", 41101)]
         set_result = _make_set_enabled_result("ok")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
         app = _create_test_app(app, tmp_path, configs, mgr)
@@ -549,8 +549,8 @@ class TestSetModuleEnabledEndpoint:
 
     async def test_has_config_false_for_unconfigured_module(self, app, tmp_path: Path):
         """has_config is False when module is not in butler.toml."""
-        _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_butler_dir(tmp_path, "general", 41101, modules={"telegram": ""})
+        configs = [ButlerConnectionInfo("general", 41101)]
         # Runtime allows 'calendar' even though it's not in config
         set_result = _make_set_enabled_result("ok")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)

@@ -29,7 +29,7 @@ pytestmark = pytest.mark.unit
 def _make_roster_with_modules(
     tmp_path: Path,
     name: str = "general",
-    port: int = 40101,
+    port: int = 41101,
     modules: dict[str, str] | None = None,
 ) -> Path:
     """Create a butler directory with modules in config.
@@ -62,7 +62,7 @@ def _make_roster_with_modules(
     return butler_dir
 
 
-def _make_roster_no_modules(tmp_path: Path, name: str = "bare", port: int = 40102) -> Path:
+def _make_roster_no_modules(tmp_path: Path, name: str = "bare", port: int = 41102) -> Path:
     """Create a butler directory with no modules."""
     butler_dir = tmp_path / name
     butler_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +92,7 @@ def _mock_status_result(
     data = {
         "name": "test",
         "description": "Test butler",
-        "port": 40101,
+        "port": 41101,
         "modules": modules_payload,
         "health": health,
         "uptime_seconds": 123.4,
@@ -228,7 +228,7 @@ class TestGetModuleHealthViaMCP:
 class TestGetButlerModulesEndpoint:
     async def test_returns_404_for_unknown_butler(self, app, tmp_path: Path):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager_with_status(unreachable=True)
         app = _create_test_app(app, tmp_path, configs, mgr)
 
@@ -254,8 +254,8 @@ class TestGetButlerModulesEndpoint:
 
     async def test_returns_module_list_from_config(self, app, tmp_path: Path):
         """Returns modules defined in butler.toml with live health status."""
-        _make_roster_with_modules(tmp_path, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_roster_with_modules(tmp_path, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         status_result = _mock_status_result(["telegram", "email"], health="ok")
         mgr = _mock_mcp_manager_with_status(status_result)
         app = _create_test_app(app, tmp_path, configs, mgr)
@@ -281,8 +281,8 @@ class TestGetButlerModulesEndpoint:
 
     async def test_handles_unreachable_butler(self, app, tmp_path: Path):
         """Returns modules with status='unknown' when butler is unreachable."""
-        _make_roster_with_modules(tmp_path, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_roster_with_modules(tmp_path, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager_with_status(unreachable=True)
         app = _create_test_app(app, tmp_path, configs, mgr)
 
@@ -301,9 +301,9 @@ class TestGetButlerModulesEndpoint:
     async def test_returns_live_module_health(self, app, tmp_path: Path):
         """Returns live module health when butler is reachable."""
         _make_roster_with_modules(
-            tmp_path, "general", 40101, modules={"telegram": "", "email": "", "calendar": ""}
+            tmp_path, "general", 41101, modules={"telegram": "", "email": "", "calendar": ""}
         )
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         # Only telegram and email are loaded — calendar is missing
         status_result = _mock_status_result(["telegram", "email"], health="ok")
         mgr = _mock_mcp_manager_with_status(status_result)
@@ -325,8 +325,8 @@ class TestGetButlerModulesEndpoint:
 
     async def test_empty_modules_list(self, app, tmp_path: Path):
         """Returns empty list when butler has no modules configured."""
-        _make_roster_no_modules(tmp_path, "bare", 40102)
-        configs = [ButlerConnectionInfo("bare", 40102)]
+        _make_roster_no_modules(tmp_path, "bare", 41102)
+        configs = [ButlerConnectionInfo("bare", 41102)]
         mgr = _mock_mcp_manager_with_status(unreachable=True)
         app = _create_test_app(app, tmp_path, configs, mgr)
 
@@ -341,8 +341,8 @@ class TestGetButlerModulesEndpoint:
 
     async def test_response_shape_matches_model(self, app, tmp_path: Path):
         """Verify response data can be parsed as ModuleStatus."""
-        _make_roster_with_modules(tmp_path, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_roster_with_modules(tmp_path, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         status_result = _mock_status_result(["telegram", "email"], health="ok")
         mgr = _mock_mcp_manager_with_status(status_result)
         app = _create_test_app(app, tmp_path, configs, mgr)
@@ -362,8 +362,8 @@ class TestGetButlerModulesEndpoint:
 
     async def test_degraded_butler_shows_degraded_modules(self, app, tmp_path: Path):
         """Modules show 'degraded' when butler health is 'degraded'."""
-        _make_roster_with_modules(tmp_path, "general", 40101)
-        configs = [ButlerConnectionInfo("general", 40101)]
+        _make_roster_with_modules(tmp_path, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
         status_result = _mock_status_result(["telegram", "email"], health="degraded")
         mgr = _mock_mcp_manager_with_status(status_result)
         app = _create_test_app(app, tmp_path, configs, mgr)

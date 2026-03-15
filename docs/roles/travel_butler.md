@@ -226,7 +226,7 @@ Travel Butler SHOULD enable calendar and memory modules by default.
 ```toml
 [butler]
 name = "travel"
-port = 40106
+port = 41106
 description = "Travel itinerary and booking specialist for flights, hotels, car rentals, and trip logistics."
 
 [butler.runtime]
@@ -241,7 +241,7 @@ name = "butlers"
 schema = "travel"
 
 [butler.switchboard]
-url = "http://localhost:40100/mcp"
+url = "http://localhost:41100/mcp"
 advertise = true
 liveness_ttl_s = 300
 route_contract_min = "route.v1"

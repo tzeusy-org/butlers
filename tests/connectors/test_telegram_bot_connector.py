@@ -27,7 +27,7 @@ pytestmark = pytest.mark.unit
 def mock_config() -> TelegramBotConnectorConfig:
     """Create a mock connector configuration."""
     return TelegramBotConnectorConfig(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         provider="telegram",
         channel="telegram_bot",
         endpoint_identity="test_bot",
@@ -74,7 +74,7 @@ def sample_telegram_update() -> dict[str, Any]:
 
 def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test loading configuration from environment variables."""
-    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
     monkeypatch.setenv("CONNECTOR_PROVIDER", "telegram")
     monkeypatch.setenv("CONNECTOR_CHANNEL", "telegram_bot")
     monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "telegram-token")
@@ -83,7 +83,7 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     config = TelegramBotConnectorConfig.from_env()
 
-    assert config.switchboard_mcp_url == "http://localhost:40100/sse"
+    assert config.switchboard_mcp_url == "http://localhost:41100/sse"
     assert config.provider == "telegram"
     assert config.channel == "telegram_bot"
     assert config.endpoint_identity == ""  # auto-resolved later via getMe
@@ -99,7 +99,7 @@ def test_config_from_env_missing_required_fields(monkeypatch: pytest.MonkeyPatch
         TelegramBotConnectorConfig.from_env()
 
     # Missing BUTLER_TELEGRAM_TOKEN (endpoint_identity is auto-resolved via getMe)
-    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
     with pytest.raises(ValueError, match="BUTLER_TELEGRAM_TOKEN"):
         TelegramBotConnectorConfig.from_env()
 
@@ -826,7 +826,7 @@ async def test_run_telegram_bot_connector_uses_db_token_when_env_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DB token should be sufficient even when BUTLER_TELEGRAM_TOKEN env var is absent."""
-    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.delenv("BUTLER_TELEGRAM_TOKEN", raising=False)
 
@@ -1727,7 +1727,7 @@ class TestRunTelegramConnectorIdentityResolution:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """run_telegram_bot_connector should set endpoint_identity from getMe."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
         monkeypatch.setenv("CONNECTOR_POLL_INTERVAL_S", "1.0")
         monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -1761,7 +1761,7 @@ class TestRunTelegramConnectorIdentityResolution:
 
     async def test_raises_when_resolution_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """run_telegram_bot_connector should propagate RuntimeError on resolution failure."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
         monkeypatch.setenv("CONNECTOR_POLL_INTERVAL_S", "1.0")
         monkeypatch.delenv("DATABASE_URL", raising=False)

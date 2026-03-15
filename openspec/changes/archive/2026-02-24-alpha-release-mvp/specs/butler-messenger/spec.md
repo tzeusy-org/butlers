@@ -1,7 +1,7 @@
 # Messenger Butler Role
 
 ## Purpose
-The Messenger (port 40104) is the outbound delivery execution plane for Telegram and Email. It does not perform classification or domain logic — it only executes delivery intents routed through Switchboard.
+The Messenger (port 41104) is the outbound delivery execution plane for Telegram and Email. It does not perform classification or domain logic — it only executes delivery intents routed through Switchboard.
 
 ## ADDED Requirements
 
@@ -10,7 +10,7 @@ The messenger butler is a delivery-only execution plane with no domain logic.
 
 #### Scenario: Identity and port
 - **WHEN** the messenger butler is running
-- **THEN** it operates on port 40104 with description "Outbound delivery execution plane for Telegram and Email"
+- **THEN** it operates on port 41104 with description "Outbound delivery execution plane for Telegram and Email"
 - **AND** it uses the `codex` runtime adapter with a maximum of 3 concurrent sessions
 - **AND** its database schema is `messenger` within the consolidated `butlers` database
 

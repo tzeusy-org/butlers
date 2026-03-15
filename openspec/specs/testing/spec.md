@@ -48,7 +48,7 @@ From a debugger breakpoint inside a test, you can manually call MCP tools:
 ```python
 from fastmcp import Client as MCPClient
 
-async with MCPClient("http://localhost:40103/sse") as client:
+async with MCPClient("http://localhost:41103/sse") as client:
     result = await client.call_tool("status", {})
     print(result)
 ```
@@ -96,10 +96,10 @@ grep 'classify_message\|route.*target' .tmp/e2e-logs/e2e-latest.log
 │  │              BUTLER ECOSYSTEM (session-scoped)           │  │
 │  │                                                          │  │
 │  │  Switchboard ──► General ──► Relationship ──► Health     │  │
-│  │   :40100          :40101       :40102           :40103   │  │
+│  │   :41100          :41101       :41102           :41103   │  │
 │  │                                                          │  │
 │  │  Messenger                                               │  │
-│  │   :40104                                                  │  │
+│  │   :41104                                                  │  │
 │  │                                                          │  │
 │  │  Each: ButlerDaemon + FastMCP SSE + Spawner + DB pool   │  │
 │  └──────────────────────┬──────────────────────────────────┘  │
@@ -565,7 +565,7 @@ E2E infrastructure tests validate the staging environment: PostgreSQL testcontai
 
 #### Scenario: Static port allocation
 - **WHEN** E2E butlers start
-- **THEN** they use the same static ports as production (40100-40106)
+- **THEN** they use the same static ports as production (41100-41106)
 - **AND** if the production stack is running on those ports, the E2E harness fails with `EADDRINUSE`
 
 #### Scenario: Docker requirements check

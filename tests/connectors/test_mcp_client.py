@@ -19,7 +19,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def client() -> CachedMCPClient:
     """Create a CachedMCPClient for testing."""
-    return CachedMCPClient("http://localhost:40100/sse", client_name="test-connector")
+    return CachedMCPClient("http://localhost:41100/sse", client_name="test-connector")
 
 
 class TestCachedMCPClient:
@@ -138,8 +138,8 @@ class TestSwitchboardHealthUrl:
 
     def test_derives_health_from_sse_url(self) -> None:
         """SSE endpoint URL is mapped to /health path on the same host."""
-        assert _switchboard_health_url("http://localhost:40100/sse") == (
-            "http://localhost:40100/health"
+        assert _switchboard_health_url("http://localhost:41100/sse") == (
+            "http://localhost:41100/health"
         )
 
     def test_preserves_host_and_port(self) -> None:
@@ -150,8 +150,8 @@ class TestSwitchboardHealthUrl:
 
     def test_handles_trailing_path_segments(self) -> None:
         """Only scheme + netloc is used; the path is replaced with /health."""
-        assert _switchboard_health_url("http://localhost:40100/mcp/sse") == (
-            "http://localhost:40100/health"
+        assert _switchboard_health_url("http://localhost:41100/mcp/sse") == (
+            "http://localhost:41100/health"
         )
 
 
@@ -178,7 +178,7 @@ class TestWaitForSwitchboardReady:
             mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
 
             await wait_for_switchboard_ready(
-                "http://localhost:40100/sse",
+                "http://localhost:41100/sse",
                 max_attempts=5,
                 initial_delay_s=1.0,
                 max_delay_s=30.0,
@@ -214,7 +214,7 @@ class TestWaitForSwitchboardReady:
             mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
 
             await wait_for_switchboard_ready(
-                "http://localhost:40100/sse",
+                "http://localhost:41100/sse",
                 max_attempts=10,
                 initial_delay_s=1.0,
                 max_delay_s=30.0,
@@ -251,7 +251,7 @@ class TestWaitForSwitchboardReady:
             mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
 
             await wait_for_switchboard_ready(
-                "http://localhost:40100/sse",
+                "http://localhost:41100/sse",
                 max_attempts=5,
                 initial_delay_s=0.1,
                 max_delay_s=10.0,
@@ -280,7 +280,7 @@ class TestWaitForSwitchboardReady:
 
             with pytest.raises(TimeoutError, match="did not become healthy"):
                 await wait_for_switchboard_ready(
-                    "http://localhost:40100/sse",
+                    "http://localhost:41100/sse",
                     max_attempts=3,
                     initial_delay_s=0.1,
                     max_delay_s=10.0,

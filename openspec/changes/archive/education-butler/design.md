@@ -298,14 +298,14 @@ CREATE UNIQUE INDEX idx_analytics_map_date ON analytics_snapshots (mind_map_id, 
 
 ### D7: Butler Identity and Runtime Configuration
 
-**Decision:** Use Claude Opus 4.6 as the default model, port 40107, with memory + telegram + contacts modules enabled.
+**Decision:** Use Claude Opus 4.6 as the default model, port 41107, with memory + telegram + contacts modules enabled.
 
 **butler.toml outline:**
 
 ```toml
 [butler]
 name = "education"
-port = 40107
+port = 41107
 description = "Personalized tutor with spaced repetition, mind maps, and adaptive learning"
 
 [butler.runtime]

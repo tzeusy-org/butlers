@@ -12,11 +12,11 @@ Usage:
     uv run python scripts/staging.py
 
 Ports (from roster/*/butler.toml):
-    - Switchboard:  http://localhost:40100/sse
-    - General:      http://localhost:40101/sse
-    - Relationship: http://localhost:40102/sse
-    - Health:       http://localhost:40103/sse
-    - Messenger:    http://localhost:40104/sse
+    - Switchboard:  http://localhost:41100/sse
+    - General:      http://localhost:41101/sse
+    - Relationship: http://localhost:41102/sse
+    - Health:       http://localhost:41103/sse
+    - Messenger:    http://localhost:41104/sse
 
 Example k6 script (save as load-test.js):
     import http from 'k6/http';
@@ -31,7 +31,7 @@ Example k6 script (save as load-test.js):
     };
 
     export default function () {
-        const res = http.post('http://localhost:40100/sse', JSON.stringify({
+        const res = http.post('http://localhost:41100/sse', JSON.stringify({
             method: 'tools/call',
             params: { name: 'status', arguments: {} },
         }), { headers: { 'Content-Type': 'application/json' } });

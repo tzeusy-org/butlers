@@ -39,7 +39,7 @@ pytestmark = pytest.mark.unit
 def _make_config(**kwargs: Any) -> LiveListenerConfig:
     """Build a LiveListenerConfig with minimal required fields."""
     base: dict[str, Any] = dict(
-        switchboard_mcp_url="http://localhost:40100/sse",
+        switchboard_mcp_url="http://localhost:41100/sse",
         devices=[MicDeviceSpec(name="kitchen", device="hw:0")],
         transcription_url="tcp://localhost:10300",
         reconnect_base_s=0.01,

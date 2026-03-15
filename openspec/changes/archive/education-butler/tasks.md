@@ -1,7 +1,7 @@
 ## 1. Butler Identity & Roster Scaffolding
 
 - [ ] 1.1 Create `roster/education/` directory with required files: `butler.toml`, `MANIFESTO.md`, `CLAUDE.md`, `AGENTS.md`
-- [ ] 1.2 Write `butler.toml` — port 40107, `claude-opus-4-6` model, `claude-code` runtime, `butlers` DB with `education` schema, `memory` + `contacts` modules, scheduled tasks (nightly-analytics, weekly-progress-digest, weekly-stale-flow-check)
+- [ ] 1.2 Write `butler.toml` — port 41107, `claude-opus-4-6` model, `claude-code` runtime, `butlers` DB with `education` schema, `memory` + `contacts` modules, scheduled tasks (nightly-analytics, weekly-progress-digest, weekly-stale-flow-check)
 - [ ] 1.3 Write `MANIFESTO.md` — value proposition (personalized spaced repetition learning), scope boundaries, educator persona
 - [ ] 1.4 Write `CLAUDE.md` — educator persona, Interactive Response Mode (React/Affirm/Follow-up/Answer/React+Reply), Memory Classification taxonomy (subjects: topic/concept/user; predicates: learning_outcome/struggle_area/prerequisite_mastered/learning_preference/study_pattern), tool listing, teaching behavior guidelines
 - [ ] 1.5 Initialize `AGENTS.md` with `# Notes to self` header

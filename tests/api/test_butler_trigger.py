@@ -97,7 +97,7 @@ def _create_test_app(
 class TestTriggerButlerEndpoint:
     async def test_returns_404_for_unknown_butler(self, app):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         _create_test_app(app, configs, mgr)
 
@@ -114,7 +114,7 @@ class TestTriggerButlerEndpoint:
 
     async def test_successful_trigger(self, app):
         """Successful trigger returns session result."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         trigger_result = _mock_trigger_result(
             session_id="sess-abc",
             success=True,
@@ -149,7 +149,7 @@ class TestTriggerButlerEndpoint:
 
     async def test_returns_503_when_butler_unreachable(self, app):
         """Returns 503 when butler MCP server is unreachable."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(unreachable=True)
         _create_test_app(app, configs, mgr)
 
@@ -166,7 +166,7 @@ class TestTriggerButlerEndpoint:
 
     async def test_returns_503_on_timeout(self, app):
         """Returns 503 when trigger request times out."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         mgr = _mock_mcp_manager(timeout=True)
         _create_test_app(app, configs, mgr)
 
@@ -183,7 +183,7 @@ class TestTriggerButlerEndpoint:
 
     async def test_response_shape_matches_model(self, app):
         """Verify response data can be parsed as TriggerResponse."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         trigger_result = _mock_trigger_result()
         mgr = _mock_mcp_manager(trigger_result)
         _create_test_app(app, configs, mgr)
@@ -204,7 +204,7 @@ class TestTriggerButlerEndpoint:
 
     async def test_trigger_with_failed_session(self, app):
         """Trigger that returns success=False is reflected in response."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         trigger_result = _mock_trigger_result(
             session_id="sess-fail",
             success=False,
@@ -228,7 +228,7 @@ class TestTriggerButlerEndpoint:
 
     async def test_trigger_requires_prompt_field(self, app):
         """Request without prompt field returns 422 validation error."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         trigger_result = _mock_trigger_result()
         mgr = _mock_mcp_manager(trigger_result)
         _create_test_app(app, configs, mgr)
@@ -245,7 +245,7 @@ class TestTriggerButlerEndpoint:
 
     async def test_trigger_with_is_error_flag(self, app):
         """When MCP result has is_error=True, success should be False."""
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         trigger_result = _mock_trigger_result(
             session_id="sess-err",
             success=True,

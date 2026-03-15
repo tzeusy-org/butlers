@@ -35,7 +35,7 @@ All butler daemons SHALL run on isolated ports using a fixed offset from product
 
 #### Scenario: Port offset applied
 - **WHEN** butlers are configured for E2E
-- **THEN** each butler's port is offset by `E2E_PORT_OFFSET` (e.g., 40100 becomes 51100)
+- **THEN** each butler's port is offset by `E2E_PORT_OFFSET` (e.g., 41100 becomes 51100)
 
 #### Scenario: Switchboard URL patching
 - **WHEN** non-switchboard butlers are configured

@@ -43,8 +43,8 @@ def _make_mock_client(*, connected: bool = True) -> MagicMock:
 def _make_configs() -> list[ButlerConnectionInfo]:
     """Return a small set of butler configs for testing."""
     return [
-        ButlerConnectionInfo(name="switchboard", port=40100, description="Routes messages"),
-        ButlerConnectionInfo(name="general", port=40101, description="Catch-all assistant"),
+        ButlerConnectionInfo(name="switchboard", port=41100, description="Routes messages"),
+        ButlerConnectionInfo(name="general", port=41101, description="Catch-all assistant"),
     ]
 
 
@@ -262,9 +262,9 @@ class TestListIssuesEndpoint:
         # Since only reachability checks exist (all critical), we verify
         # alphabetical sub-sort within the same severity.
         configs = [
-            ButlerConnectionInfo(name="zeta", port=40100),
-            ButlerConnectionInfo(name="alpha", port=40101),
-            ButlerConnectionInfo(name="mid", port=40102),
+            ButlerConnectionInfo(name="zeta", port=41100),
+            ButlerConnectionInfo(name="alpha", port=41101),
+            ButlerConnectionInfo(name="mid", port=41102),
         ]
 
         mgr = MagicMock(spec=MCPClientManager)
@@ -330,7 +330,7 @@ class TestListIssuesEndpoint:
 
     async def test_audit_schedule_error_surfaces_as_issue(self, app):
         """Latest schedule-triggered audit error should appear as a critical issue."""
-        configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+        configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
         mock_client = _make_mock_client()
 
         mgr = MagicMock(spec=MCPClientManager)

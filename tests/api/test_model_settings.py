@@ -776,7 +776,7 @@ class TestTriggerRequestComplexityField:
         mock_audit_db = MagicMock(spec=DatabaseManager)
         mock_audit_db.pool.return_value = mock_audit_pool
 
-        configs = [ButlerConnectionInfo("general", 40101)]
+        configs = [ButlerConnectionInfo("general", 41101)]
         app.dependency_overrides[get_butler_configs] = lambda: configs
         app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
         app.dependency_overrides[butlers_get_db] = lambda: mock_audit_db
