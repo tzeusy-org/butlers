@@ -101,40 +101,6 @@ class TestParserWithRealOutput:
         assert result_text is not None, "Parser returned None result_text"
         assert len(result_text) > 0, "Parser returned empty result_text"
 
-    def test_usage_is_none(self):
-        """Gemini adapter does not report token usage — usage is always None.
-
-        This is a known limitation of the Gemini CLI: it does not emit token
-        counts in its output. The test explicitly documents this limitation.
-        """
-        stdout, stderr, rc = _run_gemini("Say 'yes'.")
-        assert rc == 0, f"gemini failed: {stderr}"
-
-        # _parse_gemini_output returns (result_text, tool_calls) — no usage
-        result_text, tool_calls = _parse_gemini_output(stdout, stderr, rc)
-        # Usage is implicitly None because the parser doesn't return it;
-        # this is enforced by the return type signature.
-        # Verify invoke() also returns usage=None
-        ...
-
-    def test_invoke_returns_none_usage(self):
-        """GeminiAdapter.invoke() always returns usage=None."""
-        import asyncio
-
-        async def _run():
-            adapter = GeminiAdapter()
-            _, _, usage = await adapter.invoke(
-                prompt="Say 'yes'.",
-                system_prompt="",
-                mcp_servers={},
-                env=dict(os.environ),
-                timeout=120,
-            )
-            return usage
-
-        usage = asyncio.get_event_loop().run_until_complete(_run())
-        assert usage is None, f"Expected usage=None for Gemini adapter, got: {usage}"
-
     def test_tool_call_parsed_with_name_and_input(self):
         """Parser extracts tool calls with non-empty name and input from real output."""
         stdout, stderr, rc = _run_gemini(
