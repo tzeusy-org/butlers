@@ -290,7 +290,7 @@ async def test_last_process_info_populated_after_timeout(
     assert info is not None
     assert info["pid"] == 5678
     assert info["exit_code"] == -1  # timeout uses -1 as sentinel
-    assert "timeout" in info["stderr"].lower() or "timeout" in info["command"].lower()
+    assert "timeout" in info["stderr"].lower()
     assert info["runtime_type"] == runtime_type
 
 

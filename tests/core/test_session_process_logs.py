@@ -184,7 +184,7 @@ async def test_write_stderr_cap_at_32kib():
     stored_stderr = args[4]  # stderr is arg index 4
 
     assert stored_stderr is not None
-    assert len(stored_stderr) <= max_stderr + len("\n... [trimmed]")
+    assert len(stored_stderr) == max_stderr + len("\n... [trimmed]")
     assert stored_stderr.endswith("... [trimmed]")
 
 
