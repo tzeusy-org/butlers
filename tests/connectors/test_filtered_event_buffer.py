@@ -16,8 +16,8 @@ from butlers.connectors.filtered_event_buffer import (
     _INSERT_SQL,
     _REPLAY_SELECT_SQL,
     _REPLAY_UPDATE_SQL,
-    _sanitize_replay_payload,
     FilteredEventBuffer,
+    _sanitize_replay_payload,
     drain_replay_pending,
 )
 
@@ -683,21 +683,24 @@ class TestDrainReplayPending:
         assert isinstance(envelope["payload"]["normalized_text"], str)
         assert len(envelope["payload"]["normalized_text"]) > 0
         # policy_tier must not be None (either removed or defaulted)
-        assert envelope["control"].get("policy_tier") is not "default" or "policy_tier" not in envelope["control"]  # noqa: E712
+        ctrl = envelope["control"]
+        assert ctrl.get("policy_tier") != "default" or "policy_tier" not in ctrl
 
     async def test_sanitizes_normalized_text_from_raw_subject(self) -> None:
         """normalized_text fallback extracts subject from raw payload."""
-        payload = json.dumps({
-            "source": {"channel": "email", "provider": "gmail", "endpoint_identity": "x"},
-            "event": {
-                "external_event_id": "msg-001",
-                "external_thread_id": None,
-                "observed_at": "2026-03-11T10:00:00Z",
-            },
-            "sender": {"identity": "sender@example.com"},
-            "payload": {"raw": {"subject": "Hello World"}, "normalized_text": None},
-            "control": {"policy_tier": None},
-        })
+        payload = json.dumps(
+            {
+                "source": {"channel": "email", "provider": "gmail", "endpoint_identity": "x"},
+                "event": {
+                    "external_event_id": "msg-001",
+                    "external_thread_id": None,
+                    "observed_at": "2026-03-11T10:00:00Z",
+                },
+                "sender": {"identity": "sender@example.com"},
+                "payload": {"raw": {"subject": "Hello World"}, "normalized_text": None},
+                "control": {"policy_tier": None},
+            }
+        )
         row = _make_row(full_payload=payload)
         pool, conn, _ = _make_mock_pool_with_transaction([row])
         submit_fn = AsyncMock()

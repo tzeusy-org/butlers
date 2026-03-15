@@ -13,6 +13,7 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
@@ -63,9 +64,27 @@ def _clear_table_cache():
 async def _find_approvals_pool(db_mgr: DatabaseManager, table_name: str = "pending_actions"):
     """Find a butler pool that has the specified approvals table.
 
-    Returns the first pool that has the table, or None if no butler has it.
-    Uses a cache to avoid repeated system catalog queries on hot paths.
+    Returns the first pool that has the table accessible via its search_path,
+    or None if no butler has it.
+    Uses a cache to avoid repeated catalog queries on hot paths.
     """
+    pools = await _find_all_approvals_pools(db_mgr, table_name)
+    return pools[0] if pools else None
+
+
+async def _find_all_approvals_pools(
+    db_mgr: DatabaseManager, table_name: str = "pending_actions"
+) -> list[asyncpg.Pool]:
+    """Find ALL butler pools that have the specified approvals table.
+
+    Uses ``to_regclass`` which respects each connection's ``search_path``,
+    so only pools where the table is actually accessible are returned.
+    This is critical in the one-db/multi-schema topology where different
+    butlers (e.g. switchboard vs home) may each have their own copy of the
+    table in their respective schemas.
+    """
+    pools: list[asyncpg.Pool] = []
+    seen: set[int] = set()  # track pool identity to avoid duplicates
     for butler_name in db_mgr.butler_names:
         cache_key = (butler_name, table_name)
 
@@ -73,26 +92,48 @@ async def _find_approvals_pool(db_mgr: DatabaseManager, table_name: str = "pendi
         if cache_key in _TABLE_CACHE:
             if _TABLE_CACHE[cache_key]:
                 try:
-                    return db_mgr.pool(butler_name)
+                    p = db_mgr.pool(butler_name)
+                    if id(p) not in seen:
+                        pools.append(p)
+                        seen.add(id(p))
                 except KeyError:
-                    # Pool no longer exists, invalidate cache
                     del _TABLE_CACHE[cache_key]
-                    continue
-            else:
-                continue
+            continue
 
-        # Not in cache, query the database
+        # Not in cache — use to_regclass which respects the connection's search_path
         try:
             pool = db_mgr.pool(butler_name)
             async with pool.acquire() as conn:
                 table_check = await conn.fetchval(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
+                    "SELECT to_regclass($1) IS NOT NULL",
                     table_name,
                 )
                 _TABLE_CACHE[cache_key] = table_check
-                if table_check:
-                    return pool
+                if table_check and id(pool) not in seen:
+                    pools.append(pool)
+                    seen.add(id(pool))
         except KeyError:
+            continue
+    return pools
+
+
+async def _find_action_pool(db_mgr: DatabaseManager, action_id: UUID) -> asyncpg.Pool | None:
+    """Find the pool that contains a specific pending_action by ID.
+
+    Searches all pools that have the pending_actions table and returns the
+    first one where the action exists, or None.
+    """
+    pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
+    for pool in pools:
+        try:
+            async with pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+                    action_id,
+                )
+                if exists:
+                    return pool
+        except Exception:
             continue
     return None
 
@@ -197,9 +238,9 @@ async def list_actions(
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalAction]:
     """List pending actions with filtering and pagination."""
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
 
-    if target_pool is None:
+    if not target_pools:
         return PaginatedResponse(
             data=[],
             meta=PaginationMeta(total=0, offset=offset, limit=limit),
@@ -240,21 +281,29 @@ async def list_actions(
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    # Get total count
-    async with target_pool.acquire() as conn:
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM pending_actions{where_clause}",
-            *args,
-        )
+    # Aggregate across all pools that have the table
+    all_rows: list[asyncpg.Record] = []
+    total = 0
+    for pool in target_pools:
+        try:
+            async with pool.acquire() as conn:
+                total += await conn.fetchval(
+                    f"SELECT COUNT(*) FROM pending_actions{where_clause}",
+                    *args,
+                )
+                rows = await conn.fetch(
+                    f"SELECT * FROM pending_actions{where_clause} ORDER BY requested_at DESC",
+                    *args,
+                )
+                all_rows.extend(rows)
+        except Exception:
+            logger.warning("Failed to query pending_actions from a pool", exc_info=True)
 
-        # Get paginated results
-        query = (
-            f"SELECT * FROM pending_actions{where_clause} "
-            f"ORDER BY requested_at DESC LIMIT ${idx} OFFSET ${idx + 1}"
-        )
-        rows = await conn.fetch(query, *args, limit, offset)
+    # Sort combined results and apply pagination in Python
+    all_rows.sort(key=lambda r: r["requested_at"], reverse=True)
+    page_rows = all_rows[offset : offset + limit]
 
-    pending_actions_list = [PendingAction.from_row(row) for row in rows]
+    pending_actions_list = [PendingAction.from_row(row) for row in page_rows]
     actions = []
     for pa in pending_actions_list:
         tc = await _resolve_target_contact(db_mgr, pa)
@@ -277,9 +326,9 @@ async def list_executed_actions(
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalAction]:
     """List executed actions for audit review."""
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
 
-    if target_pool is None:
+    if not target_pools:
         return PaginatedResponse(
             data=[],
             meta=PaginationMeta(total=0, offset=offset, limit=limit),
@@ -323,19 +372,27 @@ async def list_executed_actions(
 
     where_clause = " WHERE " + " AND ".join(conditions)
 
-    async with target_pool.acquire() as conn:
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM pending_actions{where_clause}",
-            *args,
-        )
+    all_rows: list[asyncpg.Record] = []
+    total = 0
+    for pool in target_pools:
+        try:
+            async with pool.acquire() as conn:
+                total += await conn.fetchval(
+                    f"SELECT COUNT(*) FROM pending_actions{where_clause}",
+                    *args,
+                )
+                rows = await conn.fetch(
+                    f"SELECT * FROM pending_actions{where_clause} ORDER BY decided_at DESC",
+                    *args,
+                )
+                all_rows.extend(rows)
+        except Exception:
+            logger.warning("Failed to query executed actions from a pool", exc_info=True)
 
-        query = (
-            f"SELECT * FROM pending_actions{where_clause} "
-            f"ORDER BY decided_at DESC LIMIT ${idx} OFFSET ${idx + 1}"
-        )
-        rows = await conn.fetch(query, *args, limit, offset)
+    all_rows.sort(key=lambda r: r["decided_at"] or datetime.min, reverse=True)
+    page_rows = all_rows[offset : offset + limit]
 
-    pending_actions_list = [PendingAction.from_row(row) for row in rows]
+    pending_actions_list = [PendingAction.from_row(row) for row in page_rows]
     actions = []
     for pa in pending_actions_list:
         tc = await _resolve_target_contact(db_mgr, pa)
@@ -359,12 +416,19 @@ async def get_action(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
-    if target_pool is None:
+    target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
+    if not target_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
-    async with target_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+    row = None
+    for pool in target_pools:
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+            if row is not None:
+                break
+        except Exception:
+            continue
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Action not found: {action_id}")
@@ -383,11 +447,11 @@ async def approve_action(
 ) -> ApiResponse[ApprovalAction]:
     """Approve a pending action and execute it."""
     try:
-        UUID(action_id)
+        parsed_id = UUID(action_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    target_pool = await _find_action_pool(db_mgr, parsed_id)
     if target_pool is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
@@ -419,11 +483,11 @@ async def reject_action(
 ) -> ApiResponse[ApprovalAction]:
     """Reject a pending action with optional reason."""
     try:
-        UUID(action_id)
+        parsed_id = UUID(action_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    target_pool = await _find_action_pool(db_mgr, parsed_id)
     if target_pool is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
@@ -451,21 +515,26 @@ async def expire_stale_actions(
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ExpireStaleActionsResponse]:
     """Mark expired actions that are past their expires_at timestamp."""
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
 
-    if target_pool is None:
+    if not target_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
     now = datetime.now(UTC)
+    expired_ids: list[str] = []
 
-    async with target_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "UPDATE pending_actions SET status = 'expired', decided_by = 'system:expiry', "
-            "decided_at = $1 WHERE status = 'pending' AND expires_at IS NOT NULL "
-            "AND expires_at < $1 RETURNING id",
-            now,
-        )
-        expired_ids = [str(row["id"]) for row in rows]
+    for pool in target_pools:
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "UPDATE pending_actions SET status = 'expired', decided_by = 'system:expiry', "
+                    "decided_at = $1 WHERE status = 'pending' AND expires_at IS NOT NULL "
+                    "AND expires_at < $1 RETURNING id",
+                    now,
+                )
+                expired_ids.extend(str(row["id"]) for row in rows)
+        except Exception:
+            logger.warning("Failed to expire stale actions from a pool", exc_info=True)
 
     response = ExpireStaleActionsResponse(
         expired_count=len(expired_ids),
@@ -513,11 +582,11 @@ async def create_rule_from_action(
 ) -> ApiResponse[ApprovalRule]:
     """Create a standing rule from a pending action."""
     try:
-        UUID(request.action_id)
+        parsed_id = UUID(request.action_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {request.action_id}")
 
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    target_pool = await _find_action_pool(db_mgr, parsed_id)
     if target_pool is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
@@ -547,9 +616,9 @@ async def list_rules(
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalRule]:
     """List standing approval rules with filtering and pagination."""
-    target_pool = await _find_approvals_pool(db_mgr, "approval_rules")
+    target_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
 
-    if target_pool is None:
+    if not target_pools:
         return PaginatedResponse(
             data=[],
             meta=PaginationMeta(total=0, offset=offset, limit=limit),
@@ -569,19 +638,27 @@ async def list_rules(
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    async with target_pool.acquire() as conn:
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM approval_rules{where_clause}",
-            *args,
-        )
+    all_rows: list[asyncpg.Record] = []
+    total = 0
+    for pool in target_pools:
+        try:
+            async with pool.acquire() as conn:
+                total += await conn.fetchval(
+                    f"SELECT COUNT(*) FROM approval_rules{where_clause}",
+                    *args,
+                )
+                rows = await conn.fetch(
+                    f"SELECT * FROM approval_rules{where_clause} ORDER BY created_at DESC",
+                    *args,
+                )
+                all_rows.extend(rows)
+        except Exception:
+            logger.warning("Failed to query approval_rules from a pool", exc_info=True)
 
-        query = (
-            f"SELECT * FROM approval_rules{where_clause} "
-            f"ORDER BY created_at DESC LIMIT ${idx} OFFSET ${idx + 1}"
-        )
-        rows = await conn.fetch(query, *args, limit, offset)
+    all_rows.sort(key=lambda r: r["created_at"], reverse=True)
+    page_rows = all_rows[offset : offset + limit]
 
-    rules = [_approval_rule_to_api(ApprovalRuleModel.from_row(row)) for row in rows]
+    rules = [_approval_rule_to_api(ApprovalRuleModel.from_row(row)) for row in page_rows]
 
     return PaginatedResponse(
         data=rules,
@@ -601,12 +678,19 @@ async def get_rule(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
 
-    target_pool = await _find_approvals_pool(db_mgr, "approval_rules")
-    if target_pool is None:
+    target_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
+    if not target_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
-    async with target_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM approval_rules WHERE id = $1", parsed_id)
+    row = None
+    for pool in target_pools:
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM approval_rules WHERE id = $1", parsed_id)
+            if row is not None:
+                break
+        except Exception:
+            continue
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
@@ -622,13 +706,31 @@ async def revoke_rule(
 ) -> ApiResponse[ApprovalRule]:
     """Revoke (deactivate) a standing approval rule."""
     try:
-        UUID(rule_id)
+        parsed_id = UUID(rule_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
 
-    target_pool = await _find_approvals_pool(db_mgr, "approval_rules")
-    if target_pool is None:
+    target_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
+    if not target_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    # Find the pool containing this rule
+    target_pool = None
+    for pool in target_pools:
+        try:
+            async with pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM approval_rules WHERE id = $1)",
+                    parsed_id,
+                )
+                if exists:
+                    target_pool = pool
+                    break
+        except Exception:
+            continue
+
+    if target_pool is None:
+        raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
 
     async with target_pool.acquire() as conn:
         result = await approvals_ops.revoke_approval_rule(
@@ -660,7 +762,7 @@ async def get_rule_suggestions(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    target_pool = await _find_action_pool(db_mgr, parsed_id)
     if target_pool is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
@@ -696,88 +798,135 @@ async def get_metrics(
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalMetrics]:
     """Get aggregate metrics for the approvals dashboard."""
-    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    action_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
+    rule_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
 
-    if target_pool is None:
+    if not action_pools:
         return ApiResponse(data=ApprovalMetrics())
 
     today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
-    async with target_pool.acquire() as conn:
-        total_pending = await conn.fetchval(
-            "SELECT COUNT(*) FROM pending_actions WHERE status = 'pending'"
-        )
+    total_pending = 0
+    total_approved_today = 0
+    total_rejected_today = 0
+    total_auto_approved_today = 0
+    total_expired_today = 0
+    total_decisions_today = 0
+    failure_count_today = 0
+    latency_sum = 0.0
+    latency_count = 0
 
-        total_approved_today = await conn.fetchval(
-            "SELECT COUNT(*) FROM pending_actions "
-            "WHERE status IN ('approved', 'executed') AND decided_at >= $1",
-            today_start,
-        )
+    for pool in action_pools:
+        try:
+            async with pool.acquire() as conn:
+                total_pending += (
+                    await conn.fetchval(
+                        "SELECT COUNT(*) FROM pending_actions WHERE status = 'pending'"
+                    )
+                    or 0
+                )
 
-        total_rejected_today = await conn.fetchval(
-            "SELECT COUNT(*) FROM pending_actions WHERE status = 'rejected' AND decided_at >= $1",
-            today_start,
-        )
+                total_approved_today += (
+                    await conn.fetchval(
+                        "SELECT COUNT(*) FROM pending_actions "
+                        "WHERE status IN ('approved', 'executed') AND decided_at >= $1",
+                        today_start,
+                    )
+                    or 0
+                )
 
-        total_auto_approved_today = await conn.fetchval(
-            "SELECT COUNT(*) FROM pending_actions "
-            "WHERE status IN ('approved', 'executed') AND approval_rule_id IS NOT NULL "
-            "AND decided_at >= $1",
-            today_start,
-        )
+                total_rejected_today += (
+                    await conn.fetchval(
+                        "SELECT COUNT(*) FROM pending_actions "
+                        "WHERE status = 'rejected' AND decided_at >= $1",
+                        today_start,
+                    )
+                    or 0
+                )
 
-        total_expired_today = await conn.fetchval(
-            "SELECT COUNT(*) FROM pending_actions WHERE status = 'expired' AND decided_at >= $1",
-            today_start,
-        )
+                total_auto_approved_today += (
+                    await conn.fetchval(
+                        "SELECT COUNT(*) FROM pending_actions "
+                        "WHERE status IN ('approved', 'executed') AND approval_rule_id IS NOT NULL "
+                        "AND decided_at >= $1",
+                        today_start,
+                    )
+                    or 0
+                )
 
-        avg_latency_row = await conn.fetchrow(
-            "SELECT AVG(EXTRACT(EPOCH FROM (decided_at - requested_at))) as avg_latency "
-            "FROM pending_actions "
-            "WHERE decided_at >= $1 AND decided_at IS NOT NULL",
-            today_start,
-        )
-        avg_decision_latency_seconds = (
-            float(avg_latency_row["avg_latency"]) if avg_latency_row["avg_latency"] else None
-        )
+                total_expired_today += (
+                    await conn.fetchval(
+                        "SELECT COUNT(*) FROM pending_actions "
+                        "WHERE status = 'expired' AND decided_at >= $1",
+                        today_start,
+                    )
+                    or 0
+                )
 
-        total_decisions_today = await conn.fetchval(
-            "SELECT COUNT(*) FROM pending_actions WHERE decided_at >= $1",
-            today_start,
-        )
+                row = await conn.fetchrow(
+                    "SELECT AVG(EXTRACT(EPOCH FROM (decided_at - requested_at))) as avg_latency, "
+                    "COUNT(*) as cnt "
+                    "FROM pending_actions "
+                    "WHERE decided_at >= $1 AND decided_at IS NOT NULL",
+                    today_start,
+                )
+                pool_cnt = row["cnt"] or 0
+                if pool_cnt > 0 and row["avg_latency"] is not None:
+                    latency_sum += float(row["avg_latency"]) * pool_cnt
+                    latency_count += pool_cnt
 
-        auto_approval_rate = (
-            (total_auto_approved_today / total_decisions_today)
-            if total_decisions_today > 0
-            else 0.0
-        )
+                total_decisions_today += (
+                    await conn.fetchval(
+                        "SELECT COUNT(*) FROM pending_actions WHERE decided_at >= $1",
+                        today_start,
+                    )
+                    or 0
+                )
 
-        rejection_rate = (
-            (total_rejected_today / total_decisions_today) if total_decisions_today > 0 else 0.0
-        )
+                failure_count_today += (
+                    await conn.fetchval(
+                        "SELECT COUNT(*) FROM pending_actions "
+                        "WHERE status = 'executed' AND decided_at >= $1 "
+                        "AND execution_result->>'error' IS NOT NULL",
+                        today_start,
+                    )
+                    or 0
+                )
+        except Exception:
+            logger.warning("Failed to collect metrics from a pool", exc_info=True)
 
-        failure_count_today = await conn.fetchval(
-            "SELECT COUNT(*) FROM pending_actions "
-            "WHERE status = 'executed' AND decided_at >= $1 "
-            "AND execution_result->>'error' IS NOT NULL",
-            today_start,
-        )
+    avg_decision_latency_seconds = (latency_sum / latency_count) if latency_count > 0 else None
 
-        active_rules_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM approval_rules WHERE active = true"
-        )
+    auto_approval_rate = (
+        (total_auto_approved_today / total_decisions_today) if total_decisions_today > 0 else 0.0
+    )
+
+    rejection_rate = (
+        (total_rejected_today / total_decisions_today) if total_decisions_today > 0 else 0.0
+    )
+
+    active_rules_count = 0
+    for pool in rule_pools:
+        try:
+            async with pool.acquire() as conn:
+                active_rules_count += (
+                    await conn.fetchval("SELECT COUNT(*) FROM approval_rules WHERE active = true")
+                    or 0
+                )
+        except Exception:
+            logger.warning("Failed to count active rules from a pool", exc_info=True)
 
     metrics = ApprovalMetrics(
-        total_pending=total_pending or 0,
-        total_approved_today=total_approved_today or 0,
-        total_rejected_today=total_rejected_today or 0,
-        total_auto_approved_today=total_auto_approved_today or 0,
-        total_expired_today=total_expired_today or 0,
+        total_pending=total_pending,
+        total_approved_today=total_approved_today,
+        total_rejected_today=total_rejected_today,
+        total_auto_approved_today=total_auto_approved_today,
+        total_expired_today=total_expired_today,
         avg_decision_latency_seconds=avg_decision_latency_seconds,
         auto_approval_rate=auto_approval_rate,
         rejection_rate=rejection_rate,
         failure_count_today=failure_count_today,
-        active_rules_count=active_rules_count or 0,
+        active_rules_count=active_rules_count,
     )
 
     return ApiResponse(data=metrics)

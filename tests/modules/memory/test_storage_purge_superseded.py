@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import uuid
 from unittest.mock import AsyncMock
 
 import pytest

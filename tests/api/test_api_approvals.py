@@ -113,27 +113,36 @@ def _app_with_mock_db(
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=fetch_rows or [])
 
-    # Set up fetchval with side_effect or return value
-    if fetchval_side_effect is not None:
-        # For table existence check + other queries
-        if has_approvals_tables:
-            # Prepend True for table existence check
-            full_side_effect = [True] + list(fetchval_side_effect)
-            mock_conn.fetchval = AsyncMock(side_effect=full_side_effect)
-        else:
-            mock_conn.fetchval = AsyncMock(side_effect=fetchval_side_effect)
-    else:
-        if has_approvals_tables:
-            # Return True for table existence check, then fetchval_return for others
-            def fetchval_mock(*args, **kwargs):
-                # First call is table check
-                if "information_schema.tables" in args[0]:
-                    return True
-                return fetchval_return
+    # Set up fetchval with side_effect or return value.
+    # _find_all_approvals_pools calls fetchval("SELECT to_regclass($1) IS NOT NULL", ...)
+    # once per butler in butler_names per distinct table_name.  We use a single
+    # butler here because the mock returns the same pool for every butler —
+    # multiple butlers would cause endpoints to query the same pool twice,
+    # producing duplicated results.
+    #
+    # Because the number of to_regclass calls varies per endpoint (some check
+    # both pending_actions AND approval_rules, others just one), we always use
+    # a function-based side_effect that intercepts catalog/existence queries
+    # and delegates the rest to an inner side_effect iterator or return value.
+    if has_approvals_tables:
+        inner_iter = iter(fetchval_side_effect) if fetchval_side_effect is not None else None
 
-            mock_conn.fetchval = AsyncMock(side_effect=fetchval_mock)
-        else:
-            mock_conn.fetchval = AsyncMock(return_value=fetchval_return)
+        def fetchval_mock(*args, **kwargs):
+            sql = args[0] if args else ""
+            if "to_regclass" in sql:
+                return True
+            # _find_action_pool existence check
+            if "EXISTS" in sql:
+                return True
+            if inner_iter is not None:
+                return next(inner_iter)
+            return fetchval_return
+
+        mock_conn.fetchval = AsyncMock(side_effect=fetchval_mock)
+    elif fetchval_side_effect is not None:
+        mock_conn.fetchval = AsyncMock(side_effect=fetchval_side_effect)
+    else:
+        mock_conn.fetchval = AsyncMock(return_value=fetchval_return)
 
     mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
 
@@ -156,7 +165,7 @@ def _app_with_mock_db(
     # Return the pool when queried, or raise KeyError if no approvals
     if has_approvals_tables:
         mock_db.pool.return_value = mock_pool
-        mock_db.butler_names = ["general", "switchboard"]
+        mock_db.butler_names = ["general"]
     else:
         mock_db.pool.side_effect = KeyError("No pool")
         mock_db.butler_names = []
@@ -843,8 +852,8 @@ async def test_get_metrics(app):
         ],
     )
 
-    # Mock avg_latency query
-    mock_conn.fetchrow = AsyncMock(return_value={"avg_latency": 120.5})
+    # Mock avg_latency + cnt query (now combined in one fetchrow)
+    mock_conn.fetchrow = AsyncMock(return_value={"avg_latency": 120.5, "cnt": 12})
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -906,7 +915,7 @@ def _make_app_with_contact_resolution(
 
     async def mock_fetchval(*args, **kwargs):
         sql = args[0] if args else ""
-        if "information_schema.tables" in sql:
+        if "to_regclass" in sql:
             return has_approvals_tables
         return action_count
 
