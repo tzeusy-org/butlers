@@ -159,29 +159,28 @@ Configuration via environment variables with base connector variables plus Teleg
 - **THEN** `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT` (default 40081), and `CONNECTOR_WEBHOOK_URL` (enables webhook mode) are optionally configurable
 
 ### Requirement: Source Filter Integration (Telegram Bot)
-The Telegram bot connector MUST implement the source filter gate using the chat or sender ID as the evaluated key, with support for the `chat_id` key type.
 
-#### Scenario: Valid source key types for Telegram bot connector
-- **WHEN** source filters are configured for a Telegram bot connector
-- **THEN** the only valid `source_key_type` is `"chat_id"`
-- **AND** filters with any other `source_key_type` are skipped with a one-time WARNING log (they are incompatible with the Telegram channel)
+The Telegram bot connector implements the ingestion policy gate using `IngestionPolicyEvaluator` with `scope = 'connector:telegram-bot:<endpoint_identity>'`. It builds an `IngestionEnvelope` from the Telegram update's chat ID. Only the `chat_id` rule type is valid for Telegram bot connector scope.
 
-#### Scenario: Key extraction for chat_id filters
-- **WHEN** the filter gate evaluates a Telegram update
-- **THEN** the connector extracts `str(update.message.chat.id)` as the key value
-- **AND** for private chats (where `chat.type == "private"`), `chat.id` equals `from.id` — both identify the same individual
-- **AND** for group chats, `chat.id` identifies the group; filtering by group ID blocks or allows the entire group conversation
-- **AND** the key value is always a stringified integer (e.g. `"123456789"` or `"-100987654321"` for supergroups)
+#### Scenario: IngestionPolicyEvaluator instantiation
+- **WHEN** the Telegram bot connector initializes
+- **THEN** it creates an `IngestionPolicyEvaluator` with `scope = 'connector:telegram-bot:<endpoint_identity>'` and the shared switchboard DB pool
 
 #### Scenario: Filter gate position in Telegram pipeline
-- **WHEN** the Telegram bot connector processes an update
-- **THEN** source filter evaluation runs immediately after update normalization and BEFORE Switchboard submission
-- **AND** a blocked update is not submitted to Switchboard; its `update_id` IS included in the acknowledged range so Telegram does not re-deliver it
+- **WHEN** the Telegram bot connector processes an incoming update
+- **THEN** it evaluates the message via `IngestionPolicyEvaluator` AFTER update normalization and BEFORE Switchboard submission
 
-#### Scenario: SourceFilterEvaluator instantiation
-- **WHEN** the Telegram bot connector starts
-- **THEN** it instantiates `SourceFilterEvaluator(connector_type="telegram-bot", endpoint_identity=<configured bot endpoint identity>, db_pool=<shared switchboard pool>)`
-- **AND** performs the initial filter load before beginning the getUpdates polling loop or setting the webhook
+#### Scenario: Valid rule types for Telegram bot connector scope
+- **WHEN** the API validates a rule for `scope = 'connector:telegram-bot:...'`
+- **THEN** only the `chat_id` rule type is accepted
+
+#### Scenario: Envelope construction from Telegram update
+- **WHEN** the Telegram bot connector builds an `IngestionEnvelope`
+- **THEN** `sender_address` is empty, `source_channel = "telegram"`, `raw_key` is `str(chat.id)` extracted from message/edited_message/channel_post, `headers` and `mime_parts` are empty
+
+#### Scenario: Chat ID extraction from various update types
+- **WHEN** the update contains a `message`, `edited_message`, or `channel_post` with a `chat.id`
+- **THEN** the `raw_key` is set to the stringified chat ID (e.g., `"987654321"` or `"-100987654321"`)
 
 ### Requirement: Idempotency and Safety
 The connector guarantees at-least-once delivery with crash-safe resume.

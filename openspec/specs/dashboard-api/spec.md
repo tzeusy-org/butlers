@@ -579,17 +579,18 @@ Butler-specific routers can expose domain-specific API endpoints that are auto-d
 - **THEN** its endpoints (e.g., routing log, registry, set eligibility) are auto-discovered and mounted
 - **AND** the frontend `useSetEligibility` mutation calls the switchboard-specific endpoint
 
-### Requirement: Triage Rules and Thread Affinity
-Frontend hooks in `use-triage.ts` manage email triage rules and thread affinity settings via dedicated API endpoints.
+### Requirement: Ingestion Rules and Thread Affinity
+Frontend hooks manage unified ingestion rules and thread affinity settings via dedicated API endpoints. The previous triage-specific hooks (`useTriageRules`, `useCreateTriageRule`, etc.) and source filter hooks (`useSourceFilters`, `useCreateSourceFilter`, etc.) are replaced by unified ingestion rules hooks.
 
-#### Scenario: Triage rule management
-- **WHEN** triage rule hooks are used (`useTriageRules`, `useCreateTriageRule`, `useUpdateTriageRule`, `useDeleteTriageRule`)
-- **THEN** rules are fetched with `staleTime: 60s` (no refetchInterval by default)
-- **AND** mutations invalidate the `["triage-rules"]` query key family
+#### Scenario: Ingestion rule management
+- **WHEN** ingestion rule hooks are used (`useIngestionRules`, `useCreateIngestionRule`, `useUpdateIngestionRule`, `useDeleteIngestionRule`)
+- **THEN** rules are fetched from `/api/switchboard/ingestion-rules` with `staleTime: 60s` (no refetchInterval by default)
+- **AND** mutations invalidate the `["ingestion-rules"]` query key family
+- **AND** optional scope filtering is supported via query params
 
 #### Scenario: Rule dry-run testing
-- **WHEN** `useTestTriageRule` is called
-- **THEN** the mutation sends a test request to the backend without invalidating any cache
+- **WHEN** `useTestIngestionRule` is called
+- **THEN** the mutation sends a test envelope to `/api/switchboard/ingestion-rules/test` without invalidating any cache
 
 #### Scenario: Thread affinity management
 - **WHEN** `useThreadAffinitySettings`, `useUpsertThreadAffinityOverride`, `useDeleteThreadAffinityOverride` hooks are used

@@ -6,22 +6,34 @@ The Gmail connector ingests emails from a user's Gmail inbox in near real-time, 
 ## ADDED Requirements
 
 ### Requirement: Gmail Connector Identity and Authentication
-The Gmail connector authenticates via Google OAuth and resolves credentials from the butler database.
+The Gmail connector runs as a single process that discovers and manages all connected Google accounts. It authenticates each account independently via Google OAuth, resolving per-account credentials from the butler database.
 
-#### Scenario: OAuth-based authentication with DB-first resolution
+#### Scenario: Multi-account discovery at startup
 - **WHEN** the Gmail connector starts
-- **THEN** it resolves Google OAuth credentials (`client_id`, `client_secret`, `refresh_token`) from DB-backed secret storage via `CredentialStore`
-- **AND** resolution order is: connector-local DB override (`CONNECTOR_BUTLER_DB_NAME`), then shared credential DB (`BUTLER_SHARED_DB_NAME`, default `butlers`)
-- **AND** startup fails fatally if credentials are missing in DB
+- **THEN** it SHALL query `shared.google_accounts` for all rows with `status = 'active'` and `gmail.modify` or `gmail.readonly` in `granted_scopes`
+- **AND** for each qualifying account, it SHALL resolve credentials (`client_id`, `client_secret` from `butler_secrets`; `refresh_token` from the account's companion entity in `entity_info`)
+- **AND** it SHALL spawn an independent watch/poll loop per account
+- **AND** startup SHALL succeed even if some accounts fail credential resolution (degraded mode — failed accounts are logged and skipped)
 
 #### Scenario: OAuth bootstrap requirement
 - **WHEN** deploying the Gmail connector
-- **THEN** the dashboard OAuth bootstrap flow must be completed first so Google credentials are stored in DB
+- **THEN** the dashboard OAuth bootstrap flow must be completed first for at least one Google account with Gmail scopes
 - **AND** the connector has no env-var-based OAuth credential fallback — DB-only
 
-#### Scenario: Connector identity
-- **WHEN** the Gmail connector starts
-- **THEN** `source.channel="email"`, `source.provider="gmail"`, and `source.endpoint_identity` identifies the mailbox (e.g., `"gmail:user:alice@gmail.com"`)
+#### Scenario: Per-account connector identity
+- **WHEN** a watch/poll loop runs for account `work@gmail.com`
+- **THEN** `source.channel="email"`, `source.provider="gmail"`, and `source.endpoint_identity = "gmail:user:work@gmail.com"`
+- **AND** the endpoint identity is auto-resolved per-account from the authenticated email, not from an env var
+
+#### Scenario: Per-account scope validation
+- **WHEN** the connector evaluates a Google account for loop creation
+- **THEN** it SHALL verify that the account's `granted_scopes` include `gmail.modify` (or `gmail.readonly` at minimum)
+- **AND** accounts missing required scopes SHALL be skipped with a warning log (not fatal to the process)
+
+#### Scenario: No qualifying accounts
+- **WHEN** the connector starts and no active Google accounts have Gmail scopes
+- **THEN** the connector SHALL start in idle mode (health = `degraded`, no active loops)
+- **AND** it SHALL periodically re-scan for new accounts (see dynamic account discovery)
 
 ### Requirement: Ingestion Modes
 The connector supports two ingestion modes with different latency/complexity trade-offs.
@@ -128,38 +140,32 @@ The connector implements a three-tier ingestion policy to process emails in prop
 - **THEN** the order is: (1) label include/exclude filter → (2) source filter gate → (3) triage rule evaluation for ingestion tier → (4) policy tier assignment for queue ordering → (5) Switchboard submission
 
 ### Requirement: Source Filter Integration (Gmail)
-The Gmail connector MUST implement the source filter gate using the sender address as the evaluated key, with support for `domain`, `sender_address`, and `substring` key types.
 
-#### Scenario: Valid source key types for Gmail
-- **WHEN** source filters are configured for a Gmail connector
-- **THEN** the valid `source_key_type` values are: `"domain"`, `"sender_address"`, `"substring"`
-- **AND** filters with any other `source_key_type` are skipped with a one-time WARNING log (they are incompatible with the email channel)
+The Gmail connector implements the ingestion policy gate using `IngestionPolicyEvaluator` with `scope = 'connector:gmail:<endpoint_identity>'`. It builds an `IngestionEnvelope` from the Gmail message's `From` header. Compatible rule types for Gmail connector scope: `sender_domain`, `sender_address`, `substring`.
 
-#### Scenario: Key extraction for domain filters
-- **WHEN** the filter gate evaluates a Gmail message with `source_key_type="domain"`
-- **THEN** the connector normalizes the `From` header (strip display name and angle brackets, lowercase) and extracts the domain part (substring after `@`)
-- **AND** passes the bare domain string (e.g. `"newsletter.example.com"`) to `SourceFilterEvaluator.evaluate()`
-
-#### Scenario: Key extraction for sender_address filters
-- **WHEN** the filter gate evaluates a Gmail message with `source_key_type="sender_address"`
-- **THEN** the connector normalizes the `From` header to a bare, lowercased email address (e.g. `"alice@example.com"`)
-- **AND** passes the full normalized address to `SourceFilterEvaluator.evaluate()`
-
-#### Scenario: Key extraction for substring filters
-- **WHEN** the filter gate evaluates a Gmail message with `source_key_type="substring"`
-- **THEN** the connector passes the raw `From` header value verbatim to `SourceFilterEvaluator.evaluate()`
-- **AND** matching is case-insensitive substring search
+#### Scenario: IngestionPolicyEvaluator instantiation
+- **WHEN** the Gmail connector initializes
+- **THEN** it creates an `IngestionPolicyEvaluator` with `scope = 'connector:gmail:<endpoint_identity>'` and the shared switchboard DB pool
 
 #### Scenario: Filter gate position in Gmail pipeline
-- **WHEN** the Gmail connector processes a message
-- **THEN** source filter evaluation runs AFTER label filtering (`LabelFilterPolicy`) and BEFORE triage rule evaluation
-- **AND** the pipeline order is: (1) label include/exclude filter → (2) source filter gate → (3) triage rule evaluation for ingestion tier → (4) policy tier assignment → (5) Switchboard submission
-- **AND** a message blocked by the source filter gate is dropped without incrementing Gmail label filter counters (label filter already passed at step 1)
+- **WHEN** the Gmail connector processes an incoming message
+- **THEN** it evaluates the message via `IngestionPolicyEvaluator` AFTER label filtering and BEFORE Switchboard submission
 
-#### Scenario: SourceFilterEvaluator instantiation
-- **WHEN** the Gmail connector starts
-- **THEN** it instantiates `SourceFilterEvaluator(connector_type="gmail", endpoint_identity=<configured endpoint identity>, db_pool=<shared switchboard pool>)`
-- **AND** performs the initial filter load before beginning the watch/history-delta ingestion loop
+#### Scenario: Valid rule types for Gmail connector scope
+- **WHEN** the API validates a rule for `scope = 'connector:gmail:...'`
+- **THEN** only `sender_domain`, `sender_address`, and `substring` rule types are accepted
+
+#### Scenario: Envelope construction from Gmail message
+- **WHEN** the Gmail connector builds an `IngestionEnvelope`
+- **THEN** `sender_address` is the normalized From address (lowercase, no brackets), `source_channel = "email"`, `headers` contains the message headers, `raw_key` is the raw From header value
+
+#### Scenario: Blocked message in live ingestion
+- **WHEN** the evaluator returns `PolicyDecision(action='block')` for a live Gmail message
+- **THEN** the message is skipped, not submitted to Switchboard, and the connector advances its cursor
+
+#### Scenario: Blocked message in backfill
+- **WHEN** the evaluator returns `PolicyDecision(action='block')` during a backfill job
+- **THEN** the message is counted as skipped and the backfill continues to the next message
 
 ### Requirement: Policy Tier Assignment
 The connector assigns policy tiers for Switchboard queue ordering using a `PolicyTierAssigner` with first-match-wins rules.
@@ -325,45 +331,92 @@ Tier 2 records are stored in a dedicated reference table.
 - **WHEN** `email_metadata_refs` records age
 - **THEN** default retention is 90 days with scheduled pruning
 
-### Requirement: Multiple Concurrent Connectors
-Multiple Gmail connector instances can run concurrently for different accounts or policy slices.
+### Requirement: Multi-Account Connector Architecture
+A single Gmail connector process manages concurrent watch/poll loops for all connected Google accounts.
 
-#### Scenario: Per-account isolation
-- **WHEN** multiple Gmail connectors run
-- **THEN** each auto-resolves a unique `endpoint_identity` from its authenticated account and maintains its own DB-backed cursor (keyed by provider + endpoint identity)
-- **AND** each may use different label filters (e.g., one for INBOX, another for finance labels)
+#### Scenario: Independent per-account loops
+- **WHEN** the connector manages accounts `personal@gmail.com` and `work@gmail.com`
+- **THEN** each account SHALL have its own:
+  - Credential set (independent refresh token and access token cache)
+  - History cursor (persisted independently, keyed by endpoint identity)
+  - Label filter configuration (from account metadata or process-level defaults)
+  - Watch subscription (if Pub/Sub enabled for that account)
+  - Backfill state (independent backfill jobs per account)
+- **AND** the loops SHALL run as concurrent asyncio tasks within the single process
+
+#### Scenario: Per-account error isolation
+- **WHEN** account `work@gmail.com` encounters a token refresh failure or API error
+- **THEN** only that account's loop SHALL enter backoff/retry
+- **AND** account `personal@gmail.com` SHALL continue processing unaffected
+- **AND** the failed account's error SHALL be recorded in per-account health status
+
+#### Scenario: Per-account configuration via metadata
+- **WHEN** a `google_accounts` row has `metadata.gmail` containing override fields
+- **THEN** the account's loop SHALL use those overrides instead of process-level defaults
+- **AND** supported override fields are: `label_include`, `label_exclude`, `poll_interval_s`, `pubsub_enabled`, `pubsub_topic`
+- **AND** fields not present in metadata fall back to process-level env var defaults
+
+#### Scenario: Process-level defaults
+- **WHEN** an account's `metadata.gmail` does not specify a config field
+- **THEN** the process-level env vars SHALL apply: `GMAIL_POLL_INTERVAL_S`, `GMAIL_LABEL_INCLUDE`, `GMAIL_LABEL_EXCLUDE`, `GMAIL_PUBSUB_ENABLED`, etc.
+
+### Requirement: Dynamic Account Discovery
+The connector SHALL support discovering new or removed accounts without a full process restart.
+
+#### Scenario: Periodic re-scan
+- **WHEN** the connector is running
+- **THEN** it SHALL re-query `shared.google_accounts` at a configurable interval (`GMAIL_ACCOUNT_RESCAN_INTERVAL_S`, default 300)
+- **AND** newly active accounts with Gmail scopes SHALL have loops spawned
+- **AND** accounts that are no longer active (revoked, deleted) SHALL have their loops gracefully stopped
+
+#### Scenario: MCP-triggered reload
+- **WHEN** a `connector_reload_accounts` MCP tool call is received (or SIGHUP signal)
+- **THEN** an immediate re-scan SHALL be triggered outside the periodic schedule
+- **AND** the response SHALL report: accounts added, accounts removed, accounts unchanged
+
+#### Scenario: Graceful loop shutdown on account removal
+- **WHEN** an account is removed during a re-scan
+- **THEN** the account's loop SHALL complete any in-flight ingest operations
+- **AND** the cursor SHALL be checkpointed
+- **AND** the loop SHALL be stopped without affecting other account loops
+
+### Requirement: Multiple Concurrent Connectors
+Multiple Gmail connector processes can still run concurrently for horizontal scaling or policy isolation.
+
+#### Scenario: Per-account isolation across processes
+- **WHEN** multiple Gmail connector processes run
+- **THEN** each process discovers its own set of accounts from `shared.google_accounts`
+- **AND** if two processes discover the same account, they share the same endpoint identity and cursor — explicit coordination/lease ownership is required to avoid duplicate processing
 
 #### Scenario: Uniqueness boundary
 - **WHEN** deduplication is evaluated
 - **THEN** the boundary is `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, endpoint_identity, external_event_id)`
 
 #### Scenario: Horizontal replicas
-- **WHEN** multiple instances share the same endpoint identity
+- **WHEN** multiple process instances share the same endpoint identity for the same account
 - **THEN** explicit coordination/lease ownership for the cursor is required
 - **AND** duplicate accepted ingest responses are treated as success
+
+### Requirement: Aggregated Health Status
+
+#### Scenario: Health model (multi-account)
+- **WHEN** the Gmail connector's health is queried
+- **THEN** it returns: `status` (worst-case across all account loops), `uptime_seconds`, `active_accounts` (count), `account_health` (array of per-account status objects)
+- **AND** each per-account status includes: `email`, `endpoint_identity`, `status` (`healthy`/`degraded`/`error`), `last_checkpoint_save_at`, `last_ingest_submit_at`, `source_api_connectivity`, `error` (if any)
 
 ### Requirement: Environment Variables
 
 #### Scenario: Required variables
 - **WHEN** the Gmail connector starts
 - **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=gmail`, `CONNECTOR_CHANNEL=email` must be set
-- **AND** `endpoint_identity` is auto-resolved at startup from the authenticated Gmail account (e.g., `"gmail:user:alice@gmail.com"`)
-- **AND** database connectivity (`DATABASE_URL` or `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_USER`/`POSTGRES_PASSWORD`) must be configured for OAuth credential resolution
+- **AND** `endpoint_identity` is auto-resolved per-account at startup from the authenticated email (not set via env var)
+- **AND** database connectivity (`DATABASE_URL` or `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_USER`/`POSTGRES_PASSWORD`) must be configured for account discovery and credential resolution
 
-#### Scenario: Pub/Sub variables (optional)
-- **WHEN** Pub/Sub mode is desired
-- **THEN** `GMAIL_PUBSUB_ENABLED=true`, `GMAIL_PUBSUB_TOPIC`, and optionally `GMAIL_PUBSUB_WEBHOOK_PORT` (default 40083), `GMAIL_PUBSUB_WEBHOOK_PATH` (default `/gmail/webhook`), `GMAIL_PUBSUB_WEBHOOK_TOKEN` are set
-
-#### Scenario: Runtime control variables
+#### Scenario: Process-level default variables (optional)
 - **WHEN** the connector starts
-- **THEN** `GMAIL_POLL_INTERVAL_S` (default 60), `GMAIL_WATCH_RENEW_INTERVAL_S` (default 86400), `GMAIL_LABEL_INCLUDE`, `GMAIL_LABEL_EXCLUDE`, `GMAIL_USER_EMAIL`, `GMAIL_KNOWN_CONTACTS_PATH`, `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT` (default 40082) are optionally configurable
+- **THEN** `GMAIL_POLL_INTERVAL_S` (default 60), `GMAIL_WATCH_RENEW_INTERVAL_S` (default 86400), `GMAIL_LABEL_INCLUDE`, `GMAIL_LABEL_EXCLUDE`, `GMAIL_PUBSUB_ENABLED` (default false), `GMAIL_PUBSUB_TOPIC`, `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT` (default 40082), `GMAIL_ACCOUNT_RESCAN_INTERVAL_S` (default 300) are optionally configurable as process-level defaults
+- **AND** per-account overrides in `google_accounts.metadata.gmail` take precedence
 
 #### Scenario: Backfill variables
 - **WHEN** backfill is configured
 - **THEN** `CONNECTOR_BACKFILL_ENABLED` (default true), `CONNECTOR_BACKFILL_POLL_INTERVAL_S` (default 60), `CONNECTOR_BACKFILL_PROGRESS_INTERVAL` (default 50) are optionally configurable
-
-### Requirement: Health Status
-
-#### Scenario: Health model
-- **WHEN** the Gmail connector's health is queried
-- **THEN** it returns: `status` (`healthy`/`degraded`/`error` per connector-base-spec health states), `uptime_seconds`, `last_checkpoint_save_at`, `last_ingest_submit_at`, `source_api_connectivity` (`connected`/`disconnected`/`unknown`), `timestamp`

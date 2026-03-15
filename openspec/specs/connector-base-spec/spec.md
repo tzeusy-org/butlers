@@ -10,7 +10,7 @@ A connector is a long-running process (separate from any butler daemon) that bri
 
 #### Scenario: Connector responsibilities boundary
 - **WHEN** a connector processes external events
-- **THEN** it reads source events from the external system, normalizes each to an `ingest.v1` envelope, evaluates active source filters (dropping messages that fail the filter gate before any Switchboard call), submits passing envelopes to the Switchboard's canonical ingest API via MCP, persists a crash-safe resume checkpoint, enforces rate limiting against both source API and Switchboard, sends periodic heartbeats for liveness tracking, and exports Prometheus metrics
+- **THEN** it reads source events from the external system, normalizes each to an `ingest.v1` envelope, evaluates active source filters (dropping messages that fail the filter gate before any Switchboard call), submits passing envelopes to the Switchboard's canonical ingest API via MCP, persists a crash-safe resume checkpoint, enforces rate limiting against both source API and Switchboard, sends periodic heartbeats for liveness tracking, exports Prometheus metrics, persists filtered/errored events to `connectors.filtered_events` via batch flush, and drains the replay queue for pending re-ingestion requests
 - **AND** the connector does NOT classify messages, route to specialist butlers, mint canonical `request_id` values (Switchboard does this), or bypass the Switchboard ingestion path
 - **AND** a connector with no active source filters MUST pass all messages (opt-in model; the filter gate is a no-op when no filters are configured)
 
@@ -18,7 +18,7 @@ A connector is a long-running process (separate from any butler daemon) that bri
 - **WHEN** a connector runs
 - **THEN** it is a separate OS process from any butler daemon (not an in-daemon module)
 - **AND** it communicates with the Switchboard exclusively via MCP tool calls over SSE
-- **AND** it has no direct database access to butler schemas (it may access the shared credential store and the switchboard DB for filter loading via DB-first resolution)
+- **AND** it has direct database access to the `connectors` schema (for filtered event persistence and replay queue) and read access to the `shared` schema (for credential and contact resolution)
 
 #### Scenario: At-least-once delivery guarantee
 - **WHEN** a connector submits events
@@ -26,20 +26,74 @@ A connector is a long-running process (separate from any butler daemon) that bri
 - **AND** the Switchboard's deduplication layer (advisory lock + dedupe key) makes replays idempotent and harmless
 - **AND** duplicate submissions return the same canonical `request_id` (not a new request)
 - **AND** messages blocked by source filters are intentionally dropped and their checkpoints advanced; they are NOT retried
+- **AND** filtered/errored messages are persisted to `connectors.filtered_events` for operator visibility and optional replay
+
+### Requirement: Filtered Event Batch Flush Obligation
+All connectors SHALL persist filtered and errored events to `connectors.filtered_events` via a batch flush at the end of each poll cycle.
+
+#### Scenario: Connector records filtered events
+- **WHEN** a connector filters a message (label exclusion, connector-scope rule, global-scope rule skip)
+- **THEN** it SHALL record the event in an in-memory buffer with: connector_type, endpoint_identity, external_message_id, source_channel, sender_identity, subject_or_preview, filter_reason, status='filtered', and full_payload
+
+#### Scenario: Connector records error events
+- **WHEN** a connector encounters a processing error for a message (validation failure, submission error)
+- **THEN** it SHALL record the event in the buffer with status='error', error_detail containing the exception message, and full_payload containing whatever envelope fields were available
+
+#### Scenario: Flush after poll cycle
+- **WHEN** a connector's poll cycle completes
+- **THEN** the buffer SHALL be flushed to `connectors.filtered_events` in a single batch INSERT
+- **AND** the buffer SHALL be cleared after successful flush
+- **AND** flush failure SHALL be logged as a warning but SHALL NOT prevent cursor advancement
+
+### Requirement: Replay Queue Drain Loop
+All connectors SHALL check for pending replay requests after each poll cycle and process them through the standard ingestion pipeline.
+
+#### Scenario: Drain loop executes after poll cycle
+- **WHEN** a connector completes a poll cycle (including filtered event flush)
+- **THEN** it SHALL query `connectors.filtered_events` for rows with `status = 'replay_pending'` matching its `connector_type` and `endpoint_identity`
+- **AND** it SHALL process up to 10 replay items per cycle using `FOR UPDATE SKIP LOCKED`
+
+#### Scenario: Replay uses standard ingestion path
+- **WHEN** a connector processes a replay item
+- **THEN** it SHALL deserialize `full_payload` from the row
+- **AND** it SHALL construct a complete `ingest.v1` envelope from the stored payload
+- **AND** it SHALL submit the envelope to the Switchboard's `ingest_v1` MCP tool using the same code path as normal ingestion
+- **AND** it SHALL NOT re-evaluate connector-side filter rules (the operator explicitly requested replay)
+
+#### Scenario: Replay status update on success
+- **WHEN** a replay submission succeeds
+- **THEN** the connector SHALL update the row's status to `replay_complete` and set `replay_completed_at`
+
+#### Scenario: Replay status update on failure
+- **WHEN** a replay submission fails
+- **THEN** the connector SHALL update the row's status to `replay_failed` and set `error_detail` with the failure reason
+- **AND** it SHALL continue processing remaining replay items
 
 ### Requirement: Source Filter Gate (Base Contract)
-All connectors MUST implement the source filter gate as specified in `connector-source-filter-enforcement`. This is a mandatory pipeline step, not optional.
 
-#### Scenario: Filter gate is mandatory for all connector types
-- **WHEN** a new connector type is implemented
-- **THEN** it MUST instantiate a `SourceFilterEvaluator` for its `(connector_type, endpoint_identity)` pair
-- **AND** it MUST call `SourceFilterEvaluator.evaluate(key_value)` for every normalized message before submitting to Switchboard
-- **AND** it MUST pass the appropriate key value for its source type (see `connector-source-filter-enforcement` for per-source-type key extraction rules)
+All connectors MUST implement the ingestion policy gate as a mandatory pipeline step. After normalizing an event and before submitting to the Switchboard, each connector evaluates the message against its active connector-scoped ingestion rules via `IngestionPolicyEvaluator`. Messages that receive a `block` action are dropped at the connector and never reach the Switchboard.
+
+The evaluator is instantiated with `scope = 'connector:<connector_type>:<endpoint_identity>'` and loads only rules matching that scope from the unified `ingestion_rules` table.
+
+#### Scenario: Filter gate position in the connector pipeline
+- **WHEN** a connector processes an incoming message
+- **THEN** the connector evaluates the message against its `IngestionPolicyEvaluator` AFTER normalization and BEFORE submitting to the Switchboard
+
+#### Scenario: Blocked message handling
+- **WHEN** the evaluator returns `PolicyDecision(action='block')`
+- **THEN** the message is NOT submitted to the Switchboard, the Prometheus counter is incremented, and the connector advances its checkpoint
 
 #### Scenario: Filter state at startup
-- **WHEN** a connector starts up
-- **THEN** it MUST perform an initial filter load from DB before processing the first message
-- **AND** if the initial filter load fails (e.g. DB unavailable), the connector MUST log a WARNING and proceed with an empty filter set (fail-open) rather than aborting startup
+- **WHEN** a connector starts its ingestion loop
+- **THEN** it MUST call `evaluator.ensure_loaded()` before processing the first message
+
+#### Scenario: DB error fail-open behavior
+- **WHEN** the evaluator cannot reach the database during a cache refresh
+- **THEN** it retains its previous cache and logs a warning; ingestion is NOT blocked
+
+#### Scenario: IngestionPolicyEvaluator contract
+- **WHEN** a connector instantiates its evaluator
+- **THEN** it passes `scope = 'connector:<connector_type>:<endpoint_identity>'` and a shared DB pool; the evaluator loads only connector-scoped rules for that scope
 
 ### Requirement: ingest.v1 Envelope Schema
 The `ingest.v1` envelope is the canonical format for all messages entering the butler ecosystem. It is a Pydantic model (`IngestEnvelopeV1`) with five required sub-models validated at parse time.
@@ -50,11 +104,11 @@ The `ingest.v1` envelope is the canonical format for all messages entering the b
 
 #### Scenario: Source identity (IngestSourceV1)
 - **WHEN** `source` is populated
-- **THEN** `channel` is a `SourceChannel` enum value (`telegram`, `slack`, `email`, `api`, `mcp`), `provider` is a `SourceProvider` enum value (`telegram`, `slack`, `gmail`, `imap`, `internal`), and `endpoint_identity` is a non-empty string uniquely identifying the connector instance (e.g., `"gmail:user:alice@gmail.com"`, `"telegram:bot:mybot"`)
+- **THEN** `channel` is a `SourceChannel` enum value (`telegram`, `slack`, `email`, `api`, `mcp`, `voice`), `provider` is a `SourceProvider` enum value (`telegram`, `slack`, `gmail`, `imap`, `internal`, `live-listener`), and `endpoint_identity` is a non-empty string uniquely identifying the connector instance (e.g., `"gmail:user:alice@gmail.com"`, `"telegram:bot:mybot"`, `"live-listener:mic:kitchen"`)
 
 #### Scenario: Channel-provider pair validation
 - **WHEN** `source.channel` and `source.provider` are set
-- **THEN** valid pairings are enforced: `telegram`/`telegram`, `email`/`gmail`, `email`/`imap`, `api`/`internal`, `mcp`/`internal`
+- **THEN** valid pairings are enforced: `telegram`/`telegram`, `email`/`gmail`, `email`/`imap`, `api`/`internal`, `mcp`/`internal`, `voice`/`live-listener`
 - **AND** invalid pairings fail Pydantic validation
 
 #### Scenario: Event metadata (IngestEventV1)
@@ -117,22 +171,20 @@ The Switchboard builds an immutable request context from each accepted ingest en
 - **AND** the `request_id` is passed through to the spawned butler session as both `session.request_id` and `session.ingestion_event_id`
 
 ### Requirement: Triage Integration
-Connector-side and server-side triage rules gate ingestion tier assignment and early routing decisions before LLM classification.
+
+Connector-side and server-side ingestion rules gate ingestion and early routing decisions before LLM classification. Connector-scoped rules (`block` action) are evaluated at the connector. Global rules (all other actions) are evaluated post-ingest by the Switchboard.
 
 #### Scenario: Thread affinity lookup (email only)
-- **WHEN** an email message has an `external_thread_id` and thread affinity is enabled
-- **THEN** the Switchboard looks up existing thread→butler affinity before evaluating rules
-- **AND** if an affinity match produces a route, it takes precedence over rule evaluation
+- **WHEN** an email message is ingested with a thread_id
+- **THEN** Switchboard checks thread affinity BEFORE evaluating global ingestion rules
 
 #### Scenario: Deterministic rule evaluation
-- **WHEN** triage rules are configured (non-None list)
-- **THEN** rules are evaluated in priority order (first match wins)
-- **AND** rule types include: `sender_domain` (exact or suffix match), `sender_address` (exact match), `header_condition` (operations: `present`, `equals`, `contains`), `label_match` (Gmail label ID check)
-- **AND** if no rule matches, the default action is `pass_through` (Tier 1 — never silently drop)
+- **WHEN** a message passes connector-scoped evaluation and is accepted by the Switchboard
+- **THEN** global ingestion rules are evaluated in priority order; the first match determines routing/action
 
 #### Scenario: Ingestion tier classification
-- **WHEN** a triage action is determined
-- **THEN** tier mapping is: `route_to` → Tier 1 (full), `low_priority_queue` → Tier 1 (deferred), `pass_through` → Tier 1 (safety default), `metadata_only` → Tier 2, `skip` → Tier 3 (no submission)
+- **WHEN** no global ingestion rule matches (pass_through)
+- **THEN** the message proceeds to LLM classification
 
 ### Requirement: CachedMCPClient Transport
 All connector-to-Switchboard communication uses a lazy, reconnecting MCP client over SSE.

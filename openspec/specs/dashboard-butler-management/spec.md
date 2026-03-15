@@ -135,17 +135,18 @@ The overview tab surfaces butler identity, module health, cost telemetry, eligib
 - **AND** a "View all" link navigates to `/notifications?butler={name}`
 
 ### Requirement: Sessions Tab
-The sessions tab shows paginated session history for the butler with drill-down capability.
+The sessions tab shows paginated session history for the butler with drill-down capability, including model resolution metadata.
 
 #### Scenario: Paginated session table
 - **WHEN** the sessions tab is active
 - **THEN** sessions are loaded with offset-based pagination (page size 20) and displayed in a session table
 - **AND** the butler column is hidden since the context is already butler-scoped
+- **AND** each session row shows the model used and complexity tier as a badge
 
 #### Scenario: Session detail drawer
 - **WHEN** the operator clicks a session row
 - **THEN** a drawer opens showing full session details for the selected session
-- **AND** the drawer can be closed to return to the table
+- **AND** the drawer includes model resolution metadata: model alias, runtime type, complexity tier, and resolution source (catalog or toml_fallback)
 
 #### Scenario: Pagination controls
 - **WHEN** the total session count exceeds one page
@@ -186,22 +187,22 @@ The skills tab shows all skills available to a butler with drill-down and trigge
 - **THEN** the tab switches to the Trigger tab with the prompt pre-filled as "Use the {skill name} skill to "
 
 ### Requirement: Schedules Tab (CRUD)
-The schedules tab provides full CRUD management of a butler's scheduled tasks.
+The schedules tab provides full CRUD management of a butler's scheduled tasks, including complexity tier configuration.
 
 #### Scenario: Schedule table columns
 - **WHEN** schedules are loaded
-- **THEN** a table displays: Name, Cron expression (monospace badge), Mode (prompt/job badge), Prompt/Job details (truncated to 80 chars), Enabled toggle (On/Off badge, clickable), Source, Next Run (relative time with absolute tooltip), Last Run (relative time with absolute tooltip), and Actions (Edit, Delete)
+- **THEN** a table displays: Name, Cron expression (monospace badge), Mode (prompt/job badge), Prompt/Job details (truncated to 80 chars), Complexity (tier badge), Enabled toggle (On/Off badge, clickable), Source, Next Run (relative time with absolute tooltip), Last Run (relative time with absolute tooltip), and Actions (Edit, Delete)
 
 #### Scenario: Create schedule
 - **WHEN** the operator clicks "Add Schedule"
-- **THEN** a dialog opens with a form containing: Name (text input), Cron Expression (text input with standard 5-field hint), Mode selector (prompt or job), and mode-dependent fields
+- **THEN** a dialog opens with a form containing: Name (text input), Cron Expression (text input with standard 5-field hint), Mode selector (prompt or job), Complexity (dropdown: trivial, medium, high, extra_high; default medium), and mode-dependent fields
 - **AND** in prompt mode: a Prompt textarea is shown
 - **AND** in job mode: Job Name input and Job Args JSON textarea are shown
 - **AND** the form validates that name and cron are non-empty, prompt is non-empty in prompt mode, and job name is non-empty with valid JSON args in job mode
 
 #### Scenario: Edit schedule
 - **WHEN** the operator clicks "Edit" on a schedule row
-- **THEN** the same form dialog opens pre-filled with the schedule's existing values
+- **THEN** the same form dialog opens pre-filled with the schedule's existing values including complexity
 - **AND** submission triggers an update mutation instead of create
 
 #### Scenario: Delete schedule with confirmation
@@ -218,12 +219,17 @@ The schedules tab provides full CRUD management of a butler's scheduled tasks.
 - **THEN** schedule data is polled every 30 seconds
 
 ### Requirement: Trigger Tab (Manual Session Invocation)
-The trigger tab allows operators to manually spawn a Claude Code session for a butler.
+The trigger tab allows operators to manually spawn a session for a butler with complexity-aware model selection.
 
 #### Scenario: Prompt input and submission
 - **WHEN** the trigger tab is active
-- **THEN** a card with a textarea and "Trigger Session" button is shown
+- **THEN** a card with a textarea, a complexity selector (dropdown: Trivial, Medium, High, Extra High; default Medium), and "Trigger Session" button is shown
 - **AND** the button is disabled when the textarea is empty or a trigger is in flight
+
+#### Scenario: Resolved model preview
+- **WHEN** the operator selects a complexity level
+- **THEN** below the dropdown, a muted text line shows the resolved model (e.g. "Will use: claude-sonnet via claude")
+- **AND** the preview updates reactively when complexity selection changes
 
 #### Scenario: Skill pre-fill from query parameter
 - **WHEN** the URL contains a `skill` query parameter
@@ -237,7 +243,7 @@ The trigger tab allows operators to manually spawn a Claude Code session for a b
 
 #### Scenario: Ephemeral trigger history
 - **WHEN** triggers have been issued during the current page session
-- **THEN** a "Trigger History" card lists all previous triggers with their status badge, prompt text (truncated), timestamp, and session link
+- **THEN** a "Trigger History" card lists all previous triggers with their status badge, prompt text (truncated), complexity tier badge, timestamp, and session link
 - **AND** this history is not persisted and resets on page reload
 
 ### Requirement: MCP Debug Tab
@@ -369,35 +375,38 @@ The routing log tab (switchboard-only) shows inter-butler request routing activi
 - **THEN** Previous/Next pagination controls are shown with page count
 
 ### Requirement: Switchboard Triage Filters
-The filters surface (accessible from the ingestion page) manages pre-classification triage rules, thread affinity settings, and Gmail label filters.
 
-#### Scenario: Rules table with CRUD
-- **WHEN** the filters surface loads
-- **THEN** a rules table shows each triage rule with: Priority, Rule Type badge (sender_domain, sender_address, header_condition, mime_type), Condition summary, Action, Match Count, Enabled toggle, and action buttons (Edit, Test, Delete)
+The filters surface (accessible from the ingestion page at `/ingestion?tab=filters`) manages unified ingestion rules, thread affinity settings, and Gmail label filters. It replaces the previous dual-model UI (triage rules table + ManageSourceFiltersPanel sheet) with a single rules table.
 
-#### Scenario: Rule editor drawer
-- **WHEN** the operator creates or edits a rule
-- **THEN** a sheet/drawer opens with type-specific condition fields:
-  - `sender_domain`: domain input, match mode (suffix/exact)
-  - `sender_address`: address input, match mode
-  - `header_condition`: header name, operation (present/equals/contains), value
-  - `mime_type`: MIME type input
-- **AND** action selection allows static actions (skip, metadata_only, low_priority_queue, pass_through) or `route_to:{butler}` with butler selection from a predefined list
+#### Scenario: Unified rules table with CRUD
+- **WHEN** the user navigates to `/ingestion?tab=filters`
+- **THEN** they see a single table of all ingestion rules with columns: Priority, Scope, Condition, Action, Enabled toggle, Actions (edit/delete)
+
+#### Scenario: Scope display and filtering
+- **WHEN** the rules table is rendered
+- **THEN** each rule's scope is shown as a badge: "Global" for global rules, or the connector identity (e.g., "gmail:user:dev") for connector-scoped rules
+- **AND** a scope filter dropdown above the table allows filtering by "All", "Global only", or specific connector scopes
+
+#### Scenario: Rule editor drawer with scope selector
+- **WHEN** the user creates or edits a rule
+- **THEN** the rule editor drawer includes a scope selector (Global / Connector) and, when Connector is selected, a connector type and endpoint identity picker
+- **AND** the action field is constrained based on scope: connector scope only allows "block"; global allows all actions
 
 #### Scenario: Test rule dry-run
-- **WHEN** the operator clicks "Test" on a rule
-- **THEN** a test form appears allowing a sample envelope to be entered
-- **AND** submitting performs a dry-run and shows pass/fail result with matched rule details
+- **WHEN** the user clicks "Test" in the rule editor
+- **THEN** a test envelope is sent to POST `/ingestion-rules/test` and the result is displayed inline (matched/no-match with reason)
 
-#### Scenario: Thread affinity panel
-- **WHEN** the thread affinity settings are loaded
-- **THEN** a panel shows: global enable/disable toggle, TTL input in hours, and a save button
-- **AND** toggling and saving trigger the `updateThreadAffinitySettings` mutation
+#### Scenario: Thread affinity panel preserved
+- **WHEN** the user scrolls below the rules table
+- **THEN** the thread affinity panel (enable/disable toggle + TTL input) is displayed unchanged
 
 #### Scenario: Import seed rules
-- **WHEN** the operator clicks "Import defaults"
-- **THEN** a preview dialog shows the seed rules that will be created
-- **AND** confirming triggers batch rule creation from the predefined seed rule set
+- **WHEN** the user clicks "Import defaults"
+- **THEN** a preview dialog shows the 9 default seed rules (now as global ingestion rules) and imports them on confirmation
+
+#### Scenario: Connector detail page shows scoped rules
+- **WHEN** the user navigates to a connector detail page (e.g., `/ingestion/connectors/gmail/gmail:user:dev`)
+- **THEN** the page shows a rules section listing only rules with `scope = 'connector:gmail:gmail:user:dev'`, with an "+ Add Rule" button that pre-fills the scope
 
 ### Requirement: Switchboard Backfill Management
 The backfill surface manages historical replay jobs across connectors.

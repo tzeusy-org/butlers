@@ -45,17 +45,18 @@ Switchboard persists canonical ingress payloads in short-lived storage and proje
 - **THEN** table/index design supports recent-first ordering for efficient operational access
 
 ### Requirement: LLM-Driven Routing Contract
-Switchboard performs discretionary routing through a pluggable LLM CLI runtime. The router classifies incoming messages and decomposes multi-domain requests into segments routed to specialist butlers.
+Switchboard performs discretionary routing through a pluggable LLM CLI runtime. The router classifies incoming messages and decomposes multi-domain requests into segments routed to specialist butlers. Each segment SHALL include a complexity classification alongside the routing decision.
 
 #### Scenario: Single-domain routing
 - **WHEN** a message has one clear domain match (e.g., health, relationship, finance, travel)
 - **THEN** Switchboard routes the entire message to that specialist butler via `route_to_butler`
 - **AND** the sub-prompt is self-contained with all relevant entities and context
+- **AND** the routing output includes a `complexity` classification for the segment
 
 #### Scenario: Multi-domain decomposition
 - **WHEN** a message spans multiple domains with clear boundaries
 - **THEN** Switchboard decomposes into one sub-prompt per target butler
-- **AND** each segment carries self-contained prompt text and segment metadata (sentence span references, character offset ranges, or decomposition rationale)
+- **AND** each segment carries self-contained prompt text, segment metadata (sentence span references, character offset ranges, or decomposition rationale), and an independent `complexity` classification
 
 #### Scenario: Domain classification rules
 - **WHEN** a message arrives for classification
@@ -70,10 +71,12 @@ Switchboard performs discretionary routing through a pluggable LLM CLI runtime. 
 - **WHEN** routing confidence is below the configured threshold or LLM output is ambiguous
 - **THEN** Switchboard routes the full original message to the `general` butler
 - **AND** the ambiguity-triggered fallback is tagged in lifecycle records and observable in metrics
+- **AND** the complexity defaults to `medium`
 
 #### Scenario: Classification failure fallback
 - **WHEN** classification fails (LLM timeout, parse error, empty response)
 - **THEN** Switchboard routes the entire message to the `general` butler with the original text intact
+- **AND** the complexity defaults to `medium`
 
 #### Scenario: Runtime model family support
 - **WHEN** Switchboard spawns a routing LLM instance
@@ -89,6 +92,40 @@ Switchboard performs discretionary routing through a pluggable LLM CLI runtime. 
 - **WHEN** the source channel is email
 - **THEN** the full email chain is provided, truncated to 50,000 tokens (preserving newest messages)
 - **AND** the router uses chain context to improve routing but only routes the current message
+
+### Requirement: Complexity Classification Guidelines
+The Switchboard routing prompt SHALL include complexity classification guidelines to produce consistent tier assignments.
+
+#### Scenario: Trivial classification signals
+- **WHEN** the routing LLM evaluates message complexity
+- **THEN** `trivial` is assigned for: status checks, simple confirmations, single-fact lookups, acknowledgements, and short replies that require no reasoning
+
+#### Scenario: Medium classification signals
+- **WHEN** the routing LLM evaluates message complexity
+- **THEN** `medium` is assigned for: standard single-domain tasks, straightforward questions, routine data entry, and tasks requiring moderate context but no complex reasoning
+
+#### Scenario: High classification signals
+- **WHEN** the routing LLM evaluates message complexity
+- **THEN** `high` is assigned for: multi-step reasoning tasks, cross-referencing multiple data sources, analysis requiring judgment, and tasks with nuanced instructions
+
+#### Scenario: Extra-high classification signals
+- **WHEN** the routing LLM evaluates message complexity
+- **THEN** `extra_high` is assigned for: complex multi-domain analysis, long-horizon planning, tasks requiring extensive research or synthesis, and tasks with ambiguous or open-ended requirements
+
+### Requirement: Complexity in Route Dispatch
+The Switchboard SHALL include the classified complexity when dispatching routed requests to downstream butlers.
+
+#### Scenario: Route.v1 envelope carries complexity
+- **WHEN** Switchboard constructs a `route.v1` dispatch envelope
+- **THEN** the `input` section includes `complexity` with the classified tier value
+
+#### Scenario: Route handler extracts complexity
+- **WHEN** a downstream butler's `route.execute` handler receives a `route.v1` envelope
+- **THEN** the `complexity` value is extracted from `input.complexity` and passed to `spawner.trigger(complexity=...)`
+
+#### Scenario: Missing complexity in envelope defaults to medium
+- **WHEN** a `route.v1` envelope arrives without a `complexity` field in `input`
+- **THEN** the handler defaults complexity to `medium`
 
 ### Requirement: Prompt Injection Safety
 Ingress content is always untrusted. The routing pipeline enforces strict isolation between user content and executable instructions.
@@ -513,30 +550,28 @@ The switchboard has two specialized skills for message triage and relationship e
 - **THEN** it has access to `message-triage` (classification and routing with confidence scoring) and `relationship-extractor` (structured relationship data extraction for 8 signal types: contact, interaction, life_event, date, fact, sentiment, gift, loan)
 
 ### Requirement: Deterministic Pre-Classification Triage
-Before invoking LLM classification, Switchboard runs a fast deterministic triage pipeline that can route, skip, or deprioritize messages without LLM cost.
+
+Before invoking LLM classification, Switchboard runs the unified ingestion policy evaluator with `scope = 'global'` that can route, skip, or deprioritize messages without LLM cost. This replaces the previous triage-specific rule system with the shared `IngestionPolicyEvaluator`.
 
 #### Scenario: Rule-based first-match routing
-- **WHEN** an ingress message arrives
-- **THEN** it is evaluated against cached triage rules (ordered by priority ASC, created_at ASC) before LLM classification
-- **AND** the first matching rule wins; if no rule matches, the message falls through to LLM classification (`pass_through`)
+- **WHEN** a message is accepted by the Switchboard
+- **THEN** the global `IngestionPolicyEvaluator` evaluates it in `priority ASC, created_at ASC, id ASC` order; the first matching rule determines the action
 
 #### Scenario: Supported rule types
-- **WHEN** a triage rule is evaluated
-- **THEN** it matches on one of: `sender_domain` (exact or suffix match including subdomains), `sender_address` (case-insensitive exact), `header_condition` (present/equals/contains on email headers), or `mime_type` (exact or wildcard subtype)
+- **WHEN** global ingestion rules are loaded
+- **THEN** all rule types are valid: `sender_domain`, `sender_address`, `header_condition`, `mime_type`, `substring`, `chat_id`, `channel_id`
 
 #### Scenario: Triage actions
-- **WHEN** a triage rule matches
-- **THEN** its action determines routing: `route_to:<butler>` (direct route), `skip` (drop message), `metadata_only` (ingest metadata without LLM), `low_priority_queue` (deprioritize), or `pass_through` (proceed to LLM)
+- **WHEN** a global rule matches
+- **THEN** its action is one of: `skip`, `metadata_only`, `low_priority_queue`, `pass_through`, or `route_to:<butler>`
 
 #### Scenario: Fail-open semantics
-- **WHEN** a rule evaluation throws an exception
-- **THEN** that rule is skipped and evaluation continues to the next rule
-- **AND** database errors during cache refresh preserve the last known good rule set
+- **WHEN** the evaluator cannot load rules from the database
+- **THEN** it retains the previous cache; if no cache exists, all messages pass through to LLM classification
 
-#### Scenario: Triage rule cache
+#### Scenario: Ingestion rule cache
 - **WHEN** the Switchboard starts
-- **THEN** active triage rules are loaded from the `triage_rules` table into an in-memory cache
-- **AND** the cache refreshes periodically (default 60s) and invalid rows are individually skipped without affecting valid rules
+- **THEN** it creates a global `IngestionPolicyEvaluator(scope='global')` with 60-second TTL refresh and calls `ensure_loaded()` before processing messages
 
 ### Requirement: Email Thread Affinity Routing
 Follow-up emails in the same thread are routed to the same butler that handled prior messages, avoiding re-classification overhead and preserving conversational context.
@@ -566,29 +601,28 @@ Follow-up emails in the same thread are routed to the same butler that handled p
 - **THEN** affinity returns a miss and the message falls through to LLM classification with safe defaults
 
 ### Requirement: Triage Rule Management
-Dashboard and operator tools for managing triage rules.
 
-#### Scenario: Triage rule CRUD
-- **WHEN** an operator manages triage rules via the dashboard API
-- **THEN** rules can be created, listed, updated, and deleted through `/api/switchboard/triage-rules` endpoints
-- **AND** rule changes invalidate the in-memory cache for immediate effect
+Dashboard and operator tools for managing ingestion rules via the unified `/api/switchboard/ingestion-rules` endpoints. All rule scopes (global and connector-scoped) are managed through the same API.
+
+#### Scenario: Ingestion rule CRUD
+- **WHEN** a user creates, updates, or deletes a rule via the API
+- **THEN** the global evaluator cache is invalidated and changes take effect within 60 seconds for connector-scoped evaluators
 
 #### Scenario: Thread affinity settings
-- **WHEN** an operator manages thread affinity via the dashboard API
-- **THEN** global enable/disable, TTL configuration, and per-thread overrides are accessible through `/api/switchboard/thread-affinity` endpoints
+- **WHEN** a user manages thread affinity settings
+- **THEN** the existing `/api/switchboard/thread-affinity` endpoints remain unchanged (thread affinity is not part of the unified ingestion rules)
 
 ### Requirement: Triage Observability
-The triage subsystem emits OpenTelemetry metrics for monitoring rule effectiveness and thread affinity performance.
+
+The ingestion policy subsystem emits unified OpenTelemetry metrics for monitoring rule effectiveness across both connector-scoped and global evaluation.
 
 #### Scenario: Rule match metrics
-- **WHEN** a triage rule matches (or the message passes through)
-- **THEN** counters are incremented for `rule_matched` (by rule type, action, channel) and `pass_through` (by channel, reason)
-- **AND** evaluation latency is recorded as a histogram
+- **WHEN** any rule matches (connector-scoped or global)
+- **THEN** the `butlers.ingestion.rule_matched` counter is incremented with labels: `scope_type` (global or connector), `rule_type`, `action` (normalized -- `route_to` without target), `source_channel`
 
-#### Scenario: Thread affinity metrics
-- **WHEN** thread affinity is evaluated
-- **THEN** counters are incremented for hits (destination butler), misses (reason), and stale lookups
-- **AND** metric attributes use bounded value sets to prevent cardinality blowup (no raw emails, thread IDs, or request IDs)
+#### Scenario: Pass-through metrics
+- **WHEN** no rule matches at either scope
+- **THEN** the `butlers.ingestion.rule_pass_through` counter is incremented with labels: `scope_type`, `source_channel`, `reason` (no_match, cache_unavailable)
 
 ### Requirement: [TARGET-STATE] Ambiguity Resolution Contract
 Switchboard routing behavior under ambiguity.
