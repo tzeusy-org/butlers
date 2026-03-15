@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 
 import pytest
 
@@ -28,6 +27,8 @@ from butlers.core.runtimes.opencode import (
     _parse_opencode_output,
 )
 
+from .conftest import parse_jsonl_events, run_cli
+
 _opencode_available = shutil.which("opencode") is not None
 
 pytestmark = [
@@ -35,31 +36,12 @@ pytestmark = [
     pytest.mark.skipif(not _opencode_available, reason="opencode binary not on PATH"),
 ]
 
+_OPENCODE_ARGS = ["run", "--format", "json"]
+
 
 def _run_opencode(prompt: str, timeout: int = 120) -> tuple[str, str, int]:
-    """Run ``opencode run --format json`` and return (stdout, stderr, returncode)."""
-    result = subprocess.run(
-        ["opencode", "run", "--format", "json", prompt],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd="/tmp",
-    )
-    return result.stdout, result.stderr, result.returncode
-
-
-def _parse_raw_events(stdout: str) -> list[dict]:
-    """Parse raw JSON-lines from opencode stdout into event dicts."""
-    events = []
-    for line in stdout.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            events.append(json.loads(line))
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return events
+    """Run ``opencode run --format json`` via shared helper."""
+    return run_cli("opencode", _OPENCODE_ARGS, prompt, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +57,7 @@ class TestOpenCodeOutputFormat:
         stdout, stderr, rc = _run_opencode("What is 2+2? Answer in one word.")
         assert rc == 0, f"opencode failed: {stderr}"
 
-        events = _parse_raw_events(stdout)
+        events = parse_jsonl_events(stdout)
         assert len(events) >= 2, f"Expected at least 2 events, got {len(events)}"
 
         # All events should have envelope structure
@@ -90,7 +72,7 @@ class TestOpenCodeOutputFormat:
         stdout, stderr, rc = _run_opencode("Say the word 'hello' and nothing else.")
         assert rc == 0, f"opencode failed: {stderr}"
 
-        events = _parse_raw_events(stdout)
+        events = parse_jsonl_events(stdout)
         text_events = [e for e in events if e.get("type") == "text"]
         assert len(text_events) >= 1, f"No text events found in: {events}"
 
@@ -107,7 +89,7 @@ class TestOpenCodeOutputFormat:
         stdout, stderr, rc = _run_opencode("What is 1+1? One word answer.")
         assert rc == 0, f"opencode failed: {stderr}"
 
-        events = _parse_raw_events(stdout)
+        events = parse_jsonl_events(stdout)
         finish_events = [e for e in events if e.get("type") == "step_finish"]
         assert len(finish_events) >= 1, f"No step_finish events: {events}"
 
@@ -128,7 +110,7 @@ class TestOpenCodeOutputFormat:
         stdout, stderr, rc = _run_opencode("Use the shell to run: echo 'integration-test-marker'")
         assert rc == 0, f"opencode failed: {stderr}"
 
-        events = _parse_raw_events(stdout)
+        events = parse_jsonl_events(stdout)
         tool_events = [e for e in events if e.get("type") == "tool_use"]
         assert len(tool_events) >= 1, (
             f"No tool_use events found. Events: {[e.get('type') for e in events]}"

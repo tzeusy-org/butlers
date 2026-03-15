@@ -1,8 +1,9 @@
-"""Shared parser contract tests parametrized across CodexAdapter and GeminiAdapter.
+"""Shared parser contract tests parametrized across CodexAdapter, GeminiAdapter, and
+OpenCodeAdapter.
 
 Each adapter has its own parser function and invoke() implementation, but they share a
 common behavioral contract: plain text, JSON messages, tool calls, exit code handling.
-Tests in this module verify that contract for both adapters without duplication.
+Tests in this module verify that contract for all adapters without duplication.
 
 Adapter-specific tests (unique output formats, env filtering, binary discovery errors,
 system-prompt file resolution) remain in the native test files.
@@ -16,16 +17,24 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.runtimes import CodexAdapter, GeminiAdapter, RuntimeAdapter, get_adapter
+from butlers.core.runtimes import (
+    ClaudeCodeAdapter,
+    CodexAdapter,
+    GeminiAdapter,
+    OpenCodeAdapter,
+    RuntimeAdapter,
+    get_adapter,
+)
 from butlers.core.runtimes.codex import _extract_tool_call as codex_extract_tool_call
 from butlers.core.runtimes.codex import _parse_codex_output
 from butlers.core.runtimes.gemini import _extract_tool_call as gemini_extract_tool_call
 from butlers.core.runtimes.gemini import _parse_gemini_output
+from butlers.core.runtimes.opencode import _parse_opencode_output
 
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
-# Adapter registry contract — both adapters register themselves
+# Adapter registry contract — all adapters register themselves
 # ---------------------------------------------------------------------------
 
 
@@ -34,6 +43,8 @@ pytestmark = pytest.mark.unit
     [
         ("codex", CodexAdapter),
         ("gemini", GeminiAdapter),
+        ("opencode", OpenCodeAdapter),
+        ("claude", ClaudeCodeAdapter),
     ],
 )
 def test_adapter_registered(adapter_name: str, adapter_class: type) -> None:
@@ -41,15 +52,19 @@ def test_adapter_registered(adapter_name: str, adapter_class: type) -> None:
     assert get_adapter(adapter_name) is adapter_class
 
 
-@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter])
+@pytest.mark.parametrize(
+    "adapter_class", [CodexAdapter, GeminiAdapter, OpenCodeAdapter, ClaudeCodeAdapter]
+)
 def test_adapter_is_runtime_adapter(adapter_class: type) -> None:
-    """Both adapters are subclasses of RuntimeAdapter."""
+    """All adapters are subclasses of RuntimeAdapter."""
     assert issubclass(adapter_class, RuntimeAdapter)
 
 
-@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter])
+@pytest.mark.parametrize(
+    "adapter_class", [CodexAdapter, GeminiAdapter, OpenCodeAdapter, ClaudeCodeAdapter]
+)
 def test_adapter_instantiates(adapter_class: type) -> None:
-    """Both adapters can be instantiated without arguments."""
+    """All adapters can be instantiated without arguments."""
     assert adapter_class() is not None
 
 
@@ -58,10 +73,12 @@ def test_adapter_instantiates(adapter_class: type) -> None:
     [
         (CodexAdapter, "CodexAdapter"),
         (GeminiAdapter, "GeminiAdapter"),
+        (OpenCodeAdapter, "OpenCodeAdapter"),
+        (ClaudeCodeAdapter, "ClaudeCodeAdapter"),
     ],
 )
 def test_adapter_importable_from_runtimes(adapter_class: type, import_name: str) -> None:
-    """Both adapters are importable from butlers.core.runtimes."""
+    """All adapters are importable from butlers.core.runtimes."""
     import butlers.core.runtimes as runtimes_module
 
     assert getattr(runtimes_module, import_name) is adapter_class
@@ -74,7 +91,7 @@ def test_adapter_importable_from_runtimes(adapter_class: type, import_name: str)
 
 @pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter])
 def test_build_config_file_empty_servers(adapter_class: type, tmp_path: Path) -> None:
-    """build_config_file() writes a config with an empty mcpServers dict."""
+    """build_config_file() writes a config with an empty mcpServers dict (JSON adapters)."""
     adapter = adapter_class()
     config_path = adapter.build_config_file(mcp_servers={}, tmp_dir=tmp_path)
     data = json.loads(config_path.read_text())
@@ -83,7 +100,7 @@ def test_build_config_file_empty_servers(adapter_class: type, tmp_path: Path) ->
 
 @pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter])
 def test_build_config_file_multiple_servers(adapter_class: type, tmp_path: Path) -> None:
-    """build_config_file() writes all provided MCP servers."""
+    """build_config_file() writes all provided MCP servers (JSON adapters)."""
     adapter = adapter_class()
     mcp_servers = {
         "butler-a": {"url": "http://localhost:9100/mcp"},
@@ -96,14 +113,32 @@ def test_build_config_file_multiple_servers(adapter_class: type, tmp_path: Path)
     assert "butler-b" in data["mcpServers"]
 
 
+def test_opencode_build_config_file_writes_mcp_servers(tmp_path: Path) -> None:
+    """OpenCodeAdapter.build_config_file() includes all provided MCP servers in mcp section."""
+    adapter = OpenCodeAdapter()
+    mcp_servers = {
+        "butler-a": {"url": "http://localhost:9100/mcp"},
+        "butler-b": {"url": "http://localhost:9200/mcp"},
+    }
+    config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
+    # OpenCode uses JSONC format with 'mcp' section, not 'mcpServers'
+    # Strip comments before parsing
+    content = config_path.read_text()
+    lines = [line for line in content.splitlines() if not line.strip().startswith("//")]
+    data = json.loads("\n".join(lines))
+    mcp_section = data.get("mcp", {})
+    assert "butler-a" in mcp_section, f"butler-a not in mcp section: {mcp_section}"
+    assert "butler-b" in mcp_section, f"butler-b not in mcp section: {mcp_section}"
+
+
 # ---------------------------------------------------------------------------
-# parse_system_prompt_file contract — both adapters ignore CLAUDE.md
+# parse_system_prompt_file contract — non-Claude adapters ignore CLAUDE.md
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter])
+@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter, OpenCodeAdapter])
 def test_parse_system_prompt_ignores_claude_md(adapter_class: type, tmp_path: Path) -> None:
-    """Neither adapter reads CLAUDE.md for its system prompt."""
+    """Non-Claude adapters do not read CLAUDE.md for their system prompt."""
     adapter = adapter_class()
     (tmp_path / "CLAUDE.md").write_text("This is Claude instructions.")
     assert adapter.parse_system_prompt_file(config_dir=tmp_path) == ""
@@ -113,10 +148,10 @@ def test_parse_system_prompt_ignores_claude_md(adapter_class: type, tmp_path: Pa
 # Helpers: normalize parser output to (result_text, tool_calls)
 #
 # _parse_codex_output returns (result_text, tool_calls, usage)
+# _parse_opencode_output returns (result_text, tool_calls, usage)
 # _parse_gemini_output returns (result_text, tool_calls)
 # The shared contract only asserts on result_text and tool_calls.
 # ---------------------------------------------------------------------------
-
 
 def _codex_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None, list]:
     result_text, tool_calls, _usage = _parse_codex_output(stdout, stderr, returncode)
@@ -127,9 +162,15 @@ def _gemini_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None
     return _parse_gemini_output(stdout, stderr, returncode)
 
 
+def _opencode_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None, list]:
+    result_text, tool_calls, _usage = _parse_opencode_output(stdout, stderr, returncode)
+    return result_text, tool_calls
+
+
 _PARSE_PARAMS = [
     pytest.param(_codex_parse, id="codex"),
     pytest.param(_gemini_parse, id="gemini"),
+    pytest.param(_opencode_parse, id="opencode"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -304,11 +345,12 @@ def test_extract_tool_call_missing_fields(extract_tool_call) -> None:
 
 
 # ---------------------------------------------------------------------------
-# invoke() behavioral contract — shared behaviors across both adapters
+# invoke() behavioral contract — shared behaviors across subprocess adapters
 # ---------------------------------------------------------------------------
 
 _CODEX_EXEC = "butlers.core.runtimes.codex.asyncio.create_subprocess_exec"
 _GEMINI_EXEC = "butlers.core.runtimes.gemini.asyncio.create_subprocess_exec"
+_OPENCODE_EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
 
 _INVOKE_PARAMS = [
     pytest.param(
@@ -324,6 +366,13 @@ _INVOKE_PARAMS = [
         "gemini_binary",
         _GEMINI_EXEC,
         id="gemini",
+    ),
+    pytest.param(
+        OpenCodeAdapter,
+        "/usr/bin/opencode",
+        "opencode_binary",
+        _OPENCODE_EXEC,
+        id="opencode",
     ),
 ]
 
