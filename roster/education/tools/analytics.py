@@ -20,25 +20,6 @@ CurriculumReplanCallback = Callable[[str, dict[str, Any]], Coroutine[Any, Any, N
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _bucket_hour(hour: int) -> str:
-    """Map an hour (0-23) to a time-of-day bucket name.
-
-    morning   : 06:00–11:59 (hours 6-11)
-    afternoon : 12:00–17:59 (hours 12-17)
-    evening   : 18:00–05:59 (hours 18-23, 0-5)
-    """
-    if 6 <= hour <= 11:
-        return "morning"
-    if 12 <= hour <= 17:
-        return "afternoon"
-    return "evening"
-
-
-# ---------------------------------------------------------------------------
 # analytics_compute_snapshot
 # ---------------------------------------------------------------------------
 
@@ -176,22 +157,38 @@ async def analytics_compute_snapshot(
         # ------------------------------------------------------------------
         # 11. Time-of-day distribution (bounded to the 30-day session period
         #     and anchored to snapshot_date for consistency with sessions_this_period)
+        #
+        #     Counts distinct session dates per time-of-day bucket, not individual
+        #     response rows.  A "session" is one calendar date.  Multiple responses
+        #     on the same date in the same time bucket count as one session.
         # ------------------------------------------------------------------
         time_rows = await conn.fetch(
             """
-            SELECT EXTRACT(HOUR FROM responded_at AT TIME ZONE 'UTC')::int AS hour
-            FROM education.quiz_responses
-            WHERE mind_map_id = $1
-              AND responded_at::date <= $2
-              AND responded_at::date > $2 - INTERVAL '30 days'
+            WITH responses_in_period AS (
+                SELECT
+                    responded_at::date AS response_date,
+                    EXTRACT(HOUR FROM responded_at AT TIME ZONE 'UTC')::int AS hour
+                FROM education.quiz_responses
+                WHERE mind_map_id = $1
+                  AND responded_at::date <= $2
+                  AND responded_at::date > $2 - INTERVAL '30 days'
+            )
+            SELECT
+                CASE
+                    WHEN hour BETWEEN 6 AND 11 THEN 'morning'
+                    WHEN hour BETWEEN 12 AND 17 THEN 'afternoon'
+                    ELSE 'evening'
+                END AS bucket,
+                COUNT(DISTINCT response_date) AS session_count
+            FROM responses_in_period
+            GROUP BY bucket
             """,
             mind_map_id,
             snapshot_date,
         )
         tod_dist: dict[str, int] = {"morning": 0, "afternoon": 0, "evening": 0}
         for row in time_rows:
-            bucket = _bucket_hour(row["hour"])
-            tod_dist[bucket] += 1
+            tod_dist[row["bucket"]] = int(row["session_count"])
 
         # ------------------------------------------------------------------
         # Build metrics dict

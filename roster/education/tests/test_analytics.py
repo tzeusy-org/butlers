@@ -197,7 +197,7 @@ def _build_snapshot_conn(
     total_quiz_responses: int = 0,
     avg_quality_raw: float | None = None,
     sessions_this_period: int = 0,
-    time_hour_rows: list[dict[str, Any]] | None = None,
+    time_bucket_rows: list[dict[str, Any]] | None = None,
 ) -> AsyncMock:
     """Build a mock connection wired for each query in analytics_compute_snapshot.
 
@@ -212,7 +212,8 @@ def _build_snapshot_conn(
       6. conn.fetchval (total_quiz_responses)
       7. conn.fetchval (avg_quality_raw)
       8. conn.fetchval (sessions_this_period)
-      9. conn.fetch (time_hour_rows)
+      9. conn.fetch (time_bucket_rows) — rows are {"bucket": "morning"|"afternoon"|"evening",
+                                                    "session_count": int}
       10. conn.execute (upsert)
     """
     conn = AsyncMock()
@@ -223,8 +224,8 @@ def _build_snapshot_conn(
         [_make_row(r) for r in (node_rows or [])],
         # 4. struggling_nodes
         [_make_row(r) for r in (struggling_rows or [])],
-        # 9. time_hour_rows
-        [_make_row(r) for r in (time_hour_rows or [])],
+        # 9. time_bucket_rows
+        [_make_row(r) for r in (time_bucket_rows or [])],
     ]
     conn.fetch = AsyncMock(side_effect=list(fetch_queue))
 
@@ -680,43 +681,58 @@ class TestTimeOfDayDistribution:
     """time_of_day_distribution buckets responses into morning/afternoon/evening."""
 
     async def test_time_distribution_bucketed_correctly(self) -> None:
-        """Hours 7, 14, 20 map to morning, afternoon, evening respectively."""
+        """SQL groups by bucket and counts distinct dates; results map into tod_dist."""
         from butlers.tools.education.analytics import analytics_compute_snapshot
 
         map_id = str(uuid.uuid4())
         nodes = [_node_row()]
 
-        # hour=7 → morning, hour=14 → afternoon, hour=20 → evening
-        time_rows = [{"hour": 7}, {"hour": 14}, {"hour": 20}, {"hour": 9}]
+        # The SQL now returns one row per bucket with COUNT(DISTINCT date) already computed.
+        time_rows = [
+            {"bucket": "morning", "session_count": 3},
+            {"bucket": "afternoon", "session_count": 1},
+            {"bucket": "evening", "session_count": 2},
+        ]
 
-        conn = _build_snapshot_conn(node_rows=nodes, time_hour_rows=time_rows)
+        conn = _build_snapshot_conn(node_rows=nodes, time_bucket_rows=time_rows)
         pool = _make_pool_with_conn(conn)
 
         metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
 
         tod = metrics["time_of_day_distribution"]
-        assert tod["morning"] == 2  # hours 7 and 9
-        assert tod["afternoon"] == 1  # hour 14
-        assert tod["evening"] == 1  # hour 20
+        assert tod["morning"] == 3
+        assert tod["afternoon"] == 1
+        assert tod["evening"] == 2
 
-    async def test_time_distribution_evening_includes_late_night(self) -> None:
-        """Hours 0-5 are classified as evening (wraps around midnight)."""
-        from butlers.tools.education.analytics import _bucket_hour
+    async def test_time_distribution_counts_sessions_not_responses(self) -> None:
+        """Counts distinct session dates per bucket, not individual response rows.
 
-        for hour in [0, 1, 2, 3, 4, 5, 18, 19, 20, 21, 22, 23]:
-            assert _bucket_hour(hour) == "evening", f"hour {hour} should be evening"
+        If a user answers 5 questions on the same morning, that is 1 morning session,
+        not 5.  The SQL uses COUNT(DISTINCT responded_at::date) grouped by bucket,
+        so the mock returns pre-aggregated rows — verifying that the Python side
+        uses session_count directly rather than summing individual response rows.
+        """
+        from butlers.tools.education.analytics import analytics_compute_snapshot
 
-    def test_bucket_hour_morning(self) -> None:
-        from butlers.tools.education.analytics import _bucket_hour
+        map_id = str(uuid.uuid4())
+        nodes = [_node_row()]
 
-        for hour in range(6, 12):
-            assert _bucket_hour(hour) == "morning"
+        # Simulate: 5 morning responses on 1 date, 3 evening responses on 2 dates.
+        # The SQL already did COUNT(DISTINCT date) per bucket, so the mock returns:
+        time_rows = [
+            {"bucket": "morning", "session_count": 1},  # 5 responses → 1 distinct date
+            {"bucket": "evening", "session_count": 2},  # 3 responses → 2 distinct dates
+        ]
 
-    def test_bucket_hour_afternoon(self) -> None:
-        from butlers.tools.education.analytics import _bucket_hour
+        conn = _build_snapshot_conn(node_rows=nodes, time_bucket_rows=time_rows)
+        pool = _make_pool_with_conn(conn)
 
-        for hour in range(12, 18):
-            assert _bucket_hour(hour) == "afternoon"
+        metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
+
+        tod = metrics["time_of_day_distribution"]
+        assert tod["morning"] == 1, "5 responses on 1 morning date should count as 1 session"
+        assert tod["afternoon"] == 0, "no afternoon activity"
+        assert tod["evening"] == 2, "3 responses across 2 evening dates should count as 2 sessions"
 
 
 # ---------------------------------------------------------------------------
