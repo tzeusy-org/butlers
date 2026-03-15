@@ -119,6 +119,34 @@ WHERE id = $3 AND received_at = $4
 # ---------------------------------------------------------------------------
 
 
+def _sanitize_replay_payload(payload_dict: dict[str, Any]) -> None:
+    """Fix None-valued fields in stored payloads so they pass IngestEnvelopeV1 validation.
+
+    Older filtered-event rows may store ``normalized_text: null`` and
+    ``policy_tier: null``.  The canonical envelope model requires a non-empty
+    string for ``normalized_text`` and a valid ``PolicyTier`` literal for
+    ``policy_tier``.
+
+    This mutates *payload_dict* in place:
+
+    * ``payload.normalized_text``  — if None, derive from ``payload.raw``
+      (subject / snippet) or fall back to ``"[no text]"``.
+    * ``control.policy_tier``     — if None, remove the key so the Pydantic
+      default (``"default"``) is used.
+    """
+    payload_section = payload_dict.get("payload")
+    if isinstance(payload_section, dict) and payload_section.get("normalized_text") is None:
+        raw = payload_section.get("raw")
+        fallback = ""
+        if isinstance(raw, dict):
+            fallback = raw.get("subject", "") or raw.get("snippet", "") or ""
+        payload_section["normalized_text"] = fallback or "[no text]"
+
+    control_section = payload_dict.get("control")
+    if isinstance(control_section, dict) and control_section.get("policy_tier") is None:
+        control_section.pop("policy_tier", None)
+
+
 async def drain_replay_pending(
     pool: asyncpg.Pool,
     connector_type: str,
@@ -190,6 +218,10 @@ async def drain_replay_pending(
                             continue
                     else:
                         payload_dict = dict(raw_payload)
+
+                    # Sanitize stored payload: older rows may have None values for
+                    # fields that IngestEnvelopeV1 requires as non-None.
+                    _sanitize_replay_payload(payload_dict)
 
                     # Build ingest.v1 envelope by adding schema_version
                     envelope: dict[str, Any] = {"schema_version": "ingest.v1", **payload_dict}
@@ -439,6 +471,14 @@ class FilteredEventBuffer:
         Returns:
             Dict shaped as an ``ingest.v1`` envelope body.
         """
+        payload_section: dict[str, Any] = {"raw": raw}
+        if normalized_text is not None:
+            payload_section["normalized_text"] = normalized_text
+
+        control_section: dict[str, Any] = {}
+        if policy_tier is not None:
+            control_section["policy_tier"] = policy_tier
+
         return {
             "source": {
                 "channel": channel,
@@ -453,11 +493,6 @@ class FilteredEventBuffer:
             "sender": {
                 "identity": sender_identity,
             },
-            "payload": {
-                "raw": raw,
-                "normalized_text": normalized_text,
-            },
-            "control": {
-                "policy_tier": policy_tier,
-            },
+            "payload": payload_section,
+            "control": control_section,
         }

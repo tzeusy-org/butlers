@@ -16,6 +16,7 @@ from butlers.connectors.filtered_event_buffer import (
     _INSERT_SQL,
     _REPLAY_SELECT_SQL,
     _REPLAY_UPDATE_SQL,
+    _sanitize_replay_payload,
     FilteredEventBuffer,
     drain_replay_pending,
 )
@@ -488,7 +489,7 @@ class TestFullPayloadHelper:
             "observed_at": "2026-03-11T10:00:00Z",
         }
 
-    def test_full_payload_optional_fields_default_none(self) -> None:
+    def test_full_payload_optional_fields_omitted_when_none(self) -> None:
         p = FilteredEventBuffer.full_payload(
             channel="email",
             provider="gmail",
@@ -499,8 +500,8 @@ class TestFullPayloadHelper:
             sender_identity="sender@example.com",
             raw={},
         )
-        assert p["payload"]["normalized_text"] is None
-        assert p["control"]["policy_tier"] is None
+        assert "normalized_text" not in p["payload"]
+        assert "policy_tier" not in p["control"]
 
     def test_full_payload_values_are_json_serializable(self) -> None:
         p = _sample_payload()
@@ -666,6 +667,88 @@ class TestDrainReplayPending:
         await drain_replay_pending(pool, "telegram_bot", "tg:bot:123", AsyncMock())
 
         conn.fetch.assert_awaited_once_with(_REPLAY_SELECT_SQL, "telegram_bot", "tg:bot:123")
+
+    async def test_sanitizes_none_normalized_text_and_policy_tier(self) -> None:
+        """Stored payloads with None normalized_text/policy_tier must be sanitized."""
+        row = _make_row()  # default fixture has normalized_text=None, policy_tier=None
+        pool, conn, _ = _make_mock_pool_with_transaction([row])
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        submit_fn.assert_awaited_once()
+        envelope = submit_fn.call_args[0][0]
+        # normalized_text must be a non-empty string, not None
+        assert envelope["payload"]["normalized_text"] is not None
+        assert isinstance(envelope["payload"]["normalized_text"], str)
+        assert len(envelope["payload"]["normalized_text"]) > 0
+        # policy_tier must not be None (either removed or defaulted)
+        assert envelope["control"].get("policy_tier") is not "default" or "policy_tier" not in envelope["control"]  # noqa: E712
+
+    async def test_sanitizes_normalized_text_from_raw_subject(self) -> None:
+        """normalized_text fallback extracts subject from raw payload."""
+        payload = json.dumps({
+            "source": {"channel": "email", "provider": "gmail", "endpoint_identity": "x"},
+            "event": {
+                "external_event_id": "msg-001",
+                "external_thread_id": None,
+                "observed_at": "2026-03-11T10:00:00Z",
+            },
+            "sender": {"identity": "sender@example.com"},
+            "payload": {"raw": {"subject": "Hello World"}, "normalized_text": None},
+            "control": {"policy_tier": None},
+        })
+        row = _make_row(full_payload=payload)
+        pool, conn, _ = _make_mock_pool_with_transaction([row])
+        submit_fn = AsyncMock()
+
+        await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", submit_fn)
+
+        envelope = submit_fn.call_args[0][0]
+        assert envelope["payload"]["normalized_text"] == "Hello World"
+
+
+class TestSanitizeReplayPayload:
+    """Unit tests for _sanitize_replay_payload."""
+
+    def test_fills_normalized_text_fallback_when_none(self) -> None:
+        payload = {"payload": {"raw": {}, "normalized_text": None}, "control": {}}
+        _sanitize_replay_payload(payload)
+        assert payload["payload"]["normalized_text"] == "[no text]"
+
+    def test_extracts_subject_from_raw(self) -> None:
+        payload = {
+            "payload": {"raw": {"subject": "Test Subject"}, "normalized_text": None},
+            "control": {},
+        }
+        _sanitize_replay_payload(payload)
+        assert payload["payload"]["normalized_text"] == "Test Subject"
+
+    def test_extracts_snippet_from_raw(self) -> None:
+        payload = {
+            "payload": {"raw": {"snippet": "Preview text"}, "normalized_text": None},
+            "control": {},
+        }
+        _sanitize_replay_payload(payload)
+        assert payload["payload"]["normalized_text"] == "Preview text"
+
+    def test_removes_none_policy_tier(self) -> None:
+        payload = {"payload": {"normalized_text": "ok"}, "control": {"policy_tier": None}}
+        _sanitize_replay_payload(payload)
+        assert "policy_tier" not in payload["control"]
+
+    def test_preserves_valid_values(self) -> None:
+        payload = {
+            "payload": {"raw": {}, "normalized_text": "existing text"},
+            "control": {"policy_tier": "interactive"},
+        }
+        _sanitize_replay_payload(payload)
+        assert payload["payload"]["normalized_text"] == "existing text"
+        assert payload["control"]["policy_tier"] == "interactive"
+
+    def test_handles_missing_sections(self) -> None:
+        payload: dict = {}
+        _sanitize_replay_payload(payload)  # should not raise
 
     async def test_outer_db_error_does_not_raise(self) -> None:
         mock_pool = MagicMock()
