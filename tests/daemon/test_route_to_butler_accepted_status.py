@@ -68,6 +68,7 @@ def _make_switchboard_dir(tmp_path: Path) -> Path:
 def _patch_infra():
     """Return a dict of patches for all infrastructure dependencies."""
     mock_pool = AsyncMock()
+    mock_pool.fetchval.return_value = None
 
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()

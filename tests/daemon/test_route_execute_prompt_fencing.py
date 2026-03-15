@@ -77,6 +77,7 @@ def _make_butler_toml(
 
 def _patch_infra():
     mock_pool = AsyncMock()
+    mock_pool.fetchval.return_value = None
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)

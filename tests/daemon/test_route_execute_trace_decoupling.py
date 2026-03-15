@@ -95,6 +95,7 @@ def _make_butler_toml(
 def _patch_infra(butler_name: str = "health"):
     mock_conn = AsyncMock()
     mock_pool = MagicMock()
+    mock_pool.fetchval = AsyncMock(return_value=None)
     acquire_ctx = AsyncMock()
     acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
     acquire_ctx.__aexit__ = AsyncMock(return_value=None)

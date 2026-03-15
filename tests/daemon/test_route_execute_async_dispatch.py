@@ -75,6 +75,8 @@ def _make_butler_toml(
 
 def _patch_infra(butler_name: str = "health"):
     mock_pool = AsyncMock()
+    # Default fetchval returns None (no existing session for dedup checks)
+    mock_pool.fetchval.return_value = None
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
@@ -270,6 +272,62 @@ class TestRouteExecuteAcceptPhase:
         trigger_allowed.set()
         # Give background task time to run
         await asyncio.sleep(0.1)
+
+
+# ---------------------------------------------------------------------------
+# 1b. Dedup guard: rejects duplicate request_ids with successful sessions
+# ---------------------------------------------------------------------------
+
+
+class TestRouteExecuteDedup:
+    """Verify route.execute rejects duplicate request_ids that already succeeded."""
+
+    async def test_dedup_skips_when_successful_session_exists(self, tmp_path: Path) -> None:
+        """route.execute returns dedup=True when a successful session exists."""
+        patches = _patch_infra("health")
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        existing_session_id = uuid.uuid4()
+        # Simulate an existing successful session for this request_id
+        patches["mock_pool"].fetchval.return_value = existing_session_id
+
+        mock_insert = AsyncMock(return_value=uuid.uuid4())
+        with patch("butlers.daemon.route_inbox_insert", mock_insert):
+            result = await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={"prompt": "Run health check."},
+            )
+
+        assert result["status"] == "accepted"
+        assert result.get("dedup") is True
+        assert result["existing_session_id"] == str(existing_session_id)
+        # route_inbox_insert must NOT be called when dedup fires
+        mock_insert.assert_not_awaited()
+
+    async def test_dedup_allows_when_no_prior_session(self, tmp_path: Path) -> None:
+        """route.execute proceeds normally when no prior successful session exists."""
+        patches = _patch_infra("health")
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        # fetchval returns None (no existing session) — default from _patch_infra
+        inserted_id = uuid.uuid4()
+        with patch(
+            "butlers.daemon.route_inbox_insert", new_callable=AsyncMock, return_value=inserted_id
+        ):
+            result = await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={"prompt": "Run health check."},
+            )
+
+        assert result["status"] == "accepted"
+        assert result.get("dedup") is None
+        assert "inbox_id" in result
 
 
 # ---------------------------------------------------------------------------

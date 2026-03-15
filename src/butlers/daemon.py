@@ -1547,6 +1547,7 @@ class ButlerDaemon:
                         )
 
             routing_failed = False
+            _routing_error_detail: str | None = None
             try:
                 result = await pipeline.process(
                     message_text=ref.message_text,
@@ -1567,12 +1568,34 @@ class ButlerDaemon:
                 )
                 if result.classification_error or result.routing_error or result.failed_targets:
                     routing_failed = True
-            except Exception:
+                    _parts = [
+                        p for p in [result.classification_error, result.routing_error] if p
+                    ]
+                    if result.failed_targets:
+                        _parts.append(f"failed_targets: {result.failed_targets}")
+                    _routing_error_detail = "; ".join(_parts) if _parts else "routing failed"
+            except Exception as _buf_exc:
                 routing_failed = True
+                _routing_error_detail = f"{type(_buf_exc).__name__}: {_buf_exc}"
                 logger.exception(
                     "DurableBuffer: pipeline processing failed for request_id=%s",
                     ref.request_id,
                 )
+
+            # Mark the ingestion event as failed so it appears in the dashboard
+            # and can be replayed.
+            if routing_failed:
+                try:
+                    from butlers.core.ingestion_events import ingestion_event_mark_failed
+
+                    await ingestion_event_mark_failed(
+                        pool, ref.request_id, _routing_error_detail
+                    )
+                except Exception:
+                    logger.warning(
+                        "DurableBuffer: failed to mark ingestion event failed for request_id=%s",
+                        ref.request_id,
+                    )
 
             # Fire ✅ or 👾 reaction after pipeline processing (telegram_bot only).
             if channel == "telegram_bot" and telegram_mod is not None:
@@ -2549,6 +2572,34 @@ class ButlerDaemon:
                         message="route.execute: database pool is not available",
                     )
 
+                # --- Dedup guard: reject if a session already succeeded for this request_id ---
+                existing_session = await pool.fetchval(
+                    """
+                    SELECT id FROM sessions
+                    WHERE request_id = $1
+                      AND trigger_source = 'route'
+                      AND success = true
+                      AND started_at > now() - interval '24 hours'
+                    LIMIT 1
+                    """,
+                    route_request_id,
+                )
+                if existing_session is not None:
+                    logger.info(
+                        "route.execute: dedup — skipping request_id=%s, "
+                        "already has successful session %s",
+                        route_request_id,
+                        existing_session,
+                    )
+                    return {
+                        "schema_version": "route_response.v1",
+                        "status": "accepted",
+                        "request_context": route_context,
+                        "timing": {"duration_ms": 0},
+                        "dedup": True,
+                        "existing_session_id": str(existing_session),
+                    }
+
                 accept_started_at = time.monotonic()
                 try:
                     inbox_id = await route_inbox_insert(pool, route_envelope=route_payload)
@@ -3114,6 +3165,7 @@ class ButlerDaemon:
                             )
 
                 routing_failed = False
+                _routing_error_detail: str | None = None
                 try:
                     result = await pipeline.process(
                         message_text=message_text,
@@ -3134,12 +3186,38 @@ class ButlerDaemon:
                     )
                     if result.classification_error or result.routing_error or result.failed_targets:
                         routing_failed = True
-                except Exception:
+                        _parts = [
+                            p
+                            for p in [result.classification_error, result.routing_error]
+                            if p
+                        ]
+                        if result.failed_targets:
+                            _parts.append(f"failed_targets: {result.failed_targets}")
+                        _routing_error_detail = (
+                            "; ".join(_parts) if _parts else "routing failed"
+                        )
+                except Exception as _proc_exc:
                     routing_failed = True
+                    _routing_error_detail = f"{type(_proc_exc).__name__}: {_proc_exc}"
                     logger.exception(
                         "Background pipeline processing failed for request_id=%s",
                         request_id,
                     )
+
+                # Mark the ingestion event as failed so it appears in the dashboard
+                # and can be replayed.
+                if routing_failed:
+                    try:
+                        from butlers.core.ingestion_events import ingestion_event_mark_failed
+
+                        await ingestion_event_mark_failed(
+                            pool, request_id, _routing_error_detail
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Ingest: failed to mark ingestion event failed for request_id=%s",
+                            request_id,
+                        )
 
                 # Fire ✅ or 👾 reaction after pipeline processing (telegram only).
                 if _telegram_mod is not None:
@@ -4086,7 +4164,7 @@ class ButlerDaemon:
                     }
 
             client = daemon.switchboard_client
-            if client is None:
+            if client is None and butler_name != "switchboard":
                 return {
                     "status": "error",
                     "error": ("Switchboard is not connected. Cannot deliver notification."),
@@ -4174,16 +4252,29 @@ class ButlerDaemon:
                             },
                         }
                         try:
-                            await asyncio.wait_for(
-                                client.call_tool(
-                                    "deliver",
-                                    {
-                                        "source_butler": butler_name,
-                                        "notify_request": owner_notify_request,
-                                    },
-                                ),
-                                timeout=15,
-                            )
+                            if client is not None:
+                                await asyncio.wait_for(
+                                    client.call_tool(
+                                        "deliver",
+                                        {
+                                            "source_butler": butler_name,
+                                            "notify_request": owner_notify_request,
+                                        },
+                                    ),
+                                    timeout=15,
+                                )
+                            elif butler_name == "switchboard":
+                                _owner_pool = daemon.db.pool if daemon.db is not None else None
+                                if _owner_pool is not None:
+                                    from butlers.tools.switchboard.notification.deliver import (
+                                        deliver as _sw_deliver,
+                                    )
+
+                                    await _sw_deliver(
+                                        _owner_pool,
+                                        source_butler=butler_name,
+                                        notify_request=owner_notify_request,
+                                    )
                         except Exception as _owner_exc:  # noqa: BLE001
                             logger.warning(
                                 "notify() failed to alert owner about missing identifier: %s",
@@ -4295,6 +4386,37 @@ class ButlerDaemon:
                 "source_butler": butler_name,
                 "notify_request": notify_request,
             }
+
+            # Switchboard self-delivery: call deliver() directly instead of
+            # proxying through switchboard_client (which is None on switchboard).
+            if client is None and butler_name == "switchboard":
+                pool = daemon.db.pool if daemon.db is not None else None
+                if pool is None:
+                    return {
+                        "status": "error",
+                        "error": "Database not available for direct delivery.",
+                    }
+                from butlers.tools.switchboard.notification.deliver import (
+                    deliver as switchboard_deliver,
+                )
+
+                try:
+                    result = await switchboard_deliver(
+                        pool,
+                        source_butler=butler_name,
+                        notify_request=notify_request,
+                    )
+                    status = result.get("status", "sent")
+                    if status == "failed":
+                        return {"status": "error", "error": result.get("error", "Delivery failed")}
+                    return {"status": "ok", "result": result}
+                except Exception as exc:
+                    logger.warning(
+                        "notify() direct deliver failed for switchboard: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    return {"status": "error", "error": f"Direct delivery failed: {exc}"}
 
             _NOTIFY_TIMEOUT_S = 30
             try:
