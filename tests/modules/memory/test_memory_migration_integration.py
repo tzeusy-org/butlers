@@ -629,3 +629,257 @@ class TestMigrationIdempotency:
         # Spot-check: table and row count remain intact.
         count = await pool.fetchval("SELECT COUNT(*) FROM memory_policies")
         assert count == 8, f"Row count changed after second migration run: {count}"
+
+
+# ---------------------------------------------------------------------------
+# 5. mem_022 schema: embedding_versions table and memory_events enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestMem022EmbeddingVersionsTable:
+    """Verify embedding_versions table created by mem_022 exists with correct schema."""
+
+    async def test_embedding_versions_table_exists(self, memory_pool) -> None:
+        """embedding_versions table must exist after full migration chain."""
+        rows = await memory_pool.fetch(
+            """
+            SELECT tablename FROM pg_tables
+            WHERE schemaname = $1 AND tablename = 'embedding_versions'
+            """,
+            _TEST_BUTLER_SCHEMA,
+        )
+        assert len(rows) == 1, (
+            "embedding_versions table missing after mem_022 — check 022_events_enrichment.py"
+        )
+
+    async def test_embedding_versions_has_required_columns(self, memory_pool) -> None:
+        """embedding_versions has id, model_name, dimension, active, created_at columns."""
+        cols = await _get_columns(memory_pool, "embedding_versions")
+        for col in ("id", "model_name", "dimension", "description", "active", "created_at"):
+            assert col in cols, f"embedding_versions.{col} missing — check mem_022 migration"
+
+    async def test_embedding_versions_dimension_is_integer(self, memory_pool) -> None:
+        """embedding_versions.dimension is an integer column."""
+        dtype = await _get_column_type(memory_pool, "embedding_versions", "dimension")
+        assert dtype == "integer", (
+            f"Expected integer for embedding_versions.dimension, got {dtype!r}"
+        )
+
+    async def test_embedding_versions_active_is_boolean(self, memory_pool) -> None:
+        """embedding_versions.active is a boolean column."""
+        dtype = await _get_column_type(memory_pool, "embedding_versions", "active")
+        assert dtype == "boolean", f"Expected boolean for embedding_versions.active, got {dtype!r}"
+
+    async def test_embedding_versions_has_seed_row(self, memory_pool) -> None:
+        """embedding_versions contains exactly one seeded row after full chain."""
+        count = await memory_pool.fetchval("SELECT COUNT(*) FROM embedding_versions")
+        assert count == 1, (
+            f"Expected 1 seed row in embedding_versions, got {count} — check mem_022 INSERT"
+        )
+
+    async def test_embedding_versions_seed_model_name(self, memory_pool) -> None:
+        """The seeded model is all-MiniLM-L6-v2 with dimension 384."""
+        row = await memory_pool.fetchrow(
+            "SELECT model_name, dimension, active FROM embedding_versions LIMIT 1"
+        )
+        assert row is not None, "No rows found in embedding_versions"
+        assert row["model_name"] == "all-MiniLM-L6-v2", (
+            f"Expected model_name='all-MiniLM-L6-v2', got {row['model_name']!r}"
+        )
+        assert row["dimension"] == 384, f"Expected dimension=384, got {row['dimension']!r}"
+        assert row["active"] is True, f"Seed row active should be True, got {row['active']!r}"
+
+
+class TestMem022MemoryEventsEnrichmentColumns:
+    """Verify memory_events enrichment columns added by mem_022 exist with correct types."""
+
+    async def test_memory_events_has_enrichment_columns(self, memory_pool) -> None:
+        """memory_events has request_id, memory_type, memory_id, actor_butler (mem_022)."""
+        cols = await _get_columns(memory_pool, "memory_events")
+        for col in ("request_id", "memory_type", "memory_id", "actor_butler"):
+            assert col in cols, f"memory_events.{col} missing — check 022_events_enrichment.py"
+
+    async def test_memory_events_request_id_is_text(self, memory_pool) -> None:
+        """memory_events.request_id is a nullable TEXT column."""
+        dtype = await _get_column_type(memory_pool, "memory_events", "request_id")
+        assert dtype == "text", f"Expected text for memory_events.request_id, got {dtype!r}"
+
+    async def test_memory_events_memory_type_is_text(self, memory_pool) -> None:
+        """memory_events.memory_type is a nullable TEXT column."""
+        dtype = await _get_column_type(memory_pool, "memory_events", "memory_type")
+        assert dtype == "text", f"Expected text for memory_events.memory_type, got {dtype!r}"
+
+    async def test_memory_events_memory_id_is_uuid(self, memory_pool) -> None:
+        """memory_events.memory_id is a nullable UUID column."""
+        dtype = await _get_column_type(memory_pool, "memory_events", "memory_id")
+        assert dtype == "uuid", f"Expected uuid for memory_events.memory_id, got {dtype!r}"
+
+    async def test_memory_events_actor_butler_is_text(self, memory_pool) -> None:
+        """memory_events.actor_butler is a nullable TEXT column."""
+        dtype = await _get_column_type(memory_pool, "memory_events", "actor_butler")
+        assert dtype == "text", f"Expected text for memory_events.actor_butler, got {dtype!r}"
+
+    async def test_memory_events_actor_butler_index_exists(self, memory_pool) -> None:
+        """Partial index idx_memory_events_actor_butler_type exists on memory_events."""
+        row = await memory_pool.fetchrow(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE schemaname = $1
+              AND tablename  = 'memory_events'
+              AND indexname  = 'idx_memory_events_actor_butler_type'
+            """,
+            _TEST_BUTLER_SCHEMA,
+        )
+        assert row is not None, (
+            "idx_memory_events_actor_butler_type index missing — check mem_022 migration"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 6. Schema-vs-code drift detection
+#    These tests verify that the live schema matches what the runtime code
+#    in storage.py and consolidation.py expects.  A failure here means a
+#    migration was added/removed without updating the corresponding code
+#    (or vice-versa), catching the class of bug described in the
+#    memory-residual-gaps openspec.
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaVsCodeDrift:
+    """Verify the live schema matches what runtime code expects.
+
+    Each test reads the actual column set from information_schema and checks
+    that the column names referenced in the storage / consolidation source code
+    exist in the real DB.  This prevents 'accepted-but-not-persisted' bugs
+    (gap class exemplified by episode retention_class being omitted from INSERT).
+    """
+
+    async def test_episodes_columns_match_store_episode_insert(
+        self, memory_pool, embedding_engine
+    ) -> None:
+        """store_episode INSERT columns all exist in the live episodes schema."""
+        # Write a row to exercise the real INSERT path.
+        ep_id = await store_episode(
+            memory_pool,
+            "Drift detection episode.",
+            "drift-butler",
+            embedding_engine,
+            tenant_id="drift-tenant",
+            request_id="drift-req-001",
+            retention_class="operational",
+            sensitivity="normal",
+        )
+        # Verify each explicitly-set column round-trips correctly.
+        row = await memory_pool.fetchrow(
+            """
+            SELECT tenant_id, request_id, retention_class, sensitivity
+            FROM episodes WHERE id = $1
+            """,
+            ep_id,
+        )
+        assert row is not None, "Episode row not found — INSERT may have failed silently"
+        assert row["tenant_id"] == "drift-tenant", (
+            "episodes.tenant_id drift: value not persisted by store_episode"
+        )
+        assert row["request_id"] == "drift-req-001", (
+            "episodes.request_id drift: value not persisted by store_episode"
+        )
+        assert row["retention_class"] == "operational", (
+            "episodes.retention_class drift: value not persisted by store_episode"
+        )
+        assert row["sensitivity"] == "normal", (
+            "episodes.sensitivity drift: value not persisted by store_episode"
+        )
+
+    async def test_facts_columns_match_store_fact_insert(
+        self, memory_pool, embedding_engine
+    ) -> None:
+        """store_fact INSERT columns all exist in the live facts schema."""
+        fact_id = await store_fact(
+            memory_pool,
+            "drift-subject",
+            "drift-predicate",
+            "drift-value",
+            embedding_engine,
+            tenant_id="drift-tenant",
+            request_id="drift-req-002",
+            retention_class="financial_log",
+            sensitivity="pii",
+        )
+        row = await memory_pool.fetchrow(
+            """
+            SELECT tenant_id, request_id, retention_class, sensitivity
+            FROM facts WHERE id = $1
+            """,
+            fact_id,
+        )
+        assert row is not None, "Fact row not found — INSERT may have failed silently"
+        assert row["tenant_id"] == "drift-tenant", (
+            "facts.tenant_id drift: value not persisted by store_fact"
+        )
+        assert row["request_id"] == "drift-req-002", (
+            "facts.request_id drift: value not persisted by store_fact"
+        )
+        assert row["retention_class"] == "financial_log", (
+            "facts.retention_class drift: value not persisted by store_fact"
+        )
+        assert row["sensitivity"] == "pii", (
+            "facts.sensitivity drift: value not persisted by store_fact"
+        )
+
+    async def test_rules_columns_match_store_rule_insert(
+        self, memory_pool, embedding_engine
+    ) -> None:
+        """store_rule INSERT columns all exist in the live rules schema."""
+        rule_id = await store_rule(
+            memory_pool,
+            "Drift detection rule.",
+            embedding_engine,
+            tenant_id="drift-tenant",
+            request_id="drift-req-003",
+            retention_class="rule",
+            sensitivity="normal",
+        )
+        row = await memory_pool.fetchrow(
+            """
+            SELECT tenant_id, request_id, retention_class, sensitivity
+            FROM rules WHERE id = $1
+            """,
+            rule_id,
+        )
+        assert row is not None, "Rule row not found — INSERT may have failed silently"
+        assert row["tenant_id"] == "drift-tenant", (
+            "rules.tenant_id drift: value not persisted by store_rule"
+        )
+        assert row["request_id"] == "drift-req-003", (
+            "rules.request_id drift: value not persisted by store_rule"
+        )
+        assert row["retention_class"] == "rule", (
+            "rules.retention_class drift: value not persisted by store_rule"
+        )
+        assert row["sensitivity"] == "normal", (
+            "rules.sensitivity drift: value not persisted by store_rule"
+        )
+
+    async def test_consolidation_lease_columns_exist_in_live_schema(self, memory_pool) -> None:
+        """Consolidation state machine columns referenced in consolidation.py exist in DB.
+
+        run_consolidation() reads/writes: leased_until, leased_by, consolidation_status,
+        consolidation_attempts, next_consolidation_retry_at, dead_letter_reason,
+        last_consolidation_error.  A missing column here would cause a live SQL error.
+        """
+        cols = await _get_columns(memory_pool, "episodes")
+        consolidation_cols = (
+            "leased_until",
+            "leased_by",
+            "consolidation_status",
+            "consolidation_attempts",
+            "next_consolidation_retry_at",
+            "dead_letter_reason",
+            "last_consolidation_error",
+        )
+        for col in consolidation_cols:
+            assert col in cols, (
+                f"episodes.{col} missing from live schema — "
+                f"consolidation.py references this column but migration doesn't add it"
+            )
