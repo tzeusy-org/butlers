@@ -10,7 +10,7 @@ import { ScheduleForm } from "@/components/schedules/ScheduleForm";
 // The Select wrapper captures onValueChange; SelectTrigger renders as <select>
 // and propagates changes up through a custom DOM event.
 vi.mock("@/components/ui/select", () => ({
-  Select: ({ children, onValueChange, defaultValue }: { children: ReactNode; onValueChange?: (v: string) => void; defaultValue?: string }) => (
+  Select: ({ children, onValueChange }: { children: ReactNode; onValueChange?: (v: string) => void; defaultValue?: string }) => (
     <div
       data-testid="select-wrapper"
       data-on-value-change={onValueChange ? "true" : "false"}
