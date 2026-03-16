@@ -305,7 +305,7 @@ Butlers use a contiguous port range starting at 41100, with the dashboard API cl
 #### Scenario: Butler port assignments
 - **WHEN** butlers are running
 - **THEN** ports are assigned as: switchboard=41100, general=41101, relationship=41102, health=41103, messenger=41104, finance=41105, travel=41106
-- **AND** the dashboard API runs at port 40200, cleanly separated from the butler MCP port range
+- **AND** the dashboard API runs at port 41200, cleanly separated from the butler MCP port range
 - **AND** new butlers are assigned the next available port in the 401xx range
 
 ### Requirement: Module Runtime State

@@ -313,7 +313,7 @@ butlers list
 
 Access points:
 - Butler MCP servers on their configured ports (41100-41199)
-- Dashboard API on port 40200
+- Dashboard API on port 41200
 - Grafana Tempo for distributed tracing (external Alloy endpoint)
 
 ### Dashboard (Frontend)
@@ -322,13 +322,13 @@ The web dashboard provides real-time monitoring and management of all butlers. I
 
 ```bash
 # 1. Start the Dashboard API (requires PostgreSQL)
-uv run butlers dashboard --port 40200
+uv run butlers dashboard --port 41200
 
 # 2. Start the frontend dev server (in another terminal)
 cd frontend && npm install && npm run dev
 ```
 
-The dashboard will be available at `http://localhost:40173`.
+The dashboard will be available at `http://localhost:41173`.
 
 Alternatively, use Docker Compose with the `dev` profile to run everything together:
 
@@ -336,7 +336,7 @@ Alternatively, use Docker Compose with the `dev` profile to run everything toget
 docker compose --profile dev up
 ```
 
-This starts PostgreSQL, the Dashboard API (port 40200), and the Vite dev server (port 40173).
+This starts PostgreSQL, the Dashboard API (port 41200), and the Vite dev server (port 41173).
 
 ### Production
 
@@ -368,8 +368,8 @@ Each butler service mounts its config directory read-only from `butlers/<name>/`
 | Relationship  | 41102 | Contacts, interactions, gifts, activity feed           |
 | Health        | 41103 | Measurements, medications, conditions, symptoms        |
 | Messenger     | 41104 | Delivery relay — Telegram and email channel outputs    |
-| Dashboard API | 40200 | Web UI backend for monitoring and managing butlers     |
-| Frontend      | 40173 | Vite dev server (development only)                     |
+| Dashboard API | 41200 | Web UI backend for monitoring and managing butlers     |
+| Frontend      | 41173 | Vite dev server (development only)                     |
 | PostgreSQL    | 5432 | Shared database server (one DB, per-butler schemas)    |
 
 **Note:** OTLP HTTP traces (port 4318) are sent to an external Alloy instance (not exposed locally).

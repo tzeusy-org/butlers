@@ -109,14 +109,14 @@ FROM session_process_logs WHERE session_id = '<session-id>';
 
 ### Step 6: Query via Dashboard API
 
-If the dashboard is running (port 40200):
+If the dashboard is running (port 41200):
 
 ```bash
 # Single session detail (includes process_log if available)
-curl -s http://localhost:40200/api/butlers/<butler-name>/sessions/<session-id> | python3 -m json.tool
+curl -s http://localhost:41200/api/butlers/<butler-name>/sessions/<session-id> | python3 -m json.tool
 
 # Recent sessions for a butler
-curl -s "http://localhost:40200/api/butlers/<butler-name>/sessions?limit=10" | python3 -m json.tool
+curl -s "http://localhost:41200/api/butlers/<butler-name>/sessions?limit=10" | python3 -m json.tool
 ```
 
 ---

@@ -260,7 +260,7 @@ class TestDiscoverButlers:
 
     def test_discover_sorted_by_name(self, tmp_path: Path):
         """Results are sorted alphabetically by directory name."""
-        for name, port in [("zebra", 40200), ("alpha", 40201)]:
+        for name, port in [("zebra", 41200), ("alpha", 40201)]:
             d = tmp_path / name
             d.mkdir()
             (d / "butler.toml").write_text(

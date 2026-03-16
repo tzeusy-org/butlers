@@ -211,7 +211,7 @@ schema = "{name}"
 @click.option(
     "--port",
     type=int,
-    default=40200,
+    default=41200,
     show_default=True,
     help="Port for the dashboard server",
 )

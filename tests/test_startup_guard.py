@@ -40,12 +40,12 @@ class TestRequireGoogleCredentialsOrExit:
         with pytest.raises(SystemExit):
             require_google_credentials_or_exit(
                 caller="gmail-connector",
-                dashboard_url="http://localhost:40200",
+                dashboard_url="http://localhost:41200",
             )
         captured = capsys.readouterr()
         assert "gmail-connector" in captured.err
         assert "STARTUP BLOCKED" in captured.err
-        assert "http://localhost:40200" in captured.err
+        assert "http://localhost:41200" in captured.err
 
 
 class TestGoogleCredentialCheckResult:

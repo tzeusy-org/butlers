@@ -124,7 +124,7 @@ The Google OAuth section of the Secrets page provides the only mechanism to boot
 
 - **WHEN** the operator clicks "Connect Google" (or "Re-connect Google" if already connected)
 - **THEN** the browser navigates to the backend's `/api/oauth/google/start` endpoint
-- **AND** the backend generates a cryptographically random CSRF state token, stores it in an in-memory store with 10-minute TTL, and redirects to Google's authorization URL with parameters: client_id (from DB), redirect_uri (from env or default `http://localhost:40200/api/oauth/google/callback`), response_type=code, scope (gmail.readonly, gmail.modify, calendar, contacts, contacts.readonly, contacts.other.readonly, directory.readonly), access_type=offline, prompt=consent, state
+- **AND** the backend generates a cryptographically random CSRF state token, stores it in an in-memory store with 10-minute TTL, and redirects to Google's authorization URL with parameters: client_id (from DB), redirect_uri (from env or default `http://localhost:41200/api/oauth/google/callback`), response_type=code, scope (gmail.readonly, gmail.modify, calendar, contacts, contacts.readonly, contacts.other.readonly, directory.readonly), access_type=offline, prompt=consent, state
 - **AND** the "Connect Google" button is disabled until both client_id and client_secret are configured in the Secrets table
 
 #### Scenario: OAuth callback processing

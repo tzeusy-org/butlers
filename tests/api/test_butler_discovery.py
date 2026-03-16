@@ -166,7 +166,7 @@ class TestListUnexpectedErrors:
     async def test_runtime_error_yields_down_not_500(self, app):
         """RuntimeError from MCPClientManager results in status='down'."""
         configs = [
-            ButlerConnectionInfo(name="borked", port=40200, description="Broken butler"),
+            ButlerConnectionInfo(name="borked", port=41200, description="Broken butler"),
         ]
 
         mgr = MagicMock(spec=MCPClientManager)
@@ -185,7 +185,7 @@ class TestListUnexpectedErrors:
         assert len(data) == 1
         assert data[0]["name"] == "borked"
         assert data[0]["status"] == "down"
-        assert data[0]["port"] == 40200
+        assert data[0]["port"] == 41200
 
     async def test_os_error_yields_down_not_500(self, app):
         """OSError from MCPClientManager results in status='down'."""

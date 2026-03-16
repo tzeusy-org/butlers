@@ -227,7 +227,7 @@ class TestCorsPreflightPassthrough:
     """
 
     _CORS_HEADERS = {
-        "Origin": "http://localhost:40173",
+        "Origin": "http://localhost:41173",
         "Access-Control-Request-Method": "GET",
         "Access-Control-Request-Headers": "X-API-Key",
     }
@@ -244,7 +244,7 @@ class TestCorsPreflightPassthrough:
         resp = await _options(
             app,
             "/api/issues",
-            headers={"Origin": "http://localhost:40173", "Access-Control-Request-Method": "GET"},
+            headers={"Origin": "http://localhost:41173", "Access-Control-Request-Method": "GET"},
         )
         assert resp.status_code != 401
 

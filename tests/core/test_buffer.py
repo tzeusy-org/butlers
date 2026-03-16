@@ -1041,7 +1041,7 @@ class TestDaemonIntegration:
                 [
                     "[butler]",
                     'name = "health"',
-                    "port = 40200",
+                    "port = 41200",
                     "[butler.db]",
                     'name = "butlers"',
                     'schema = "health"',

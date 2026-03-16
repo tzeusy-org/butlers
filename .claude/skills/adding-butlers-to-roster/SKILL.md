@@ -133,7 +133,7 @@ full_sync_interval_days = 6
 ```
 
 **Key decisions:**
-- **Port**: Pick the next available port. Active butlers: switchboard=41100, general=41101, relationship=41102, health=41103, messenger=41104. Use 41105+ for new domain butlers (40199 is reserved for infrastructure).
+- **Port**: Pick the next available port. Active butlers: switchboard=41100, general=41101, relationship=41102, health=41103, messenger=41104. Use 41105+ for new domain butlers (41199 is reserved for infrastructure).
 - **Database**: Always `name = "butlers"` (shared DB) with `schema = "<butler-name>"` for per-butler isolation. This is a hard architectural constraint. The DB sets `search_path` to `<schema>, shared, public` so SQL queries resolve tables in butler schema first, then shared, then public.
 - **Schedule**: Two dispatch modes:
   - `prompt` (default): Sends the `prompt` text to a spawned runtime instance.

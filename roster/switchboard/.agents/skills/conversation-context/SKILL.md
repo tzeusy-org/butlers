@@ -125,3 +125,52 @@ Got it! I've noted your electric bill is due tomorrow.
 **Action:** Call `route_to_butler(butler="finance", prompt="What was last month's electric bill amount? (Context: User's electric bill is due tomorrow)")`
 
 **Response:** "Routed to finance butler for bill history query (continuation of bill tracking conversation)."
+
+---
+
+### Example 4: Bare confirmation of a proposed action
+
+**History:**
+```
+**user101** (2026-03-15T13:54:05Z):
+send an email to tze.notifications.dev@gmail.com with the content 'hello world'.
+
+**butler → general** (2026-03-15T13:56:17Z):
+I can do that, but I need a quick confirmation because this request arrived via routed content.
+
+Confirm I should send an email to `tze.notifications.dev@gmail.com` with body: `hello world` (no subject)? Reply "yes" or tell me edits.
+```
+
+**Current message:** "yes"
+
+**Reasoning:** "yes" by itself is meaningless. The history shows the user is confirming a previously proposed email send. Resolve the reference and route with the full resolved action.
+
+**Action:** Call `notify(channel="email", message="hello world", recipient="tze.notifications.dev@gmail.com", intent="send")`
+
+**Response:** "User confirmed the previously proposed email — sent email to tze.notifications.dev@gmail.com with body 'hello world'."
+
+**WRONG approach:** `route_to_butler(butler="general", prompt="yes")` — the target butler has NO history and will not understand what "yes" means.
+
+---
+
+### Example 5: Short reply selecting an option
+
+**History:**
+```
+**user202** (2026-03-15T10:00:00Z):
+What flights do I have coming up?
+
+**butler → travel** (2026-03-15T10:00:10Z):
+You have two upcoming flights:
+1. SQ321 SIN→LHR on March 20
+2. UA456 SFO→NRT on April 3
+Which one would you like details on?
+```
+
+**Current message:** "the first one"
+
+**Reasoning:** "the first one" only makes sense with the history. Resolve the reference before routing.
+
+**Action:** Call `route_to_butler(butler="travel", prompt="Show me details for flight SQ321 SIN→LHR on March 20. (Context: User asked about upcoming flights and selected this one from a list)")`
+
+**Response:** "Routed to travel butler — user selected flight SQ321 from the list."

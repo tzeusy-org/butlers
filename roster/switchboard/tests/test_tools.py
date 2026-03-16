@@ -298,7 +298,7 @@ async def test_route_to_known_butler_success(pool):
     """route calls the target butler and returns the result on success."""
     from butlers.tools.switchboard import register_butler, route
 
-    await register_butler(pool, "target", "http://localhost:40200/sse")
+    await register_butler(pool, "target", "http://localhost:41200/sse")
 
     async def mock_call(endpoint_url, tool_name, args):
         return {"status": "ok", "data": 42}

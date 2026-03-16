@@ -25,7 +25,7 @@ def test_load_config_parses_modules_memory_section(tmp_path: Path) -> None:
     toml = """\
 [butler]
 name = "membot"
-port = 40200
+port = 41200
 
 [modules.memory]
 

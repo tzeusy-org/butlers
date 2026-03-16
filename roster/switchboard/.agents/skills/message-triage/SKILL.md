@@ -240,11 +240,19 @@ For outbound email or telegram delivery, call the `notify` tool instead of `rout
 
 ### Self-Contained Sub-Prompts
 
-Each sub-prompt must be independently understandable. Include:
+Each sub-prompt must be independently understandable **without access to conversation history**. The target butler receives ONLY the `prompt` and `context` you provide — it does NOT see prior turns. Include:
 
 - Relevant entities (people, merchants, amounts, dates)
-- Necessary context from the original message
+- Necessary context from the original message **and from conversation history**
 - The specific action or information for that domain
+
+**Critical: Resolve anaphoric/short replies before routing.** When the current message is a bare confirmation ("yes", "ok", "go ahead"), a short reply ("that one", "the second option"), or otherwise only meaningful in the context of prior conversation, you MUST:
+
+1. Read the conversation history to determine what the user is confirming or referring to
+2. Expand the reference into a fully resolved, self-contained prompt
+3. Never pass the bare reply as-is — the target butler has no history and will not understand it
+
+Example: If history shows the butler asked "Should I send an email to X with body Y?" and the user replies "yes", the routed prompt must be the resolved action (e.g. "Send an email to X with body Y"), NOT the word "yes".
 
 ---
 

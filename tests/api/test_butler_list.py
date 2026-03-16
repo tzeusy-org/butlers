@@ -94,7 +94,7 @@ class TestProbeButler:
 
     async def test_probe_timeout(self, app):
         """Timed-out butler returns status='down'."""
-        info = ButlerConnectionInfo(name="slow", port=40200)
+        info = ButlerConnectionInfo(name="slow", port=41200)
 
         mgr = MagicMock(spec=MCPClientManager)
 

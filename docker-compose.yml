@@ -16,8 +16,8 @@
 #   - general: 41101
 #   - relationship: 41102
 #   - health: 41103
-#   - heartbeat: 40199
-#   - dashboard-api: 40200
+#   - heartbeat: 41199
+#   - dashboard-api: 41200
 #
 # Observability: Grafana/Tempo tracing via LGTM stack (Alloy OTLP endpoint)
 
@@ -127,7 +127,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "40199:40199"
+      - "41199:41199"
     volumes:
       - ./butlers/heartbeat:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -147,10 +147,10 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "40200:40200"
+      - "41200:41200"
     volumes:
       - ./roster:/app/roster:ro
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "40200"]
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -169,9 +169,9 @@ services:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
     ports:
-      - "40173:40173"
+      - "41173:41173"
     environment:
-      - VITE_API_URL=http://dashboard-api:40200
+      - VITE_API_URL=http://dashboard-api:41200
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     depends_on:
       - dashboard-api

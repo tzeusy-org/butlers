@@ -69,7 +69,7 @@ class TestButlerSummaryModel:
         b = ButlerSummary(
             name="heartbeat",
             status="idle",
-            port=40199,
+            port=41199,
             db="butlers",
             modules=[],
             schedule_count=1,

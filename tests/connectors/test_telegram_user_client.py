@@ -2202,7 +2202,7 @@ class TestBuildBatchEnvelopeFraming:
         """Owner is tagged '(owner)' in the Participants line."""
         # endpoint_identity uses numeric format → owner_sender_id is resolvable
         config = TelegramUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             endpoint_identity="telegram:user:123456",
         )
         connector = TelegramUserClientConnector(config)
@@ -2218,7 +2218,7 @@ class TestBuildBatchEnvelopeFraming:
     def test_owner_tagged_in_message_lines(self) -> None:
         """Owner messages are tagged '(owner)' on each message line."""
         config = TelegramUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             endpoint_identity="telegram:user:123456",
         )
         connector = TelegramUserClientConnector(config)
@@ -2230,7 +2230,7 @@ class TestBuildBatchEnvelopeFraming:
     def test_non_owner_messages_not_tagged(self) -> None:
         """Non-owner message lines do not get '(owner)' tag."""
         config = TelegramUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             endpoint_identity="telegram:user:123456",
         )
         connector = TelegramUserClientConnector(config)
@@ -2243,7 +2243,7 @@ class TestBuildBatchEnvelopeFraming:
     def test_owner_tagging_disabled_for_username_identity(self) -> None:
         """Owner tagging is skipped (graceful degrade) when identity uses @username format."""
         config = TelegramUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:40100/sse",
+            switchboard_mcp_url="http://localhost:41100/sse",
             endpoint_identity="telegram:user:@myusername",
         )
         connector = TelegramUserClientConnector(config)

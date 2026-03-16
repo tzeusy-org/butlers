@@ -96,7 +96,7 @@ class TestCheckButlerReachability:
 
     async def test_timeout_returns_critical_issue(self):
         """Timed-out butler generates a critical issue."""
-        info = ButlerConnectionInfo(name="slow", port=40200)
+        info = ButlerConnectionInfo(name="slow", port=41200)
 
         mgr = MagicMock(spec=MCPClientManager)
 
@@ -201,7 +201,7 @@ class TestListIssuesEndpoint:
 
     async def test_timeout_generates_critical_issue(self, app):
         """Timed-out butler generates a critical issue in the endpoint."""
-        configs = [ButlerConnectionInfo(name="slow", port=40200)]
+        configs = [ButlerConnectionInfo(name="slow", port=41200)]
 
         mgr = MagicMock(spec=MCPClientManager)
 

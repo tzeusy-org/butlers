@@ -694,7 +694,7 @@ make test-qg
 
 ### Dev script location + process-clear contract
 - Canonical bootstrap implementation now lives at `scripts/dev.sh`; repository-root `dev.sh` is a compatibility shim that delegates to `scripts/dev.sh`.
-- `scripts/clear-processes.sh` is the canonical pre-bootstrap cleanup helper: by default it targets listeners on `POSTGRES_PORT` (`54320`), `FRONTEND_PORT` (`40173`), and `DASHBOARD_PORT` (`40200`), with explicit override via `EXPECTED_PORTS`.
+- `scripts/clear-processes.sh` is the canonical pre-bootstrap cleanup helper: by default it targets listeners on `POSTGRES_PORT` (`54320`), `FRONTEND_PORT` (`41173`), and `DASHBOARD_PORT` (`41200`), with explicit override via `EXPECTED_PORTS`.
 
 ### Telemetry span concurrency guardrail
 - `src/butlers/core/telemetry.py::tool_span` decorator usage is unsafe if per-invocation span/token state is stored on the decorator instance (`self._span`, `self._token`): concurrent calls to one decorated async handler can trigger OpenTelemetry `Failed to detach context` / `Token ... created in a different Context`.
@@ -702,10 +702,10 @@ make test-qg
 - Track holistic fix in `butlers-978`, including both decorator state isolation and concurrent-session `_active_session_context` parent-lineage hardening.
 
 ### Dev bootstrap tailscale+pipefail guardrail
-- `dev.sh::_tailscale_serve_check` should prefer modern Tailscale CLI syntax (`tailscale serve --yes --bg --https=443 http://localhost:40200`) with legacy positional fallback (`https:443 ...`) for older CLI versions.
+- `dev.sh::_tailscale_serve_check` should prefer modern Tailscale CLI syntax (`tailscale serve --yes --bg --https=443 http://localhost:41200`) with legacy positional fallback (`https:443 ...`) for older CLI versions.
 - `dev.sh` split routing defaults are `TAILSCALE_DASHBOARD_PATH_PREFIX=/butlers` (Vite frontend) and `TAILSCALE_API_PATH_PREFIX=/butlers-api` (dashboard API); non-root path routing uses `tailscale serve --set-path <prefix> ...`.
 - Dashboard mapping should proxy to `http://localhost:${FRONTEND_PORT}${TAILSCALE_DASHBOARD_PATH_PREFIX}` (not bare frontend root) so prefix paths are preserved end-to-end and Vite `--base` assets avoid redirect loops under tailscale path routing.
-- Frontend dev port is configurable via `FRONTEND_PORT` (default `40173`) and should be kept aligned with tailscale dashboard target and the Vite startup command (`--port ... --strictPort`).
+- Frontend dev port is configurable via `FRONTEND_PORT` (default `41173`) and should be kept aligned with tailscale dashboard target and the Vite startup command (`--port ... --strictPort`).
 - `docker/Dockerfile` is the dev-suite image target for `dev.sh`: include `tmux`, `postgresql-client`, Docker CLI + compose plugin, tailscale CLI, Node.js, and global runtime CLIs (`@openai/codex`, `@anthropic-ai/claude-code`, `opencode-ai`) so `dev.sh` can run in-container when host sockets are mounted.
 - Do not discard `tailscale serve` stderr in `dev.sh`; surfaced output is needed to diagnose operator/permission failures (for example `Access denied: serve config denied` and `sudo tailscale set --operator=$USER` remediation).
 - In `dev.sh` with `set -o pipefail`, avoid `grep ... | wc -l || echo 0` inside command substitutions; on no-match this can produce `0\n0` and break integer comparisons.

@@ -703,7 +703,7 @@ class TestApprovalConfig:
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 40200
+port = 41200
 
 [modules.approvals]
 enabled = true
@@ -722,7 +722,7 @@ enabled = true
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 40200
+port = 41200
 
 [modules.approvals]
 enabled = true
@@ -754,7 +754,7 @@ calendar_invite = {}
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 40200
+port = 41200
 
 [modules.approvals]
 enabled = false
@@ -770,7 +770,7 @@ enabled = false
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 40200
+port = 41200
 
 [modules.approvals]
 enabled = true
@@ -790,7 +790,7 @@ enabled = true
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 40200
+port = 41200
 
 [modules.approvals]
 enabled = true
@@ -807,7 +807,7 @@ default_expiry_hours = 48
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 40200
+port = 41200
 
 [modules.approvals]
 enabled = true
@@ -828,7 +828,7 @@ high_risk_action = {expiry_hours = 1}
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 40200
+port = 41200
 
 [modules.approvals]
 enabled = true
@@ -855,7 +855,7 @@ calendar_invite = {}
         toml = """\
 [butler]
 name = "noapprovalsbot"
-port = 40200
+port = 41200
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)

@@ -193,7 +193,7 @@ class SchedulerConfig:
 
     tick_interval_seconds: int = 60
     heartbeat_interval_seconds: int = 120
-    switchboard_url: str = "http://localhost:40200"
+    switchboard_url: str = "http://localhost:41200"
 
 
 @dataclass
@@ -705,7 +705,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
             "Must be a positive integer."
         )
     # Switchboard URL for liveness reporter: env var > toml > default
-    _default_sb_url = os.environ.get("BUTLERS_SWITCHBOARD_URL", "http://localhost:40200")
+    _default_sb_url = os.environ.get("BUTLERS_SWITCHBOARD_URL", "http://localhost:41200")
     switchboard_liveness_url = scheduler_section.get("switchboard_url", _default_sb_url)
     scheduler_config = SchedulerConfig(
         tick_interval_seconds=tick_interval_seconds,

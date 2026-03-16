@@ -31,7 +31,7 @@ The bootstrap flow:
 
 Environment variables:
   GOOGLE_OAUTH_REDIRECT_URI  — Callback URL registered with Google
-                               (default: http://localhost:40200/api/oauth/google/callback)
+                               (default: http://localhost:41200/api/oauth/google/callback)
   OAUTH_DASHBOARD_URL        — Where to redirect after a successful bootstrap
                                (default: not set; returns JSON payload instead)
 
@@ -164,7 +164,7 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
-_DEFAULT_REDIRECT_URI = "http://localhost:40200/api/oauth/google/callback"
+_DEFAULT_REDIRECT_URI = "http://localhost:41200/api/oauth/google/callback"
 _DEFAULT_SCOPES = " ".join(
     [
         "openid",

@@ -125,7 +125,7 @@ def create_app(
     Parameters
     ----------
     cors_origins:
-        Allowed CORS origins. Defaults to ["http://localhost:40173"] for
+        Allowed CORS origins. Defaults to ["http://localhost:41173"] for
         local Vite dev server.
     static_dir:
         Path to the built frontend directory (e.g. ``frontend/dist/``).
@@ -141,7 +141,7 @@ def create_app(
         the environment variable (useful in tests).
     """
     if cors_origins is None:
-        cors_origins = ["http://localhost:40173"]
+        cors_origins = ["http://localhost:41173"]
 
     app = FastAPI(
         title="Butlers Dashboard API",

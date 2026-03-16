@@ -45,7 +45,7 @@ pytestmark = pytest.mark.unit
 _BASE_ENV = {
     "GOOGLE_OAUTH_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
     "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:40200/api/oauth/google/callback",
+    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:41200/api/oauth/google/callback",
 }
 
 _FULL_SCOPES = (

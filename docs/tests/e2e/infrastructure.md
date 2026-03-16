@@ -141,7 +141,7 @@ The port range `41100–41199` is chosen because:
 2. **Below common development ports.** Does not conflict with typical dev server
    ports (3000, 5173, 8000, 8080, 8200, 9000).
 3. **Contiguous and predictable.** Butlers are numbered sequentially from 41100.
-4. **Dashboard lives at 40200.** The dashboard API runs at 40200, cleanly separated
+4. **Dashboard lives at 41200.** The dashboard API runs at 41200, cleanly separated
    from the butler MCP port range.
 
 ### Port Conflict Avoidance

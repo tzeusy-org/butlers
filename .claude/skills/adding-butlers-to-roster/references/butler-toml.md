@@ -80,9 +80,9 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 | health      | 41103 | Domain         | Active  |
 | messenger   | 41104 | Infrastructure | Active  |
 | *next*      | 41105+| Domain         | —       |
-| *(reserved)*| 40199 | Infrastructure | Reserved|
+| *(reserved)*| 41199 | Infrastructure | Reserved|
 
-Port 40199 is reserved for infrastructure butlers. New domain butlers should use 41105+.
+Port 41199 is reserved for infrastructure butlers. New domain butlers should use 41105+.
 
 ## Database Isolation
 

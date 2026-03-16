@@ -17,7 +17,7 @@ The `create_app()` function in `src/butlers/api/app.py` builds the FastAPI appli
 
 #### Scenario: CORS configuration
 - **WHEN** `create_app(cors_origins=None)` is called
-- **THEN** the default CORS origin `http://localhost:40173` (Vite dev server) is used
+- **THEN** the default CORS origin `http://localhost:41173` (Vite dev server) is used
 - **AND** all methods and headers are allowed with credentials enabled
 
 #### Scenario: Router registration order

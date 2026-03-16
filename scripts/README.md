@@ -26,13 +26,13 @@ Kills processes currently listening on the expected local dev ports.
 
 Default ports:
 - `POSTGRES_PORT` (default `54320`)
-- `FRONTEND_PORT` (default `40173`)
-- `DASHBOARD_PORT` (default `40200`)
+- `FRONTEND_PORT` (default `41173`)
+- `DASHBOARD_PORT` (default `41200`)
 
 You can override with `EXPECTED_PORTS` (comma/space separated), for example:
 
 ```bash
-EXPECTED_PORTS="54320,40173,40200" ./scripts/clear-processes.sh
+EXPECTED_PORTS="54320,41173,41200" ./scripts/clear-processes.sh
 ```
 
 ## cleanup_logs.sh

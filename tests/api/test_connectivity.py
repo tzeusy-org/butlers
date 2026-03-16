@@ -5,10 +5,10 @@ FastAPI backend:
 
 1. The /api/health endpoint returns {"status": "ok"} (simulating what the
    frontend proxy would forward to the backend).
-2. The Vite proxy config targets the correct backend port (40200).
+2. The Vite proxy config targets the correct backend port (41200).
 3. The frontend API client defaults to "/api" as its base URL, matching the
    proxy path prefix.
-4. CORS headers allow the Vite dev server origin (localhost:40173).
+4. CORS headers allow the Vite dev server origin (localhost:41173).
 """
 
 import re
@@ -60,15 +60,15 @@ class TestViteProxyConfig:
         """vite.config.ts must exist in the frontend directory."""
         assert VITE_CONFIG_PATH.is_file(), f"Missing {VITE_CONFIG_PATH}"
 
-    def test_proxy_targets_port_40200(self, app):
-        """The /api proxy target must point to localhost:40200."""
+    def test_proxy_targets_port_41200(self, app):
+        """The /api proxy target must point to localhost:41200."""
         content = VITE_CONFIG_PATH.read_text()
-        # Match the proxy target URL — expect http://localhost:40200
+        # Match the proxy target URL — expect http://localhost:41200
         match = re.search(r'target:\s*["\']([^"\']+)["\']', content)
         assert match, "Could not find proxy target in vite.config.ts"
         target_url = match.group(1)
-        assert "localhost:40200" in target_url, (
-            f"Proxy target should be localhost:40200, got {target_url}"
+        assert "localhost:41200" in target_url, (
+            f"Proxy target should be localhost:41200, got {target_url}"
         )
 
     def test_proxy_path_prefix_is_api(self, app):
@@ -108,21 +108,21 @@ class TestCORSForViteDevServer:
     """Verify CORS headers allow the Vite dev server origin."""
 
     async def test_cors_preflight_allows_vite_origin(self, app):
-        """CORS preflight from http://localhost:40173 must be allowed."""
+        """CORS preflight from http://localhost:41173 must be allowed."""
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.options(
                 "/api/health",
                 headers={
-                    "origin": "http://localhost:40173",
+                    "origin": "http://localhost:41173",
                     "access-control-request-method": "GET",
                     "access-control-request-headers": "content-type",
                 },
             )
 
         assert response.status_code == 200
-        assert response.headers.get("access-control-allow-origin") == "http://localhost:40173"
+        assert response.headers.get("access-control-allow-origin") == "http://localhost:41173"
 
     async def test_cors_allows_json_content_type_header(self, app):
         """CORS must allow the Content-Type header the frontend sends."""
@@ -132,7 +132,7 @@ class TestCORSForViteDevServer:
             response = await client.options(
                 "/api/health",
                 headers={
-                    "origin": "http://localhost:40173",
+                    "origin": "http://localhost:41173",
                     "access-control-request-method": "GET",
                     "access-control-request-headers": "content-type,accept",
                 },
@@ -152,8 +152,8 @@ class TestCORSForViteDevServer:
         ) as client:
             response = await client.get(
                 "/api/health",
-                headers={"origin": "http://localhost:40173"},
+                headers={"origin": "http://localhost:41173"},
             )
 
         assert response.status_code == 200
-        assert response.headers.get("access-control-allow-origin") == "http://localhost:40173"
+        assert response.headers.get("access-control-allow-origin") == "http://localhost:41173"
