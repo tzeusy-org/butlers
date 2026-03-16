@@ -837,7 +837,7 @@ export default function EntityDetailPage() {
                     Source Provenance
                   </p>
                   <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-                    {entity.metadata.source_butler && (
+                    {!!entity.metadata.source_butler && (
                       <span>
                         Butler:{" "}
                         <span className="text-foreground font-medium">
@@ -845,7 +845,7 @@ export default function EntityDetailPage() {
                         </span>
                       </span>
                     )}
-                    {entity.metadata.source_scope && (
+                    {!!entity.metadata.source_scope && (
                       <span>
                         Scope:{" "}
                         <span className="text-foreground font-medium">

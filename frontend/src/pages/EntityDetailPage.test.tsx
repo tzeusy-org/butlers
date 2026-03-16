@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router";
 
 import EntityDetailPage from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
+import type { EntityDetail } from "@/api/types";
 
 // Mock react-router's useParams so we can control the entityId
 vi.mock("react-router", async (importOriginal) => {
@@ -36,7 +37,7 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 type UseEntityResult = ReturnType<typeof useEntity>;
 
-const BASE_ENTITY = {
+const BASE_ENTITY: EntityDetail = {
   id: "entity-001",
   canonical_name: "Test Owner",
   entity_type: "person",
@@ -55,7 +56,7 @@ const BASE_ENTITY = {
   entity_info: [],
 };
 
-function setEntityState(entity: typeof BASE_ENTITY | null, opts: Partial<UseEntityResult> = {}) {
+function setEntityState(entity: EntityDetail | null, opts: Partial<UseEntityResult> = {}) {
   vi.mocked(useEntity).mockReturnValue({
     data: entity ? { data: entity } : undefined,
     isLoading: false,
