@@ -993,7 +993,13 @@ async def set_linked_contact(
     body: _LinkContactRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict:
-    """Link a contact to this entity by setting entity_id on the contact."""
+    """Link a contact to this entity by setting entity_id on the contact.
+
+    After linking, migrates any existing contact-scoped facts (stored with
+    ``subject = 'contact:{cid}'`` or legacy bare-UUID ``subject = '{cid}'``)
+    to the entity by setting their ``entity_id`` column.  This ensures facts
+    created before entity promotion are visible on the entity detail page.
+    """
     import uuid as _uuid
 
     pool = _any_pool(db)
@@ -1016,7 +1022,30 @@ async def set_linked_contact(
         cid,
     )
 
-    return {"entity_id": str(eid), "contact_id": str(cid)}
+    # Migrate existing contact-scoped facts to the entity across all memory pools.
+    # Matches both the current 'contact:{cid}' prefix and legacy bare-UUID subjects.
+    cid_str = str(cid)
+    prefixed_subject = f"contact:{cid_str}"
+
+    async def _migrate_facts(_name: str, fpool: object) -> int:
+        result = await fpool.execute(
+            "UPDATE facts SET entity_id = $1"
+            " WHERE (subject = $2 OR subject = $3)"
+            " AND entity_id IS NULL"
+            " AND validity = 'active'",
+            eid,
+            prefixed_subject,
+            cid_str,
+        )
+        # asyncpg returns 'UPDATE N' — extract the count
+        return int(result.split()[-1]) if result else 0
+
+    counts = await _fan_out_memory_queries(
+        db, query_name="migrate_contact_facts", query_fn=_migrate_facts
+    )
+    migrated = sum(c for c in counts if c)
+
+    return {"entity_id": str(eid), "contact_id": str(cid), "facts_migrated": migrated}
 
 
 # ---------------------------------------------------------------------------
