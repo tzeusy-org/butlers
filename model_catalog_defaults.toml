@@ -142,3 +142,17 @@ extra_args = []
 complexity_tier = "high"
 priority = 5
 enabled = false
+
+# ---------------------------------------------------------------------------
+# Discretion tier — lightweight local models for real-time message filtering
+# (connector discretion layer).  Requires Ollama with the specified model.
+# ---------------------------------------------------------------------------
+
+[[models]]
+alias = "discretion-qwen3.5-9b"
+runtime_type = "opencode"
+model_id = "ollama/qwen3.5:9b"
+extra_args = []
+complexity_tier = "discretion"
+priority = 10
+enabled = true

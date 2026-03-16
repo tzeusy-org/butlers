@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 catalog_router = APIRouter(prefix="/api/settings/models", tags=["model-catalog"])
 butler_model_router = APIRouter(prefix="/api/butlers", tags=["butlers", "model-overrides"])
 
-_COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high")
+_COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high", "discretion")
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -219,11 +219,12 @@ async def list_catalog_entries(
         FROM shared.model_catalog
         ORDER BY
             CASE complexity_tier
-                WHEN 'trivial'    THEN 1
-                WHEN 'medium'     THEN 2
-                WHEN 'high'       THEN 3
-                WHEN 'extra_high' THEN 4
-                ELSE 5
+                WHEN 'trivial'     THEN 1
+                WHEN 'medium'      THEN 2
+                WHEN 'high'        THEN 3
+                WHEN 'extra_high'  THEN 4
+                WHEN 'discretion'  THEN 5
+                ELSE 6
             END,
             priority DESC,
             alias ASC
