@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Loader2, FlaskConical, Check, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Info, Loader2, FlaskConical, Check, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type { ComplexityTier, ModelCatalogCreate, ModelCatalogEntry, ModelTestResult } from "@/api/types.ts";
@@ -40,6 +40,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
@@ -88,30 +94,6 @@ const MODEL_PRESETS: ModelPreset[] = [
       runtime_type: "claude",
       model_id: "claude-sonnet-4-5",
       extra_args_raw: JSON.stringify(["--thinking", "extended"], null, 2),
-    },
-  },
-  {
-    label: "Ollama Llama 3.3",
-    values: {
-      runtime_type: "ollama",
-      model_id: "llama3.3:latest",
-      extra_args_raw: "[]",
-    },
-  },
-  {
-    label: "Ollama Qwen 2.5 Coder 7B",
-    values: {
-      runtime_type: "ollama",
-      model_id: "qwen2.5-coder:7b",
-      extra_args_raw: "[]",
-    },
-  },
-  {
-    label: "Ollama DeepSeek R1 32B",
-    values: {
-      runtime_type: "ollama",
-      model_id: "deepseek-r1:32b",
-      extra_args_raw: "[]",
     },
   },
 ];
@@ -305,7 +287,6 @@ function ModelFormFields({
               <SelectItem value="claude">claude</SelectItem>
               <SelectItem value="codex">codex</SelectItem>
               <SelectItem value="opencode">opencode</SelectItem>
-              <SelectItem value="ollama">ollama</SelectItem>
               <SelectItem value="gemini">gemini</SelectItem>
             </SelectContent>
           </Select>
@@ -679,6 +660,19 @@ export function ModelCatalogCard() {
                       <TableCell colSpan={7} className="py-2 px-0">
                         <div className="flex items-center gap-2">
                           <ComplexityBadge tier={tier} />
+                          {tier === "discretion" && (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                                </TooltipTrigger>
+                                <TooltipContent side="right" className="max-w-64">
+                                  High-volume, high-noise traffic (e.g. discretion gates) —
+                                  best served by local models to avoid exorbitant cloud costs.
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )}
                           <span className="text-xs text-muted-foreground">
                             {tierEntries.length} model{tierEntries.length !== 1 ? "s" : ""}
                           </span>

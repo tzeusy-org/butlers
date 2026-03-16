@@ -46,9 +46,9 @@ def call_discretion(
 ) -> dict:
     """Call the discretion LLM and return structured result.
 
-    Uses the same Ollama native ``/api/chat`` endpoint as production
-    (see ``_call_llm`` in ``discretion.py``), with ``think: false`` so
-    reasoning models produce a direct answer.
+    Calls Ollama's native ``/api/chat`` endpoint directly for raw
+    latency measurement, with ``think: false`` so reasoning models
+    produce a direct answer.
 
     Returns:
         dict with keys: verdict, reason, raw, latency_ms, prompt_tokens,

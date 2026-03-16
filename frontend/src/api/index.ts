@@ -441,8 +441,6 @@ export {
   updateProvider,
   deleteProvider,
   testProviderConnectivity,
-  discoverOllamaModels,
-  importOllamaModels,
 } from "./client.ts";
 
 export type {
@@ -450,10 +448,6 @@ export type {
   ProviderConfigCreate,
   ProviderConfigUpdate,
   ProviderConnectivityResult,
-  OllamaDiscoveredModel,
-  OllamaImportItem,
-  OllamaImportRequest,
-  OllamaImportResult,
 } from "./types.ts";
 
 export {

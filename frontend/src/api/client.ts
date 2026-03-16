@@ -145,9 +145,6 @@ import type {
   ProviderConfigCreate,
   ProviderConfigUpdate,
   ProviderConnectivityResult,
-  OllamaDiscoveredModel,
-  OllamaImportRequest,
-  OllamaImportResult,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2614,25 +2611,5 @@ export function testProviderConnectivity(
   return apiFetch<ApiResponse<ProviderConnectivityResult>>(
     `/settings/providers/${encodeURIComponent(providerType)}/test-connectivity`,
     { method: "POST" },
-  );
-}
-
-/** GET /api/settings/providers/ollama/models — discover models from Ollama */
-export function discoverOllamaModels(): Promise<ApiResponse<OllamaDiscoveredModel[]>> {
-  return apiFetch<ApiResponse<OllamaDiscoveredModel[]>>(
-    "/settings/providers/ollama/models",
-  );
-}
-
-/** POST /api/settings/providers/ollama/import — import discovered models into catalog */
-export function importOllamaModels(
-  body: OllamaImportRequest,
-): Promise<ApiResponse<OllamaImportResult[]>> {
-  return apiFetch<ApiResponse<OllamaImportResult[]>>(
-    "/settings/providers/ollama/import",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
   );
 }

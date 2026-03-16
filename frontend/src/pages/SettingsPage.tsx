@@ -1,15 +1,20 @@
 import { useEffect, useState } from "react";
 
+import { Loader2, Plug, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+
 import type {
   CLIAuthHealthState,
   CLIAuthProvider,
   CLIAuthSessionState,
   GoogleAccount,
   OAuthCredentialState,
+  ProviderConfig,
+  ProviderConfigCreate,
+  ProviderConfigUpdate,
 } from "@/api/index.ts";
 import { getGoogleOAuthStartUrl } from "@/api/index.ts";
 import { ModelCatalogCard } from "@/components/settings/ModelCatalogCard.tsx";
-import { ProviderConfigCard } from "@/components/settings/ProviderConfigCard.tsx";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,6 +35,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -48,6 +54,13 @@ import {
   useStartCLIAuth,
   useTestCLIAuthApiKey,
 } from "@/hooks/use-cli-auth";
+import {
+  useCreateProvider,
+  useDeleteProvider,
+  useProviders,
+  useTestProviderConnectivity,
+  useUpdateProvider,
+} from "@/hooks/use-providers";
 import {
   useDisconnectAccount,
   useGoogleAccounts,
@@ -385,6 +398,366 @@ function CLIAuthApiKeyRow({ provider }: { provider: CLIAuthProvider }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Ollama provider section (embedded in CLIAuthCard)
+// ---------------------------------------------------------------------------
+
+function OllamaProviderSection() {
+  const { data, isLoading } = useProviders();
+  const providers = data?.data ?? [];
+  const ollamaProvider = providers.find((p) => p.provider_type === "ollama") ?? null;
+
+  const createMutation = useCreateProvider();
+  const updateMutation = useUpdateProvider();
+  const deleteMutation = useDeleteProvider();
+  const testMutation = useTestProviderConnectivity();
+
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  function handleTest() {
+    if (!ollamaProvider) return;
+    testMutation.mutate(ollamaProvider.provider_type, {
+      onSuccess: (resp) => {
+        const d = resp.data;
+        if (d.success) {
+          toast.success(`Ollama connected (${d.latency_ms}ms)`);
+        } else {
+          toast.error(`Ollama connection failed: ${d.error}`);
+        }
+      },
+      onError: (err) => {
+        toast.error(
+          `Test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        );
+      },
+    });
+  }
+
+  function handleFormSubmit(values: {
+    base_url: string;
+    display_name: string;
+    enabled: boolean;
+  }) {
+    if (ollamaProvider) {
+      updateMutation.mutate(
+        {
+          providerType: ollamaProvider.provider_type,
+          body: {
+            display_name: values.display_name.trim(),
+            config: { base_url: values.base_url.trim() },
+            enabled: values.enabled,
+          } satisfies ProviderConfigUpdate,
+        },
+        {
+          onSuccess: () => {
+            toast.success("Ollama provider updated");
+            setEditDialogOpen(false);
+          },
+          onError: (err) =>
+            toast.error(
+              `Failed to update: ${err instanceof Error ? err.message : "Unknown error"}`,
+            ),
+        },
+      );
+    } else {
+      createMutation.mutate(
+        {
+          provider_type: "ollama",
+          display_name: values.display_name.trim() || "Ollama",
+          config: { base_url: values.base_url.trim() },
+          enabled: values.enabled,
+        } satisfies ProviderConfigCreate,
+        {
+          onSuccess: () => {
+            toast.success("Ollama provider configured");
+            setEditDialogOpen(false);
+          },
+          onError: (err) =>
+            toast.error(
+              `Failed to create: ${err instanceof Error ? err.message : "Unknown error"}`,
+            ),
+        },
+      );
+    }
+  }
+
+  function handleDeleteConfirm() {
+    if (!ollamaProvider) return;
+    deleteMutation.mutate(ollamaProvider.provider_type, {
+      onSuccess: () => {
+        toast.success("Ollama provider removed");
+        setDeleteDialogOpen(false);
+      },
+      onError: (err) =>
+        toast.error(
+          `Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`,
+        ),
+    });
+  }
+
+  if (isLoading) {
+    return (
+      <div className="pt-4 border-t border-border">
+        <Skeleton className="h-16 w-full" />
+      </div>
+    );
+  }
+
+  const baseUrl =
+    typeof ollamaProvider?.config?.base_url === "string"
+      ? ollamaProvider.config.base_url
+      : null;
+
+  const statusBadge = ollamaProvider
+    ? ollamaProvider.enabled
+      ? { variant: "default" as const, label: "Connected" }
+      : { variant: "secondary" as const, label: "Disabled" }
+    : { variant: "outline" as const, label: "Not configured" };
+
+  return (
+    <>
+      <div className="space-y-3 py-4 border-t border-border">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">OpenCode (Ollama)</p>
+            {baseUrl ? (
+              <p className="text-xs text-muted-foreground font-mono">{baseUrl}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Local LLM inference via Ollama
+              </p>
+            )}
+          </div>
+          <Badge variant={statusBadge.variant}>{statusBadge.label}</Badge>
+        </div>
+
+        {/* Test result inline feedback */}
+        {testMutation.data && (
+          <p
+            className={`text-sm ${
+              testMutation.data.data.success
+                ? "text-green-600 dark:text-green-400"
+                : "text-destructive"
+            }`}
+          >
+            {testMutation.data.data.success
+              ? `Connected (${testMutation.data.data.latency_ms}ms)`
+              : `Failed: ${testMutation.data.data.error}`}
+          </p>
+        )}
+
+        <div className="flex items-center gap-2">
+          {ollamaProvider ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTest}
+                disabled={testMutation.isPending}
+              >
+                {testMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                    Testing...
+                  </>
+                ) : (
+                  <>
+                    <Plug className="h-3.5 w-3.5 mr-1" />
+                    Test
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEditDialogOpen(true)}
+              >
+                Edit
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive hover:bg-destructive/10"
+                onClick={() => setDeleteDialogOpen(true)}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1" />
+                Delete
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" onClick={() => setEditDialogOpen(true)}>
+              Configure Ollama
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Edit / Add dialog */}
+      <OllamaProviderFormDialog
+        open={editDialogOpen}
+        onOpenChange={setEditDialogOpen}
+        provider={ollamaProvider}
+        onSubmit={handleFormSubmit}
+        isSubmitting={createMutation.isPending || updateMutation.isPending}
+      />
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove Ollama Provider?</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to remove the Ollama provider configuration?
+              This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteDialogOpen(false)}
+              disabled={deleteMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteConfirm}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ollama provider form dialog (simple: base_url + display_name)
+// ---------------------------------------------------------------------------
+
+function OllamaProviderFormDialog({
+  open,
+  onOpenChange,
+  provider,
+  onSubmit,
+  isSubmitting,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  provider: ProviderConfig | null;
+  onSubmit: (values: { base_url: string; display_name: string; enabled: boolean }) => void;
+  isSubmitting: boolean;
+}) {
+  const isEdit = !!provider;
+  const [baseUrl, setBaseUrl] = useState(
+    typeof provider?.config?.base_url === "string" ? provider.config.base_url : "http://localhost:11434",
+  );
+  const [displayName, setDisplayName] = useState(provider?.display_name ?? "Ollama");
+  const [enabled, setEnabled] = useState(provider?.enabled ?? true);
+
+  // Reset form when dialog opens with new provider state
+  useEffect(() => {
+    if (open) {
+      setBaseUrl(
+        typeof provider?.config?.base_url === "string"
+          ? provider.config.base_url
+          : "http://localhost:11434",
+      );
+      setDisplayName(provider?.display_name ?? "Ollama");
+      setEnabled(provider?.enabled ?? true);
+    }
+  }, [open, provider]);
+
+  const isValid = baseUrl.trim() !== "" && displayName.trim() !== "";
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!isValid || isSubmitting) return;
+    onSubmit({ base_url: baseUrl, display_name: displayName, enabled });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {isEdit ? "Edit Ollama Provider" : "Configure Ollama"}
+          </DialogTitle>
+          <DialogDescription>
+            {isEdit
+              ? "Update the Ollama provider configuration."
+              : "Set the base URL for your local Ollama instance."}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="ollama-display-name">Display Name</Label>
+            <Input
+              id="ollama-display-name"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="Ollama"
+              disabled={isSubmitting}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="ollama-base-url">Base URL</Label>
+            <Input
+              id="ollama-base-url"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="http://localhost:11434"
+              disabled={isSubmitting}
+            />
+            <p className="text-xs text-muted-foreground">
+              The base URL for the Ollama API (default: http://localhost:11434).
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              id="ollama-enabled"
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-input"
+              disabled={isSubmitting}
+            />
+            <Label htmlFor="ollama-enabled" className="text-sm">
+              Enabled
+            </Label>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!isValid || isSubmitting}>
+              {isSubmitting
+                ? isEdit
+                  ? "Updating..."
+                  : "Saving..."
+                : isEdit
+                  ? "Update"
+                  : "Save"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CLI Auth card
+// ---------------------------------------------------------------------------
+
 function CLIAuthCard() {
   const providersQuery = useCLIAuthProviders();
   const providers = providersQuery.data;
@@ -424,6 +797,9 @@ function CLIAuthCard() {
             device-code authentication.
           </p>
         )}
+
+        {/* Ollama provider (accessed via OpenCode) */}
+        <OllamaProviderSection />
       </CardContent>
     </Card>
   );
@@ -821,8 +1197,6 @@ export default function SettingsPage() {
       </div>
 
       <ExpiredAuthBanner />
-
-      <ProviderConfigCard />
 
       <ModelCatalogCard />
 

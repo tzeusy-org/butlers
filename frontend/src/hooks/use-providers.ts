@@ -1,5 +1,5 @@
 /**
- * TanStack Query hooks for the provider configuration and Ollama discovery APIs.
+ * TanStack Query hooks for the provider configuration APIs.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -7,14 +7,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createProvider,
   deleteProvider,
-  discoverOllamaModels,
-  importOllamaModels,
   listProviders,
   testProviderConnectivity,
   updateProvider,
 } from "@/api/index.ts";
 import type {
-  OllamaImportRequest,
   ProviderConfigCreate,
   ProviderConfigUpdate,
 } from "@/api/types.ts";
@@ -74,27 +71,5 @@ export function useDeleteProvider() {
 export function useTestProviderConnectivity() {
   return useMutation({
     mutationFn: (providerType: string) => testProviderConnectivity(providerType),
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Ollama discovery + import
-// ---------------------------------------------------------------------------
-
-/** Mutation to discover models from an Ollama provider. */
-export function useDiscoverOllamaModels() {
-  return useMutation({
-    mutationFn: () => discoverOllamaModels(),
-  });
-}
-
-/** Mutation to import discovered Ollama models into the catalog. */
-export function useImportOllamaModels() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (body: OllamaImportRequest) => importOllamaModels(body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["model-catalog"] });
-    },
   });
 }
