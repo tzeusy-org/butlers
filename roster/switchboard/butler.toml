@@ -4,11 +4,11 @@ port = 41100
 description = "Routes incoming messages to specialist butlers"
 
 [butler.runtime]
-model = "gpt-5.1"
 max_concurrent_sessions = 3
 
-[runtime]
-type = "codex"
+[butler.seed_configs]
+runtime_type = "codex"
+model = "gpt-5.1"
 
 [buffer]
 queue_capacity = 100

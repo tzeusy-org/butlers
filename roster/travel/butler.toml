@@ -4,11 +4,7 @@ port = 41106
 description = "Travel logistics and itinerary intelligence specialist for flights, hotels, car rentals, and trip planning."
 
 [butler.runtime]
-model = "gpt-5.1"
 max_concurrent_sessions = 3
-
-[runtime]
-type = "codex"
 
 [butler.db]
 name = "butlers"
@@ -16,10 +12,13 @@ schema = "travel"
 
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
-advertise = true
-liveness_ttl_s = 300
-route_contract_min = "route.v1"
-route_contract_max = "route.v1"
+
+[butler.seed_configs]
+runtime_type = "codex"
+model = "gpt-5.1"
+liveness_ttl_seconds = 300
+route_contract_min = 1
+route_contract_max = 1
 
 [modules.email]
 
@@ -31,9 +30,12 @@ policy = "suggest"
 
 [modules.memory]
 
+[modules.travel]
+
 [[butler.schedule]]
 name = "upcoming-travel-check"
-cron = "30 21 * * 0"
+# Daily 08:00 SGT (scheduler interprets cron in UTC)
+cron = "0 0 * * *"
 dispatch_mode = "prompt"
 prompt = """
 Daily pre-trip scan. Check for upcoming departures and check-ins within the next 48 hours.
