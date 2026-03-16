@@ -543,6 +543,7 @@ class Spawner:
             self._adapter_pool: dict[str, RuntimeAdapter] = {
                 config.runtime.type: runtime,
             }
+            self._adapter_pool_cfg: dict[str, str] = {config.runtime.type: ""}
         else:
             # Default: create a ClaudeCodeAdapter with the real SDK query
             from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
@@ -555,8 +556,54 @@ class Spawner:
             self._adapter_pool = {
                 config.runtime.type: self._runtime,
             }
+            self._adapter_pool_cfg = {config.runtime.type: ""}
 
-    def _get_or_create_adapter(self, runtime_type: str) -> RuntimeAdapter:
+    async def _resolve_provider_config(
+        self, model_id: str | None
+    ) -> dict[str, dict[str, Any]] | None:
+        """Look up provider base URL from ``shared.provider_config``.
+
+        When *model_id* starts with ``ollama/``, queries the DB for the
+        Ollama provider's configured base URL and returns an
+        OpenCode-compatible provider config dict.  Returns ``None`` when
+        no provider is configured, the model doesn't use a provider
+        prefix, or no DB pool is available.
+        """
+        if self._pool is None or not model_id or "/" not in model_id:
+            return None
+
+        provider_type = model_id.split("/", 1)[0]
+        if provider_type != "ollama":
+            return None
+
+        try:
+            row = await self._pool.fetchrow(
+                "SELECT config FROM shared.provider_config "
+                "WHERE provider_type = $1 AND enabled = true",
+                provider_type,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to query provider_config for %s", provider_type, exc_info=True
+            )
+            return None
+
+        if row is None:
+            return None
+
+        raw = row["config"]
+        config = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        base_url = config.get("base_url", "")
+        if not base_url:
+            return None
+
+        return {provider_type: {"options": {"baseURL": base_url}}}
+
+    def _get_or_create_adapter(
+        self,
+        runtime_type: str,
+        provider_config: dict[str, dict[str, Any]] | None = None,
+    ) -> RuntimeAdapter:
         """Return a cached parent adapter for *runtime_type*, creating one lazily if needed.
 
         The TOML-configured adapter is seeded at construction time.  When the
@@ -568,6 +615,9 @@ class Spawner:
         ----------
         runtime_type:
             The runtime type string (e.g. ``"claude"``, ``"codex"``).
+        provider_config:
+            Optional provider configuration forwarded to adapters that accept
+            it (e.g. OpenCodeAdapter uses it to set the Ollama base URL).
 
         Returns
         -------
@@ -579,19 +629,36 @@ class Spawner:
         ValueError
             If no adapter is registered for the given runtime type string.
         """
+        # Return cached adapter if provider_config hasn't changed
+        cfg_str = str(provider_config) if provider_config else ""
         if runtime_type in self._adapter_pool:
-            return self._adapter_pool[runtime_type]
+            if self._adapter_pool_cfg.get(runtime_type, "") == cfg_str:
+                return self._adapter_pool[runtime_type]
 
         log_root = resolve_log_root(self._config.logging.log_root)
         adapter_cls = get_adapter(runtime_type)
         # Adapters may require butler-specific constructor kwargs (e.g. log_root).
         # We use a best-effort approach: try with known kwargs, fall back to bare
         # instantiation when the adapter class does not accept them.
+        kwargs: dict[str, Any] = {
+            "butler_name": self._config.name,
+            "log_root": log_root,
+        }
+        if provider_config:
+            kwargs["provider_config"] = provider_config
         try:
-            adapter = adapter_cls(butler_name=self._config.name, log_root=log_root)  # type: ignore[call-arg]
+            adapter = adapter_cls(**kwargs)  # type: ignore[call-arg]
         except TypeError:
-            adapter = adapter_cls()
+            # Retry without butler-specific kwargs for simple adapters
+            kwargs2: dict[str, Any] = {}
+            if provider_config:
+                kwargs2["provider_config"] = provider_config
+            try:
+                adapter = adapter_cls(**kwargs2)  # type: ignore[call-arg]
+            except TypeError:
+                adapter = adapter_cls()
         self._adapter_pool[runtime_type] = adapter
+        self._adapter_pool_cfg[runtime_type] = cfg_str
         logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)
         return adapter
 
@@ -869,10 +936,15 @@ class Spawner:
             model,
         )
 
+        # Resolve provider config (e.g. Ollama base URL) for the model
+        provider_config = await self._resolve_provider_config(model)
+
         # Select adapter for the resolved runtime type (lazy instantiation on demand).
         # Fall back to the TOML adapter if the catalog resolved an unregistered runtime type.
         try:
-            runtime = self._get_or_create_adapter(resolved_runtime_type).create_worker()
+            runtime = self._get_or_create_adapter(
+                resolved_runtime_type, provider_config
+            ).create_worker()
         except ValueError:
             logger.warning(
                 "Catalog resolved unregistered runtime_type=%s for butler=%s; "

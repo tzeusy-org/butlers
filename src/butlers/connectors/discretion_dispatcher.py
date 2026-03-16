@@ -28,6 +28,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import asyncpg
@@ -152,10 +153,8 @@ class DiscretionDispatcher:
         if row is None:
             return None
 
-        import json as _json
-
         raw = row["config"]
-        config = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+        config = json.loads(raw) if isinstance(raw, str) else (raw or {})
         base_url = config.get("base_url", "")
         if not base_url:
             return None
