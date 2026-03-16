@@ -581,6 +581,7 @@ def build_config_file(
     mcp_servers: dict[str, Any],
     tmp_dir: Path,
     instructions_path: Path | None = None,
+    provider_config: dict[str, dict[str, Any]] | None = None,
 ) -> Path:
     """Write MCP config in OpenCode-compatible JSONC format.
 
@@ -598,6 +599,11 @@ def build_config_file(
     instructions_path:
         Optional path to a system prompt file to include in the
         ``instructions`` array. The absolute path string is used directly.
+    provider_config:
+        Optional provider configuration dict injected into the OpenCode
+        config's ``provider`` section.  Used to set base URLs for
+        providers like Ollama, e.g.
+        ``{"ollama": {"options": {"baseURL": "http://host:11434"}}}``.
 
     Returns
     -------
@@ -634,6 +640,9 @@ def build_config_file(
     if instructions_path is not None:
         config["instructions"] = [str(instructions_path)]
 
+    if provider_config:
+        config["provider"] = provider_config
+
     config_path = tmp_dir / "opencode.jsonc"
     config_path.write_text(json.dumps(config, indent=2))
     return config_path
@@ -654,10 +663,20 @@ class OpenCodeAdapter(RuntimeAdapter):
     opencode_binary:
         Path to the opencode binary. If None, will be auto-detected on PATH
         at invocation time.
+    provider_config:
+        Optional provider configuration injected into the generated OpenCode
+        config.  Used to set base URLs for providers like Ollama, e.g.
+        ``{"ollama": {"options": {"baseURL": "http://host:11434"}}}``.
     """
 
-    def __init__(self, opencode_binary: str | None = None) -> None:
+    def __init__(
+        self,
+        opencode_binary: str | None = None,
+        provider_config: dict[str, dict[str, Any]] | None = None,
+        **_kwargs: Any,
+    ) -> None:
         self._opencode_binary = opencode_binary
+        self._provider_config = provider_config
         self._last_process_info: dict[str, Any] | None = None
 
     @property
@@ -667,7 +686,10 @@ class OpenCodeAdapter(RuntimeAdapter):
 
     def create_worker(self) -> RuntimeAdapter:
         """Create an independent adapter for a pooled spawner worker."""
-        return OpenCodeAdapter(opencode_binary=self._opencode_binary)
+        return OpenCodeAdapter(
+            opencode_binary=self._opencode_binary,
+            provider_config=self._provider_config,
+        )
 
     @property
     def binary_name(self) -> str:
@@ -791,11 +813,13 @@ class OpenCodeAdapter(RuntimeAdapter):
                 instructions_path = tmp_dir / "_system_prompt.md"
                 instructions_path.write_text(system_prompt)
 
-            # Build OpenCode JSONC config with MCP servers and instructions
+            # Build OpenCode JSONC config with MCP servers, instructions,
+            # and provider settings (e.g. Ollama base URL)
             config_path = build_config_file(
                 mcp_servers=mcp_servers,
                 tmp_dir=tmp_dir,
                 instructions_path=instructions_path,
+                provider_config=self._provider_config,
             )
 
             # Build command: opencode run --format json [--model <model>] [runtime_args] <prompt>
@@ -814,11 +838,12 @@ class OpenCodeAdapter(RuntimeAdapter):
 
             cmd.append(prompt)
 
-            # Inject OPENCODE_CONFIG into subprocess env only when we have
-            # MCP servers or instructions to override — otherwise let OpenCode
-            # use its own config so provider auth/keys are preserved.
+            # Inject OPENCODE_CONFIG into subprocess env when we have MCP
+            # servers, instructions, or provider config to override —
+            # otherwise let OpenCode use its own config so provider
+            # auth/keys are preserved.
             subprocess_env = dict(env) if env else {}
-            if mcp_servers or instructions_path:
+            if mcp_servers or instructions_path or self._provider_config:
                 subprocess_env["OPENCODE_CONFIG"] = str(config_path)
 
             cmd_for_log = " ".join(cmd[:4]) + " ..."

@@ -75,8 +75,13 @@ class DiscretionDispatcher:
         self._timeout_s = timeout_s
         # Adapter instance cache keyed by runtime_type string.
         self._adapter_cache: dict[str, RuntimeAdapter] = {}
+        self._adapter_cache_key: dict[str, str] = {}
 
-    def _get_or_create_adapter(self, runtime_type: str) -> RuntimeAdapter:
+    def _get_or_create_adapter(
+        self,
+        runtime_type: str,
+        provider_config: dict[str, dict] | None = None,
+    ) -> RuntimeAdapter:
         """Return a cached adapter instance for *runtime_type*, creating lazily.
 
         Follows the same best-effort constructor pattern as
@@ -84,25 +89,78 @@ class DiscretionDispatcher:
         first, falls back to bare instantiation for adapters that don't
         accept it.
 
+        Parameters
+        ----------
+        provider_config:
+            Optional provider configuration forwarded to adapters that accept
+            it (e.g. OpenCodeAdapter uses it to set the Ollama base URL).
+
         Raises
         ------
         ValueError
             If no adapter is registered for the given runtime type string.
         """
+        # Return cached adapter if provider_config hasn't changed
+        cfg_str = str(provider_config) if provider_config else ""
         if runtime_type in self._adapter_cache:
-            return self._adapter_cache[runtime_type]
+            if self._adapter_cache_key.get(runtime_type, "") == cfg_str:
+                return self._adapter_cache[runtime_type]
 
         adapter_cls = get_adapter(runtime_type)
+        kwargs: dict[str, object] = {}
+        if provider_config:
+            kwargs["provider_config"] = provider_config
         try:
-            adapter: RuntimeAdapter = adapter_cls(butler_name=self._butler_name)  # type: ignore[call-arg]
+            adapter: RuntimeAdapter = adapter_cls(butler_name=self._butler_name, **kwargs)  # type: ignore[call-arg]
         except TypeError:
-            adapter = adapter_cls()
+            try:
+                adapter = adapter_cls(**kwargs)  # type: ignore[call-arg]
+            except TypeError:
+                adapter = adapter_cls()
 
         self._adapter_cache[runtime_type] = adapter
+        self._adapter_cache_key[runtime_type] = cfg_str
         logger.debug(
             "DiscretionDispatcher: lazily instantiated adapter runtime_type=%s", runtime_type
         )
         return adapter
+
+    async def _resolve_provider_config(
+        self, model_id: str
+    ) -> dict[str, dict] | None:
+        """Look up provider base URL from ``shared.provider_config``.
+
+        When *model_id* starts with ``ollama/``, queries the DB for the
+        Ollama provider's base URL and returns the OpenCode-compatible
+        provider config dict.  Returns ``None`` if no provider is configured
+        or the model doesn't use a provider prefix.
+        """
+        provider_type = model_id.split("/", 1)[0] if "/" in model_id else None
+        if provider_type != "ollama":
+            return None
+
+        try:
+            row = await self._pool.fetchrow(
+                "SELECT config FROM shared.provider_config "
+                "WHERE provider_type = $1 AND enabled = true",
+                provider_type,
+            )
+        except Exception:
+            logger.debug("DiscretionDispatcher: failed to query provider_config", exc_info=True)
+            return None
+
+        if row is None:
+            return None
+
+        import json as _json
+
+        raw = row["config"]
+        config = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+        base_url = config.get("base_url", "")
+        if not base_url:
+            return None
+
+        return {provider_type: {"options": {"baseURL": base_url}}}
 
     async def call(
         self,
@@ -146,7 +204,11 @@ class DiscretionDispatcher:
             )
 
         runtime_type, model_id, extra_args = catalog_result
-        adapter = self._get_or_create_adapter(runtime_type)
+
+        # Resolve provider config for models using external providers
+        # (e.g. ollama/ prefix needs the base URL from shared.provider_config)
+        provider_config = await self._resolve_provider_config(model_id)
+        adapter = self._get_or_create_adapter(runtime_type, provider_config)
 
         async def _invoke() -> str:
             result_text, _tool_calls, _usage = await adapter.invoke(
