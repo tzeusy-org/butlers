@@ -27,11 +27,9 @@ Optional:
   LIVE_LISTENER_TRANSCRIPTION_PROTOCOL  wyoming | websocket | http (default: wyoming)
   LIVE_LISTENER_LANGUAGE               BCP-47 language hint (default: en)
   LIVE_LISTENER_MIN_CONFIDENCE         Min confidence threshold (default: 0.3)
-  LIVE_LISTENER_DISCRETION_LLM_URL
-  LIVE_LISTENER_DISCRETION_LLM_MODEL
-  LIVE_LISTENER_DISCRETION_TIMEOUT_S
-  LIVE_LISTENER_DISCRETION_WINDOW_SIZE
-  LIVE_LISTENER_DISCRETION_WINDOW_SECONDS
+  LIVE_LISTENER_DISCRETION_TIMEOUT_S       LLM call hard timeout in seconds (default: 3)
+  LIVE_LISTENER_DISCRETION_WINDOW_SIZE     Context window size for discretion (default: 10)
+  LIVE_LISTENER_DISCRETION_WINDOW_SECONDS  Context window age cap in seconds (default: 300)
   LIVE_LISTENER_SESSION_GAP_S
 
 Spec references:
@@ -228,6 +226,8 @@ class LiveListenerConnector:
                 self._discretion_evaluators[mic] = DiscretionEvaluator(
                     source_name=mic,
                     dispatcher=discretion_dispatcher,
+                    window_size=self._config.discretion_window_size,
+                    window_seconds=float(self._config.discretion_window_seconds),
                 )
 
             # Pre-filter (heuristic gate before discretion LLM)
@@ -518,29 +518,36 @@ class LiveListenerConnector:
         # --- Discretion ---
         evaluator = self._discretion_evaluators.get(mic)
         if evaluator is None:
-            logger.warning("live-listener: no discretion evaluator for mic=%s", mic)
-            return
-
-        d_start = time.monotonic()
-        try:
-            disc_result = await evaluator.evaluate(
-                result.text,
-                timestamp=time.time(),
-            )
-        except Exception as exc:
-            ll_metrics.inc_discretion_failure(type(exc).__name__.lower())
-            self._mic_states[mic].discretion_healthy = False
-            logger.warning("live-listener: discretion error for mic=%s: %s (fail-open)", mic, exc)
-            # fail-open: treat as FORWARD
+            # No DB pool available — discretion skipped, pass through unconditionally.
+            logger.debug("live-listener: discretion skipped (no dispatcher) for mic=%s", mic)
             disc_result = DiscretionResult(
                 verdict="FORWARD",
-                reason=f"fail-open: {type(exc).__name__}",
+                reason="no-dispatcher",
                 is_fail_open=True,
             )
-        discretion_elapsed = time.monotonic() - d_start
-        ll_metrics.observe_stage_latency("discretion", discretion_elapsed)
+        else:
+            d_start = time.monotonic()
+            try:
+                disc_result = await evaluator.evaluate(
+                    result.text,
+                    timestamp=time.time(),
+                )
+            except Exception as exc:
+                ll_metrics.inc_discretion_failure(type(exc).__name__.lower())
+                self._mic_states[mic].discretion_healthy = False
+                logger.warning(
+                    "live-listener: discretion error for mic=%s: %s (fail-open)", mic, exc
+                )
+                # fail-open: treat as FORWARD
+                disc_result = DiscretionResult(
+                    verdict="FORWARD",
+                    reason=f"fail-open: {type(exc).__name__}",
+                    is_fail_open=True,
+                )
+            discretion_elapsed = time.monotonic() - d_start
+            ll_metrics.observe_stage_latency("discretion", discretion_elapsed)
 
-        self._mic_states[mic].discretion_healthy = True
+            self._mic_states[mic].discretion_healthy = True
 
         if disc_result.verdict == "IGNORE":
             ll_metrics.inc_discretion("ignore")

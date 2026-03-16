@@ -73,8 +73,8 @@ class LiveListenerConfig:
     min_confidence: float = 0.3
 
     # --- Discretion ---
-    discretion_llm_url: str = ""
-    discretion_llm_model: str = ""
+    # Note: model selection is catalog-driven (discretion tier); LLM_URL/LLM_MODEL env vars
+    # are no longer used. Window and timeout parameters remain operator-configurable.
     discretion_timeout_s: float = 3.0
     discretion_window_size: int = 10
     discretion_window_seconds: int = 300
@@ -113,8 +113,6 @@ class LiveListenerConfig:
             LIVE_LISTENER_TRANSCRIPTION_PROTOCOL
             LIVE_LISTENER_LANGUAGE
             LIVE_LISTENER_MIN_CONFIDENCE
-            LIVE_LISTENER_DISCRETION_LLM_URL
-            LIVE_LISTENER_DISCRETION_LLM_MODEL
             LIVE_LISTENER_DISCRETION_TIMEOUT_S
             LIVE_LISTENER_DISCRETION_WINDOW_SIZE
             LIVE_LISTENER_DISCRETION_WINDOW_SECONDS
@@ -172,8 +170,6 @@ class LiveListenerConfig:
             ),
             language=os.environ.get("LIVE_LISTENER_LANGUAGE", "en"),
             min_confidence=_float("LIVE_LISTENER_MIN_CONFIDENCE", 0.3),
-            discretion_llm_url=os.environ.get("LIVE_LISTENER_DISCRETION_LLM_URL", ""),
-            discretion_llm_model=os.environ.get("LIVE_LISTENER_DISCRETION_LLM_MODEL", ""),
             discretion_timeout_s=_float("LIVE_LISTENER_DISCRETION_TIMEOUT_S", 3.0),
             discretion_window_size=_int("LIVE_LISTENER_DISCRETION_WINDOW_SIZE", 10),
             discretion_window_seconds=_int("LIVE_LISTENER_DISCRETION_WINDOW_SECONDS", 300),
