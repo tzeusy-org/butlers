@@ -26,7 +26,7 @@ WORKDIR /app
 # Copy project files
 COPY pyproject.toml .
 COPY src/ src/
-COPY alembic.ini alembic.ini
+COPY alembic/alembic.ini alembic.ini
 COPY alembic/ alembic/
 
 # Install production dependencies
