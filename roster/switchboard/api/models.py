@@ -6,6 +6,7 @@ and unified ingestion rules (switchboard butler).
 
 from __future__ import annotations
 
+import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
@@ -639,8 +640,8 @@ class CreateBackfillJobRequest(BaseModel):
     connector_type: str
     endpoint_identity: str
     target_categories: list[str] = []
-    date_from: str
-    date_to: str
+    date_from: datetime.date
+    date_to: datetime.date
     rate_limit_per_hour: int = 100
     daily_cost_cap_cents: int = 500
 
