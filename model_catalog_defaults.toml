@@ -119,25 +119,25 @@ enabled = true
 [[models]]
 alias = "ollama-default"
 runtime_type = "ollama"
-model_id = "llama3.2"
-extra_args = []
-complexity_tier = "medium"
-priority = 5
-enabled = false
-
-[[models]]
-alias = "ollama-light"
-runtime_type = "ollama"
-model_id = "llama3.2:1b"
+model_id = "qwen2.5-coder:7b"
 extra_args = []
 complexity_tier = "trivial"
 priority = 5
 enabled = false
 
 [[models]]
+alias = "ollama-light"
+runtime_type = "ollama"
+model_id = "llama3.3:latest"
+extra_args = []
+complexity_tier = "medium"
+priority = 5
+enabled = false
+
+[[models]]
 alias = "ollama-heavy"
 runtime_type = "ollama"
-model_id = "llama3.1:70b"
+model_id = "deepseek-r1:32b"
 extra_args = []
 complexity_tier = "high"
 priority = 5
