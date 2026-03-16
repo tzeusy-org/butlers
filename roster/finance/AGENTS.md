@@ -162,3 +162,7 @@ consult the `memory-classification` skill. Key rules:
 - **`memory-classification`** — Finance domain subject/predicate taxonomy and example facts
 - **`butler-notifications`** — `notify()` required parameters and intent usage
 - **`butler-memory`** — Entity resolution protocol before storing memory facts
+
+## Notes to self
+
+- MCP memory tools validate structured params as real objects/lists (e.g. `context_hints` on `memory_entity_resolve`, `metadata` on `memory_entity_create`, `tags` on `memory_store_fact`). Passing JSON-encoded strings will fail Pydantic validation.
