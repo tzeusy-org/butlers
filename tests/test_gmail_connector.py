@@ -877,6 +877,143 @@ class TestGmailConnectorRuntime:
         assert body == "(no body)"
 
     # ------------------------------------------------------------------
+    # Body attachment ref resolution (DBS Card Transaction Alert fix)
+    # ------------------------------------------------------------------
+
+    async def test_resolve_body_attachment_refs_inlines_html(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """HTML body stored via attachmentId is fetched and inlined.
+
+        Gmail API omits body.data for parts larger than ~25KB, storing only
+        an attachmentId reference. _resolve_body_attachment_refs pre-fetches
+        these so _extract_body_from_payload can extract them normally.
+        """
+        import base64
+
+        html_content = b"<h1>Card Transaction Alert</h1><p>SGD 42.00 at Merchant</p>"
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/html",
+                    "body": {
+                        "attachmentId": "ANGjdJ-abc123",
+                        "size": len(html_content),
+                    },
+                },
+            ],
+        }
+
+        # Mock the download to return the HTML content
+        gmail_runtime._download_gmail_attachment = AsyncMock(return_value=html_content)
+
+        await gmail_runtime._resolve_body_attachment_refs("msg123", payload)
+
+        # Verify data was inlined
+        html_part = payload["parts"][0]
+        assert html_part["body"]["data"] == base64.urlsafe_b64encode(html_content).decode("ascii")
+
+        # Now extraction should work
+        body = gmail_runtime._extract_body_from_payload(payload)
+        assert "Card Transaction Alert" in body
+        assert "SGD 42.00" in body
+
+    async def test_resolve_body_attachment_refs_prefers_plain(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """When both plain and html have attachmentId refs, both are resolved."""
+        plain_content = b"SGD 42.00 at Merchant on 16 Mar 2026"
+        html_content = b"<p>SGD 42.00 at Merchant</p>"
+
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/html",
+                    "body": {"attachmentId": "html-ref", "size": len(html_content)},
+                },
+                {
+                    "mimeType": "text/plain",
+                    "body": {"attachmentId": "plain-ref", "size": len(plain_content)},
+                },
+            ],
+        }
+
+        async def mock_download(msg_id: str, att_id: str) -> bytes:
+            return plain_content if att_id == "plain-ref" else html_content
+
+        gmail_runtime._download_gmail_attachment = AsyncMock(side_effect=mock_download)
+
+        await gmail_runtime._resolve_body_attachment_refs("msg456", payload)
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+        # Plain text should be preferred over HTML
+        assert body == "SGD 42.00 at Merchant on 16 Mar 2026"
+
+    async def test_resolve_body_attachment_refs_skips_inline_data(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Parts that already have inline data are NOT re-fetched."""
+        import base64
+
+        payload = {
+            "mimeType": "text/plain",
+            "body": {
+                "data": base64.urlsafe_b64encode(b"Already inline").decode(),
+            },
+        }
+
+        gmail_runtime._download_gmail_attachment = AsyncMock()
+
+        await gmail_runtime._resolve_body_attachment_refs("msg789", payload)
+
+        gmail_runtime._download_gmail_attachment.assert_not_awaited()
+
+    async def test_resolve_body_attachment_refs_download_failure_graceful(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Download failure is logged but does not crash ingestion."""
+        payload = {
+            "mimeType": "text/html",
+            "body": {"attachmentId": "bad-ref", "size": 1000},
+        }
+
+        gmail_runtime._download_gmail_attachment = AsyncMock(
+            side_effect=RuntimeError("403 Forbidden")
+        )
+
+        # Should not raise
+        await gmail_runtime._resolve_body_attachment_refs("msg_err", payload)
+
+        # Body data remains empty — extraction will produce "(no body)"
+        assert not payload["body"].get("data")
+
+    async def test_resolve_body_attachment_refs_skips_non_text_parts(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Non-text parts (image/png, application/pdf) are NOT resolved."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "image/png",
+                    "body": {"attachmentId": "img-ref", "size": 50000},
+                },
+                {
+                    "mimeType": "application/pdf",
+                    "body": {"attachmentId": "pdf-ref", "size": 100000},
+                },
+            ],
+        }
+
+        gmail_runtime._download_gmail_attachment = AsyncMock()
+
+        await gmail_runtime._resolve_body_attachment_refs("msg_att", payload)
+
+        gmail_runtime._download_gmail_attachment.assert_not_awaited()
+
+    # ------------------------------------------------------------------
     # Mid-session Switchboard ConnectionError tests (butlers-tt60)
     # ------------------------------------------------------------------
 

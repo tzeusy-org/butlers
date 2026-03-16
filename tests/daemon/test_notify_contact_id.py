@@ -211,10 +211,13 @@ class TestNotifyContactIdParameter:
         mock_client = _make_mock_client()
         daemon.switchboard_client = mock_client
 
-        with patch.object(
-            daemon,
-            "_resolve_contact_channel_identifier",
-            new=AsyncMock(return_value="user@example.com"),
+        with (
+            patch.object(
+                daemon,
+                "_resolve_contact_channel_identifier",
+                new=AsyncMock(return_value="user@example.com"),
+            ),
+            _known_contact_patch("user@example.com"),
         ):
             result = await notify_fn(
                 channel="email",
@@ -259,10 +262,13 @@ class TestNotifyContactIdResolution:
         mock_client = _make_mock_client()
         daemon.switchboard_client = mock_client
 
-        with patch.object(
-            daemon,
-            "_resolve_contact_channel_identifier",
-            new=AsyncMock(return_value="contact@example.com"),
+        with (
+            patch.object(
+                daemon,
+                "_resolve_contact_channel_identifier",
+                new=AsyncMock(return_value="contact@example.com"),
+            ),
+            _known_contact_patch("contact@example.com"),
         ):
             result = await notify_fn(
                 channel="email",
@@ -924,10 +930,13 @@ class TestNotifyContactIdResolutionPriority:
         daemon.switchboard_client = mock_client
 
         contact_id = uuid.UUID("00000000-0000-0000-0000-000000000040")
-        with patch.object(
-            daemon,
-            "_resolve_contact_channel_identifier",
-            new=AsyncMock(return_value="contact-resolved@example.com"),
+        with (
+            patch.object(
+                daemon,
+                "_resolve_contact_channel_identifier",
+                new=AsyncMock(return_value="contact-resolved@example.com"),
+            ),
+            _known_contact_patch("contact-resolved@example.com"),
         ):
             result = await notify_fn(
                 channel="email",
@@ -1037,8 +1046,13 @@ class TestNotifyEmailRecipientValidation:
         # resolve_contact_by_channel should NOT have been called for telegram
         mock_resolve.assert_not_awaited()
 
-    async def test_contact_id_path_skips_email_validation(self, butler_dir: Path) -> None:
-        """When contact_id is used, the email validation gate is skipped."""
+    async def test_contact_id_path_runs_email_validation(self, butler_dir: Path) -> None:
+        """When contact_id is used, the email validation guard MUST still run.
+
+        Bug fix: prior to this fix, contact_id bypassed the email guard entirely,
+        allowing emails to arbitrary addresses (e.g., DBS bank alerts) without
+        approval. Now the guard runs regardless of how the recipient was resolved.
+        """
         patches = _patch_infra()
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         assert notify_fn is not None
@@ -1062,6 +1076,8 @@ class TestNotifyEmailRecipientValidation:
                 contact_id=contact_id,
             )
 
-        assert result["status"] == "ok"
-        # Email validation should be skipped for contact_id path
-        mock_resolve.assert_not_awaited()
+        # Email validation MUST run and reject unknown recipients
+        assert result["status"] == "pending_approval", (
+            "contact_id path must NOT bypass email validation; unknown recipients must be parked"
+        )
+        mock_resolve.assert_awaited_once()

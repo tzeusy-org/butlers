@@ -2159,8 +2159,16 @@ class GmailConnectorRuntime:
             }
 
         # --- Tier 1: Full envelope ---
+        # Pre-resolve body parts that use attachmentId references instead of
+        # inline data.  Gmail API omits body.data for larger parts (typically
+        # >25KB), storing only an attachmentId that must be fetched separately.
+        # Without this step, HTML-only bank alerts and similar emails produce
+        # "(no body)" because the extraction sees empty data fields.
+        payload = message_data.get("payload", {})
+        await self._resolve_body_attachment_refs(message_id, payload)
+
         # Extract body
-        body = self._extract_body_from_payload(message_data.get("payload", {}))
+        body = self._extract_body_from_payload(payload)
 
         # Build normalized text
         normalized_text = f"Subject: {html.escape(subject)}\n\n{html.escape(body)}"
@@ -2234,6 +2242,61 @@ class GmailConnectorRuntime:
         """
         charset = self._charset_from_headers(payload.get("headers", []))
         return raw_bytes.decode(charset, errors="replace")
+
+    _BODY_TEXT_MIME_TYPES = frozenset({"text/plain", "text/html"})
+
+    async def _resolve_body_attachment_refs(
+        self,
+        message_id: str,
+        payload: dict[str, Any],
+        depth: int = 0,
+    ) -> None:
+        """Pre-fetch body content stored as attachmentId references.
+
+        Gmail API omits ``body.data`` for parts larger than ~25KB, storing
+        only an ``attachmentId`` that must be fetched via a separate API call.
+        This method walks the MIME tree, finds text/plain and text/html parts
+        that have an ``attachmentId`` but no inline ``data``, fetches the
+        content, and inlines it into the payload dict so that the synchronous
+        ``_extract_body_from_payload`` can extract it normally.
+
+        Mutates *payload* in place.
+        """
+        if depth > 20:
+            return
+
+        mime_type = payload.get("mimeType", "")
+        body = payload.get("body", {})
+
+        # Leaf text part with attachmentId but no inline data
+        if (
+            mime_type in self._BODY_TEXT_MIME_TYPES
+            and body.get("attachmentId")
+            and not body.get("data")
+        ):
+            try:
+                raw_bytes = await self._download_gmail_attachment(
+                    message_id, body["attachmentId"]
+                )
+                # Inline the fetched data as base64url (matching Gmail API format)
+                body["data"] = base64.urlsafe_b64encode(raw_bytes).decode("ascii")
+                logger.debug(
+                    "Resolved attachmentId body ref for %s part (%d bytes) in message %s",
+                    mime_type,
+                    len(raw_bytes),
+                    message_id,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to resolve attachmentId body ref for %s part in message %s",
+                    mime_type,
+                    message_id,
+                    exc_info=True,
+                )
+
+        # Recurse into multipart children
+        for part in payload.get("parts", []):
+            await self._resolve_body_attachment_refs(message_id, part, depth + 1)
 
     def _extract_body_from_payload(self, payload: dict[str, Any], depth: int = 0) -> str:
         """Recursively extract body text from Gmail message payload.

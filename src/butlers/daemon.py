@@ -2911,6 +2911,67 @@ class ButlerDaemon:
                     if email_module is None:
                         raise RuntimeError("Messenger email adapter is unavailable.")
 
+                    # --- Approval gate for direct email delivery ---
+                    # route.execute calls module methods directly (not MCP tools),
+                    # so MCP-level approval gate wrappers are NOT in the path.
+                    # Enforce role-based gating here to close the bypass.
+                    _email_target: str | None = None
+                    if intent == "send":
+                        _email_target = notify_request.delivery.recipient
+                    elif notify_context is not None:
+                        _email_target = notify_context.source_sender_identity
+
+                    if _email_target:
+                        _approval_pool = daemon.db.pool if daemon.db is not None else None
+                        if _approval_pool is not None:
+                            from butlers.identity import (
+                                resolve_contact_by_channel as _resolve_email_contact,
+                            )
+
+                            _email_contact = await _resolve_email_contact(
+                                _approval_pool, "email", _email_target
+                            )
+                            if _email_contact is None or "owner" not in _email_contact.roles:
+                                # Non-owner or unknown: check standing approval rules
+                                _gate_tool = (
+                                    "email_send_message"
+                                    if intent == "send"
+                                    else "email_reply_to_thread"
+                                )
+                                _gate_args = {"to": _email_target}
+                                _gate_rule = None
+                                try:
+                                    from butlers.modules.approvals.rules import (
+                                        match_rules as _match_gate_rules,
+                                    )
+
+                                    _gate_rule = await _match_gate_rules(
+                                        _approval_pool, _gate_tool, _gate_args
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    pass
+
+                                if _gate_rule is None:
+                                    _contact_desc = (
+                                        "known non-owner contact"
+                                        if _email_contact is not None
+                                        else "unknown contact"
+                                    )
+                                    raise ValueError(
+                                        f"Delivery blocked: email target "
+                                        f"'{_email_target}' is a {_contact_desc} "
+                                        f"and no standing approval rule matches. "
+                                        f"Create a standing rule or approve via "
+                                        f"the approval dashboard."
+                                    )
+                                else:
+                                    logger.info(
+                                        "route.execute email gate: standing rule %s "
+                                        "permits delivery to %r",
+                                        _gate_rule.id,
+                                        _email_target,
+                                    )
+
                     raw_subject = notify_request.delivery.subject or "Notification"
                     normalized_subject = (
                         raw_subject
@@ -4293,7 +4354,10 @@ class ButlerDaemon:
 
             # Validate email recipients against known contacts.
             # This prevents LLM-hallucinated addresses from reaching delivery.
-            if channel == "email" and resolved_recipient is not None and contact_id is None:
+            # NOTE: runs regardless of whether contact_id was used for resolution.
+            # The contact_id path resolves to an email address but does NOT verify
+            # that the address belongs to a known, non-temporary contact.
+            if channel == "email" and resolved_recipient is not None:
                 pool = daemon.db.pool if daemon.db is not None else None
                 if pool is not None:
                     from butlers.identity import resolve_contact_by_channel
