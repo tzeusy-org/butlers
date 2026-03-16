@@ -111,10 +111,13 @@ def routing_results(
         elapsed = time.monotonic() - t_start
         avg = elapsed / (i + 1)
         eta = avg * (total - i - 1)
+        ok = sum(1 for r in results if r.get("routed_to"))
+        err = len(results) - ok
         status = result["routed_to"] or "ERR"
         sys.stderr.write(
             f"\r  switchboard [{i + 1}/{total}] "
             f"{status:<12s} "
+            f"ok={ok} err={err}  "
             f"({elapsed:.0f}s elapsed, ~{eta:.0f}s remaining)   "
         )
         sys.stderr.flush()
