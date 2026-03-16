@@ -324,7 +324,7 @@ class RouteRequestContextV1(BaseModel):
         )
 
 
-_ALLOWED_COMPLEXITY_VALUES: frozenset[str] = frozenset({"trivial", "medium", "high", "extra_high"})
+_ALLOWED_COMPLEXITY_VALUES: frozenset[str] = frozenset({"trivial", "medium", "high", "extra_high", "discretion"})
 
 
 class RouteInputV1(BaseModel):
