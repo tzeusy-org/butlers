@@ -230,6 +230,10 @@ class PolicyTierAssigner:
         # - user address in To or Cc
         # - no List-Unsubscribe header
         # - no bulk signal in Precedence
+        # NOTE: uses high_priority, NOT interactive.  Email is inherently
+        # asynchronous — the interactive tier is reserved for chat channels
+        # (Telegram, WhatsApp, Discord, Slack) where there is a live
+        # conversation loop.
         to_header = _header_value(headers, "To") or ""
         cc_header = _header_value(headers, "Cc") or ""
         all_recipients = _extract_addresses(to_header) + _extract_addresses(cc_header)
@@ -241,7 +245,7 @@ class PolicyTierAssigner:
         has_bulk_precedence = precedence.strip().lower() in ("bulk", "list")
 
         if user_is_recipient and not has_list_unsubscribe and not has_bulk_precedence:
-            return POLICY_TIER_INTERACTIVE, RULE_DIRECT_CORRESPONDENCE
+            return POLICY_TIER_HIGH_PRIORITY, RULE_DIRECT_CORRESPONDENCE
 
         # Rule 4: Default fallback
         return POLICY_TIER_DEFAULT, RULE_FALLBACK_DEFAULT

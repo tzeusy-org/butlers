@@ -189,7 +189,6 @@ class TestAttachmentPolicyEnforcement:
         from butlers.connectors.gmail_policy import (
             POLICY_TIER_DEFAULT,
             POLICY_TIER_HIGH_PRIORITY,
-            POLICY_TIER_INTERACTIVE,
             PolicyTierAssigner,
         )
 
@@ -204,10 +203,10 @@ class TestAttachmentPolicyEnforcement:
         tier2, _rule2 = assigner.assign("unknown@bulk.com", {})
         assert tier2 == POLICY_TIER_DEFAULT
 
-        # Direct correspondence gets interactive
+        # Direct correspondence gets high_priority (email is async, not interactive)
         headers = {"To": "me@example.com"}
         tier3, _rule3 = assigner.assign("colleague@work.com", headers)
-        assert tier3 == POLICY_TIER_INTERACTIVE
+        assert tier3 == POLICY_TIER_HIGH_PRIORITY
 
 
 # ===========================================================================

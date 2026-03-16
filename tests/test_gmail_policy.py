@@ -25,7 +25,6 @@ from butlers.connectors.gmail_policy import (
     INGESTION_TIER_SKIP,
     POLICY_TIER_DEFAULT,
     POLICY_TIER_HIGH_PRIORITY,
-    POLICY_TIER_INTERACTIVE,
     RULE_DIRECT_CORRESPONDENCE,
     RULE_FALLBACK_DEFAULT,
     RULE_KNOWN_CONTACT,
@@ -298,13 +297,18 @@ class TestPolicyTierAssigner:
         assert tier == POLICY_TIER_HIGH_PRIORITY
         assert rule == RULE_REPLY_TO_OUTBOUND
 
-    def test_direct_correspondence_interactive(self) -> None:
+    def test_direct_correspondence_high_priority(self) -> None:
+        """Direct email correspondence gets high_priority, NOT interactive.
+
+        Email is inherently asynchronous — interactive tier is reserved
+        for chat channels (Telegram, WhatsApp, Discord, Slack).
+        """
         assigner = _make_tier_assigner(user_email="user@example.com")
         tier, rule = assigner.assign(
             "sender@example.com",
             {"To": "user@example.com", "Cc": ""},
         )
-        assert tier == POLICY_TIER_INTERACTIVE
+        assert tier == POLICY_TIER_HIGH_PRIORITY
         assert rule == RULE_DIRECT_CORRESPONDENCE
 
     def test_list_unsubscribe_prevents_interactive(self) -> None:
@@ -371,7 +375,7 @@ class TestPolicyTierAssigner:
             "sender@example.com",
             {"To": "other@example.com", "Cc": "user@example.com"},
         )
-        assert tier == POLICY_TIER_INTERACTIVE
+        assert tier == POLICY_TIER_HIGH_PRIORITY
         assert rule == RULE_DIRECT_CORRESPONDENCE
 
     def test_case_insensitive_header_lookup(self) -> None:
@@ -380,7 +384,7 @@ class TestPolicyTierAssigner:
             "sender@example.com",
             {"to": "user@example.com"},
         )
-        assert tier == POLICY_TIER_INTERACTIVE
+        assert tier == POLICY_TIER_HIGH_PRIORITY
         assert rule == RULE_DIRECT_CORRESPONDENCE
 
     def test_empty_user_email_no_crash(self) -> None:
@@ -399,7 +403,7 @@ class TestPolicyTierAssigner:
             {"In-Reply-To": "<abc123@mail.example.com>"},
         )
         # Falls through to direct correspondence or default
-        assert tier in (POLICY_TIER_INTERACTIVE, POLICY_TIER_DEFAULT)
+        assert tier in (POLICY_TIER_HIGH_PRIORITY, POLICY_TIER_DEFAULT)
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +493,7 @@ class TestEvaluateMessagePolicy:
         assert result.policy_tier == POLICY_TIER_HIGH_PRIORITY
         assert result.assignment_rule == RULE_KNOWN_CONTACT
 
-    def test_direct_correspondence_gets_interactive_policy_tier(self) -> None:
+    def test_direct_correspondence_gets_high_priority_policy_tier(self) -> None:
         msg = _make_message(
             labels=["INBOX"],
             from_addr="sender@example.com",
@@ -500,7 +504,7 @@ class TestEvaluateMessagePolicy:
             label_filter=_make_label_filter(),
             tier_assigner=_make_tier_assigner(user_email="user@example.com"),
         )
-        assert result.policy_tier == POLICY_TIER_INTERACTIVE
+        assert result.policy_tier == POLICY_TIER_HIGH_PRIORITY
 
     def test_label_excluded_skips(self) -> None:
         msg = _make_message(labels=["SPAM"], from_addr="alice@example.com")
@@ -601,13 +605,13 @@ class TestBuildIngestEnvelopeTiers:
         policy = MessagePolicyResult(
             should_ingest=True,
             ingestion_tier=INGESTION_TIER_FULL,
-            policy_tier=POLICY_TIER_INTERACTIVE,
+            policy_tier=POLICY_TIER_HIGH_PRIORITY,
             assignment_rule=RULE_DIRECT_CORRESPONDENCE,
             filter_reason="label_allowed",
             triage_action="pass_through",
         )
         envelope = await runtime._build_ingest_envelope(msg, policy_result=policy)
-        assert envelope["control"]["policy_tier"] == POLICY_TIER_INTERACTIVE
+        assert envelope["control"]["policy_tier"] == POLICY_TIER_HIGH_PRIORITY
 
 
 # ---------------------------------------------------------------------------
