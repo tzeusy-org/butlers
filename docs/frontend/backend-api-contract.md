@@ -49,11 +49,6 @@ Required query filters for list endpoints:
 - `since` (ISO timestamp)
 - `until` (ISO timestamp)
 
-## Traces Contract
-
-- `GET /api/traces` -> `PaginatedResponse<TraceSummary>`
-- `GET /api/traces/{traceId}` -> `ApiResponse<TraceDetail>`
-
 ## Timeline Contract
 
 - `GET /api/timeline` -> `TimelineResponse`

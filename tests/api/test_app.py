@@ -74,13 +74,13 @@ class TestAppFactory:
 
 
 class TestRouteSlashBehavior:
-    async def test_traces_preflight_without_trailing_slash(self):
+    async def test_health_preflight_without_trailing_slash(self):
         app = create_app(cors_origins=["http://localhost:41173"])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.options(
-                "/api/traces?offset=0&limit=20",
+                "/api/health",
                 headers={
                     "origin": "http://localhost:41173",
                     "access-control-request-method": "GET",
@@ -88,55 +88,6 @@ class TestRouteSlashBehavior:
             )
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == "http://localhost:41173"
-
-
-class TestTracesRouterMounted:
-    """Verify the traces router is registered in the FastAPI app."""
-
-    def test_traces_list_route_exists(self):
-        """GET /api/traces must be a registered route (not 404/405)."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from butlers.api.db import DatabaseManager
-        from butlers.api.routers.traces import _get_db_manager
-
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.fan_out = AsyncMock(return_value={})
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-        from fastapi.testclient import TestClient
-
-        client = TestClient(app, raise_server_exceptions=False)
-        response = client.get("/api/traces")
-        assert response.status_code != 404, (
-            "GET /api/traces returned 404 — traces router is not mounted"
-        )
-
-    def test_traces_detail_route_exists(self):
-        """GET /api/traces/{trace_id} must be a registered route (not 404)."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from butlers.api.db import DatabaseManager
-        from butlers.api.routers.traces import _get_db_manager
-
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.fan_out = AsyncMock(return_value={})
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-        from fastapi.testclient import TestClient
-
-        client = TestClient(app, raise_server_exceptions=False)
-        response = client.get("/api/traces/no-such-trace")
-        assert response.status_code == 404
-        # A real 404 from the endpoint (trace not found) differs from
-        # FastAPI's routing 404. The endpoint returns {"detail": "Trace ..."}
-        assert "Trace" in response.json().get("detail", ""), (
-            "Expected trace-not-found detail from the endpoint, got routing 404"
-        )
 
 
 class TestLifespan:

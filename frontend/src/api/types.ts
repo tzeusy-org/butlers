@@ -151,48 +151,6 @@ export interface HealthResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Traces
-// ---------------------------------------------------------------------------
-
-/** A recursive span node in a trace tree. */
-export interface SpanNode {
-  id: string;
-  butler: string;
-  prompt: string;
-  trigger_source: string;
-  success: boolean | null;
-  started_at: string;
-  completed_at: string | null;
-  duration_ms: number | null;
-  model: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  parent_session_id: string | null;
-  children: SpanNode[];
-}
-
-/** Lightweight trace representation for list views. */
-export interface TraceSummary {
-  trace_id: string;
-  root_butler: string;
-  span_count: number;
-  total_duration_ms: number | null;
-  started_at: string;
-  status: string; // "success" | "failed" | "running" | "partial"
-}
-
-/** Full trace detail including the span tree. */
-export interface TraceDetail extends TraceSummary {
-  spans: SpanNode[];
-}
-
-/** Query parameters for trace list endpoints. */
-export interface TraceParams {
-  offset?: number;
-  limit?: number;
-}
-
-// ---------------------------------------------------------------------------
 // Notifications
 // ---------------------------------------------------------------------------
 

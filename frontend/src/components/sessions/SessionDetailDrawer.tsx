@@ -294,7 +294,7 @@ export function SessionDetailDrawer({
                   </h3>
                   <div className="flex items-center gap-2">
                     <Link
-                      to={`/traces/${encodeURIComponent(session.trace_id)}`}
+                      to="/ingestion?tab=timeline"
                       className="text-xs font-mono text-primary underline underline-offset-2 hover:text-primary/80 transition-colors truncate max-w-[200px]"
                     >
                       {session.trace_id}

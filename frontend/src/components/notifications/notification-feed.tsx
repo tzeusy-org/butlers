@@ -148,7 +148,7 @@ export function NotificationFeed({
                   {n.trace_id && (
                     <Link
                       className="text-primary underline underline-offset-2 hover:text-primary/80"
-                      to={`/traces/${encodeURIComponent(n.trace_id)}`}
+                      to="/ingestion?tab=timeline"
                     >
                       Trace {shortId(n.trace_id)}
                     </Link>

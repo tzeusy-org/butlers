@@ -58,8 +58,6 @@ export const router = createBrowserRouter(
         { path: '/butlers/:name', element: <ButlerDetailPage /> },
         { path: '/sessions', element: <SessionsPage /> },
         { path: '/sessions/:id', element: <SessionDetailPage /> },
-        { path: '/traces', element: <Navigate to="/ingestion?tab=timeline" replace /> },
-        { path: '/traces/:traceId', element: <Navigate to="/ingestion?tab=timeline" replace /> },
         { path: '/timeline', element: <TimelinePage /> },
         { path: '/notifications', element: <NotificationsPage /> },
         { path: '/issues', element: <IssuesPage /> },
