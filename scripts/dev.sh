@@ -818,10 +818,10 @@ tmux send-keys -t "$PANE_TELEGRAM_BOT" \
   "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_bot uv run python -m butlers.connectors.telegram_bot" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_user_client TELEGRAM_USER_DISCRETION_LLM_URL=https://ollama.parrot-hen.ts.net/v1 TELEGRAM_USER_DISCRETION_LLM_MODEL=gemma3:12b uv run python -m butlers.connectors.telegram_user_client" Enter
+  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_user_client uv run python -m butlers.connectors.telegram_user_client" Enter
 
 tmux send-keys -t "$PANE_LIVE_LISTENER" \
-  "${ENV_LOADER} && if [ -f \"$LIVE_LISTENER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$LIVE_LISTENER_CONNECTOR_ENV_FILE\" && set +a; fi && uv sync --extra live-listener -q && CONNECTOR_PROVIDER=live-listener CONNECTOR_CHANNEL=voice LIVE_LISTENER_DEVICES='[{\"name\":\"webcam\",\"device\":\"hw:2,0\"}]' LIVE_LISTENER_DISCRETION_LLM_URL=https://ollama.parrot-hen.ts.net/v1 LIVE_LISTENER_DISCRETION_LLM_MODEL=gemma3:12b CONNECTOR_HEALTH_PORT=40091 uv run python -m butlers.connectors.live_listener" Enter
+  "${ENV_LOADER} && if [ -f \"$LIVE_LISTENER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$LIVE_LISTENER_CONNECTOR_ENV_FILE\" && set +a; fi && uv sync --extra live-listener -q && CONNECTOR_PROVIDER=live-listener CONNECTOR_CHANNEL=voice LIVE_LISTENER_DEVICES='[{\"name\":\"webcam\",\"device\":\"hw:2,0\"}]' CONNECTOR_HEALTH_PORT=40091 uv run python -m butlers.connectors.live_listener" Enter
 
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)

@@ -157,8 +157,6 @@ Optional:
 - `LIVE_LISTENER_VAD_ONSET_THRESHOLD`: VAD onset threshold (default: `0.5`)
 - `LIVE_LISTENER_VAD_OFFSET_THRESHOLD`: VAD offset threshold (default: `0.3`)
 - `LIVE_LISTENER_SESSION_GAP_S`: Silence gap (seconds) that starts a new session (default: `120`)
-- `LIVE_LISTENER_DISCRETION_LLM_URL`: LLM endpoint for discretion filter (default: local Ollama)
-- `LIVE_LISTENER_DISCRETION_LLM_MODEL`: LLM model name (default: `haiku`)
 
 ### Health
 

@@ -292,7 +292,6 @@ Configuration via environment variables extending the base connector variables.
 #### Scenario: Discretion model selection
 - **WHEN** the connector starts
 - **THEN** the discretion model is resolved from the shared model catalog at the `discretion` complexity tier (managed via the Settings UI at `/butlers/settings`)
-- **AND** the `LIVE_LISTENER_DISCRETION_LLM_URL` and `LIVE_LISTENER_DISCRETION_LLM_MODEL` environment variables are no longer used (model selection is catalog-driven)
 
 #### Scenario: Optional session variables
 - **WHEN** the connector starts

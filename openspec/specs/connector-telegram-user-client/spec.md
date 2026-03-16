@@ -178,7 +178,6 @@ The Telegram user client connector uses the shared discretion layer (`butlers.co
 #### Scenario: Discretion model selection
 - **WHEN** the connector starts
 - **THEN** the discretion model is resolved from the shared model catalog at the `discretion` complexity tier (managed via the Settings UI at `/butlers/settings`)
-- **AND** the `TELEGRAM_USER_DISCRETION_LLM_URL` and `TELEGRAM_USER_DISCRETION_LLM_MODEL` environment variables are no longer used (model selection is catalog-driven)
 - **AND** window/weight configuration (`window_size`, `window_seconds`, `weight_bypass`, `weight_fail_open`) is passed directly to the `DiscretionEvaluator` constructor
 
 ### Requirement: Environment Variables

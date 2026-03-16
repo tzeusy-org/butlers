@@ -116,7 +116,7 @@ Ingestion policy and discretion evaluation SHALL operate on the batch as a whole
 - **AND** policy decisions apply to the entire batch (not per-message)
 
 #### Scenario: Discretion evaluation on new messages
-- **WHEN** the discretion layer is enabled (`TELEGRAM_USER_DISCRETION_LLM_URL` configured)
+- **WHEN** the discretion layer is enabled
 - **THEN** discretion is evaluated on the concatenated `normalized_text` (new messages only)
 - **AND** an IGNORE verdict drops the entire batch
 

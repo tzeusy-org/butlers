@@ -73,8 +73,8 @@ class LiveListenerConfig:
     min_confidence: float = 0.3
 
     # --- Discretion ---
-    # Note: model selection is catalog-driven (discretion tier); LLM_URL/LLM_MODEL env vars
-    # are no longer used. Window and timeout parameters remain operator-configurable.
+    # Model selection is catalog-driven (discretion tier). Window and timeout
+    # parameters remain operator-configurable.
     discretion_timeout_s: float = 3.0
     discretion_window_size: int = 10
     discretion_window_seconds: int = 300

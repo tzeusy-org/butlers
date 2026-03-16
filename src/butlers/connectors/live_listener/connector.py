@@ -30,7 +30,7 @@ Optional:
   LIVE_LISTENER_DISCRETION_TIMEOUT_S       LLM call hard timeout in seconds (default: 3)
   LIVE_LISTENER_DISCRETION_WINDOW_SIZE     Context window size for discretion (default: 10)
   LIVE_LISTENER_DISCRETION_WINDOW_SECONDS  Context window age cap in seconds (default: 300)
-  LIVE_LISTENER_SESSION_GAP_S
+  LIVE_LISTENER_SESSION_GAP_S              Silence gap that starts a new session
 
 Spec references:
   openspec/changes/connector-live-listener/specs/connector-live-listener/spec.md

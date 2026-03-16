@@ -439,7 +439,7 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 #### Scenario: Discretion configuration
 - **WHEN** a connector uses the discretion layer
 - **THEN** the `DiscretionEvaluator` accepts configuration for: `window_size` (default: 10), `window_seconds` (default: 300), `weight_bypass` (default: 1.0), `weight_fail_open` (default: 0.5), and `system_prompt`
-- **AND** model selection (previously via `{PREFIX}DISCRETION_LLM_URL` / `{PREFIX}DISCRETION_LLM_MODEL` env vars) is handled entirely by the model catalog
+- **AND** model selection is handled entirely by the model catalog
 
 #### Scenario: Fail-open by default
 - **WHEN** the discretion LLM call fails (timeout, connection error, malformed response)
