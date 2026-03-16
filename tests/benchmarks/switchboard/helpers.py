@@ -1,11 +1,14 @@
 """Shared helpers for switchboard routing benchmarks.
 
-The system prompt is derived from the production switchboard's message-triage
-skill (roster/switchboard/.agents/skills/message-triage/SKILL.md) and routing
-prompt builder (src/butlers/modules/pipeline.py::_build_routing_prompt).
+Uses the **real production code** for prompt construction:
+- ``_build_routing_prompt`` from ``src/butlers/modules/pipeline.py``
+- ``_format_capabilities`` from ``roster/switchboard/tools/routing/classify.py``
+- Classification rules from the production ``message-triage`` SKILL.md
 
-Adapted for local Ollama models: instead of MCP tool calls, the model responds
-with a single butler name.
+The only adaptation for local Ollama models: the SKILL.md content is injected
+as a system prompt (since local models don't have Claude Code's skill-loading
+system), and the output format asks for a single butler name instead of MCP
+tool calls.
 """
 
 from __future__ import annotations
@@ -13,8 +16,14 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
+
+# ---------------------------------------------------------------------------
+# Import the REAL production prompt builder
+# ---------------------------------------------------------------------------
+from butlers.modules.pipeline import _build_routing_prompt
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -23,16 +32,78 @@ VALID_BUTLERS = frozenset({
 })
 
 # ---------------------------------------------------------------------------
-# System prompt — derived from production message-triage SKILL.md
+# Butler registry snapshot — matches production switchboard.butler_registry.
+# Used instead of a live DB query to avoid a runtime dependency.
+# Update if butlers are added/removed/renamed.
 # ---------------------------------------------------------------------------
 
-# Read the real SKILL.md at import time so the benchmark always tracks
-# the production classification rules.
+BUTLER_REGISTRY: list[dict[str, Any]] = [
+    {
+        "name": "education",
+        "description": (
+            "Personalized tutor with spaced repetition, mind maps,"
+            " and adaptive learning"
+        ),
+        "modules": ["education", "memory", "contacts"],
+    },
+    {
+        "name": "finance",
+        "description": (
+            "Personal finance specialist for receipts, bills,"
+            " subscriptions, and transaction alerts."
+        ),
+        "modules": ["email", "calendar", "memory", "finance"],
+    },
+    {
+        "name": "general",
+        "description": "Flexible catch-all assistant for freeform data",
+        "modules": ["calendar", "contacts", "general", "memory"],
+    },
+    {
+        "name": "health",
+        "description": (
+            "Health tracking assistant for measurements, medications,"
+            " diet, food preferences, nutrition, meals, and symptoms"
+        ),
+        "modules": [
+            "calendar", "contacts", "health", "home_assistant", "memory",
+        ],
+    },
+    {
+        "name": "home",
+        "description": (
+            "Smart home automation orchestrator for comfort, energy,"
+            " and device management"
+        ),
+        "modules": ["home_assistant", "memory", "contacts", "approvals"],
+    },
+    {
+        "name": "relationship",
+        "description": (
+            "Personal CRM. Manages contacts, relationships, important"
+            " dates, interactions, gifts, and reminders."
+        ),
+        "modules": ["calendar", "contacts", "memory", "relationship"],
+    },
+    {
+        "name": "travel",
+        "description": (
+            "Travel logistics and itinerary intelligence specialist"
+            " for flights, hotels, car rentals, and trip planning."
+        ),
+        "modules": ["email", "calendar", "memory"],
+    },
+]
+
+# ---------------------------------------------------------------------------
+# System prompt — production SKILL.md with benchmark output format
+# ---------------------------------------------------------------------------
+
 _SKILL_PATH = (
-    Path(__file__).resolve().parents[2]  # tests/benchmarks/switchboard -> repo root/tests
-    / ".."  # -> repo root
-    / "roster" / "switchboard" / ".agents" / "skills" / "message-triage" / "SKILL.md"
-).resolve()
+    Path(__file__).resolve().parents[3]  # tests/benchmarks/switchboard -> repo root
+    / "roster" / "switchboard" / ".agents" / "skills"
+    / "message-triage" / "SKILL.md"
+)
 
 _BENCH_PREAMBLE = """\
 You are a message router for a personal assistant system. Your job is to \
@@ -51,90 +122,78 @@ _BENCH_SUFFIX = """
 REMINDER: Reply with EXACTLY one butler name and nothing else."""
 
 
-def _load_system_prompt() -> str:
-    """Build the benchmark system prompt from the production SKILL.md."""
-    if _SKILL_PATH.exists():
-        skill_text = _SKILL_PATH.read_text()
-        # Strip YAML frontmatter
-        if skill_text.startswith("---"):
-            end = skill_text.find("---", 3)
-            if end != -1:
-                skill_text = skill_text[end + 3:].strip()
-        # Strip sections that reference MCP tool calls (not available in benchmark)
-        # Keep classification rules, safety rules, confidence scoring, decision matrix
-        sections_to_strip = [
-            "## Execution Contract",
-            "## Routing via `route_to_butler` Tool",
-            "## Outbound Delivery via `notify` Tool",
-            "## Implementation Notes",
-        ]
-        for section in sections_to_strip:
-            idx = skill_text.find(section)
-            if idx == -1:
-                continue
-            # Find next ## heading or end of text
-            next_heading = skill_text.find("\n## ", idx + len(section))
-            if next_heading != -1:
-                skill_text = skill_text[:idx] + skill_text[next_heading:]
-            else:
-                skill_text = skill_text[:idx]
-        return _BENCH_PREAMBLE + skill_text.strip() + _BENCH_SUFFIX
-    # Fallback if SKILL.md not found (shouldn't happen in repo)
-    return _BENCH_PREAMBLE + _FALLBACK_RULES + _BENCH_SUFFIX
+def _load_skill_text() -> str:
+    """Load and clean the production SKILL.md."""
+    if not _SKILL_PATH.exists():
+        return ""
+    skill_text = _SKILL_PATH.read_text()
+    # Strip YAML frontmatter
+    if skill_text.startswith("---"):
+        end = skill_text.find("---", 3)
+        if end != -1:
+            skill_text = skill_text[end + 3:].strip()
+    # Strip sections that reference MCP tool calls (not available in benchmark)
+    for section in [
+        "## Execution Contract",
+        "## Routing via `route_to_butler` Tool",
+        "## Outbound Delivery via `notify` Tool",
+        "## Implementation Notes",
+    ]:
+        idx = skill_text.find(section)
+        if idx == -1:
+            continue
+        next_heading = skill_text.find("\n## ", idx + len(section))
+        if next_heading != -1:
+            skill_text = skill_text[:idx] + skill_text[next_heading:]
+        else:
+            skill_text = skill_text[:idx]
+    return skill_text.strip()
 
 
-_FALLBACK_RULES = """\
-## Available Butlers
+ROUTING_SYSTEM_PROMPT = _BENCH_PREAMBLE + _load_skill_text() + _BENCH_SUFFIX
 
-- finance: Receipts, invoices, bills, subscriptions, transaction alerts, spending queries
-- relationship: Contacts, interactions, reminders, gifts, social events
-- health: Medications, measurements, conditions, symptoms, exercise, diet, nutrition
-- travel: Flight bookings, hotel reservations, car rentals, trip itineraries, travel documents
-- education: Personalized tutoring, quizzes, spaced repetition, learning progress
-- home: Smart home devices, automations, scenes, energy management, comfort settings
-- general: Last-resort fallback — only when no specialist butler matches
 
-## Routing Safety Rules
-
-- All food, meal, and nutrition mentions route to health (not general)
-- Finance wins on explicit payment/billing/subscription semantics
-- Travel wins on explicit booking/itinerary/flight semantics
-- Education wins on explicit learning/teaching/quiz intent or technical questions
-- Education does NOT capture health questions without tutoring intent
-- General is last-resort only — never route to general if a specialist matches
-"""
-
-ROUTING_SYSTEM_PROMPT = _load_system_prompt()
+# ---------------------------------------------------------------------------
+# Prompt construction — uses real production _build_routing_prompt
+# ---------------------------------------------------------------------------
 
 
 def build_routing_prompt(entry: dict) -> str:
-    """Build a routing prompt from a scenario entry.
+    """Build a routing prompt using the production prompt builder.
 
-    Mirrors production's JSON-encoded message format from _build_routing_prompt.
+    Calls ``_build_routing_prompt`` from ``src/butlers/modules/pipeline.py``
+    with the real butler registry, ensuring the benchmark prompt matches
+    production exactly (butler descriptions, capability formatting, JSON
+    message encoding).
     """
-    import json
-    encoded = json.dumps({"message": entry["text"]}, ensure_ascii=False)
-    return f"Route this message to the appropriate butler.\n\nUser input JSON:\n{encoded}"
+    return _build_routing_prompt(
+        message=entry["text"],
+        butlers=BUTLER_REGISTRY,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Response parsing
+# ---------------------------------------------------------------------------
 
 
 def parse_butler(raw: str) -> str | None:
-    """Extract a valid butler name from model output.
-
-    Returns the butler name if found, or None if unparseable.
-    """
+    """Extract a valid butler name from model output."""
     cleaned = _THINK_RE.sub("", raw).strip().lower()
-    # Exact match
     if cleaned in VALID_BUTLERS:
         return cleaned
-    # First word match (model might add explanation)
     first_word = cleaned.split()[0].strip(".:,\"'") if cleaned else ""
     if first_word in VALID_BUTLERS:
         return first_word
-    # Search for any butler name in the response
     for butler in VALID_BUTLERS:
         if re.search(rf"\b{butler}\b", cleaned):
             return butler
     return None
+
+
+# ---------------------------------------------------------------------------
+# LLM call
+# ---------------------------------------------------------------------------
 
 
 def call_routing(
