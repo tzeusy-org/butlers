@@ -123,6 +123,7 @@ export {
   getExecutedActions,
   getRuleSuggestions,
   rejectAction,
+  retryAction,
   revokeApprovalRule,
   setPrimaryCalendar,
   syncCalendarWorkspace,

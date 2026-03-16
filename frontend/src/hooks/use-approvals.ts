@@ -12,6 +12,7 @@ import {
   getExecutedActions,
   getRuleSuggestions,
   rejectAction,
+  retryAction,
   revokeApprovalRule,
 } from "@/api/index.ts";
 import type {
@@ -105,6 +106,16 @@ export function useRejectAction() {
   return useMutation({
     mutationFn: ({ actionId, request }: { actionId: string; request: ApprovalActionRejectRequest }) =>
       rejectAction(actionId, request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: approvalKeys.all });
+    },
+  });
+}
+
+export function useRetryAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (actionId: string) => retryAction(actionId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: approvalKeys.all });
     },

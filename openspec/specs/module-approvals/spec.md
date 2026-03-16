@@ -284,6 +284,47 @@ Module config is declared under `[modules.approvals]` in `butler.toml`.
 - **WHEN** `[modules.approvals]` is absent or `enabled = false`
 - **THEN** the module does not wrap any tools and no approval gates are active
 
+#### Scenario: Gated tools completeness for outbound butlers
+
+- **WHEN** a butler registers outbound communication tools (send, reply, or delivery tools for any channel)
+- **THEN** ALL such tools MUST be listed in the butler's `gated_tools` config
+- **AND** omitting any registered outbound tool from `gated_tools` is a spec violation
+
+### Requirement: Defense-in-Depth at the Delivery Layer
+
+The approval gate operates at two layers. Both MUST enforce gating independently.
+
+**Layer 1 — MCP tool wrapping** (gate.py): Intercepts gated tool calls at the MCP boundary before the tool handler runs. This is the primary gate for direct tool invocations.
+
+**Layer 2 — route.execute inline gate** (daemon.py): The Messenger butler's `route.execute` handler calls module methods directly (e.g., `_send_email()`, `_send_message()`), bypassing MCP tool wrappers entirely. An inline approval gate MUST re-enforce role-based gating at this layer for every outbound channel.
+
+#### Scenario: route.execute enforces approval gate for email delivery
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="email"`
+- **THEN** it MUST resolve the target contact by email address via `shared.contacts`
+- **AND** if the target contact is NOT an owner, it MUST check standing approval rules
+- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if the target is an owner, delivery proceeds without rule check
+
+#### Scenario: route.execute enforces approval gate for telegram delivery
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="telegram"` and `intent` of `"send"` or `"reply"`
+- **THEN** it MUST resolve the target contact by telegram chat ID via `shared.contacts`
+- **AND** if the target contact is NOT an owner, it MUST check standing approval rules
+- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if the target is an owner, delivery proceeds without rule check
+
+#### Scenario: route.execute skips gate for emoji reactions
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="telegram"` and `intent="react"`
+- **THEN** the inline approval gate is NOT applied (reactions are low-risk, non-content operations)
+
+#### Scenario: All channels have parity
+
+- **WHEN** a new outbound channel is added to the Messenger butler
+- **THEN** the `route.execute` handler MUST include an inline approval gate for that channel matching the email/telegram pattern
+- **AND** the absence of an inline gate for any outbound channel is a spec violation
+
 ### Requirement: Authorization Model
 
 The approvals module is a single-user control surface. Decision-bearing actions require authenticated human identity.

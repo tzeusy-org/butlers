@@ -19,6 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   useApproveAction,
   useRejectAction,
+  useRetryAction,
 } from "@/hooks/use-approvals";
 
 interface ActionDetailDialogProps {
@@ -49,10 +50,12 @@ export function ActionDetailDialog({
 
   const approveMutation = useApproveAction();
   const rejectMutation = useRejectAction();
+  const retryMutation = useRetryAction();
 
   if (!action) return null;
 
   const isPending = action.status === "pending";
+  const canRetry = action.status === "approved" && !action.execution_result;
 
   function handleApprove() {
     if (!action) return;
@@ -80,9 +83,18 @@ export function ActionDetailDialog({
     );
   }
 
+  function handleRetry() {
+    if (!action) return;
+    retryMutation.mutate(action.id, {
+      onSuccess: () => {
+        onOpenChange(false);
+      },
+    });
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-[72rem] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Approval Action Detail</DialogTitle>
           <DialogDescription>
@@ -105,7 +117,7 @@ export function ActionDetailDialog({
 
           <div>
             <Label className="text-muted-foreground">Tool Arguments</Label>
-            <pre className="mt-1 rounded-md bg-muted p-3 text-xs overflow-x-auto">
+            <pre className="mt-1 rounded-md bg-muted p-3 text-xs overflow-x-auto whitespace-pre-wrap break-words">
               {JSON.stringify(action.tool_args, null, 2)}
             </pre>
           </div>
@@ -193,7 +205,7 @@ export function ActionDetailDialog({
           {action.execution_result && (
             <div>
               <Label className="text-muted-foreground">Execution Result</Label>
-              <pre className="mt-1 rounded-md bg-muted p-3 text-xs overflow-x-auto">
+              <pre className="mt-1 rounded-md bg-muted p-3 text-xs overflow-x-auto whitespace-pre-wrap break-words">
                 {JSON.stringify(action.execution_result, null, 2)}
               </pre>
             </div>
@@ -241,6 +253,15 @@ export function ActionDetailDialog({
                 disabled={approveMutation.isPending}
               >
                 Approve
+              </Button>
+            </>
+          ) : canRetry ? (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Close
+              </Button>
+              <Button onClick={handleRetry} disabled={retryMutation.isPending}>
+                Retry Dispatch
               </Button>
             </>
           ) : (

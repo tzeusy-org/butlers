@@ -53,6 +53,9 @@ default_risk_tier = "medium"
 [modules.approvals.gated_tools.telegram_send_message]
 risk_tier = "medium"
 
+[modules.approvals.gated_tools.telegram_reply_to_message]
+risk_tier = "medium"
+
 [modules.approvals.gated_tools.email_send_message]
 risk_tier = "medium"
 

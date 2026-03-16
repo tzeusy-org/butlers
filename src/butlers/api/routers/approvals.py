@@ -530,7 +530,7 @@ async def _dispatch_approved_action(
         dispatch_tool = "deliver"
         dispatch_args = dict(tool_args)
         # deliver expects source_butler; notify tool_args don't include it
-        dispatch_args.setdefault("source_butler", "dashboard")
+        dispatch_args.setdefault("source_butler", "switchboard")
         target_butlers = ["switchboard"]
     else:
         dispatch_tool = tool_name
@@ -590,6 +590,68 @@ async def _dispatch_approved_action(
         action_id,
     )
     return None
+
+
+@router.post("/actions/{action_id}/retry")
+async def retry_action(
+    action_id: str,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
+) -> ApiResponse[ApprovalAction]:
+    """Retry dispatch for an approved action that was not yet executed."""
+    try:
+        parsed_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    target_pool = await _find_action_pool(db_mgr, parsed_id)
+    if target_pool is None:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    async with target_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+        )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Action {action_id} not found")
+
+    status = row["status"]
+    if status != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot retry action with status '{status}'; "
+                "only 'approved' actions can be retried"
+            ),
+        )
+
+    if row.get("execution_result") is not None:
+        raise HTTPException(
+            status_code=409, detail="Action already has an execution result"
+        )
+
+    tool_name = row["tool_name"]
+    raw_args = row["tool_args"]
+    tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+
+    dispatch_result = await _dispatch_approved_action(
+        mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args
+    )
+
+    if dispatch_result is None:
+        raise HTTPException(
+            status_code=502, detail="No reachable butler to dispatch action"
+        )
+
+    # Re-read the row to get the final state after execution
+    async with target_pool.acquire() as conn:
+        updated_row = await conn.fetchrow(
+            "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+        )
+    pa = PendingAction.from_row(updated_row or row)
+    tc = await _resolve_target_contact(db_mgr, pa)
+    return ApiResponse(data=_pending_action_to_api(pa, tc))
 
 
 @router.post("/actions/{action_id}/reject")

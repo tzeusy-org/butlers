@@ -1413,6 +1413,15 @@ export function rejectAction(
   );
 }
 
+export function retryAction(
+  actionId: string,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/actions/${encodeURIComponent(actionId)}/retry`,
+    { method: "POST" },
+  );
+}
+
 export function expireStaleActions(
   butler?: string,
   hours?: number,

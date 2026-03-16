@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router";
 import type { ApprovalAction, ApprovalActionParams } from "@/api/types";
 import { ActionTable } from "@/components/approvals/action-table";
 import { ActionDetailDialog } from "@/components/approvals/action-detail-dialog";
 import { ApprovalMetricsBar } from "@/components/approvals/approval-metrics";
+import { HistoryTable } from "@/components/approvals/history-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  useApprovalAction,
   useApprovalActions,
   useApprovalMetrics,
   useExpireStaleActions,
@@ -22,6 +24,8 @@ import {
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 
 const PAGE_SIZE = 20;
+const HISTORY_LIMIT = 10;
+const RESOLVED_STATUSES = new Set(["approved", "rejected", "expired", "executed"]);
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
@@ -45,10 +49,13 @@ const EMPTY_FILTERS: FilterState = {
 };
 
 export default function ApprovalsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [page, setPage] = useState(0);
   const [selectedAction, setSelectedAction] = useState<ApprovalAction | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  const actionIdParam = searchParams.get("action");
 
   useAutoRefresh(); // Auto-refresh enabled
 
@@ -62,7 +69,20 @@ export default function ApprovalsPage() {
 
   const { data: metricsResponse, isLoading: metricsLoading } = useApprovalMetrics();
   const { data: actionsResponse, isLoading: actionsLoading } = useApprovalActions(params);
+  const { data: historyResponse, isLoading: historyLoading } = useApprovalActions({
+    offset: 0,
+    limit: 50,
+  });
+  const { data: deepLinkedAction } = useApprovalAction(actionIdParam ?? "");
   const expireMutation = useExpireStaleActions();
+
+  // Open dialog when ?action=<id> is present and the action data loads
+  useEffect(() => {
+    if (actionIdParam && deepLinkedAction?.data) {
+      setSelectedAction(deepLinkedAction.data);
+      setDialogOpen(true);
+    }
+  }, [actionIdParam, deepLinkedAction]);
 
   const metrics = metricsResponse?.data;
   const actions = actionsResponse?.data ?? [];
@@ -86,6 +106,20 @@ export default function ApprovalsPage() {
   function handleActionClick(action: ApprovalAction) {
     setSelectedAction(action);
     setDialogOpen(true);
+    setSearchParams((prev) => {
+      prev.set("action", action.id);
+      return prev;
+    });
+  }
+
+  function handleDialogClose(open: boolean) {
+    setDialogOpen(open);
+    if (!open) {
+      setSearchParams((prev) => {
+        prev.delete("action");
+        return prev;
+      });
+    }
   }
 
   function handleExpireStale() {
@@ -93,6 +127,10 @@ export default function ApprovalsPage() {
       expireMutation.mutate({});
     }
   }
+
+  const historyActions = (historyResponse?.data ?? [])
+    .filter((a) => RESOLVED_STATUSES.has(a.status))
+    .slice(0, HISTORY_LIMIT);
 
   const hasActiveFilters =
     filters.tool_name !== "" || filters.status !== "pending" || filters.butler !== "";
@@ -220,11 +258,25 @@ export default function ApprovalsPage() {
         </CardContent>
       </Card>
 
+      {/* History */}
+      <Card>
+        <CardHeader>
+          <CardTitle>History</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {historyLoading ? (
+            <div className="text-center text-muted-foreground py-8">Loading...</div>
+          ) : (
+            <HistoryTable actions={historyActions} onActionClick={handleActionClick} />
+          )}
+        </CardContent>
+      </Card>
+
       {/* Action detail dialog */}
       <ActionDetailDialog
         action={selectedAction}
         open={dialogOpen}
-        onOpenChange={setDialogOpen}
+        onOpenChange={handleDialogClose}
       />
     </div>
   );

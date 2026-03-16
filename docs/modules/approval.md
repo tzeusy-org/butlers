@@ -36,6 +36,12 @@ This document is the authoritative module contract for approval-gated actions (f
 - Cross-butler shared approval storage.
 - Policy engines external to butler runtime.
 
+## 3.1 End-to-End Flow Diagram
+
+![Approval-Gating Flow](approval-flow.png)
+
+*Source: [approval-flow.excalidraw](approval-flow.excalidraw)*
+
 ## 4. Runtime Architecture Contract
 ### 4.1 Local components (per hosting butler)
 - `Gate wrapper`: wraps configured MCP tools and intercepts calls.
@@ -59,7 +65,19 @@ This document is the authoritative module contract for approval-gated actions (f
 4. `Audit review`
 - `list_executed_actions` returns executed rows with optional tool/rule/time filters.
 
-### 4.3 Determinism and isolation
+### 4.3 Defense-in-depth: two-layer gating
+
+The approval gate operates at two independent layers. Both MUST enforce gating.
+
+**Layer 1 — MCP tool wrapping** (`gate.py`): Intercepts gated tool calls at the MCP boundary. This is the primary gate for direct tool invocations by LLM sessions.
+
+**Layer 2 — `route.execute` inline gate** (`daemon.py`): The Messenger butler's `route.execute` handler calls channel module methods directly (e.g., `_send_email()`, `_send_message()`), bypassing MCP tool wrappers. An inline approval gate re-enforces role-based gating at this layer for every outbound channel (email, telegram send/reply). Emoji reactions are exempt (low-risk, non-content).
+
+This two-layer design ensures that even if the MCP tool layer is bypassed (e.g., via direct `route.execute` invocation or future code paths), outbound delivery to non-owner contacts cannot proceed without an explicit standing approval rule.
+
+**Completeness requirement**: All outbound communication tools registered by a butler MUST appear in its `gated_tools` config. When a new outbound channel is added, the `route.execute` handler MUST include a corresponding inline gate.
+
+### 4.5 Determinism and isolation
 - Approvals data is local to each butler DB; no cross-butler DB access.
 - Status transitions are explicit and validated.
 - Rule checks use deterministic precedence:
@@ -68,7 +86,7 @@ This document is the authoritative module contract for approval-gated actions (f
   3. newer rule before older
   4. lexical rule id tie-breaker
 
-### 4.4 Reliability
+### 4.6 Reliability
 - Unknown configured gated tools are skipped during wrapping with warning logs.
 - Execution exceptions are captured and persisted as failed execution results while action status still advances to `executed`.
 - Approvals disable cleanly when config is absent or `enabled=false`.

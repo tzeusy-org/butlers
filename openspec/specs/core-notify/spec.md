@@ -153,6 +153,28 @@ The `notify.v1` envelope is carried inside a Switchboard-routed `route.v1` paylo
 - **WHEN** a butler calls `notify()`
 - **THEN** the daemon routes the `notify.v1` envelope through the Switchboard MCP client to the Messenger butler
 
+### Requirement: Messenger route.execute Approval Gate (Defense-in-Depth)
+The Messenger's `route.execute` handler calls channel module methods directly (`_send_email()`, `_send_message()`, `_reply_to_message()`), bypassing MCP tool wrappers. Because the MCP-level approval gate is not in this code path, `route.execute` MUST independently re-enforce role-based approval gating before invoking any outbound channel adapter.
+
+This requirement exists because the delivery architecture has two layers: `notify()` MCP tool → Switchboard `deliver()` → Messenger `route.execute` → direct module call. If only the first layer gates, any bypass of the MCP tool layer (e.g., direct `route.execute` invocation) would allow ungated delivery.
+
+#### Scenario: Messenger route.execute blocks non-owner email without rule
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope with `channel="email"`
+- **AND** the email target resolves to a non-owner contact (or is unknown)
+- **AND** no standing approval rule matches `email_send_message` or `email_reply_to_thread` for that target
+- **THEN** delivery MUST be blocked and a descriptive error returned
+
+#### Scenario: Messenger route.execute blocks non-owner telegram without rule
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope with `channel="telegram"` and `intent` in `("send", "reply")`
+- **AND** the telegram target resolves to a non-owner contact (or is unknown)
+- **AND** no standing approval rule matches `telegram_send_message` or `telegram_reply_to_message` for that target
+- **THEN** delivery MUST be blocked and a descriptive error returned
+
+#### Scenario: Messenger route.execute permits owner delivery without rule
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope
+- **AND** the target contact has the `owner` role
+- **THEN** delivery proceeds immediately without checking standing rules
+
 ### Requirement: [TARGET-STATE] Notify Response Envelope
 Successful delivery returns `notify_response.v1` with `status="ok"` and delivery metadata. Failed delivery returns `status="error"` with canonical error class and message.
 
