@@ -2527,8 +2527,8 @@ class TestFlushChatBufferPipeline:
             return_value=PolicyDecision(action="pass_through", reason="ok")
         )
 
-        # Configure discretion to IGNORE
-        connector._discretion_config.llm_url = "http://localhost:9999/llm"
+        # Configure discretion to IGNORE (set dispatcher non-None to enable gate)
+        connector._discretion_dispatcher = MagicMock()
         mock_discretion = MagicMock()
         mock_discretion.evaluate = AsyncMock(
             return_value=DiscretionResult(verdict="IGNORE", reason="test")
@@ -2757,8 +2757,8 @@ class TestRecordBatchFilteredEventHelper:
             return_value=PolicyDecision(action="pass_through", reason="ok")
         )
 
-        # Configure discretion to IGNORE
-        connector._discretion_config.llm_url = "http://localhost:9999/llm"
+        # Configure discretion to IGNORE (set dispatcher non-None to enable gate)
+        connector._discretion_dispatcher = MagicMock()
         mock_discretion = MagicMock()
         mock_discretion.evaluate = AsyncMock(
             return_value=DiscretionResult(verdict="IGNORE", reason="test")

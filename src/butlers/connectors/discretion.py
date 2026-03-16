@@ -7,36 +7,17 @@ they warrant butler attention (FORWARD) or should be silently discarded
 Design constraints:
 - Sliding context window: last N messages OR last T seconds, whichever is fewer.
 - Fail-open: timeout and errors always default to FORWARD.
-- Configurable LLM backend via environment variables.
-- Hard timeout per call (default 3 s).
+- Hard timeout per call is enforced by the injected dispatcher.
 - Identity-based weight: sender relationship determines fail behaviour and
   bypass thresholds.  Owner messages skip the LLM entirely.
-
-Environment variables use a per-connector prefix (e.g. ``LIVE_LISTENER_``,
-``TELEGRAM_USER_``).  Each connector reads:
-
-    {PREFIX}DISCRETION_LLM_URL
-    {PREFIX}DISCRETION_LLM_MODEL
-    {PREFIX}DISCRETION_TIMEOUT_S
-    {PREFIX}DISCRETION_WINDOW_SIZE
-    {PREFIX}DISCRETION_WINDOW_SECONDS
-    {PREFIX}DISCRETION_WEIGHT_BYPASS      (default 1.0)
-    {PREFIX}DISCRETION_WEIGHT_FAIL_OPEN   (default 0.5)
-
-Falls back to ``CONNECTOR_DISCRETION_*`` if the prefixed var is not set,
-then to built-in defaults.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import time
 from dataclasses import dataclass, field
-from typing import Literal
-
-import httpx
+from typing import Literal, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +25,8 @@ logger = logging.getLogger(__name__)
 # Constants / defaults
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT_S: float = 3.0
 _DEFAULT_WINDOW_SIZE: int = 10
 _DEFAULT_WINDOW_SECONDS: float = 300.0
-_DEFAULT_LLM_MODEL: str = "gemma3:12b"
-_DEFAULT_LLM_URL: str = "http://localhost:11434"
 _DEFAULT_WEIGHT_BYPASS: float = 1.0
 _DEFAULT_WEIGHT_FAIL_OPEN: float = 0.5
 
@@ -249,7 +227,25 @@ class ContactWeightResolver:
 
 
 # ---------------------------------------------------------------------------
-# LLM caller
+# LLM caller protocol
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class DiscretionLLMCaller(Protocol):
+    """Protocol for dispatching a single-turn discretion LLM call.
+
+    Implementations include :class:`~butlers.connectors.discretion_dispatcher.DiscretionDispatcher`
+    for production use and lightweight mock objects for testing.
+    """
+
+    async def call(self, prompt: str, system_prompt: str = "") -> str:
+        """Invoke the LLM with *prompt* and return the raw response text."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Prompt helpers
 # ---------------------------------------------------------------------------
 
 
@@ -300,102 +296,6 @@ def _parse_verdict(raw_response: str) -> tuple[Verdict, str]:
 
 
 # ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-
-class DiscretionConfig:
-    """Reads discretion configuration from environment variables.
-
-    Supports a per-connector prefix for env var resolution:
-
-        DiscretionConfig(env_prefix="LIVE_LISTENER_")
-        # reads LIVE_LISTENER_DISCRETION_LLM_URL, falls back to
-        # CONNECTOR_DISCRETION_LLM_URL, then built-in default.
-
-        DiscretionConfig(env_prefix="TELEGRAM_USER_")
-        # reads TELEGRAM_USER_DISCRETION_LLM_URL, etc.
-
-        DiscretionConfig()
-        # reads CONNECTOR_DISCRETION_* only.
-    """
-
-    def __init__(
-        self,
-        *,
-        env_prefix: str = "",
-        system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
-    ) -> None:
-        self.system_prompt = system_prompt
-        self.llm_url = self._env("DISCRETION_LLM_URL", "", env_prefix)
-        self.llm_model = self._env("DISCRETION_LLM_MODEL", "", env_prefix)
-        self.timeout_s = float(
-            self._env("DISCRETION_TIMEOUT_S", str(_DEFAULT_TIMEOUT_S), env_prefix)
-        )
-        self.window_size = int(
-            self._env("DISCRETION_WINDOW_SIZE", str(_DEFAULT_WINDOW_SIZE), env_prefix)
-        )
-        self.window_seconds = float(
-            self._env("DISCRETION_WINDOW_SECONDS", str(_DEFAULT_WINDOW_SECONDS), env_prefix)
-        )
-        self.weight_bypass = float(
-            self._env("DISCRETION_WEIGHT_BYPASS", str(_DEFAULT_WEIGHT_BYPASS), env_prefix)
-        )
-        self.weight_fail_open = float(
-            self._env("DISCRETION_WEIGHT_FAIL_OPEN", str(_DEFAULT_WEIGHT_FAIL_OPEN), env_prefix)
-        )
-
-    @staticmethod
-    def _env(suffix: str, default: str, prefix: str) -> str:
-        """Resolve env var: {prefix}{suffix} → CONNECTOR_{suffix} → default."""
-        if prefix:
-            val = os.environ.get(f"{prefix}{suffix}")
-            if val is not None:
-                return val
-        val = os.environ.get(f"CONNECTOR_{suffix}")
-        if val is not None:
-            return val
-        return default
-
-
-async def _call_llm(
-    prompt: str,
-    *,
-    system_prompt: str,
-    llm_url: str,
-    llm_model: str,
-    timeout_s: float,
-) -> str:
-    """Call the Ollama native ``/api/chat`` endpoint and return the raw response text.
-
-    Uses ``think: false`` so reasoning models (qwen3, deepseek-r1, etc.) produce
-    a direct answer without consuming tokens on chain-of-thought.
-    """
-    base_url = (llm_url.rstrip("/") if llm_url else _DEFAULT_LLM_URL).removesuffix("/v1")
-    model = llm_model if llm_model else _DEFAULT_LLM_MODEL
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "think": False,
-        "stream": False,
-        "options": {
-            "num_predict": 64,
-            "temperature": 0.0,
-        },
-    }
-
-    async with httpx.AsyncClient(timeout=timeout_s) as client:
-        resp = await client.post(f"{base_url}/api/chat", json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["message"]["content"]
-
-
-# ---------------------------------------------------------------------------
 # Main discretion evaluator
 # ---------------------------------------------------------------------------
 
@@ -403,13 +303,18 @@ async def _call_llm(
 class DiscretionEvaluator:
     """Stateful per-source discretion evaluator.
 
-    Maintains a :class:`ContextWindow` and calls the configured LLM to
-    evaluate each new message.  All failures are fail-open (FORWARD).
+    Maintains a :class:`ContextWindow` and calls the injected dispatcher to
+    evaluate each new message.  All failures are handled per the weight tier:
+    high-weight senders fail-open (FORWARD), low-weight senders fail-closed
+    (IGNORE).
 
     Typical usage::
 
-        config = DiscretionConfig(env_prefix="LIVE_LISTENER_")
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
+        dispatcher = DiscretionDispatcher(pool=db_pool)
+        evaluator = DiscretionEvaluator(
+            source_name="kitchen",
+            dispatcher=dispatcher,
+        )
 
         result = await evaluator.evaluate(text="Hey, what's the weather?")
         if result.verdict == "FORWARD":
@@ -417,12 +322,25 @@ class DiscretionEvaluator:
             ...
     """
 
-    def __init__(self, source_name: str, config: DiscretionConfig | None = None) -> None:
+    def __init__(
+        self,
+        source_name: str,
+        dispatcher: DiscretionLLMCaller,
+        *,
+        window_size: int = _DEFAULT_WINDOW_SIZE,
+        window_seconds: float = _DEFAULT_WINDOW_SECONDS,
+        weight_bypass: float = _DEFAULT_WEIGHT_BYPASS,
+        weight_fail_open: float = _DEFAULT_WEIGHT_FAIL_OPEN,
+        system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
+    ) -> None:
         self._source = source_name
-        self._config = config or DiscretionConfig()
+        self._dispatcher = dispatcher
+        self._weight_bypass = weight_bypass
+        self._weight_fail_open = weight_fail_open
+        self._system_prompt = system_prompt
         self._window = ContextWindow(
-            max_size=self._config.window_size,
-            max_age_seconds=self._config.window_seconds,
+            max_size=window_size,
+            max_age_seconds=window_seconds,
         )
 
     @property
@@ -448,11 +366,11 @@ class DiscretionEvaluator:
             weight: Sender-relationship weight (0.0–1.0).  Controls bypass
                 and fail behaviour:
 
-                - ``>= config.weight_bypass`` (default 1.0): skip LLM,
+                - ``>= weight_bypass`` (default 1.0): skip LLM,
                   always FORWARD.
-                - ``>= config.weight_fail_open`` (default 0.5): call LLM,
+                - ``>= weight_fail_open`` (default 0.5): call LLM,
                   errors → FORWARD (fail-open).
-                - ``< config.weight_fail_open``: call LLM, errors → IGNORE
+                - ``< weight_fail_open``: call LLM, errors → IGNORE
                   (fail-closed).
 
         Returns:
@@ -469,34 +387,24 @@ class DiscretionEvaluator:
         self._window.append(entry)
 
         # Weight bypass: high-trust senders skip the LLM entirely.
-        if weight >= self._config.weight_bypass:
+        if weight >= self._weight_bypass:
             return DiscretionResult(
                 verdict="FORWARD",
                 reason="weight-bypass",
                 is_fail_open=False,
             )
 
-        fail_open = weight >= self._config.weight_fail_open
+        fail_open = weight >= self._weight_fail_open
         fail_verdict: Verdict = "FORWARD" if fail_open else "IGNORE"
         fail_label = "fail-open" if fail_open else "fail-closed"
 
         prompt = _build_user_prompt(context_snapshot, entry)
 
         try:
-            raw = await asyncio.wait_for(
-                _call_llm(
-                    prompt,
-                    system_prompt=self._config.system_prompt,
-                    llm_url=self._config.llm_url,
-                    llm_model=self._config.llm_model,
-                    timeout_s=self._config.timeout_s,
-                ),
-                timeout=self._config.timeout_s,
-            )
-        except (TimeoutError, httpx.TimeoutException):
+            raw = await self._dispatcher.call(prompt, system_prompt=self._system_prompt)
+        except TimeoutError:
             logger.warning(
-                "Discretion LLM timed out after %.1fs for source=%s (weight=%.2f) — defaulting %s",
-                self._config.timeout_s,
+                "Discretion LLM timed out for source=%s (weight=%.2f) — defaulting %s",
                 self._source,
                 weight,
                 fail_verdict,

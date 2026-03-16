@@ -32,6 +32,10 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - TELEGRAM_USER_HISTORY_MAX_MESSAGES (optional, default 50): history fetch limit per flush
 - TELEGRAM_USER_HISTORY_TIME_WINDOW_M (optional, default 30): history lookback window (minutes)
 - TELEGRAM_USER_BUFFER_MAX_MESSAGES (optional, default 200): per-chat buffer cap before force-flush
+- TELEGRAM_USER_DISCRETION_WINDOW_SIZE (optional, default 10): discretion context window size
+- TELEGRAM_USER_DISCRETION_WINDOW_SECONDS (optional, default 300): discretion context window age cap
+- TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS (optional, default 1.0): weight threshold to skip LLM
+- TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN (optional, default 0.5): weight threshold for fail-open
 
 Security requirements:
 - Never commit credentials or session artifacts to version control
@@ -55,9 +59,9 @@ from typing import Any
 
 from butlers.connectors.discretion import (
     ContactWeightResolver,
-    DiscretionConfig,
     DiscretionEvaluator,
 )
+from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -141,6 +145,12 @@ class TelegramUserClientConnectorConfig:
     history_time_window_m: int = 30
     buffer_max_messages: int = 200
 
+    # Discretion layer config
+    discretion_window_size: int = 10
+    discretion_window_seconds: float = 300.0
+    discretion_weight_bypass: float = 1.0
+    discretion_weight_fail_open: float = 0.5
+
     @classmethod
     def from_env(cls) -> TelegramUserClientConnectorConfig:
         """Load non-credential configuration from environment variables.
@@ -170,6 +180,19 @@ class TelegramUserClientConnectorConfig:
         history_time_window_m = int(os.environ.get("TELEGRAM_USER_HISTORY_TIME_WINDOW_M", "30"))
         buffer_max_messages = int(os.environ.get("TELEGRAM_USER_BUFFER_MAX_MESSAGES", "200"))
 
+        def _int(key: str, default: int) -> int:
+            v = os.environ.get(key, "").strip()
+            return int(v) if v else default
+
+        def _float(key: str, default: float) -> float:
+            v = os.environ.get(key, "").strip()
+            return float(v) if v else default
+
+        discretion_window_size = _int("TELEGRAM_USER_DISCRETION_WINDOW_SIZE", 10)
+        discretion_window_seconds = _float("TELEGRAM_USER_DISCRETION_WINDOW_SECONDS", 300.0)
+        discretion_weight_bypass = _float("TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS", 1.0)
+        discretion_weight_fail_open = _float("TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN", 0.5)
+
         # Credential fields default to empty — must be populated from DB.
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
@@ -184,6 +207,10 @@ class TelegramUserClientConnectorConfig:
             history_max_messages=history_max_messages,
             history_time_window_m=history_time_window_m,
             buffer_max_messages=buffer_max_messages,
+            discretion_window_size=discretion_window_size,
+            discretion_window_seconds=discretion_window_seconds,
+            discretion_weight_bypass=discretion_weight_bypass,
+            discretion_weight_fail_open=discretion_weight_fail_open,
         )
 
 
@@ -269,7 +296,9 @@ class TelegramUserClientConnector:
 
         # Discretion layer: LLM-based FORWARD/IGNORE filter per chat.
         # Weight resolver maps sender → contact role → weight tier.
-        self._discretion_config = DiscretionConfig(env_prefix="TELEGRAM_USER_")
+        self._discretion_dispatcher: DiscretionDispatcher | None = (
+            DiscretionDispatcher(pool=db_pool) if db_pool is not None else None
+        )
         self._discretion_evaluators: dict[str, DiscretionEvaluator] = {}
         self._weight_resolver: ContactWeightResolver | None = (
             ContactWeightResolver(db_pool) if db_pool is not None else None
@@ -683,11 +712,15 @@ class TelegramUserClientConnector:
 
             # f. Evaluate discretion on concatenated normalized_text of new messages only.
             normalized_text: str = envelope["payload"]["normalized_text"]
-            if self._discretion_config.llm_url and normalized_text:
+            if self._discretion_dispatcher is not None and normalized_text:
                 if chat_id not in self._discretion_evaluators:
                     self._discretion_evaluators[chat_id] = DiscretionEvaluator(
                         source_name=f"tg:{chat_id}",
-                        config=self._discretion_config,
+                        dispatcher=self._discretion_dispatcher,
+                        window_size=self._config.discretion_window_size,
+                        window_seconds=self._config.discretion_window_seconds,
+                        weight_bypass=self._config.discretion_weight_bypass,
+                        weight_fail_open=self._config.discretion_weight_fail_open,
                     )
                 d_result = await self._discretion_evaluators[chat_id].evaluate(
                     normalized_text, weight=1.0
@@ -985,14 +1018,18 @@ class TelegramUserClientConnector:
                     return
 
                 # 3. Discretion layer: LLM-based FORWARD/IGNORE filter.
-                #    Only evaluated when the LLM URL is configured.
+                #    Only evaluated when a dispatcher is available.
                 msg_text = getattr(message, "message", None) or getattr(message, "text", None)
-                if self._discretion_config.llm_url and msg_text:
+                if self._discretion_dispatcher is not None and msg_text:
                     chat_id_str = self._extract_chat_id(message) or "unknown"
                     if chat_id_str not in self._discretion_evaluators:
                         self._discretion_evaluators[chat_id_str] = DiscretionEvaluator(
                             source_name=f"tg:{chat_id_str}",
-                            config=self._discretion_config,
+                            dispatcher=self._discretion_dispatcher,
+                            window_size=self._config.discretion_window_size,
+                            window_seconds=self._config.discretion_window_seconds,
+                            weight_bypass=self._config.discretion_weight_bypass,
+                            weight_fail_open=self._config.discretion_weight_fail_open,
                         )
                     # Resolve sender weight from contact roles.
                     sender_id = self._extract_sender_identity(message)
