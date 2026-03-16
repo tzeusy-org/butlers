@@ -54,7 +54,7 @@ describe("FanoutMatrix", () => {
       root.render(<FanoutMatrix fanout={MOCK_FANOUT} isLoading={false} />);
     });
     expect(container.textContent).toContain("gmail:user@example.com");
-    expect(container.textContent).toContain("telegram:bot-123");
+    expect(container.textContent).toContain("telegram_bot:bot-123");
   });
 
   it("renders message counts in cells", () => {

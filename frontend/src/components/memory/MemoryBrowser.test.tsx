@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router";
 
 import MemoryBrowser from "@/components/memory/MemoryBrowser";
 import { useEpisodes, useFacts, useRules } from "@/hooks/use-memory";
@@ -95,7 +96,7 @@ describe("MemoryBrowser episodes", () => {
     ]);
 
     act(() => {
-      root.render(<MemoryBrowser />);
+      root.render(<MemoryRouter><MemoryBrowser /></MemoryRouter>);
     });
 
     expect(container.textContent).not.toContain(LONG_EPISODE_CONTENT);

@@ -2627,8 +2627,8 @@ export function discoverOllamaModels(): Promise<ApiResponse<OllamaDiscoveredMode
 /** POST /api/settings/providers/ollama/import — import discovered models into catalog */
 export function importOllamaModels(
   body: OllamaImportRequest,
-): Promise<ApiResponse<OllamaImportResult>> {
-  return apiFetch<ApiResponse<OllamaImportResult>>(
+): Promise<ApiResponse<OllamaImportResult[]>> {
+  return apiFetch<ApiResponse<OllamaImportResult[]>>(
     "/settings/providers/ollama/import",
     {
       method: "POST",

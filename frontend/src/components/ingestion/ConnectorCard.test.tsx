@@ -101,10 +101,5 @@ describe("ConnectorCard", () => {
     expect(container.textContent).toContain("degraded");
   });
 
-  it("renders the Filters button", () => {
-    render();
-    const btn = container.querySelector('[data-testid="connector-filters-button"]');
-    expect(btn).not.toBeNull();
-    expect(btn!.textContent).toContain("Filters");
-  });
+  // NOTE: Filters button was removed from ConnectorCard and moved to ConnectorDetailPage.
 });

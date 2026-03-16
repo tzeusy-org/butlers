@@ -379,7 +379,7 @@ describe("getConnectorDetail counters and checkpoint mapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("listConnectorSummaries today field mapping (Bug 1)", () => {
-  function makeEntry(overrides: Partial<{ counter_messages_ingested: number; counter_messages_failed: number }> = {}) {
+  function makeEntry(overrides: Partial<{ today_messages_ingested: number; today_messages_failed: number }> = {}) {
     return {
       connector_type: "gmail",
       endpoint_identity: "u@example.com",
@@ -396,14 +396,16 @@ describe("listConnectorSummaries today field mapping (Bug 1)", () => {
       counter_source_api_calls: 0,
       counter_checkpoint_saves: 0,
       counter_dedupe_accepted: 0,
+      today_messages_ingested: 0,
+      today_messages_failed: 0,
       checkpoint_cursor: null,
       checkpoint_updated_at: null,
       ...overrides,
     };
   }
 
-  it("maps counter_messages_ingested to today.messages_ingested (not null)", async () => {
-    mockResponse({ data: [makeEntry({ counter_messages_ingested: 42, counter_messages_failed: 3 })] });
+  it("maps today_messages_ingested to today.messages_ingested (not null)", async () => {
+    mockResponse({ data: [makeEntry({ today_messages_ingested: 42, today_messages_failed: 3 })] });
     const resp = await listConnectorSummaries();
     const connector = resp.data[0];
     expect(connector.today).not.toBeNull();
@@ -411,8 +413,8 @@ describe("listConnectorSummaries today field mapping (Bug 1)", () => {
     expect(connector.today!.messages_failed).toBe(3);
   });
 
-  it("maps zero counters to today with zeroes (not null)", async () => {
-    mockResponse({ data: [makeEntry({ counter_messages_ingested: 0, counter_messages_failed: 0 })] });
+  it("maps zero today counters to today with zeroes (not null)", async () => {
+    mockResponse({ data: [makeEntry({ today_messages_ingested: 0, today_messages_failed: 0 })] });
     const resp = await listConnectorSummaries();
     const connector = resp.data[0];
     expect(connector.today).not.toBeNull();
