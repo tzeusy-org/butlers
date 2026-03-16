@@ -54,7 +54,7 @@ protect_breaking_commits = false
 filter_commits = false
 
 # Tags sorted by date
-tag_pattern = "v[0-9]*"
+tag_pattern = "v[0-9].*"
 
 # Skip tags matching this pattern
 skip_tags = ""

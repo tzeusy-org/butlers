@@ -36,8 +36,9 @@ make bump-version VERSION=1.2.0
 ### 2. Commit the version bump
 
 ```bash
+VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
 git add pyproject.toml
-git commit -m "chore: bump version to $(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+git commit -m "chore: bump version to $VERSION"
 ```
 
 ### 3. Create and push the release tag
@@ -73,13 +74,13 @@ With tagged images in GHCR, rolling back to a previous version is a two-step pro
 ### Step 1: Pull the previous image
 
 ```bash
-docker pull ghcr.io/tzeusy/butlers:v<PREVIOUS_VERSION>
+docker pull ghcr.io/tzeusy/butlers:<PREVIOUS_VERSION>
 ```
 
 For example, to roll back to `1.1.3`:
 
 ```bash
-docker pull ghcr.io/tzeusy/butlers:v1.1.3
+docker pull ghcr.io/tzeusy/butlers:1.1.3
 ```
 
 ### Step 2: Restart with the previous image
@@ -88,14 +89,14 @@ Update your `docker-compose.yml` or runtime config to reference the pinned versi
 
 ```bash
 # If using docker compose — set the image tag in your environment or compose override:
-BUTLERS_IMAGE=ghcr.io/tzeusy/butlers:v1.1.3 docker compose up -d
+BUTLERS_IMAGE=ghcr.io/tzeusy/butlers:1.1.3 docker compose up -d
 
 # Or pull and restart a single container:
 docker stop butlers
 docker rm butlers
 docker run -d --name butlers \
   -v /path/to/config:/etc/butler:ro \
-  ghcr.io/tzeusy/butlers:v1.1.3
+  ghcr.io/tzeusy/butlers:1.1.3
 ```
 
 ### Finding available versions
