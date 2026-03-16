@@ -24,6 +24,7 @@ tools to consume results without parsing stdout.
 
 from __future__ import annotations
 
+import datetime
 import json
 from pathlib import Path
 
@@ -32,6 +33,16 @@ import pytest
 from .helpers import build_prompt, call_discretion
 
 PROMPTS_FILE = Path(__file__).parent / "prompts.jsonl"
+RESULTS_FILE = Path(__file__).parent / "results.md"
+
+_RESULTS_HEADER = (
+    "| Model | Accuracy | FWD Recall | IGN Prec | p50 | p95 | p99"
+    " | Cold Start | req/s | Prompts | Date |"
+)
+_RESULTS_SEP = (
+    "|-------|----------|------------|----------|-----|-----|-----"
+    "|------------|-------|---------|------|"
+)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -118,6 +129,88 @@ def all_results(
         result["text"] = entry["text"]
         results.append(result)
     return results
+
+
+def _persist_results(report: dict) -> None:
+    """Idempotently update the model's row in results.md.
+
+    If the model already has a row, it is replaced. Otherwise a new row is
+    appended. The file is created with a header if it doesn't exist yet.
+    """
+    model = report.get("model")
+    if not model or "accuracy" not in report:
+        return  # Not enough data to persist
+
+    acc = report.get("accuracy", {}).get("value")
+    fwd = report.get("forward_recall", {}).get("value")
+    ign = report.get("ignore_precision", {}).get("value")
+    lat = report.get("latency", {})
+    cold = report.get("cold_start", {}).get("value")
+    counts = report.get("counts", {})
+
+    def fmt_pct(v: float | None) -> str:
+        return f"{v:.1%}" if v is not None else "—"
+
+    def fmt_ms(v: float | None) -> str:
+        return f"{v:.0f}ms" if v is not None else "—"
+
+    cols = [
+        model,
+        fmt_pct(acc),
+        fmt_pct(fwd),
+        fmt_pct(ign),
+        fmt_ms(lat.get("p50")),
+        fmt_ms(lat.get("p95")),
+        fmt_ms(lat.get("p99")),
+        fmt_ms(cold),
+        f"{lat['throughput']:.1f}" if lat.get("throughput") else "—",
+        str(counts.get("total", "—")),
+        datetime.date.today().isoformat(),
+    ]
+    row = "| " + " | ".join(cols) + " |"
+
+    # Read existing file or create template
+    if RESULTS_FILE.exists():
+        lines = RESULTS_FILE.read_text().splitlines()
+    else:
+        lines = [
+            "# Discretion LLM Benchmark Results",
+            "",
+            "Maintained by the `discretion_llm_bench` suite. Each row is updated",
+            "idempotently when the benchmark is run for that model.",
+            "",
+            "```",
+            "uv run pytest tests/discretion_llm_bench/ -v --override-ini=\"addopts=\""
+            " --model <name>",
+            "```",
+            "",
+            _RESULTS_HEADER,
+            _RESULTS_SEP,
+        ]
+
+    # Find existing row for this model (match first column)
+    existing_idx = None
+    for i, line in enumerate(lines):
+        if not line.startswith("|") or "---" in line:
+            continue
+        cells = [c.strip() for c in line.split("|")]
+        # cells: ['', 'Model', 'Accuracy', ...] — cells[1] is first column
+        if len(cells) > 1 and cells[1] == model:
+            existing_idx = i
+            break
+
+    if existing_idx is not None:
+        lines[existing_idx] = row
+    else:
+        # Append after the last table row
+        last_table_idx = 0
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].startswith("|"):
+                last_table_idx = i
+                break
+        lines.insert(last_table_idx + 1, row)
+
+    RESULTS_FILE.write_text("\n".join(lines) + "\n")
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
@@ -256,3 +349,6 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
 
     for line in lines:
         terminalreporter.write_line(line)
+
+    # Persist results to git-committed file for cross-model comparison.
+    _persist_results(report)
