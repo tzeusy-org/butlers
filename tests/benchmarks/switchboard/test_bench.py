@@ -1,14 +1,14 @@
 """Switchboard routing benchmarks — accuracy and latency.
 
 All scenarios are run exactly once via the session-scoped ``routing_results``
-fixture. Individual test functions assert on different metrics from that
-shared result set.
+fixture. Uses the real OpenCodeAdapter to spawn ``opencode run`` with a mock
+MCP server capturing ``route_to_butler`` decisions.
 
-NOT run in CI/CD. Requires a live Ollama endpoint.
+NOT run in CI/CD. Requires ``opencode`` CLI on PATH with a configured model.
 
 Usage:
     uv run pytest tests/benchmarks/switchboard/ -v --override-ini="addopts=" \\
-        --model gemma3:4b --junit-xml=switchboard-bench.xml
+        --model glm-5 --junit-xml=switchboard-bench.xml
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ def test_routing_accuracy(
     record_property("accuracy", f"{accuracy:.4f}")
 
     assert len(errors) <= len(routing_results) * 0.05, (
-        f"{len(errors)}/{len(routing_results)} requests failed — check Ollama connectivity"
+        f"{len(errors)}/{len(routing_results)} requests failed — check opencode/model availability"
     )
     assert len(unparseable) <= len(evaluated) * 0.10, (
         f"{len(unparseable)}/{len(evaluated)} responses unparseable — "
@@ -104,7 +104,7 @@ def test_routing_latency(
     steady = [r for r in routing_results[1:] if not r["error"]]
     latencies = [r["latency_ms"] for r in steady]
 
-    assert len(latencies) > 0, "No successful requests — check Ollama connectivity"
+    assert len(latencies) > 0, "No successful requests — check opencode/model availability"
 
     p95 = _percentile(latencies, 95)
     total_ms = sum(latencies)

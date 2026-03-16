@@ -1,29 +1,30 @@
 """Shared helpers for switchboard routing benchmarks.
 
-Uses the **real production code** for prompt construction:
-- ``_build_routing_prompt`` from ``src/butlers/modules/pipeline.py``
-- ``_format_capabilities`` from ``roster/switchboard/tools/routing/classify.py``
-- Classification rules from the production ``message-triage`` SKILL.md
+Uses the **real production code** end-to-end:
 
-The only adaptation for local Ollama models: the SKILL.md content is injected
-as a system prompt (since local models don't have Claude Code's skill-loading
-system), and the output format asks for a single butler name instead of MCP
-tool calls.
+- ``OpenCodeAdapter`` from ``src/butlers/core/runtimes/opencode.py`` to spawn
+  the LLM via ``opencode run``
+- ``_build_routing_prompt`` from ``src/butlers/modules/pipeline.py`` for prompt
+  construction (butler list, capabilities, JSON message encoding)
+- ``_extract_routed_butlers`` from ``src/butlers/modules/pipeline.py`` to parse
+  tool calls from the spawn result
+- The real ``message-triage`` SKILL.md is loaded by OpenCode's skill system
+
+The only mock is the MCP server: ``route_to_butler`` captures the routing
+decision and returns ``{"status": "ok"}`` without actually dispatching.
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-# ---------------------------------------------------------------------------
-# Import the REAL production prompt builder
-# ---------------------------------------------------------------------------
-from butlers.modules.pipeline import _build_routing_prompt
+from butlers.core.runtimes.opencode import OpenCodeAdapter
+from butlers.modules.pipeline import _build_routing_prompt, _extract_routed_butlers
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -31,10 +32,12 @@ VALID_BUTLERS = frozenset({
     "general", "relationship", "health", "finance", "travel", "education", "home",
 })
 
+SWITCHBOARD_CONFIG_DIR = (
+    Path(__file__).resolve().parents[3] / "roster" / "switchboard"
+)
+
 # ---------------------------------------------------------------------------
-# Butler registry snapshot — matches production switchboard.butler_registry.
-# Used instead of a live DB query to avoid a runtime dependency.
-# Update if butlers are added/removed/renamed.
+# Butler registry snapshot — matches switchboard.butler_registry in prod.
 # ---------------------------------------------------------------------------
 
 BUTLER_REGISTRY: list[dict[str, Any]] = [
@@ -95,63 +98,6 @@ BUTLER_REGISTRY: list[dict[str, Any]] = [
     },
 ]
 
-# ---------------------------------------------------------------------------
-# System prompt — production SKILL.md with benchmark output format
-# ---------------------------------------------------------------------------
-
-_SKILL_PATH = (
-    Path(__file__).resolve().parents[3]  # tests/benchmarks/switchboard -> repo root
-    / "roster" / "switchboard" / ".agents" / "skills"
-    / "message-triage" / "SKILL.md"
-)
-
-_BENCH_PREAMBLE = """\
-You are a message router for a personal assistant system. Your job is to \
-classify each incoming message and decide which specialist butler should \
-handle it.
-
-Reply with EXACTLY one butler name. No explanation, no punctuation, \
-no other text — just the butler name.
-
-Valid butler names: general, relationship, health, finance, travel, education, home
-
-"""
-
-_BENCH_SUFFIX = """
-
-REMINDER: Reply with EXACTLY one butler name and nothing else."""
-
-
-def _load_skill_text() -> str:
-    """Load and clean the production SKILL.md."""
-    if not _SKILL_PATH.exists():
-        return ""
-    skill_text = _SKILL_PATH.read_text()
-    # Strip YAML frontmatter
-    if skill_text.startswith("---"):
-        end = skill_text.find("---", 3)
-        if end != -1:
-            skill_text = skill_text[end + 3:].strip()
-    # Strip sections that reference MCP tool calls (not available in benchmark)
-    for section in [
-        "## Execution Contract",
-        "## Routing via `route_to_butler` Tool",
-        "## Outbound Delivery via `notify` Tool",
-        "## Implementation Notes",
-    ]:
-        idx = skill_text.find(section)
-        if idx == -1:
-            continue
-        next_heading = skill_text.find("\n## ", idx + len(section))
-        if next_heading != -1:
-            skill_text = skill_text[:idx] + skill_text[next_heading:]
-        else:
-            skill_text = skill_text[:idx]
-    return skill_text.strip()
-
-
-ROUTING_SYSTEM_PROMPT = _BENCH_PREAMBLE + _load_skill_text() + _BENCH_SUFFIX
-
 
 # ---------------------------------------------------------------------------
 # Prompt construction — uses real production _build_routing_prompt
@@ -159,13 +105,7 @@ ROUTING_SYSTEM_PROMPT = _BENCH_PREAMBLE + _load_skill_text() + _BENCH_SUFFIX
 
 
 def build_routing_prompt(entry: dict) -> str:
-    """Build a routing prompt using the production prompt builder.
-
-    Calls ``_build_routing_prompt`` from ``src/butlers/modules/pipeline.py``
-    with the real butler registry, ensuring the benchmark prompt matches
-    production exactly (butler descriptions, capability formatting, JSON
-    message encoding).
-    """
+    """Build a routing prompt using the production prompt builder."""
     return _build_routing_prompt(
         message=entry["text"],
         butlers=BUTLER_REGISTRY,
@@ -173,12 +113,12 @@ def build_routing_prompt(entry: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Response parsing
+# Fallback response parsing (when model outputs text instead of tool calls)
 # ---------------------------------------------------------------------------
 
 
 def parse_butler(raw: str) -> str | None:
-    """Extract a valid butler name from model output."""
+    """Extract a valid butler name from model text output."""
     cleaned = _THINK_RE.sub("", raw).strip().lower()
     if cleaned in VALID_BUTLERS:
         return cleaned
@@ -192,51 +132,70 @@ def parse_butler(raw: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# LLM call
+# LLM call — real OpenCodeAdapter
 # ---------------------------------------------------------------------------
+
+
+def _build_env() -> dict[str, str]:
+    """Build environment for the opencode subprocess.
+
+    Passes PATH plus any provider auth env vars so the spawned process
+    can authenticate with model backends.
+    """
+    env: dict[str, str] = {"PATH": os.environ.get("PATH", "")}
+    for key, val in os.environ.items():
+        if key.startswith((
+            "OPENCODE_", "OPENAI_", "ANTHROPIC_", "OPENROUTER_",
+            "GOOGLE_", "GEMINI_",
+        )):
+            env[key] = val
+    return env
 
 
 def call_routing(
     prompt: str,
     *,
-    ollama_url: str,
+    mock_mcp_url: str,
     model: str,
-    timeout: float = 10.0,
+    timeout: float = 120.0,
 ) -> dict:
-    """Call the routing LLM and return structured result.
+    """Route a message using the real OpenCodeAdapter + mock MCP server.
 
-    Uses the Ollama native ``/api/chat`` endpoint with ``think: false``.
+    Spawns ``opencode run --model <model>`` with the switchboard's system
+    prompt and skill files, pointed at a mock MCP server. Parses tool calls
+    via the production ``_extract_routed_butlers`` function.
 
     Returns:
-        dict with keys: routed_to, raw, latency_ms, prompt_tokens,
-        completion_tokens, error
+        dict with keys: routed_to, routed_targets, raw, tool_calls,
+        latency_ms, prompt_tokens, completion_tokens, error
     """
-    base_url = ollama_url.rstrip("/").removesuffix("/v1")
-    url = f"{base_url}/api/chat"
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": ROUTING_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "think": False,
-        "stream": False,
-        "options": {
-            "num_predict": 32,
-            "temperature": 0.0,
-        },
+    adapter = OpenCodeAdapter()
+    system_prompt = adapter.parse_system_prompt_file(SWITCHBOARD_CONFIG_DIR)
+
+    mcp_servers = {
+        "switchboard": {"url": mock_mcp_url},
     }
 
     t0 = time.perf_counter()
     try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(url, json=payload)
-            resp.raise_for_status()
+        result_text, tool_calls, usage = asyncio.run(
+            adapter.invoke(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                mcp_servers=mcp_servers,
+                env=_build_env(),
+                model=model,
+                timeout=int(timeout),
+                cwd=SWITCHBOARD_CONFIG_DIR,
+            )
+        )
     except Exception as exc:
         elapsed = (time.perf_counter() - t0) * 1000
         return {
             "routed_to": None,
+            "routed_targets": [],
             "raw": "",
+            "tool_calls": [],
             "latency_ms": elapsed,
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -244,15 +203,22 @@ def call_routing(
         }
 
     elapsed = (time.perf_counter() - t0) * 1000
-    data = resp.json()
-    raw = data["message"]["content"]
-    routed_to = parse_butler(raw)
+
+    # Use real production extractor to parse routing decisions from tool calls
+    routed, acked, failed = _extract_routed_butlers(tool_calls)
+
+    # Primary: use tool-call-based routing. Fallback: parse text output.
+    routed_to = routed[0] if routed else None
+    if not routed_to and result_text:
+        routed_to = parse_butler(result_text)
 
     return {
         "routed_to": routed_to,
-        "raw": raw,
+        "routed_targets": routed,
+        "raw": result_text or "",
+        "tool_calls": tool_calls,
         "latency_ms": elapsed,
-        "prompt_tokens": data.get("prompt_eval_count", 0),
-        "completion_tokens": data.get("eval_count", 0),
+        "prompt_tokens": (usage or {}).get("input_tokens", 0),
+        "completion_tokens": (usage or {}).get("output_tokens", 0),
         "error": None,
     }

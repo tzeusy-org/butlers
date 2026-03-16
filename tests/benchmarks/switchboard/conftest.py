@@ -1,19 +1,27 @@
 """Switchboard routing benchmark configuration.
 
-Fixtures for running all routing scenarios once and caching results.
-CLI options and shared fixtures (ollama_url, model_name, bench_timeout)
-are inherited from the parent tests/benchmarks/conftest.py.
+Runs each scenario through the real switchboard LLM pipeline:
+  OpenCodeAdapter → opencode run → mock MCP server (captures route_to_butler)
+
+The mock MCP server implements route_to_butler and notify as real MCP tools.
+The LLM sees them exactly as it would in production, calls them, and we
+capture which butler(s) it routed to.
+
+CLI options (--model, --bench-timeout) are inherited from the parent
+tests/benchmarks/conftest.py.
 """
 
 from __future__ import annotations
 
 import datetime
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
 from .helpers import build_routing_prompt, call_routing
+from .mock_mcp import MockMCPServer
 
 SCENARIOS_FILE = Path(__file__).parent / "scenarios.jsonl"
 RESULTS_FILE = Path(__file__).parent / "results.md"
@@ -29,19 +37,16 @@ _RESULTS_SEP = (
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Initialize the switchboard benchmark report store."""
     config._switchboard_report = {}  # type: ignore[attr-defined]
 
 
 @pytest.fixture(scope="session")
 def sw_report(request: pytest.FixtureRequest) -> dict:
-    """Session-scoped store for switchboard benchmark metrics."""
     return request.config._switchboard_report  # type: ignore[attr-defined]
 
 
 @pytest.fixture(scope="session")
 def scenarios() -> list[dict]:
-    """Load all routing scenarios from scenarios.jsonl."""
     entries = []
     with SCENARIOS_FILE.open() as f:
         for line in f:
@@ -52,26 +57,52 @@ def scenarios() -> list[dict]:
 
 
 @pytest.fixture(scope="session")
+def mock_mcp_server() -> MockMCPServer:
+    """Start a mock MCP server for the entire benchmark session."""
+    server = MockMCPServer()
+    server.start()
+    yield server  # type: ignore[misc]
+    server.stop()
+
+
+@pytest.fixture(scope="session")
+def _require_opencode():
+    """Skip the entire benchmark if opencode CLI is not available."""
+    if not shutil.which("opencode"):
+        pytest.skip("opencode CLI not found on PATH")
+
+
+@pytest.fixture(scope="session")
 def routing_results(
     scenarios: list[dict],
-    ollama_url: str,
+    mock_mcp_server: MockMCPServer,
     model_name: str,
     bench_timeout: float,
     sw_report: dict,
+    _require_opencode,
 ) -> list[dict]:
-    """Run every scenario exactly once and cache results for all test functions."""
+    """Run every scenario through the real OpenCodeAdapter and capture results."""
     sw_report["model"] = model_name
-    sw_report["ollama_url"] = ollama_url
 
     results: list[dict] = []
-    for i, entry in enumerate(scenarios):
+    for entry in scenarios:
+        mock_mcp_server.reset_captures()
         prompt = build_routing_prompt(entry)
-        timeout = 30.0 if i == 0 else bench_timeout
-        result = call_routing(prompt, ollama_url=ollama_url, model=model_name, timeout=timeout)
+
+        result = call_routing(
+            prompt,
+            mock_mcp_url=mock_mcp_server.url,
+            model=model_name,
+            timeout=bench_timeout,
+        )
         result["id"] = entry["id"]
         result["expected"] = entry["expected"]
         result["category"] = entry["category"]
         result["text"] = entry["text"]
+
+        # Also attach server-side captured calls for debugging
+        result["captured_calls"] = mock_mcp_server.get_captured_calls()
+
         results.append(result)
     return results
 
@@ -80,8 +111,8 @@ def routing_results(
 # Results persistence
 # ---------------------------------------------------------------------------
 
+
 def _persist_results(report: dict) -> None:
-    """Idempotently update the model's row in results.md."""
     model = report.get("model")
     if not model or "accuracy" not in report:
         return
@@ -154,22 +185,21 @@ def _persist_results(report: dict) -> None:
 # Terminal summary
 # ---------------------------------------------------------------------------
 
-def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
-    """Print a consolidated switchboard benchmark report."""
+
+def pytest_terminal_summary(
+    terminalreporter, exitstatus: int, config: pytest.Config
+) -> None:
     report: dict = getattr(config, "_switchboard_report", {})
     if not report:
         return
 
     model = report.get("model", "unknown")
-    url = report.get("ollama_url", "")
     W = 72
 
     lines: list[str] = []
     lines.append("")
     lines.append("=" * W)
     lines.append(f"  SWITCHBOARD ROUTING BENCHMARK REPORT -- {model}")
-    if url:
-        lines.append(f"  {url}")
     lines.append("=" * W)
 
     counts = report.get("counts")
@@ -177,7 +207,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         lines.append("")
         lines.append(
             f"  Scenarios: {counts['total']}  |  Errors: {counts['errors']}  |  "
-            f"Unparseable: {counts['unparseable']}  |  Classified: {counts['classified']}"
+            f"Unparseable: {counts['unparseable']}  |  "
+            f"Classified: {counts['classified']}"
         )
 
     acc = report.get("accuracy")
@@ -185,26 +216,29 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         lines.append("")
         lines.append(f"  Overall routing accuracy: {acc['value']:.1%}")
 
-    # Per-butler breakdown
     per_butler = report.get("per_butler")
     if per_butler:
         lines.append("")
         lines.append("  PER-BUTLER ACCURACY")
         lines.append(f"  {'-' * 52}")
-        lines.append(f"  {'Butler':<16s} {'Correct':>8s} {'Total':>6s} {'Acc':>7s}")
+        lines.append(
+            f"  {'Butler':<16s} {'Correct':>8s} {'Total':>6s} {'Acc':>7s}"
+        )
         lines.append(f"  {'-' * 52}")
         for butler in sorted(per_butler.keys()):
             s = per_butler[butler]
             pct = s["correct"] / s["total"] * 100 if s["total"] else 0
-            lines.append(f"  {butler:<16s} {s['correct']:>8d} {s['total']:>6d} {pct:>6.1f}%")
+            lines.append(
+                f"  {butler:<16s} {s['correct']:>8d} {s['total']:>6d}"
+                f" {pct:>6.1f}%"
+            )
         lines.append(f"  {'-' * 52}")
 
-    # Confusion matrix
     cm = report.get("confusion_matrix")
     if cm:
         butlers = sorted(cm.keys())
         lines.append("")
-        lines.append("  ROUTING CONFUSION MATRIX (expected \u2192 actual)")
+        lines.append("  ROUTING CONFUSION MATRIX (expected -> actual)")
         header = f"  {'':>16s}" + "".join(f" {b[:6]:>7s}" for b in butlers)
         lines.append(header)
         for expected in butlers:
@@ -229,7 +263,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
                 if val is not None:
                     lines.append(f"  {label:<16s} {val:>8.0f}ms")
         if cold is not None:
-            lines.append(f"  {'Cold start':<16s} {cold['value']:>8.0f}ms")
+            lines.append(
+                f"  {'Cold start':<16s} {cold['value']:>8.0f}ms"
+            )
         lines.append(f"  {'-' * 40}")
         if lat and lat.get("throughput"):
             lines.append(f"  {lat['throughput']:.1f} req/s")
