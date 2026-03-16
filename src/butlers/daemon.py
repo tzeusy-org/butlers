@@ -93,6 +93,7 @@ from butlers.core.sessions import sessions_get as _sessions_get
 from butlers.core.sessions import sessions_list as _sessions_list
 from butlers.core.sessions import sessions_summary as _sessions_summary
 from butlers.core.sessions import top_sessions as _top_sessions
+from butlers.core.skills import get_skills_dir
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_delete as _state_delete
 from butlers.core.state import state_get as _state_get
@@ -1395,7 +1396,12 @@ class ButlerDaemon:
             }
             for s in self.config.schedules
         ]
-        await sync_schedules(pool, schedules, stagger_key=self.config.name)
+        await sync_schedules(
+            pool,
+            schedules,
+            stagger_key=self.config.name,
+            skills_dir=get_skills_dir(self.config_dir),
+        )
 
         # 11b. Open MCP client connection to Switchboard (non-switchboard butlers)
         await self._connect_switchboard()

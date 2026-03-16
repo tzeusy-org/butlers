@@ -10,8 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -29,6 +31,50 @@ _DISPATCH_MODE_JOB = "job"
 _ALLOWED_DISPATCH_MODES = {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
 _ALLOWED_COMPLEXITY_VALUES = {c.value for c in Complexity}
 _DEFAULT_COMPLEXITY = Complexity.MEDIUM.value
+
+# Pattern to find candidate skill names in prompt text (kebab-case words).
+_SKILL_NAME_PATTERN = re.compile(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b")
+
+
+def _check_notify_reference(
+    *,
+    task_name: str,
+    prompt: str,
+    skills_dir: Path | None,
+) -> None:
+    """Warn if a prompt-mode scheduled task does not reference notify().
+
+    Checks the prompt text directly (case-insensitive).  If *skills_dir* is
+    provided, also checks the SKILL.md of any skill whose kebab-case name
+    appears as a word in the prompt.
+
+    Emits a WARNING when neither the prompt nor any discovered skill SKILL.md
+    contains the string ``notify`` (case-insensitive).  This is a soft check
+    only — some tasks legitimately skip notify (e.g., cleanup jobs).
+    """
+    if "notify" in prompt.lower():
+        return
+
+    if skills_dir is not None and skills_dir.is_dir():
+        for match in _SKILL_NAME_PATTERN.finditer(prompt):
+            skill_name = match.group(1)
+            skill_md = skills_dir / skill_name / "SKILL.md"
+            if skill_md.is_file():
+                try:
+                    if "notify" in skill_md.read_text(encoding="utf-8").lower():
+                        return
+                except OSError as exc:
+                    logger.debug(
+                        "Could not read skill file %s for notify check: %s",
+                        skill_md,
+                        exc,
+                    )
+
+    logger.warning(
+        "Scheduled task %r has dispatch_mode=prompt but prompt/skill does not reference"
+        " notify() — task results may not reach the user",
+        task_name,
+    )
 
 
 def _normalize_schedule_projection_fields(
@@ -317,6 +363,7 @@ async def sync_schedules(
     *,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    skills_dir: Path | None = None,
 ) -> None:
     """Sync TOML ``[[butler.schedule]]`` entries to the ``scheduled_tasks`` DB table.
 
@@ -326,9 +373,17 @@ async def sync_schedules(
     - Match by ``name`` field
     - Compute ``next_run_at`` via croniter for each synced task
 
+    For ``dispatch_mode=prompt`` tasks, emits a WARNING if neither the prompt
+    text nor any skill SKILL.md referenced by the prompt contains ``notify``
+    (case-insensitive).  Pass *skills_dir* (``roster/{butler}/.agents/skills/``)
+    to enable skill-content scanning.
+
     Args:
         pool: asyncpg connection pool.
         schedules: List of dicts with schedule fields.
+        skills_dir: Optional path to the butler's skills directory for notify
+            reference checking.  When provided, SKILL.md files for any
+            kebab-case skill names found in the prompt are also inspected.
     """
     normalized_schedules: list[dict[str, Any]] = []
     for i, schedule in enumerate(schedules):
@@ -354,6 +409,15 @@ async def sync_schedules(
             complexity=schedule.get("complexity"),
             context=schedule_path,
         )
+
+        # Warn if a prompt-mode task omits notify() — task results will be silent otherwise.
+        if dispatch_mode == _DISPATCH_MODE_PROMPT and prompt is not None:
+            _check_notify_reference(
+                task_name=name,
+                prompt=prompt,
+                skills_dir=skills_dir,
+            )
+
         normalized_schedules.append(
             {
                 "name": name,

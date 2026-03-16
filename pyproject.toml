@@ -99,6 +99,7 @@ markers = [
     "bench: All Ollama model benchmarks — require live endpoint (run with -m bench)",
     "discretion_bench: Discretion layer FORWARD/IGNORE classification benchmarks",
     "switchboard_bench: Switchboard routing accuracy benchmarks",
+    "db: Database integration tests — require Docker (testcontainers with real PostgreSQL)",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here
