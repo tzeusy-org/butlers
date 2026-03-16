@@ -82,10 +82,15 @@ def routing_results(
     _require_opencode,
 ) -> list[dict]:
     """Run every scenario through the real OpenCodeAdapter and capture results."""
+    import sys
+    import time
+
     sw_report["model"] = model_name
+    total = len(scenarios)
+    t_start = time.monotonic()
 
     results: list[dict] = []
-    for entry in scenarios:
+    for i, entry in enumerate(scenarios):
         mock_mcp_server.reset_captures()
         prompt = build_routing_prompt(entry)
 
@@ -99,11 +104,22 @@ def routing_results(
         result["expected"] = entry["expected"]
         result["category"] = entry["category"]
         result["text"] = entry["text"]
-
-        # Also attach server-side captured calls for debugging
         result["captured_calls"] = mock_mcp_server.get_captured_calls()
-
         results.append(result)
+
+        # Progress output
+        elapsed = time.monotonic() - t_start
+        avg = elapsed / (i + 1)
+        eta = avg * (total - i - 1)
+        status = result["routed_to"] or "ERR"
+        sys.stderr.write(
+            f"\r  switchboard [{i + 1}/{total}] "
+            f"{status:<12s} "
+            f"({elapsed:.0f}s elapsed, ~{eta:.0f}s remaining)   "
+        )
+        sys.stderr.flush()
+
+    sys.stderr.write("\n")
     return results
 
 

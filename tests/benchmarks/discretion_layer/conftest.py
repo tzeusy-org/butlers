@@ -64,8 +64,13 @@ def all_results(
     The first request uses an extended 30s timeout to accommodate model loading
     (cold start). All subsequent requests use the configured bench_timeout.
     """
+    import sys
+    import time
+
     bench_report["model"] = model_name
     bench_report["ollama_url"] = ollama_url
+    total = len(prompts)
+    t_start = time.monotonic()
 
     results: list[dict] = []
     for i, entry in enumerate(prompts):
@@ -77,6 +82,19 @@ def all_results(
         result["category"] = entry["category"]
         result["text"] = entry["text"]
         results.append(result)
+
+        elapsed = time.monotonic() - t_start
+        avg = elapsed / (i + 1)
+        eta = avg * (total - i - 1)
+        verdict = result.get("verdict") or "ERR"
+        sys.stderr.write(
+            f"\r  discretion [{i + 1}/{total}] "
+            f"{verdict:<8s} "
+            f"({elapsed:.0f}s elapsed, ~{eta:.0f}s remaining)   "
+        )
+        sys.stderr.flush()
+
+    sys.stderr.write("\n")
     return results
 
 
