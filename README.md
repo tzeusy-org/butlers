@@ -1,6 +1,6 @@
 # Butlers
 
-![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/Tzeusy/COVERAGE_GIST_ID/raw/butlers-coverage.json)
+![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/Tzeusy/33d1433ee529f878bd4b4a8bf4609f96/raw/butlers-coverage.json)
 
 A personal AI agent framework where each **butler** is a long-running MCP server daemon that you interact with day-to-day. Butlers handle recurring tasks, manage integrations, and act on your behalf — powered by an agentic framework under the hood. Fully modular and extensible.
 
