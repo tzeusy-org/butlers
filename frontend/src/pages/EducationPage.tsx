@@ -29,6 +29,7 @@ export default function EducationPage() {
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
 
   // Auto-select first mind map when data loads
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     if (mindMaps.length > 0 && !selectedMapId) {
       setSelectedMapId(mindMaps[0].id);

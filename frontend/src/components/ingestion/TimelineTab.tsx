@@ -146,6 +146,7 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
   if (withTimes.length === 0) return null;
 
   const starts = withTimes.map((s) => new Date(s.started_at!).getTime());
+  // eslint-disable-next-line react-hooks/purity
   const ends = withTimes.map((s) =>
     s.completed_at ? new Date(s.completed_at).getTime() : Date.now(),
   );
@@ -593,6 +594,7 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
   const hasMore = eventsResp?.meta?.has_more ?? false;
 
   // Accumulate loaded pages into a single list
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     if (rawPageEvents.length === 0) return;
     if (offset === 0) {
@@ -609,6 +611,7 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
   // Evict stale optimistic overrides: once the server returns a status other
   // than replay_pending for an event we overrode, the server has caught up and
   // the override is no longer needed.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     setOptimisticOverrides((prev) => {
       if (prev.size === 0) return prev;

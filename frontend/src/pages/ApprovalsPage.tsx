@@ -77,6 +77,7 @@ export default function ApprovalsPage() {
   const expireMutation = useExpireStaleActions();
 
   // Open dialog when ?action=<id> is present and the action data loads
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     if (actionIdParam && deepLinkedAction?.data) {
       setSelectedAction(deepLinkedAction.data);

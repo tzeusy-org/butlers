@@ -18,7 +18,6 @@ import {
 import type {
   ModelCatalogCreate,
   ModelCatalogUpdate,
-  ModelTestResult,
   ButlerModelOverrideUpsert,
 } from "@/api/types.ts";
 
