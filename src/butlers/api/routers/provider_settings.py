@@ -483,12 +483,12 @@ async def import_ollama_models(
     """Bulk-import Ollama models into the shared model catalog.
 
     Creates catalog entries with ``runtime_type='ollama'`` for each item in
-    the request.  Uses ``INSERT ... ON CONFLICT (alias) DO NOTHING`` to skip
-    duplicates silently unless the alias is already taken by a *different*
-    runtime type, in which case a 409 is returned.
+    the request.  Uses ``INSERT ... ON CONFLICT (alias) DO NOTHING`` to
+    idempotently handle duplicates.  If an alias already exists, the model is
+    not inserted and the corresponding result will have ``created=False``.
 
-    Returns 409 when any requested alias already exists in the catalog
-    (regardless of runtime_type).
+    A 409 Conflict is only raised in the rare case of a race condition where
+    two concurrent requests attempt to insert the same new alias simultaneously.
     """
     pool = _shared_pool(db)
 
