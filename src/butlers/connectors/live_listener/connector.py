@@ -205,7 +205,7 @@ class LiveListenerConnector:
 
         # Build per-mic components
         discretion_dispatcher = (
-            DiscretionDispatcher(pool=self._db_pool) if self._db_pool is not None else None
+            DiscretionDispatcher(pool=self._db_pool, timeout_s=self._config.discretion_timeout_s) if self._db_pool is not None else None
         )
         for spec in self._config.devices:
             mic = spec.name
