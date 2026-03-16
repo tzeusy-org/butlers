@@ -148,20 +148,21 @@ The live-listener uses the shared discretion layer (`butlers.connectors.discreti
 
 #### Scenario: Shared discretion module
 - **WHEN** the live-listener connector uses the discretion layer
-- **THEN** it imports from `butlers.connectors.discretion` (shared module)
-- **AND** it uses `DiscretionConfig(env_prefix="LIVE_LISTENER_")` for per-connector env var resolution
+- **THEN** it imports `DiscretionEvaluator` from `butlers.connectors.discretion` and `DiscretionDispatcher` from `butlers.connectors.discretion_dispatcher`
+- **AND** it creates a single `DiscretionDispatcher(pool=db_pool)` and injects it into each per-mic `DiscretionEvaluator`
+- **AND** the dispatcher resolves the discretion model from the shared model catalog (`complexity_tier='discretion'`) via the RuntimeAdapter interface
 
 #### Scenario: Sliding context window
 - **WHEN** an utterance is transcribed
 - **THEN** it is appended to a per-mic sliding context window
-- **AND** the window retains the last `LIVE_LISTENER_DISCRETION_WINDOW_SIZE` utterances (default: 10) or utterances within the last `LIVE_LISTENER_DISCRETION_WINDOW_SECONDS` (default: 300), whichever produces fewer entries
+- **AND** the window retains the last `window_size` utterances (default: 10) or utterances within the last `window_seconds` (default: 300), whichever produces fewer entries
 - **AND** each entry in the window includes: transcribed text, timestamp, and source name (mic name)
 
 #### Scenario: Discretion evaluation with weight
 - **WHEN** a new utterance is added to the context window
-- **THEN** the discretion layer sends the context window plus the latest utterance to the configured LLM
+- **THEN** the discretion layer sends the context window plus the latest utterance to the catalog-resolved LLM via the `DiscretionDispatcher`
 - **AND** the LLM MUST respond with a structured verdict: `FORWARD` (with a one-line reason) or `IGNORE`
-- **AND** the LLM call uses `LIVE_LISTENER_DISCRETION_LLM_MODEL` (default: `gemma3:12b`) and `LIVE_LISTENER_DISCRETION_LLM_URL`
+- **AND** the model used is determined by the `discretion` tier in the shared model catalog (default seed: `qwen3.5:9b` via opencode/ollama)
 - **AND** all voice utterances use `weight=1.0` (no sender identity available for ambient audio), meaning the LLM is always called and failures always fail-open
 
 #### Scenario: Discretion verdicts
@@ -183,10 +184,11 @@ The live-listener uses the shared discretion layer (`butlers.connectors.discreti
 - **AND** if the timeout is exceeded, the utterance is treated as `FORWARD` (fail-open) and the timeout is logged
 
 #### Scenario: Privacy boundary
-- **WHEN** `LIVE_LISTENER_DISCRETION_LLM_URL` points to a local LLM endpoint
+- **WHEN** the discretion model catalog entry uses an `opencode` runtime with a local Ollama model (e.g. `ollama/qwen3.5:9b`)
 - **THEN** transcribed text does not leave the local network until an utterance is forwarded to the Switchboard
-- **WHEN** `LIVE_LISTENER_DISCRETION_LLM_URL` is empty or points to a cloud endpoint
+- **WHEN** the discretion model catalog entry uses a cloud-hosted runtime (e.g. `claude`, `codex`)
 - **THEN** ALL transcribed text (including ignored utterances) is sent to the cloud LLM for evaluation
+- **AND** operators can control this privacy boundary by selecting the appropriate model in the Settings UI
 
 ### Requirement: ingest.v1 Field Mapping
 Each forwarded utterance is normalized to the canonical `ingest.v1` envelope.
@@ -287,9 +289,10 @@ Configuration via environment variables extending the base connector variables.
 - **WHEN** the connector starts
 - **THEN** `LIVE_LISTENER_TRANSCRIPTION_PROTOCOL` (default: `"wyoming"`), `LIVE_LISTENER_LANGUAGE` (default: `"en"`) are optionally configurable
 
-#### Scenario: Optional discretion variables
+#### Scenario: Discretion model selection
 - **WHEN** the connector starts
-- **THEN** `LIVE_LISTENER_DISCRETION_LLM_URL` (default: empty = butler ecosystem default), `LIVE_LISTENER_DISCRETION_LLM_MODEL` (default: fastest available), `LIVE_LISTENER_DISCRETION_TIMEOUT_S` (default: 3), `LIVE_LISTENER_DISCRETION_WINDOW_SIZE` (default: 10), `LIVE_LISTENER_DISCRETION_WINDOW_SECONDS` (default: 300) are optionally configurable
+- **THEN** the discretion model is resolved from the shared model catalog at the `discretion` complexity tier (managed via the Settings UI at `/butlers/settings`)
+- **AND** the `LIVE_LISTENER_DISCRETION_LLM_URL` and `LIVE_LISTENER_DISCRETION_LLM_MODEL` environment variables are no longer used (model selection is catalog-driven)
 
 #### Scenario: Optional session variables
 - **WHEN** the connector starts

@@ -54,10 +54,11 @@ The dashboard settings page SHALL include a model catalog management section wit
 #### Scenario: Catalog table display
 - **WHEN** the settings page loads the model catalog section
 - **THEN** a table displays all catalog entries grouped by complexity tier with columns: Alias, Runtime, Model ID, Extra Args (formatted), Tier (badge), Priority, Enabled (toggle), and Actions (Edit, Delete)
+- **AND** the `discretion` tier group is displayed under a "Discretion" heading, visually separated from session tiers, with a subtitle explaining these models are used for connector noise filtering
 
 #### Scenario: Create model alias dialog
 - **WHEN** the operator clicks "Add Model"
-- **THEN** a dialog opens with fields: Alias (text input), Runtime Type (dropdown of registered adapters: `claude`, `codex`, `gemini`, `opencode`), Model ID (text input), Extra Args (key-value editor with "Add arg" button, or raw JSON toggle), Complexity Tier (dropdown: trivial, medium, high, extra_high), Priority (numeric input, default 0), Enabled (toggle, default true)
+- **THEN** a dialog opens with fields: Alias (text input), Runtime Type (dropdown of registered adapters: `claude`, `codex`, `gemini`, `opencode`), Model ID (text input), Extra Args (key-value editor with "Add arg" button, or raw JSON toggle), Complexity Tier (dropdown: trivial, medium, high, extra_high, discretion), Priority (numeric input, default 0), Enabled (toggle, default true)
 
 #### Scenario: Extra args key-value editor
 - **WHEN** the operator edits extra args in key-value mode
@@ -108,6 +109,7 @@ The manual trigger UI on each butler's detail page SHALL include a complexity se
 #### Scenario: Complexity dropdown in trigger tab
 - **WHEN** the operator uses the trigger tab to manually spawn a session
 - **THEN** a complexity dropdown is shown with options: Trivial, Medium (default), High, Extra High
+- **AND** the `discretion` tier is excluded from this dropdown (it is not user-selectable for session triggers)
 - **AND** the selected complexity is passed to the trigger API
 
 #### Scenario: Resolved model preview

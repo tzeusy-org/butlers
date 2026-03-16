@@ -156,12 +156,12 @@ The Telegram user client connector uses the shared discretion layer (`butlers.co
 #### Scenario: Discretion gate position
 - **WHEN** a message passes the ingestion policy gates (connector-scope and global-scope)
 - **THEN** the discretion layer evaluates the message text before normalization and Switchboard submission
-- **AND** the discretion gate is only active when `TELEGRAM_USER_DISCRETION_LLM_URL` is configured (non-empty)
+- **AND** the discretion gate is active when a `DiscretionDispatcher` is available (requires a DB pool for catalog resolution)
 
 #### Scenario: Per-chat evaluators
 - **WHEN** the connector processes messages from multiple chats
 - **THEN** each chat ID gets its own `DiscretionEvaluator` instance with an independent context window
-- **AND** evaluators are lazily created on first message from each chat
+- **AND** evaluators are lazily created on first message from each chat, all sharing the same `DiscretionDispatcher` instance
 - **AND** the evaluator source name is `"tg:{chat_id}"`
 
 #### Scenario: Identity-based weight resolution
@@ -175,10 +175,11 @@ The Telegram user client connector uses the shared discretion layer (`butlers.co
 - **THEN** the message is recorded in `FilteredEventBuffer` with `filter_reason="discretion:IGNORE"` and not submitted to Switchboard
 - **AND** the full message payload is preserved in the filtered event for dashboard visibility
 
-#### Scenario: Discretion environment variables
+#### Scenario: Discretion model selection
 - **WHEN** the connector starts
-- **THEN** discretion is configured via: `TELEGRAM_USER_DISCRETION_LLM_URL` (Ollama endpoint), `TELEGRAM_USER_DISCRETION_LLM_MODEL` (default: `gemma3:12b`), `TELEGRAM_USER_DISCRETION_TIMEOUT_S` (default: 3.0), `TELEGRAM_USER_DISCRETION_WINDOW_SIZE` (default: 10), `TELEGRAM_USER_DISCRETION_WINDOW_SECONDS` (default: 300), `TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS` (default: 1.0), `TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN` (default: 0.5)
-- **AND** all variables fall back to `CONNECTOR_DISCRETION_*` if the prefixed var is not set
+- **THEN** the discretion model is resolved from the shared model catalog at the `discretion` complexity tier (managed via the Settings UI at `/butlers/settings`)
+- **AND** the `TELEGRAM_USER_DISCRETION_LLM_URL` and `TELEGRAM_USER_DISCRETION_LLM_MODEL` environment variables are no longer used (model selection is catalog-driven)
+- **AND** window/weight configuration (`window_size`, `window_seconds`, `weight_bypass`, `weight_fail_open`) is passed directly to the `DiscretionEvaluator` constructor
 
 ### Requirement: Environment Variables
 

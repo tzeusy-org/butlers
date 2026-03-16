@@ -416,14 +416,30 @@ Runtime-configurable connector settings are stored in `connector_registry.settin
 ### Requirement: Shared Discretion Layer
 An LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE). Used by connectors that need noise filtering before Switchboard ingestion.
 
+The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `discretion` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
+
 #### Scenario: Discretion module location
 - **WHEN** a connector integrates the discretion layer
-- **THEN** it imports from `butlers.connectors.discretion` (shared module, not connector-specific)
-- **AND** it uses `DiscretionConfig(env_prefix="{CONNECTOR_PREFIX}")` for per-connector env var resolution with fallback to `CONNECTOR_DISCRETION_*`
+- **THEN** it imports `DiscretionEvaluator` from `butlers.connectors.discretion` (shared module, not connector-specific)
+- **AND** it imports `DiscretionDispatcher` from `butlers.connectors.discretion_dispatcher`
+- **AND** it creates a `DiscretionDispatcher(pool=db_pool)` and injects it into each `DiscretionEvaluator`
 
-#### Scenario: Discretion environment variables
+#### Scenario: Discretion model resolution via catalog
+- **WHEN** a discretion evaluation requires an LLM call
+- **THEN** the `DiscretionDispatcher` resolves the model from `shared.model_catalog` using `complexity_tier='discretion'`
+- **AND** the resolved `(runtime_type, model_id, extra_args)` tuple is passed to the appropriate `RuntimeAdapter` via the standard adapter registry
+- **AND** the default seed entry is `discretion-qwen3.5-9b` (runtime_type=`opencode`, model_id=`ollama/qwen3.5:9b`) — a local Ollama model accessed via the OpenCode adapter
+- **AND** operators can change the discretion model at any time via the Settings UI at `/butlers/settings` without code changes or restarts
+
+#### Scenario: Discretion dispatcher concurrency
+- **WHEN** a `DiscretionDispatcher` is instantiated
+- **THEN** it maintains its own `asyncio.Semaphore` (default 4 concurrent calls), independent from any butler's spawner semaphore
+- **AND** the concurrency limit is configurable per dispatcher instance
+
+#### Scenario: Discretion configuration
 - **WHEN** a connector uses the discretion layer
-- **THEN** the following env vars are read (with `{PREFIX}` per connector, fallback to `CONNECTOR_`): `{PREFIX}DISCRETION_LLM_URL`, `{PREFIX}DISCRETION_LLM_MODEL` (default: `gemma3:12b`), `{PREFIX}DISCRETION_TIMEOUT_S` (default: 3.0), `{PREFIX}DISCRETION_WINDOW_SIZE` (default: 10), `{PREFIX}DISCRETION_WINDOW_SECONDS` (default: 300), `{PREFIX}DISCRETION_WEIGHT_BYPASS` (default: 1.0), `{PREFIX}DISCRETION_WEIGHT_FAIL_OPEN` (default: 0.5)
+- **THEN** the `DiscretionEvaluator` accepts configuration for: `window_size` (default: 10), `window_seconds` (default: 300), `weight_bypass` (default: 1.0), `weight_fail_open` (default: 0.5), and `system_prompt`
+- **AND** model selection (previously via `{PREFIX}DISCRETION_LLM_URL` / `{PREFIX}DISCRETION_LLM_MODEL` env vars) is handled entirely by the model catalog
 
 #### Scenario: Fail-open by default
 - **WHEN** the discretion LLM call fails (timeout, connection error, malformed response)

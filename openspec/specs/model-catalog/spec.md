@@ -19,8 +19,9 @@ The system SHALL maintain a `shared.model_catalog` table as the canonical regist
 
 #### Scenario: Valid complexity tiers
 - **WHEN** a catalog entry specifies a `complexity_tier`
-- **THEN** the value MUST be one of: `trivial`, `medium`, `high`, `extra_high`
+- **THEN** the value MUST be one of: `trivial`, `medium`, `high`, `extra_high`, `discretion`
 - **AND** any other value is rejected with a validation error
+- **AND** the `discretion` tier is reserved for lightweight, latency-sensitive evaluations (e.g. noise filtering) that run outside the butler session spawner
 
 #### Scenario: Valid runtime types
 - **WHEN** a catalog entry specifies a `runtime_type`
@@ -112,6 +113,8 @@ The system SHALL seed the model catalog with sensible defaults on first migratio
 | `minimax-m2.5` | `opencode` | `minimax/MiniMax-M2.5` | `[]` | `medium` | 20 |
 | `glm-5` | `opencode` | `zhipu/GLM-5` | `[]` | `medium` | 20 |
 | `kimi-k2.5` | `opencode` | `moonshot/Kimi-K2.5` | `[]` | `high` | 20 |
+
+| `discretion-qwen3.5-9b` | `opencode` | `ollama/qwen3.5:9b` | `[]` | `discretion` | 10 |
 
 #### Scenario: Seed is idempotent
 - **WHEN** the migration runs on a database where seed entries already exist
