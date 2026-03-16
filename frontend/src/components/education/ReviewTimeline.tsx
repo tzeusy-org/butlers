@@ -93,7 +93,7 @@ export default function ReviewTimeline() {
         new Date(a.next_review_at).getTime() - new Date(b.next_review_at).getTime(),
     );
     return entries;
-  }, [mindMaps, map0.data, map1.data, map2.data, map3.data, map4.data]);
+  }, [mindMaps, map0, map1, map2, map3, map4]);
 
   const groups = useMemo(() => groupByTimePeriod(allEntries), [allEntries]);
 

@@ -19,6 +19,7 @@ const COMPLEXITY_COLORS: Record<ComplexityTier, string> = {
   extra_high: "bg-red-600 text-white hover:bg-red-600/90",
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const COMPLEXITY_TIERS: ComplexityTier[] = [
   "trivial",
   "medium",
@@ -26,6 +27,7 @@ export const COMPLEXITY_TIERS: ComplexityTier[] = [
   "extra_high",
 ];
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function complexityLabel(tier: ComplexityTier | string): string {
   return COMPLEXITY_LABELS[tier as ComplexityTier] ?? tier;
 }

@@ -103,6 +103,7 @@ describe("ContactsPage", () => {
       applied: 2,
       skipped: 0,
       deleted: 0,
+      provider_total: null,
       summary: {},
       message: null,
     });

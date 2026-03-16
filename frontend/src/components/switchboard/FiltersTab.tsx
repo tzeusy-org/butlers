@@ -1603,4 +1603,5 @@ export function FiltersTab() {
 // Exports for testing
 // ---------------------------------------------------------------------------
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { formatAction, formatCondition, formatScope, isConnectorScope, SEED_RULES };

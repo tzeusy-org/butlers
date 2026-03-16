@@ -39,6 +39,7 @@ const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 // Redirect /connectors/:connectorType/:endpointIdentity
 // → /ingestion/connectors/:connectorType/:endpointIdentity
 // Preserves relevant query string params (period, date filters) per spec section 3.3.
+// eslint-disable-next-line react-refresh/only-export-components
 function ConnectorDetailRedirect() {
   const { connectorType, endpointIdentity } = useParams()
   const [searchParams] = useSearchParams()

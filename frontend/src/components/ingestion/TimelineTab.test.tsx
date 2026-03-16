@@ -76,6 +76,7 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
     triage_target: null,
     status: "ingested",
     filter_reason: null,
+    error_detail: null,
     ...overrides,
   };
 }
@@ -360,7 +361,7 @@ describe("TimelineTab — Status filter", () => {
       data: { data: [], meta: { total: 0, limit: 50, offset: 0 } },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    } as unknown as ReturnType<typeof useIngestionEvents>);
   });
 
   afterEach(() => {

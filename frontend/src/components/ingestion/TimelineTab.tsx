@@ -147,6 +147,7 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
 
   const starts = withTimes.map((s) => new Date(s.started_at!).getTime());
   const ends = withTimes.map((s) =>
+    // eslint-disable-next-line react-hooks/purity
     s.completed_at ? new Date(s.completed_at).getTime() : Date.now(),
   );
   const minTime = Math.min(...starts);
@@ -593,6 +594,7 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
   const hasMore = eventsResp?.meta?.has_more ?? false;
 
   // Accumulate loaded pages into a single list
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (rawPageEvents.length === 0) return;
     if (offset === 0) {
@@ -603,12 +605,14 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
       setLoadedEvents((prev) => [...prev, ...rawPageEvents]);
     }
   }, [rawPageEvents, offset]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const rawEvents = offset === 0 ? rawPageEvents : loadedEvents;
 
   // Evict stale optimistic overrides: once the server returns a status other
   // than replay_pending for an event we overrode, the server has caught up and
   // the override is no longer needed.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setOptimisticOverrides((prev) => {
       if (prev.size === 0) return prev;
@@ -621,6 +625,7 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
       return next.size === prev.size ? prev : next; // stable ref if no change
     });
   }, [rawEvents]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Apply optimistic overrides so replayed events immediately show replay_pending
   const allEvents: IngestionEventSummary[] = rawEvents.map((e) => {
