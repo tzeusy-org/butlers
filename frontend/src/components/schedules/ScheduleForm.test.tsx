@@ -14,7 +14,7 @@ vi.mock("@/components/ui/select", () => ({
     <div
       data-testid="select-wrapper"
       data-on-value-change={onValueChange ? "true" : "false"}
-      onChangeCapture={(e: React.ChangeEvent<HTMLSelectElement>) => {
+      onChangeCapture={(e) => {
         onValueChange?.((e.target as HTMLSelectElement).value);
       }}
     >
