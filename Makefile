@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-qg test-qg-serial test-qg-parallel check
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-qg test-qg-serial test-qg-parallel check bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -61,3 +61,20 @@ test-qg-parallel:
 	$(MAKE) test-qg
 
 check: lint test
+
+# Version management — single source of truth is pyproject.toml
+# Usage: make bump-version VERSION=1.2.3
+# Increments the patch segment if VERSION is not specified:
+#   Current: 0.1.0 → make bump-version → 0.1.1
+bump-version:
+	@if [ -z "$(VERSION)" ]; then \
+		python scripts/bump_version.py; \
+	else \
+		python scripts/bump_version.py "$(VERSION)"; \
+	fi
+
+# Create and push a release tag matching the current pyproject.toml version.
+# Usage: make release-tag
+# This triggers the release workflow in CI.
+release-tag:
+	@python scripts/release_tag.py
