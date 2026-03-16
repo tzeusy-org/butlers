@@ -9,6 +9,19 @@ The spawner is responsible for:
 6. Logging sessions before and after invocation
 7. Passing the configured model to the SDK when set
 8. Resolving models dynamically from the catalog (with TOML fallback)
+9. Enforcing a process-wide global concurrency cap across all butlers
+
+Global concurrency cap
+----------------------
+A module-level ``asyncio.Semaphore`` (``_global_semaphore``) limits the total
+number of concurrently running LLM sessions across **all** Spawner instances in
+the process.  This prevents runaway parallelism when many butlers are triggered
+simultaneously.
+
+The cap defaults to 3 and can be overridden via the
+``BUTLERS_MAX_GLOBAL_SESSIONS`` environment variable.  Per-butler concurrency
+limits (``max_concurrent_sessions`` in butler.toml) remain unchanged and still
+apply — the global cap is an additional outer constraint.
 """
 
 from __future__ import annotations
@@ -55,6 +68,53 @@ from butlers.core.utils import generate_uuid7_string
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Global spawn concurrency cap
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MAX_GLOBAL_SESSIONS = 3
+_global_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_global_semaphore() -> asyncio.Semaphore:
+    """Return the process-wide spawn concurrency semaphore (lazy init).
+
+    The cap is read from the ``BUTLERS_MAX_GLOBAL_SESSIONS`` environment
+    variable on first call.  Defaults to 3 when the variable is absent or
+    unparseable.  The semaphore is shared across **all** Spawner instances,
+    so concurrent LLM sessions across every butler in the process are
+    collectively bounded by this limit.
+    """
+    global _global_semaphore
+    if _global_semaphore is None:
+        raw = os.environ.get("BUTLERS_MAX_GLOBAL_SESSIONS", "")
+        try:
+            cap = int(raw)
+            if cap < 1:
+                raise ValueError("must be >= 1")
+        except (ValueError, TypeError):
+            cap = _DEFAULT_MAX_GLOBAL_SESSIONS
+            if raw:
+                logger.warning(
+                    "BUTLERS_MAX_GLOBAL_SESSIONS=%r is not a valid positive integer; "
+                    "defaulting to %d",
+                    raw,
+                    cap,
+                )
+        _global_semaphore = asyncio.Semaphore(cap)
+        logger.info(
+            "Global spawn concurrency cap initialised: max_global_sessions=%d",
+            cap,
+        )
+    return _global_semaphore
+
+
+def _reset_global_semaphore() -> None:
+    """Reset the module-level global semaphore (for testing only)."""
+    global _global_semaphore
+    _global_semaphore = None
+
 
 _MEMORY_TABLE_NAMES = ("episodes", "facts", "rules", "memory_links", "memory_events")
 _missing_memory_table_warnings: set[tuple[str, str]] = set()
@@ -634,10 +694,30 @@ class Spawner:
         task = asyncio.current_task()
         if task is not None:
             self._in_flight.add(task)
-        # Track triggers waiting for a semaphore slot
-        self._metrics.spawner_queued_triggers_inc()
+        _global_semaphore_acquired = False
         _semaphore_acquired = False
+        global_sem = _get_global_semaphore()
         try:
+            # Acquire the process-wide global cap first.
+            # When all global slots are taken, log at INFO so operators can see
+            # that spawns are being queued (metric: spawner_global_queue_depth).
+            if global_sem._value == 0:
+                logger.info(
+                    "Spawn queued waiting for global cap (butler=%s, prompt=%.60r)",
+                    self._config.name,
+                    prompt,
+                )
+            self._metrics.spawner_global_queue_depth_inc()
+            try:
+                await global_sem.acquire()
+                _global_semaphore_acquired = True
+            finally:
+                self._metrics.spawner_global_queue_depth_dec()
+
+            # Track triggers waiting for the per-butler semaphore slot only
+            # (after the global cap is acquired, so the metric reflects
+            # per-butler queue depth, not global backpressure wait time).
+            self._metrics.spawner_queued_triggers_inc()
             async with self._session_semaphore:
                 # Slot acquired — no longer queued, now active
                 _semaphore_acquired = True
@@ -656,10 +736,14 @@ class Spawner:
                 finally:
                     self._metrics.spawner_active_sessions_dec()
         finally:
-            # If cancelled before acquiring the semaphore, queued_triggers_dec
-            # was never called inside the async-with block; decrement here to
-            # keep the gauge accurate.
-            if not _semaphore_acquired:
+            # Release global semaphore if acquired (not released via context manager).
+            if _global_semaphore_acquired:
+                global_sem.release()
+            # If the global semaphore was acquired but the per-butler semaphore was not
+            # (e.g. cancelled after global acquire but before/during per-butler acquire),
+            # queued_triggers_dec was never called inside the async-with block;
+            # decrement here to keep the gauge accurate.
+            if _global_semaphore_acquired and not _semaphore_acquired:
                 self._metrics.spawner_queued_triggers_dec()
             if task is not None:
                 self._in_flight.discard(task)

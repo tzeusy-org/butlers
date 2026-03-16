@@ -2583,3 +2583,211 @@ class TestCatalogModelResolution:
         assert result.success is True
         assert captured["model"] == "claude-haiku-4-5-20251001"
         assert result.model == "claude-haiku-4-5-20251001"
+
+
+# ---------------------------------------------------------------------------
+# Global spawn concurrency cap (bu-s3lr.2)
+# ---------------------------------------------------------------------------
+
+
+from butlers.core.spawner import _reset_global_semaphore  # noqa: E402
+
+
+class TestGlobalSpawnConcurrencyCap:
+    """Process-wide global semaphore limits total concurrent LLM sessions.
+
+    Tests verify:
+    - Global cap (env var) is respected across multiple Spawner instances
+    - Per-butler semaphore is unchanged and still applies
+    - Queuing events are logged at INFO when the global cap is saturated
+    - Global semaphore is released after each session (no leaks)
+    - Configurable via BUTLERS_MAX_GLOBAL_SESSIONS
+    """
+
+    def setup_method(self) -> None:
+        """Reset the global semaphore before each test for isolation."""
+        _reset_global_semaphore()
+
+    def teardown_method(self) -> None:
+        """Reset the global semaphore after each test to avoid state leakage."""
+        _reset_global_semaphore()
+
+    async def test_global_cap_limits_concurrent_sessions_across_spawners(self, tmp_path: Path):
+        """With global cap=2 and 5 spawners, at most 2 LLM sessions run simultaneously.
+
+        This is the primary acceptance criterion: 5 butlers triggering simultaneously
+        are collectively bounded by the global cap, not just their per-butler limit.
+        """
+        # Reset + install a fresh global semaphore with cap=2
+        _reset_global_semaphore()
+        with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "2"}, clear=False):
+            # Force re-init so the env var is picked up
+            _reset_global_semaphore()
+
+            max_concurrent = 0
+            active_count = 0
+            lock = asyncio.Lock()
+
+            class ConcurrencyTrackingAdapter(MockAdapter):
+                async def invoke(self, *args, **kwargs):
+                    nonlocal max_concurrent, active_count
+                    async with lock:
+                        active_count += 1
+                        if active_count > max_concurrent:
+                            max_concurrent = active_count
+                    await asyncio.sleep(0.02)
+                    async with lock:
+                        active_count -= 1
+                    return "done", [], None
+
+            # 5 spawners, each with max_concurrent_sessions=2 (per-butler cap)
+            # but global cap=2 should be the binding constraint
+            spawners = []
+            for i in range(5):
+                config_dir = tmp_path / f"butler-{i}"
+                config_dir.mkdir()
+                config = _make_config(
+                    name=f"butler-{i}",
+                    port=9100 + i,
+                    max_concurrent_sessions=2,
+                )
+                spawners.append(
+                    Spawner(
+                        config=config,
+                        config_dir=config_dir,
+                        runtime=ConcurrencyTrackingAdapter(),
+                    )
+                )
+
+            # Fire one trigger per spawner simultaneously
+            results = await asyncio.gather(
+                *[spawner.trigger(f"prompt-{i}", "tick") for i, spawner in enumerate(spawners)]
+            )
+
+        assert all(r.success for r in results), [r.error for r in results]
+        # With global cap=2, never more than 2 sessions should be active at once
+        assert max_concurrent <= 2, (
+            f"Expected at most 2 concurrent sessions; observed {max_concurrent}"
+        )
+
+    async def test_global_cap_env_var_default_is_three(self, tmp_path: Path):
+        """When BUTLERS_MAX_GLOBAL_SESSIONS is unset, default cap is 3."""
+        import butlers.core.spawner as spawner_mod
+
+        env_without_cap = {
+            k: v for k, v in os.environ.items() if k != "BUTLERS_MAX_GLOBAL_SESSIONS"
+        }
+        with patch.dict(os.environ, env_without_cap, clear=True):
+            _reset_global_semaphore()
+            sem = spawner_mod._get_global_semaphore()
+
+        assert sem._value == 3
+
+    async def test_global_cap_env_var_respected(self, tmp_path: Path):
+        """BUTLERS_MAX_GLOBAL_SESSIONS overrides the default cap."""
+        import butlers.core.spawner as spawner_mod
+
+        with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "7"}, clear=False):
+            _reset_global_semaphore()
+            sem = spawner_mod._get_global_semaphore()
+
+        assert sem._value == 7
+
+    async def test_global_semaphore_released_after_session(self, tmp_path: Path):
+        """Global semaphore slot is released after each session completes."""
+        import butlers.core.spawner as spawner_mod
+
+        with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "1"}, clear=False):
+            _reset_global_semaphore()
+
+            config_dir = tmp_path / "config"
+            config_dir.mkdir()
+            config = _make_config(max_concurrent_sessions=1)
+            adapter = MockAdapter(result_text="ok")
+            spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+            # Run a session — slot should be returned afterwards
+            result = await spawner.trigger("first", "tick")
+            assert result.success
+
+            # With cap=1, semaphore should be back to value=1 after the session
+            sem = spawner_mod._get_global_semaphore()
+            assert sem._value == 1, (
+                f"Expected global semaphore value=1 after session; got {sem._value}"
+            )
+
+    async def test_global_semaphore_released_after_error(self, tmp_path: Path):
+        """Global semaphore slot is released even when the session raises an error."""
+        import butlers.core.spawner as spawner_mod
+
+        with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "1"}, clear=False):
+            _reset_global_semaphore()
+
+            config_dir = tmp_path / "config"
+            config_dir.mkdir()
+            config = _make_config(max_concurrent_sessions=1)
+            adapter = MockAdapter(error="adapter crashed")
+            spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+            result = await spawner.trigger("fail", "tick")
+            assert result.error is not None
+
+            sem = spawner_mod._get_global_semaphore()
+            assert sem._value == 1, (
+                f"Expected global semaphore value=1 after error; got {sem._value}"
+            )
+
+    async def test_global_cap_queuing_logged_at_info(self, tmp_path: Path, caplog):
+        """When the global cap is saturated, a queuing INFO message is emitted."""
+        import logging
+
+        with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "1"}, clear=False):
+            _reset_global_semaphore()
+
+            config_dir = tmp_path / "config"
+            config_dir.mkdir()
+            config = _make_config(max_concurrent_sessions=2)
+            adapter = MockAdapter(result_text="ok", delay=0.02)
+            spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+            with caplog.at_level(logging.INFO, logger="butlers.core.spawner"):
+                results = await asyncio.gather(
+                    spawner.trigger("first", "tick"),
+                    spawner.trigger("second", "tick"),
+                )
+
+        assert all(r.success for r in results)
+        # At least one of the two triggers should have logged the global-cap queuing message
+        queued_msgs = [r.message for r in caplog.records if "global cap" in r.message.lower()]
+        assert queued_msgs, (
+            "Expected at least one INFO log about spawning being queued for global cap; "
+            f"got caplog records: {[r.message for r in caplog.records]}"
+        )
+
+    async def test_per_butler_semaphore_still_enforced_with_global_cap(self, tmp_path: Path):
+        """Per-butler max_concurrent_sessions is still respected with global cap active."""
+        with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "10"}, clear=False):
+            _reset_global_semaphore()
+
+            # Butler has per-butler cap=1 (serial dispatch)
+            config_dir = tmp_path / "config"
+            config_dir.mkdir()
+            config = _make_config(max_concurrent_sessions=1)
+
+            adapter = TrackingMockAdapter()
+            spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+            results = await asyncio.gather(
+                spawner.trigger("A", "tick"),
+                spawner.trigger("B", "tick"),
+            )
+
+        assert all(r.error is None for r in results)
+        # Serial dispatch still holds: start/end pairs must not overlap
+        log = adapter.execution_log
+        assert len(log) == 4
+        # Pattern: start-A, end-A, start-B, end-B (or B before A, but never interleaved)
+        for i in range(0, len(log), 2):
+            assert log[i][0] == "start"
+            assert log[i + 1][0] == "end"
+            assert log[i][1] == log[i + 1][1]
