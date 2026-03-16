@@ -84,7 +84,7 @@ class MockMCPServer:
 
     def start(self) -> None:
         """Start the server in a background daemon thread."""
-        app = self._mcp.streamable_http_app()
+        app = self._mcp.http_app()
         config = uvicorn.Config(
             app,
             host="127.0.0.1",
