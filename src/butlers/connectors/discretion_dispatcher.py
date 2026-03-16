@@ -145,7 +145,7 @@ class DiscretionDispatcher:
                 "Add an enabled entry with complexity_tier='discretion'."
             )
 
-        runtime_type, model_id, _extra_args = catalog_result
+        runtime_type, model_id, extra_args = catalog_result
         adapter = self._get_or_create_adapter(runtime_type)
 
         async def _invoke() -> str:
@@ -156,6 +156,7 @@ class DiscretionDispatcher:
                 env={},
                 max_turns=1,
                 model=model_id,
+                runtime_args=extra_args or None,
             )
             return result_text or ""
 

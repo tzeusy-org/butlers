@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -33,11 +34,13 @@ def _mock_pool(
     *, runtime_type: str = "claude", model_id: str = "claude-haiku", extra_args: list | None = None
 ):
     """Return an asyncpg pool mock whose fetchrow returns a matching catalog row."""
+    # asyncpg returns JSONB columns as strings; simulate that behaviour here.
+    extra_args_json = json.dumps(extra_args) if extra_args is not None else None
     row = MagicMock()
     row.__getitem__ = lambda self, key: {
         "runtime_type": runtime_type,
         "model_id": model_id,
-        "extra_args": None,
+        "extra_args": extra_args_json,
     }[key]
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=row)
@@ -82,6 +85,7 @@ class _StubAdapter(RuntimeAdapter):
                 "env": env,
                 "max_turns": max_turns,
                 "model": model,
+                "runtime_args": runtime_args,
             }
         )
         return (self._response, [], None)
@@ -211,18 +215,18 @@ async def test_call_returns_empty_string_for_none_result() -> None:
     """call() returns '' when the adapter returns None as result_text."""
 
     class NoneResultAdapter(_StubAdapter):
-        async def invoke(  # type: ignore[override]
+        async def invoke(
             self,
-            prompt,
-            system_prompt,
-            mcp_servers,
-            env,
-            max_turns=20,
-            model=None,
-            runtime_args=None,
-            cwd=None,
-            timeout=None,
-        ):
+            prompt: str,
+            system_prompt: str,
+            mcp_servers: dict[str, Any],
+            env: dict[str, str],
+            max_turns: int = 20,
+            model: str | None = None,
+            runtime_args: list[str] | None = None,
+            cwd: Path | None = None,
+            timeout: int | None = None,
+        ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
             return (None, [], None)
 
     stub = NoneResultAdapter()
@@ -250,18 +254,18 @@ async def test_semaphore_limits_concurrent_calls() -> None:
     gate = asyncio.Event()
 
     class CountingAdapter(_StubAdapter):
-        async def invoke(  # type: ignore[override]
+        async def invoke(
             self,
-            prompt,
-            system_prompt,
-            mcp_servers,
-            env,
-            max_turns=20,
-            model=None,
-            runtime_args=None,
-            cwd=None,
-            timeout=None,
-        ):
+            prompt: str,
+            system_prompt: str,
+            mcp_servers: dict[str, Any],
+            env: dict[str, str],
+            max_turns: int = 20,
+            model: str | None = None,
+            runtime_args: list[str] | None = None,
+            cwd: Path | None = None,
+            timeout: int | None = None,
+        ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
             in_flight.append(1)
             peak[0] = max(peak[0], len(in_flight))
             await gate.wait()
@@ -341,5 +345,31 @@ async def test_get_or_create_adapter_raises_for_unknown_type() -> None:
 
     dispatcher = DiscretionDispatcher(pool=pool)
 
-    with pytest.raises((ValueError, RuntimeError)):
+    with pytest.raises(ValueError, match="Unknown runtime type"):
         await dispatcher.call("test")
+
+
+async def test_call_passes_extra_args_as_runtime_args() -> None:
+    """call() forwards catalog extra_args to adapter.invoke as runtime_args."""
+    stub = _StubAdapter(response="ok")
+    pool = _mock_pool(runtime_type="stub-rta", model_id="m", extra_args=["--flag", "val"])
+    register_adapter("stub-rta", type(stub))
+
+    dispatcher = DiscretionDispatcher(pool=pool)
+    dispatcher._adapter_cache["stub-rta"] = stub
+
+    await dispatcher.call("test prompt")
+    assert stub._calls[0]["runtime_args"] == ["--flag", "val"]
+
+
+async def test_call_passes_none_runtime_args_when_extra_args_empty() -> None:
+    """call() passes runtime_args=None when catalog extra_args is empty."""
+    stub = _StubAdapter(response="ok")
+    pool = _mock_pool(runtime_type="stub-rta-empty", model_id="m", extra_args=None)
+    register_adapter("stub-rta-empty", type(stub))
+
+    dispatcher = DiscretionDispatcher(pool=pool)
+    dispatcher._adapter_cache["stub-rta-empty"] = stub
+
+    await dispatcher.call("test prompt")
+    assert stub._calls[0]["runtime_args"] is None
