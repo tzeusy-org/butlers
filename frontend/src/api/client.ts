@@ -66,9 +66,6 @@ import type {
   TimelineParams,
   TimelineResponse,
   TopSession,
-  TraceDetail,
-  TraceParams,
-  TraceSummary,
   TriggerResponse,
   ButlerMcpTool,
   ButlerMcpToolCallRequest,
@@ -576,29 +573,6 @@ export function searchAll(query: string, limit?: number): Promise<ApiResponse<Se
   const sp = new URLSearchParams({ q: query });
   if (limit) sp.set("limit", String(limit));
   return apiFetch<ApiResponse<SearchResults>>(`/search?${sp.toString()}`);
-}
-
-// ---------------------------------------------------------------------------
-// Traces
-// ---------------------------------------------------------------------------
-
-/** Fetch a paginated list of traces across all butlers. */
-export function getTraces(
-  params?: TraceParams,
-): Promise<PaginatedResponse<TraceSummary>> {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  const path = qs ? `/traces?${qs}` : "/traces";
-  return apiFetch<PaginatedResponse<TraceSummary>>(path);
-}
-
-/** Fetch a single trace by ID. */
-export function getTrace(traceId: string): Promise<ApiResponse<TraceDetail>> {
-  return apiFetch<ApiResponse<TraceDetail>>(
-    `/traces/${encodeURIComponent(traceId)}`,
-  );
 }
 
 // ---------------------------------------------------------------------------

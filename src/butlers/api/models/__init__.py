@@ -346,7 +346,6 @@ from butlers.api.models.secrets import SecretEntry, SecretUpsertRequest  # noqa:
 from butlers.api.models.session import SessionDetail  # noqa: E402
 from butlers.api.models.state import StateEntry, StateSetRequest  # noqa: E402
 from butlers.api.models.timeline import TimelineEvent, TimelineResponse  # noqa: E402
-from butlers.api.models.trace import SpanNode, TraceDetail, TraceSummary  # noqa: E402
 
 __all__ = [
     "ApprovalAction",
@@ -405,11 +404,8 @@ __all__ = [
     "SessionDetail",
     "SessionSummary",
     "SkillInfo",
-    "SpanNode",
     "StateEntry",
     "StateSetRequest",
-    "TraceDetail",
-    "TraceSummary",
     "TickResponse",
     "TimelineEvent",
     "TimelineResponse",
