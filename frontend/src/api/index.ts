@@ -436,6 +436,27 @@ export type {
 } from "./types.ts";
 
 export {
+  listProviders,
+  createProvider,
+  updateProvider,
+  deleteProvider,
+  testProviderConnectivity,
+  discoverOllamaModels,
+  importOllamaModels,
+} from "./client.ts";
+
+export type {
+  ProviderConfig,
+  ProviderConfigCreate,
+  ProviderConfigUpdate,
+  ProviderConnectivityResult,
+  OllamaDiscoveredModel,
+  OllamaImportItem,
+  OllamaImportRequest,
+  OllamaImportResult,
+} from "./types.ts";
+
+export {
   getEducationCrossTopicAnalytics,
   getEducationFlows,
   getEducationMasterySummary,

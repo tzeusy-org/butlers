@@ -90,6 +90,30 @@ const MODEL_PRESETS: ModelPreset[] = [
       extra_args_raw: JSON.stringify(["--thinking", "extended"], null, 2),
     },
   },
+  {
+    label: "Ollama Llama 3.3",
+    values: {
+      runtime_type: "ollama",
+      model_id: "llama3.3:latest",
+      extra_args_raw: "[]",
+    },
+  },
+  {
+    label: "Ollama Qwen 2.5 Coder 7B",
+    values: {
+      runtime_type: "ollama",
+      model_id: "qwen2.5-coder:7b",
+      extra_args_raw: "[]",
+    },
+  },
+  {
+    label: "Ollama DeepSeek R1 32B",
+    values: {
+      runtime_type: "ollama",
+      model_id: "deepseek-r1:32b",
+      extra_args_raw: "[]",
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -281,6 +305,7 @@ function ModelFormFields({
               <SelectItem value="claude">claude</SelectItem>
               <SelectItem value="codex">codex</SelectItem>
               <SelectItem value="opencode">opencode</SelectItem>
+              <SelectItem value="ollama">ollama</SelectItem>
             </SelectContent>
           </Select>
         </div>

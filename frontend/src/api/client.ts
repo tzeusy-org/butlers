@@ -141,6 +141,13 @@ import type {
   ButlerModelOverride,
   ButlerModelOverrideUpsert,
   ResolveModelResponse,
+  ProviderConfig,
+  ProviderConfigCreate,
+  ProviderConfigUpdate,
+  ProviderConnectivityResult,
+  OllamaDiscoveredModel,
+  OllamaImportRequest,
+  OllamaImportResult,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2554,5 +2561,78 @@ export function resolveButlerModel(
 ): Promise<ApiResponse<ResolveModelResponse>> {
   return apiFetch<ApiResponse<ResolveModelResponse>>(
     `/butlers/${encodeURIComponent(butlerName)}/resolve-model?complexity=${encodeURIComponent(complexity)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Provider configuration
+// ---------------------------------------------------------------------------
+
+/** GET /api/settings/providers — list all configured providers */
+export function listProviders(): Promise<ApiResponse<ProviderConfig[]>> {
+  return apiFetch<ApiResponse<ProviderConfig[]>>("/settings/providers");
+}
+
+/** POST /api/settings/providers — register a new provider */
+export function createProvider(
+  body: ProviderConfigCreate,
+): Promise<ApiResponse<ProviderConfig>> {
+  return apiFetch<ApiResponse<ProviderConfig>>("/settings/providers", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** PUT /api/settings/providers/{providerType} — update provider config */
+export function updateProvider(
+  providerType: string,
+  body: ProviderConfigUpdate,
+): Promise<ApiResponse<ProviderConfig>> {
+  return apiFetch<ApiResponse<ProviderConfig>>(
+    `/settings/providers/${encodeURIComponent(providerType)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** DELETE /api/settings/providers/{providerType} — remove provider */
+export function deleteProvider(
+  providerType: string,
+): Promise<ApiResponse<{ deleted: boolean; provider_type: string }>> {
+  return apiFetch<ApiResponse<{ deleted: boolean; provider_type: string }>>(
+    `/settings/providers/${encodeURIComponent(providerType)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** POST /api/settings/providers/{providerType}/test-connectivity — probe base URL */
+export function testProviderConnectivity(
+  providerType: string,
+): Promise<ApiResponse<ProviderConnectivityResult>> {
+  return apiFetch<ApiResponse<ProviderConnectivityResult>>(
+    `/settings/providers/${encodeURIComponent(providerType)}/test-connectivity`,
+    { method: "POST" },
+  );
+}
+
+/** GET /api/settings/providers/ollama/models — discover models from Ollama */
+export function discoverOllamaModels(): Promise<ApiResponse<OllamaDiscoveredModel[]>> {
+  return apiFetch<ApiResponse<OllamaDiscoveredModel[]>>(
+    "/settings/providers/ollama/models",
+  );
+}
+
+/** POST /api/settings/providers/ollama/import — import discovered models into catalog */
+export function importOllamaModels(
+  body: OllamaImportRequest,
+): Promise<ApiResponse<OllamaImportResult>> {
+  return apiFetch<ApiResponse<OllamaImportResult>>(
+    "/settings/providers/ollama/import",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
   );
 }

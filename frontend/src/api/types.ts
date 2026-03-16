@@ -2278,3 +2278,71 @@ export interface ResolveModelResponse {
   extra_args: string[];
   resolved: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Provider configuration
+// ---------------------------------------------------------------------------
+
+/** A single provider configuration entry. */
+export interface ProviderConfig {
+  provider_type: string;
+  display_name: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+}
+
+/** Request body for creating a provider. */
+export interface ProviderConfigCreate {
+  provider_type: string;
+  display_name: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+/** Request body for updating a provider (all fields optional). */
+export interface ProviderConfigUpdate {
+  display_name?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+/** Response from the provider test-connectivity endpoint. */
+export interface ProviderConnectivityResult {
+  success: boolean;
+  provider_type: string;
+  url: string | null;
+  status_code: number | null;
+  error: string | null;
+  latency_ms: number;
+}
+
+/** A model discovered from an Ollama instance. */
+export interface OllamaDiscoveredModel {
+  name: string;
+  size: number | null;
+  modified_at: string | null;
+  /** digest field is not returned by the backend; kept for forward-compatibility. */
+  digest?: string | null;
+  parameter_size: string | null;
+  quantization: string | null;
+  already_in_catalog: boolean;
+}
+
+/** A single model entry in an OllamaImportRequest. */
+export interface OllamaImportItem {
+  name: string;
+  alias: string;
+  complexity_tier?: ComplexityTier;
+}
+
+/** Request body for importing Ollama models into the catalog. */
+export interface OllamaImportRequest {
+  models: OllamaImportItem[];
+}
+
+/** Result for a single Ollama model import operation. */
+export interface OllamaImportResult {
+  alias: string;
+  name: string;
+  created: boolean;
+}
