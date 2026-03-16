@@ -109,3 +109,36 @@ extra_args = []
 complexity_tier = "high"
 priority = 20
 enabled = true
+
+# ---------------------------------------------------------------------------
+# Ollama (local/self-hosted) — disabled by default; requires Ollama provider
+# to be configured with a base_url.  Use the discovery/import API to populate
+# the catalog with models available on your Ollama instance.
+# ---------------------------------------------------------------------------
+
+[[models]]
+alias = "ollama-default"
+runtime_type = "ollama"
+model_id = "llama3.2"
+extra_args = []
+complexity_tier = "medium"
+priority = 5
+enabled = false
+
+[[models]]
+alias = "ollama-light"
+runtime_type = "ollama"
+model_id = "llama3.2:1b"
+extra_args = []
+complexity_tier = "trivial"
+priority = 5
+enabled = false
+
+[[models]]
+alias = "ollama-heavy"
+runtime_type = "ollama"
+model_id = "llama3.1:70b"
+extra_args = []
+complexity_tier = "high"
+priority = 5
+enabled = false

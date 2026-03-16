@@ -2,11 +2,13 @@
 
 Provides ``router`` at ``/api/settings/providers``:
 
-- ``GET    /api/settings/providers``                    — list all configured providers
-- ``POST   /api/settings/providers``                    — register a new provider
-- ``PUT    /api/settings/providers/{provider_type}``    — update provider config
-- ``DELETE /api/settings/providers/{provider_type}``    — remove provider
+- ``GET    /api/settings/providers``                              — list all configured providers
+- ``POST   /api/settings/providers``                              — register a new provider
+- ``PUT    /api/settings/providers/{provider_type}``              — update provider config
+- ``DELETE /api/settings/providers/{provider_type}``              — remove provider
 - ``POST   /api/settings/providers/{provider_type}/test-connectivity`` — probe base URL
+- ``GET    /api/settings/providers/ollama/models``                — discover available Ollama models
+- ``POST   /api/settings/providers/ollama/import``                — bulk-import models into catalog
 
 All operations target ``shared.provider_config`` via the shared credential pool.
 """
@@ -76,6 +78,39 @@ class ConnectivityResult(BaseModel):
     status_code: int | None = None
     error: str | None = None
     latency_ms: int = 0
+
+
+class OllamaDiscoveredModel(BaseModel):
+    """A model discovered from the Ollama /api/tags endpoint."""
+
+    name: str
+    size: int | None = None
+    modified_at: str | None = None
+    parameter_size: str | None = None
+    quantization: str | None = None
+    already_in_catalog: bool = False
+
+
+class OllamaImportItem(BaseModel):
+    """A single model selection for the Ollama import request."""
+
+    name: str
+    alias: str
+    complexity_tier: str = "medium"
+
+
+class OllamaImportRequest(BaseModel):
+    """Request body for bulk-importing Ollama models into the catalog."""
+
+    models: list[OllamaImportItem]
+
+
+class OllamaImportResult(BaseModel):
+    """Result of a single model import operation."""
+
+    alias: str
+    name: str
+    created: bool
 
 
 # ---------------------------------------------------------------------------
@@ -338,3 +373,150 @@ async def test_connectivity(
         )
     result.latency_ms = int((time.monotonic() - t0) * 1000)
     return ApiResponse[ConnectivityResult](data=result)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/providers/ollama/models — discover available Ollama models
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ollama/models", response_model=ApiResponse[list[OllamaDiscoveredModel]])
+async def list_ollama_models(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[OllamaDiscoveredModel]]:
+    """Discover models available on the configured Ollama instance.
+
+    Queries Ollama's ``GET /api/tags`` endpoint using the ``base_url`` stored
+    in ``shared.provider_config`` for ``provider_type='ollama'``.
+
+    Each model in the response is enriched with ``already_in_catalog=True``
+    when a matching entry already exists in ``shared.model_catalog``.
+
+    Returns:
+    - 404 if no Ollama provider is configured.
+    - 503 if the Ollama provider is disabled or if the shared pool is unavailable.
+    - 502 if the Ollama instance is unreachable.
+    """
+    pool = _shared_pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT config, enabled FROM shared.provider_config WHERE provider_type = 'ollama'"
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No Ollama provider configured",
+        )
+
+    if not row["enabled"]:
+        raise HTTPException(
+            status_code=503,
+            detail="Ollama provider is disabled",
+        )
+
+    config: dict[str, Any] = _parse_config(row["config"])
+    base_url = config.get("base_url", "").rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            status_code=422,
+            detail="Ollama provider has no base_url configured",
+        )
+
+    # Fetch available models from Ollama
+    tags_url = f"{base_url}/api/tags"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(tags_url)
+        resp.raise_for_status()
+        tags_data = resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama returned HTTP {exc.response.status_code}",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to reach Ollama at {base_url}: {exc}",
+        )
+
+    ollama_models: list[dict[str, Any]] = tags_data.get("models", [])
+
+    # Fetch existing catalog entries to check already_in_catalog
+    existing_rows = await pool.fetch(
+        "SELECT model_id FROM shared.model_catalog WHERE runtime_type = 'ollama'"
+    )
+    existing_model_ids: set[str] = {r["model_id"] for r in existing_rows}
+
+    discovered: list[OllamaDiscoveredModel] = []
+    for m in ollama_models:
+        name = m.get("name", "")
+        details = m.get("details", {}) or {}
+        discovered.append(
+            OllamaDiscoveredModel(
+                name=name,
+                size=m.get("size"),
+                modified_at=m.get("modified_at"),
+                parameter_size=details.get("parameter_size"),
+                quantization=details.get("quantization_level"),
+                already_in_catalog=name in existing_model_ids,
+            )
+        )
+
+    return ApiResponse[list[OllamaDiscoveredModel]](data=discovered)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/settings/providers/ollama/import — bulk-import Ollama models
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/ollama/import",
+    response_model=ApiResponse[list[OllamaImportResult]],
+    status_code=201,
+)
+async def import_ollama_models(
+    body: OllamaImportRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[OllamaImportResult]]:
+    """Bulk-import Ollama models into the shared model catalog.
+
+    Creates catalog entries with ``runtime_type='ollama'`` for each item in
+    the request.  Uses ``INSERT ... ON CONFLICT (alias) DO NOTHING`` to
+    idempotently handle duplicates.  If an alias already exists, the model is
+    not inserted and the corresponding result will have ``created=False``.
+
+    A 409 Conflict is only raised in the rare case of a race condition where
+    two concurrent requests attempt to insert the same new alias simultaneously.
+    """
+    pool = _shared_pool(db)
+
+    results: list[OllamaImportResult] = []
+    for item in body.models:
+        try:
+            row = await pool.fetchrow(
+                """
+                INSERT INTO shared.model_catalog
+                    (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
+                VALUES ($1, 'ollama', $2, '[]'::jsonb, $3, false, 10)
+                ON CONFLICT (alias) DO NOTHING
+                RETURNING alias
+                """,
+                item.alias,
+                item.name,
+                item.complexity_tier,
+            )
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Alias '{item.alias}' already exists in the catalog",
+            )
+        except Exception as exc:
+            logger.error("Failed to import Ollama model '%s': %s", item.alias, exc)
+            raise HTTPException(status_code=500, detail=f"Failed to import model: {item.alias}")
+
+        created = row is not None
+        results.append(OllamaImportResult(alias=item.alias, name=item.name, created=created))
+
+    return ApiResponse[list[OllamaImportResult]](data=results)
