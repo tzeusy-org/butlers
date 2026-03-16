@@ -83,23 +83,24 @@ class ConnectivityResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _row_to_provider(row: Any) -> ProviderConfig:
-    """Convert an asyncpg Record to a ProviderConfig."""
-    raw_config = row["config"]
+def _parse_config(raw_config: Any) -> dict[str, Any]:
+    """Parse a JSONB config field from a database record."""
     if isinstance(raw_config, str):
         try:
-            parsed = json.loads(raw_config)
+            return json.loads(raw_config)
         except (json.JSONDecodeError, TypeError):
-            parsed = {}
+            return {}
     elif isinstance(raw_config, dict):
-        parsed = raw_config
-    else:
-        parsed = {}
+        return raw_config
+    return {}
 
+
+def _row_to_provider(row: Any) -> ProviderConfig:
+    """Convert an asyncpg Record to a ProviderConfig."""
     return ProviderConfig(
         provider_type=row["provider_type"],
         display_name=row["display_name"],
-        config=parsed,
+        config=_parse_config(row["config"]),
         enabled=bool(row["enabled"]),
     )
 
@@ -303,16 +304,7 @@ async def test_connectivity(
             detail=f"Provider not found: {provider_type}",
         )
 
-    raw_config = row["config"]
-    if isinstance(raw_config, str):
-        try:
-            config: dict[str, Any] = json.loads(raw_config)
-        except (json.JSONDecodeError, TypeError):
-            config = {}
-    elif isinstance(raw_config, dict):
-        config = raw_config
-    else:
-        config = {}
+    config: dict[str, Any] = _parse_config(row["config"])
 
     probe_url = _probe_url_for_provider(provider_type, config)
     if probe_url is None:
@@ -325,29 +317,24 @@ async def test_connectivity(
         )
 
     t0 = time.monotonic()
+    result: ConnectivityResult
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(probe_url)
-        latency_ms = int((time.monotonic() - t0) * 1000)
         success = resp.status_code < 400
-        return ApiResponse[ConnectivityResult](
-            data=ConnectivityResult(
-                success=success,
-                provider_type=provider_type,
-                url=probe_url,
-                status_code=resp.status_code,
-                latency_ms=latency_ms,
-                error=None if success else f"HTTP {resp.status_code}",
-            )
+        result = ConnectivityResult(
+            success=success,
+            provider_type=provider_type,
+            url=probe_url,
+            status_code=resp.status_code,
+            error=None if success else f"HTTP {resp.status_code}",
         )
     except Exception as exc:
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        return ApiResponse[ConnectivityResult](
-            data=ConnectivityResult(
-                success=False,
-                provider_type=provider_type,
-                url=probe_url,
-                error=str(exc),
-                latency_ms=latency_ms,
-            )
+        result = ConnectivityResult(
+            success=False,
+            provider_type=provider_type,
+            url=probe_url,
+            error=str(exc),
         )
+    result.latency_ms = int((time.monotonic() - t0) * 1000)
+    return ApiResponse[ConnectivityResult](data=result)

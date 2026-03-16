@@ -18,7 +18,6 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.provider_settings import _get_db_manager
 
@@ -61,31 +60,6 @@ def _mock_record(row: dict[str, Any]) -> MagicMock:
     for key, value in row.items():
         setattr(m, key, value)
     return m
-
-
-def _build_app_with_pool(
-    *,
-    fetch_rows: list[dict[str, Any]] | None = None,
-    fetchrow_result: dict[str, Any] | None = None,
-    execute_result: str = "DELETE 1",
-) -> tuple[Any, MagicMock, MagicMock]:
-    """Create a test app with a mocked shared credential pool.
-
-    Returns (app, mock_pool, mock_db).
-    """
-    mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in (fetch_rows or [])])
-    mock_pool.fetchrow = AsyncMock(
-        return_value=_mock_record(fetchrow_result) if fetchrow_result else None
-    )
-    mock_pool.execute = AsyncMock(return_value=execute_result)
-
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = mock_pool
-
-    app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
-    return app, mock_pool, mock_db
 
 
 # ---------------------------------------------------------------------------
