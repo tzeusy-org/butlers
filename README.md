@@ -70,7 +70,7 @@ For butlers that need to act on your behalf (e.g., sending emails, connecting to
 - **Telegram API ID** — from [my.telegram.org](https://my.telegram.org), for user-client (MTProto) connections
 - **Telegram API hash** — from [my.telegram.org](https://my.telegram.org)
 
-Secured entries are stored encrypted and masked in the dashboard. Use the "Reveal" button to view them.
+Secured entries are stored in PostgreSQL and masked in the dashboard (API-level masking — raw values are excluded from list responses). Use the "Reveal" button to view them. Since Butlers runs as a user-federated platform (each user owns their instance), encryption at rest adds minimal value; you control the database directly.
 
 A one-time setup banner appears on the contacts page when identity fields are missing, but the contact detail page is the primary place for managing all identity fields and credentials going forward.
 
