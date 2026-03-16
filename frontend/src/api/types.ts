@@ -2278,3 +2278,63 @@ export interface ResolveModelResponse {
   extra_args: string[];
   resolved: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Provider configuration
+// ---------------------------------------------------------------------------
+
+/** A single provider configuration entry. */
+export interface ProviderConfig {
+  provider_type: string;
+  display_name: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+}
+
+/** Request body for creating a provider. */
+export interface ProviderConfigCreate {
+  provider_type: string;
+  display_name: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+/** Request body for updating a provider (all fields optional). */
+export interface ProviderConfigUpdate {
+  display_name?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+/** Response from the provider test-connectivity endpoint. */
+export interface ProviderConnectivityResult {
+  success: boolean;
+  provider_type: string;
+  url: string | null;
+  status_code: number | null;
+  error: string | null;
+  latency_ms: number;
+}
+
+/** A model discovered from an Ollama instance. */
+export interface OllamaDiscoveredModel {
+  name: string;
+  size: number | null;
+  modified_at: string | null;
+  digest: string | null;
+}
+
+/** Request body for importing Ollama models into the catalog. */
+export interface OllamaImportRequest {
+  models: Array<{
+    name: string;
+    complexity_tier?: ComplexityTier;
+  }>;
+}
+
+/** Result of an Ollama model import operation. */
+export interface OllamaImportResult {
+  imported: number;
+  skipped: number;
+  entries: ModelCatalogEntry[];
+}
