@@ -219,11 +219,12 @@ async def list_catalog_entries(
         FROM shared.model_catalog
         ORDER BY
             CASE complexity_tier
-                WHEN 'trivial'    THEN 1
-                WHEN 'medium'     THEN 2
-                WHEN 'high'       THEN 3
-                WHEN 'extra_high' THEN 4
-                ELSE 5
+                WHEN 'trivial'     THEN 1
+                WHEN 'medium'      THEN 2
+                WHEN 'high'        THEN 3
+                WHEN 'extra_high'  THEN 4
+                WHEN 'discretion'  THEN 5
+                ELSE 6
             END,
             priority DESC,
             alias ASC

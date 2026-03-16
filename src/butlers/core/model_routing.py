@@ -1,7 +1,7 @@
 """Dynamic model routing — catalog-based model selection with per-butler overrides.
 
 Provides:
-- ``Complexity`` enum (trivial / medium / high / extra_high)
+- ``Complexity`` enum (trivial / medium / high / extra_high / discretion)
 - ``resolve_model(pool, butler_name, complexity_tier)`` — single-query resolution
   that respects per-butler overrides and falls back to global catalog entries.
 
@@ -81,7 +81,7 @@ async def resolve_model(
         per-butler overrides; if none exist the global catalog is used directly.
     complexity_tier:
         A ``Complexity`` enum value or its string equivalent
-        (``"trivial"``, ``"medium"``, ``"high"``, ``"extra_high"``).
+        (``"trivial"``, ``"medium"``, ``"high"``, ``"extra_high"``, ``"discretion"``).
 
     Returns
     -------
