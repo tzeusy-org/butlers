@@ -49,11 +49,6 @@ function formatBytes(bytes: number | null): string {
   return `${gb.toFixed(1)} GB`;
 }
 
-interface SelectedModel {
-  name: string;
-  complexity_tier: ComplexityTier;
-}
-
 // ---------------------------------------------------------------------------
 // OllamaDiscoveryDialog
 // ---------------------------------------------------------------------------
@@ -83,9 +78,13 @@ export function OllamaDiscoveryDialog({
         const data = resp.data;
         setModels(data);
         setDiscovered(true);
-        // Default: select all with "medium" tier
+        // Default: pre-select models not already in the catalog with "medium" tier
         const initial = new Map<string, ComplexityTier>();
-        data.forEach((m) => initial.set(m.name, "medium"));
+        data.forEach((m) => {
+          if (!m.already_in_catalog) {
+            initial.set(m.name, "medium");
+          }
+        });
         setSelection(initial);
       },
       onError: (err) => {
@@ -96,7 +95,9 @@ export function OllamaDiscoveryDialog({
     });
   }
 
-  function toggleModel(name: string) {
+  function toggleModel(model: OllamaDiscoveredModel) {
+    if (model.already_in_catalog) return;
+    const name = model.name;
     setSelection((prev) => {
       const next = new Map(prev);
       if (next.has(name)) {
@@ -117,22 +118,25 @@ export function OllamaDiscoveryDialog({
   }
 
   function handleImport() {
-    const items: SelectedModel[] = [];
-    selection.forEach((tier, name) => {
-      items.push({ name, complexity_tier: tier });
-    });
-    if (items.length === 0) {
+    if (selection.size === 0) {
       toast.error("No models selected");
       return;
     }
+    const items = Array.from(selection.entries()).map(([name, complexity_tier]) => ({
+      name,
+      alias: name,
+      complexity_tier,
+    }));
     importMutation.mutate(
       { models: items },
       {
         onSuccess: (resp) => {
-          const data = resp.data;
+          const results = resp.data;
+          const imported = results.filter((r) => r.created).length;
+          const skipped = results.filter((r) => !r.created).length;
           toast.success(
-            `Imported ${data.imported} model(s)` +
-              (data.skipped > 0 ? `, skipped ${data.skipped}` : ""),
+            `Imported ${imported} model(s)` +
+              (skipped > 0 ? `, skipped ${skipped} (already in catalog)` : ""),
           );
           onOpenChange(false);
         },
@@ -211,7 +215,9 @@ export function OllamaDiscoveryDialog({
                     size="sm"
                     onClick={() => {
                       const all = new Map<string, ComplexityTier>();
-                      models.forEach((m) => all.set(m.name, selection.get(m.name) ?? "medium"));
+                      models
+                        .filter((m) => !m.already_in_catalog)
+                        .forEach((m) => all.set(m.name, selection.get(m.name) ?? "medium"));
                       setSelection(all);
                     }}
                   >
@@ -247,22 +253,36 @@ export function OllamaDiscoveryDialog({
                 <TableBody>
                   {models.map((model) => {
                     const isSelected = selection.has(model.name);
+                    const inCatalog = model.already_in_catalog;
                     return (
-                      <TableRow key={model.name}>
+                      <TableRow
+                        key={model.name}
+                        className={inCatalog ? "opacity-50" : undefined}
+                      >
                         <TableCell>
                           <input
                             type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleModel(model.name)}
+                            checked={isSelected || inCatalog}
+                            onChange={() => toggleModel(model)}
+                            disabled={inCatalog}
                             className="h-4 w-4 rounded border-input"
                           />
                         </TableCell>
                         <TableCell>
                           <div className="space-y-0.5">
-                            <p className="text-sm font-medium">{model.name}</p>
-                            {model.digest && (
-                              <p className="text-xs text-muted-foreground font-mono truncate max-w-48">
-                                {model.digest.substring(0, 12)}
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-medium">{model.name}</p>
+                              {inCatalog && (
+                                <Badge variant="secondary" className="text-xs">
+                                  In catalog
+                                </Badge>
+                              )}
+                            </div>
+                            {(model.parameter_size || model.quantization) && (
+                              <p className="text-xs text-muted-foreground">
+                                {[model.parameter_size, model.quantization]
+                                  .filter(Boolean)
+                                  .join(" · ")}
                               </p>
                             )}
                           </div>
@@ -271,7 +291,7 @@ export function OllamaDiscoveryDialog({
                           <Badge variant="outline">{formatBytes(model.size)}</Badge>
                         </TableCell>
                         <TableCell>
-                          {isSelected ? (
+                          {isSelected && !inCatalog ? (
                             <Select
                               value={selection.get(model.name) ?? "medium"}
                               onValueChange={(v) =>

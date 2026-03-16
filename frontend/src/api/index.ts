@@ -451,6 +451,7 @@ export type {
   ProviderConfigUpdate,
   ProviderConnectivityResult,
   OllamaDiscoveredModel,
+  OllamaImportItem,
   OllamaImportRequest,
   OllamaImportResult,
 } from "./types.ts";

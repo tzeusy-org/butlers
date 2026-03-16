@@ -67,7 +67,7 @@ function defaultFormValues(provider?: ProviderConfig | null): ProviderFormValues
   return {
     provider_type: provider?.provider_type ?? "ollama",
     display_name: provider?.display_name ?? "",
-    base_url: (provider?.config?.base_url as string) ?? "",
+    base_url: typeof provider?.config?.base_url === "string" ? provider.config.base_url : "",
     enabled: provider?.enabled ?? true,
   };
 }
@@ -391,7 +391,7 @@ function ProviderRow({
     });
   }
 
-  const baseUrl = (provider.config?.base_url as string) ?? null;
+  const baseUrl = typeof provider.config?.base_url === "string" ? provider.config.base_url : null;
 
   return (
     <div className="space-y-2 py-4 border-b border-border last:border-0">

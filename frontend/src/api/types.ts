@@ -2321,20 +2321,28 @@ export interface OllamaDiscoveredModel {
   name: string;
   size: number | null;
   modified_at: string | null;
-  digest: string | null;
+  /** digest field is not returned by the backend; kept for forward-compatibility. */
+  digest?: string | null;
+  parameter_size: string | null;
+  quantization: string | null;
+  already_in_catalog: boolean;
+}
+
+/** A single model entry in an OllamaImportRequest. */
+export interface OllamaImportItem {
+  name: string;
+  alias: string;
+  complexity_tier?: ComplexityTier;
 }
 
 /** Request body for importing Ollama models into the catalog. */
 export interface OllamaImportRequest {
-  models: Array<{
-    name: string;
-    complexity_tier?: ComplexityTier;
-  }>;
+  models: OllamaImportItem[];
 }
 
-/** Result of an Ollama model import operation. */
+/** Result for a single Ollama model import operation. */
 export interface OllamaImportResult {
-  imported: number;
-  skipped: number;
-  entries: ModelCatalogEntry[];
+  alias: string;
+  name: string;
+  created: boolean;
 }

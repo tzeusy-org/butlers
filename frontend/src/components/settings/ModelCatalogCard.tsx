@@ -91,26 +91,26 @@ const MODEL_PRESETS: ModelPreset[] = [
     },
   },
   {
-    label: "Ollama llama3.1",
+    label: "Ollama Llama 3.3",
     values: {
       runtime_type: "ollama",
-      model_id: "llama3.1",
+      model_id: "llama3.3:latest",
       extra_args_raw: "[]",
     },
   },
   {
-    label: "Ollama qwen2.5-coder",
+    label: "Ollama Qwen 2.5 Coder 7B",
     values: {
       runtime_type: "ollama",
-      model_id: "qwen2.5-coder",
+      model_id: "qwen2.5-coder:7b",
       extra_args_raw: "[]",
     },
   },
   {
-    label: "Ollama deepseek-r1",
+    label: "Ollama DeepSeek R1 32B",
     values: {
       runtime_type: "ollama",
-      model_id: "deepseek-r1",
+      model_id: "deepseek-r1:32b",
       extra_args_raw: "[]",
     },
   },
