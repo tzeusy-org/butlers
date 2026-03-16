@@ -42,10 +42,35 @@ jobs:
         run: make lint
 
       - name: Unit tests
-        run: uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e -m "not integration and not e2e"
+        run: uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
 
       - name: Integration tests (testcontainers)
-        run: uv run pytest roster/ tests/integration/ -q --maxfail=5 --tb=short -m "integration" -n auto --dist loadfile
+        run: uv run pytest roster/ tests/integration/ -q --maxfail=5 --tb=short -m "integration" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
         env:
           # Testcontainers uses the Docker socket directly — no DOCKER_HOST needed on ubuntu-latest
           TESTCONTAINERS_RYUK_DISABLED: "true"
+
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          COVERAGE=$(python -c "import json; print(round(json.load(open('coverage.json'))['totals']['percent_covered']))")
+          echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
+          # Color thresholds: green ≥80, yellow ≥60, red <60
+          if [ "$COVERAGE" -ge 80 ]; then
+            echo "color=brightgreen" >> "$GITHUB_OUTPUT"
+          elif [ "$COVERAGE" -ge 60 ]; then
+            echo "color=yellow" >> "$GITHUB_OUTPUT"
+          else
+            echo "color=red" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ secrets.COVERAGE_GIST_ID }}
+          filename: butlers-coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.percentage }}%
+          color: ${{ steps.coverage.outputs.color }}
