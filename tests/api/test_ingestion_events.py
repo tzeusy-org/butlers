@@ -594,28 +594,35 @@ class TestGetIngestionEventRollup:
 
 
 # ---------------------------------------------------------------------------
-# Route absence tests: /api/traces must no longer exist
+# Route presence tests: /api/traces must exist (routes were re-mounted, bu-8i7g.4)
 # ---------------------------------------------------------------------------
 
 
-class TestTracesRouteRemoved:
-    async def test_traces_list_returns_404(self, app):
-        """/api/traces should not exist; expect 404 or 405."""
+class TestTracesRoutePresence:
+    async def test_traces_list_route_is_registered(self, app):
+        """/api/traces is now mounted; must not return routing 404."""
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/traces")
 
-        assert resp.status_code in (404, 405)
+        # Route is registered — response will be 200 or 500 (DB not wired in shared
+        # fixture) but must NOT be a routing 404 or 405.
+        assert resp.status_code not in (404, 405)
 
-    async def test_traces_detail_returns_404(self, app):
-        """/api/traces/{id} should not exist; expect 404 or 405."""
+    async def test_traces_detail_route_is_registered(self, app):
+        """/api/traces/{id} is now mounted; must not return routing 404."""
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/traces/some-trace-id")
 
-        assert resp.status_code in (404, 405)
+        # Route is registered — response will be 200/404/500 from the endpoint
+        # (404 = trace not found, 500 = DB not wired) but not a routing 404/405.
+        # The routing 404 would have no body; an endpoint 404 has {"detail": "Trace..."}.
+        assert resp.status_code != 405
+        if resp.status_code == 404:
+            assert "Trace" in resp.json().get("detail", "")
 
 
 # ---------------------------------------------------------------------------
