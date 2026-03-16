@@ -142,14 +142,9 @@ def _build_env() -> dict[str, str]:
     Passes PATH plus any provider auth env vars so the spawned process
     can authenticate with model backends.
     """
-    env: dict[str, str] = {"PATH": os.environ.get("PATH", "")}
-    for key, val in os.environ.items():
-        if key.startswith((
-            "OPENCODE_", "OPENAI_", "ANTHROPIC_", "OPENROUTER_",
-            "GOOGLE_", "GEMINI_",
-        )):
-            env[key] = val
-    return env
+    # Pass the full host environment so opencode can find its own binary,
+    # provider credentials (auth.json), and any API keys.
+    return dict(os.environ)
 
 
 def call_routing(
@@ -170,7 +165,15 @@ def call_routing(
         latency_ms, prompt_tokens, completion_tokens, error
     """
     adapter = OpenCodeAdapter()
+    # OpenCode reads OPENCODE.md → AGENTS.md for system prompt.
+    # The switchboard's AGENTS.md is a stub (@AGENTS.md include ref), so we
+    # fall back to CLAUDE.md which has the real switchboard personality.
+    # Skills (message-triage) are auto-discovered from cwd by OpenCode.
     system_prompt = adapter.parse_system_prompt_file(SWITCHBOARD_CONFIG_DIR)
+    if len(system_prompt) < 50:
+        claude_md = SWITCHBOARD_CONFIG_DIR / "CLAUDE.md"
+        if claude_md.exists():
+            system_prompt = claude_md.read_text().strip()
 
     mcp_servers = {
         "switchboard": {"url": mock_mcp_url},
