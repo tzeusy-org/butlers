@@ -831,7 +831,7 @@ export default function EntityDetailPage() {
               </div>
 
               {/* Source provenance */}
-              {(entity.metadata?.source_butler || entity.metadata?.source_scope) && (
+              {!!(entity.metadata?.source_butler || entity.metadata?.source_scope) && (
                 <div>
                   <p className="text-muted-foreground mb-1 text-sm font-medium">
                     Source Provenance
