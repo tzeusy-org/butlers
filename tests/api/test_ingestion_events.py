@@ -598,7 +598,7 @@ class TestGetIngestionEventRollup:
 # ---------------------------------------------------------------------------
 
 
-class TestTracesRouteRemoved:
+class TestTracesRoutePresence:
     async def test_traces_list_route_is_registered(self, app):
         """/api/traces is now mounted; must not return routing 404."""
         async with httpx.AsyncClient(
@@ -620,6 +620,7 @@ class TestTracesRouteRemoved:
         # Route is registered — response will be 200/404/500 from the endpoint
         # (404 = trace not found, 500 = DB not wired) but not a routing 404/405.
         # The routing 404 would have no body; an endpoint 404 has {"detail": "Trace..."}.
+        assert resp.status_code != 405
         if resp.status_code == 404:
             assert "Trace" in resp.json().get("detail", "")
 
