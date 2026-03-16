@@ -94,11 +94,13 @@ def routing_results(
         mock_mcp_server.reset_captures()
         prompt = build_routing_prompt(entry)
 
+        # OpenCode spawns a subprocess + LLM call; 10s bench_timeout is
+        # far too short. Use 120s (enough for cold start + inference).
         result = call_routing(
             prompt,
             mock_mcp_url=mock_mcp_server.url,
             model=model_name,
-            timeout=bench_timeout,
+            timeout=120.0,
         )
         result["id"] = entry["id"]
         result["expected"] = entry["expected"]
