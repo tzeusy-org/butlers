@@ -403,6 +403,34 @@ async def test_invoke_no_system_prompt():
 # ---------------------------------------------------------------------------
 
 
+async def test_invoke_no_model_raises_value_error():
+    """invoke() raises ValueError when model is not specified."""
+    adapter = OllamaAdapter(base_url="http://localhost:11434")
+
+    with pytest.raises(ValueError, match="model must be specified"):
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            model=None,
+        )
+
+
+async def test_invoke_empty_model_raises_value_error():
+    """invoke() raises ValueError when model is empty string."""
+    adapter = OllamaAdapter(base_url="http://localhost:11434")
+
+    with pytest.raises(ValueError, match="model must be specified"):
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            model="",
+        )
+
+
 async def test_invoke_non_200_raises_runtime_error():
     """invoke() raises RuntimeError when HTTP status is non-200."""
     mock_response = MagicMock()

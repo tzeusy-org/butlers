@@ -364,8 +364,14 @@ class OllamaAdapter(RuntimeAdapter):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        if not model:
+            raise ValueError(
+                "A model must be specified for OllamaAdapter. "
+                "Pass the model name (e.g. 'llama3.2') via the model parameter."
+            )
+
         payload: dict[str, Any] = {
-            "model": model or "llama3.2",
+            "model": model,
             "messages": messages,
         }
 
