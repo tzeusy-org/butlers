@@ -1,10 +1,33 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { ScheduleForm } from "@/components/schedules/ScheduleForm";
+
+// Mock shadcn Select with a native <select> so tests can fire change events.
+// The Select wrapper captures onValueChange; SelectTrigger renders as <select>
+// and propagates changes up through a custom DOM event.
+vi.mock("@/components/ui/select", () => ({
+  Select: ({ children, onValueChange, defaultValue }: { children: ReactNode; onValueChange?: (v: string) => void; defaultValue?: string }) => (
+    <div
+      data-testid="select-wrapper"
+      data-on-value-change={onValueChange ? "true" : "false"}
+      onChangeCapture={(e: React.ChangeEvent<HTMLSelectElement>) => {
+        onValueChange?.((e.target as HTMLSelectElement).value);
+      }}
+    >
+      {children}
+    </div>
+  ),
+  SelectTrigger: ({ children, id }: { children: ReactNode; id?: string }) => (
+    <select id={id} onChange={() => {}}>{children}</select>
+  ),
+  SelectValue: () => null,
+  SelectContent: ({ children }: { children: ReactNode }) => <>{children}</>,
+  SelectItem: ({ value, children }: { value: string; children: ReactNode }) => <option value={value}>{children}</option>,
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -87,6 +110,7 @@ describe("ScheduleForm dual-mode behavior", () => {
       cron: "0 9 * * *",
       dispatch_mode: "prompt",
       prompt: "Run daily review",
+      complexity: "medium",
     });
   });
 
@@ -140,6 +164,7 @@ describe("ScheduleForm dual-mode behavior", () => {
       dispatch_mode: "job",
       job_name: "switchboard.eligibility_sweep",
       job_args: { policy_tier: "default" },
+      complexity: "medium",
     });
   });
 

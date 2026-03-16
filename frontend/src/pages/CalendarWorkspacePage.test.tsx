@@ -653,7 +653,7 @@ describe("CalendarWorkspacePage", () => {
     });
     setUserMutationState({ mutateAsync });
 
-    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
 
     const editButton = findButton("Edit");
     expect(editButton).toBeDefined();
@@ -703,7 +703,7 @@ describe("CalendarWorkspacePage", () => {
     });
     setUserMutationState({ mutateAsync });
 
-    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
 
     const rowDeleteButton = findButton("Delete");
     expect(rowDeleteButton).toBeDefined();

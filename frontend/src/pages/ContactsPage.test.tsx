@@ -22,6 +22,8 @@ vi.mock("@/hooks/use-contacts", () => {
     useConfirmContact: vi.fn(mut),
     useLinkEntity: vi.fn(mut),
     useCreateAndLinkEntity: vi.fn(mut),
+    useArchiveContact: vi.fn(mut),
+    useUnarchiveContact: vi.fn(mut),
     useEntitySuggestions: vi.fn(() => ({ data: [] })),
   };
 });
@@ -150,7 +152,7 @@ describe("ContactsPage", () => {
     });
 
     expect(triggerContactsSync).toHaveBeenCalledTimes(1);
-    expect(triggerContactsSync).toHaveBeenCalledWith("incremental");
+    expect(triggerContactsSync).toHaveBeenCalledWith("incremental", "google");
     expect(refetch).toHaveBeenCalledTimes(1);
     expect(toast.success).toHaveBeenCalledTimes(1);
   });
