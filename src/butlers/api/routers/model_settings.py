@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 catalog_router = APIRouter(prefix="/api/settings/models", tags=["model-catalog"])
 butler_model_router = APIRouter(prefix="/api/butlers", tags=["butlers", "model-overrides"])
 
-_COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high")
+_COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high", "discretion")
 
 
 def _get_db_manager() -> DatabaseManager:
