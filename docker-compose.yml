@@ -16,8 +16,19 @@
 #   - general: 41101
 #   - relationship: 41102
 #   - health: 41103
-#   - heartbeat: 41199
 #   - dashboard-api: 41200
+#
+# Service status:
+#   FUNCTIONAL (roster/ directories exist, configs are complete):
+#     - postgres        — database server (always functional)
+#     - switchboard     — routes incoming requests to butlers
+#     - general         — catch-all assistant butler
+#     - relationship    — contacts and interactions butler
+#     - health          — medications and health tracking butler
+#     - dashboard-api   — web UI backend
+#     - frontend-dev    — Vite dev server (profile: dev)
+#   ASPIRATIONAL (roster/ directories exist but butler may lack full config):
+#     - education, finance, home, messenger, travel — in roster, not yet in compose
 #
 # Observability: Grafana/Tempo tracing via LGTM stack (Alloy OTLP endpoint)
 
@@ -49,7 +60,7 @@ services:
     ports:
       - "41100:41100"
     volumes:
-      - ./butlers/switchboard:/etc/butler:ro
+      - ./roster/switchboard:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
       - POSTGRES_HOST=postgres
@@ -69,7 +80,7 @@ services:
     ports:
       - "41101:41101"
     volumes:
-      - ./butlers/general:/etc/butler:ro
+      - ./roster/general:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
       - POSTGRES_HOST=postgres
@@ -89,7 +100,7 @@ services:
     ports:
       - "41102:41102"
     volumes:
-      - ./butlers/relationship:/etc/butler:ro
+      - ./roster/relationship:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
       - POSTGRES_HOST=postgres
@@ -109,27 +120,7 @@ services:
     ports:
       - "41103:41103"
     volumes:
-      - ./butlers/health:/etc/butler:ro
-    command: ["run", "--config", "/etc/butler"]
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel.parrot-hen.ts.net:4318
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  # Heartbeat butler - system monitor
-  heartbeat:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "41199:41199"
-    volumes:
-      - ./butlers/heartbeat:/etc/butler:ro
+      - ./roster/health:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
       - POSTGRES_HOST=postgres
