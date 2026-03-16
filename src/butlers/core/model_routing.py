@@ -35,6 +35,7 @@ class Complexity(enum.StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
     EXTRA_HIGH = "extra_high"
+    DISCRETION = "discretion"
 
 
 # SQL that performs the full resolution in a single round-trip.
