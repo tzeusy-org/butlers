@@ -306,6 +306,7 @@ function ModelFormFields({
               <SelectItem value="codex">codex</SelectItem>
               <SelectItem value="opencode">opencode</SelectItem>
               <SelectItem value="ollama">ollama</SelectItem>
+              <SelectItem value="gemini">gemini</SelectItem>
             </SelectContent>
           </Select>
         </div>
