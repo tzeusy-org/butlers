@@ -1,0 +1,241 @@
+{"id":"health-nutr-001","text":"I had a chicken salad for lunch, about 450 calories","expected":"health","category":"nutrition"}
+{"id":"health-nutr-002","text":"What's the protein content of Greek yogurt?","expected":"health","category":"nutrition"}
+{"id":"health-nutr-003","text":"Log breakfast: two scrambled eggs and toast with butter","expected":"health","category":"nutrition"}
+{"id":"health-nutr-004","text":"I've been eating too much sugar lately, need to cut back","expected":"health","category":"nutrition"}
+{"id":"health-nutr-005","text":"How many carbs are in a sweet potato?","expected":"health","category":"nutrition"}
+{"id":"health-nutr-006","text":"Track my water intake: 3 glasses so far today","expected":"health","category":"nutrition"}
+{"id":"health-nutr-007","text":"I skipped dinner last night, just had a protein shake","expected":"health","category":"nutrition"}
+{"id":"health-nutr-008","text":"What are some good high-fiber foods?","expected":"health","category":"nutrition"}
+{"id":"health-nutr-009","text":"Made a smoothie with spinach, banana, and almond milk","expected":"health","category":"nutrition"}
+{"id":"health-nutr-010","text":"I'm trying to hit 2000 calories a day, how am I doing?","expected":"health","category":"nutrition"}
+{"id":"health-nutr-011","text":"Is oat milk better than regular milk nutritionally?","expected":"health","category":"nutrition"}
+{"id":"health-nutr-012","text":"Had sushi for dinner, maybe 800 calories total","expected":"health","category":"nutrition"}
+{"id":"health-nutr-013","text":"I need to eat more iron-rich foods, what do you suggest?","expected":"health","category":"nutrition"}
+{"id":"health-nutr-014","text":"Log snack: handful of almonds and an apple","expected":"health","category":"nutrition"}
+{"id":"health-nutr-015","text":"What's my average daily calorie intake this week?","expected":"health","category":"nutrition"}
+{"id":"health-med-001","text":"Remind me to take my blood pressure medication at 8 PM","expected":"health","category":"medication"}
+{"id":"health-med-002","text":"I need to refill my metformin prescription","expected":"health","category":"medication"}
+{"id":"health-med-003","text":"What are the side effects of ibuprofen if I take it daily?","expected":"health","category":"medication"}
+{"id":"health-med-004","text":"I forgot to take my morning vitamins today","expected":"health","category":"medication"}
+{"id":"health-med-005","text":"Can I take melatonin with my allergy medication?","expected":"health","category":"medication"}
+{"id":"health-med-006","text":"My doctor changed my dosage to 10mg twice daily","expected":"health","category":"medication"}
+{"id":"health-med-007","text":"When does my Lipitor prescription expire?","expected":"health","category":"medication"}
+{"id":"health-med-008","text":"I started a new supplement: vitamin D 2000 IU","expected":"health","category":"medication"}
+{"id":"health-symptom-001","text":"I've had a headache for the past three days","expected":"health","category":"symptoms"}
+{"id":"health-symptom-002","text":"My knee has been swelling after running","expected":"health","category":"symptoms"}
+{"id":"health-symptom-003","text":"I think I'm coming down with a cold, sore throat since yesterday","expected":"health","category":"symptoms"}
+{"id":"health-symptom-004","text":"Been feeling really fatigued lately, sleeping 8 hours but still tired","expected":"health","category":"symptoms"}
+{"id":"health-symptom-005","text":"My back pain is getting worse, especially in the morning","expected":"health","category":"symptoms"}
+{"id":"health-symptom-006","text":"I noticed a rash on my arm after trying that new lotion","expected":"health","category":"symptoms"}
+{"id":"health-symptom-007","text":"I've been having trouble sleeping the past week","expected":"health","category":"symptoms"}
+{"id":"health-measure-001","text":"My blood pressure this morning was 128 over 82","expected":"health","category":"measurements"}
+{"id":"health-measure-002","text":"Weighed in at 175.5 pounds today","expected":"health","category":"measurements"}
+{"id":"health-measure-003","text":"Blood sugar reading: 105 mg/dL fasting","expected":"health","category":"measurements"}
+{"id":"health-measure-004","text":"Resting heart rate was 62 bpm this morning","expected":"health","category":"measurements"}
+{"id":"health-measure-005","text":"I walked 8,500 steps today","expected":"health","category":"measurements"}
+{"id":"health-measure-006","text":"Ran 5K in 28 minutes this morning","expected":"health","category":"measurements"}
+{"id":"health-measure-007","text":"Body fat percentage came in at 22% at the gym","expected":"health","category":"measurements"}
+{"id":"finance-tx-001","text":"I just spent $47.50 at Whole Foods","expected":"finance","category":"transactions"}
+{"id":"finance-tx-002","text":"There's a charge on my card for $200 that I don't recognize","expected":"finance","category":"transactions"}
+{"id":"finance-tx-003","text":"Transfer $500 from savings to checking","expected":"finance","category":"transactions"}
+{"id":"finance-tx-004","text":"I got a refund of $35 from Amazon","expected":"finance","category":"transactions"}
+{"id":"finance-tx-005","text":"My paycheck was deposited, $3,200 after tax","expected":"finance","category":"transactions"}
+{"id":"finance-tx-006","text":"I need to send $100 to Jake for dinner last night","expected":"finance","category":"transactions"}
+{"id":"finance-tx-007","text":"The gas station charged me $62 this morning","expected":"finance","category":"transactions"}
+{"id":"finance-tx-008","text":"How much have I spent at restaurants this month?","expected":"finance","category":"transactions"}
+{"id":"finance-tx-009","text":"I paid $1,200 for rent today","expected":"finance","category":"transactions"}
+{"id":"finance-tx-010","text":"Got charged twice for the same Uber ride, need to dispute","expected":"finance","category":"transactions"}
+{"id":"finance-bill-001","text":"My electric bill is due next Tuesday, $145","expected":"finance","category":"bills"}
+{"id":"finance-bill-002","text":"The water bill came in higher than usual this month","expected":"finance","category":"bills"}
+{"id":"finance-bill-003","text":"I need to pay the internet bill before the 15th","expected":"finance","category":"bills"}
+{"id":"finance-bill-004","text":"Car insurance premium went up by $30 this quarter","expected":"finance","category":"bills"}
+{"id":"finance-bill-005","text":"My phone bill is $85 a month, is that too much?","expected":"finance","category":"bills"}
+{"id":"finance-bill-006","text":"Property tax payment is due December 1st","expected":"finance","category":"bills"}
+{"id":"finance-bill-007","text":"The HOA fee increased to $350 per month","expected":"finance","category":"bills"}
+{"id":"finance-sub-001","text":"I want to cancel my Netflix subscription","expected":"finance","category":"subscriptions"}
+{"id":"finance-sub-002","text":"How much am I paying for all my streaming services combined?","expected":"finance","category":"subscriptions"}
+{"id":"finance-sub-003","text":"My Spotify subscription renewed at $10.99","expected":"finance","category":"subscriptions"}
+{"id":"finance-sub-004","text":"I signed up for a free trial of Adobe Creative Cloud","expected":"finance","category":"subscriptions"}
+{"id":"finance-sub-005","text":"When does my gym membership auto-renew?","expected":"finance","category":"subscriptions"}
+{"id":"finance-sub-006","text":"I'm paying for Hulu but never use it, should I cancel?","expected":"finance","category":"subscriptions"}
+{"id":"finance-alert-001","text":"Chase sent me a fraud alert about a $500 charge in Miami","expected":"finance","category":"bank_alerts"}
+{"id":"finance-alert-002","text":"My bank balance dropped below $500, got a low balance alert","expected":"finance","category":"bank_alerts"}
+{"id":"finance-alert-003","text":"Got a notification that my credit score changed","expected":"finance","category":"bank_alerts"}
+{"id":"finance-alert-004","text":"The bank flagged an international transaction on my card","expected":"finance","category":"bank_alerts"}
+{"id":"finance-alert-005","text":"My savings account interest rate changed to 4.5% APY","expected":"finance","category":"bank_alerts"}
+{"id":"finance-budget-001","text":"I'm over budget on dining out this month","expected":"finance","category":"budget"}
+{"id":"finance-budget-002","text":"How much of my entertainment budget is left?","expected":"finance","category":"budget"}
+{"id":"finance-budget-003","text":"I want to save an extra $200 a month, where can I cut?","expected":"finance","category":"budget"}
+{"id":"finance-budget-004","text":"What percentage of my income goes to housing?","expected":"finance","category":"budget"}
+{"id":"finance-budget-005","text":"Set a grocery budget of $400 for this month","expected":"finance","category":"budget"}
+{"id":"rel-contact-001","text":"What's Sarah's phone number?","expected":"relationship","category":"contacts"}
+{"id":"rel-contact-002","text":"Save Mike's new email: mike.jones@gmail.com","expected":"relationship","category":"contacts"}
+{"id":"rel-contact-003","text":"What's Dave's mailing address?","expected":"relationship","category":"contacts"}
+{"id":"rel-contact-004","text":"I met someone named Lisa at the conference, she works at Stripe","expected":"relationship","category":"contacts"}
+{"id":"rel-contact-005","text":"Update Jake's phone number to 555-0142","expected":"relationship","category":"contacts"}
+{"id":"rel-contact-006","text":"Who do I know that works in marketing?","expected":"relationship","category":"contacts"}
+{"id":"rel-contact-007","text":"Add a note about Tom: he's allergic to shellfish","expected":"relationship","category":"contacts"}
+{"id":"rel-contact-008","text":"What was the name of that person I met at Jenny's party?","expected":"relationship","category":"contacts"}
+{"id":"rel-birthday-001","text":"When is mom's birthday?","expected":"relationship","category":"birthdays"}
+{"id":"rel-birthday-002","text":"Sarah's birthday is coming up next week, any gift ideas?","expected":"relationship","category":"birthdays"}
+{"id":"rel-birthday-003","text":"Save dad's birthday: March 15th","expected":"relationship","category":"birthdays"}
+{"id":"rel-birthday-004","text":"Whose birthdays are coming up this month?","expected":"relationship","category":"birthdays"}
+{"id":"rel-birthday-005","text":"I need to plan something for Jake's 30th birthday","expected":"relationship","category":"birthdays"}
+{"id":"rel-birthday-006","text":"What did I get mom for her birthday last year?","expected":"relationship","category":"birthdays"}
+{"id":"rel-birthday-007","text":"Don't forget, it's the twins' birthday on Saturday","expected":"relationship","category":"birthdays"}
+{"id":"rel-interact-001","text":"I had coffee with Alex yesterday, we talked about his new startup","expected":"relationship","category":"interactions"}
+{"id":"rel-interact-002","text":"I haven't talked to grandma in a while, I should call her","expected":"relationship","category":"interactions"}
+{"id":"rel-interact-003","text":"Met up with the college crew last weekend, it was great","expected":"relationship","category":"interactions"}
+{"id":"rel-interact-004","text":"Rachel mentioned she's moving to Portland next month","expected":"relationship","category":"interactions"}
+{"id":"rel-interact-005","text":"I need to thank Kevin for helping me move last Saturday","expected":"relationship","category":"interactions"}
+{"id":"rel-interact-006","text":"When was the last time I saw uncle Bob?","expected":"relationship","category":"interactions"}
+{"id":"rel-interact-007","text":"Jenny told me she got promoted at work, I should congratulate her","expected":"relationship","category":"interactions"}
+{"id":"rel-interact-008","text":"Note: Chris and Maria are having a baby in July","expected":"relationship","category":"interactions"}
+{"id":"rel-anniversary-001","text":"Our wedding anniversary is June 12th","expected":"relationship","category":"anniversaries"}
+{"id":"rel-anniversary-002","text":"What should I plan for our 5th anniversary?","expected":"relationship","category":"anniversaries"}
+{"id":"rel-anniversary-003","text":"It's my parents' 40th anniversary next month","expected":"relationship","category":"anniversaries"}
+{"id":"rel-anniversary-004","text":"When is my work anniversary?","expected":"relationship","category":"anniversaries"}
+{"id":"rel-gift-001","text":"What should I get my wife for Valentine's Day?","expected":"relationship","category":"gifts"}
+{"id":"rel-gift-002","text":"I bought a $50 Amazon gift card for Tom's graduation","expected":"relationship","category":"gifts"}
+{"id":"rel-gift-003","text":"Mom mentioned she wants a Kindle, note that for Christmas","expected":"relationship","category":"gifts"}
+{"id":"rel-gift-004","text":"I need a housewarming gift for the Johnsons","expected":"relationship","category":"gifts"}
+{"id":"rel-gift-005","text":"What's a good thank-you gift for a host?","expected":"relationship","category":"gifts"}
+{"id":"travel-flight-001","text":"My flight UA231 was delayed by 2 hours","expected":"travel","category":"flights"}
+{"id":"travel-flight-002","text":"Book a round-trip flight to New York for next Friday","expected":"travel","category":"flights"}
+{"id":"travel-flight-003","text":"What gate is my connecting flight at?","expected":"travel","category":"flights"}
+{"id":"travel-flight-004","text":"The airline changed my seat assignment","expected":"travel","category":"flights"}
+{"id":"travel-flight-005","text":"I need to check in for my Southwest flight tomorrow","expected":"travel","category":"flights"}
+{"id":"travel-flight-006","text":"How much baggage can I bring on this flight?","expected":"travel","category":"flights"}
+{"id":"travel-flight-007","text":"My flight from London lands at 3:45 PM local time","expected":"travel","category":"flights"}
+{"id":"travel-flight-008","text":"I want to upgrade to business class for the return flight","expected":"travel","category":"flights"}
+{"id":"travel-flight-009","text":"Check if there are any direct flights to Barcelona in June","expected":"travel","category":"flights"}
+{"id":"travel-flight-010","text":"I got a confirmation email for flight DL1492 to Atlanta","expected":"travel","category":"flights"}
+{"id":"travel-hotel-001","text":"Find a hotel near Times Square for under $200 a night","expected":"travel","category":"hotels"}
+{"id":"travel-hotel-002","text":"What time is check-in at the Marriott?","expected":"travel","category":"hotels"}
+{"id":"travel-hotel-003","text":"I need to cancel my hotel reservation in Chicago","expected":"travel","category":"hotels"}
+{"id":"travel-hotel-004","text":"Does my Hilton booking include breakfast?","expected":"travel","category":"hotels"}
+{"id":"travel-hotel-005","text":"Extend my hotel stay by one night","expected":"travel","category":"hotels"}
+{"id":"travel-hotel-006","text":"Book an Airbnb in Lake Tahoe for the long weekend","expected":"travel","category":"hotels"}
+{"id":"travel-hotel-007","text":"I need a room with two beds near the conference center","expected":"travel","category":"hotels"}
+{"id":"travel-itin-001","text":"What's the full itinerary for my Japan trip?","expected":"travel","category":"itinerary"}
+{"id":"travel-itin-002","text":"Add a day trip to Kyoto on Thursday","expected":"travel","category":"itinerary"}
+{"id":"travel-itin-003","text":"I'm planning a 10-day road trip through California","expected":"travel","category":"itinerary"}
+{"id":"travel-itin-004","text":"What do I have planned for day 3 of the trip?","expected":"travel","category":"itinerary"}
+{"id":"travel-itin-005","text":"Move the museum visit to Monday instead of Tuesday","expected":"travel","category":"itinerary"}
+{"id":"travel-itin-006","text":"We need to leave extra time for customs at Heathrow","expected":"travel","category":"itinerary"}
+{"id":"travel-itin-007","text":"What restaurants are near our hotel in Rome?","expected":"travel","category":"itinerary"}
+{"id":"travel-doc-001","text":"When does my passport expire?","expected":"travel","category":"documents"}
+{"id":"travel-doc-002","text":"Do I need a visa for Thailand?","expected":"travel","category":"documents"}
+{"id":"travel-doc-003","text":"Save my Global Entry number: 12345678","expected":"travel","category":"documents"}
+{"id":"travel-doc-004","text":"Where's my travel insurance policy document?","expected":"travel","category":"documents"}
+{"id":"travel-doc-005","text":"I need to renew my driver's license before the trip","expected":"travel","category":"documents"}
+{"id":"travel-transport-001","text":"Book a rental car at LAX for Saturday","expected":"travel","category":"transport"}
+{"id":"travel-transport-002","text":"What's the best way to get from the airport to downtown Tokyo?","expected":"travel","category":"transport"}
+{"id":"travel-transport-003","text":"I need a shuttle from the hotel to the convention center","expected":"travel","category":"transport"}
+{"id":"travel-transport-004","text":"Return the rental car by 5 PM on Sunday","expected":"travel","category":"transport"}
+{"id":"travel-transport-005","text":"Is it better to take the train or rent a car in Italy?","expected":"travel","category":"transport"}
+{"id":"edu-learn-001","text":"Teach me about the French Revolution","expected":"education","category":"learning"}
+{"id":"edu-learn-002","text":"Explain quantum entanglement in simple terms","expected":"education","category":"learning"}
+{"id":"edu-learn-003","text":"I want to learn Python programming from scratch","expected":"education","category":"learning"}
+{"id":"edu-learn-004","text":"Help me understand how photosynthesis works","expected":"education","category":"learning"}
+{"id":"edu-learn-005","text":"What are the key principles of microeconomics?","expected":"education","category":"learning"}
+{"id":"edu-learn-006","text":"Teach me basic conversational Japanese","expected":"education","category":"learning"}
+{"id":"edu-learn-007","text":"I need to understand how compound interest is calculated","expected":"education","category":"learning"}
+{"id":"edu-learn-008","text":"Explain the difference between TCP and UDP","expected":"education","category":"learning"}
+{"id":"edu-study-001","text":"Quiz me on the periodic table elements","expected":"education","category":"study"}
+{"id":"edu-study-002","text":"Let's do a practice session on Spanish vocabulary","expected":"education","category":"study"}
+{"id":"edu-study-003","text":"Review my flashcards for the biology exam","expected":"education","category":"study"}
+{"id":"edu-study-004","text":"I need to study for the bar exam, what topics should I focus on?","expected":"education","category":"study"}
+{"id":"edu-study-005","text":"Create a mind map for the causes of World War I","expected":"education","category":"study"}
+{"id":"edu-study-006","text":"Help me practice solving quadratic equations","expected":"education","category":"study"}
+{"id":"edu-study-007","text":"What topics should I review for my calculus final?","expected":"education","category":"study"}
+{"id":"edu-quiz-001","text":"Test me on US state capitals","expected":"education","category":"quizzes"}
+{"id":"edu-quiz-002","text":"Give me 10 practice questions on organic chemistry","expected":"education","category":"quizzes"}
+{"id":"edu-quiz-003","text":"How well do I know the material from chapter 5?","expected":"education","category":"quizzes"}
+{"id":"edu-quiz-004","text":"Run a mock interview for a software engineering position","expected":"education","category":"quizzes"}
+{"id":"edu-quiz-005","text":"Test my knowledge of music theory basics","expected":"education","category":"quizzes"}
+{"id":"edu-resource-001","text":"What's a good book for learning machine learning?","expected":"education","category":"resources"}
+{"id":"edu-resource-002","text":"Find me an online course for data science","expected":"education","category":"resources"}
+{"id":"edu-resource-003","text":"What YouTube channels are good for learning guitar?","expected":"education","category":"resources"}
+{"id":"edu-resource-004","text":"I need a textbook recommendation for introductory statistics","expected":"education","category":"resources"}
+{"id":"edu-resource-005","text":"Are there any free courses on Coursera about AI?","expected":"education","category":"resources"}
+{"id":"home-device-001","text":"Turn off the living room lights","expected":"home","category":"devices"}
+{"id":"home-device-002","text":"Is the front door locked?","expected":"home","category":"devices"}
+{"id":"home-device-003","text":"Set the thermostat to 72 degrees","expected":"home","category":"devices"}
+{"id":"home-device-004","text":"Start the robot vacuum in the kitchen","expected":"home","category":"devices"}
+{"id":"home-device-005","text":"Show me the backyard security camera","expected":"home","category":"devices"}
+{"id":"home-device-006","text":"Close the garage door","expected":"home","category":"devices"}
+{"id":"home-device-007","text":"Turn on the sprinklers for 15 minutes","expected":"home","category":"devices"}
+{"id":"home-device-008","text":"Is the washing machine done?","expected":"home","category":"devices"}
+{"id":"home-auto-001","text":"Set up a routine to turn on lights at sunset","expected":"home","category":"automation"}
+{"id":"home-auto-002","text":"When I say goodnight, turn off all lights and lock the doors","expected":"home","category":"automation"}
+{"id":"home-auto-003","text":"Create an automation for when I leave the house","expected":"home","category":"automation"}
+{"id":"home-auto-004","text":"Activate movie mode in the living room","expected":"home","category":"automation"}
+{"id":"home-auto-005","text":"Set the house to away mode","expected":"home","category":"automation"}
+{"id":"home-auto-006","text":"Schedule the porch lights to come on at 7 PM every day","expected":"home","category":"automation"}
+{"id":"home-auto-007","text":"Create a morning routine that brews coffee and opens blinds","expected":"home","category":"automation"}
+{"id":"home-energy-001","text":"How much electricity did we use last month?","expected":"home","category":"energy"}
+{"id":"home-energy-002","text":"Which devices are using the most power right now?","expected":"home","category":"energy"}
+{"id":"home-energy-003","text":"What's the solar panel output today?","expected":"home","category":"energy"}
+{"id":"home-energy-004","text":"Is it cheaper to run the dishwasher at night?","expected":"home","category":"energy"}
+{"id":"home-energy-005","text":"Set the water heater to eco mode","expected":"home","category":"energy"}
+{"id":"home-comfort-001","text":"It's too hot upstairs, can you turn on the fan?","expected":"home","category":"comfort"}
+{"id":"home-comfort-002","text":"The humidity is really high, turn on the dehumidifier","expected":"home","category":"comfort"}
+{"id":"home-comfort-003","text":"Set the bedroom to 68 degrees for sleeping","expected":"home","category":"comfort"}
+{"id":"home-comfort-004","text":"Open the living room blinds","expected":"home","category":"comfort"}
+{"id":"home-comfort-005","text":"The air quality seems bad today, run the air purifier","expected":"home","category":"comfort"}
+{"id":"general-freeform-001","text":"What's the weather going to be like tomorrow?","expected":"general","category":"freeform"}
+{"id":"general-freeform-002","text":"Who painted the Mona Lisa?","expected":"general","category":"freeform"}
+{"id":"general-freeform-003","text":"What's the population of Iceland?","expected":"general","category":"freeform"}
+{"id":"general-freeform-004","text":"How far is the moon from earth?","expected":"general","category":"freeform"}
+{"id":"general-freeform-005","text":"What time does the sun set today?","expected":"general","category":"freeform"}
+{"id":"general-freeform-006","text":"Tell me a fun fact about octopuses","expected":"general","category":"freeform"}
+{"id":"general-freeform-007","text":"What's the meaning of the word serendipity?","expected":"general","category":"freeform"}
+{"id":"general-freeform-008","text":"How many teaspoons are in a tablespoon?","expected":"general","category":"freeform"}
+{"id":"general-freeform-009","text":"What year did the Berlin Wall fall?","expected":"general","category":"freeform"}
+{"id":"general-freeform-010","text":"Can you recommend a good movie to watch tonight?","expected":"general","category":"freeform"}
+{"id":"general-calendar-001","text":"What do I have on my calendar today?","expected":"general","category":"calendar"}
+{"id":"general-calendar-002","text":"Schedule a meeting for 2 PM on Thursday","expected":"general","category":"calendar"}
+{"id":"general-calendar-003","text":"Block off next Monday morning for focused work","expected":"general","category":"calendar"}
+{"id":"general-calendar-004","text":"Am I free this Saturday afternoon?","expected":"general","category":"calendar"}
+{"id":"general-calendar-005","text":"Move my 3 PM meeting to 4 PM","expected":"general","category":"calendar"}
+{"id":"general-calendar-006","text":"Add a dentist appointment for next Wednesday at 10 AM","expected":"general","category":"calendar"}
+{"id":"general-calendar-007","text":"What's my schedule like for the rest of the week?","expected":"general","category":"calendar"}
+{"id":"general-calendar-008","text":"Cancel my Friday afternoon meeting","expected":"general","category":"calendar"}
+{"id":"general-notes-001","text":"Save a note: the garage code is 4587","expected":"general","category":"notes"}
+{"id":"general-notes-002","text":"Remind me to pick up dry cleaning tomorrow","expected":"general","category":"notes"}
+{"id":"general-notes-003","text":"Add to my shopping list: eggs, bread, and olive oil","expected":"general","category":"notes"}
+{"id":"general-notes-004","text":"Make a note that the car needs an oil change soon","expected":"general","category":"notes"}
+{"id":"general-notes-005","text":"Save this idea: build a raised garden bed in spring","expected":"general","category":"notes"}
+{"id":"general-notes-006","text":"What was that note I made about the plumber?","expected":"general","category":"notes"}
+{"id":"general-notes-007","text":"Create a packing list for the camping trip","expected":"general","category":"notes"}
+{"id":"general-misc-001","text":"What's 15 percent of 340?","expected":"general","category":"misc"}
+{"id":"general-misc-002","text":"Convert 100 kilometers to miles","expected":"general","category":"misc"}
+{"id":"general-misc-003","text":"What's a good name for a golden retriever puppy?","expected":"general","category":"misc"}
+{"id":"general-misc-004","text":"Summarize the top news stories today","expected":"general","category":"misc"}
+{"id":"general-misc-005","text":"What's the best way to remove a coffee stain?","expected":"general","category":"misc"}
+{"id":"general-misc-006","text":"How do I fix a leaky faucet?","expected":"general","category":"misc"}
+{"id":"general-misc-007","text":"What's a good beginner-friendly houseplant?","expected":"general","category":"misc"}
+{"id":"general-misc-008","text":"Tell me a joke","expected":"general","category":"misc"}
+{"id":"general-misc-009","text":"What are the best noise-canceling headphones under $300?","expected":"general","category":"misc"}
+{"id":"general-misc-010","text":"How long should I cook a turkey for Thanksgiving?","expected":"general","category":"misc"}
+{"id":"ambig-health-gen-001","text":"I'm feeling really stressed about work","expected":"health","category":"ambiguous"}
+{"id":"ambig-health-gen-002","text":"Is dark chocolate actually good for you?","expected":"health","category":"ambiguous"}
+{"id":"ambig-health-gen-003","text":"I should drink more water","expected":"health","category":"ambiguous"}
+{"id":"ambig-health-gen-004","text":"How much sleep should I be getting at my age?","expected":"health","category":"ambiguous"}
+{"id":"ambig-health-gen-005","text":"I've been sitting at my desk all day, my neck hurts","expected":"health","category":"ambiguous"}
+{"id":"ambig-fin-gen-001","text":"Is it a good time to buy a house?","expected":"finance","category":"ambiguous"}
+{"id":"ambig-fin-gen-002","text":"I got a raise at work, now what?","expected":"finance","category":"ambiguous"}
+{"id":"ambig-fin-gen-003","text":"Should I pay off my car loan early or invest?","expected":"finance","category":"ambiguous"}
+{"id":"ambig-fin-gen-004","text":"My company offers a 401k match, should I max it out?","expected":"finance","category":"ambiguous"}
+{"id":"ambig-fin-gen-005","text":"Prices seem to keep going up everywhere","expected":"finance","category":"ambiguous"}
+{"id":"ambig-rel-gen-001","text":"I should catch up with some old friends","expected":"relationship","category":"ambiguous"}
+{"id":"ambig-rel-gen-002","text":"I feel like I haven't been a good friend lately","expected":"relationship","category":"ambiguous"}
+{"id":"ambig-rel-gen-003","text":"Who should I invite to the barbecue?","expected":"relationship","category":"ambiguous"}
+{"id":"ambig-rel-gen-004","text":"I need to write thank you cards for the wedding gifts","expected":"relationship","category":"ambiguous"}
+{"id":"ambig-rel-gen-005","text":"What's a thoughtful thing to do for someone going through a hard time?","expected":"relationship","category":"ambiguous"}
+{"id":"ambig-cross-001","text":"I had dinner at that new Italian place with Sarah, the pasta was amazing","expected":"health","category":"ambiguous"}
+{"id":"ambig-cross-002","text":"I need to pack my medications for the trip to Japan","expected":"travel","category":"ambiguous"}
+{"id":"ambig-cross-003","text":"How much should I budget for food on the vacation?","expected":"travel","category":"ambiguous"}
+{"id":"ambig-cross-004","text":"My gym membership auto-renewed for $49.99","expected":"finance","category":"ambiguous"}
+{"id":"ambig-cross-005","text":"Set up a study schedule for the GRE in my calendar","expected":"education","category":"ambiguous"}

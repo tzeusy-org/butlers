@@ -6,7 +6,7 @@ Individual test functions assert on different metrics from that shared result se
 NOT run in CI/CD. Requires a live Ollama endpoint.
 
 Usage:
-    uv run pytest tests/discretion_llm_bench/ -v --override-ini="addopts=" \\
+    uv run pytest tests/benchmarks/discretion_layer/ -v --override-ini="addopts=" \\
         --model gemma3:4b --junit-xml=bench-results.xml
 """
 
@@ -17,7 +17,7 @@ from collections import defaultdict
 
 import pytest
 
-pytestmark = pytest.mark.discretion_bench
+pytestmark = [pytest.mark.bench, pytest.mark.discretion_bench]
 
 # The live-listener connector uses a 3s timeout for discretion calls.
 CONNECTOR_TIMEOUT_MS = 3000.0

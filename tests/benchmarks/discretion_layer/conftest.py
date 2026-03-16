@@ -1,25 +1,8 @@
-"""Pytest configuration for discretion LLM benchmarks.
+"""Discretion layer benchmark configuration.
 
-These tests hit a live Ollama endpoint and are NOT run in CI/CD.
-Run manually with:
-
-    uv run pytest tests/discretion_llm_bench/ -v \\
-        --override-ini="addopts=" \\
-        --ollama-url https://ollama.parrot-hen.ts.net
-
-To compare models:
-
-    uv run pytest tests/discretion_llm_bench/ -v --override-ini="addopts=" --model gemma3:4b
-    uv run pytest tests/discretion_llm_bench/ -v --override-ini="addopts=" --model qwen3:4b
-
-JUnit XML output (intermediary data layer for report generation):
-
-    uv run pytest tests/discretion_llm_bench/ -v --override-ini="addopts=" \\
-        --model gemma3:4b --junit-xml=bench-results.xml
-
-Each test case embeds its metrics as JUnit XML properties via record_property,
-enabling downstream report generators, CI dashboards, and cross-model comparison
-tools to consume results without parsing stdout.
+Fixtures for running all discretion prompts once and caching results.
+CLI options and shared fixtures (ollama_url, model_name, bench_timeout)
+are inherited from the parent tests/benchmarks/conftest.py.
 """
 
 from __future__ import annotations
@@ -45,38 +28,15 @@ _RESULTS_SEP = (
 )
 
 
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--ollama-url",
-        default="https://ollama.parrot-hen.ts.net",
-        help="Ollama base URL (without /v1 suffix)",
-    )
-    parser.addoption(
-        "--model",
-        default="gemma3:4b",
-        help="Model name to benchmark (e.g. gemma3:4b, qwen3:4b)",
-    )
-    parser.addoption(
-        "--bench-timeout",
-        default=10.0,
-        type=float,
-        help="Per-request timeout in seconds (default: 10)",
-    )
+def pytest_configure(config: pytest.Config) -> None:
+    """Initialize the discretion benchmark report store."""
+    config._discretion_report = {}  # type: ignore[attr-defined]
 
 
 @pytest.fixture(scope="session")
-def ollama_url(request: pytest.FixtureRequest) -> str:
-    return request.config.getoption("--ollama-url").rstrip("/")
-
-
-@pytest.fixture(scope="session")
-def model_name(request: pytest.FixtureRequest) -> str:
-    return request.config.getoption("--model")
-
-
-@pytest.fixture(scope="session")
-def bench_timeout(request: pytest.FixtureRequest) -> float:
-    return request.config.getoption("--bench-timeout")
+def bench_report(request: pytest.FixtureRequest) -> dict:
+    """Session-scoped store for discretion benchmark metrics."""
+    return request.config._discretion_report  # type: ignore[attr-defined]
 
 
 @pytest.fixture(scope="session")
@@ -89,17 +49,6 @@ def prompts() -> list[dict]:
             if line:
                 entries.append(json.loads(line))
     return entries
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    """Initialize the benchmark report store."""
-    config._bench_report = {}  # type: ignore[attr-defined]
-
-
-@pytest.fixture(scope="session")
-def bench_report(request: pytest.FixtureRequest) -> dict:
-    """Session-scoped store for benchmark metrics, printed as consolidated report at session end."""
-    return request.config._bench_report  # type: ignore[attr-defined]
 
 
 @pytest.fixture(scope="session")
@@ -131,15 +80,16 @@ def all_results(
     return results
 
 
-def _persist_results(report: dict) -> None:
-    """Idempotently update the model's row in results.md.
+# ---------------------------------------------------------------------------
+# Results persistence
+# ---------------------------------------------------------------------------
 
-    If the model already has a row, it is replaced. Otherwise a new row is
-    appended. The file is created with a header if it doesn't exist yet.
-    """
+
+def _persist_results(report: dict) -> None:
+    """Idempotently update the model's row in results.md."""
     model = report.get("model")
     if not model or "accuracy" not in report:
-        return  # Not enough data to persist
+        return
 
     acc = report.get("accuracy", {}).get("value")
     fwd = report.get("forward_recall", {}).get("value")
@@ -169,18 +119,17 @@ def _persist_results(report: dict) -> None:
     ]
     row = "| " + " | ".join(cols) + " |"
 
-    # Read existing file or create template
     if RESULTS_FILE.exists():
         lines = RESULTS_FILE.read_text().splitlines()
     else:
         lines = [
-            "# Discretion LLM Benchmark Results",
+            "# Discretion Layer Benchmark Results",
             "",
-            "Maintained by the `discretion_llm_bench` suite. Each row is updated",
+            "Maintained by the `discretion_layer` benchmark suite. Each row is updated",
             "idempotently when the benchmark is run for that model.",
             "",
             "```",
-            "uv run pytest tests/discretion_llm_bench/ -v --override-ini=\"addopts=\""
+            'uv run pytest tests/benchmarks/discretion_layer/ -v --override-ini="addopts="'
             " --model <name>",
             "```",
             "",
@@ -188,13 +137,11 @@ def _persist_results(report: dict) -> None:
             _RESULTS_SEP,
         ]
 
-    # Find existing row for this model (match first column)
     existing_idx = None
     for i, line in enumerate(lines):
         if not line.startswith("|") or "---" in line:
             continue
         cells = [c.strip() for c in line.split("|")]
-        # cells: ['', 'Model', 'Accuracy', ...] — cells[1] is first column
         if len(cells) > 1 and cells[1] == model:
             existing_idx = i
             break
@@ -202,7 +149,6 @@ def _persist_results(report: dict) -> None:
     if existing_idx is not None:
         lines[existing_idx] = row
     else:
-        # Append after the last table row
         last_table_idx = 0
         for i in range(len(lines) - 1, -1, -1):
             if lines[i].startswith("|"):
@@ -213,9 +159,14 @@ def _persist_results(report: dict) -> None:
     RESULTS_FILE.write_text("\n".join(lines) + "\n")
 
 
+# ---------------------------------------------------------------------------
+# Terminal summary
+# ---------------------------------------------------------------------------
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
-    """Print a consolidated benchmark report after all tests complete."""
-    report: dict = getattr(config, "_bench_report", {})
+    """Print a consolidated discretion benchmark report after all tests complete."""
+    report: dict = getattr(config, "_discretion_report", {})
     if not report:
         return
 
@@ -231,20 +182,14 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         lines.append(f"  {url}")
     lines.append("=" * W)
 
-    # --- Counts ---
     counts = report.get("counts")
     if counts:
-        total = counts["total"]
-        errs = counts["errors"]
-        unp = counts["unparseable"]
-        classified = counts["classified"]
         lines.append("")
         lines.append(
-            f"  Prompts: {total}  |  Errors: {errs}  |  "
-            f"Unparseable: {unp}  |  Classified: {classified}"
+            f"  Prompts: {counts['total']}  |  Errors: {counts['errors']}  |  "
+            f"Unparseable: {counts['unparseable']}  |  Classified: {counts['classified']}"
         )
 
-    # --- Accuracy ---
     acc = report.get("accuracy")
     fwd = report.get("forward_recall")
     ign = report.get("ignore_precision")
@@ -266,7 +211,6 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
                 lines.append(f"  {label:<24s} {v:>8s}   {thresh:>10s}   {r:>6s}")
         lines.append(f"  {'-' * 64}")
 
-    # --- Confusion matrix ---
     cm = report.get("confusion_matrix")
     if cm:
         lines.append("")
@@ -275,7 +219,6 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         lines.append(f"  {'Actual FORWARD':<24s} {cm['tp']:>14d} {cm['fn']:>13d}")
         lines.append(f"  {'Actual IGNORE':<24s} {cm['fp']:>14d} {cm['tn']:>13d}")
 
-    # --- Latency ---
     lat = report.get("latency")
     cold = report.get("cold_start")
 
@@ -285,18 +228,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         lines.append(f"  {'-' * 64}")
         lines.append(f"  {'Metric':<24s} {'Value':>8s}   {'Threshold':>10s}   {'Result':>6s}")
         lines.append(f"  {'-' * 64}")
-
         if lat is not None:
             for label, key, thresh in [
-                ("Mean", "mean", ""),
-                ("p50", "p50", ""),
-                ("p75", "p75", ""),
-                ("p90", "p90", ""),
-                ("p95", "p95", "<= 3000ms"),
-                ("p99", "p99", ""),
-                ("Min", "min", ""),
-                ("Max", "max", ""),
-                ("Std Dev", "stdev", ""),
+                ("Mean", "mean", ""), ("p50", "p50", ""), ("p75", "p75", ""),
+                ("p90", "p90", ""), ("p95", "p95", "<= 3000ms"), ("p99", "p99", ""),
+                ("Min", "min", ""), ("Max", "max", ""), ("Std Dev", "stdev", ""),
             ]:
                 val = lat.get(key)
                 if val is None:
@@ -307,14 +243,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
                     lines.append(f"  {label:<24s} {v:>8s}   {thresh:>10s}   {r:>6s}")
                 else:
                     lines.append(f"  {label:<24s} {v:>8s}")
-
         if cold is not None:
             v = f"{cold['value']:.0f}ms"
             r = "PASS" if cold["passed"] else "FAIL"
             lines.append(f"  {'Cold start':<24s} {v:>8s}   {'<= 30s':>10s}   {r:>6s}")
-
         lines.append(f"  {'-' * 64}")
-
         if lat is not None:
             parts = []
             if lat.get("throughput") is not None:
@@ -327,13 +260,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
             if parts:
                 lines.append(f"  {' | '.join(parts)}")
 
-    # --- Verdict ---
     checks = []
     for key in ["accuracy", "forward_recall", "ignore_precision", "latency", "cold_start"]:
         entry = report.get(key)
         if entry is not None and "passed" in entry:
             checks.append(entry["passed"])
-
     if checks:
         passed = sum(checks)
         total = len(checks)
@@ -350,5 +281,4 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
     for line in lines:
         terminalreporter.write_line(line)
 
-    # Persist results to git-committed file for cross-model comparison.
     _persist_results(report)
