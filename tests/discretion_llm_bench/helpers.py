@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 import httpx
@@ -14,6 +15,10 @@ from butlers.connectors.discretion import (
     _USER_PROMPT_TEMPLATE,
     _parse_verdict,
 )
+
+# Strip <think>...</think> blocks that reasoning models (qwen3, deepseek-r1, etc.)
+# may emit before the actual verdict in some API configurations.
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 def build_prompt(entry: dict) -> str:
@@ -41,19 +46,28 @@ def call_discretion(
 ) -> dict:
     """Call the discretion LLM and return structured result.
 
+    Uses the same Ollama native ``/api/chat`` endpoint as production
+    (see ``_call_llm`` in ``discretion.py``), with ``think: false`` so
+    reasoning models produce a direct answer.
+
     Returns:
         dict with keys: verdict, reason, raw, latency_ms, prompt_tokens,
         completion_tokens, error
     """
-    url = f"{ollama_url}/v1/chat/completions"
+    base_url = ollama_url.rstrip("/").removesuffix("/v1")
+    url = f"{base_url}/api/chat"
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        "max_tokens": 64,
-        "temperature": 0.0,
+        "think": False,
+        "stream": False,
+        "options": {
+            "num_predict": 64,
+            "temperature": 0.0,
+        },
     }
 
     t0 = time.perf_counter()
@@ -75,11 +89,13 @@ def call_discretion(
 
     elapsed = (time.perf_counter() - t0) * 1000
     data = resp.json()
-    raw = data["choices"][0]["message"]["content"]
-    usage = data.get("usage", {})
+    raw = data["message"]["content"]
+
+    # Strip any <think> blocks that may have leaked through.
+    cleaned = _THINK_RE.sub("", raw).strip()
 
     try:
-        verdict, reason = _parse_verdict(raw)
+        verdict, reason = _parse_verdict(cleaned)
     except ValueError:
         verdict, reason = None, ""
 
@@ -88,7 +104,7 @@ def call_discretion(
         "reason": reason,
         "raw": raw,
         "latency_ms": elapsed,
-        "prompt_tokens": usage.get("prompt_tokens", 0),
-        "completion_tokens": usage.get("completion_tokens", 0),
+        "prompt_tokens": data.get("prompt_eval_count", 0),
+        "completion_tokens": data.get("eval_count", 0),
         "error": None,
     }

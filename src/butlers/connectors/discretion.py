@@ -48,7 +48,7 @@ _DEFAULT_TIMEOUT_S: float = 3.0
 _DEFAULT_WINDOW_SIZE: int = 10
 _DEFAULT_WINDOW_SECONDS: float = 300.0
 _DEFAULT_LLM_MODEL: str = "gemma3:12b"
-_DEFAULT_LLM_URL: str = "http://localhost:11434/v1"
+_DEFAULT_LLM_URL: str = "http://localhost:11434"
 _DEFAULT_WEIGHT_BYPASS: float = 1.0
 _DEFAULT_WEIGHT_FAIL_OPEN: float = 0.5
 
@@ -366,8 +366,12 @@ async def _call_llm(
     llm_model: str,
     timeout_s: float,
 ) -> str:
-    """Call an OpenAI-compatible LLM endpoint and return the raw response text."""
-    base_url = llm_url.rstrip("/") if llm_url else _DEFAULT_LLM_URL
+    """Call the Ollama native ``/api/chat`` endpoint and return the raw response text.
+
+    Uses ``think: false`` so reasoning models (qwen3, deepseek-r1, etc.) produce
+    a direct answer without consuming tokens on chain-of-thought.
+    """
+    base_url = (llm_url.rstrip("/") if llm_url else _DEFAULT_LLM_URL).removesuffix("/v1")
     model = llm_model if llm_model else _DEFAULT_LLM_MODEL
 
     payload = {
@@ -376,15 +380,19 @@ async def _call_llm(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
-        "max_tokens": 64,
-        "temperature": 0.0,
+        "think": False,
+        "stream": False,
+        "options": {
+            "num_predict": 64,
+            "temperature": 0.0,
+        },
     }
 
     async with httpx.AsyncClient(timeout=timeout_s) as client:
-        resp = await client.post(f"{base_url}/chat/completions", json=payload)
+        resp = await client.post(f"{base_url}/api/chat", json=payload)
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        return data["message"]["content"]
 
 
 # ---------------------------------------------------------------------------

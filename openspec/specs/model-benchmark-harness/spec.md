@@ -52,3 +52,22 @@ The suite SHALL support `validate` mode (default, pass/fail assertions) and `ben
 #### Scenario: Benchmark mode
 - **WHEN** tests run with `--benchmark` flag
 - **THEN** scenarios execute for each model in the list, accumulating results without hard assertion failures, and scorecards are generated at the end
+
+### Requirement: JUnit XML as intermediary data layer
+All benchmark test cases SHALL emit their metrics as JUnit XML properties via pytest's `record_property` fixture. JUnit XML is the canonical intermediary data format between test execution and report generation.
+
+#### Scenario: Metrics embedded in JUnit XML
+- **WHEN** a benchmark run executes with `--junit-xml=bench-results.xml`
+- **THEN** each `<testcase>` element in the output XML contains `<property>` elements for all metrics that test computed (accuracy, recall, precision, latency percentiles, etc.)
+
+#### Scenario: Cross-model comparison via JUnit XML
+- **WHEN** benchmark runs produce JUnit XML files for models A, B, and C
+- **THEN** a downstream tool can parse the XML files to generate a comparison table without re-running the benchmarks or parsing stdout
+
+#### Scenario: Terminal summary from in-memory data
+- **WHEN** a benchmark run completes (with or without `--junit-xml`)
+- **THEN** a consolidated human-readable report is printed to the terminal via `pytest_terminal_summary`, sourced from the same metric store that populates JUnit XML properties
+
+#### Scenario: Report without JUnit XML flag
+- **WHEN** a benchmark run executes without `--junit-xml`
+- **THEN** the terminal summary report still prints (it reads in-memory data, not the XML file), but no portable artifact is produced for downstream tooling
