@@ -694,8 +694,6 @@ class Spawner:
         task = asyncio.current_task()
         if task is not None:
             self._in_flight.add(task)
-        # Track triggers waiting for a semaphore slot
-        self._metrics.spawner_queued_triggers_inc()
         _global_semaphore_acquired = False
         _semaphore_acquired = False
         global_sem = _get_global_semaphore()
@@ -716,6 +714,10 @@ class Spawner:
             finally:
                 self._metrics.spawner_global_queue_depth_dec()
 
+            # Track triggers waiting for the per-butler semaphore slot only
+            # (after the global cap is acquired, so the metric reflects
+            # per-butler queue depth, not global backpressure wait time).
+            self._metrics.spawner_queued_triggers_inc()
             async with self._session_semaphore:
                 # Slot acquired — no longer queued, now active
                 _semaphore_acquired = True
@@ -737,10 +739,11 @@ class Spawner:
             # Release global semaphore if acquired (not released via context manager).
             if _global_semaphore_acquired:
                 global_sem.release()
-            # If cancelled before acquiring the per-butler semaphore,
+            # If the global semaphore was acquired but the per-butler semaphore was not
+            # (e.g. cancelled after global acquire but before/during per-butler acquire),
             # queued_triggers_dec was never called inside the async-with block;
             # decrement here to keep the gauge accurate.
-            if not _semaphore_acquired:
+            if _global_semaphore_acquired and not _semaphore_acquired:
                 self._metrics.spawner_queued_triggers_dec()
             if task is not None:
                 self._in_flight.discard(task)

@@ -438,7 +438,7 @@ class ButlerMetrics:
         return self.__spawner_queued
 
     @property
-    def _spawner_global_queue(self) -> metrics.UpDownCounter:
+    def _spawner_global_queue_depth(self) -> metrics.UpDownCounter:
         if self.__spawner_global_queue_depth is None:
             self.__spawner_global_queue_depth = _spawner_global_queue_depth()
         return self.__spawner_global_queue_depth
@@ -557,11 +557,11 @@ class ButlerMetrics:
 
     def spawner_global_queue_depth_inc(self) -> None:
         """Record that a trigger is waiting for the global concurrency cap."""
-        self._spawner_global_queue.add(1, self._attrs)
+        self._spawner_global_queue_depth.add(1, self._attrs)
 
     def spawner_global_queue_depth_dec(self) -> None:
         """Record that a trigger has acquired the global concurrency cap."""
-        self._spawner_global_queue.add(-1, self._attrs)
+        self._spawner_global_queue_depth.add(-1, self._attrs)
 
     def record_session_duration(self, duration_ms: int) -> None:
         """Record the end-to-end duration of a completed session."""
