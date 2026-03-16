@@ -55,9 +55,9 @@ from typing import Any
 
 from butlers.connectors.discretion import (
     ContactWeightResolver,
-    DiscretionConfig,
     DiscretionEvaluator,
 )
+from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -269,7 +269,9 @@ class TelegramUserClientConnector:
 
         # Discretion layer: LLM-based FORWARD/IGNORE filter per chat.
         # Weight resolver maps sender → contact role → weight tier.
-        self._discretion_config = DiscretionConfig(env_prefix="TELEGRAM_USER_")
+        self._discretion_dispatcher: DiscretionDispatcher | None = (
+            DiscretionDispatcher(pool=db_pool) if db_pool is not None else None
+        )
         self._discretion_evaluators: dict[str, DiscretionEvaluator] = {}
         self._weight_resolver: ContactWeightResolver | None = (
             ContactWeightResolver(db_pool) if db_pool is not None else None
@@ -683,11 +685,11 @@ class TelegramUserClientConnector:
 
             # f. Evaluate discretion on concatenated normalized_text of new messages only.
             normalized_text: str = envelope["payload"]["normalized_text"]
-            if self._discretion_config.llm_url and normalized_text:
+            if self._discretion_dispatcher is not None and normalized_text:
                 if chat_id not in self._discretion_evaluators:
                     self._discretion_evaluators[chat_id] = DiscretionEvaluator(
                         source_name=f"tg:{chat_id}",
-                        config=self._discretion_config,
+                        dispatcher=self._discretion_dispatcher,
                     )
                 d_result = await self._discretion_evaluators[chat_id].evaluate(
                     normalized_text, weight=1.0
@@ -985,14 +987,14 @@ class TelegramUserClientConnector:
                     return
 
                 # 3. Discretion layer: LLM-based FORWARD/IGNORE filter.
-                #    Only evaluated when the LLM URL is configured.
+                #    Only evaluated when a dispatcher is available.
                 msg_text = getattr(message, "message", None) or getattr(message, "text", None)
-                if self._discretion_config.llm_url and msg_text:
+                if self._discretion_dispatcher is not None and msg_text:
                     chat_id_str = self._extract_chat_id(message) or "unknown"
                     if chat_id_str not in self._discretion_evaluators:
                         self._discretion_evaluators[chat_id_str] = DiscretionEvaluator(
                             source_name=f"tg:{chat_id_str}",
-                            config=self._discretion_config,
+                            dispatcher=self._discretion_dispatcher,
                         )
                     # Resolve sender weight from contact roles.
                     sender_id = self._extract_sender_identity(message)

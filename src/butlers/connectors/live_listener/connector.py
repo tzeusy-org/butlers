@@ -59,10 +59,10 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 
 from butlers.connectors.discretion import (
-    DiscretionConfig,
     DiscretionEvaluator,
     DiscretionResult,
 )
+from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
     load_voice_checkpoint,
@@ -206,7 +206,9 @@ class LiveListenerConnector:
         )
 
         # Build per-mic components
-        discretion_config = DiscretionConfig(env_prefix="LIVE_LISTENER_")
+        discretion_dispatcher = (
+            DiscretionDispatcher(pool=self._db_pool) if self._db_pool is not None else None
+        )
         for spec in self._config.devices:
             mic = spec.name
 
@@ -221,11 +223,12 @@ class LiveListenerConnector:
             await client.connect()
             self._transcription_clients[mic] = client
 
-            # Discretion evaluator
-            self._discretion_evaluators[mic] = DiscretionEvaluator(
-                source_name=mic,
-                config=discretion_config,
-            )
+            # Discretion evaluator (only created when a dispatcher is available)
+            if discretion_dispatcher is not None:
+                self._discretion_evaluators[mic] = DiscretionEvaluator(
+                    source_name=mic,
+                    dispatcher=discretion_dispatcher,
+                )
 
             # Pre-filter (heuristic gate before discretion LLM)
             self._prefilters[mic] = PreFilter(

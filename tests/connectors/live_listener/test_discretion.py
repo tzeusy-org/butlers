@@ -3,29 +3,58 @@
 Covers:
   - Sliding context window management (size cap, age cap, both simultaneously)
   - Discretion LLM verdict parsing (FORWARD with/without reason, IGNORE, malformed)
-  - Fail-open behaviour: timeout → FORWARD, HTTP error → FORWARD, parse error → FORWARD
+  - Fail-open behaviour: timeout → FORWARD, error → FORWARD, parse error → FORWARD
   - Full evaluator flow via DiscretionEvaluator (happy path + failure paths)
-  - Config reads from environment variables
+  - MockDispatcher replaces direct LLM calls for all evaluator tests
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 
 from butlers.connectors.discretion import (
     ContextEntry,
     ContextWindow,
-    DiscretionConfig,
     DiscretionEvaluator,
+    DiscretionLLMCaller,
     _build_user_prompt,
     _parse_verdict,
 )
 
 pytestmark = pytest.mark.unit
+
+
+# ---------------------------------------------------------------------------
+# MockDispatcher — implements DiscretionLLMCaller for tests
+# ---------------------------------------------------------------------------
+
+
+class MockDispatcher:
+    """Lightweight mock implementing DiscretionLLMCaller.
+
+    Wraps an ``AsyncMock`` so test code can control return values and
+    side_effects while still satisfying the protocol.
+    """
+
+    def __init__(
+        self,
+        return_value: str = "FORWARD: ok",
+        side_effect: Any = None,
+    ) -> None:
+        self._mock = AsyncMock(return_value=return_value, side_effect=side_effect)
+
+    async def call(self, prompt: str, system_prompt: str = "") -> str:
+        return await self._mock(prompt, system_prompt=system_prompt)
+
+    @property
+    def mock(self) -> AsyncMock:
+        """Access the underlying AsyncMock for assertions."""
+        return self._mock
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +65,29 @@ pytestmark = pytest.mark.unit
 def _make_entry(text: str, *, mic: str = "kitchen", age_s: float = 0.0) -> ContextEntry:
     """Create a ContextEntry with a timestamp offset by ``age_s`` seconds in the past."""
     return ContextEntry(text=text, timestamp=time.time() - age_s, source=mic)
+
+
+def _make_evaluator(
+    source_name: str = "kitchen",
+    *,
+    return_value: str = "IGNORE",
+    side_effect: Any = None,
+    window_size: int = 10,
+    window_seconds: float = 300.0,
+    weight_bypass: float = 1.0,
+    weight_fail_open: float = 0.5,
+) -> tuple[DiscretionEvaluator, MockDispatcher]:
+    """Return an evaluator + its mock dispatcher."""
+    dispatcher = MockDispatcher(return_value=return_value, side_effect=side_effect)
+    evaluator = DiscretionEvaluator(
+        source_name=source_name,
+        dispatcher=dispatcher,
+        window_size=window_size,
+        window_seconds=window_seconds,
+        weight_bypass=weight_bypass,
+        weight_fail_open=weight_fail_open,
+    )
+    return evaluator, dispatcher
 
 
 # ---------------------------------------------------------------------------
@@ -208,51 +260,15 @@ class TestBuildUserPrompt:
 
 
 # ---------------------------------------------------------------------------
-# DiscretionConfig — environment variables
+# DiscretionLLMCaller protocol
 # ---------------------------------------------------------------------------
 
 
-class TestDiscretionConfig:
-    def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("LIVE_LISTENER_DISCRETION_LLM_URL", raising=False)
-        monkeypatch.delenv("LIVE_LISTENER_DISCRETION_LLM_MODEL", raising=False)
-        monkeypatch.delenv("LIVE_LISTENER_DISCRETION_TIMEOUT_S", raising=False)
-        monkeypatch.delenv("LIVE_LISTENER_DISCRETION_WINDOW_SIZE", raising=False)
-        monkeypatch.delenv("LIVE_LISTENER_DISCRETION_WINDOW_SECONDS", raising=False)
-        monkeypatch.delenv("CONNECTOR_DISCRETION_LLM_URL", raising=False)
-        monkeypatch.delenv("CONNECTOR_DISCRETION_LLM_MODEL", raising=False)
-        monkeypatch.delenv("CONNECTOR_DISCRETION_TIMEOUT_S", raising=False)
-        monkeypatch.delenv("CONNECTOR_DISCRETION_WINDOW_SIZE", raising=False)
-        monkeypatch.delenv("CONNECTOR_DISCRETION_WINDOW_SECONDS", raising=False)
-
-        cfg = DiscretionConfig(env_prefix="LIVE_LISTENER_")
-        assert cfg.llm_url == ""
-        assert cfg.llm_model == ""
-        assert cfg.timeout_s == 3.0
-        assert cfg.window_size == 10
-        assert cfg.window_seconds == 300.0
-
-    def test_env_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LIVE_LISTENER_DISCRETION_LLM_URL", "http://gpu-box:11434/v1")
-        monkeypatch.setenv("LIVE_LISTENER_DISCRETION_LLM_MODEL", "phi3-mini")
-        monkeypatch.setenv("LIVE_LISTENER_DISCRETION_TIMEOUT_S", "5")
-        monkeypatch.setenv("LIVE_LISTENER_DISCRETION_WINDOW_SIZE", "20")
-        monkeypatch.setenv("LIVE_LISTENER_DISCRETION_WINDOW_SECONDS", "600")
-
-        cfg = DiscretionConfig(env_prefix="LIVE_LISTENER_")
-        assert cfg.llm_url == "http://gpu-box:11434/v1"
-        assert cfg.llm_model == "phi3-mini"
-        assert cfg.timeout_s == 5.0
-        assert cfg.window_size == 20
-        assert cfg.window_seconds == 600.0
-
-    def test_connector_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Prefix vars not set → falls back to CONNECTOR_DISCRETION_* vars."""
-        monkeypatch.delenv("LIVE_LISTENER_DISCRETION_LLM_URL", raising=False)
-        monkeypatch.setenv("CONNECTOR_DISCRETION_LLM_URL", "http://shared:11434/v1")
-
-        cfg = DiscretionConfig(env_prefix="LIVE_LISTENER_")
-        assert cfg.llm_url == "http://shared:11434/v1"
+class TestDiscretionLLMCallerProtocol:
+    def test_mock_dispatcher_satisfies_protocol(self) -> None:
+        """MockDispatcher must satisfy the DiscretionLLMCaller runtime-checkable protocol."""
+        dispatcher = MockDispatcher()
+        assert isinstance(dispatcher, DiscretionLLMCaller)
 
 
 # ---------------------------------------------------------------------------
@@ -261,75 +277,52 @@ class TestDiscretionConfig:
 
 
 class TestDiscretionEvaluatorHappyPath:
-    @pytest.fixture()
-    def config(self) -> DiscretionConfig:
-        cfg = DiscretionConfig.__new__(DiscretionConfig)
-        cfg.system_prompt = "test"
-        cfg.llm_url = "http://localhost:11434/v1"
-        cfg.llm_model = "haiku"
-        cfg.timeout_s = 3.0
-        cfg.window_size = 10
-        cfg.window_seconds = 300.0
-        cfg.weight_bypass = 1.0
-        cfg.weight_fail_open = 0.5
-        return cfg
-
-    async def test_forward_verdict_returned(self, config: DiscretionConfig) -> None:
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="FORWARD: sounds like a direct request"),
-        ):
-            result = await evaluator.evaluate("Hey, turn off the lights", weight=0.7)
+    async def test_forward_verdict_returned(self) -> None:
+        evaluator, _ = _make_evaluator(
+            return_value="FORWARD: sounds like a direct request",
+        )
+        result = await evaluator.evaluate("Hey, turn off the lights", weight=0.7)
         assert result.verdict == "FORWARD"
         assert "direct request" in result.reason
         assert result.is_fail_open is False
 
-    async def test_ignore_verdict_returned(self, config: DiscretionConfig) -> None:
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="IGNORE"),
-        ):
-            result = await evaluator.evaluate("Yeah I know right, it was crazy", weight=0.7)
+    async def test_ignore_verdict_returned(self) -> None:
+        evaluator, _ = _make_evaluator(return_value="IGNORE")
+        result = await evaluator.evaluate("Yeah I know right, it was crazy", weight=0.7)
         assert result.verdict == "IGNORE"
         assert result.reason == ""
         assert result.is_fail_open is False
 
-    async def test_utterance_appended_to_window_before_next_call(
-        self, config: DiscretionConfig
-    ) -> None:
+    async def test_utterance_appended_to_window_before_next_call(self) -> None:
         """After evaluate(), the utterance should appear in the context window."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="IGNORE"),
-        ):
-            await evaluator.evaluate("first utterance", weight=0.7)
-            await evaluator.evaluate("second utterance", weight=0.7)
+        evaluator, _ = _make_evaluator(return_value="IGNORE")
+        await evaluator.evaluate("first utterance", weight=0.7)
+        await evaluator.evaluate("second utterance", weight=0.7)
 
         entries = evaluator.window.entries
         assert len(entries) == 2
         assert entries[0].text == "first utterance"
         assert entries[1].text == "second utterance"
 
-    async def test_context_passed_to_llm_excludes_current_utterance(
-        self, config: DiscretionConfig
-    ) -> None:
+    async def test_context_passed_to_llm_excludes_current_utterance(self) -> None:
         """The prompt context should contain only the *previous* window entries."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
         captured_prompts: list[str] = []
 
-        async def capture_call(prompt: str, **_kwargs: object) -> str:
+        async def capture_call(prompt: str, *, system_prompt: str = "") -> str:
             captured_prompts.append(prompt)
             return "IGNORE"
 
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(side_effect=capture_call),
-        ):
-            await evaluator.evaluate("first", weight=0.7)
-            await evaluator.evaluate("second", weight=0.7)
+        dispatcher = MockDispatcher()
+        dispatcher._mock.side_effect = capture_call
+        evaluator = DiscretionEvaluator(
+            source_name="kitchen",
+            dispatcher=dispatcher,
+            weight_bypass=1.0,
+            weight_fail_open=0.5,
+        )
+
+        await evaluator.evaluate("first", weight=0.7)
+        await evaluator.evaluate("second", weight=0.7)
 
         # First call: context window was empty.
         assert "(none)" in captured_prompts[0]
@@ -352,82 +345,58 @@ class TestDiscretionEvaluatorHappyPath:
 
 
 class TestDiscretionEvaluatorFailOpen:
-    @pytest.fixture()
-    def config(self) -> DiscretionConfig:
-        cfg = DiscretionConfig.__new__(DiscretionConfig)
-        cfg.system_prompt = "test"
-        cfg.llm_url = "http://localhost:11434/v1"
-        cfg.llm_model = "haiku"
-        cfg.timeout_s = 0.1  # Very short for testing
-        cfg.window_size = 10
-        cfg.window_seconds = 300.0
-        cfg.weight_bypass = 1.0
-        cfg.weight_fail_open = 0.5
-        return cfg
-
-    async def test_timeout_yields_forward(self, config: DiscretionConfig) -> None:
-        import asyncio
-
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-
-        async def slow_call(prompt: str, **_kwargs: object) -> str:
-            await asyncio.sleep(10)  # Will be cancelled by wait_for timeout
+    async def test_timeout_yields_forward(self) -> None:
+        async def slow_call(prompt: str, *, system_prompt: str = "") -> str:
+            await asyncio.sleep(10)  # Will never complete in test
             return "IGNORE"
 
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(side_effect=slow_call),
-        ):
-            result = await evaluator.evaluate("any text", weight=0.7)
+        dispatcher = MockDispatcher()
+        dispatcher._mock.side_effect = TimeoutError()
+        evaluator = DiscretionEvaluator(
+            source_name="kitchen",
+            dispatcher=dispatcher,
+            weight_bypass=1.0,
+            weight_fail_open=0.5,
+        )
+
+        result = await evaluator.evaluate("any text", weight=0.7)
 
         assert result.verdict == "FORWARD"
         assert result.is_fail_open is True
         assert "timeout" in result.reason
 
-    async def test_http_error_yields_forward(self, config: DiscretionConfig) -> None:
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(side_effect=httpx.ConnectError("refused")),
-        ):
-            result = await evaluator.evaluate("any text", weight=0.7)
-
-        assert result.verdict == "FORWARD"
-        assert result.is_fail_open is True
-        assert "ConnectError" in result.reason
-
-    async def test_malformed_response_yields_forward(self, config: DiscretionConfig) -> None:
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="MAYBE: not sure"),
-        ):
-            result = await evaluator.evaluate("any text", weight=0.7)
-
-        assert result.verdict == "FORWARD"
-        assert result.is_fail_open is True
-        assert "parse_error" in result.reason
-
-    async def test_unexpected_exception_yields_forward(self, config: DiscretionConfig) -> None:
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(side_effect=RuntimeError("something unexpected")),
-        ):
-            result = await evaluator.evaluate("any text", weight=0.7)
+    async def test_error_yields_forward(self) -> None:
+        evaluator, _ = _make_evaluator(
+            side_effect=RuntimeError("connection refused"),
+        )
+        result = await evaluator.evaluate("any text", weight=0.7)
 
         assert result.verdict == "FORWARD"
         assert result.is_fail_open is True
         assert "RuntimeError" in result.reason
 
-    async def test_window_still_updated_on_failure(self, config: DiscretionConfig) -> None:
+    async def test_malformed_response_yields_forward(self) -> None:
+        evaluator, _ = _make_evaluator(return_value="MAYBE: not sure")
+        result = await evaluator.evaluate("any text", weight=0.7)
+
+        assert result.verdict == "FORWARD"
+        assert result.is_fail_open is True
+        assert "parse_error" in result.reason
+
+    async def test_unexpected_exception_yields_forward(self) -> None:
+        evaluator, _ = _make_evaluator(
+            side_effect=RuntimeError("something unexpected"),
+        )
+        result = await evaluator.evaluate("any text", weight=0.7)
+
+        assert result.verdict == "FORWARD"
+        assert result.is_fail_open is True
+        assert "RuntimeError" in result.reason
+
+    async def test_window_still_updated_on_failure(self) -> None:
         """Even when LLM fails, the utterance is added to the context window."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(side_effect=httpx.TimeoutException("timeout")),
-        ):
-            await evaluator.evaluate("hello", weight=0.7)
+        evaluator, _ = _make_evaluator(side_effect=RuntimeError("timeout"))
+        await evaluator.evaluate("hello", weight=0.7)
 
         assert len(evaluator.window) == 1
         assert evaluator.window.entries[0].text == "hello"
@@ -439,50 +408,28 @@ class TestDiscretionEvaluatorFailOpen:
 
 
 class TestDiscretionEvaluatorWindowIntegration:
-    @pytest.fixture()
-    def config(self) -> DiscretionConfig:
-        cfg = DiscretionConfig.__new__(DiscretionConfig)
-        cfg.system_prompt = "test"
-        cfg.llm_url = ""
-        cfg.llm_model = ""
-        cfg.timeout_s = 3.0
-        cfg.window_size = 3
-        cfg.window_seconds = 300.0
-        cfg.weight_bypass = 1.0
-        cfg.weight_fail_open = 0.5
-        return cfg
-
-    async def test_window_respects_size_cap(self, config: DiscretionConfig) -> None:
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="IGNORE"),
-        ):
-            for i in range(5):
-                await evaluator.evaluate(f"utterance {i}")
+    async def test_window_respects_size_cap(self) -> None:
+        evaluator, _ = _make_evaluator(
+            return_value="IGNORE",
+            window_size=3,
+        )
+        for i in range(5):
+            await evaluator.evaluate(f"utterance {i}")
 
         assert len(evaluator.window) == 3
         texts = [e.text for e in evaluator.window.entries]
         assert texts == ["utterance 2", "utterance 3", "utterance 4"]
 
-    async def test_mic_name_stored_in_window(self, config: DiscretionConfig) -> None:
-        evaluator = DiscretionEvaluator(source_name="bedroom", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="FORWARD: ok"),
-        ):
-            await evaluator.evaluate("good morning")
+    async def test_mic_name_stored_in_window(self) -> None:
+        evaluator, _ = _make_evaluator(source_name="bedroom", return_value="FORWARD: ok")
+        await evaluator.evaluate("good morning")
 
         assert evaluator.window.entries[0].source == "bedroom"
 
-    async def test_timestamp_stored_in_window(self, config: DiscretionConfig) -> None:
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
+    async def test_timestamp_stored_in_window(self) -> None:
+        evaluator, _ = _make_evaluator(return_value="IGNORE")
         before = time.time()
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="IGNORE"),
-        ):
-            await evaluator.evaluate("any text", timestamp=before + 1.0)
+        await evaluator.evaluate("any text", timestamp=before + 1.0)
 
         assert evaluator.window.entries[0].timestamp == pytest.approx(before + 1.0, abs=0.01)
 
@@ -493,111 +440,89 @@ class TestDiscretionEvaluatorWindowIntegration:
 
 
 class TestDiscretionEvaluatorWeight:
-    @pytest.fixture()
-    def config(self) -> DiscretionConfig:
-        cfg = DiscretionConfig.__new__(DiscretionConfig)
-        cfg.system_prompt = "test"
-        cfg.llm_url = "http://localhost:11434/v1"
-        cfg.llm_model = "haiku"
-        cfg.timeout_s = 0.1
-        cfg.window_size = 10
-        cfg.window_seconds = 300.0
-        cfg.weight_bypass = 1.0
-        cfg.weight_fail_open = 0.5
-        return cfg
-
-    async def test_weight_bypass_skips_llm(self, config: DiscretionConfig) -> None:
+    async def test_weight_bypass_skips_llm(self) -> None:
         """weight >= weight_bypass should return FORWARD without calling LLM."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        mock = AsyncMock(return_value="IGNORE")
-        with patch("butlers.connectors.discretion._call_llm", new=mock):
-            result = await evaluator.evaluate("any text", weight=1.0)
+        evaluator, dispatcher = _make_evaluator(
+            return_value="IGNORE",
+            weight_bypass=1.0,
+            weight_fail_open=0.5,
+        )
+        result = await evaluator.evaluate("any text", weight=1.0)
 
         assert result.verdict == "FORWARD"
         assert result.reason == "weight-bypass"
         assert result.is_fail_open is False
-        mock.assert_not_called()
+        dispatcher.mock.assert_not_called()
 
-    async def test_weight_bypass_still_appends_to_window(self, config: DiscretionConfig) -> None:
+    async def test_weight_bypass_still_appends_to_window(self) -> None:
         """Bypassed messages should still appear in context window."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="IGNORE"),
-        ):
-            await evaluator.evaluate("owner says hello", weight=1.0)
-            await evaluator.evaluate("stranger says hi", weight=0.3)
+        evaluator, _ = _make_evaluator(
+            return_value="IGNORE",
+            weight_bypass=1.0,
+            weight_fail_open=0.5,
+        )
+        await evaluator.evaluate("owner says hello", weight=1.0)
+        await evaluator.evaluate("stranger says hi", weight=0.3)
 
         assert len(evaluator.window) == 2
         assert evaluator.window.entries[0].text == "owner says hello"
 
-    async def test_high_weight_fails_open(self, config: DiscretionConfig) -> None:
+    async def test_high_weight_fails_open(self) -> None:
         """weight >= weight_fail_open should fail-open (FORWARD) on errors."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(side_effect=httpx.ConnectError("refused")),
-        ):
-            result = await evaluator.evaluate("any text", weight=0.7)
+        evaluator, _ = _make_evaluator(
+            side_effect=RuntimeError("connection refused"),
+            weight_bypass=1.0,
+            weight_fail_open=0.5,
+        )
+        result = await evaluator.evaluate("any text", weight=0.7)
 
         assert result.verdict == "FORWARD"
         assert result.is_fail_open is True
         assert "fail-open" in result.reason
 
-    async def test_low_weight_fails_closed(self, config: DiscretionConfig) -> None:
+    async def test_low_weight_fails_closed(self) -> None:
         """weight < weight_fail_open should fail-closed (IGNORE) on errors."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(side_effect=httpx.ConnectError("refused")),
-        ):
-            result = await evaluator.evaluate("any text", weight=0.3)
+        evaluator, _ = _make_evaluator(
+            side_effect=RuntimeError("connection refused"),
+            weight_bypass=1.0,
+            weight_fail_open=0.5,
+        )
+        result = await evaluator.evaluate("any text", weight=0.3)
 
         assert result.verdict == "IGNORE"
         assert result.is_fail_open is False
         assert "fail-closed" in result.reason
 
-    async def test_low_weight_timeout_fails_closed(self, config: DiscretionConfig) -> None:
+    async def test_low_weight_timeout_fails_closed(self) -> None:
         """Timeout with low weight should fail-closed."""
-        import asyncio
-
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-
-        async def slow_call(prompt: str, **_kwargs: object) -> str:
-            await asyncio.sleep(10)
-            return "IGNORE"
-
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(side_effect=slow_call),
-        ):
-            result = await evaluator.evaluate("any text", weight=0.3)
+        evaluator, _ = _make_evaluator(
+            side_effect=TimeoutError(),
+            weight_bypass=1.0,
+            weight_fail_open=0.5,
+        )
+        result = await evaluator.evaluate("any text", weight=0.3)
 
         assert result.verdict == "IGNORE"
         assert "fail-closed" in result.reason
         assert "timeout" in result.reason
 
-    async def test_low_weight_parse_error_fails_closed(self, config: DiscretionConfig) -> None:
+    async def test_low_weight_parse_error_fails_closed(self) -> None:
         """Parse error with low weight should fail-closed."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="MAYBE: not sure"),
-        ):
-            result = await evaluator.evaluate("any text", weight=0.3)
+        evaluator, _ = _make_evaluator(
+            return_value="MAYBE: not sure",
+            weight_bypass=1.0,
+            weight_fail_open=0.5,
+        )
+        result = await evaluator.evaluate("any text", weight=0.3)
 
         assert result.verdict == "IGNORE"
         assert "fail-closed" in result.reason
         assert "parse_error" in result.reason
 
-    async def test_low_weight_normal_verdict_still_honored(self, config: DiscretionConfig) -> None:
+    async def test_low_weight_normal_verdict_still_honored(self) -> None:
         """When LLM succeeds, weight doesn't override the verdict."""
-        evaluator = DiscretionEvaluator(source_name="kitchen", config=config)
-        with patch(
-            "butlers.connectors.discretion._call_llm",
-            new=AsyncMock(return_value="FORWARD: urgent request"),
-        ):
-            result = await evaluator.evaluate("help!", weight=0.3)
+        evaluator, _ = _make_evaluator(return_value="FORWARD: urgent request")
+        result = await evaluator.evaluate("help!", weight=0.3)
 
         assert result.verdict == "FORWARD"
         assert result.is_fail_open is False
