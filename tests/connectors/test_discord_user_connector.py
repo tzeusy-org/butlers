@@ -301,7 +301,7 @@ class TestNormalizeToIngestV1:
             envelope["control"]["idempotency_key"]
             == "discord:discord:user:123456789:1234567890123456789"
         )
-        assert envelope["control"]["policy_tier"] == "default"
+        assert envelope["control"]["policy_tier"] == "interactive"
 
         # observed_at must be RFC3339
         observed_at = envelope["event"]["observed_at"]
@@ -824,7 +824,7 @@ class TestSubmitToIngest:
             "event": {"external_event_id": "1", "external_thread_id": "2", "observed_at": "now"},
             "sender": {"identity": "user1"},
             "payload": {"raw": {}, "normalized_text": "hi"},
-            "control": {"idempotency_key": "discord:x:1", "policy_tier": "default"},
+            "control": {"idempotency_key": "discord:x:1", "policy_tier": "interactive"},
         }
 
         with patch.object(
@@ -844,7 +844,7 @@ class TestSubmitToIngest:
             "event": {"external_event_id": "1", "external_thread_id": "2", "observed_at": "now"},
             "sender": {"identity": "user1"},
             "payload": {"raw": {}, "normalized_text": "hi"},
-            "control": {"idempotency_key": "discord:x:1", "policy_tier": "default"},
+            "control": {"idempotency_key": "discord:x:1", "policy_tier": "interactive"},
         }
 
         with patch.object(
@@ -863,7 +863,7 @@ class TestSubmitToIngest:
             "event": {"external_event_id": "1", "external_thread_id": "2", "observed_at": "now"},
             "sender": {"identity": "user1"},
             "payload": {"raw": {}, "normalized_text": "hi"},
-            "control": {"idempotency_key": "discord:x:1", "policy_tier": "default"},
+            "control": {"idempotency_key": "discord:x:1", "policy_tier": "interactive"},
         }
 
         with patch.object(

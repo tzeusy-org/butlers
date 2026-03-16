@@ -884,7 +884,7 @@ class TelegramUserClientConnector:
             },
             "control": {
                 "idempotency_key": f"tg_batch:{chat_id}:{min_id}:{max_id}",
-                "policy_tier": "default",
+                "policy_tier": "interactive",
             },
         }
 
@@ -1443,7 +1443,7 @@ class TelegramUserClientConnector:
             },
             "control": {
                 "idempotency_key": idem_key,
-                "policy_tier": "default",
+                "policy_tier": "interactive",
             },
         }
 

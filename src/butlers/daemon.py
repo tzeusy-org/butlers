@@ -2825,68 +2825,6 @@ class ButlerDaemon:
                     if telegram_module is None:
                         raise RuntimeError("Messenger telegram adapter is unavailable.")
 
-                    # --- Approval gate for direct telegram delivery ---
-                    # route.execute calls module methods directly (not MCP tools),
-                    # so MCP-level approval gate wrappers are NOT in the path.
-                    # Enforce role-based gating here to close the bypass.
-                    _tg_target: str | None = None
-                    if intent == "send":
-                        _tg_target = notify_request.delivery.recipient
-                    elif intent == "reply" and notify_context is not None:
-                        _tg_identity = notify_context.source_thread_identity
-                        if _tg_identity:
-                            _tg_target = _tg_identity.partition(":")[0]
-
-                    if _tg_target and intent in ("send", "reply"):
-                        _approval_pool = daemon.db.pool if daemon.db is not None else None
-                        if _approval_pool is not None:
-                            from butlers.identity import (
-                                resolve_contact_by_channel as _resolve_tg_contact,
-                            )
-
-                            _tg_contact = await _resolve_tg_contact(
-                                _approval_pool, "telegram", _tg_target
-                            )
-                            if _tg_contact is None or "owner" not in _tg_contact.roles:
-                                _gate_tool = (
-                                    "telegram_send_message"
-                                    if intent == "send"
-                                    else "telegram_reply_to_message"
-                                )
-                                _gate_args = {"chat_id": _tg_target}
-                                _gate_rule = None
-                                try:
-                                    from butlers.modules.approvals.rules import (
-                                        match_rules as _match_gate_rules,
-                                    )
-
-                                    _gate_rule = await _match_gate_rules(
-                                        _approval_pool, _gate_tool, _gate_args
-                                    )
-                                except Exception:  # noqa: BLE001
-                                    pass
-
-                                if _gate_rule is None:
-                                    _contact_desc = (
-                                        "known non-owner contact"
-                                        if _tg_contact is not None
-                                        else "unknown contact"
-                                    )
-                                    raise ValueError(
-                                        f"Delivery blocked: telegram target "
-                                        f"'{_tg_target}' is a {_contact_desc} "
-                                        f"and no standing approval rule matches. "
-                                        f"Create a standing rule or approve via "
-                                        f"the approval dashboard."
-                                    )
-                                else:
-                                    logger.info(
-                                        "route.execute telegram gate: standing "
-                                        "rule %s permits delivery to %r",
-                                        _gate_rule.id,
-                                        _tg_target,
-                                    )
-
                     rendered_text = (
                         message_text
                         if message_text.lstrip().startswith(notify_prefix)

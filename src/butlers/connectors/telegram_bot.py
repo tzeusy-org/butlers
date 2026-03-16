@@ -958,7 +958,7 @@ class TelegramBotConnector:
             },
             "control": {
                 "idempotency_key": idem_key,
-                "policy_tier": "default",
+                "policy_tier": "interactive",
             },
         }
 

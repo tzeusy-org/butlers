@@ -545,7 +545,7 @@ class TestEnvelopeFieldMapping:
 
         # Control
         assert env["control"]["idempotency_key"].startswith("voice:live-listener:mic:kitchen:")
-        assert env["control"]["policy_tier"] == "default"
+        assert env["control"]["policy_tier"] == "interactive"
         assert env["control"]["ingestion_tier"] == "full"
 
 

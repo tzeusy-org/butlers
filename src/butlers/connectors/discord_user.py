@@ -1076,7 +1076,7 @@ class DiscordUserConnector:
                 "idempotency_key": (
                     f"{self._config.provider}:{self._config.endpoint_identity}:{message_id}"
                 ),
-                "policy_tier": "default",
+                "policy_tier": "interactive",
             },
         }
 

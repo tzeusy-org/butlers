@@ -201,7 +201,7 @@ def test_envelope_payload_normalized_text(envelope: dict) -> None:
 
 
 def test_envelope_control_policy_tier(envelope: dict) -> None:
-    assert envelope["control"]["policy_tier"] == "default"
+    assert envelope["control"]["policy_tier"] == "interactive"
 
 
 def test_envelope_control_ingestion_tier(envelope: dict) -> None:

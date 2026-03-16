@@ -128,7 +128,7 @@ def build_voice_envelope(
         },
         "control": {
             "idempotency_key": idempotency_key,
-            "policy_tier": "default",
+            "policy_tier": "interactive",
             "ingestion_tier": "full",
         },
     }
