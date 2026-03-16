@@ -309,10 +309,12 @@ async def ingestion_event_replay_request(
     ``'replay_pending'`` for the existing replay worker.
 
     Allowed transitions:
-    - ``failed``        → ``ingested``        (ingestion event — ready for re-route)
-    - ``filtered``      → ``replay_pending``  (connector filter)
-    - ``error``         → ``replay_pending``  (connector error)
-    - ``replay_failed`` → ``replay_pending``  (re-replay, filtered_events only)
+    - ``failed``          → ``ingested``        (ingestion event — ready for re-route)
+    - ``filtered``        → ``replay_pending``  (connector filter)
+    - ``error``           → ``replay_pending``  (connector error)
+    - ``replay_failed``   → ``replay_pending``  (re-replay)
+    - ``ingested``        → ``replay_pending``  (re-process successful event)
+    - ``replay_complete`` → ``replay_pending``  (re-replay completed event)
 
     Args:
         pool: asyncpg connection pool that can resolve both
@@ -342,16 +344,14 @@ async def ingestion_event_replay_request(
     if row is not None:
         return {"outcome": "ok", "id": str(row["id"]), "source": "ingestion_events"}
 
-    # Check if it exists but is not replayable (e.g. already ingested).
-    ie_status = await pool.fetchval(
-        "SELECT status FROM shared.ingestion_events WHERE id = $1",
-        event_id,
+    # 2. Try connectors.filtered_events (any status except replay_pending).
+    filtered_replayable = (
+        "filtered",
+        "error",
+        "replay_failed",
+        "ingested",
+        "replay_complete",
     )
-    if ie_status is not None:
-        return {"outcome": "conflict", "current_status": ie_status}
-
-    # 2. Fall back to connectors.filtered_events.
-    filtered_replayable = ("filtered", "error", "replay_failed")
     row = await pool.fetchrow(
         """
         UPDATE connectors.filtered_events
@@ -365,13 +365,16 @@ async def ingestion_event_replay_request(
     if row is not None:
         return {"outcome": "ok", "id": str(row["id"]), "source": "filtered_events"}
 
-    current_status = await pool.fetchval(
-        "SELECT status FROM connectors.filtered_events WHERE id = $1",
-        event_id,
-    )
-    if current_status is None:
-        return {"outcome": "not_found"}
-    return {"outcome": "conflict", "current_status": current_status}
+    # 3. Check both tables for non-replayable status (e.g. replay_pending).
+    for table in ("shared.ingestion_events", "connectors.filtered_events"):
+        current_status = await pool.fetchval(
+            f"SELECT status FROM {table} WHERE id = $1",
+            event_id,
+        )
+        if current_status is not None:
+            return {"outcome": "conflict", "current_status": current_status}
+
+    return {"outcome": "not_found"}
 
 
 async def ingestion_event_sessions(

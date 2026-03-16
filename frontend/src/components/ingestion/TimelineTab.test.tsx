@@ -156,21 +156,21 @@ describe("TimelineTab — StatusBadge rendering", () => {
     render([makeEvent({ status: "filtered" })]);
     const btn = container.querySelector("[data-testid='replay-button']");
     expect(btn).not.toBeNull();
-    expect(btn!.textContent).toContain("Replay");
+    expect(btn!.getAttribute("title")).toBe("Replay");
   });
 
   it("shows Replay button for error events", () => {
     render([makeEvent({ status: "error" })]);
     const btn = container.querySelector("[data-testid='replay-button']");
     expect(btn).not.toBeNull();
-    expect(btn!.textContent).toContain("Replay");
+    expect(btn!.getAttribute("title")).toBe("Replay");
   });
 
   it("shows Retry button for replay_failed events", () => {
     render([makeEvent({ status: "replay_failed" })]);
     const btn = container.querySelector("[data-testid='replay-button']");
     expect(btn).not.toBeNull();
-    expect(btn!.textContent).toContain("Retry");
+    expect(btn!.getAttribute("title")).toBe("Retry");
   });
 
   it("shows spinner (not Replay button) for replay_pending events", () => {
@@ -181,20 +181,18 @@ describe("TimelineTab — StatusBadge rendering", () => {
     expect(spinner).not.toBeNull();
   });
 
-  it("shows no action button for ingested events", () => {
+  it("shows Replay button for ingested events", () => {
     render([makeEvent({ status: "ingested" })]);
     const btn = container.querySelector("[data-testid='replay-button']");
-    const spinner = container.querySelector("[data-testid='replay-pending-spinner']");
-    expect(btn).toBeNull();
-    expect(spinner).toBeNull();
+    expect(btn).not.toBeNull();
+    expect(btn!.getAttribute("title")).toBe("Replay");
   });
 
-  it("shows no action button for replay_complete events", () => {
+  it("shows Replay button for replay_complete events", () => {
     render([makeEvent({ status: "replay_complete" })]);
     const btn = container.querySelector("[data-testid='replay-button']");
-    const spinner = container.querySelector("[data-testid='replay-pending-spinner']");
-    expect(btn).toBeNull();
-    expect(spinner).toBeNull();
+    expect(btn).not.toBeNull();
+    expect(btn!.getAttribute("title")).toBe("Replay");
   });
 });
 

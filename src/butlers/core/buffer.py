@@ -522,8 +522,18 @@ class DurableBuffer:
     async def _run_scanner_sweep(self) -> int:
         """Execute one scanner sweep and re-enqueue stuck messages.
 
+        Uses an expiring-lock pattern: each recovered row is atomically claimed
+        (lifecycle_state → 'processing', updated_at → now()) before it is
+        enqueued.  This prevents subsequent sweeps from re-enqueuing the same
+        message while it sits in the in-memory queue waiting for a worker.
+
+        If a claimed row's lock expires (updated_at older than
+        ``scanner_lock_timeout_s``), the scanner treats it as a crashed worker
+        and reclaims it.
+
         Returns the number of messages recovered.
         """
+        lock_timeout = self._config.scanner_lock_timeout_s
         try:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
@@ -535,13 +545,19 @@ class DurableBuffer:
                         raw_payload,
                         normalized_text
                     FROM message_inbox
-                    WHERE lifecycle_state = 'accepted'
-                      AND received_at < now() - ($1 * interval '1 second')
+                    WHERE (
+                        lifecycle_state = 'accepted'
+                        AND received_at < now() - ($1 * interval '1 second')
+                    ) OR (
+                        lifecycle_state = 'processing'
+                        AND updated_at < now() - ($3 * interval '1 second')
+                    )
                     ORDER BY received_at ASC
                     LIMIT $2
                     """,
                     self._config.scanner_grace_s,
                     self._config.scanner_batch_size,
+                    lock_timeout,
                 )
         except Exception:
             logger.exception("Buffer scanner DB query failed")
@@ -570,7 +586,7 @@ class DurableBuffer:
                             SET lifecycle_state = 'errored',
                                 updated_at = now()
                             WHERE id = $1
-                              AND lifecycle_state = 'accepted'
+                              AND lifecycle_state IN ('accepted', 'processing')
                             """,
                             row["id"],
                         )
@@ -602,6 +618,32 @@ class DurableBuffer:
                 )
                 continue
 
+            # Atomically claim the row before enqueuing — prevents duplicate
+            # enqueue on subsequent sweeps while the message sits in the queue.
+            try:
+                async with self._pool.acquire() as conn:
+                    claimed = await conn.fetchval(
+                        """
+                        UPDATE message_inbox
+                        SET lifecycle_state = 'processing',
+                            updated_at = now()
+                        WHERE id = $1
+                          AND lifecycle_state IN ('accepted', 'processing')
+                        RETURNING id
+                        """,
+                        row["id"],
+                    )
+            except Exception:
+                logger.exception(
+                    "Buffer scanner: failed to claim row id=%s",
+                    row["id"],
+                )
+                continue
+
+            if claimed is None:
+                # Another scanner or worker already claimed it
+                continue
+
             # Recover triage decision from stored request_context
             triage_decision = request_context.get("triage_decision")
             triage_target = request_context.get("triage_target")
@@ -621,7 +663,9 @@ class DurableBuffer:
 
             tier_queue = self._tier_queues[policy_tier]
             try:
-                # Non-blocking; if queue is full, skip and retry next sweep
+                # Non-blocking; if queue is full, release the claim so it can
+                # be retried next sweep (the lock will have expired by then,
+                # or we explicitly reset it).
                 tier_queue.put_nowait(ref)
                 self._enqueue_cold_total += 1
                 self._scanner_recovered_total += 1
@@ -637,13 +681,30 @@ class DurableBuffer:
                     row["received_at"].isoformat(),
                 )
             except asyncio.QueueFull:
-                # Queue is full; this message will be retried next sweep
+                # Queue is full; release the claim so the next sweep can retry
+                try:
+                    async with self._pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE message_inbox
+                            SET lifecycle_state = 'accepted',
+                                updated_at = now()
+                            WHERE id = $1
+                              AND lifecycle_state = 'processing'
+                            """,
+                            row["id"],
+                        )
+                except Exception:
+                    logger.debug(
+                        "Buffer scanner: failed to release claim for id=%s",
+                        row["id"],
+                    )
                 logger.debug(
                     "Buffer scanner: tier=%s queue full, skipping request_id=%s (will retry)",
                     policy_tier,
                     request_id,
                 )
-                continue  # This tier is full; try next tier on next sweep
+                continue
 
         if recovered:
             logger.info("Buffer scanner sweep: recovered %d message(s)", recovered)

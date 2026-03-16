@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
+import { Loader2, RotateCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -102,7 +102,7 @@ function fmtNum(n: number | null | undefined): string {
 
 /** Returns true if this status is replayable (Replay button shown). */
 function isReplayable(status: IngestionEventStatus): boolean {
-  return status === "filtered" || status === "error" || status === "replay_failed";
+  return status !== "replay_pending";
 }
 
 /** Returns true if this status is pending replay (spinner shown). */
@@ -391,7 +391,7 @@ function ActionCell({ event, onOptimisticUpdate }: ActionCellProps) {
     return null;
   }
 
-  const label = event.status === "replay_failed" ? "Retry" : "Replay";
+  const title = event.status === "replay_failed" ? "Retry" : "Replay";
 
   async function handleReplay(e: React.MouseEvent) {
     e.stopPropagation(); // Don't trigger row expand
@@ -409,14 +409,19 @@ function ActionCell({ event, onOptimisticUpdate }: ActionCellProps) {
 
   return (
     <Button
-      variant="outline"
-      size="xs"
+      variant="ghost"
+      size="icon"
+      className="size-7"
       disabled={isPending}
       onClick={handleReplay}
+      title={title}
       data-testid="replay-button"
     >
-      {isPending ? <Loader2 className="size-3 animate-spin" /> : null}
-      {label}
+      {isPending ? (
+        <Loader2 className="size-3.5 animate-spin" />
+      ) : (
+        <RotateCw className="size-3.5" />
+      )}
     </Button>
   );
 }

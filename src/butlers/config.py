@@ -178,6 +178,7 @@ class BufferConfig:
     scanner_grace_s: int = 10
     scanner_batch_size: int = 50
     max_consecutive_same_tier: int = 10
+    scanner_lock_timeout_s: int = 300
 
 
 @dataclass

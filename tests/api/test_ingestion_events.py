@@ -961,11 +961,12 @@ class TestReplayEndpoint:
         detail = body.get("detail", body)
         assert detail["current_status"] == "replay_pending"
 
-    async def test_replay_returns_409_for_replay_complete(self, app):
-        """Replay of replay_complete event returns 409 Conflict."""
+    async def test_replay_of_replay_complete_returns_200(self, app):
+        """Replay of replay_complete event is allowed and returns 200."""
+        replay_id = uuid4()
         mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=None)
-        mock_pool.fetchval = AsyncMock(return_value="replay_complete")
+        # First fetchrow (ingestion_events UPDATE) misses, second (filtered_events) hits.
+        mock_pool.fetchrow = AsyncMock(side_effect=[None, {"id": replay_id}])
 
         _app_with_mock_db(app, shared_pool=mock_pool)
 
@@ -974,9 +975,8 @@ class TestReplayEndpoint:
         ) as client:
             resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
 
-        assert resp.status_code == 409
-        detail = resp.json().get("detail", resp.json())
-        assert detail["current_status"] == "replay_complete"
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "replay_pending"
 
     async def test_replay_409_includes_error_message(self, app):
         """409 response must include 'error' key with human-readable message."""
