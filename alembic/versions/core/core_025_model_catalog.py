@@ -40,7 +40,13 @@ _COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high")
 
 
 def _load_seed_entries() -> list[dict]:
-    """Load default model catalog entries from model_catalog_defaults.toml."""
+    """Load default model catalog entries from model_catalog_defaults.toml.
+
+    Only returns entries whose complexity_tier is one of the four tiers
+    allowed by the CHECK constraint created in this migration. Entries with
+    tiers added by later migrations (e.g. 'discretion' added in core_034)
+    are excluded here and seeded by the migration that widens the constraint.
+    """
     import tomllib  # noqa: PLC0415
 
     defaults_path = Path(__file__).resolve().parents[3] / "model_catalog_defaults.toml"
@@ -48,7 +54,10 @@ def _load_seed_entries() -> list[dict]:
         return []
     with open(defaults_path, "rb") as f:
         data = tomllib.load(f)
-    return data.get("models", [])
+    return [
+        m for m in data.get("models", [])
+        if m.get("complexity_tier", "medium") in _COMPLEXITY_TIERS
+    ]
 
 
 def upgrade() -> None:
