@@ -245,7 +245,8 @@ async def check_token_quota(
 
         row = await pool.fetchrow(_QUOTA_CHECK_SQL, catalog_entry_id)
         if row is None:
-            # No limits row found (CTE returned empty); treat as unlimited.
+            # Race condition: limits row was deleted between the existence check and
+            # the CTE query. Treat as unlimited for safety.
             return _unlimited
 
         limit_24h: int | None = row["limit_24h"]
@@ -253,11 +254,10 @@ async def check_token_quota(
         used_24h: int = int(row["used_24h"])
         used_30d: int = int(row["used_30d"])
 
-        allowed = True
-        if limit_24h is not None and used_24h >= limit_24h:
-            allowed = False
-        if limit_30d is not None and used_30d >= limit_30d:
-            allowed = False
+        allowed = not (
+            (limit_24h is not None and used_24h >= limit_24h)
+            or (limit_30d is not None and used_30d >= limit_30d)
+        )
 
         return QuotaStatus(
             allowed=allowed,
