@@ -795,17 +795,16 @@ async def dispatch_healing(
         if _current_ctx is not None and _current_ctx.trace_id:
             _failed_session_trace_id = format(_current_ctx.trace_id, "032x")
 
+        _span_attributes: dict[str, str] = {
+            "butler.name": butler_name,
+            "healing.trigger_source": trigger_source,
+        }
+        if _failed_session_trace_id is not None:
+            _span_attributes["healing.failed_session_trace_id"] = _failed_session_trace_id
+
         _span = _tracer.start_span(
             "butlers.healing.dispatch",
-            attributes={
-                "butler.name": butler_name,
-                "healing.trigger_source": trigger_source,
-                **(
-                    {"healing.failed_session_trace_id": _failed_session_trace_id}
-                    if _failed_session_trace_id is not None
-                    else {}
-                ),
-            },
+            attributes=_span_attributes,
         )
         _span_token = otel_context.attach(trace.set_span_in_context(_span))
 
