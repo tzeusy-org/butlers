@@ -2524,7 +2524,7 @@ class TestBulkRecordTransactions:
 # ---------------------------------------------------------------------------
 
 
-class TestCompositeDeudupKeyCanonicalisation:
+class TestCompositeDedupKeyCanonicalisation:
     """Pure unit tests for _compute_composite_dedup_key."""
 
     def _key(self, posted_at, amount, merchant="Merchant", account_id=None) -> str:
@@ -2538,9 +2538,10 @@ class TestCompositeDeudupKeyCanonicalisation:
         )
 
     def test_utc_and_z_suffix_produce_same_key(self):
+        # datetime with explicit UTC tzinfo
         dt_z = datetime(2025, 6, 15, 0, 0, 0, tzinfo=UTC)
-        # fromisoformat of ISO8601 string with Z produces UTC-aware datetime
-        dt_offset = datetime(2025, 6, 15, 0, 0, 0, tzinfo=UTC)
+        # fromisoformat of ISO8601 string with Z suffix produces UTC-aware datetime
+        dt_offset = datetime.fromisoformat("2025-06-15T00:00:00Z")
         assert self._key(dt_z, "-55.00") == self._key(dt_offset, "-55.00")
 
     def test_naive_datetime_treated_as_utc(self):
