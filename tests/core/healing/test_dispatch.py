@@ -1413,6 +1413,137 @@ class TestDispatchHealingOtelSpan:
         assert result.accepted is True
         assert result.reason == "dispatched"
 
+    async def _run_dispatch_with_otel(
+        self,
+        tmp_path: Path,
+        *,
+        with_parent_span: bool,
+    ) -> tuple[object, str | None]:
+        """Shared helper: set up an in-memory OTel exporter, run dispatch_healing, return
+        (exporter, expected_trace_id).  expected_trace_id is None when no parent span is used."""
+        import opentelemetry.trace as real_trace
+        from opentelemetry import context as otel_ctx
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        real_trace.set_tracer_provider(provider)
+
+        # Reinitialise the module-level _tracer to use our test provider so
+        # start_span() calls are captured by the exporter.
+        import butlers.core.healing.dispatch as dispatch_mod
+
+        dispatch_mod._tracer = provider.get_tracer("butlers.healing")
+        dispatch_mod._HAS_OTEL = True
+
+        expected_trace_id: str | None = None
+        token = None
+        parent_span = None
+
+        if with_parent_span:
+            # Simulate an active parent span representing the failed butler session.
+            parent_span = provider.get_tracer("test.session").start_span("session")
+            expected_trace_id = format(parent_span.get_span_context().trace_id, "032x")
+            token = otel_ctx.attach(real_trace.set_span_in_context(parent_span))
+
+        try:
+            pool = _make_pool_all_pass()
+            with (
+                patch(
+                    "butlers.core.healing.dispatch.create_or_join_attempt",
+                    new_callable=AsyncMock,
+                    return_value=(uuid.uuid4(), True),
+                ),
+                patch(
+                    "butlers.core.healing.dispatch.get_recent_attempt",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    "butlers.core.healing.dispatch.count_active_attempts",
+                    new_callable=AsyncMock,
+                    return_value=1,
+                ),
+                patch(
+                    "butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                    new_callable=AsyncMock,
+                    return_value=[],
+                ),
+                patch(
+                    "butlers.core.healing.dispatch.resolve_model",
+                    new_callable=AsyncMock,
+                    return_value=("claude_code", "model", []),
+                ),
+                patch(
+                    "butlers.core.healing.dispatch.create_healing_worktree",
+                    new_callable=AsyncMock,
+                    return_value=(tmp_path / "wt", "self-healing/b/x"),
+                ),
+                patch(
+                    "butlers.core.healing.dispatch.update_attempt_status",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ),
+                patch(
+                    "butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                    new_callable=AsyncMock,
+                ),
+                patch("asyncio.create_task") as mock_create_task,
+            ):
+                mock_create_task.return_value = MagicMock()
+                result = await dispatch_healing(
+                    pool=pool,
+                    butler_name="email",
+                    session_id=uuid.uuid4(),
+                    fingerprint_input=_make_fp(),
+                    config=_make_config(),
+                    repo_root=tmp_path,
+                    spawner=_make_spawner(),
+                    trigger_source="external",
+                )
+        finally:
+            if token is not None:
+                otel_ctx.detach(token)
+            if parent_span is not None:
+                parent_span.end()
+
+        assert result.accepted is True
+        return exporter, expected_trace_id
+
+    async def test_failed_session_trace_id_recorded_as_span_attribute(self, tmp_path: Path) -> None:
+        """healing.dispatch span records healing.failed_session_trace_id from the failed session."""
+        exporter, expected_trace_id = await self._run_dispatch_with_otel(
+            tmp_path, with_parent_span=True
+        )
+
+        # Find the healing.dispatch span and verify the attribute.
+        finished = exporter.get_finished_spans()
+        dispatch_spans = [s for s in finished if s.name == "butlers.healing.dispatch"]
+        assert dispatch_spans, "Expected at least one butlers.healing.dispatch span"
+        dispatch_span = dispatch_spans[0]
+        assert "healing.failed_session_trace_id" in dispatch_span.attributes, (
+            "healing.dispatch span must record healing.failed_session_trace_id"
+        )
+        assert dispatch_span.attributes["healing.failed_session_trace_id"] == expected_trace_id
+
+    async def test_failed_session_trace_id_omitted_when_no_parent_context(
+        self, tmp_path: Path
+    ) -> None:
+        """healing.dispatch span omits healing.failed_session_trace_id when no active trace."""
+        exporter, _ = await self._run_dispatch_with_otel(tmp_path, with_parent_span=False)
+
+        finished = exporter.get_finished_spans()
+        dispatch_spans = [s for s in finished if s.name == "butlers.healing.dispatch"]
+        assert dispatch_spans, "Expected at least one butlers.healing.dispatch span"
+        dispatch_span = dispatch_spans[0]
+        # When there's no active trace context, the attribute should not be set.
+        assert "healing.failed_session_trace_id" not in (dispatch_span.attributes or {}), (
+            "healing.failed_session_trace_id should be absent when there is no parent trace context"
+        )
+
     async def test_dispatch_works_when_otel_missing(self, tmp_path: Path) -> None:
         """dispatch_healing gracefully handles ImportError from opentelemetry."""
         import sys
