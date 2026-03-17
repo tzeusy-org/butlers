@@ -2433,6 +2433,11 @@ class CalendarModule(Module):
         self._calendar_is_butler_specific: bool = False
         # All provider calendar IDs discovered at startup (for pull-all sync).
         self._all_provider_calendar_ids: list[str] = []
+        # User's primary Google Calendar ID (email address).  Used as the
+        # default target for user-facing MCP tool mutations so that events
+        # land on the user's personal calendar rather than the shared
+        # "Butlers" group calendar.
+        self._primary_calendar_id: str | None = None
 
     @property
     def name(self) -> str:
@@ -2792,6 +2797,12 @@ class CalendarModule(Module):
                 result["policy"] = resolved_conflict_policy
                 result["conflicts"] = conflict_result["conflicts"]
                 result["suggested_slots"] = []
+            # Eagerly project the event to avoid Google indexing latency race.
+            await module._project_provider_mutation(
+                source_id=source_id,
+                calendar_id=resolved_calendar_id,
+                updated_events=[event],
+            )
             result["projection_freshness"] = await module._refresh_user_projection(
                 resolved_calendar_id
             )
@@ -3104,6 +3115,12 @@ class CalendarModule(Module):
                 result["policy"] = resolved_conflict_policy
                 result["conflicts"] = conflict_result["conflicts"]
                 result["suggested_slots"] = []
+            # Eagerly project the update to avoid Google indexing latency race.
+            await module._project_provider_mutation(
+                source_id=source_id,
+                calendar_id=resolved_calendar_id,
+                updated_events=[event],
+            )
             result["projection_freshness"] = await module._refresh_user_projection(
                 resolved_calendar_id
             )
@@ -3243,6 +3260,12 @@ class CalendarModule(Module):
                 "calendar_id": resolved_calendar_id,
                 "event_id": normalized_event_id,
             }
+            # Eagerly cancel in projection to avoid Google indexing latency race.
+            await module._project_provider_mutation(
+                source_id=source_id,
+                calendar_id=resolved_calendar_id,
+                cancelled_ids=[normalized_event_id],
+            )
             result["projection_freshness"] = await module._refresh_user_projection(
                 resolved_calendar_id
             )
@@ -4327,6 +4350,7 @@ class CalendarModule(Module):
                 candidate = cal.get("id")
                 if isinstance(candidate, str) and "@" in candidate:
                     account_email = candidate
+                    self._primary_calendar_id = candidate
                 break
 
         calendar_ids: list[str] = []
@@ -5358,6 +5382,40 @@ class CalendarModule(Module):
             source_id,
         )
 
+    async def _project_provider_mutation(
+        self,
+        *,
+        source_id: uuid.UUID | None,
+        calendar_id: str,
+        updated_events: list[CalendarEvent] | None = None,
+        cancelled_ids: list[str] | None = None,
+    ) -> None:
+        """Write a provider mutation directly to projection tables.
+
+        Bypasses the sync-from-Google round-trip to avoid Google indexing
+        latency race conditions.  The next sync cycle reconciles any
+        discrepancies.  Fail-open: errors are logged but do not propagate.
+        """
+        if source_id is None:
+            return
+        provider = self._provider
+        if provider is None:
+            return
+        try:
+            await self._project_provider_changes(
+                source_id=source_id,
+                provider_name=provider.name,
+                calendar_id=calendar_id,
+                updated_events=updated_events or [],
+                cancelled_ids=cancelled_ids or [],
+            )
+        except Exception as exc:
+            logger.warning(
+                "Direct projection of provider mutation failed (calendar_id=%s): %s",
+                calendar_id,
+                exc,
+            )
+
     async def _project_provider_changes(
         self,
         *,
@@ -6259,6 +6317,12 @@ class CalendarModule(Module):
 
     def _resolve_calendar_id(self, override_calendar_id: str | None) -> str:
         if override_calendar_id is None:
+            # Prefer the user's primary calendar for MCP tool mutations so
+            # events land on the personal calendar, not the shared "Butlers"
+            # group calendar.  Fall back to _resolved_calendar_id (the butler
+            # calendar) only when discovery hasn't found a primary.
+            if self._primary_calendar_id is not None:
+                return self._primary_calendar_id
             if self._resolved_calendar_id is None:
                 raise RuntimeError("Calendar ID not resolved; call on_startup first")
             return self._resolved_calendar_id

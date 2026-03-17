@@ -14,13 +14,22 @@ The module defines an abstract `CalendarProvider` interface with concrete implem
 
 - **WHEN** the Calendar module starts up with `provider = "google"` and `account = "work@gmail.com"` in config
 - **THEN** a `_GoogleProvider` instance is created with OAuth credentials resolved from the credential store for the specified Google account
-- **AND** the calendar ID is resolved from credential store or auto-discovered via shared "Butlers" calendar on that account
+- **AND** the butler calendar ID is resolved from credential store or auto-discovered via shared "Butlers" calendar on that account
 
 #### Scenario: Provider selection at startup without account (primary)
 
 - **WHEN** the Calendar module starts up with `provider = "google"` and no `account` field in config
 - **THEN** credentials are resolved for the primary Google account
 - **AND** behavior is identical to pre-multi-account single-account deployments
+
+#### Scenario: Dual calendar ID resolution
+
+- **WHEN** the Calendar module completes startup and calendar discovery
+- **THEN** two calendar IDs are tracked:
+  - `_resolved_calendar_id` — the shared "Butlers" group calendar (auto-discovered or from credential store), used exclusively by `_push_internal_events_to_provider` to push scheduled tasks and reminders to Google
+  - `_primary_calendar_id` — the user's primary Google Calendar (the one marked `primary: true` in Google's calendarList), used as the default for user-facing MCP tool mutations
+- **AND** when an MCP tool is called without an explicit `calendar_id` parameter, the primary calendar is used so that events land on the user's personal calendar rather than the shared group calendar
+- **AND** `_push_internal_events_to_provider` always uses `_resolved_calendar_id` directly, bypassing the default resolution
 
 #### Scenario: Unsupported provider configured
 
@@ -79,6 +88,14 @@ The module registers 13 MCP tools total. The core CRUD tools are: `calendar_list
 - **THEN** the event is created on the provider with butler-generated metadata in `extendedProperties.private`
 - **AND** conflict detection runs according to the configured policy (suggest alternatives, fail, or allow with approval gate)
 - **AND** the event payload is normalized (timezone, all-day inference, notification defaults)
+
+#### Scenario: Eager projection write-through on provider mutations
+
+- **WHEN** a provider mutation succeeds (`calendar_create_event`, `calendar_update_event`, or `calendar_delete_event`)
+- **THEN** the event is eagerly projected into the projection tables via `_project_provider_mutation` before the sync round-trip
+- **AND** a background `_refresh_user_projection` sync still runs for reconciliation and freshness metadata
+- **AND** failures in eager projection are logged but do not block the mutation response (fail-open)
+- **BECAUSE** Google's incremental sync API has indexing latency (1-5s) after writes, and relying on a sync round-trip to project the mutation creates a race condition where the event may never reach the projection tables
 
 #### Scenario: Update event with partial patch
 
@@ -249,12 +266,14 @@ The projection uses a dual-lane model to separate event authority. Each `calenda
 - **`lane="user"`** — Provider-synced external events (meetings, appointments created by humans on Google Calendar). Google is the source of truth. The local projection faithfully mirrors whatever the provider reports on each sync cycle.
 - **`lane="butler"`** — Internal scheduled tasks and reminders managed by the butler. The butler's database (`scheduled_tasks`, `reminders`) is the source of truth. These are pushed outbound to Google for visibility but Google is never read back as authoritative for them.
 
-#### Scenario: Butler-generated events are excluded from provider sync projection
+#### Scenario: Butler-generated events in provider sync projection
+
+> **SPEC-CODE DIVERGENCE**: The implementation at `_project_provider_changes` (calendar.py:5370-5376) persists ALL provider events including butler-generated ones, noting butler metadata for UI differentiation. The original exclusion behavior described below is not implemented. The rationale in code: butler events created via `calendar_create_event` (workspace mutations) are distinct from internal scheduler events and should appear in the provider projection.
 
 - **WHEN** `_project_provider_changes` processes events returned by an incremental or full sync
-- **THEN** events with `butler_generated=True` (detected via `extendedProperties.private.butler_generated`) are skipped
-- **AND** any previously projected butler-generated rows under the provider source (`lane="user"`) are purged
-- **BECAUSE** butler events already have their own `lane="butler"` source via the internal scheduler/reminder projection
+- **THEN** all events are persisted to the projection, including butler-generated ones
+- **AND** butler-generated metadata (`butler_generated`, `butler_name`) is preserved in the projection row metadata for UI differentiation
+- **BECAUSE** butler events created via `calendar_create_event` are user-lane workspace mutations (not internal scheduler items) and should be visible in the provider projection
 
 #### Scenario: Butler overwrites external edits to butler-owned events
 
