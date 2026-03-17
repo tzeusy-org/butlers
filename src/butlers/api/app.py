@@ -38,6 +38,7 @@ from butlers.api.routers.calendar_workspace import (
 )
 from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.costs import router as costs_router
+from butlers.api.routers.healing import router as healing_router
 from butlers.api.routers.ingestion_events import router as ingestion_events_router
 from butlers.api.routers.issues import router as issues_router
 from butlers.api.routers.memory import router as memory_router
@@ -221,6 +222,7 @@ def create_app(
     app.include_router(sse_router)
     app.include_router(catalog_router)
     app.include_router(butler_model_router)
+    app.include_router(healing_router)
     app.include_router(provider_settings_router)
 
     # --- Auto-discovered Butler Routers ---
