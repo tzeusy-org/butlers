@@ -2095,6 +2095,7 @@ class TestBulkRecordTransactionsCrossSourceDedup:
 
 
 # ---------------------------------------------------------------------------
+<<<<<<< Updated upstream
 # Integration tests: bulk_record_transactions (composite dedup, error paths,
 # embedding bypass, tsvector, account_id inheritance, source metadata)
 # ---------------------------------------------------------------------------
@@ -2104,62 +2105,126 @@ _DDL_IDEMPOTENCY_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_temporal_idempotency
 ON facts (tenant_id, idempotency_key)
 WHERE idempotency_key IS NOT NULL
+=======
+# Integration tests: bulk_record_transactions core behavior (bu-lnzh)
+# ---------------------------------------------------------------------------
+
+_DDL_IDEMPOTENCY_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_temporal_idempotency
+    ON facts (tenant_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL
+>>>>>>> Stashed changes
 """
 
 
 class TestBulkRecordTransactions:
+<<<<<<< Updated upstream
     """Integration tests for bulk_record_transactions — CSV ingest path."""
 
     @pytest.fixture
     async def idem_pool(self, pool_with_owner):
         """pool_with_owner + the partial unique idempotency index."""
+=======
+    """Integration tests for bulk_record_transactions core behavior.
+
+    Covers: successful import, idempotency-key dedup, per-row error handling,
+    batch size limit, account_id inheritance, source metadata, embedding bypass,
+    and composite dedup key canonicalization.
+    """
+
+    @pytest.fixture
+    async def idem_pool(self, pool_with_owner):
+        """Pool with facts table + partial unique index on (tenant_id, idempotency_key)."""
+>>>>>>> Stashed changes
         await pool_with_owner.execute(_DDL_IDEMPOTENCY_INDEX)
         yield pool_with_owner
 
     # ------------------------------------------------------------------
+<<<<<<< Updated upstream
     # Basic import
     # ------------------------------------------------------------------
 
     async def test_basic_import_returns_counts(self, idem_pool):
         """A single valid row is imported and counts are correct."""
+=======
+    # Happy-path: basic successful import
+    # ------------------------------------------------------------------
+
+    async def test_basic_import_returns_correct_counts(self, idem_pool):
+        """Batch of valid rows → all imported, zero skipped, zero errors."""
+>>>>>>> Stashed changes
         from butlers.tools.finance.facts import bulk_record_transactions
 
         result = await bulk_record_transactions(
             pool=idem_pool,
             transactions=[
                 {
+<<<<<<< Updated upstream
                     "posted_at": "2025-06-15T00:00:00Z",
+=======
+                    "posted_at": "2026-01-15T10:00:00Z",
+>>>>>>> Stashed changes
                     "merchant": "Trader Joe's",
                     "amount": "-55.00",
                     "currency": "USD",
                     "category": "groceries",
+<<<<<<< Updated upstream
                 }
             ],
         )
 
         assert result["total"] == 1
         assert result["imported"] == 1
+=======
+                },
+                {
+                    "posted_at": "2026-01-16T09:00:00Z",
+                    "merchant": "Netflix",
+                    "amount": "-15.49",
+                    "currency": "USD",
+                    "category": "subscriptions",
+                },
+            ],
+        )
+
+        assert result["total"] == 2
+        assert result["imported"] == 2
+>>>>>>> Stashed changes
         assert result["skipped"] == 0
         assert result["errors"] == 0
         assert result["error_details"] == []
 
+<<<<<<< Updated upstream
     async def test_row_stored_in_db(self, idem_pool):
         """Imported row is persisted in facts table with correct fields."""
+=======
+    async def test_imported_row_stored_in_facts(self, idem_pool):
+        """Imported transaction is queryable from the facts table."""
+>>>>>>> Stashed changes
         from butlers.tools.finance.facts import bulk_record_transactions
 
         await bulk_record_transactions(
             pool=idem_pool,
             transactions=[
                 {
+<<<<<<< Updated upstream
                     "posted_at": "2025-07-01T12:00:00Z",
                     "merchant": "Netflix",
                     "amount": "-15.49",
                     "currency": "USD",
                     "category": "subscriptions",
+=======
+                    "posted_at": "2026-02-10T15:30:00Z",
+                    "merchant": "Whole Foods Market",
+                    "amount": "-87.50",
+                    "currency": "USD",
+                    "category": "groceries",
+>>>>>>> Stashed changes
                 }
             ],
         )
 
+<<<<<<< Updated upstream
         row = await idem_pool.fetchrow(
             "SELECT * FROM facts WHERE predicate = 'transaction_debit' LIMIT 1"
         )
@@ -2200,11 +2265,55 @@ class TestBulkRecordTransactions:
 
     async def test_invalid_date_counted_as_error(self, idem_pool):
         """Row with invalid posted_at is counted as error, reason='invalid_date'."""
+=======
+        count = await idem_pool.fetchval(
+            "SELECT COUNT(*) FROM facts WHERE metadata->>'merchant' = 'Whole Foods Market'"
+        )
+        assert count == 1
+
+    # ------------------------------------------------------------------
+    # Idempotency: same batch twice → second batch all skipped
+    # ------------------------------------------------------------------
+
+    async def test_second_identical_batch_all_skipped(self, idem_pool):
+        """Submitting the same batch twice skips all rows on the second pass."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        txn = {
+            "posted_at": "2026-01-20T12:00:00Z",
+            "merchant": "Starbucks",
+            "amount": "-6.75",
+            "currency": "USD",
+            "category": "dining",
+        }
+
+        first = await bulk_record_transactions(pool=idem_pool, transactions=[txn])
+        assert first["imported"] == 1
+
+        second = await bulk_record_transactions(pool=idem_pool, transactions=[txn])
+        assert second["imported"] == 0
+        assert second["skipped"] == 1
+        assert second["error_details"][0]["reason"] == "duplicate"
+
+        # Exactly one row in the facts table
+        count = await idem_pool.fetchval(
+            "SELECT COUNT(*) FROM facts WHERE metadata->>'merchant' = 'Starbucks'"
+        )
+        assert count == 1
+
+    # ------------------------------------------------------------------
+    # Per-row error handling: mix of valid/invalid rows
+    # ------------------------------------------------------------------
+
+    async def test_per_row_errors_do_not_abort_batch(self, idem_pool):
+        """Invalid rows produce per-row errors; valid rows in the same batch still import."""
+>>>>>>> Stashed changes
         from butlers.tools.finance.facts import bulk_record_transactions
 
         result = await bulk_record_transactions(
             pool=idem_pool,
             transactions=[
+<<<<<<< Updated upstream
                 {
                     "posted_at": "not-a-date",
                     "merchant": "Amazon",
@@ -2241,22 +2350,66 @@ class TestBulkRecordTransactions:
 
     async def test_missing_merchant_counted_as_error(self, idem_pool):
         """Row with empty merchant is counted as error, reason='missing_merchant'."""
+=======
+                {  # row 0: invalid date
+                    "posted_at": "not-a-valid-date",
+                    "merchant": "Amazon",
+                    "amount": "-29.99",
+                    "currency": "USD",
+                    "category": "shopping",
+                },
+                {  # row 1: valid
+                    "posted_at": "2026-01-22T10:00:00Z",
+                    "merchant": "Lyft",
+                    "amount": "-12.00",
+                    "currency": "USD",
+                    "category": "transport",
+                },
+                {  # row 2: missing merchant
+                    "posted_at": "2026-01-22T11:00:00Z",
+                    "merchant": "",
+                    "amount": "-5.00",
+                    "currency": "USD",
+                    "category": "dining",
+                },
+            ],
+        )
+
+        assert result["total"] == 3
+        assert result["imported"] == 1
+        assert result["errors"] == 2
+        reasons = {d["reason"] for d in result["error_details"]}
+        assert "invalid_date" in reasons
+        assert "missing_merchant" in reasons
+
+    async def test_invalid_amount_produces_per_row_error(self, idem_pool):
+        """Non-numeric amount is reported as per-row error."""
+>>>>>>> Stashed changes
         from butlers.tools.finance.facts import bulk_record_transactions
 
         result = await bulk_record_transactions(
             pool=idem_pool,
             transactions=[
                 {
+<<<<<<< Updated upstream
                     "posted_at": "2025-06-15T00:00:00Z",
                     "merchant": "",
                     "amount": "-10.00",
                     "currency": "USD",
                     "category": "other",
+=======
+                    "posted_at": "2026-01-23T08:00:00Z",
+                    "merchant": "Uber",
+                    "amount": "not-a-number",
+                    "currency": "USD",
+                    "category": "transport",
+>>>>>>> Stashed changes
                 }
             ],
         )
 
         assert result["errors"] == 1
+<<<<<<< Updated upstream
         assert result["error_details"][0]["reason"] == "missing_merchant"
 
     async def test_batch_limit_exceeded_raises_value_error(self, idem_pool):
@@ -2311,10 +2464,45 @@ class TestBulkRecordTransactions:
         """Top-level account_id is stored in fact metadata when not overridden per row."""
         from butlers.tools.finance.facts import bulk_record_transactions
 
+=======
+        assert result["error_details"][0]["reason"] == "invalid_amount"
+
+    # ------------------------------------------------------------------
+    # Batch size limit
+    # ------------------------------------------------------------------
+
+    async def test_batch_over_500_raises(self, idem_pool):
+        """Batch with more than 500 rows raises ValueError."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        txn = {
+            "posted_at": "2026-01-15T00:00:00Z",
+            "merchant": "Test",
+            "amount": "-1.00",
+            "currency": "USD",
+            "category": "other",
+        }
+        with pytest.raises(ValueError, match="Batch too large"):
+            await bulk_record_transactions(
+                pool=idem_pool,
+                transactions=[txn] * 501,
+            )
+
+    # ------------------------------------------------------------------
+    # account_id inheritance
+    # ------------------------------------------------------------------
+
+    async def test_top_level_account_id_inherited(self, idem_pool):
+        """Top-level account_id is stored in fact metadata when row omits it."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        acct_id = "550e8400-e29b-41d4-a716-446655440000"
+>>>>>>> Stashed changes
         await bulk_record_transactions(
             pool=idem_pool,
             transactions=[
                 {
+<<<<<<< Updated upstream
                     "posted_at": "2025-08-01T00:00:00Z",
                     "merchant": "Shell Gas",
                     "amount": "-45.00",
@@ -2333,10 +2521,38 @@ class TestBulkRecordTransactions:
         """Per-row account_id takes precedence over top-level account_id."""
         from butlers.tools.finance.facts import bulk_record_transactions
 
+=======
+                    "posted_at": "2026-01-25T08:00:00Z",
+                    "merchant": "Chase Fee",
+                    "amount": "-15.00",
+                    "currency": "USD",
+                    "category": "fees",
+                    # No per-row account_id — should inherit top-level
+                }
+            ],
+            account_id=acct_id,
+        )
+
+        meta = await idem_pool.fetchval(
+            "SELECT metadata FROM facts WHERE metadata->>'merchant' = 'Chase Fee'"
+        )
+        import json as _json
+
+        stored = _json.loads(meta)
+        assert stored["account_id"] == acct_id
+
+    async def test_per_row_account_id_overrides_top_level(self, idem_pool):
+        """Per-row account_id overrides the top-level account_id."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        top_acct = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        row_acct = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+>>>>>>> Stashed changes
         await bulk_record_transactions(
             pool=idem_pool,
             transactions=[
                 {
+<<<<<<< Updated upstream
                     "posted_at": "2025-08-01T00:00:00Z",
                     "merchant": "Costco",
                     "amount": "-123.45",
@@ -2354,6 +2570,29 @@ class TestBulkRecordTransactions:
 
     # ------------------------------------------------------------------
     # source metadata
+=======
+                    "posted_at": "2026-01-26T09:00:00Z",
+                    "merchant": "Per-row Account Test",
+                    "amount": "-20.00",
+                    "currency": "USD",
+                    "category": "other",
+                    "account_id": row_acct,
+                }
+            ],
+            account_id=top_acct,
+        )
+
+        meta_raw = await idem_pool.fetchval(
+            "SELECT metadata FROM facts WHERE metadata->>'merchant' = 'Per-row Account Test'"
+        )
+        import json as _json
+
+        meta = _json.loads(meta_raw)
+        assert meta["account_id"] == row_acct  # per-row wins
+
+    # ------------------------------------------------------------------
+    # Source metadata storage
+>>>>>>> Stashed changes
     # ------------------------------------------------------------------
 
     async def test_source_stored_as_import_source(self, idem_pool):
@@ -2364,6 +2603,7 @@ class TestBulkRecordTransactions:
             pool=idem_pool,
             transactions=[
                 {
+<<<<<<< Updated upstream
                     "posted_at": "2025-09-01T00:00:00Z",
                     "merchant": "IKEA",
                     "amount": "-299.00",
@@ -2395,17 +2635,63 @@ class TestBulkRecordTransactions:
         ):
             from butlers.tools.finance.facts import bulk_record_transactions
 
+=======
+                    "posted_at": "2026-01-27T07:00:00Z",
+                    "merchant": "Source Test",
+                    "amount": "-10.00",
+                    "currency": "USD",
+                    "category": "other",
+                }
+            ],
+            source="csv_import",
+        )
+
+        meta_raw = await idem_pool.fetchval(
+            "SELECT metadata FROM facts WHERE metadata->>'merchant' = 'Source Test'"
+        )
+        import json as _json
+
+        meta = _json.loads(meta_raw)
+        assert meta["import_source"] == "csv_import"
+
+    # ------------------------------------------------------------------
+    # Embedding bypass: NULL embedding, tsvector computed
+    # ------------------------------------------------------------------
+
+    async def test_embedding_is_null_no_embed_calls(self, idem_pool):
+        """Bulk ingestion stores NULL embedding — embedding engine is never called."""
+        from unittest.mock import patch as _patch
+
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        mock_engine = MagicMock()
+        mock_engine.embed.return_value = [0.1] * 384
+
+        with _patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=mock_engine,
+        ):
+>>>>>>> Stashed changes
             await bulk_record_transactions(
                 pool=idem_pool,
                 transactions=[
                     {
+<<<<<<< Updated upstream
                         "posted_at": "2025-06-15T00:00:00Z",
                         "merchant": "Embed Test",
                         "amount": "-1.00",
+=======
+                        "posted_at": "2026-01-28T08:00:00Z",
+                        "merchant": "Embed Bypass Test",
+                        "amount": "-5.00",
+                        "currency": "USD",
+                        "category": "other",
+>>>>>>> Stashed changes
                     }
                 ],
             )
 
+<<<<<<< Updated upstream
         mock_engine.embed.assert_not_called()
 
     async def test_embedding_column_is_null(self, idem_pool):
@@ -2430,20 +2716,43 @@ class TestBulkRecordTransactions:
 
     async def test_tsvector_computed(self, idem_pool):
         """search_vector tsvector is populated (not NULL) for imported rows."""
+=======
+        # embed() must NOT have been called
+        mock_engine.embed.assert_not_called()
+
+        # Verify NULL embedding in DB
+        row = await idem_pool.fetchrow(
+            "SELECT embedding FROM facts WHERE metadata->>'merchant' = 'Embed Bypass Test'"
+        )
+        assert row is not None
+        assert row["embedding"] is None
+
+    async def test_search_vector_computed(self, idem_pool):
+        """Bulk ingestion computes a tsvector for full-text search."""
+>>>>>>> Stashed changes
         from butlers.tools.finance.facts import bulk_record_transactions
 
         await bulk_record_transactions(
             pool=idem_pool,
             transactions=[
                 {
+<<<<<<< Updated upstream
                     "posted_at": "2025-06-15T00:00:00Z",
                     "merchant": "Tsvector Market",
                     "amount": "-3.50",
+=======
+                    "posted_at": "2026-01-29T09:00:00Z",
+                    "merchant": "Tsvector Test Merchant",
+                    "amount": "-3.00",
+                    "currency": "USD",
+                    "category": "other",
+>>>>>>> Stashed changes
                 }
             ],
         )
 
         row = await idem_pool.fetchrow(
+<<<<<<< Updated upstream
             "SELECT search_vector FROM facts WHERE predicate = 'transaction_debit' LIMIT 1"
         )
         assert row["search_vector"] is not None
@@ -2580,3 +2889,194 @@ class TestCompositeDedupKeyCanonicalisation:
         dt = datetime(2025, 6, 15, tzinfo=UTC)
         key = self._key(dt, "-55.00")
         assert re.fullmatch(r"[0-9a-f]{64}", key)
+=======
+            "SELECT search_vector FROM facts WHERE metadata->>'merchant' = 'Tsvector Test Merchant'"
+        )
+        assert row is not None
+        # search_vector is a tsvector; the row should exist and have a non-empty value
+        # (asyncpg returns it as a string representation)
+        assert row["search_vector"] is not None
+
+    # ------------------------------------------------------------------
+    # Composite dedup key canonicalization
+    # ------------------------------------------------------------------
+
+    async def test_utc_normalization_deduplicates_timezone_variants(self, idem_pool):
+        """Two rows with the same UTC moment but different tz offsets are deduplicated."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        # Two ISO timestamps that represent the same UTC instant
+        utc_ts = "2026-02-01T12:00:00Z"
+        offset_ts = "2026-02-01T07:00:00-05:00"  # -05:00 → same UTC
+
+        first = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": utc_ts,
+                    "merchant": "Dedup TZ Test",
+                    "amount": "-100.00",
+                    "currency": "USD",
+                    "category": "test",
+                }
+            ],
+        )
+        assert first["imported"] == 1
+
+        second = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": offset_ts,  # Same moment, different tz notation
+                    "merchant": "Dedup TZ Test",
+                    "amount": "-100.00",
+                    "currency": "USD",
+                    "category": "test",
+                }
+            ],
+        )
+        assert second["skipped"] == 1
+
+    async def test_decimal_quantization_deduplicates_amount_variants(self, idem_pool):
+        """Amounts that quantize to the same 0.01 value are treated as identical."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        first = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2026-02-05T10:00:00Z",
+                    "merchant": "Decimal Test",
+                    "amount": "-47.3",  # 47.3 → quantized to 47.30
+                    "currency": "USD",
+                    "category": "test",
+                }
+            ],
+        )
+        assert first["imported"] == 1
+
+        second = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2026-02-05T10:00:00Z",
+                    "merchant": "Decimal Test",
+                    "amount": "-47.30",  # 47.30 → same after quantization
+                    "currency": "USD",
+                    "category": "test",
+                }
+            ],
+        )
+        assert second["skipped"] == 1
+
+    async def test_account_id_lowercasing_deduplicates_uuid_variants(self, idem_pool):
+        """Same UUID account_id with different casing is treated as the same in dedup key."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        uuid_upper = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        uuid_lower = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+        first = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2026-02-08T10:00:00Z",
+                    "merchant": "UUID Case Test",
+                    "amount": "-50.00",
+                    "currency": "USD",
+                    "category": "test",
+                    "account_id": uuid_upper,
+                }
+            ],
+        )
+        assert first["imported"] == 1
+
+        second = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2026-02-08T10:00:00Z",
+                    "merchant": "UUID Case Test",
+                    "amount": "-50.00",
+                    "currency": "USD",
+                    "category": "test",
+                    "account_id": uuid_lower,  # Same UUID, lowercase
+                }
+            ],
+        )
+        assert second["skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Pure-unit tests: _compute_composite_dedup_key canonicalization
+# ---------------------------------------------------------------------------
+
+
+class TestCompositeDeudupKeyCanonicalisation:
+    """Unit tests for _compute_composite_dedup_key — pure logic, no DB."""
+
+    def _call(self, **kwargs):
+        from butlers.tools.finance.facts import _compute_composite_dedup_key
+
+        return _compute_composite_dedup_key(**kwargs)
+
+    def test_utc_naive_datetime_treated_as_utc(self):
+        """Naive datetime is treated as UTC (not re-interpreted as local)."""
+        naive = datetime(2026, 1, 15, 10, 0, 0)
+        aware_utc = datetime(2026, 1, 15, 10, 0, 0, tzinfo=UTC)
+        k1 = self._call(posted_at=naive, amount="-50.00", merchant="Test", account_id=None)
+        k2 = self._call(posted_at=aware_utc, amount="-50.00", merchant="Test", account_id=None)
+        assert k1 == k2
+
+    def test_different_timezone_same_moment_same_key(self):
+        """Two datetimes at the same UTC instant produce the same key."""
+        from datetime import timezone
+
+        utc_dt = datetime(2026, 1, 20, 12, 0, 0, tzinfo=UTC)
+        minus5 = datetime(2026, 1, 20, 7, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+        k1 = self._call(posted_at=utc_dt, amount="-100.00", merchant="M", account_id=None)
+        k2 = self._call(posted_at=minus5, amount="-100.00", merchant="M", account_id=None)
+        assert k1 == k2
+
+    def test_amount_quantized_to_cents(self):
+        """Amount variants that quantize identically produce the same key."""
+        posted = datetime(2026, 1, 15, tzinfo=UTC)
+        k1 = self._call(posted_at=posted, amount="-47.3", merchant="M", account_id=None)
+        k2 = self._call(posted_at=posted, amount="-47.30", merchant="M", account_id=None)
+        assert k1 == k2
+
+    def test_account_id_lowercased(self):
+        """account_id casing is irrelevant — both produce the same key."""
+        posted = datetime(2026, 2, 1, tzinfo=UTC)
+        upper = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        lower = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        k1 = self._call(posted_at=posted, amount="-50.00", merchant="M", account_id=upper)
+        k2 = self._call(posted_at=posted, amount="-50.00", merchant="M", account_id=lower)
+        assert k1 == k2
+
+    def test_none_account_id_same_as_empty_string(self):
+        """None account_id is treated as empty string in the key."""
+        posted = datetime(2026, 2, 2, tzinfo=UTC)
+        k_none = self._call(posted_at=posted, amount="-10.00", merchant="M", account_id=None)
+        k_empty = self._call(posted_at=posted, amount="-10.00", merchant="M", account_id="")
+        assert k_none == k_empty
+
+    def test_different_amounts_produce_different_keys(self):
+        posted = datetime(2026, 2, 3, tzinfo=UTC)
+        k1 = self._call(posted_at=posted, amount="-10.00", merchant="M", account_id=None)
+        k2 = self._call(posted_at=posted, amount="-10.01", merchant="M", account_id=None)
+        assert k1 != k2
+
+    def test_different_merchants_produce_different_keys(self):
+        posted = datetime(2026, 2, 4, tzinfo=UTC)
+        k1 = self._call(posted_at=posted, amount="-10.00", merchant="Alpha", account_id=None)
+        k2 = self._call(posted_at=posted, amount="-10.00", merchant="Beta", account_id=None)
+        assert k1 != k2
+
+    def test_key_is_64_char_hex(self):
+        """Key is a 64-character SHA-256 hex digest."""
+        posted = datetime(2026, 2, 5, tzinfo=UTC)
+        key = self._call(posted_at=posted, amount="-1.00", merchant="X", account_id=None)
+        assert len(key) == 64
+        assert all(c in "0123456789abcdef" for c in key)
+>>>>>>> Stashed changes
