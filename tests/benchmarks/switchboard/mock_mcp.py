@@ -39,7 +39,7 @@ class MockMCPServer:
         @self._mcp.tool()
         def route_to_butler(
             butler: str,
-            prompt: str,
+            prompt: str = "",
             context: str | None = None,
             complexity: str | None = None,
         ) -> dict:
@@ -61,7 +61,8 @@ class MockMCPServer:
                 {
                     "tool": "route_to_butler",
                     "butler": butler,
-                    "prompt": prompt,
+                    "prompt": prompt or None,
+                    "prompt_missing": not prompt,
                     "complexity": complexity,
                 }
             )

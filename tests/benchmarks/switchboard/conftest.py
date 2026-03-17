@@ -282,6 +282,18 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         if lat and lat.get("throughput"):
             lines.append(f"  {lat['throughput']:.1f} req/s")
 
+    sc = report.get("schema_compliance")
+    if sc:
+        lines.append("")
+        lines.append("  SCHEMA COMPLIANCE")
+        lines.append(f"  {'-' * 40}")
+        lines.append(f"  {'Compliance':<16s} {sc['value']:>7.1%}")
+        lines.append(
+            f"  {'prompt missing':<16s} {sc['prompt_missing']:>3d} / "
+            f"{sc['total_route_calls']} route_to_butler calls"
+        )
+        lines.append(f"  {'-' * 40}")
+
     checks = []
     for key in ["accuracy", "latency", "cold_start"]:
         entry = report.get(key)

@@ -77,6 +77,28 @@ def test_routing_accuracy(
     sw_report["accuracy"] = {"value": accuracy, "passed": accuracy >= 0.70}
     record_property("accuracy", f"{accuracy:.4f}")
 
+    # Schema compliance: count route_to_butler calls where prompt was missing
+    prompt_missing = 0
+    for r in routing_results:
+        for cap in r.get("captured_calls", []):
+            if cap.get("tool") == "route_to_butler" and cap.get("prompt_missing"):
+                prompt_missing += 1
+    total_route_calls = sum(
+        1
+        for r in routing_results
+        for cap in r.get("captured_calls", [])
+        if cap.get("tool") == "route_to_butler"
+    )
+    if total_route_calls:
+        schema_compliance = 1 - (prompt_missing / total_route_calls)
+        sw_report["schema_compliance"] = {
+            "value": schema_compliance,
+            "prompt_missing": prompt_missing,
+            "total_route_calls": total_route_calls,
+        }
+        record_property("schema_compliance", f"{schema_compliance:.4f}")
+        record_property("prompt_missing_count", str(prompt_missing))
+
     assert len(errors) <= len(routing_results) * 0.05, (
         f"{len(errors)}/{len(routing_results)} requests failed — check opencode/model availability"
     )
