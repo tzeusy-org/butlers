@@ -1161,3 +1161,161 @@ async def dispatch_healing(
             _span.end()
             if _span_token is not None:
                 otel_context.detach(_span_token)
+
+
+# ---------------------------------------------------------------------------
+# Re-dispatch helper for dispatch_pending rows
+# ---------------------------------------------------------------------------
+
+
+async def redispatch_pending_attempt(
+    pool: asyncpg.Pool,
+    attempt_row: dict,
+    config: HealingConfig,
+    repo_root: Path,
+    spawner,  # Spawner instance — typed as Any to avoid circular import
+    task_registry: list[asyncio.Task] | None = None,
+    gh_token: str | None = None,
+) -> DispatchResult:
+    """Re-dispatch a ``dispatch_pending`` healing attempt.
+
+    Called by ``SelfHealingModule.on_startup`` for rows that were created by
+    the retry endpoint while the daemon was down.  Bypasses the normal 10-gate
+    sequence (novelty, cooldown, concurrency, circuit-breaker, etc.) since the
+    row already exists and the operator intentionally requested a retry.
+
+    The row is transitioned from ``dispatch_pending`` → ``investigating``
+    (optimistic, via ``update_attempt_status``), then a worktree is created and
+    the healing agent is spawned as a background task.  If the status transition
+    fails (e.g. another process raced us), the function returns immediately with
+    ``reason="already_investigating"``.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the shared schema.
+    attempt_row:
+        A ``HealingAttemptRow`` dict from ``shared.healing_attempts`` with
+        ``status == 'dispatch_pending'``.
+    config:
+        ``HealingConfig`` for the butler.
+    repo_root:
+        Absolute path to the repository root (for worktree creation).
+    spawner:
+        The butler's ``Spawner`` instance.
+    task_registry:
+        Optional list to which the watchdog task will be appended.
+    gh_token:
+        GitHub token for ``gh pr create``.  Falls back to ``GH_TOKEN`` env var.
+
+    Returns
+    -------
+    DispatchResult
+    """
+    attempt_id: uuid.UUID = attempt_row["id"]
+    fingerprint: str = attempt_row["fingerprint"]
+    butler_name: str = attempt_row["butler_name"]
+
+    fp = FingerprintResult(
+        fingerprint=fingerprint,
+        severity=attempt_row["severity"],
+        exception_type=attempt_row["exception_type"],
+        call_site=attempt_row["call_site"],
+        sanitized_message=attempt_row.get("sanitized_msg") or "",
+    )
+
+    # Transition dispatch_pending → investigating (optimistic).
+    # If the transition fails (already transitioned by a race), bail out.
+    transitioned = await update_attempt_status(pool, attempt_id, "investigating")
+    if not transitioned:
+        logger.warning(
+            "redispatch_pending_attempt: status transition failed for attempt=%s "
+            "(may have already been re-dispatched or failed)",
+            attempt_id,
+        )
+        return DispatchResult(
+            accepted=False,
+            fingerprint=fingerprint,
+            reason="already_investigating",
+        )
+
+    # Create a worktree for the healing agent.
+    try:
+        worktree_path, branch_name = await create_healing_worktree(
+            repo_root, butler_name, fingerprint
+        )
+    except WorktreeCreationError as wt_exc:
+        logger.warning(
+            "redispatch_pending_attempt: worktree creation failed (attempt=%s): %s",
+            attempt_id,
+            wt_exc,
+        )
+        await update_attempt_status(
+            pool,
+            attempt_id,
+            "failed",
+            error_detail=(
+                f"Worktree creation failed on re-dispatch: {wt_exc.git_output or str(wt_exc)}"
+            ),
+        )
+        return DispatchResult(
+            accepted=False,
+            fingerprint=fingerprint,
+            reason="worktree_creation_failed",
+        )
+
+    # Store the worktree path and branch on the attempt row.
+    await update_attempt_status(
+        pool,
+        attempt_id,
+        "investigating",
+        branch_name=branch_name,
+        worktree_path=str(worktree_path),
+    )
+
+    logger.info(
+        "redispatch_pending_attempt: re-dispatching attempt=%s fingerprint=%s branch=%s",
+        attempt_id,
+        fingerprint[:12],
+        branch_name,
+    )
+
+    healing_task = asyncio.create_task(
+        _run_healing_session(
+            pool=pool,
+            repo_root=repo_root,
+            attempt_id=attempt_id,
+            branch_name=branch_name,
+            worktree_path=worktree_path,
+            fp=fp,
+            butler_name=butler_name,
+            trigger_source="retry",
+            agent_context=None,
+            config=config,
+            spawner=spawner,
+            gh_token=gh_token,
+        ),
+        name=f"healing-{attempt_id}",
+    )
+
+    watchdog_task = asyncio.create_task(
+        _timeout_watchdog(
+            pool=pool,
+            attempt_id=attempt_id,
+            repo_root=repo_root,
+            branch_name=branch_name,
+            healing_task=healing_task,
+            timeout_minutes=config.timeout_minutes,
+        ),
+        name=f"healing-watchdog-{attempt_id}",
+    )
+
+    if task_registry is not None:
+        task_registry.append(watchdog_task)
+
+    return DispatchResult(
+        accepted=True,
+        fingerprint=fingerprint,
+        reason="dispatched",
+        attempt_id=attempt_id,
+    )

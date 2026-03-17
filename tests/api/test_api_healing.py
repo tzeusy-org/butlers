@@ -211,6 +211,7 @@ class TestListHealingAttempts:
 
     async def test_all_valid_statuses_accepted(self) -> None:
         valid_statuses = [
+            "dispatch_pending",
             "investigating",
             "pr_open",
             "pr_merged",
@@ -492,8 +493,8 @@ class TestRetryHealingAttempt:
         assert call["call_site"] == "src/butlers/foo.py:bar"
         assert call["sanitized_msg"] == "Something broke"
 
-    async def test_no_dispatch_when_hook_not_configured(self) -> None:
-        """When no dispatch callable is wired, the endpoint still returns 201."""
+    async def test_no_dispatch_creates_dispatch_pending_row(self) -> None:
+        """When no dispatch callable is wired, the endpoint creates a dispatch_pending row."""
         original_id = uuid.uuid4()
         new_id = uuid.uuid4()
         fingerprint = "e" * 64
@@ -503,10 +504,11 @@ class TestRetryHealingAttempt:
             fingerprint=fingerprint,
             status="failed",
         )
+        # Simulate the INSERT returning dispatch_pending (the new initial status)
         new_row = {
             "id": new_id,
             "fingerprint": fingerprint,
-            "status": "investigating",
+            "status": "dispatch_pending",
         }
 
         mock_pool = AsyncMock()
@@ -530,11 +532,83 @@ class TestRetryHealingAttempt:
         ) as client:
             response = await client.post(f"/api/healing/attempts/{original_id}/retry")
 
-        # Row is created successfully even without dispatch
+        # Row is created successfully with dispatch_pending status
         assert response.status_code == 201
         data = response.json()
         assert data["attempt_id"] == str(new_id)
+        assert data["status"] == "dispatch_pending"
+
+        # Verify the INSERT used 'dispatch_pending' as the status
+        insert_call = mock_pool.fetchrow.call_args_list[1]
+        insert_args = insert_call[0][1:]
+        assert "dispatch_pending" in insert_args
+
+    async def test_dispatch_fn_creates_investigating_row(self) -> None:
+        """When a dispatch callable IS wired, the row is created with investigating status."""
+        original_id = uuid.uuid4()
+        new_id = uuid.uuid4()
+        fingerprint = "e2" * 32
+
+        original_row = _make_attempt_row(
+            attempt_id=original_id,
+            fingerprint=fingerprint,
+            status="failed",
+        )
+        new_row = {
+            "id": new_id,
+            "fingerprint": fingerprint,
+            "status": "investigating",
+        }
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[
+                _mock_record(original_row),
+                _mock_record(new_row),
+            ]
+        )
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        async def _noop_dispatch(**kwargs: Any) -> None:
+            pass
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[_get_dispatch_fn] = lambda: _noop_dispatch
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/healing/attempts/{original_id}/retry")
+
+        assert response.status_code == 201
+        data = response.json()
         assert data["status"] == "investigating"
+
+        # Verify the INSERT used 'investigating' (not 'dispatch_pending')
+        insert_call = mock_pool.fetchrow.call_args_list[1]
+        insert_args = insert_call[0][1:]
+        assert "investigating" in insert_args
+        assert "dispatch_pending" not in insert_args
+
+    async def test_retry_rejects_dispatch_pending_status(self) -> None:
+        """A dispatch_pending row is non-terminal — retry should return 409."""
+        original_id = uuid.uuid4()
+        original_row = _make_attempt_row(
+            attempt_id=original_id,
+            status="dispatch_pending",
+        )
+        app, _ = _build_app(fetchrow_result=original_row)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/healing/attempts/{original_id}/retry")
+
+        assert response.status_code == 409
+        assert "dispatch_pending" in response.json()["detail"]
 
     async def test_dispatch_receives_correct_metadata_from_original_attempt(self) -> None:
         """Dispatch callable receives all metadata fields from the original attempt row."""

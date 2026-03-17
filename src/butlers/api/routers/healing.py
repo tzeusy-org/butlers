@@ -16,16 +16,22 @@ Retry rejection (HTTP 409) is enforced for non-terminal attempts.
 
 Dispatch hook
 -------------
-The retry endpoint creates a new ``investigating`` row and then attempts to
-dispatch the healing agent via a pluggable ``_get_dispatch_fn`` dependency.
-This hook is ``None`` by default (dashboard API is a separate process from the
-butler daemon and has no spawner), but can be overridden via
+The retry endpoint creates a new row and then attempts to dispatch the healing
+agent via a pluggable ``_get_dispatch_fn`` dependency.  This hook is ``None``
+by default (dashboard API is a separate process from the butler daemon and has
+no spawner), but can be overridden via
 ``app.dependency_overrides[_get_dispatch_fn]`` when the dispatch pipeline is
 available in-process (e.g. embedded use, tests).
 
-When ``_get_dispatch_fn`` returns ``None`` the row is created and dispatch is
-deferred: the butler daemon will pick up the ``investigating`` row on its next
-startup (``SelfHealingModule.on_startup`` → ``recover_stale_attempts``).
+When ``_get_dispatch_fn`` returns a callable the row is created with status
+``investigating`` and the dispatch callable is scheduled as a background task.
+
+When ``_get_dispatch_fn`` returns ``None`` the row is created with status
+``dispatch_pending`` (not ``investigating``).  This clearly distinguishes
+deferred retry-created rows from crashed-mid-investigation rows.  The butler
+daemon picks up ``dispatch_pending`` rows on its next startup via
+``recover_stale_attempts`` and re-dispatches the agent (transitioning the row
+to ``investigating`` before spawning).
 
 Callers that override ``_get_dispatch_fn`` must return an async callable
 conforming to ``DispatchCallable`` (see class definition below).
@@ -353,8 +359,14 @@ async def retry_healing_attempt(
     call_site: str = original["call_site"]
     sanitized_msg: str | None = original.get("sanitized_msg")
 
-    # Insert a fresh investigating row bypassing the partial unique index
-    # by using a direct INSERT (not create_or_join_attempt which is novelty-aware).
+    # Choose the initial status based on whether an in-process dispatch callable
+    # is available.  When dispatch is deferred (no hook), use 'dispatch_pending'
+    # so the daemon can distinguish these rows from crash-orphaned 'investigating'
+    # rows on restart.
+    initial_status = "investigating" if dispatch_fn is not None else "dispatch_pending"
+
+    # Insert a fresh row bypassing the partial unique index by using a direct INSERT
+    # (not create_or_join_attempt which is novelty-aware).
     # The retry semantics intentionally skip the cooldown gate — it's admin-initiated.
     try:
         new_row = await pool.fetchrow(
@@ -363,7 +375,7 @@ async def retry_healing_attempt(
                 fingerprint, butler_name, status, severity,
                 exception_type, call_site, sanitized_msg, session_ids
             )
-            VALUES ($1, $2, 'investigating', $3, $4, $5, $6, '{}')
+            VALUES ($1, $2, $7, $3, $4, $5, $6, '{}')
             RETURNING id, fingerprint, status
             """,
             fingerprint,
@@ -372,6 +384,7 @@ async def retry_healing_attempt(
             exception_type,
             call_site,
             sanitized_msg,
+            initial_status,
         )
     except Exception as exc:
         logger.error("Failed to create retry attempt for %s: %s", attempt_id, exc)
@@ -383,10 +396,11 @@ async def retry_healing_attempt(
     new_attempt_id: uuid.UUID = new_row["id"]
 
     logger.info(
-        "Retry attempt created: original=%s new=%s fingerprint=%s",
+        "Retry attempt created: original=%s new=%s fingerprint=%s status=%s",
         attempt_id,
         new_attempt_id,
         fingerprint[:12],
+        initial_status,
     )
 
     if dispatch_fn is not None:
@@ -408,11 +422,13 @@ async def retry_healing_attempt(
         )
     else:
         # No in-process dispatch available (dashboard API is a separate process
-        # from the butler daemon).  The row is created; the daemon will dispatch
-        # on next startup via recover_stale_attempts.
+        # from the butler daemon).  The row is created with 'dispatch_pending'
+        # status; the daemon will re-dispatch on next startup via
+        # recover_stale_attempts (dispatch_pending rows → re-dispatch, not failed).
         logger.warning(
             "No dispatch function available for retry attempt=%s; "
-            "dispatch deferred to daemon restart (recover_stale_attempts). "
+            "row created with status='dispatch_pending'. "
+            "The butler daemon will re-dispatch on next startup via recover_stale_attempts. "
             "Override _get_dispatch_fn dependency to enable immediate dispatch.",
             new_attempt_id,
         )

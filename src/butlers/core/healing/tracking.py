@@ -7,7 +7,7 @@ This module provides the data backbone for the self-healing dispatcher:
 - Fingerprint collision detection for observability
 - Gate query functions (active attempt, cooldown window, concurrency cap,
   circuit breaker, dashboard listing)
-- Daemon restart recovery for stale investigating rows
+- Daemon restart recovery for stale investigating / dispatch_pending rows
 
 All public functions accept an asyncpg Pool so callers can use any pool
 (per-butler pool or shared pool depending on deployment).
@@ -31,6 +31,20 @@ Schema reference (shared.healing_attempts):
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     closed_at       TIMESTAMPTZ
     error_detail    TEXT
+
+Status lifecycle
+----------------
+``dispatch_pending``
+    Created by the retry endpoint when no in-process dispatch hook is
+    configured.  The row exists but no healing agent has been spawned yet.
+    On daemon restart, ``recover_stale_attempts`` picks up these rows and
+    re-dispatches the healing agent (transition → ``investigating``).
+    After 30 minutes without dispatch the row is failed instead.
+
+``investigating``
+    The healing agent is actively running.  Transitions to ``pr_open``
+    (success path) or ``failed`` / ``unfixable`` / ``anonymization_failed``
+    / ``timeout`` (failure paths).
 """
 
 from __future__ import annotations
@@ -50,6 +64,7 @@ logger = logging.getLogger(__name__)
 #: All valid status values for healing_attempts.
 VALID_STATUSES = frozenset(
     {
+        "dispatch_pending",
         "investigating",
         "pr_open",
         "pr_merged",
@@ -67,10 +82,12 @@ TERMINAL_STATUSES = frozenset(
 
 #: Active (non-terminal) statuses — only one row per fingerprint may exist in these states
 #: (enforced by partial unique index on the database).
-ACTIVE_STATUSES = frozenset({"investigating", "pr_open"})
+ACTIVE_STATUSES = frozenset({"dispatch_pending", "investigating", "pr_open"})
 
 #: Valid transitions from each state (target states).
 _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
+    # dispatch_pending → investigating (agent dispatched) or failed (extended timeout)
+    "dispatch_pending": frozenset({"investigating", "failed"}),
     "investigating": frozenset(
         {"pr_open", "failed", "unfixable", "anonymization_failed", "timeout"}
     ),
@@ -395,7 +412,7 @@ async def get_active_attempt(
         SELECT *
         FROM shared.healing_attempts
         WHERE fingerprint = $1
-          AND status IN ('investigating', 'pr_open')
+          AND status IN ('dispatch_pending', 'investigating', 'pr_open')
         LIMIT 1
         """,
         fingerprint,
@@ -596,7 +613,8 @@ async def list_attempts(
 async def recover_stale_attempts(
     pool: asyncpg.Pool,
     timeout_minutes: int = 30,
-) -> int:
+    dispatch_pending_timeout_minutes: int = 30,
+) -> tuple[int, list[dict]]:
     """Recover incomplete healing attempts left behind by a prior daemon crash.
 
     Called once on dispatcher startup, **before** accepting new errors.
@@ -608,6 +626,10 @@ async def recover_stale_attempts(
     2. ``investigating`` rows with ``healing_session_id = NULL`` and
        ``created_at`` older than 5 minutes → transition to ``failed``
        (agent was never spawned before the crash).
+    3. ``dispatch_pending`` rows older than *dispatch_pending_timeout_minutes*
+       → transition to ``failed`` (dispatch never happened after extended wait).
+    4. ``dispatch_pending`` rows newer than *dispatch_pending_timeout_minutes*
+       are returned as a list for the caller to re-dispatch immediately.
 
     Rows updated within the last 5 minutes are left alone — a still-running
     agent may have been in the middle of work before the daemon restarted.
@@ -620,11 +642,19 @@ async def recover_stale_attempts(
         How many minutes of inactivity before an ``investigating`` row is
         considered stale.  Should match the dispatcher's ``[healing]
         timeout_minutes`` config value.
+    dispatch_pending_timeout_minutes:
+        How many minutes before a ``dispatch_pending`` row is given up on
+        (transitioned to ``failed``).  Defaults to 30 minutes, which is
+        longer than the ``investigating`` stale check window to allow the
+        daemon time to re-dispatch on restart.
 
     Returns
     -------
-    int
-        Total number of rows recovered (timed-out + failed).
+    tuple[int, list[dict]]
+        ``(recovered_count, pending_rows)`` where ``recovered_count`` is the
+        total number of rows closed (timed-out + failed), and ``pending_rows``
+        is a list of ``dispatch_pending`` row dicts that should be re-dispatched
+        by the caller.
     """
     # Rule 1: stale rows with a healing_session_id → timeout
     timeout_count: int = await pool.fetchval(
@@ -665,15 +695,54 @@ async def recover_stale_attempts(
         """,
     )
 
-    total = int(timeout_count) + int(failed_count)
+    # Rule 3: dispatch_pending rows past the extended timeout → failed
+    dp_failed_count: int = await pool.fetchval(
+        """
+        WITH recovered AS (
+            UPDATE shared.healing_attempts
+            SET
+                status       = 'failed',
+                updated_at   = now(),
+                closed_at    = now(),
+                error_detail = 'Recovered on daemon restart — dispatch never completed'
+            WHERE status = 'dispatch_pending'
+              AND created_at < now() - ($1 * INTERVAL '1 minute')
+            RETURNING id
+        )
+        SELECT COUNT(*) FROM recovered
+        """,
+        dispatch_pending_timeout_minutes,
+    )
+
+    # Rule 4: dispatch_pending rows within the timeout — return them for re-dispatch
+    pending_rows_raw = await pool.fetch(
+        """
+        SELECT *
+        FROM shared.healing_attempts
+        WHERE status = 'dispatch_pending'
+          AND created_at >= now() - ($1 * INTERVAL '1 minute')
+        ORDER BY created_at ASC
+        """,
+        dispatch_pending_timeout_minutes,
+    )
+    pending_rows = [_decode_row(row) for row in pending_rows_raw]
+
+    total = int(timeout_count) + int(failed_count) + int(dp_failed_count)
     if total > 0:
         logger.info(
-            "recover_stale_attempts: recovered %d rows (%d timeout, %d failed)",
+            "recover_stale_attempts: recovered %d rows "
+            "(%d timeout, %d failed, %d dispatch_pending_failed)",
             total,
             int(timeout_count),
             int(failed_count),
+            int(dp_failed_count),
         )
-    return total
+    if pending_rows:
+        logger.info(
+            "recover_stale_attempts: found %d dispatch_pending rows to re-dispatch",
+            len(pending_rows),
+        )
+    return total, pending_rows
 
 
 # ---------------------------------------------------------------------------
