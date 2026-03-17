@@ -657,6 +657,40 @@ class TestGmailConnectorRuntime:
         assert "<" not in body
         assert ">" not in body
 
+    def test_extract_body_html_with_void_elements_in_head(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Void elements (<meta>, <link>) in <head> must not poison skip_depth.
+
+        Regression: <meta> tags have no closing tag, so they incremented
+        _skip_depth without ever decrementing, causing all <body> content
+        to be skipped and producing '(no body)' for emails with <meta> in <head>.
+        """
+        import base64
+
+        html_content = (
+            b"<html><head>"
+            b'<meta http-equiv="Content-Type" content="text/html; charset=utf-8">'
+            b'<meta name="viewport" content="width=device-width">'
+            b'<link rel="stylesheet" href="styles.css">'
+            b"<title>OneMap</title>"
+            b"</head><body>"
+            b"<style>#outlook a { padding: 0; }</style>"
+            b"<p>Good day! You have requested a password change.</p>"
+            b"<p>Confirmation Code: <b>ABC123</b></p>"
+            b"</body></html>"
+        )
+        payload = {
+            "mimeType": "text/html",
+            "body": {"data": base64.urlsafe_b64encode(html_content).decode()},
+        }
+
+        body = gmail_runtime._extract_body_from_payload(payload)
+
+        assert "Good day" in body
+        assert "ABC123" in body
+        assert body != "(no body)"
+
     def test_extract_body_from_payload_prefers_plain_over_html(
         self, gmail_runtime: GmailConnectorRuntime
     ) -> None:

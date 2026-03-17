@@ -2381,7 +2381,7 @@ class GmailConnectorRuntime:
         class _TextExtractor(HTMLParser):
             """Collect visible text, skipping style/script content."""
 
-            _SKIP_TAGS = frozenset({"style", "script", "head", "meta", "link"})
+            _SKIP_TAGS = frozenset({"style", "script", "head"})
 
             def __init__(self) -> None:
                 super().__init__(convert_charrefs=True)
