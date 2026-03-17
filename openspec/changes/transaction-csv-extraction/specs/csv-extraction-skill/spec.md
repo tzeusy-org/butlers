@@ -33,11 +33,22 @@ The skill MUST instruct the LLM to follow a write-script-then-execute workflow. 
   - Uses only Python stdlib modules (`csv`, `json`, `urllib.request`, `datetime`, `hashlib`, `sys`)
   - Reads the full CSV file from disk
   - Maps each row to the normalized transaction schema (posted_at, merchant, amount, currency, category, description)
+  - Normalizes amounts to the canonical sign convention: negative = debit, positive = credit (regardless of how the source CSV represents them)
   - POSTs transactions in batches of 100 to the bulk ingestion endpoint (`POST /api/finance/transactions/bulk`)
   - Handles BOM markers, quoted fields, and empty trailing rows
   - Prints a JSON summary to stdout: `{"total": N, "imported": N, "skipped": N, "errors": N}`
   - Exits with code 0 on success, non-zero on fatal errors
 - **AND** the script MUST NOT depend on `requests`, `pandas`, or any non-stdlib package
+
+#### Scenario: Amount sign normalization for split debit/credit columns
+- **WHEN** the CSV has separate Debit and Credit columns (both positive values)
+- **THEN** the generated script MUST output the Debit column value as negative and the Credit column value as positive
+- **AND** when the CSV has a single Amount column with a separate transaction type indicator (e.g., "debit"/"credit" or "D"/"C"), the script MUST negate debit amounts
+
+#### Scenario: Amount sign normalization for positive-debit conventions
+- **WHEN** the CSV uses positive numbers for debits (no separate credit column, common in credit card statements where all charges are positive)
+- **THEN** the LLM MUST infer from the sample rows that all amounts should be negated (debits)
+- **AND** refunds or payments (if identifiable from description or type column) MUST remain positive
 
 #### Scenario: Script execution and self-correction
 - **WHEN** the LLM executes the generated script
@@ -50,6 +61,11 @@ The skill MUST instruct the LLM to follow a write-script-then-execute workflow. 
 - **THEN** the LLM MUST parse the JSON summary from stdout
 - **AND** the LLM MUST report to the user: total rows processed, rows imported, rows skipped (with explanation that these are duplicates), and any errors
 - **AND** if `skipped` count exceeds 20% of `total`, the LLM MUST warn the user that some transactions may have been deduplicated and suggest verification
+
+#### Scenario: Re-run after partial failure
+- **WHEN** the script failed mid-way through a previous run and is re-executed
+- **THEN** the LLM MUST explain to the user that previously imported rows will appear as "skipped (duplicate)" and this is expected, not data loss
+- **AND** the LLM MUST report only the newly imported count as the meaningful result
 
 ### Requirement: Token budget protection
 The skill MUST prevent the LLM from consuming excessive tokens during CSV import. This is a hard constraint, not a suggestion.

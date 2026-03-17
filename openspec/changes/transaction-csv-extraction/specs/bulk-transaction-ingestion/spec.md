@@ -20,6 +20,14 @@ The dashboard API SHALL expose a bulk transaction import endpoint that accepts a
 - **AND** if a fact with the same idempotency key already exists, the row MUST be counted as `skipped` (not `imported` or `errors`)
 - **AND** no duplicate fact MUST be created
 
+#### Scenario: Composite key canonicalization
+- **WHEN** the composite idempotency key is computed
+- **THEN** `posted_at` MUST be canonicalized to UTC ISO 8601 with Z suffix at second precision (e.g., `2025-01-15T00:00:00Z`) before hashing
+- **AND** `amount` MUST be canonicalized via `str(Decimal(amount).quantize(Decimal("0.01")))` (e.g., `"-47.32"`, never `"-47.3200"`) before hashing
+- **AND** `merchant` MUST be used as-is (case-sensitive, preserving the source representation)
+- **AND** `account_id` MUST be lowercased or empty string when absent
+- **AND** the hash input MUST be the pipe-delimited concatenation: `f"{canonical_posted_at}|{canonical_amount}|{merchant}|{canonical_account_id}"`
+
 #### Scenario: Source message ID deduplication preserved
 - **WHEN** a transaction in the bulk request includes a `source_message_id`
 - **THEN** deduplication MUST use the existing `source_message_id`-based logic from `record_transaction_fact`
@@ -72,3 +80,27 @@ All bulk ingestion paths (HTTP and MCP) MUST accept the same normalized transact
 - **THEN** it MUST be stored as a string-encoded `NUMERIC(14,2)` value
 - **AND** floating-point amounts MUST be quantized to 2 decimal places before storage
 - **AND** no floating-point intermediate representation MUST be used in persistence
+
+### Requirement: Bulk ingestion embedding strategy
+Transaction facts are structured data queryable via metadata JSONB fields. Semantic embedding search is not a useful retrieval path for transactions (no one searches for "that grocery purchase last week" by semantic similarity). Bulk ingestion MUST avoid the per-row embedding bottleneck.
+
+#### Scenario: Embedding bypass for bulk-ingested transactions
+- **WHEN** transactions are persisted via the bulk ingestion path
+- **THEN** the embedding computation MUST be skipped or deferred — the bulk path MUST NOT call `embedding_engine.embed()` synchronously per row
+- **AND** a zero vector or NULL embedding MUST be stored as a placeholder
+- **AND** the `search_vector` (tsvector) MUST still be computed (it is cheap and enables text search)
+- **AND** the `idempotency_key` deduplication MUST still function correctly without a real embedding
+
+#### Scenario: Bulk ingestion performance target
+- **WHEN** a batch of 500 transactions is submitted to the bulk endpoint
+- **THEN** the endpoint MUST complete within 10 seconds under normal conditions
+- **AND** the response MUST NOT time out for batches up to the 500-row limit
+
+### Requirement: Partial failure and re-run semantics
+Re-running an import after a partial failure (e.g., API went down mid-import) MUST produce a clear, non-confusing result.
+
+#### Scenario: Re-run after partial failure
+- **WHEN** a CSV import script is re-run after a previous partial failure
+- **THEN** previously imported rows MUST be deduped as `skipped`
+- **AND** the response `error_details` MUST distinguish dedup skips from validation errors by including a `reason` field (e.g., `"duplicate"` vs `"invalid_date"`)
+- **AND** the skill MUST instruct the LLM to explain to the user that skipped rows are previously imported duplicates, not data loss

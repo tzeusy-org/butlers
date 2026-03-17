@@ -21,7 +21,7 @@ Financial data uses precise numeric types and ISO currency codes.
 
 #### Scenario: Composite deduplication for non-email sources
 - **WHEN** a transaction is recorded without a `source_message_id` (e.g., from CSV import)
-- **THEN** deduplication MUST use a composite idempotency key computed as `sha256(posted_at|amount|merchant|account_id)`
+- **THEN** deduplication MUST use a composite idempotency key computed as `sha256(posted_at|amount|merchant|account_id)` with canonicalized inputs (UTC ISO 8601 at second precision, quantized decimal amount, case-sensitive merchant, lowercased account_id or empty string)
 - **AND** this composite key MUST be passed as the `idempotency_key` parameter to the fact storage layer
 - **AND** the existing `source_message_id`-based deduplication MUST remain the primary strategy when `source_message_id` is present
 
