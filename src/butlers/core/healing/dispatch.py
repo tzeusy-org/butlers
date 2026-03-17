@@ -262,19 +262,36 @@ and you have been spawned to investigate the root cause and propose a fix.
 
 1. Investigate the root cause of this error in the codebase (your CWD is an \
 isolated worktree branched from main).
-2. Write a fix with tests.
-3. Commit your changes to the current branch (do NOT push — the dispatcher \
-handles pushing and PR creation).
-4. If the error is not a code bug (external service, data issue, user error), \
-write a commit with a file explaining why it is unfixable and what the \
-recommendation is.
+2. If it is a code bug: write a fix with tests, then commit. The dispatcher \
+will open a PR automatically (do NOT push yourself).
+3. If it is NOT a code bug (external service outage, missing infrastructure, \
+bad user data, known limitation): signal this by creating an ``UNFIXABLE`` \
+file in the worktree root, then committing it. See the protocol below.
+
+## Signaling an Unfixable Error
+
+When the error cannot be fixed with a code change, create a file named \
+``UNFIXABLE`` in the repository root with a plain-text explanation (≤500 words):
+
+- Why this is NOT a code bug
+- The actual root cause
+- What a human operator should do to resolve it
+
+Then commit it::
+
+    git add UNFIXABLE
+    git commit -m "chore: unfixable — <brief reason>"
+
+The dispatcher detects this file after your session ends and transitions the \
+attempt to ``unfixable`` status (no PR will be opened).
 
 ## Important Rules
 
 - Do NOT create a PR yourself — the dispatcher handles that.
 - Do NOT include any PII, user data, credentials, or environment-specific \
-information in commit messages or code.
-- Run tests after your fix: ``uv run pytest`` and ``uv run ruff check src/ tests/``.
+information in commit messages or the UNFIXABLE file.
+- Run tests after a code fix: ``uv run pytest`` and \
+``uv run ruff check src/ tests/``.
 - Stay within the scope of this specific error.
 """
 
@@ -546,6 +563,30 @@ async def _timeout_watchdog(
 
 
 # ---------------------------------------------------------------------------
+# Unfixable sentinel
+# ---------------------------------------------------------------------------
+
+#: Filename placed by a healing agent in the worktree root to signal that the
+#: error is not a code bug and cannot be fixed by a code change.
+#:
+#: Convention (taught in roster/shared/skills/self-healing/SKILL.md):
+#:   1. Create this file with a plain-text explanation (≤500 words).
+#:   2. ``git add UNFIXABLE && git commit -m "chore: unfixable — <reason>"``
+#:   3. Exit normally (the dispatcher detects the file and transitions to
+#:      ``unfixable`` instead of proceeding to PR creation).
+#:
+#: The agent MUST commit the file so the explanation is preserved in git
+#: history for human operators.  The worktree and branch are removed after the
+#: transition (no PR is opened for unfixable errors).
+UNFIXABLE_SENTINEL_FILENAME = "UNFIXABLE"
+
+
+def _is_unfixable(worktree_path: Path) -> bool:
+    """Return True if the healing agent left an UNFIXABLE sentinel in the worktree."""
+    return (worktree_path / UNFIXABLE_SENTINEL_FILENAME).exists()
+
+
+# ---------------------------------------------------------------------------
 # Healing session runner
 # ---------------------------------------------------------------------------
 
@@ -604,6 +645,29 @@ async def _run_healing_session(
                 attempt_id,
                 "failed",
                 error_detail=error_detail,
+                healing_session_id=healing_session_id,
+            )
+            await remove_healing_worktree(
+                repo_root,
+                branch_name,
+                delete_branch=True,
+                delete_remote=False,
+            )
+            return
+
+        # Check for unfixable sentinel before proceeding to PR creation.
+        # The healing agent creates an UNFIXABLE file (and commits it) to
+        # signal that the error is not a code bug and cannot be fixed.
+        if _is_unfixable(worktree_path):
+            logger.info(
+                "Healing agent marked error as unfixable (attempt=%s); skipping PR creation",
+                attempt_id,
+            )
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "unfixable",
+                error_detail="Healing agent determined this error is not a code bug",
                 healing_session_id=healing_session_id,
             )
             await remove_healing_worktree(

@@ -17,6 +17,7 @@ Covers:
 - Timeout watchdog: cancels task and sets status to timeout
 - PR flow: success → pr_open; push failure → failed; anonymization_failed
 - dispatch_healing never raises (internal_error result)
+- Unfixable sentinel: _is_unfixable detection, transition to unfixable, no PR opened
 """
 
 from __future__ import annotations
@@ -1668,3 +1669,237 @@ class TestTaskRegistry:
         assert watchdog_a in registry
         assert watchdog_b in registry
         assert len(registry) == 2
+
+
+# ---------------------------------------------------------------------------
+# Unfixable sentinel: _is_unfixable helper
+# ---------------------------------------------------------------------------
+
+
+class TestIsUnfixable:
+    """Unit tests for the _is_unfixable sentinel detection helper."""
+
+    def test_returns_false_when_no_sentinel(self, tmp_path: Path) -> None:
+        """_is_unfixable returns False when UNFIXABLE file is absent."""
+        from butlers.core.healing.dispatch import _is_unfixable
+
+        assert _is_unfixable(tmp_path) is False
+
+    def test_returns_true_when_sentinel_present(self, tmp_path: Path) -> None:
+        """_is_unfixable returns True when UNFIXABLE file exists."""
+        from butlers.core.healing.dispatch import _is_unfixable
+
+        (tmp_path / "UNFIXABLE").write_text("External service is down.")
+        assert _is_unfixable(tmp_path) is True
+
+    def test_sentinel_filename_constant(self) -> None:
+        """The UNFIXABLE_SENTINEL_FILENAME constant is exactly 'UNFIXABLE'."""
+        from butlers.core.healing.dispatch import UNFIXABLE_SENTINEL_FILENAME
+
+        assert UNFIXABLE_SENTINEL_FILENAME == "UNFIXABLE"
+
+    def test_only_exact_filename_matches(self, tmp_path: Path) -> None:
+        """Partial or different-case filenames do not trigger the sentinel."""
+        from butlers.core.healing.dispatch import _is_unfixable
+
+        (tmp_path / "UNFIXABLE.txt").write_text("not the sentinel")
+        (tmp_path / "unfixable").write_text("wrong case")
+        assert _is_unfixable(tmp_path) is False
+
+
+# ---------------------------------------------------------------------------
+# Unfixable sentinel: _run_healing_session transitions
+# ---------------------------------------------------------------------------
+
+
+class TestHealingSessionUnfixable:
+    """Verify _run_healing_session transitions to unfixable when sentinel is present."""
+
+    async def _run_session(
+        self,
+        tmp_path: Path,
+        worktree_path: Path,
+        spawner,
+        status_updates: list,
+        remove_calls: list,
+        create_pr_mock,
+    ) -> None:
+        """Helper that runs _run_healing_session with common patches."""
+        pool = _make_pool_all_pass()
+
+        async def capture_status(pool, attempt_id, status, **kwargs):
+            status_updates.append(status)
+            return True
+
+        async def capture_remove(repo_root, branch_name, **kwargs):
+            remove_calls.append({"branch": branch_name, **kwargs})
+
+        with (
+            patch(
+                "butlers.core.healing.dispatch.update_attempt_status",
+                side_effect=capture_status,
+            ),
+            patch(
+                "butlers.core.healing.dispatch.remove_healing_worktree",
+                side_effect=capture_remove,
+            ),
+            patch(
+                "butlers.core.healing.dispatch.get_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.healing.dispatch._create_pr",
+                new_callable=AsyncMock,
+                side_effect=create_pr_mock,
+            ),
+        ):
+            from butlers.core.healing.dispatch import HealingConfig, _run_healing_session
+
+            config = HealingConfig(enabled=True, timeout_minutes=30)
+            await _run_healing_session(
+                pool=pool,
+                repo_root=tmp_path,
+                attempt_id=uuid.uuid4(),
+                branch_name="self-healing/email/unfixable-test",
+                worktree_path=worktree_path,
+                fp=_make_fp(),
+                butler_name="email",
+                trigger_source="external",
+                agent_context=None,
+                config=config,
+                spawner=spawner,
+                gh_token=None,
+            )
+
+    async def test_unfixable_sentinel_transitions_to_unfixable(self, tmp_path: Path) -> None:
+        """When agent creates UNFIXABLE file, status transitions to unfixable."""
+        worktree_path = tmp_path / "healing-wt"
+        worktree_path.mkdir()
+        # Place the UNFIXABLE sentinel (simulating a healing agent that left it)
+        (worktree_path / "UNFIXABLE").write_text(
+            "External payment API is returning HTTP 503. Not a code bug."
+        )
+
+        status_updates: list[str] = []
+        remove_calls: list = []
+        create_pr_called = []
+
+        async def should_not_be_called(*args, **kwargs):
+            create_pr_called.append(True)
+            raise AssertionError("_create_pr must not be called for unfixable errors")
+
+        spawner = _make_spawner(success=True)
+        await self._run_session(
+            tmp_path=tmp_path,
+            worktree_path=worktree_path,
+            spawner=spawner,
+            status_updates=status_updates,
+            remove_calls=remove_calls,
+            create_pr_mock=should_not_be_called,
+        )
+
+        assert "unfixable" in status_updates
+        assert "pr_open" not in status_updates
+        assert not create_pr_called, "_create_pr must not be called for unfixable"
+
+    async def test_unfixable_removes_worktree(self, tmp_path: Path) -> None:
+        """When unfixable, the worktree and branch are removed (no PR branch kept)."""
+        worktree_path = tmp_path / "healing-wt-rm"
+        worktree_path.mkdir()
+        (worktree_path / "UNFIXABLE").write_text("External service issue.")
+
+        status_updates: list[str] = []
+        remove_calls: list = []
+
+        async def noop_pr(*args, **kwargs):
+            return ("https://example.com/pull/1", 1, None)
+
+        spawner = _make_spawner(success=True)
+        await self._run_session(
+            tmp_path=tmp_path,
+            worktree_path=worktree_path,
+            spawner=spawner,
+            status_updates=status_updates,
+            remove_calls=remove_calls,
+            create_pr_mock=noop_pr,
+        )
+
+        assert len(remove_calls) == 1
+        # delete_branch=True — the healing branch is not kept for unfixable
+        assert remove_calls[0].get("delete_branch") is True
+
+    async def test_no_sentinel_proceeds_to_pr(self, tmp_path: Path) -> None:
+        """Without UNFIXABLE file, a successful agent proceeds to PR creation."""
+        worktree_path = tmp_path / "healing-wt-pr"
+        worktree_path.mkdir()
+        # No UNFIXABLE file — agent produced a code fix
+
+        status_updates: list[str] = []
+        remove_calls: list = []
+        create_pr_called = []
+
+        async def record_pr_call(*args, **kwargs):
+            create_pr_called.append(True)
+            return ("https://github.com/example/repo/pull/99", 99, None)
+
+        spawner = _make_spawner(success=True)
+        await self._run_session(
+            tmp_path=tmp_path,
+            worktree_path=worktree_path,
+            spawner=spawner,
+            status_updates=status_updates,
+            remove_calls=remove_calls,
+            create_pr_mock=record_pr_call,
+        )
+
+        assert "unfixable" not in status_updates
+        assert "pr_open" in status_updates
+        assert create_pr_called, "_create_pr should have been called"
+
+    async def test_failed_agent_with_sentinel_still_fails(self, tmp_path: Path) -> None:
+        """When the agent reports failure (result.success=False), the status is 'failed'
+        even if an UNFIXABLE file happens to be present — the failure check comes first."""
+        worktree_path = tmp_path / "healing-wt-fail"
+        worktree_path.mkdir()
+        # Place the UNFIXABLE sentinel
+        (worktree_path / "UNFIXABLE").write_text("External issue.")
+
+        status_updates: list[str] = []
+        remove_calls: list = []
+
+        async def noop_pr(*args, **kwargs):
+            return ("https://example.com/pull/1", 1, None)
+
+        # Agent reports failure (result.success = False)
+        spawner = _make_spawner(success=False)
+        await self._run_session(
+            tmp_path=tmp_path,
+            worktree_path=worktree_path,
+            spawner=spawner,
+            status_updates=status_updates,
+            remove_calls=remove_calls,
+            create_pr_mock=noop_pr,
+        )
+
+        # Failure is reported before unfixable is checked
+        assert "failed" in status_updates
+        assert "unfixable" not in status_updates
+
+    async def test_unfixable_prompt_describes_sentinel_convention(self) -> None:
+        """The healing prompt mentions the UNFIXABLE file and commit convention."""
+        from butlers.core.healing.dispatch import _build_healing_prompt
+
+        fp = _make_fp()
+        prompt = _build_healing_prompt(fp, "email", "external", None)
+        assert "UNFIXABLE" in prompt
+        assert "git add UNFIXABLE" in prompt
+
+    async def test_unfixable_prompt_mentions_no_pr_for_sentinel(self) -> None:
+        """The healing prompt explains that no PR is opened for unfixable errors."""
+        from butlers.core.healing.dispatch import _build_healing_prompt
+
+        fp = _make_fp()
+        prompt = _build_healing_prompt(fp, "email", "external", None)
+        # The prompt should tell the agent the dispatcher handles the unfixable transition
+        assert "unfixable" in prompt.lower()

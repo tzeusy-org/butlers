@@ -148,6 +148,64 @@ If status is `pr_merged`, note that a fix was deployed and the error may resolve
 
 ---
 
+## For Healing Agents: Signaling an Unfixable Error
+
+> **This section is for healing agents** — Claude instances spawned inside a healing worktree to investigate a reported error.
+
+After investigating the root cause, you have two outcomes:
+
+### 1. Fixable — commit a code fix
+
+Write the fix, add tests, and commit as normal. The dispatcher detects commits on the branch and opens a PR automatically. Do NOT push yourself.
+
+### 2. Unfixable — create an UNFIXABLE file
+
+If you determine the error is **not a code bug** — for example:
+
+- An external service is down or behaving incorrectly
+- The error is caused by bad user data that needs operator intervention
+- A required infrastructure resource (database table, secret, environment variable) is missing and must be provisioned manually
+- The error is a known limitation with no viable code-level fix
+
+Then signal this by:
+
+1. Create a file named `UNFIXABLE` in the worktree root with a plain-text explanation (≤500 words). Include:
+   - Why this is not a code bug
+   - What the actual root cause is
+   - What a human operator should do to resolve it
+   - Any references to external services or infrastructure involved
+
+2. Commit the file:
+   ```bash
+   git add UNFIXABLE
+   git commit -m "chore: unfixable — <brief reason>"
+   ```
+
+3. Exit normally. The dispatcher detects the `UNFIXABLE` file after your session ends and transitions the attempt to `unfixable` status instead of opening a PR.
+
+**UNFIXABLE file content rules:**
+- Do NOT include user data, credentials, PII, or environment-specific values
+- Describe the problem in terms of system behaviour, not user inputs
+- Keep it factual and actionable for a human operator
+
+**Example UNFIXABLE file:**
+
+```
+Root cause: The external payment processor API is returning HTTP 503 errors.
+This is a transient upstream outage, not a bug in this butler's code.
+
+The API endpoint https://api.payments.example.com/v1/charge returns
+HTTP 503 with body {"error": "service_unavailable"} for all requests.
+
+Recommendation:
+1. Check the payment processor's status page for an active incident.
+2. If the outage persists > 1 hour, consider switching to the backup payment
+   provider configured in butler.toml under [modules.payments.fallback].
+3. No code changes are required — retry once the upstream service recovers.
+```
+
+---
+
 ## Examples
 
 ### Good report
