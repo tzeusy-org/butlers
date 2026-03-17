@@ -285,16 +285,22 @@ async def list_catalog_entries(
         """
         WITH usage_agg AS (
             SELECT
-                catalog_entry_id,
-                COALESCE(SUM(input_tokens + output_tokens)
-                    FILTER (WHERE recorded_at > now() - interval '24 hours'), 0
-                ) AS usage_24h,
-                COALESCE(SUM(input_tokens + output_tokens)
-                    FILTER (WHERE recorded_at > now() - interval '30 days'), 0
-                ) AS usage_30d
-            FROM shared.token_usage_ledger
-            WHERE recorded_at > now() - interval '30 days'
-            GROUP BY catalog_entry_id
+                mc.id AS catalog_entry_id,
+                COALESCE(SUM(tul.input_tokens + tul.output_tokens)
+                    FILTER (WHERE tul.recorded_at > GREATEST(
+                        COALESCE(tl.reset_24h_at, '-infinity'::timestamptz),
+                        now() - interval '24 hours'
+                    )), 0) AS usage_24h,
+                COALESCE(SUM(tul.input_tokens + tul.output_tokens)
+                    FILTER (WHERE tul.recorded_at > GREATEST(
+                        COALESCE(tl.reset_30d_at, '-infinity'::timestamptz),
+                        now() - interval '30 days'
+                    )), 0) AS usage_30d
+            FROM shared.model_catalog mc
+            LEFT JOIN shared.token_limits tl ON tl.catalog_entry_id = mc.id
+            LEFT JOIN shared.token_usage_ledger tul ON tul.catalog_entry_id = mc.id
+                AND tul.recorded_at > now() - interval '30 days'
+            GROUP BY mc.id, tl.reset_24h_at, tl.reset_30d_at
         )
         SELECT
             mc.id, mc.alias, mc.runtime_type, mc.model_id, mc.extra_args,
@@ -635,8 +641,8 @@ async def get_token_usage(
               AND recorded_at > now() - interval '30 days'
         )
         SELECT
-            COALESCE((SELECT limit_24h FROM limits), NULL)    AS limit_24h,
-            COALESCE((SELECT limit_30d FROM limits), NULL)    AS limit_30d,
+            (SELECT limit_24h FROM limits)                    AS limit_24h,
+            (SELECT limit_30d FROM limits)                    AS limit_30d,
             (SELECT reset_24h_at FROM limits)                 AS reset_24h_at,
             (SELECT reset_30d_at FROM limits)                 AS reset_30d_at,
             COALESCE((SELECT usage_24h FROM usage), 0)        AS usage_24h,
