@@ -55,6 +55,11 @@ class ModelCatalogEntry(BaseModel):
     complexity_tier: str
     enabled: bool = True
     priority: int = 0
+    # Token usage + limits (populated by list endpoint CTE aggregation)
+    usage_24h: int = 0
+    usage_30d: int = 0
+    limit_24h: int | None = None
+    limit_30d: int | None = None
 
 
 class ModelCatalogCreate(BaseModel):
@@ -111,6 +116,58 @@ class ResolveModelResponse(BaseModel):
     model_id: str | None = None
     extra_args: list[str] = Field(default_factory=list)
     resolved: bool
+    # Quota fields (populated when resolved=True)
+    quota_blocked: bool = False
+    usage_24h: int = 0
+    limit_24h: int | None = None
+    usage_30d: int = 0
+    limit_30d: int | None = None
+
+
+class TokenLimitsRequest(BaseModel):
+    """Request body for PUT /api/settings/models/{entry_id}/limits."""
+
+    limit_24h: int | None = None
+    limit_30d: int | None = None
+
+    def model_post_init(self, __context: Any) -> None:  # noqa: ANN401
+        if self.limit_24h is not None and self.limit_24h < 1:
+            raise ValueError("limit_24h must be >= 1 when not null")
+        if self.limit_30d is not None and self.limit_30d < 1:
+            raise ValueError("limit_30d must be >= 1 when not null")
+
+
+class TokenLimitsResponse(BaseModel):
+    """Response for PUT /api/settings/models/{entry_id}/limits."""
+
+    catalog_entry_id: UUID
+    limit_24h: int | None = None
+    limit_30d: int | None = None
+    deleted: bool = False
+
+
+class ResetUsageRequest(BaseModel):
+    """Request body for POST /api/settings/models/{entry_id}/reset-usage."""
+
+    window: str  # "24h" | "30d" | "both"
+
+    def model_post_init(self, __context: Any) -> None:  # noqa: ANN401
+        if self.window not in ("24h", "30d", "both"):
+            raise ValueError("window must be '24h', '30d', or 'both'")
+
+
+class TokenUsageResponse(BaseModel):
+    """Response for GET /api/settings/models/{entry_id}/usage."""
+
+    catalog_entry_id: UUID
+    usage_24h: int = 0
+    usage_30d: int = 0
+    limit_24h: int | None = None
+    limit_30d: int | None = None
+    reset_24h_at: Any | None = None
+    reset_30d_at: Any | None = None
+    percent_24h: float | None = None
+    percent_30d: float | None = None
 
 
 class ModelTestResult(BaseModel):
@@ -163,6 +220,10 @@ def _coerce_extra_args(raw: Any) -> list[str]:
 
 def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
     """Convert an asyncpg Record to a ModelCatalogEntry."""
+    raw_usage_24h = _row_value(row, "usage_24h", 0)
+    raw_usage_30d = _row_value(row, "usage_30d", 0)
+    raw_limit_24h = _row_value(row, "limit_24h", None)
+    raw_limit_30d = _row_value(row, "limit_30d", None)
     return ModelCatalogEntry(
         id=row["id"],
         alias=row["alias"],
@@ -172,6 +233,10 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
         complexity_tier=row["complexity_tier"],
         enabled=bool(_row_value(row, "enabled", True)),
         priority=int(_row_value(row, "priority", 0)),
+        usage_24h=int(raw_usage_24h) if raw_usage_24h is not None else 0,
+        usage_30d=int(raw_usage_30d) if raw_usage_30d is not None else 0,
+        limit_24h=int(raw_limit_24h) if raw_limit_24h is not None else None,
+        limit_30d=int(raw_limit_30d) if raw_limit_30d is not None else None,
     )
 
 
@@ -210,15 +275,39 @@ def _shared_pool(db: DatabaseManager):
 async def list_catalog_entries(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[ModelCatalogEntry]]:
-    """Return all catalog entries ordered by complexity_tier, priority, alias."""
+    """Return all catalog entries ordered by complexity_tier, priority, alias.
+
+    Usage aggregation is done via a single CTE across all catalog entries
+    to avoid N+1 queries.
+    """
     pool = _shared_pool(db)
     rows = await pool.fetch(
         """
-        SELECT id, alias, runtime_type, model_id, extra_args,
-               complexity_tier, enabled, priority
-        FROM shared.model_catalog
+        WITH usage_agg AS (
+            SELECT
+                catalog_entry_id,
+                COALESCE(SUM(input_tokens + output_tokens)
+                    FILTER (WHERE recorded_at > now() - interval '24 hours'), 0
+                ) AS usage_24h,
+                COALESCE(SUM(input_tokens + output_tokens)
+                    FILTER (WHERE recorded_at > now() - interval '30 days'), 0
+                ) AS usage_30d
+            FROM shared.token_usage_ledger
+            WHERE recorded_at > now() - interval '30 days'
+            GROUP BY catalog_entry_id
+        )
+        SELECT
+            mc.id, mc.alias, mc.runtime_type, mc.model_id, mc.extra_args,
+            mc.complexity_tier, mc.enabled, mc.priority,
+            COALESCE(ua.usage_24h, 0) AS usage_24h,
+            COALESCE(ua.usage_30d, 0) AS usage_30d,
+            tl.limit_24h,
+            tl.limit_30d
+        FROM shared.model_catalog mc
+        LEFT JOIN usage_agg ua ON ua.catalog_entry_id = mc.id
+        LEFT JOIN shared.token_limits tl ON tl.catalog_entry_id = mc.id
         ORDER BY
-            CASE complexity_tier
+            CASE mc.complexity_tier
                 WHEN 'trivial'     THEN 1
                 WHEN 'medium'      THEN 2
                 WHEN 'high'        THEN 3
@@ -226,8 +315,8 @@ async def list_catalog_entries(
                 WHEN 'discretion'  THEN 5
                 ELSE 6
             END,
-            priority DESC,
-            alias ASC
+            mc.priority DESC,
+            mc.alias ASC
         """
     )
     entries = [_row_to_catalog_entry(row) for row in rows]
@@ -364,6 +453,227 @@ async def delete_catalog_entry(
         raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
 
     return ApiResponse[dict](data={"deleted": True, "id": str(entry_id)})
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/settings/models/{entry_id}/limits — upsert token limits
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.put("/{entry_id}/limits", response_model=ApiResponse[TokenLimitsResponse])
+async def upsert_token_limits(
+    entry_id: UUID,
+    body: TokenLimitsRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[TokenLimitsResponse]:
+    """Set or update 24h/30d token limits for a catalog entry.
+
+    Setting both limits to null deletes the token_limits row.
+    Limit values must be >= 1 (null means unlimited for that window).
+    """
+    pool = _shared_pool(db)
+
+    # Verify the catalog entry exists
+    exists = await pool.fetchval(
+        "SELECT 1 FROM shared.model_catalog WHERE id = $1",
+        entry_id,
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
+
+    # If both limits are null, delete the row
+    if body.limit_24h is None and body.limit_30d is None:
+        await pool.execute(
+            "DELETE FROM shared.token_limits WHERE catalog_entry_id = $1",
+            entry_id,
+        )
+        return ApiResponse[TokenLimitsResponse](
+            data=TokenLimitsResponse(
+                catalog_entry_id=entry_id,
+                limit_24h=None,
+                limit_30d=None,
+                deleted=True,
+            )
+        )
+
+    # Upsert the limits row
+    await pool.execute(
+        """
+        INSERT INTO shared.token_limits (catalog_entry_id, limit_24h, limit_30d)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (catalog_entry_id) DO UPDATE
+            SET limit_24h  = EXCLUDED.limit_24h,
+                limit_30d  = EXCLUDED.limit_30d,
+                updated_at = now()
+        """,
+        entry_id,
+        body.limit_24h,
+        body.limit_30d,
+    )
+
+    return ApiResponse[TokenLimitsResponse](
+        data=TokenLimitsResponse(
+            catalog_entry_id=entry_id,
+            limit_24h=body.limit_24h,
+            limit_30d=body.limit_30d,
+            deleted=False,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/settings/models/{entry_id}/reset-usage — reset usage window(s)
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.post("/{entry_id}/reset-usage", response_model=ApiResponse[dict])
+async def reset_token_usage(
+    entry_id: UUID,
+    body: ResetUsageRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Reset the 24h, 30d, or both usage windows for a catalog entry.
+
+    Creates the token_limits row (with null limits) if it does not exist.
+    Sets the appropriate reset_*_at to now().
+    """
+    pool = _shared_pool(db)
+
+    # Verify the catalog entry exists
+    exists = await pool.fetchval(
+        "SELECT 1 FROM shared.model_catalog WHERE id = $1",
+        entry_id,
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
+
+    if body.window == "24h":
+        sql = """
+            INSERT INTO shared.token_limits (catalog_entry_id, reset_24h_at)
+            VALUES ($1, now())
+            ON CONFLICT (catalog_entry_id) DO UPDATE
+                SET reset_24h_at = now(),
+                    updated_at   = now()
+        """
+    elif body.window == "30d":
+        sql = """
+            INSERT INTO shared.token_limits (catalog_entry_id, reset_30d_at)
+            VALUES ($1, now())
+            ON CONFLICT (catalog_entry_id) DO UPDATE
+                SET reset_30d_at = now(),
+                    updated_at   = now()
+        """
+    else:  # "both"
+        sql = """
+            INSERT INTO shared.token_limits (catalog_entry_id, reset_24h_at, reset_30d_at)
+            VALUES ($1, now(), now())
+            ON CONFLICT (catalog_entry_id) DO UPDATE
+                SET reset_24h_at = now(),
+                    reset_30d_at = now(),
+                    updated_at   = now()
+        """
+
+    await pool.execute(sql, entry_id)
+
+    return ApiResponse[dict](
+        data={"catalog_entry_id": str(entry_id), "window": body.window, "reset": True}
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/models/{entry_id}/usage — detailed usage for single entry
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.get("/{entry_id}/usage", response_model=ApiResponse[TokenUsageResponse])
+async def get_token_usage(
+    entry_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[TokenUsageResponse]:
+    """Return detailed token usage for a single catalog entry.
+
+    Includes actual usage aggregation (respecting reset markers), configured
+    limits, and percentage fields (null when no limit is set).
+    """
+    pool = _shared_pool(db)
+
+    # Verify the catalog entry exists
+    exists = await pool.fetchval(
+        "SELECT 1 FROM shared.model_catalog WHERE id = $1",
+        entry_id,
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
+
+    row = await pool.fetchrow(
+        """
+        WITH limits AS (
+            SELECT
+                limit_24h,
+                limit_30d,
+                reset_24h_at,
+                reset_30d_at,
+                COALESCE(reset_24h_at, '-infinity'::timestamptz) AS eff_reset_24h,
+                COALESCE(reset_30d_at, '-infinity'::timestamptz) AS eff_reset_30d
+            FROM shared.token_limits
+            WHERE catalog_entry_id = $1
+        ),
+        usage AS (
+            SELECT
+                COALESCE(SUM(input_tokens + output_tokens)
+                    FILTER (WHERE recorded_at > GREATEST(
+                        (SELECT eff_reset_24h FROM limits),
+                        now() - interval '24 hours'
+                    )), 0) AS usage_24h,
+                COALESCE(SUM(input_tokens + output_tokens)
+                    FILTER (WHERE recorded_at > GREATEST(
+                        (SELECT eff_reset_30d FROM limits),
+                        now() - interval '30 days'
+                    )), 0) AS usage_30d
+            FROM shared.token_usage_ledger
+            WHERE catalog_entry_id = $1
+              AND recorded_at > now() - interval '30 days'
+        )
+        SELECT
+            COALESCE((SELECT limit_24h FROM limits), NULL)    AS limit_24h,
+            COALESCE((SELECT limit_30d FROM limits), NULL)    AS limit_30d,
+            (SELECT reset_24h_at FROM limits)                 AS reset_24h_at,
+            (SELECT reset_30d_at FROM limits)                 AS reset_30d_at,
+            COALESCE((SELECT usage_24h FROM usage), 0)        AS usage_24h,
+            COALESCE((SELECT usage_30d FROM usage), 0)        AS usage_30d
+        """,
+        entry_id,
+    )
+
+    if row is None:
+        # No limits row and no usage — return zeros
+        return ApiResponse[TokenUsageResponse](
+            data=TokenUsageResponse(
+                catalog_entry_id=entry_id,
+            )
+        )
+
+    usage_24h = int(row["usage_24h"]) if row["usage_24h"] is not None else 0
+    usage_30d = int(row["usage_30d"]) if row["usage_30d"] is not None else 0
+    limit_24h = int(row["limit_24h"]) if row["limit_24h"] is not None else None
+    limit_30d = int(row["limit_30d"]) if row["limit_30d"] is not None else None
+
+    percent_24h = (usage_24h / limit_24h * 100.0) if limit_24h is not None else None
+    percent_30d = (usage_30d / limit_30d * 100.0) if limit_30d is not None else None
+
+    return ApiResponse[TokenUsageResponse](
+        data=TokenUsageResponse(
+            catalog_entry_id=entry_id,
+            usage_24h=usage_24h,
+            usage_30d=usage_30d,
+            limit_24h=limit_24h,
+            limit_30d=limit_30d,
+            reset_24h_at=row["reset_24h_at"],
+            reset_30d_at=row["reset_30d_at"],
+            percent_24h=percent_24h,
+            percent_30d=percent_30d,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +824,9 @@ async def resolve_model_preview(
     Executes the same resolution logic as the spawner: LEFT JOIN the catalog
     with per-butler overrides, COALESCE enabled/priority/tier, return the
     highest-priority matching row.
+
+    Also returns actual quota status by querying the ledger directly (does not
+    use the check_token_quota fast-path that returns zeroes for unlimited entries).
     """
     _validate_complexity_tier(complexity)
     pool = _shared_pool(db)
@@ -521,6 +834,7 @@ async def resolve_model_preview(
     row = await pool.fetchrow(
         """
         SELECT
+            mc.id         AS catalog_entry_id,
             mc.runtime_type,
             mc.model_id,
             mc.extra_args
@@ -549,6 +863,67 @@ async def resolve_model_preview(
             )
         )
 
+    raw_entry_id = _row_value(row, "catalog_entry_id")
+    catalog_entry_id: UUID | None = UUID(str(raw_entry_id)) if raw_entry_id is not None else None
+
+    # Query actual usage from ledger (always, even for unlimited entries).
+    # Only possible when we have a catalog_entry_id from the row.
+    quota_row = None
+    if catalog_entry_id is not None:
+        quota_row = await pool.fetchrow(
+            """
+            WITH limits AS (
+                SELECT
+                    limit_24h,
+                    limit_30d,
+                    COALESCE(reset_24h_at, '-infinity'::timestamptz) AS eff_reset_24h,
+                    COALESCE(reset_30d_at, '-infinity'::timestamptz) AS eff_reset_30d
+                FROM shared.token_limits
+                WHERE catalog_entry_id = $1
+            ),
+            usage AS (
+                SELECT
+                    COALESCE(SUM(input_tokens + output_tokens)
+                        FILTER (WHERE recorded_at > GREATEST(
+                            (SELECT eff_reset_24h FROM limits),
+                            now() - interval '24 hours'
+                        )), 0) AS usage_24h,
+                    COALESCE(SUM(input_tokens + output_tokens)
+                        FILTER (WHERE recorded_at > GREATEST(
+                            (SELECT eff_reset_30d FROM limits),
+                            now() - interval '30 days'
+                        )), 0) AS usage_30d
+                FROM shared.token_usage_ledger
+                WHERE catalog_entry_id = $1
+                  AND recorded_at > now() - interval '30 days'
+            )
+            SELECT
+                COALESCE((SELECT limit_24h FROM limits), NULL) AS limit_24h,
+                COALESCE((SELECT limit_30d FROM limits), NULL) AS limit_30d,
+                COALESCE((SELECT usage_24h FROM usage), 0)    AS usage_24h,
+                COALESCE((SELECT usage_30d FROM usage), 0)    AS usage_30d
+            """,
+            catalog_entry_id,
+        )
+
+    usage_24h = 0
+    usage_30d = 0
+    limit_24h = None
+    limit_30d = None
+    quota_blocked = False
+
+    if quota_row is not None:
+        usage_24h = int(quota_row["usage_24h"]) if quota_row["usage_24h"] is not None else 0
+        usage_30d = int(quota_row["usage_30d"]) if quota_row["usage_30d"] is not None else 0
+        raw_lim_24h = quota_row["limit_24h"]
+        raw_lim_30d = quota_row["limit_30d"]
+        limit_24h = int(raw_lim_24h) if raw_lim_24h is not None else None
+        limit_30d = int(raw_lim_30d) if raw_lim_30d is not None else None
+        if (limit_24h is not None and usage_24h >= limit_24h) or (
+            limit_30d is not None and usage_30d >= limit_30d
+        ):
+            quota_blocked = True
+
     return ApiResponse[ResolveModelResponse](
         data=ResolveModelResponse(
             butler_name=name,
@@ -557,6 +932,11 @@ async def resolve_model_preview(
             model_id=row["model_id"],
             extra_args=_coerce_extra_args(_row_value(row, "extra_args")),
             resolved=True,
+            quota_blocked=quota_blocked,
+            usage_24h=usage_24h,
+            limit_24h=limit_24h,
+            usage_30d=usage_30d,
+            limit_30d=limit_30d,
         )
     )
 
