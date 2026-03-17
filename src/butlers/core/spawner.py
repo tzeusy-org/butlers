@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -594,6 +595,9 @@ class Spawner:
         self._in_flight_event.set()  # Initially no in-flight sessions
         self._metrics = ButlerMetrics(butler_name=config.name)
         self._metrics.ensure_registered()
+        # Self-healing module reference — wired by the daemon after module startup.
+        # When non-None, the spawner fallback fires on hard crashes.
+        self._healing_module: Any = None
 
         if runtime is not None:
             self._runtime = runtime
@@ -616,6 +620,22 @@ class Spawner:
                 config.runtime.type: self._runtime,
             }
             self._adapter_pool_cfg = {config.runtime.type: ""}
+
+    def wire_healing_module(self, healing_module: Any) -> None:
+        """Wire the self-healing module for spawner fallback dispatch.
+
+        Called by the butler daemon after the self-healing module's
+        ``on_startup()`` completes.  When wired, the spawner's except block
+        fires ``dispatch_healing()`` as a background task on hard crashes.
+
+        Parameters
+        ----------
+        healing_module:
+            A :class:`~butlers.modules.self_healing.SelfHealingModule` instance
+            (typed as ``Any`` to avoid a circular import).  Pass ``None`` to
+            unwire.
+        """
+        self._healing_module = healing_module
 
     async def _resolve_provider_config(
         self, model_id: str | None
@@ -1136,19 +1156,43 @@ class Spawner:
                 system_prompt, memory_ctx, routing_instructions=routing_ctx
             )
 
-            # Build credential env
-            env = await _build_env(
-                self._config, self._module_credentials_env, self._credential_store
-            )
+            # Build credential env.
+            # Healing sessions get a minimal env: only PATH + GH_TOKEN for PR creation.
+            # No butler-specific credentials are passed to the isolated healing agent.
+            if trigger_source == "healing":
+                env: dict[str, str] = {}
+                host_path = os.environ.get("PATH")
+                if host_path:
+                    env["PATH"] = host_path
+                # Resolve GH_TOKEN for PR creation via credential store or env fallback
+                gh_token_key = "GH_TOKEN"
+                if self._credential_store is not None:
+                    gh_token_value = await self._credential_store.resolve(gh_token_key)
+                else:
+                    gh_token_value = os.environ.get(gh_token_key)
+                if gh_token_value:
+                    env[gh_token_key] = gh_token_value
+                # Include traceparent for distributed tracing continuity
+                env.update(get_traceparent_env())
+            else:
+                env = await _build_env(
+                    self._config, self._module_credentials_env, self._credential_store
+                )
 
-            # Build MCP server config for the adapter
-            mcp_url = runtime_mcp_url(self._config.port)
-            mcp_url = _append_runtime_session_query(mcp_url, runtime_session_id)
-            mcp_servers: dict[str, Any] = {
-                self._config.name: {
-                    "url": mcp_url,
-                },
-            }
+            # Build MCP server config for the adapter.
+            # Healing sessions run in an isolated worktree with shell tools only —
+            # they must NOT have access to the butler's MCP tools (which operate on
+            # live production state).  An empty dict disables all MCP servers.
+            if trigger_source == "healing":
+                mcp_servers: dict[str, Any] = {}
+            else:
+                mcp_url = runtime_mcp_url(self._config.port)
+                mcp_url = _append_runtime_session_query(mcp_url, runtime_session_id)
+                mcp_servers = {
+                    self._config.name: {
+                        "url": mcp_url,
+                    },
+                }
 
             # Invoke via runtime adapter
             runtime_invoked = True
@@ -1260,6 +1304,10 @@ class Spawner:
             return spawner_result
 
         except Exception as exc:
+            # Capture exc_info FIRST — before any cleanup code runs.
+            # The traceback object is live only until cleanup clears the frame.
+            _exc_type, _exc_value, _exc_tb = sys.exc_info()
+
             if runtime_session_id:
                 discard_runtime_session_tool_calls(runtime_session_id)
             duration_ms = int((time.monotonic() - t0) * 1000)
@@ -1340,6 +1388,75 @@ class Spawner:
                 result="error",
                 error=error_msg,
             )
+
+            # Self-healing spawner fallback — secondary path for hard crashes.
+            # Fires only when:
+            #   1. trigger_source != "healing" (no recursive healing)
+            #   2. The self-healing module is loaded and wired
+            #   3. We have a DB pool and a valid session_id
+            if (
+                trigger_source != "healing"
+                and self._healing_module is not None
+                and self._pool is not None
+                and session_id is not None
+                and _exc_value is not None
+            ):
+                try:
+                    from butlers.core.healing import HealingConfig, dispatch_healing
+
+                    _healing_cfg_dict = {}
+                    _healing_cfg = getattr(self._healing_module, "_config", None)
+                    if _healing_cfg is not None and hasattr(_healing_cfg, "model_dump"):
+                        _healing_cfg_dict = _healing_cfg.model_dump()
+                    healing_config = HealingConfig.from_module_config(_healing_cfg_dict)
+
+                    # Resolve repo_root from the healing module if wired
+                    _repo_root = getattr(self._healing_module, "_repo_root", Path("."))
+
+                    # Resolve GH_TOKEN for PR creation
+                    _gh_token: str | None = None
+                    if self._credential_store is not None:
+                        try:
+                            _gh_token = await self._credential_store.resolve(
+                                healing_config.gh_token_env_var
+                            )
+                        except Exception:
+                            pass
+                    if _gh_token is None:
+                        _gh_token = os.environ.get(healing_config.gh_token_env_var)
+
+                    _fallback_task = asyncio.create_task(
+                        dispatch_healing(
+                            pool=self._pool,
+                            butler_name=self._config.name,
+                            session_id=session_id,
+                            fingerprint_input=(_exc_value, _exc_tb),
+                            config=healing_config,
+                            repo_root=_repo_root,
+                            spawner=self,
+                            agent_context=None,  # Hard crash — no agent context
+                            trigger_source=trigger_source,
+                            gh_token=_gh_token,
+                        ),
+                        name=f"healing-fallback-{session_id}",
+                    )
+
+                    def _log_fallback_error(t: asyncio.Task) -> None:
+                        if t.exception() is not None:
+                            logger.warning(
+                                "Self-healing fallback task failed (session=%s): %s",
+                                session_id,
+                                t.exception(),
+                            )
+
+                    _fallback_task.add_done_callback(_log_fallback_error)
+
+                except Exception:
+                    logger.warning(
+                        "Failed to schedule self-healing fallback for session %s",
+                        session_id,
+                        exc_info=True,
+                    )
 
             return spawner_result
 
