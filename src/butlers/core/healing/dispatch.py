@@ -296,8 +296,8 @@ def _build_pr_body(
         anon_context = anonymize(agent_context.strip(), repo_root)
         context_section = f"\n### Butler Diagnostic Context\n{anon_context}\n"
 
-    first_seen_line = f"\n**First seen:** {first_seen}" if first_seen is not None else ""
-    occurrences_line = f"\n**Occurrences:** {occurrences}" if occurrences is not None else ""
+    first_seen_line = f"\n**First seen:** {first_seen if first_seen is not None else 'unknown'}"
+    occurrences_line = f"\n**Occurrences:** {occurrences if occurrences is not None else 'unknown'}"
 
     raw_body = f"""\
 ## Self-Healing Fix: {fp.fingerprint[:12]}
