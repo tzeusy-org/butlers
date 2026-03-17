@@ -46,7 +46,12 @@ from butlers.core.audit import write_audit_entry
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.model_routing import Complexity, resolve_model
+from butlers.core.model_routing import (
+    Complexity,
+    check_token_quota,
+    record_token_usage,
+    resolve_model,
+)
 from butlers.core.runtimes.base import RuntimeAdapter, get_adapter
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
@@ -906,6 +911,12 @@ class Spawner:
         spawner_result: SpawnerResult | None = None
         runtime_invoked = False
         routing_context = _capture_pipeline_routing_context()
+        # Ledger token tracking: set as soon as the adapter reports usage so that
+        # ledger recording in the finally block captures tokens even when post-invoke
+        # processing fails (e.g. session_complete raises). Tokens are consumed by the
+        # upstream provider on invocation regardless of later failure.
+        _ledger_input_tokens: int | None = None
+        _ledger_output_tokens: int | None = None
 
         # Prepend context to prompt if provided
         final_prompt = prompt
@@ -958,6 +969,36 @@ class Spawner:
             resolved_runtime_type,
             model,
         )
+
+        # Pre-spawn quota check: block if catalog entry token budget is exhausted.
+        # Only applies when a catalog entry was resolved (not TOML fallback).
+        if catalog_entry_id is not None and self._pool is not None:
+            quota = await check_token_quota(self._pool, catalog_entry_id)
+            if not quota.allowed:
+                windows_exceeded = []
+                if quota.limit_24h is not None and quota.usage_24h >= quota.limit_24h:
+                    windows_exceeded.append(
+                        f"24h (used={quota.usage_24h}, limit={quota.limit_24h})"
+                    )
+                if quota.limit_30d is not None and quota.usage_30d >= quota.limit_30d:
+                    windows_exceeded.append(
+                        f"30d (used={quota.usage_30d}, limit={quota.limit_30d})"
+                    )
+                alias = model or str(catalog_entry_id)
+                error_msg = f"Token quota exhausted for catalog entry '{alias}': " + "; ".join(
+                    windows_exceeded
+                )
+                logger.warning(
+                    "Spawn blocked by quota for butler=%s catalog_entry_id=%s: %s",
+                    self._config.name,
+                    catalog_entry_id,
+                    error_msg,
+                )
+                return SpawnerResult(
+                    success=False,
+                    error=error_msg,
+                    model=model,
+                )
 
         # Resolve provider config (e.g. Ollama base URL) for the model
         provider_config = await self._resolve_provider_config(model)
@@ -1099,6 +1140,11 @@ class Spawner:
             if usage:
                 input_tokens = usage.get("input_tokens")
                 output_tokens = usage.get("output_tokens")
+                # Capture immediately for ledger recording in finally block; ensures
+                # the ledger receives token data even if post-invoke processing fails.
+                if input_tokens is not None:
+                    _ledger_input_tokens = input_tokens
+                    _ledger_output_tokens = output_tokens or 0
 
             spawner_result = SpawnerResult(
                 output=result_text,
@@ -1271,6 +1317,24 @@ class Spawner:
                     output_tokens=spawner_result.output_tokens or 0,
                     model=spawner_result.model or "unknown",
                     butler=self._config.name,
+                )
+            # Record token usage to ledger for both successful and failed sessions.
+            # Uses _ledger_input_tokens set as soon as the adapter reports usage,
+            # so the ledger receives token data even when post-invoke processing
+            # fails (e.g. session_complete raises). Tokens are consumed by the
+            # upstream provider on invocation regardless of session outcome.
+            if (
+                _ledger_input_tokens is not None
+                and catalog_entry_id is not None
+                and self._pool is not None
+            ):
+                await record_token_usage(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler_name=self._config.name,
+                    session_id=session_id,
+                    input_tokens=_ledger_input_tokens,
+                    output_tokens=_ledger_output_tokens or 0,
                 )
             # Clear session context before ending span so tool handlers
             # arriving after this point don't attach to a finished span.
