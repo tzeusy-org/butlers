@@ -44,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -1185,6 +1186,158 @@ async def bulk_update_transactions(
 _MAX_BULK_TRANSACTIONS = 500
 
 
+# ---------------------------------------------------------------------------
+# Cross-source fuzzy dedup helpers
+# ---------------------------------------------------------------------------
+
+
+def _tokenize_merchant(merchant: str) -> frozenset[str]:
+    """Split a merchant string into lowercase alphanumeric tokens.
+
+    Example: "WHOLEFDS MKT #10456 AUSTIN TX"
+        -> frozenset({"wholefds", "mkt", "10456", "austin", "tx"})
+    Example: "Whole Foods Market" -> frozenset({"whole", "foods", "market"})
+    """
+    return frozenset(tok.lower() for tok in re.findall(r"[a-z0-9]+", merchant, flags=re.IGNORECASE))
+
+
+def _jaccard_similarity(set_a: frozenset[str], set_b: frozenset[str]) -> float:
+    """Compute Jaccard similarity: |intersection| / |union|.
+
+    Returns 0.0 when both sets are empty.
+    """
+    if not set_a and not set_b:
+        return 0.0
+    intersection = set_a & set_b
+    union = set_a | set_b
+    return len(intersection) / len(union)
+
+
+def _merchant_tokens_match(merchant_a: str, merchant_b: str, threshold: float = 0.5) -> bool:
+    """Return True when token-overlap Jaccard similarity is >= threshold."""
+    tokens_a = _tokenize_merchant(merchant_a)
+    tokens_b = _tokenize_merchant(merchant_b)
+    if not tokens_a or not tokens_b:
+        return False
+    return _jaccard_similarity(tokens_a, tokens_b) >= threshold
+
+
+async def _fetch_facts_for_date_range(
+    pool: asyncpg.Pool,
+    start_dt: datetime,
+    end_dt: datetime,
+    account_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Batch pre-fetch active transaction facts in [start_dt, end_dt].
+
+    Used to build an in-memory cache for cross-source fuzzy dedup so we avoid
+    N+1 queries while processing a CSV import batch.
+
+    Returns a list of lightweight dicts with: valid_at, amount, merchant, account_id.
+    Rows without a source_message_id are excluded (they are CSV-sourced, not email-sourced).
+    We want to catch email-sourced facts that match an incoming CSV row, so we
+    only keep facts that have a source_message_id.
+    """
+    try:
+        conditions = [
+            "predicate = ANY($1::text[])",
+            "validity = 'active'",
+            "scope = 'finance'",
+            "valid_at >= $2",
+            "valid_at <= $3",
+            "metadata->>'source_message_id' IS NOT NULL",
+        ]
+        params: list[Any] = [_TRANSACTION_PREDICATES, start_dt, end_dt]
+        idx = 4
+
+        if account_id is not None:
+            conditions.append(f"metadata->>'account_id' = ${idx}")
+            params.append(account_id)
+            idx += 1
+
+        where = " AND ".join(conditions)
+        rows = await pool.fetch(
+            f"""
+            SELECT valid_at,
+                   metadata->>'amount'     AS amount,
+                   metadata->>'merchant'   AS merchant,
+                   metadata->>'account_id' AS account_id
+            FROM facts
+            WHERE {where}
+            """,
+            *params,
+        )
+        result = []
+        for r in rows:
+            meta_amount = r["amount"]
+            if meta_amount is None:
+                continue
+            try:
+                amt = Decimal(str(meta_amount))
+            except (ValueError, DecimalInvalidOperation):
+                continue
+            result.append(
+                {
+                    "valid_at": r["valid_at"],
+                    "amount": amt,
+                    "merchant": r["merchant"] or "",
+                    "account_id": r["account_id"],
+                }
+            )
+        return result
+    except asyncpg.PostgresError:
+        return []
+
+
+def _is_cross_source_match(
+    incoming_amount: Decimal,
+    incoming_posted_at: datetime,
+    incoming_merchant: str,
+    incoming_account_id: str | None,
+    existing_facts: list[dict[str, Any]],
+) -> bool:
+    """Return True when an existing (email-sourced) fact fuzzy-matches the incoming CSV row.
+
+    Match criteria (all must be satisfied):
+    - amount within ±$0.01
+    - valid_at (posted_at) within ±1 day
+    - merchant token Jaccard similarity ≥ 0.5
+    - account_id matches when both sides provide one
+
+    account_id is only a constraint when both the incoming row and the existing
+    fact have a non-None account_id; if either is None, account_id is ignored.
+    """
+    amount_tol = Decimal("0.01")
+    date_tol = timedelta(days=1)
+
+    for fact in existing_facts:
+        # Amount within ±$0.01
+        if abs(fact["amount"] - incoming_amount) > amount_tol:
+            continue
+
+        # valid_at within ±1 day
+        fact_dt = fact["valid_at"]
+        if fact_dt is None:
+            continue
+        if fact_dt.tzinfo is None:
+            fact_dt = fact_dt.replace(tzinfo=UTC)
+        if abs(fact_dt - incoming_posted_at) > date_tol:
+            continue
+
+        # account_id filter: only applied when both sides specify one
+        if incoming_account_id is not None and fact["account_id"] is not None:
+            if incoming_account_id != fact["account_id"]:
+                continue
+
+        # Merchant token overlap ≥ 0.5
+        if not _merchant_tokens_match(incoming_merchant, fact["merchant"]):
+            continue
+
+        return True
+
+    return False
+
+
 def _compute_composite_dedup_key(
     posted_at: datetime,
     amount: Decimal | float | int | str,
@@ -1231,11 +1384,16 @@ async def bulk_record_transactions(
     Embeddings are SKIPPED for this path (no embedding_engine.embed() call).
     A zero-vector placeholder is stored. tsvector (search_vector) is computed.
 
-    Deduplication:
-    - Rows with source_message_id: use existing source_message_id-based dedup
-      (same logic as record_transaction_fact).
-    - Rows without source_message_id: use composite key
-      sha256(posted_at|amount|merchant|account_id) with canonicalized inputs.
+    Deduplication (priority order for CSV-sourced rows):
+    1. Rows WITH source_message_id: source_message_id-based dedup (same logic
+       as record_transaction_fact). Fuzzy dedup is NOT applied.
+    2. Rows WITHOUT source_message_id: cross-source fuzzy dedup first — if an
+       existing email-sourced fact matches on amount (±$0.01), date (±1 day),
+       and merchant token overlap (Jaccard ≥ 0.5), the row is skipped with
+       reason "cross_source_match". Existing facts are pre-fetched in a single
+       batch query for the import date range (no N+1 queries).
+    3. Composite key dedup: sha256(posted_at|amount|merchant|account_id) with
+       canonicalized inputs — applied only when fuzzy dedup did not skip the row.
 
     Args:
         pool: Database connection pool.
@@ -1250,8 +1408,9 @@ async def bulk_record_transactions(
     Returns:
         {total, imported, skipped, errors, error_details}
         error_details items have: {index, reason}
-        reason is "duplicate" for dedup skips, "invalid_date" for unparseable
-        dates, "invalid_amount" for non-numeric amounts.
+        reason is "duplicate" for dedup skips, "cross_source_match" for fuzzy
+        cross-source dedup skips, "invalid_date" for unparseable dates,
+        "invalid_amount" for non-numeric amounts.
     """
     if len(transactions) > _MAX_BULK_TRANSACTIONS:
         raise ValueError(
@@ -1269,6 +1428,37 @@ async def bulk_record_transactions(
     error_details: list[dict[str, Any]] = []
 
     now = datetime.now(UTC)
+
+    # ------------------------------------------------------------------
+    # Batch pre-fetch: load existing email-sourced facts for the import
+    # date range once so cross-source fuzzy dedup runs in-memory.
+    # We only need this for CSV-sourced rows (no source_message_id); skip
+    # when all rows have a source_message_id.
+    # ------------------------------------------------------------------
+    csv_rows = [t for t in transactions if not t.get("source_message_id")]
+    existing_facts_cache: list[dict[str, Any]] = []
+    if csv_rows:
+        parsed_dates: list[datetime] = []
+        for txn in csv_rows:
+            raw = txn.get("posted_at")
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(raw))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                parsed_dates.append(dt)
+            except (ValueError, TypeError):
+                pass
+        if parsed_dates:
+            range_start = min(parsed_dates) - timedelta(days=1)
+            range_end = max(parsed_dates) + timedelta(days=1)
+            existing_facts_cache = await _fetch_facts_for_date_range(
+                pool,
+                start_dt=range_start,
+                end_dt=range_end,
+                account_id=account_id,
+            )
 
     for idx, txn in enumerate(transactions):
         # ------------------------------------------------------------------
@@ -1362,6 +1552,19 @@ async def bulk_record_transactions(
             )
             idempotency_key = hashlib.sha256(idem_parts.encode()).hexdigest()
         else:
+            # Fuzzy cross-source dedup: check in-memory cache of existing
+            # email-sourced facts before falling through to composite key dedup.
+            if _is_cross_source_match(
+                incoming_amount=stored_amount,
+                incoming_posted_at=posted_at,
+                incoming_merchant=merchant,
+                incoming_account_id=effective_account_id,
+                existing_facts=existing_facts_cache,
+            ):
+                skipped += 1
+                error_details.append({"index": idx, "reason": "cross_source_match"})
+                continue
+
             # Composite dedup key for CSV-sourced rows
             idempotency_key = _compute_composite_dedup_key(
                 posted_at=posted_at,
