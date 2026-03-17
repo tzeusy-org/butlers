@@ -868,6 +868,7 @@ class TestRouteExecuteComplexityPlumbing:
             conv_hist = envelope.input.conversation_history
             object.__setattr__(bad_input, "conversation_history", conv_hist)
             object.__setattr__(bad_input, "complexity", "not_a_valid_value")
+            object.__setattr__(bad_input, "attachments", envelope.input.attachments)
             object.__setattr__(envelope, "input", bad_input)
             return envelope
 

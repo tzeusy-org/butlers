@@ -448,15 +448,14 @@ def _build_routing_prompt(
             media_type = att.get("media_type", "unknown")
             size_bytes = att.get("size_bytes", 0)
             size_kb = size_bytes / 1024
-            storage_ref = att.get("storage_ref", "")
+            storage_ref = att.get("storage_ref")
             filename = att.get("filename")
+            label = filename or media_type
 
-            if filename:
-                detail = (
-                    f"  - {filename} ({media_type}, {size_kb:.1f}KB, storage_ref: {storage_ref})"
-                )
+            if storage_ref:
+                detail = f"  - {label} ({media_type}, {size_kb:.1f}KB, storage_ref: {storage_ref})"
             else:
-                detail = f"  - {media_type}, {size_kb:.1f}KB, storage_ref: {storage_ref}"
+                detail = f"  - {label} ({media_type}, {size_kb:.1f}KB, pending lazy fetch)"
 
             attachment_details.append(detail)
 
@@ -465,8 +464,8 @@ def _build_routing_prompt(
             f"This message includes {attachment_count} attachment(s):\n"
             + "\n".join(attachment_details)
             + "\n\n"
-            "You can call `get_attachment(storage_ref)` to retrieve and analyze "
-            "attachment content if needed for routing decisions.\n\n"
+            "Include attachment metadata in the `context` parameter of route_to_butler "
+            "calls so the target butler knows what files are available.\n\n"
         )
 
     return "".join(prompt_parts)
@@ -621,6 +620,7 @@ class MessagePipeline:
         identity_preamble: str | None = None,
         source_contact_id: str | None = None,
         source_entity_id: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         """Populate the per-task routing context via ContextVar before runtime spawn.
 
@@ -640,6 +640,7 @@ class MessagePipeline:
                 "identity_preamble": identity_preamble,
                 "source_contact_id": source_contact_id,
                 "source_entity_id": source_entity_id,
+                "attachments": attachments,
             }
         )
 
@@ -1436,6 +1437,7 @@ class MessagePipeline:
                         identity_preamble=identity_preamble,
                         source_contact_id=source_contact_id,
                         source_entity_id=source_entity_id,
+                        attachments=attachments,
                     )
 
                     # Spawn CC — it calls route_to_butler tool(s) directly

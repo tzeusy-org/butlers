@@ -87,6 +87,7 @@ class _MessageRef:
     policy_tier: str = field(default=POLICY_TIER_DEFAULT)
     triage_decision: str | None = field(default=None)
     triage_target: str | None = field(default=None)
+    attachments: list[dict[str, Any]] | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +293,7 @@ class DurableBuffer:
         policy_tier: str = POLICY_TIER_DEFAULT,
         triage_decision: str | None = None,
         triage_target: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Attempt to enqueue a message reference (non-blocking, hot path).
 
@@ -321,6 +323,7 @@ class DurableBuffer:
             policy_tier=policy_tier,
             triage_decision=triage_decision,
             triage_target=triage_target,
+            attachments=attachments,
         )
 
         queue = self._tier_queues[policy_tier]

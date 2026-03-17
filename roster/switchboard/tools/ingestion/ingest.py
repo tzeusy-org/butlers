@@ -720,18 +720,24 @@ async def ingest_v1(
 
     normalized_text = envelope.payload.normalized_text
 
-    # 6a. Serialize attachments if present
+    # 6a. Serialize attachments if present (includes both eager and lazy refs)
     attachments_json = None
     if envelope.payload.attachments:
         attachments_json = json.dumps(
             [
                 {
-                    "media_type": att.media_type,
-                    "storage_ref": att.storage_ref,
-                    "size_bytes": att.size_bytes,
-                    "filename": att.filename,
-                    "width": att.width,
-                    "height": att.height,
+                    k: v
+                    for k, v in {
+                        "media_type": att.media_type,
+                        "storage_ref": att.storage_ref,
+                        "size_bytes": att.size_bytes,
+                        "filename": att.filename,
+                        "width": att.width,
+                        "height": att.height,
+                        "source_message_id": att.source_message_id,
+                        "source_attachment_id": att.source_attachment_id,
+                    }.items()
+                    if v is not None
                 }
                 for att in envelope.payload.attachments
             ]

@@ -218,6 +218,7 @@ def _build_route_runtime_context(
     source_channel: str,
     conversation_history: str | None,
     input_context: dict[str, Any] | str | None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Assemble context text for route.execute processing and recovery paths."""
     context_parts: list[str] = []
@@ -239,6 +240,33 @@ def _build_route_runtime_context(
         context_parts.append(f"\nINPUT CONTEXT:\n{input_ctx_json}")
     elif isinstance(input_context, str):
         context_parts.append(f"\nINPUT CONTEXT:\n{input_context}")
+
+    # Surface attachment metadata so the target butler knows what files are
+    # available.  Lazy-fetched attachments lack a storage_ref but carry
+    # source_message_id/source_attachment_id for on-demand retrieval.
+    if attachments:
+        att_lines: list[str] = []
+        for att in attachments:
+            filename = att.get("filename", "unnamed")
+            media_type = att.get("media_type", "unknown")
+            size_kb = att.get("size_bytes", 0) / 1024
+            storage_ref = att.get("storage_ref")
+            if storage_ref:
+                att_lines.append(
+                    f"  - {filename} ({media_type}, {size_kb:.1f}KB, storage_ref: {storage_ref})"
+                )
+            else:
+                att_lines.append(
+                    f"  - {filename} ({media_type}, {size_kb:.1f}KB, pending lazy fetch)"
+                )
+
+        context_parts.append(
+            f"\nATTACHMENTS ({len(attachments)} file(s)):\n"
+            + "\n".join(att_lines)
+            + "\n\nUse `get_attachment(storage_ref)` for eager-fetched attachments. "
+            "Lazy-fetch attachments are available for processing but require "
+            "on-demand retrieval."
+        )
 
     non_interactive_guidance = _build_non_interactive_route_safety_guidance(source_channel)
     if non_interactive_guidance:
@@ -1554,22 +1582,26 @@ class ButlerDaemon:
 
             routing_failed = False
             _routing_error_detail: str | None = None
+            _buf_tool_args: dict[str, Any] = {
+                "source": channel,
+                "source_channel": channel,
+                "source_identity": endpoint_identity,
+                "source_endpoint_identity": f"{channel}:{endpoint_identity}",
+                "sender_identity": ref.sender.get("identity", "unknown"),
+                "external_event_id": ref.event.get("external_event_id", ""),
+                "external_thread_id": external_thread_id,
+                "source_tool": "ingest",
+                "request_id": ref.request_id,
+                "request_context": request_context,
+            }
+            if ref.attachments:
+                _buf_tool_args["attachments"] = ref.attachments
+
             try:
                 result = await pipeline.process(
                     message_text=ref.message_text,
                     tool_name="bot_switchboard_handle_message",
-                    tool_args={
-                        "source": channel,
-                        "source_channel": channel,
-                        "source_identity": endpoint_identity,
-                        "source_endpoint_identity": f"{channel}:{endpoint_identity}",
-                        "sender_identity": ref.sender.get("identity", "unknown"),
-                        "external_event_id": ref.event.get("external_event_id", ""),
-                        "external_thread_id": external_thread_id,
-                        "source_tool": "ingest",
-                        "request_id": ref.request_id,
-                        "request_context": request_context,
-                    },
+                    tool_args=_buf_tool_args,
                     message_inbox_id=ref.message_inbox_id,
                 )
                 if result.classification_error or result.routing_error or result.failed_targets:
@@ -1684,6 +1716,7 @@ class ButlerDaemon:
                 source_channel=parsed.request_context.source_channel,
                 conversation_history=parsed.input.conversation_history,
                 input_context=parsed.input.context,
+                attachments=parsed.input.attachments,
             )
             recovery_prompt = _wrap_routed_message(parsed.input.prompt)
 
@@ -2626,6 +2659,7 @@ class ButlerDaemon:
                     source_channel=source_channel,
                     conversation_history=parsed_route.input.conversation_history,
                     input_context=parsed_route.input.context,
+                    attachments=parsed_route.input.attachments,
                 )
                 prompt_text = _wrap_routed_message(parsed_route.input.prompt)
                 # Extract sender entity_id so spawner can propagate it to tool calls.
@@ -3180,6 +3214,7 @@ class ButlerDaemon:
                 message_inbox_id: Any,
                 triage_decision: str | None = None,
                 triage_target: str | None = None,
+                attachments: list[dict[str, Any]] | None = None,
             ) -> None:
                 """Background task: classify and route an ingested message."""
                 from butlers.modules.telegram import (
@@ -3229,22 +3264,26 @@ class ButlerDaemon:
 
                 routing_failed = False
                 _routing_error_detail: str | None = None
+                _tool_args: dict[str, Any] = {
+                    "source": channel,
+                    "source_channel": channel,
+                    "source_identity": endpoint_identity,
+                    "source_endpoint_identity": f"{channel}:{endpoint_identity}",
+                    "sender_identity": sender.get("identity", "unknown"),
+                    "external_event_id": event.get("external_event_id", ""),
+                    "external_thread_id": external_thread_id,
+                    "source_tool": "ingest",
+                    "request_id": request_id,
+                    "request_context": request_context,
+                }
+                if attachments:
+                    _tool_args["attachments"] = attachments
+
                 try:
                     result = await pipeline.process(
                         message_text=message_text,
                         tool_name="bot_switchboard_handle_message",
-                        tool_args={
-                            "source": channel,
-                            "source_channel": channel,
-                            "source_identity": endpoint_identity,
-                            "source_endpoint_identity": f"{channel}:{endpoint_identity}",
-                            "sender_identity": sender.get("identity", "unknown"),
-                            "external_event_id": event.get("external_event_id", ""),
-                            "external_thread_id": external_thread_id,
-                            "source_tool": "ingest",
-                            "request_id": request_id,
-                            "request_context": request_context,
-                        },
+                        tool_args=_tool_args,
                         message_inbox_id=message_inbox_id,
                     )
                     if result.classification_error or result.routing_error or result.failed_targets:
@@ -3323,6 +3362,13 @@ class ButlerDaemon:
                 # or fall back to direct create_task if buffer is unavailable.
                 if not result.duplicate and pipeline is not None:
                     normalized_text = payload.get("normalized_text", "")
+                    # Extract attachment metadata (eager + lazy) for routing context.
+                    _raw_attachments = payload.get("attachments")
+                    _attachments: list[dict[str, Any]] | None = (
+                        list(_raw_attachments)
+                        if isinstance(_raw_attachments, (list, tuple)) and _raw_attachments
+                        else None
+                    )
                     if normalized_text:
                         if buffer is not None:
                             buffer.enqueue(
@@ -3334,6 +3380,7 @@ class ButlerDaemon:
                                 sender=sender,
                                 triage_decision=result.triage_decision,
                                 triage_target=result.triage_target,
+                                attachments=_attachments,
                             )
                         else:
                             # Fallback: unbounded create_task (buffer not wired)
@@ -3348,6 +3395,7 @@ class ButlerDaemon:
                                     message_inbox_id=result.request_id,
                                     triage_decision=result.triage_decision,
                                     triage_target=result.triage_target,
+                                    attachments=_attachments,
                                 ),
                                 name=f"ingest-route-{result.request_id}",
                             )
@@ -3438,11 +3486,17 @@ class ButlerDaemon:
                     else Complexity.MEDIUM.value
                 )
 
+                # Forward attachment metadata from routing context so target
+                # butlers know what attachments exist and can fetch on demand.
+                _route_attachments = _routing_ctx.get("attachments")
+
                 _input: dict[str, Any] = {
                     "prompt": effective_prompt,
                     "context": context,
                     "complexity": _normalized_complexity,
                 }
+                if _route_attachments:
+                    _input["attachments"] = _route_attachments
 
                 # Structured sender identity from resolution (contact_id, entity_id).
                 rc: dict[str, Any] = {

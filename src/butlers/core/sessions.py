@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 # Valid trigger_source base values (schedule uses pattern "schedule:<task-name>")
 TRIGGER_SOURCES = frozenset({"tick", "external", "trigger", "route"})
 
+
+def _strip_null_bytes(value: str | None) -> str | None:
+    """Strip NUL characters that PostgreSQL text columns cannot store."""
+    if value is None:
+        return None
+    return value.replace("\x00", "")
+
+
 # JSONB columns that need deserialization from string → Python object
 _JSONB_FIELDS = ("tool_calls", "cost")
 _SUMMARY_PERIODS = frozenset({"today", "7d", "30d"})
@@ -113,7 +121,7 @@ async def session_create(
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id
         """,
-        prompt,
+        _strip_null_bytes(prompt),
         trigger_source,
         trace_id,
         model,
@@ -157,6 +165,13 @@ async def session_complete(
     Raises:
         ValueError: If ``session_id`` does not match an existing session.
     """
+    # PostgreSQL text columns reject NUL (\x00) characters.  LLM output
+    # occasionally contains them (e.g. from binary-ish attachments or model
+    # artefacts), so strip before writing.
+    safe_output = _strip_null_bytes(output)
+    safe_error = _strip_null_bytes(error)
+    safe_tool_calls = _strip_null_bytes(json.dumps(tool_calls))
+
     row = await pool.fetchval(
         """
         UPDATE sessions
@@ -173,12 +188,12 @@ async def session_complete(
         RETURNING id
         """,
         session_id,
-        output,
-        json.dumps(tool_calls),
+        safe_output,
+        safe_tool_calls,
         duration_ms,
         json.dumps(cost) if cost is not None else None,
         success,
-        error,
+        safe_error,
         input_tokens,
         output_tokens,
     )

@@ -239,6 +239,6 @@ async def test_ingest_persists_multiple_attachments(pool):
     assert attachments[1]["media_type"] == "application/pdf"
     assert attachments[1]["storage_ref"] == "s3://bucket/doc.pdf"
     assert attachments[1]["filename"] == "report.pdf"
-    # PDF has no width/height
-    assert attachments[1]["width"] is None
-    assert attachments[1]["height"] is None
+    # PDF has no width/height — None-valued fields are omitted from JSONB
+    assert attachments[1].get("width") is None
+    assert attachments[1].get("height") is None

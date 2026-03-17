@@ -1196,7 +1196,7 @@ def test_build_routing_prompt_with_single_attachment():
     assert "image/jpeg" in prompt
     assert "240.0KB" in prompt
     assert "local://2026/02/16/test-photo.jpg" in prompt
-    assert "get_attachment(storage_ref)" in prompt
+    assert "route_to_butler" in prompt
 
 
 def test_build_routing_prompt_with_multiple_attachments():

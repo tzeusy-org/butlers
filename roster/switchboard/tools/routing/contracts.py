@@ -152,16 +152,25 @@ class IngestSenderV1(BaseModel):
 
 
 class IngestAttachment(BaseModel):
-    """Attachment metadata for canonical ingest payloads."""
+    """Attachment metadata for canonical ingest payloads.
+
+    Eager-fetched attachments have a ``storage_ref`` pointing to blob storage.
+    Lazy-fetched attachments (e.g. large CSVs) have ``storage_ref=None`` and
+    carry ``source_message_id`` / ``source_attachment_id`` for on-demand
+    retrieval via the connector's ``fetch_attachment()`` method.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     media_type: NonEmptyStr
-    storage_ref: NonEmptyStr
+    storage_ref: NonEmptyStr | None = None
     size_bytes: int = Field(ge=0)
     filename: NonEmptyStr | None = None
     width: int | None = Field(default=None, ge=1)
     height: int | None = Field(default=None, ge=1)
+    # Lazy-fetch identifiers — set when storage_ref is None.
+    source_message_id: str | None = None
+    source_attachment_id: str | None = None
 
 
 class IngestPayloadV1(BaseModel):
@@ -324,7 +333,9 @@ class RouteRequestContextV1(BaseModel):
         )
 
 
-_ALLOWED_COMPLEXITY_VALUES: frozenset[str] = frozenset({"trivial", "medium", "high", "extra_high", "discretion"})
+_ALLOWED_COMPLEXITY_VALUES: frozenset[str] = frozenset(
+    {"trivial", "medium", "high", "extra_high", "discretion"}
+)
 
 
 class RouteInputV1(BaseModel):
@@ -336,6 +347,7 @@ class RouteInputV1(BaseModel):
     context: NonEmptyStr | dict[str, Any] | None = None
     conversation_history: str | None = None
     complexity: str = "medium"
+    attachments: list[dict[str, Any]] | None = None
 
     @field_validator("complexity")
     @classmethod

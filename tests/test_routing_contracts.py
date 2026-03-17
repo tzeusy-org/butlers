@@ -165,12 +165,11 @@ def test_ingest_attachment_minimal_fields():
 
 @pytest.mark.unit
 def test_ingest_attachment_missing_required_field():
-    """IngestAttachment should reject attachments missing required fields."""
+    """IngestAttachment should reject attachments missing required media_type."""
     envelope = _build_valid_ingest_envelope(text="Invalid attachment")
     envelope["payload"]["attachments"] = [
         {
-            "media_type": "image/jpeg",
-            # Missing storage_ref
+            # Missing media_type (required)
             "size_bytes": 1024,
         }
     ]
@@ -179,7 +178,28 @@ def test_ingest_attachment_missing_required_field():
         parse_ingest_envelope(envelope)
 
     errors = exc_info.value.errors()
-    assert any("storage_ref" in str(e.get("loc", [])) for e in errors)
+    assert any("media_type" in str(e.get("loc", [])) for e in errors)
+
+
+@pytest.mark.unit
+def test_ingest_attachment_lazy_without_storage_ref():
+    """IngestAttachment allows None storage_ref for lazy-fetched attachments."""
+    envelope = _build_valid_ingest_envelope(text="Lazy attachment")
+    envelope["payload"]["attachments"] = [
+        {
+            "media_type": "text/csv",
+            "size_bytes": 1024,
+            "filename": "data.csv",
+            "source_message_id": "msg123",
+            "source_attachment_id": "att456",
+        }
+    ]
+
+    parsed = parse_ingest_envelope(envelope)
+    att = parsed.payload.attachments[0]
+    assert att.storage_ref is None
+    assert att.source_message_id == "msg123"
+    assert att.source_attachment_id == "att456"
 
 
 @pytest.mark.unit

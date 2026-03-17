@@ -2275,9 +2275,7 @@ class GmailConnectorRuntime:
             and not body.get("data")
         ):
             try:
-                raw_bytes = await self._download_gmail_attachment(
-                    message_id, body["attachmentId"]
-                )
+                raw_bytes = await self._download_gmail_attachment(message_id, body["attachmentId"])
                 # Inline the fetched data as base64url (matching Gmail API format)
                 body["data"] = base64.urlsafe_b64encode(raw_bytes).decode("ascii")
                 logger.debug(
@@ -2533,6 +2531,13 @@ class GmailConnectorRuntime:
             blob_ref: BlobStore reference; NULL until materialized.
         """
         if not self._db_pool:
+            logger.warning(
+                "attachment_refs: db_pool unavailable, cannot persist ref for %s/%s (%s). "
+                "Lazy-fetch resolution will fall back to direct Gmail API download.",
+                message_id,
+                attachment_id,
+                filename or media_type,
+            )
             return
 
         try:
@@ -2701,10 +2706,20 @@ class GmailConnectorRuntime:
                     blob_ref=None,
                 )
 
-                # Lazy-fetched attachments are NOT included in the ingest
-                # envelope — IngestAttachment requires a non-empty storage_ref.
-                # The attachment_refs DB row (written above) is sufficient for
-                # on-demand fetch via fetch_attachment().
+                # Include lazy-fetched attachments in the ingest envelope with
+                # source identifiers so downstream butlers know attachments exist
+                # and can trigger on-demand fetch via fetch_attachment().
+                lazy_dict: dict[str, Any] = {
+                    "media_type": mime_type,
+                    "storage_ref": None,
+                    "size_bytes": size_bytes,
+                    "source_message_id": message_id,
+                    "source_attachment_id": attachment_id,
+                }
+                if filename:
+                    lazy_dict["filename"] = filename
+
+                processed_attachments.append(lazy_dict)
                 self._metrics.record_attachment_fetched(
                     media_type=mime_type, fetch_mode="lazy", result="success"
                 )
