@@ -431,3 +431,6 @@ butlers-ufzc worktree
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Healing worktrees (created by self-healing dispatcher)
+.healing-worktrees/
