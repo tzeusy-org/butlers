@@ -111,13 +111,29 @@ _RE_IPV6 = re.compile(
 # ---------------------------------------------------------------------------
 
 # Patterns that look like credentials but are actually harmless:
-# 40-hex-char git SHA-1 hashes
+# 40-hex-char git SHA-1 hashes (only lowercase hex — uppercase is not a git SHA)
 _RE_GIT_SHA = re.compile(r"\b[0-9a-f]{40}\b")
 # 64-hex-char git SHA-256 hashes
 _RE_GIT_SHA256 = re.compile(r"\b[0-9a-f]{64}\b")
 
-# Version strings like "3.12.0" or "Python 3.12.0" — four dotted number groups
+# Version strings like "3.12.0" or "Python 3.12.0" — four dotted number groups.
+# Used by both _scrub_ipv4 (via _is_preceded_by_version_keyword) and
+# validate_anonymized to avoid false-positive IPv4 hits on version quads.
 _RE_VERSION_QUAD = re.compile(r"\b\d+\.\d+\.\d+\.\d+\b")
+
+# ---------------------------------------------------------------------------
+# Path patterns
+# ---------------------------------------------------------------------------
+
+# Absolute filesystem paths: Unix-style /foo/bar or Windows-style C:\foo\bar.
+# Only matches at start-of-line or after whitespace so that URL path components
+# like the /sendMessage in "https://host/sendMessage" are not mistaken for
+# filesystem paths.
+_RE_ABS_PATH = re.compile(
+    r"(?:(?<=\s)|^)"
+    r"(?:/?(?:[A-Za-z]:)?/[^\s\"',;(){}\[\]<>]+)",
+    re.MULTILINE,
+)
 
 # ---------------------------------------------------------------------------
 # Environment scrubbing: hostnames
@@ -225,39 +241,23 @@ def _is_preceded_by_version_keyword(text: str, start: int) -> bool:
 
 def _scrub_ipv4(text: str) -> str:
     """Replace non-loopback IPv4 addresses, skipping version-string quads."""
-    result: list[str] = []
-    pos = 0
-    for m in _RE_IPV4.finditer(text):
-        start, end = m.start(), m.end()
 
+    def _replace_ipv4(m: re.Match[str]) -> str:
         # Skip if preceded by a version keyword (e.g. "version 1.2.3.4", "v1.2.3.4")
-        if _is_preceded_by_version_keyword(text, start):
-            result.append(text[pos:start])
-            result.append(m.group(0))
-            pos = end
-            continue
+        if _is_preceded_by_version_keyword(text, m.start()):
+            return m.group(0)
 
         octets = (m.group(1), m.group(2), m.group(3), m.group(4))
         if not all(_is_valid_ipv4_octet(o) for o in octets):
-            result.append(text[pos:start])
-            result.append(m.group(0))
-            pos = end
-            continue
+            return m.group(0)
 
         # Preserve localhost / loopback (127.x.x.x already excluded in regex)
-        first_octet = int(octets[0])
-        if first_octet == 127:
-            result.append(text[pos:start])
-            result.append(m.group(0))
-            pos = end
-            continue
+        if int(octets[0]) == 127:
+            return m.group(0)
 
-        result.append(text[pos:start])
-        result.append("[REDACTED-IP]")
-        pos = end
+        return "[REDACTED-IP]"
 
-    result.append(text[pos:])
-    return "".join(result)
+    return _RE_IPV4.sub(_replace_ipv4, text)
 
 
 def _scrub_credentials(text: str) -> str:
@@ -272,8 +272,12 @@ def _scrub_credentials(text: str) -> str:
     # OpenAI-style (sk- …) after Anthropic to avoid double-scrubbing
     text = _RE_OPENAI_KEY.sub("[REDACTED-API-KEY]", text)
 
-    # Generic labelled keys — replace whole match
+    # Generic labelled keys — replace whole match, but guard against git SHAs
     def _redact_generic(m: re.Match[str]) -> str:
+        token = m.group(1)
+        # Git SHA-1 (40 hex) and SHA-256 (64 hex) are not credentials even when labelled
+        if _RE_GIT_SHA.fullmatch(token) or _RE_GIT_SHA256.fullmatch(token):
+            return m.group(0)
         # Preserve label, replace token
         prefix = m.group(0)[: m.start(1) - m.start()]
         return prefix + "[REDACTED-API-KEY]"
@@ -308,9 +312,6 @@ def _scrub_pii(text: str) -> str:
 def _normalize_paths(text: str, repo_root: Path) -> str:
     """Replace absolute paths with repo-relative paths or [REDACTED-PATH]."""
     repo_str = str(repo_root.resolve())
-
-    # Match absolute paths: /something or C:\something (Windows)
-    _RE_ABS_PATH = re.compile(r"(?:/?(?:[A-Za-z]:)?/[^\s\"',;(){}\[\]<>]+)")
 
     def _replace_path(m: re.Match[str]) -> str:
         raw = m.group(0)
@@ -441,6 +442,15 @@ def validate_anonymized(text: str) -> tuple[bool, list[str]]:
     for pattern_type, pattern in _VALIDATION_RULES:
         for m in pattern.finditer(text):
             start, end = m.start(), m.end()
+
+            # IPv4 validation: skip version-string quads that anonymize() correctly
+            # preserved (e.g. "version 1.2.3.4", "v2.1.0.5").  These match the IPv4
+            # pattern but are not real IP addresses — flagging them would produce a
+            # false-positive block that prevents PR creation for harmless content.
+            if pattern_type == "IPv4 address pattern" and _is_preceded_by_version_keyword(
+                text, start
+            ):
+                continue
 
             # Build surrounding context without revealing the match value
             ctx_before = text[max(0, start - _CONTEXT_CHARS) : start]

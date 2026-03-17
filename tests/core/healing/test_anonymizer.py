@@ -81,7 +81,7 @@ class TestCredentialRedaction:
         text = "url: https://api.telegram.org/bot123456789:AAHabcXYZ-_tokenValue/sendMessage"
         result = anonymize(text, REPO_ROOT)
         assert "AAHabcXYZ-_tokenValue" not in result
-        assert "[REDACTED]" in result
+        assert "/bot[REDACTED]/" in result
 
     def test_bearer_token_redacted(self):
         text = "Authorization: Bearer eyABCDEF1234567890"
@@ -93,6 +93,7 @@ class TestCredentialRedaction:
         text = "authorization: bearer MySecretToken12345"
         result = anonymize(text, REPO_ROOT)
         assert "MySecretToken12345" not in result
+        assert "Bearer [REDACTED]" in result
 
     def test_generic_api_key_label_redacted(self):
         text = "api_key=supersecretvalue123456"
@@ -333,6 +334,28 @@ class TestValidateAnonymized:
         is_clean, violations = validate_anonymized(cleaned)
         assert is_clean is True, f"Residual violations: {violations}"
 
+    def test_version_string_preserved_by_anonymize_passes_validate(self):
+        """Version strings like 'version 1.2.3.4' must pass the full pipeline.
+
+        anonymize() correctly skips 4-part version quads when preceded by a
+        version keyword.  validate_anonymized() must not then flag them as
+        residual IPv4 addresses — that would be a false-positive block on
+        legitimate content.
+        """
+        raw = "Running version 1.2.3.4 of the package"
+        cleaned = anonymize(raw, REPO_ROOT)
+        assert "1.2.3.4" in cleaned, "anonymize() should preserve version strings"
+        is_clean, violations = validate_anonymized(cleaned)
+        assert is_clean is True, f"Pipeline false positive on version string: {violations}"
+
+    def test_python_version_quad_pipeline_clean(self):
+        """Python-prefixed version quads like 'Python 3.12.0.0' pass the pipeline."""
+        raw = "Python 3.12.0.0 interpreter"
+        cleaned = anonymize(raw, REPO_ROOT)
+        assert "3.12.0.0" in cleaned
+        is_clean, violations = validate_anonymized(cleaned)
+        assert is_clean is True, f"Pipeline false positive on Python version: {violations}"
+
     def test_placeholders_not_flagged(self):
         """[REDACTED-*] placeholders inserted by anonymize should not trigger validation."""
         text = "[REDACTED-EMAIL] and [REDACTED-API-KEY] and [REDACTED-IP]"
@@ -381,12 +404,33 @@ class TestFalsePositiveGuards:
         assert sha in result
         assert "[REDACTED-API-KEY]" not in result
 
+    def test_git_sha_labeled_not_treated_as_api_key(self):
+        """40-char hex git SHA-1 labelled with api_key: must NOT be redacted.
+
+        The generic API key guard must check if the token is a git SHA before
+        redacting.  Without this guard, 'api_key: <sha>' would be erroneously
+        redacted to 'api_key: [REDACTED-API-KEY]'.
+        """
+        sha = "7c42c7a8e98d3c4b5e6f7a8b9c0d1e2f3a4b5c6d"
+        text = f"api_key: {sha}"
+        result = anonymize(text, REPO_ROOT)
+        assert sha in result
+        assert "[REDACTED-API-KEY]" not in result
+
     def test_git_sha256_not_treated_as_api_key(self):
         """64-char hex git SHA-256 must NOT be treated as a credential."""
         sha256 = "a" * 64
         text = f"Object: {sha256}"
         result = anonymize(text, REPO_ROOT)
         assert sha256 in result
+
+    def test_git_sha256_labeled_not_treated_as_api_key(self):
+        """64-char hex git SHA-256 labelled with secret_key: must NOT be redacted."""
+        sha256 = "b" * 64
+        text = f"secret_key: {sha256}"
+        result = anonymize(text, REPO_ROOT)
+        assert sha256 in result
+        assert "[REDACTED-API-KEY]" not in result
 
     def test_short_hex_string_not_treated_as_key(self):
         """Short hex identifiers (like 12-char fingerprints) should not be redacted."""
