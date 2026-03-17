@@ -323,30 +323,7 @@ class TestSpendingSummaryOverlay:
             {"key": "electronics", "amount": Decimal("60.00"), "count": 2},
             {"key": "dining", "amount": Decimal("40.00"), "count": 3},
         ]
-
-        import importlib.util
-        import sys
-        from pathlib import Path
-
-        router_path = Path(__file__).parents[2] / "roster" / "finance" / "api" / "router.py"
-        module_name = "finance_api_router"
-        if module_name not in sys.modules:
-            spec = importlib.util.spec_from_file_location(module_name, router_path)
-            assert spec is not None and spec.loader is not None
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = mod
-            spec.loader.exec_module(mod)
-        finance_router_mod = sys.modules[module_name]
-
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=_make_record(total_row))
-        mock_pool.fetch = AsyncMock(return_value=[_make_record(r) for r in group_rows])
-
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.pool.return_value = mock_pool
-
-        app = create_app()
-        app.dependency_overrides[finance_router_mod._get_db_manager] = lambda: mock_db
+        app, mock_pool, _ = _build_finance_app_with_spending(total_row, group_rows)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -377,30 +354,7 @@ class TestSpendingSummaryOverlay:
             {"key": "Amazon", "amount": Decimal("120.00"), "count": 5},
             {"key": "Blue Bottle Coffee", "amount": Decimal("80.00"), "count": 4},
         ]
-
-        import importlib.util
-        import sys
-        from pathlib import Path
-
-        router_path = Path(__file__).parents[2] / "roster" / "finance" / "api" / "router.py"
-        module_name = "finance_api_router"
-        if module_name not in sys.modules:
-            spec = importlib.util.spec_from_file_location(module_name, router_path)
-            assert spec is not None and spec.loader is not None
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = mod
-            spec.loader.exec_module(mod)
-        finance_router_mod = sys.modules[module_name]
-
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=_make_record(total_row))
-        mock_pool.fetch = AsyncMock(return_value=[_make_record(r) for r in group_rows])
-
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.pool.return_value = mock_pool
-
-        app = create_app()
-        app.dependency_overrides[finance_router_mod._get_db_manager] = lambda: mock_db
+        app, mock_pool, _ = _build_finance_app_with_spending(total_row, group_rows)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -432,30 +386,7 @@ class TestSpendingSummaryOverlay:
         group_rows = [
             {"key": "groceries", "amount": Decimal("55.00"), "count": 3},
         ]
-
-        import importlib.util
-        import sys
-        from pathlib import Path
-
-        router_path = Path(__file__).parents[2] / "roster" / "finance" / "api" / "router.py"
-        module_name = "finance_api_router"
-        if module_name not in sys.modules:
-            spec = importlib.util.spec_from_file_location(module_name, router_path)
-            assert spec is not None and spec.loader is not None
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = mod
-            spec.loader.exec_module(mod)
-        finance_router_mod = sys.modules[module_name]
-
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=_make_record(total_row))
-        mock_pool.fetch = AsyncMock(return_value=[_make_record(r) for r in group_rows])
-
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.pool.return_value = mock_pool
-
-        app = create_app()
-        app.dependency_overrides[finance_router_mod._get_db_manager] = lambda: mock_db
+        app, _, _ = _build_finance_app_with_spending(total_row, group_rows, currency="EUR")
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
