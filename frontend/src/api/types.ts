@@ -2218,6 +2218,14 @@ export interface ModelCatalogEntry {
   complexity_tier: ComplexityTier;
   enabled: boolean;
   priority: number;
+  /** Rolling 24h token usage (from ledger aggregation). */
+  usage_24h: number;
+  /** Rolling 30d token usage (from ledger aggregation). */
+  usage_30d: number;
+  /** Configured 24h token limit; null = unlimited. */
+  limit_24h: number | null;
+  /** Configured 30d token limit; null = unlimited. */
+  limit_30d: number | null;
 }
 
 /** Request body for creating a catalog entry. */
@@ -2277,6 +2285,47 @@ export interface ResolveModelResponse {
   model_id: string | null;
   extra_args: string[];
   resolved: boolean;
+  /** True when either window's usage meets or exceeds its configured limit. */
+  quota_blocked: boolean;
+  usage_24h: number;
+  limit_24h: number | null;
+  usage_30d: number;
+  limit_30d: number | null;
+}
+
+/** Request body for PUT /api/settings/models/{entry_id}/limits. */
+export interface TokenLimitsRequest {
+  limit_24h: number | null;
+  limit_30d: number | null;
+}
+
+/** Response from PUT /api/settings/models/{entry_id}/limits. */
+export interface TokenLimitsResponse {
+  catalog_entry_id: string;
+  limit_24h: number | null;
+  limit_30d: number | null;
+  deleted: boolean;
+}
+
+/** Window selector for POST /api/settings/models/{entry_id}/reset-usage. */
+export type UsageWindow = "24h" | "30d" | "both";
+
+/** Request body for POST /api/settings/models/{entry_id}/reset-usage. */
+export interface ResetUsageRequest {
+  window: UsageWindow;
+}
+
+/** Response from GET /api/settings/models/{entry_id}/usage. */
+export interface TokenUsageDetail {
+  catalog_entry_id: string;
+  usage_24h: number;
+  usage_30d: number;
+  limit_24h: number | null;
+  limit_30d: number | null;
+  reset_24h_at: string | null;
+  reset_30d_at: string | null;
+  percent_24h: number | null;
+  percent_30d: number | null;
 }
 
 // ---------------------------------------------------------------------------

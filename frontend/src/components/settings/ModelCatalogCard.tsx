@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Info, Loader2, FlaskConical, Check, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Info, Loader2, FlaskConical, Check, X, RefreshCw, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
-import type { ComplexityTier, ModelCatalogCreate, ModelCatalogEntry, ModelTestResult } from "@/api/types.ts";
+import type { ComplexityTier, ModelCatalogCreate, ModelCatalogEntry, ModelTestResult, UsageWindow } from "@/api/types.ts";
 import { ComplexityBadge, COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -52,7 +52,254 @@ import {
   useModelCatalog,
   useTestModelCatalogEntry,
   useUpdateModelCatalogEntry,
+  useSetModelTokenLimits,
+  useResetModelUsage,
 } from "@/hooks/use-model-catalog.ts";
+
+// ---------------------------------------------------------------------------
+// Token count formatting
+// ---------------------------------------------------------------------------
+
+/** Format token count as a short string: 142312 -> "142K", 1234567 -> "1.2M". */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
+
+/** Format token count with commas: 142312 -> "142,312". */
+function formatTokensExact(n: number): string {
+  return n.toLocaleString();
+}
+
+// ---------------------------------------------------------------------------
+// Progress bar color
+// ---------------------------------------------------------------------------
+
+/** Compute a Tailwind background-color class based on percent used (0-100+). */
+function usageBarColor(percent: number): string {
+  if (percent >= 100) return "bg-red-600";
+  if (percent >= 85) return "bg-red-500";
+  if (percent >= 60) return "bg-yellow-500";
+  return "bg-emerald-500";
+}
+
+// ---------------------------------------------------------------------------
+// UsageBar — mini horizontal progress bar with label, reset button, and tooltip
+// ---------------------------------------------------------------------------
+
+interface UsageBarProps {
+  entryId: string;
+  window: UsageWindow;
+  used: number;
+  limit: number | null;
+  resetAt?: string | null;
+  onLimitClick?: () => void;
+}
+
+function UsageBar({ entryId, window: usageWindow, used, limit, resetAt, onLimitClick }: UsageBarProps) {
+  const resetMutation = useResetModelUsage();
+
+  const percent = limit != null ? (used / limit) * 100 : null;
+  const isBlocked = limit != null && used >= limit;
+  const windowLabel = usageWindow === "24h" ? "Rolling 24h window" : "Rolling 30d window";
+
+  // Tooltip lines
+  const tooltipLines: string[] = [];
+  if (limit != null) {
+    tooltipLines.push(`${formatTokensExact(used)} / ${formatTokensExact(limit)} tokens`);
+    tooltipLines.push(`${Math.round((used / limit) * 100)}% used · ${windowLabel}`);
+  } else {
+    tooltipLines.push(`${formatTokensExact(used)} tokens used`);
+    tooltipLines.push(`No limit · ${windowLabel}`);
+  }
+  if (resetAt) {
+    const resetDate = new Date(resetAt);
+    const diffMs = Date.now() - resetDate.getTime();
+    const diffH = diffMs / (1000 * 60 * 60);
+    const relativeStr = diffH < 1
+      ? `${Math.round(diffH * 60)}m ago`
+      : diffH < 24
+        ? `${Math.round(diffH)}h ago`
+        : `${Math.round(diffH / 24)}d ago`;
+    tooltipLines.push(`Last reset: ${relativeStr}`);
+  }
+
+  function handleReset(e: React.MouseEvent) {
+    e.stopPropagation();
+    resetMutation.mutate(
+      { id: entryId, body: { window: usageWindow } },
+      {
+        onSuccess: () => toast.success(`Reset ${usageWindow} usage`),
+        onError: (err) => toast.error(`Reset failed: ${err instanceof Error ? err.message : "Unknown error"}`),
+      },
+    );
+  }
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="flex flex-col gap-0.5 min-w-[110px]">
+            {/* Text label row */}
+            <div className="flex items-center gap-1">
+              <span className="text-xs tabular-nums text-muted-foreground whitespace-nowrap">
+                {formatTokens(used)} /{" "}
+                <button
+                  type="button"
+                  className="underline decoration-dotted hover:text-foreground cursor-pointer"
+                  title={limit != null ? "Click to edit limit" : "Click to set a limit"}
+                  onClick={(e) => { e.stopPropagation(); onLimitClick?.(); }}
+                >
+                  {limit != null ? formatTokens(limit) : "-"}
+                </button>
+              </span>
+              {isBlocked && (
+                <Badge className="h-3.5 px-1 text-[9px] leading-none bg-red-600 text-white hover:bg-red-600">
+                  BLOCKED
+                </Badge>
+              )}
+              <button
+                type="button"
+                title={`Reset ${usageWindow} usage`}
+                className="ml-auto h-3.5 w-3.5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-30"
+                onClick={handleReset}
+                disabled={resetMutation.isPending}
+              >
+                {resetMutation.isPending ? (
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-2.5 w-2.5" />
+                )}
+              </button>
+            </div>
+            {/* Progress bar (only when limit is set) */}
+            {limit != null && percent != null && (
+              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${usageBarColor(percent)}`}
+                  style={{ width: `${Math.min(percent, 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-64">
+          <div className="space-y-0.5 text-xs">
+            {tooltipLines.map((line, i) => (
+              // eslint-disable-next-line react/no-array-index-key
+              <div key={i}>{line}</div>
+            ))}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline limit editor dialog
+// ---------------------------------------------------------------------------
+
+interface LimitEditorDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  entry: ModelCatalogEntry;
+  window: UsageWindow;
+}
+
+function LimitEditorDialog({ open, onOpenChange, entry, window: usageWindow }: LimitEditorDialogProps) {
+  const setLimitsMutation = useSetModelTokenLimits();
+
+  const current24h = entry.limit_24h;
+  const current30d = entry.limit_30d;
+  const currentValue = usageWindow === "24h" ? current24h : current30d;
+
+  const [raw, setRaw] = useState(currentValue != null ? String(currentValue) : "");
+  const [error, setError] = useState<string | null>(null);
+
+  const windowLabel = usageWindow === "24h" ? "24-hour" : "30-day";
+
+  function handleSave() {
+    const trimmed = raw.trim();
+    let newLimit: number | null;
+    if (trimmed === "" || trimmed === "-") {
+      newLimit = null;
+    } else {
+      const parsed = parseInt(trimmed, 10);
+      if (isNaN(parsed) || parsed < 1) {
+        setError("Enter a positive integer or leave blank to remove the limit");
+        return;
+      }
+      newLimit = parsed;
+    }
+
+    const body = usageWindow === "24h"
+      ? { limit_24h: newLimit, limit_30d: current30d ?? null }
+      : { limit_24h: current24h ?? null, limit_30d: newLimit };
+
+    setLimitsMutation.mutate(
+      { id: entry.id, body },
+      {
+        onSuccess: () => {
+          toast.success(
+            `${windowLabel} limit ${newLimit != null
+              ? `set to ${formatTokensExact(newLimit)} tokens`
+              : "removed"} for ${entry.alias}`,
+          );
+          onOpenChange(false);
+        },
+        onError: (err) => {
+          setError(err instanceof Error ? err.message : "Failed to save limit");
+        },
+      },
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Edit {windowLabel} token limit</DialogTitle>
+          <DialogDescription>
+            Set a rolling token budget for <strong>{entry.alias}</strong>.
+            Leave blank to remove the limit (unlimited).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label htmlFor="limit-value">Token limit</Label>
+            <Input
+              id="limit-value"
+              type="number"
+              min={1}
+              value={raw}
+              onChange={(e) => { setRaw(e.target.value); setError(null); }}
+              placeholder="e.g. 500000 (blank = unlimited)"
+              disabled={setLimitsMutation.isPending}
+            />
+            <p className="text-xs text-muted-foreground">
+              Total tokens (input + output) per rolling {usageWindow} window.
+            </p>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={setLimitsMutation.isPending}
+          >
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={setLimitsMutation.isPending}>
+            {setLimitsMutation.isPending ? "Saving..." : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Preset templates
@@ -450,6 +697,8 @@ function SkeletonRows({ count = 4 }: { count?: number }) {
           <TableCell><Skeleton className="h-4 w-24" /></TableCell>
           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-12" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
           <TableCell className="text-right"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
         </TableRow>
       ))}
@@ -476,6 +725,12 @@ export function ModelCatalogCard() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [testResults, setTestResults] = useState<Record<string, ModelTestResult>>({});
+
+  // Limit editor: which entry + window is being edited
+  const [limitEditor, setLimitEditor] = useState<{
+    entry: ModelCatalogEntry;
+    window: UsageWindow;
+  } | null>(null);
 
   function handleAddClick() {
     setEditingEntry(null);
@@ -622,9 +877,11 @@ export function ModelCatalogCard() {
                   <TableHead>Alias</TableHead>
                   <TableHead>Runtime</TableHead>
                   <TableHead>Model ID</TableHead>
-                  <TableHead>Complexity</TableHead>
+                  <TableHead>Extra Args</TableHead>
                   <TableHead>Priority</TableHead>
                   <TableHead>Enabled</TableHead>
+                  <TableHead>24h</TableHead>
+                  <TableHead>30d</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -650,6 +907,18 @@ export function ModelCatalogCard() {
                   <TableHead>Extra Args</TableHead>
                   <TableHead>Priority</TableHead>
                   <TableHead>Enabled</TableHead>
+                  <TableHead
+                    className="text-xs"
+                    title="Rolling 24h token usage. Click the limit to edit."
+                  >
+                    24h
+                  </TableHead>
+                  <TableHead
+                    className="text-xs"
+                    title="Rolling 30d token usage. Click the limit to edit."
+                  >
+                    30d
+                  </TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -657,7 +926,7 @@ export function ModelCatalogCard() {
                 {grouped.map(({ tier, entries: tierEntries }) => (
                   <>
                     <TableRow key={`tier-${tier}`} className="hover:bg-transparent">
-                      <TableCell colSpan={7} className="py-2 px-0">
+                      <TableCell colSpan={9} className="py-2 px-0">
                         <div className="flex items-center gap-2">
                           <ComplexityBadge tier={tier} />
                           {tier === "discretion" && (
@@ -763,6 +1032,26 @@ export function ModelCatalogCard() {
                             )}
                           </button>
                         </TableCell>
+                        {/* 24h usage column */}
+                        <TableCell className="min-w-[120px]">
+                          <UsageBar
+                            entryId={entry.id}
+                            window="24h"
+                            used={entry.usage_24h}
+                            limit={entry.limit_24h}
+                            onLimitClick={() => setLimitEditor({ entry, window: "24h" })}
+                          />
+                        </TableCell>
+                        {/* 30d usage column */}
+                        <TableCell className="min-w-[120px]">
+                          <UsageBar
+                            entryId={entry.id}
+                            window="30d"
+                            used={entry.usage_30d}
+                            limit={entry.limit_30d}
+                            onLimitClick={() => setLimitEditor({ entry, window: "30d" })}
+                          />
+                        </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
                             <Button
@@ -845,6 +1134,16 @@ export function ModelCatalogCard() {
         onConfirm={handleDeleteConfirm}
         isDeleting={deleteMutation.isPending}
       />
+
+      {/* Limit editor dialog */}
+      {limitEditor && (
+        <LimitEditorDialog
+          open={!!limitEditor}
+          onOpenChange={(open) => { if (!open) setLimitEditor(null); }}
+          entry={limitEditor.entry}
+          window={limitEditor.window}
+        />
+      )}
     </>
   );
 }

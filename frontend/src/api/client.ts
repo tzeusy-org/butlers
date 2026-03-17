@@ -141,6 +141,10 @@ import type {
   ButlerModelOverride,
   ButlerModelOverrideUpsert,
   ResolveModelResponse,
+  TokenLimitsRequest,
+  TokenLimitsResponse,
+  ResetUsageRequest,
+  TokenUsageDetail,
   ProviderConfig,
   ProviderConfigCreate,
   ProviderConfigUpdate,
@@ -2558,6 +2562,43 @@ export function resolveButlerModel(
 ): Promise<ApiResponse<ResolveModelResponse>> {
   return apiFetch<ApiResponse<ResolveModelResponse>>(
     `/butlers/${encodeURIComponent(butlerName)}/resolve-model?complexity=${encodeURIComponent(complexity)}`,
+  );
+}
+
+/** PUT /api/settings/models/{id}/limits — set or update token limits */
+export function setModelTokenLimits(
+  id: string,
+  body: TokenLimitsRequest,
+): Promise<ApiResponse<TokenLimitsResponse>> {
+  return apiFetch<ApiResponse<TokenLimitsResponse>>(
+    `/settings/models/${encodeURIComponent(id)}/limits`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** POST /api/settings/models/{id}/reset-usage — reset usage window(s) */
+export function resetModelUsage(
+  id: string,
+  body: ResetUsageRequest,
+): Promise<ApiResponse<{ catalog_entry_id: string; window: string; reset: boolean }>> {
+  return apiFetch<ApiResponse<{ catalog_entry_id: string; window: string; reset: boolean }>>(
+    `/settings/models/${encodeURIComponent(id)}/reset-usage`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** GET /api/settings/models/{id}/usage — detailed usage for a single entry */
+export function getModelUsageDetail(
+  id: string,
+): Promise<ApiResponse<TokenUsageDetail>> {
+  return apiFetch<ApiResponse<TokenUsageDetail>>(
+    `/settings/models/${encodeURIComponent(id)}/usage`,
   );
 }
 

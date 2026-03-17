@@ -14,11 +14,16 @@ import {
   testModelCatalogEntry,
   updateModelCatalogEntry,
   upsertButlerModelOverrides,
+  setModelTokenLimits,
+  resetModelUsage,
+  getModelUsageDetail,
 } from "@/api/index.ts";
 import type {
   ModelCatalogCreate,
   ModelCatalogUpdate,
   ButlerModelOverrideUpsert,
+  TokenLimitsRequest,
+  ResetUsageRequest,
 } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -128,5 +133,43 @@ export function useResolveModel(butlerName: string, complexity: string) {
     queryFn: () => resolveButlerModel(butlerName, complexity),
     enabled: !!butlerName && !!complexity,
     staleTime: 30_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Token limits and usage
+// ---------------------------------------------------------------------------
+
+/** Mutation to set or update token limits for a catalog entry. */
+export function useSetModelTokenLimits() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: TokenLimitsRequest }) =>
+      setModelTokenLimits(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["model-catalog"] });
+    },
+  });
+}
+
+/** Mutation to reset usage window(s) for a catalog entry. */
+export function useResetModelUsage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: ResetUsageRequest }) =>
+      resetModelUsage(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["model-catalog"] });
+    },
+  });
+}
+
+/** Query detailed usage for a single catalog entry (for tooltip refresh). */
+export function useModelUsageDetail(entryId: string, enabled = false) {
+  return useQuery({
+    queryKey: ["model-usage-detail", entryId],
+    queryFn: () => getModelUsageDetail(entryId),
+    enabled: !!entryId && enabled,
+    staleTime: 10_000,
   });
 }
