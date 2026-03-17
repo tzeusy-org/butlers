@@ -1107,3 +1107,424 @@ class TestSpendingSummaryFacts:
         )
         # Should not raise; total should include the seeded debit transactions
         assert Decimal(result["total_spend"]) >= Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# list_distinct_merchants
+# ---------------------------------------------------------------------------
+
+
+class TestListDistinctMerchants:
+    """Tests for list_distinct_merchants — aggregate query with merchant grouping."""
+
+    @pytest.fixture
+    async def seeded_merchants(self, pool_with_owner):
+        """Pool with multiple transactions across a few merchants."""
+        with patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=_mock_embedding_engine(),
+        ):
+            from butlers.tools.finance.facts import record_transaction_fact
+
+            now = _utcnow()
+            entries = [
+                ("TRADER JOES #123", -55.00, "groceries"),
+                ("TRADER JOES #456", -40.00, "groceries"),
+                ("NETFLIX.COM", -15.49, "subscriptions"),
+                ("NETFLIX.COM", -15.49, "subscriptions"),
+                ("STARBUCKS STORE 001", -6.75, "dining"),
+            ]
+            for merchant, amount, category in entries:
+                await record_transaction_fact(
+                    pool=pool_with_owner,
+                    posted_at=now,
+                    merchant=merchant,
+                    amount=amount,
+                    currency="USD",
+                    category=category,
+                )
+        return pool_with_owner
+
+    async def test_returns_distinct_merchants(self, seeded_merchants):
+        from butlers.tools.finance.facts import list_distinct_merchants
+
+        result = await list_distinct_merchants(pool=seeded_merchants)
+        assert "items" in result
+        assert "total" in result
+        merchants = {item["merchant"] for item in result["items"]}
+        assert "TRADER JOES #123" in merchants
+        assert "NETFLIX.COM" in merchants
+
+    async def test_count_and_total_amount(self, seeded_merchants):
+        from butlers.tools.finance.facts import list_distinct_merchants
+
+        result = await list_distinct_merchants(pool=seeded_merchants)
+        netflix_item = next(i for i in result["items"] if i["merchant"] == "NETFLIX.COM")
+        assert netflix_item["count"] == 2
+        assert Decimal(netflix_item["total_amount"]) == Decimal("30.98")
+
+    async def test_min_count_filter(self, seeded_merchants):
+        from butlers.tools.finance.facts import list_distinct_merchants
+
+        result = await list_distinct_merchants(pool=seeded_merchants, min_count=2)
+        # Only NETFLIX.COM has 2 transactions
+        for item in result["items"]:
+            assert item["count"] >= 2
+
+    async def test_empty_pool(self, pool_with_owner):
+        from butlers.tools.finance.facts import list_distinct_merchants
+
+        result = await list_distinct_merchants(pool=pool_with_owner)
+        assert result["total"] == 0
+        assert result["items"] == []
+
+    async def test_pagination(self, seeded_merchants):
+        from butlers.tools.finance.facts import list_distinct_merchants
+
+        result = await list_distinct_merchants(pool=seeded_merchants, limit=2, offset=0)
+        assert len(result["items"]) == 2
+        assert result["total"] >= 3
+
+    async def test_limit_capped_at_max(self, seeded_merchants):
+        from butlers.tools.finance.facts import list_distinct_merchants
+
+        result = await list_distinct_merchants(pool=seeded_merchants, limit=9999)
+        assert result["limit"] == 1000  # capped at max
+
+    async def test_unnormalized_only(self, seeded_merchants):
+        """unnormalized_only=True returns only merchants without normalized_merchant."""
+        from butlers.tools.finance.facts import bulk_update_transactions, list_distinct_merchants
+
+        # Normalize NETFLIX.COM
+        await bulk_update_transactions(
+            pool=seeded_merchants,
+            ops=[
+                {
+                    "match": {"merchant_pattern": "NETFLIX%"},
+                    "set": {"normalized_merchant": "Netflix"},
+                }
+            ],
+        )
+
+        result = await list_distinct_merchants(pool=seeded_merchants, unnormalized_only=True)
+        merchant_names = {i["merchant"] for i in result["items"]}
+        assert "NETFLIX.COM" not in merchant_names
+
+    async def test_normalized_merchant_field_populated(self, seeded_merchants):
+        """After normalization, normalized_merchant is present in results."""
+        from butlers.tools.finance.facts import bulk_update_transactions, list_distinct_merchants
+
+        await bulk_update_transactions(
+            pool=seeded_merchants,
+            ops=[
+                {
+                    "match": {"merchant_pattern": "NETFLIX%"},
+                    "set": {"normalized_merchant": "Netflix"},
+                }
+            ],
+        )
+
+        result = await list_distinct_merchants(pool=seeded_merchants)
+        netflix_items = [i for i in result["items"] if "NETFLIX" in i["merchant"]]
+        assert len(netflix_items) > 0
+        assert netflix_items[0]["normalized_merchant"] == "Netflix"
+
+    async def test_date_filter(self, pool_with_owner):
+        """Transactions outside the date range are excluded."""
+        with patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=_mock_embedding_engine(),
+        ):
+            from butlers.tools.finance.facts import list_distinct_merchants, record_transaction_fact
+
+            old = _utcnow() - timedelta(days=60)
+            new = _utcnow() - timedelta(days=1)
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=old,
+                merchant="OldShop",
+                amount=-10.00,
+                currency="USD",
+                category="misc",
+            )
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=new,
+                merchant="NewShop",
+                amount=-20.00,
+                currency="USD",
+                category="misc",
+            )
+
+        cutoff = (_utcnow() - timedelta(days=30)).date()
+        result = await list_distinct_merchants(pool=pool_with_owner, start_date=cutoff)
+        merchants = {i["merchant"] for i in result["items"]}
+        assert "NewShop" in merchants
+        assert "OldShop" not in merchants
+
+
+# ---------------------------------------------------------------------------
+# bulk_update_transactions
+# ---------------------------------------------------------------------------
+
+
+class TestBulkUpdateTransactions:
+    """Tests for bulk_update_transactions — metadata overlay."""
+
+    @pytest.fixture
+    async def seeded_bulk(self, pool_with_owner):
+        """Pool with transactions for bulk update testing."""
+        with patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=_mock_embedding_engine(),
+        ):
+            from butlers.tools.finance.facts import record_transaction_fact
+
+            now = _utcnow()
+            txns = [
+                ("STARBUCKS STORE 001", -5.50, "dining"),
+                ("STARBUCKS STORE 002", -6.00, "dining"),
+                ("AMAZON MKTPL", -25.00, "shopping"),
+            ]
+            for merchant, amount, category in txns:
+                await record_transaction_fact(
+                    pool=pool_with_owner,
+                    posted_at=now,
+                    merchant=merchant,
+                    amount=amount,
+                    currency="USD",
+                    category=category,
+                )
+        return pool_with_owner
+
+    async def test_normalized_merchant_overlay_applied(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        result = await bulk_update_transactions(
+            pool=seeded_bulk,
+            ops=[
+                {
+                    "match": {"merchant_pattern": "STARBUCKS%"},
+                    "set": {"normalized_merchant": "Starbucks"},
+                }
+            ],
+        )
+
+        assert result["updated_total"] == 2
+        assert result["results"][0]["updated"] == 2
+
+        # Verify overlay in DB
+        rows = await seeded_bulk.fetch(
+            "SELECT metadata->>'normalized_merchant' AS nm FROM facts "
+            "WHERE metadata->>'merchant' LIKE 'STARBUCKS%'"
+        )
+        assert all(r["nm"] == "Starbucks" for r in rows)
+
+    async def test_inferred_category_overlay_applied(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        await bulk_update_transactions(
+            pool=seeded_bulk,
+            ops=[
+                {
+                    "match": {"merchant_pattern": "AMAZON%"},
+                    "set": {"inferred_category": "online_shopping"},
+                }
+            ],
+        )
+
+        rows = await seeded_bulk.fetch(
+            "SELECT metadata->>'inferred_category' AS ic FROM facts "
+            "WHERE metadata->>'merchant' LIKE 'AMAZON%'"
+        )
+        assert all(r["ic"] == "online_shopping" for r in rows)
+
+    async def test_original_merchant_not_modified(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        await bulk_update_transactions(
+            pool=seeded_bulk,
+            ops=[
+                {
+                    "match": {"merchant_pattern": "STARBUCKS%"},
+                    "set": {"normalized_merchant": "Starbucks"},
+                }
+            ],
+        )
+
+        # Original merchant field in metadata must be unchanged
+        rows = await seeded_bulk.fetch(
+            "SELECT metadata->>'merchant' AS m FROM facts "
+            "WHERE metadata->>'normalized_merchant' = 'Starbucks'"
+        )
+        for r in rows:
+            assert "STARBUCKS" in r["m"]
+
+    async def test_original_category_not_modified(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        await bulk_update_transactions(
+            pool=seeded_bulk,
+            ops=[
+                {
+                    "match": {"merchant_pattern": "STARBUCKS%"},
+                    "set": {"inferred_category": "coffee"},
+                }
+            ],
+        )
+
+        rows = await seeded_bulk.fetch(
+            "SELECT metadata->>'category' AS c FROM facts "
+            "WHERE metadata->>'merchant' LIKE 'STARBUCKS%'"
+        )
+        assert all(r["c"] == "dining" for r in rows)  # original unchanged
+
+    async def test_multiple_ops(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        result = await bulk_update_transactions(
+            pool=seeded_bulk,
+            ops=[
+                {
+                    "match": {"merchant_pattern": "STARBUCKS%"},
+                    "set": {"normalized_merchant": "Starbucks"},
+                },
+                {
+                    "match": {"merchant_pattern": "AMAZON%"},
+                    "set": {"normalized_merchant": "Amazon"},
+                },
+            ],
+        )
+
+        assert len(result["results"]) == 2
+        assert result["updated_total"] == 3  # 2 Starbucks + 1 Amazon
+
+    async def test_no_match_returns_zero(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        result = await bulk_update_transactions(
+            pool=seeded_bulk,
+            ops=[
+                {
+                    "match": {"merchant_pattern": "NONEXISTENT%"},
+                    "set": {"normalized_merchant": "NoOne"},
+                }
+            ],
+        )
+
+        assert result["updated_total"] == 0
+        assert result["results"][0]["updated"] == 0
+
+    async def test_too_many_ops_raises(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        ops = [
+            {"match": {"merchant_pattern": f"MERCHANT{i}%"}, "set": {"normalized_merchant": "X"}}
+            for i in range(201)
+        ]
+        with pytest.raises(ValueError, match="Too many ops"):
+            await bulk_update_transactions(pool=seeded_bulk, ops=ops)
+
+    async def test_disallowed_set_key_raises(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        with pytest.raises(ValueError, match="not allowed"):
+            await bulk_update_transactions(
+                pool=seeded_bulk,
+                ops=[
+                    {
+                        "match": {"merchant_pattern": "STARBUCKS%"},
+                        "set": {"merchant": "Hacked"},  # not allowed
+                    }
+                ],
+            )
+
+    async def test_missing_merchant_pattern_raises(self, seeded_bulk):
+        from butlers.tools.finance.facts import bulk_update_transactions
+
+        with pytest.raises(ValueError, match="merchant_pattern"):
+            await bulk_update_transactions(
+                pool=seeded_bulk,
+                ops=[{"match": {}, "set": {"normalized_merchant": "X"}}],
+            )
+
+
+# ---------------------------------------------------------------------------
+# Overlay preference in _fact_row_to_transaction and spending_summary_facts
+# ---------------------------------------------------------------------------
+
+
+class TestOverlayPreference:
+    """Verify overlay fields (normalized_merchant, inferred_category) are preferred
+    in list_transaction_facts and spending_summary_facts."""
+
+    @pytest.fixture
+    async def seeded_overlay(self, pool_with_owner):
+        """Pool with two Starbucks variants, one normalized."""
+        with patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=_mock_embedding_engine(),
+        ):
+            from butlers.tools.finance.facts import (
+                bulk_update_transactions,
+                record_transaction_fact,
+            )
+
+            now = _utcnow()
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="STARBUCKS #001",
+                amount=-5.00,
+                currency="USD",
+                category="dining",
+            )
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now - timedelta(hours=1),
+                merchant="STARBUCKS RESERVE",
+                amount=-8.00,
+                currency="USD",
+                category="dining",
+            )
+            # Normalize both
+            await bulk_update_transactions(
+                pool=pool_with_owner,
+                ops=[
+                    {
+                        "match": {"merchant_pattern": "STARBUCKS%"},
+                        "set": {"normalized_merchant": "Starbucks", "inferred_category": "coffee"},
+                    }
+                ],
+            )
+        return pool_with_owner
+
+    async def test_list_facts_includes_overlay_fields(self, seeded_overlay):
+        from butlers.tools.finance.facts import list_transaction_facts
+
+        result = await list_transaction_facts(pool=seeded_overlay)
+        for item in result["items"]:
+            assert item["normalized_merchant"] == "Starbucks"
+            assert item["inferred_category"] == "coffee"
+            assert item["display_merchant"] == "Starbucks"
+            assert item["display_category"] == "coffee"
+            assert "STARBUCKS" in item["merchant"]  # original preserved
+            assert item["category"] == "dining"  # original preserved
+
+    async def test_spending_summary_groups_by_normalized_merchant(self, seeded_overlay):
+        from butlers.tools.finance.facts import spending_summary_facts
+
+        result = await spending_summary_facts(pool=seeded_overlay, group_by="merchant")
+        keys = {g["key"] for g in result["groups"]}
+        # Both should be grouped under the normalized name
+        assert "Starbucks" in keys
+        assert "STARBUCKS #001" not in keys
+        assert "STARBUCKS RESERVE" not in keys
+
+    async def test_spending_summary_groups_by_inferred_category(self, seeded_overlay):
+        from butlers.tools.finance.facts import spending_summary_facts
+
+        result = await spending_summary_facts(pool=seeded_overlay, group_by="category")
+        keys = {g["key"] for g in result["groups"]}
+        assert "coffee" in keys
+        assert "dining" not in keys

@@ -108,3 +108,54 @@ class UpcomingBillItemModel(BaseModel):
     bill: BillModel
     urgency: str
     days_until_due: int
+
+
+class DistinctMerchantModel(BaseModel):
+    """Aggregate row from the distinct-merchants query."""
+
+    merchant: str
+    normalized_merchant: str | None = None
+    count: int
+    total_amount: str  # numeric as string to preserve precision
+
+
+class BulkUpdateMatchModel(BaseModel):
+    """Match criteria for a single bulk-update op."""
+
+    merchant_pattern: str
+
+
+class BulkUpdateSetModel(BaseModel):
+    """Fields to overlay on matching transaction fact metadata."""
+
+    normalized_merchant: str | None = None
+    inferred_category: str | None = None
+
+
+class BulkUpdateOpModel(BaseModel):
+    """A single op in a bulk-update request."""
+
+    match: BulkUpdateMatchModel
+    set: BulkUpdateSetModel
+
+
+class BulkUpdateOpResultModel(BaseModel):
+    """Result of a single bulk-update op."""
+
+    pattern: str
+    set: dict
+    matched: int
+    updated: int
+
+
+class BulkUpdateRequestModel(BaseModel):
+    """Request body for the bulk-metadata-update endpoint."""
+
+    ops: list[BulkUpdateOpModel]
+
+
+class BulkUpdateResponseModel(BaseModel):
+    """Response from the bulk-metadata-update endpoint."""
+
+    updated_total: int
+    results: list[BulkUpdateOpResultModel]

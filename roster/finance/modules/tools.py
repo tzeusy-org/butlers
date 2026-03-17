@@ -387,6 +387,8 @@ def register_tools(mcp: Any, module: Any) -> None:
         Amounts in groups are string-encoded for NUMERIC precision.
         group_by: category | merchant | week | month, or None (single bucket).
         Defaults to the current calendar month when start_date/end_date are omitted.
+        When group_by='category', uses inferred_category overlay when present.
+        When group_by='merchant', uses normalized_merchant overlay when present.
         """
         return await _facts.spending_summary_facts(
             module._get_pool(),
@@ -395,4 +397,65 @@ def register_tools(mcp: Any, module: Any) -> None:
             group_by=group_by,
             category_filter=category_filter,
             account_id=account_id,
+        )
+
+    # =================================================================
+    # Merchant normalization and bulk update tools
+    # =================================================================
+
+    @mcp.tool()
+    async def list_distinct_merchants(
+        start_date: str | None = None,
+        end_date: str | None = None,
+        min_count: int | None = None,
+        unnormalized_only: bool = False,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Return distinct merchants from active transaction facts with aggregate stats.
+
+        Groups by normalized_merchant when present, falling back to original merchant.
+        Returns: {items: [{merchant, normalized_merchant, count, total_amount}],
+        total, limit, offset}
+
+        start_date / end_date: ISO-8601 date strings (optional filter)
+        min_count: Only return merchants with at least this many transactions (HAVING)
+        unnormalized_only: Only return merchants where normalized_merchant is not set
+        limit: Max results per page (default 500, max 1000)
+        offset: Pagination offset
+        """
+        return await _facts.list_distinct_merchants(
+            module._get_pool(),
+            start_date=start_date,
+            end_date=end_date,
+            min_count=min_count,
+            unnormalized_only=unnormalized_only,
+            limit=limit,
+            offset=offset,
+        )
+
+    @mcp.tool()
+    async def bulk_update_transactions(
+        ops: str,
+    ) -> dict[str, Any]:
+        """Apply bulk metadata overlay to matching transaction facts.
+
+        ops: JSON string — array of update operations, each with shape:
+          {"match": {"merchant_pattern": "<ILIKE>"}, "set": {"normalized_merchant": "...",
+          "inferred_category": "..."}}
+
+        Constraints:
+        - Maximum 200 ops per call.
+        - Only 'normalized_merchant' and 'inferred_category' keys may be set.
+        - Uses JSONB overlay so original merchant/category columns are NEVER modified.
+        - merchant_pattern uses ILIKE (case-insensitive, % wildcards supported).
+
+        Returns: {updated_total, results: [{pattern, set, matched, updated}]}
+        """
+        import json as _json
+
+        parsed_ops = _json.loads(ops)
+        return await _facts.bulk_update_transactions(
+            module._get_pool(),
+            ops=parsed_ops,
         )

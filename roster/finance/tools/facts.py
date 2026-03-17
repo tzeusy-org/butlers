@@ -457,13 +457,20 @@ def _fact_row_to_transaction(row: dict[str, Any]) -> dict[str, Any]:
         meta = json.loads(meta)
     posted_at = row.get("valid_at")
     created_at = row.get("created_at")
+    # Overlay fields: prefer normalized_merchant / inferred_category when present
+    merchant_display = meta.get("normalized_merchant") or meta.get("merchant", "")
+    category_display = meta.get("inferred_category") or meta.get("category", "")
     return {
         "id": str(row["id"]),
         "direction": direction,
         "merchant": meta.get("merchant", ""),
+        "normalized_merchant": meta.get("normalized_merchant"),
         "amount": meta.get("amount", "0.00"),
         "currency": meta.get("currency", "USD"),
         "category": meta.get("category", ""),
+        "inferred_category": meta.get("inferred_category"),
+        "display_merchant": merchant_display,
+        "display_category": category_display,
         "posted_at": posted_at.isoformat() if posted_at else None,
         "description": meta.get("description"),
         "payment_method": meta.get("payment_method"),
@@ -863,12 +870,12 @@ async def spending_summary_facts(
     elif group_by == "category":
         rows = await pool.fetch(
             f"""
-            SELECT metadata->>'category' AS key,
+            SELECT COALESCE(metadata->>'inferred_category', metadata->>'category') AS key,
                    SUM((metadata->>'amount')::numeric) AS amount,
                    COUNT(*) AS count
             FROM facts
             WHERE {where_clause}
-            GROUP BY metadata->>'category'
+            GROUP BY COALESCE(metadata->>'inferred_category', metadata->>'category')
             ORDER BY SUM((metadata->>'amount')::numeric) DESC
             """,
             *params,
@@ -878,12 +885,12 @@ async def spending_summary_facts(
     elif group_by == "merchant":
         rows = await pool.fetch(
             f"""
-            SELECT metadata->>'merchant' AS key,
+            SELECT COALESCE(metadata->>'normalized_merchant', metadata->>'merchant') AS key,
                    SUM((metadata->>'amount')::numeric) AS amount,
                    COUNT(*) AS count
             FROM facts
             WHERE {where_clause}
-            GROUP BY metadata->>'merchant'
+            GROUP BY COALESCE(metadata->>'normalized_merchant', metadata->>'merchant')
             ORDER BY SUM((metadata->>'amount')::numeric) DESC
             """,
             *params,
@@ -926,4 +933,238 @@ async def spending_summary_facts(
         "currency": currency,
         "total_spend": str(total_spend),
         "groups": groups,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Aggregate query: distinct merchants
+# ---------------------------------------------------------------------------
+
+_MAX_DISTINCT_MERCHANTS_LIMIT = 1000
+
+
+async def list_distinct_merchants(
+    pool: asyncpg.Pool,
+    start_date: date | str | None = None,
+    end_date: date | str | None = None,
+    min_count: int | None = None,
+    unnormalized_only: bool = False,
+    limit: int = 500,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return distinct merchants from active transaction facts with aggregates.
+
+    Groups by the unique combination of original merchant and normalized merchant.
+    Each distinct (merchant, normalized_merchant) pair is a separate row.
+    Returns: {items: [{merchant, normalized_merchant, count, total_amount}], total, limit, offset}
+
+    Filters:
+      start_date / end_date  — ISO-8601 date strings or date objects
+      min_count              — HAVING COUNT(*) >= min_count
+      unnormalized_only      — Only rows where normalized_merchant IS NULL
+      limit / offset         — Pagination (limit capped at 1000)
+    """
+    limit = min(max(1, limit), _MAX_DISTINCT_MERCHANTS_LIMIT)
+    offset = max(0, offset)
+
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+    if isinstance(end_date, str):
+        end_date = date.fromisoformat(end_date)
+
+    conditions: list[str] = [
+        f"predicate = ANY(ARRAY{_TRANSACTION_PREDICATES!r}::text[])",
+        "validity = 'active'",
+        "scope = 'finance'",
+    ]
+    params: list[Any] = []
+    idx = 1
+
+    if start_date is not None:
+        conditions.append(f"valid_at::date >= ${idx}")
+        params.append(start_date)
+        idx += 1
+
+    if end_date is not None:
+        conditions.append(f"valid_at::date <= ${idx}")
+        params.append(end_date)
+        idx += 1
+
+    if unnormalized_only:
+        conditions.append("(metadata->>'normalized_merchant') IS NULL")
+
+    where_clause = " AND ".join(conditions)
+
+    # Build HAVING clause for min_count
+    having_clause = ""
+    if min_count is not None and min_count >= 1:
+        having_clause = f"HAVING COUNT(*) >= ${idx}"
+        params.append(min_count)
+        idx += 1
+
+    # Count query (wrap in subquery to apply HAVING)
+    count_sql = f"""
+    SELECT COUNT(*) AS total FROM (
+        SELECT 1
+        FROM facts
+        WHERE {where_clause}
+        GROUP BY metadata->>'merchant', metadata->>'normalized_merchant'
+        {having_clause}
+    ) sq
+    """
+    count_row = await pool.fetchrow(count_sql, *params)
+    total = count_row["total"] if count_row else 0
+
+    # Data query
+    data_sql = f"""
+    SELECT
+        metadata->>'merchant' AS merchant,
+        metadata->>'normalized_merchant' AS normalized_merchant,
+        COUNT(*) AS count,
+        SUM((metadata->>'amount')::numeric) AS total_amount
+    FROM facts
+    WHERE {where_clause}
+    GROUP BY metadata->>'merchant', metadata->>'normalized_merchant'
+    {having_clause}
+    ORDER BY COUNT(*) DESC, metadata->>'merchant' ASC
+    LIMIT ${idx} OFFSET ${idx + 1}
+    """
+    params_data = params + [limit, offset]
+    rows = await pool.fetch(data_sql, *params_data)
+
+    items = [
+        {
+            "merchant": r["merchant"] or "",
+            "normalized_merchant": r["normalized_merchant"],
+            "count": r["count"],
+            "total_amount": str(r["total_amount"] or Decimal("0.00")),
+        }
+        for r in rows
+    ]
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Bulk metadata update (overlay, write-once contract preserved)
+# ---------------------------------------------------------------------------
+
+_MAX_BULK_UPDATE_OPS = 200
+_ALLOWED_SET_KEYS = frozenset({"normalized_merchant", "inferred_category"})
+
+
+async def bulk_update_transactions(
+    pool: asyncpg.Pool,
+    ops: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply bulk metadata overlay to matching transaction facts.
+
+    Each op has the shape:
+      {
+        "match": {"merchant_pattern": "<ILIKE pattern>"},
+        "set":   {"normalized_merchant": "...", "inferred_category": "..."}
+      }
+
+    Constraints:
+    - Maximum 200 ops per call.
+    - Only 'normalized_merchant' and 'inferred_category' keys are settable.
+    - Uses JSONB overlay: metadata = metadata || jsonb_build_object(...) so
+      original merchant/category and all other fact columns are NEVER modified.
+    - Pattern matching is ILIKE on metadata->>'merchant'.
+
+    Returns: {updated_total, results: [{pattern, set, matched, updated}]}
+    """
+    if not isinstance(ops, list):
+        raise ValueError("ops must be a list")
+    if len(ops) > _MAX_BULK_UPDATE_OPS:
+        raise ValueError(f"Too many ops: {len(ops)} exceeds max {_MAX_BULK_UPDATE_OPS}")
+
+    results = []
+    updated_total = 0
+
+    for op in ops:
+        if not isinstance(op, dict):
+            raise ValueError(f"Each op must be a dict, got: {type(op).__name__}")
+        match = op.get("match") or {}
+        set_fields = op.get("set") or {}
+
+        merchant_pattern = match.get("merchant_pattern")
+        if not merchant_pattern:
+            raise ValueError("Each op must have match.merchant_pattern")
+
+        # Validate set keys
+        unknown_keys = set(set_fields.keys()) - _ALLOWED_SET_KEYS
+        if unknown_keys:
+            raise ValueError(
+                f"set keys {sorted(unknown_keys)} are not allowed. "
+                f"Only {sorted(_ALLOWED_SET_KEYS)} may be set."
+            )
+
+        if not set_fields:
+            # Nothing to set — count matches but do not update
+            matched = await pool.fetchval(
+                """
+                SELECT COUNT(*) FROM facts
+                WHERE predicate = ANY($1::text[])
+                  AND validity = 'active'
+                  AND scope = 'finance'
+                  AND metadata->>'merchant' ILIKE $2
+                """,
+                _TRANSACTION_PREDICATES,
+                merchant_pattern,
+            )
+            results.append(
+                {
+                    "pattern": merchant_pattern,
+                    "set": set_fields,
+                    "matched": matched or 0,
+                    "updated": 0,
+                }
+            )
+            continue
+
+        # Build the JSONB overlay: only allowed keys
+        overlay_pairs = []
+        overlay_values: list[Any] = [_TRANSACTION_PREDICATES, merchant_pattern]
+        param_idx = 3
+        for key in sorted(set_fields.keys()):
+            overlay_pairs.append(f"'{key}', ${param_idx}::text")
+            overlay_values.append(set_fields[key])
+            param_idx += 1
+
+        overlay_expr = ", ".join(overlay_pairs)
+
+        update_sql = f"""
+        UPDATE facts
+        SET metadata = metadata || jsonb_build_object({overlay_expr})
+        WHERE predicate = ANY($1::text[])
+          AND validity = 'active'
+          AND scope = 'finance'
+          AND metadata->>'merchant' ILIKE $2
+        """
+        status = await pool.execute(update_sql, *overlay_values)
+        # asyncpg returns "UPDATE N"
+        try:
+            updated = int(status.split()[-1])
+        except (ValueError, AttributeError, IndexError):
+            updated = 0
+
+        updated_total += updated
+        results.append(
+            {
+                "pattern": merchant_pattern,
+                "set": set_fields,
+                "matched": updated,
+                "updated": updated,
+            }
+        )
+
+    return {
+        "updated_total": updated_total,
+        "results": results,
     }

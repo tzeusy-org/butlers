@@ -13,7 +13,7 @@ import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
@@ -28,6 +28,10 @@ if _spec is not None and _spec.loader is not None:
 
     AccountModel = _models.AccountModel
     BillModel = _models.BillModel
+    BulkUpdateOpResultModel = _models.BulkUpdateOpResultModel
+    BulkUpdateRequestModel = _models.BulkUpdateRequestModel
+    BulkUpdateResponseModel = _models.BulkUpdateResponseModel
+    DistinctMerchantModel = _models.DistinctMerchantModel
     SpendingGroupModel = _models.SpendingGroupModel
     SpendingSummaryModel = _models.SpendingSummaryModel
     SubscriptionModel = _models.SubscriptionModel
@@ -548,3 +552,122 @@ async def get_upcoming_bills(
         "days_ahead": days_ahead,
         "include_overdue": include_overdue,
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /merchants/distinct — distinct merchants with aggregate stats
+# ---------------------------------------------------------------------------
+
+_FACTS_TOOLS_PATH = Path(__file__).parents[1] / "tools" / "facts.py"
+
+
+def _load_facts_tools():
+    """Dynamically load the finance facts tools module."""
+    import importlib.util
+    import sys
+
+    module_name = "finance_facts_tools"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    spec = importlib.util.spec_from_file_location(module_name, _FACTS_TOOLS_PATH)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@router.get("/merchants/distinct", response_model=PaginatedResponse[DistinctMerchantModel])
+async def list_distinct_merchants(
+    start_date: str | None = Query(None, description="Start date filter (YYYY-MM-DD)"),
+    end_date: str | None = Query(None, description="End date filter (YYYY-MM-DD)"),
+    min_count: int | None = Query(None, ge=1, description="Minimum transaction count (HAVING)"),
+    unnormalized_only: bool = Query(False, description="Only merchants without normalization"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=1000),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[DistinctMerchantModel]:
+    """Return distinct merchants from active transaction facts with aggregate stats."""
+    pool = _pool(db)
+
+    _facts_mod = _load_facts_tools()
+    result = await _facts_mod.list_distinct_merchants(
+        pool,
+        start_date=start_date,
+        end_date=end_date,
+        min_count=min_count,
+        unnormalized_only=unnormalized_only,
+        limit=limit,
+        offset=offset,
+    )
+
+    data = [
+        DistinctMerchantModel(
+            merchant=item["merchant"],
+            normalized_merchant=item.get("normalized_merchant"),
+            count=item["count"],
+            total_amount=item["total_amount"],
+        )
+        for item in result["items"]
+    ]
+
+    return PaginatedResponse[DistinctMerchantModel](
+        data=data,
+        meta=PaginationMeta(total=result["total"], offset=offset, limit=limit),
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /transactions/bulk-metadata — bulk metadata overlay
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/transactions/bulk-metadata", response_model=BulkUpdateResponseModel)
+async def bulk_update_transactions(
+    request: BulkUpdateRequestModel = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> BulkUpdateResponseModel:
+    """Apply bulk metadata overlay to matching transaction facts.
+
+    Each op specifies an ILIKE merchant_pattern and a set of overlay fields
+    (normalized_merchant, inferred_category). The original fact content
+    (merchant, category, subject, predicate, content, embedding) is never modified.
+    """
+    pool = _pool(db)
+
+    # Serialize ops back to the dict format expected by the tools layer
+    ops_raw = [
+        {
+            "match": {"merchant_pattern": op.match.merchant_pattern},
+            "set": op.set.model_dump(exclude_none=True),
+        }
+        for op in request.ops
+    ]
+
+    if len(ops_raw) > 200:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many ops: {len(ops_raw)} exceeds max 200",
+        )
+
+    _facts_mod = _load_facts_tools()
+    try:
+        result = await _facts_mod.bulk_update_transactions(pool, ops=ops_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    op_results = [
+        BulkUpdateOpResultModel(
+            pattern=r["pattern"],
+            set=r["set"],
+            matched=r["matched"],
+            updated=r["updated"],
+        )
+        for r in result["results"]
+    ]
+
+    return BulkUpdateResponseModel(
+        updated_total=result["updated_total"],
+        results=op_results,
+    )

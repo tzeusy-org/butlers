@@ -883,6 +883,236 @@ async def test_upcoming_bills_include_overdue_false():
 
 
 # ---------------------------------------------------------------------------
+# Tests: GET /api/finance/merchants/distinct
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_distinct_merchants_empty():
+    """GET /api/finance/merchants/distinct returns empty list when no merchants."""
+    from unittest.mock import AsyncMock, patch
+
+    mock_facts = MagicMock()
+    mock_facts.list_distinct_merchants = AsyncMock(
+        return_value={"items": [], "total": 0, "limit": 500, "offset": 0}
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/finance/merchants/distinct")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"] == []
+    assert body["meta"]["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_distinct_merchants_with_results():
+    """GET /api/finance/merchants/distinct returns merchant aggregates."""
+    from unittest.mock import AsyncMock, patch
+
+    items = [
+        {
+            "merchant": "STARBUCKS #001",
+            "normalized_merchant": "Starbucks",
+            "count": 5,
+            "total_amount": "25.00",
+        },
+        {
+            "merchant": "AMAZON MKTPL",
+            "normalized_merchant": None,
+            "count": 2,
+            "total_amount": "50.00",
+        },
+    ]
+    mock_facts = MagicMock()
+    mock_facts.list_distinct_merchants = AsyncMock(
+        return_value={"items": items, "total": 2, "limit": 500, "offset": 0}
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/finance/merchants/distinct")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["meta"]["total"] == 2
+    assert len(body["data"]) == 2
+    first = body["data"][0]
+    assert first["merchant"] == "STARBUCKS #001"
+    assert first["normalized_merchant"] == "Starbucks"
+    assert first["count"] == 5
+    assert first["total_amount"] == "25.00"
+
+
+@pytest.mark.asyncio
+async def test_list_distinct_merchants_passes_filters():
+    """GET /api/finance/merchants/distinct forwards query params to facts layer."""
+    from unittest.mock import AsyncMock, patch
+
+    mock_facts = MagicMock()
+    mock_facts.list_distinct_merchants = AsyncMock(
+        return_value={"items": [], "total": 0, "limit": 10, "offset": 5}
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/api/finance/merchants/distinct"
+                "?min_count=3&unnormalized_only=true&limit=10&offset=5"
+            )
+
+    assert response.status_code == 200
+    call_kwargs = mock_facts.list_distinct_merchants.call_args[1]
+    assert call_kwargs["min_count"] == 3
+    assert call_kwargs["unnormalized_only"] is True
+    assert call_kwargs["limit"] == 10
+    assert call_kwargs["offset"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Tests: PATCH /api/finance/transactions/bulk-metadata
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_transactions_success():
+    """PATCH /api/finance/transactions/bulk-metadata applies overlay and returns results."""
+    from unittest.mock import AsyncMock, patch
+
+    mock_facts = MagicMock()
+    mock_facts.bulk_update_transactions = AsyncMock(
+        return_value={
+            "updated_total": 3,
+            "results": [
+                {
+                    "pattern": "STARBUCKS%",
+                    "set": {"normalized_merchant": "Starbucks"},
+                    "matched": 3,
+                    "updated": 3,
+                }
+            ],
+        }
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.patch(
+                "/api/finance/transactions/bulk-metadata",
+                json={
+                    "ops": [
+                        {
+                            "match": {"merchant_pattern": "STARBUCKS%"},
+                            "set": {"normalized_merchant": "Starbucks"},
+                        }
+                    ]
+                },
+            )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["updated_total"] == 3
+    assert len(body["results"]) == 1
+    assert body["results"][0]["pattern"] == "STARBUCKS%"
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_transactions_empty_ops():
+    """PATCH /api/finance/transactions/bulk-metadata with empty ops returns 200."""
+    from unittest.mock import AsyncMock, patch
+
+    mock_facts = MagicMock()
+    mock_facts.bulk_update_transactions = AsyncMock(
+        return_value={"updated_total": 0, "results": []}
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.patch(
+                "/api/finance/transactions/bulk-metadata",
+                json={"ops": []},
+            )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["updated_total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_transactions_too_many_ops():
+    """PATCH /api/finance/transactions/bulk-metadata with >200 ops returns 422."""
+    from unittest.mock import AsyncMock, patch
+
+    mock_facts = MagicMock()
+    mock_facts.bulk_update_transactions = AsyncMock(
+        return_value={"updated_total": 0, "results": []}
+    )
+
+    ops = [
+        {"match": {"merchant_pattern": f"MERCHANT{i}%"}, "set": {"normalized_merchant": "X"}}
+        for i in range(201)
+    ]
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.patch(
+                "/api/finance/transactions/bulk-metadata",
+                json={"ops": ops},
+            )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_transactions_value_error_422():
+    """PATCH /api/finance/transactions/bulk-metadata propagates ValueError as 422."""
+    from unittest.mock import AsyncMock, patch
+
+    mock_facts = MagicMock()
+    mock_facts.bulk_update_transactions = AsyncMock(
+        side_effect=ValueError("set keys ['merchant'] are not allowed")
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.patch(
+                "/api/finance/transactions/bulk-metadata",
+                json={
+                    "ops": [
+                        {
+                            "match": {"merchant_pattern": "STARBUCKS%"},
+                            "set": {"normalized_merchant": "Starbucks"},
+                        }
+                    ]
+                },
+            )
+
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Tests: 503 when pool not available
 # ---------------------------------------------------------------------------
 
