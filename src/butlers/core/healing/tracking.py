@@ -321,6 +321,9 @@ async def update_attempt_status(
 
     is_terminal = new_status in TERMINAL_STATUSES
 
+    # Include the expected current_status in the WHERE clause to close the race window
+    # between the SELECT above and this UPDATE.  If another process transitions the
+    # attempt in the meantime, the UPDATE will affect 0 rows and we return False.
     updated = await pool.fetchval(
         """
         UPDATE shared.healing_attempts
@@ -334,7 +337,7 @@ async def update_attempt_status(
             branch_name         = COALESCE($7, branch_name),
             worktree_path       = COALESCE($8, worktree_path),
             healing_session_id  = COALESCE($9, healing_session_id)
-        WHERE id = $1
+        WHERE id = $1 AND status = $10
         RETURNING id
         """,
         attempt_id,
@@ -346,9 +349,14 @@ async def update_attempt_status(
         branch_name,
         worktree_path,
         str(healing_session_id) if healing_session_id else None,
+        current_status,
     )
     if updated is None:
-        logger.warning("update_attempt_status: attempt %s disappeared during update", attempt_id)
+        logger.warning(
+            "update_attempt_status: attempt %s not found or status changed from %r during update",
+            attempt_id,
+            current_status,
+        )
         return False
 
     logger.info(
