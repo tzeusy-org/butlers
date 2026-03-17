@@ -155,3 +155,18 @@ extra_args = []
 complexity_tier = "discretion"
 priority = 10
 enabled = true
+
+# ---------------------------------------------------------------------------
+# Self-healing tier — dedicated model for healing agent sessions that
+# investigate and propose fixes for butler errors.  Disabled by default;
+# enable when the self-healing module is configured.
+# ---------------------------------------------------------------------------
+
+[[models]]
+alias = "healing-sonnet"
+runtime_type = "claude"
+model_id = "claude-sonnet-4-6"
+extra_args = []
+complexity_tier = "self_healing"
+priority = 10
+enabled = false

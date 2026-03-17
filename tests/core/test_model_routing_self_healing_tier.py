@@ -1,9 +1,10 @@
-"""Tests for Complexity.DISCRETION tier in butlers.core.model_routing.
+"""Tests for Complexity.SELF_HEALING tier in butlers.core.model_routing.
 
 Covers:
-- Complexity.DISCRETION exists and equals "discretion"
+- Complexity.SELF_HEALING exists and equals "self_healing"
 - Complexity enum round-trip (string → enum)
-- resolve_model works end-to-end for the discretion tier (integration)
+- All expected tiers present in the enum
+- resolve_model works end-to-end for the self_healing tier (integration)
 """
 
 from __future__ import annotations
@@ -27,23 +28,30 @@ docker_available = shutil.which("docker") is not None
 
 
 @pytest.mark.unit
-def test_complexity_discretion_exists() -> None:
-    """Complexity.DISCRETION must exist and equal the string 'discretion'."""
-    assert Complexity.DISCRETION == "discretion"
-    assert Complexity.DISCRETION.value == "discretion"
+def test_complexity_self_healing_exists() -> None:
+    """Complexity.SELF_HEALING must exist and equal the string 'self_healing'."""
+    assert Complexity.SELF_HEALING == "self_healing"
+    assert Complexity.SELF_HEALING.value == "self_healing"
 
 
 @pytest.mark.unit
-def test_complexity_discretion_from_string() -> None:
-    """Complexity('discretion') must resolve to Complexity.DISCRETION."""
-    assert Complexity("discretion") is Complexity.DISCRETION
+def test_complexity_self_healing_from_string() -> None:
+    """Complexity('self_healing') must resolve to Complexity.SELF_HEALING."""
+    assert Complexity("self_healing") is Complexity.SELF_HEALING
 
 
 @pytest.mark.unit
-def test_complexity_enum_has_expected_tiers() -> None:
-    """All expected tiers (including discretion and self_healing) must be present."""
+def test_complexity_enum_has_all_tiers() -> None:
+    """All six tiers (including self_healing) must be present in the enum."""
     values = {m.value for m in Complexity}
-    assert {"trivial", "medium", "high", "extra_high", "discretion"}.issubset(values)
+    assert values == {"trivial", "medium", "high", "extra_high", "discretion", "self_healing"}
+
+
+@pytest.mark.unit
+def test_complexity_self_healing_not_equal_to_discretion() -> None:
+    """SELF_HEALING and DISCRETION are distinct tiers."""
+    assert Complexity.SELF_HEALING != Complexity.DISCRETION
+    assert Complexity.SELF_HEALING.value != Complexity.DISCRETION.value
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +98,7 @@ async def _make_pool(postgres_container: Any) -> AsyncIterator[asyncpg.Pool]:
 
 
 async def _create_schema(pool: asyncpg.Pool) -> None:
-    """Create the shared schema and model routing tables with discretion tier."""
+    """Create the shared schema and model routing tables with self_healing tier."""
     await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
 
     await pool.execute("""
@@ -107,7 +115,9 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
             updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
             CONSTRAINT uq_model_catalog_alias UNIQUE (alias),
             CONSTRAINT chk_model_catalog_complexity_tier
-                CHECK (complexity_tier IN ('trivial', 'medium', 'high', 'extra_high', 'discretion'))
+                CHECK (complexity_tier IN (
+                    'trivial', 'medium', 'high', 'extra_high', 'discretion', 'self_healing'
+                ))
         )
     """)
 
@@ -124,8 +134,10 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
                 UNIQUE (butler_name, catalog_entry_id),
             CONSTRAINT chk_butler_model_overrides_complexity_tier
                 CHECK (complexity_tier IS NULL
-                       OR complexity_tier IN
-                       ('trivial', 'medium', 'high', 'extra_high', 'discretion'))
+                       OR complexity_tier IN (
+                           'trivial', 'medium', 'high', 'extra_high',
+                           'discretion', 'self_healing'
+                       ))
         )
     """)
 
@@ -138,8 +150,8 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_discretion_tier(postgres_container: Any) -> None:
-    """resolve_model finds a discretion-tier entry for Complexity.DISCRETION."""
+async def test_resolve_self_healing_tier(postgres_container: Any) -> None:
+    """resolve_model finds a self_healing-tier entry for Complexity.SELF_HEALING."""
     async with _make_pool(postgres_container) as pool:
         import json
 
@@ -149,29 +161,29 @@ async def test_resolve_discretion_tier(postgres_container: Any) -> None:
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
-            "discretion-qwen3",
-            "opencode",
-            "ollama/qwen3.5:9b",
+            "healing-sonnet",
+            "claude",
+            "claude-sonnet-4-6",
             json.dumps([]),
-            "discretion",
+            "self_healing",
             True,
             10,
         )
 
-        result = await resolve_model(pool, "connector", Complexity.DISCRETION)
+        result = await resolve_model(pool, "email", Complexity.SELF_HEALING)
 
         assert result is not None
         runtime_type, model_id, extra_args = result
-        assert runtime_type == "opencode"
-        assert model_id == "ollama/qwen3.5:9b"
+        assert runtime_type == "claude"
+        assert model_id == "claude-sonnet-4-6"
         assert extra_args == []
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_discretion_string_tier(postgres_container: Any) -> None:
-    """resolve_model accepts the plain string 'discretion' for complexity_tier."""
+async def test_resolve_self_healing_string_tier(postgres_container: Any) -> None:
+    """resolve_model accepts the plain string 'self_healing' for complexity_tier."""
     async with _make_pool(postgres_container) as pool:
         import json
 
@@ -181,26 +193,26 @@ async def test_resolve_discretion_string_tier(postgres_container: Any) -> None:
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
-            "discretion-model",
-            "opencode",
-            "ollama/qwen3.5:9b",
+            "healing-model",
+            "claude",
+            "claude-sonnet-4-6",
             json.dumps([]),
-            "discretion",
+            "self_healing",
             True,
             10,
         )
 
-        result = await resolve_model(pool, "connector", "discretion")
+        result = await resolve_model(pool, "email", "self_healing")
 
         assert result is not None
-        assert result[1] == "ollama/qwen3.5:9b"
+        assert result[1] == "claude-sonnet-4-6"
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_discretion_tier_does_not_match_medium(postgres_container: Any) -> None:
-    """A discretion-tier entry must NOT be returned when resolving 'medium'."""
+async def test_self_healing_tier_does_not_match_medium(postgres_container: Any) -> None:
+    """A self_healing-tier entry must NOT be returned when resolving 'medium'."""
     async with _make_pool(postgres_container) as pool:
         import json
 
@@ -210,24 +222,34 @@ async def test_discretion_tier_does_not_match_medium(postgres_container: Any) ->
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
-            "discretion-only",
-            "opencode",
-            "ollama/qwen3.5:9b",
+            "healing-only",
+            "claude",
+            "claude-sonnet-4-6",
             json.dumps([]),
-            "discretion",
+            "self_healing",
             True,
             10,
         )
 
-        result = await resolve_model(pool, "connector", Complexity.MEDIUM)
+        result = await resolve_model(pool, "email", Complexity.MEDIUM)
         assert result is None
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_override_remap_to_discretion_tier(postgres_container: Any) -> None:
-    """A per-butler override can remap a medium entry to the discretion tier."""
+async def test_no_self_healing_model_returns_none(postgres_container: Any) -> None:
+    """resolve_model returns None when no self_healing-tier entry is configured."""
+    async with _make_pool(postgres_container) as pool:
+        result = await resolve_model(pool, "email", Complexity.SELF_HEALING)
+        assert result is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_override_remap_to_self_healing_tier(postgres_container: Any) -> None:
+    """A per-butler override can remap an entry to the self_healing tier."""
     async with _make_pool(postgres_container) as pool:
         import json
 
@@ -238,11 +260,11 @@ async def test_override_remap_to_discretion_tier(postgres_container: Any) -> Non
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             RETURNING id
             """,
-            "small-local",
-            "opencode",
-            "ollama/phi4:3.8b",
+            "finance-opus",
+            "claude",
+            "claude-opus-4-6",
             json.dumps([]),
-            "medium",
+            "high",
             True,
             5,
         )
@@ -254,18 +276,18 @@ async def test_override_remap_to_discretion_tier(postgres_container: Any) -> Non
                 (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
             VALUES ($1, $2, $3, $4, $5)
             """,
-            "connector",
+            "finance",
             entry_id,
             True,
             None,
-            "discretion",
+            "self_healing",
         )
 
-        # Should now be found under discretion tier for the connector butler
-        result = await resolve_model(pool, "connector", Complexity.DISCRETION)
+        # Should now be found under self_healing tier for the finance butler
+        result = await resolve_model(pool, "finance", Complexity.SELF_HEALING)
         assert result is not None
-        assert result[1] == "ollama/phi4:3.8b"
+        assert result[1] == "claude-opus-4-6"
 
-        # Should NOT be found under medium tier for the connector butler (remapped away)
-        medium_result = await resolve_model(pool, "connector", Complexity.MEDIUM)
-        assert medium_result is None
+        # Other butlers still see nothing for self_healing (no entry in catalog)
+        result_other = await resolve_model(pool, "general", Complexity.SELF_HEALING)
+        assert result_other is None

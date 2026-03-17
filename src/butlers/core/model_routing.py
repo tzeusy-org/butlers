@@ -36,6 +36,7 @@ class Complexity(enum.StrEnum):
     HIGH = "high"
     EXTRA_HIGH = "extra_high"
     DISCRETION = "discretion"
+    SELF_HEALING = "self_healing"
 
 
 # SQL that performs the full resolution in a single round-trip.
@@ -81,7 +82,8 @@ async def resolve_model(
         per-butler overrides; if none exist the global catalog is used directly.
     complexity_tier:
         A ``Complexity`` enum value or its string equivalent
-        (``"trivial"``, ``"medium"``, ``"high"``, ``"extra_high"``, ``"discretion"``).
+        (``"trivial"``, ``"medium"``, ``"high"``, ``"extra_high"``, ``"discretion"``,
+        ``"self_healing"``).
 
     Returns
     -------

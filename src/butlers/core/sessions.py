@@ -20,7 +20,7 @@ from croniter import croniter
 logger = logging.getLogger(__name__)
 
 # Valid trigger_source base values (schedule uses pattern "schedule:<task-name>")
-TRIGGER_SOURCES = frozenset({"tick", "external", "trigger", "route"})
+TRIGGER_SOURCES = frozenset({"tick", "external", "trigger", "route", "healing"})
 
 
 def _strip_null_bytes(value: str | None) -> str | None:
@@ -110,7 +110,7 @@ async def session_create(
     if not _is_valid_trigger_source(trigger_source):
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', 'external', "
-            f"'trigger', 'route', or 'schedule:<task-name>'"
+            f"'trigger', 'route', 'healing', or 'schedule:<task-name>'"
         )
 
     session_id: uuid.UUID = await pool.fetchval(
@@ -206,6 +206,33 @@ async def session_complete(
         success,
         input_tokens,
         output_tokens,
+    )
+
+
+async def session_set_healing_fingerprint(
+    pool: asyncpg.Pool,
+    session_id: uuid.UUID,
+    fingerprint: str,
+) -> None:
+    """Set the healing_fingerprint on an existing session row (best-effort).
+
+    Called by the self-healing dispatcher after a session fails and a
+    fingerprint has been computed.  If the session does not exist, the
+    update silently affects 0 rows — no error is raised.
+
+    Args:
+        pool: asyncpg connection pool for the butler's database.
+        session_id: UUID of the session to update.
+        fingerprint: 64-character hex SHA-256 fingerprint string.
+    """
+    await pool.execute(
+        """
+        UPDATE sessions
+        SET healing_fingerprint = $2
+        WHERE id = $1
+        """,
+        session_id,
+        fingerprint,
     )
 
 
