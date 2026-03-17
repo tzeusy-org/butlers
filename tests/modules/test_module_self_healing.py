@@ -283,7 +283,7 @@ class TestOnStartup:
             patch(
                 "butlers.modules.self_healing.recover_stale_attempts",
                 new_callable=AsyncMock,
-                return_value=0,
+                return_value=(0, []),
             ) as mock_recover,
             patch(
                 "butlers.modules.self_healing.reap_stale_worktrees",
@@ -295,6 +295,33 @@ class TestOnStartup:
         mock_recover.assert_awaited_once()
         mock_reap.assert_awaited_once()
 
+    async def test_on_startup_redispatches_pending_rows(self):
+        """on_startup calls _redispatch_pending for each dispatch_pending row returned."""
+        from unittest.mock import patch
+
+        mod = _make_module()
+        pool = _make_fake_pool()
+        fake_db = MagicMock()
+        fake_db.pool = pool
+
+        pending_row = {"id": "test-id", "fingerprint": "a" * 64, "status": "dispatch_pending"}
+
+        with (
+            patch(
+                "butlers.modules.self_healing.recover_stale_attempts",
+                new_callable=AsyncMock,
+                return_value=(0, [pending_row]),
+            ),
+            patch(
+                "butlers.modules.self_healing.reap_stale_worktrees",
+                new_callable=AsyncMock,
+            ),
+            patch.object(mod, "_redispatch_pending", new_callable=AsyncMock) as mock_redispatch,
+        ):
+            await mod.on_startup(SelfHealingConfig(), fake_db)
+
+        mock_redispatch.assert_awaited_once_with(pending_row)
+
     async def test_on_startup_no_pool_skips_recovery(self):
         mod = _make_module()
         fake_db = MagicMock()
@@ -304,7 +331,7 @@ class TestOnStartup:
             patch(
                 "butlers.modules.self_healing.recover_stale_attempts",
                 new_callable=AsyncMock,
-                return_value=0,
+                return_value=(0, []),
             ) as mock_recover,
             patch(
                 "butlers.modules.self_healing.reap_stale_worktrees",

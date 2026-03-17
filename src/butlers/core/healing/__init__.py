@@ -12,6 +12,7 @@ from butlers.core.healing.dispatch import (
     DispatchResult,
     HealingConfig,
     dispatch_healing,
+    redispatch_pending_attempt,
 )
 from butlers.core.healing.fingerprint import (
     FingerprintResult,
@@ -49,6 +50,7 @@ __all__ = [
     "DispatchResult",
     "HealingConfig",
     "dispatch_healing",
+    "redispatch_pending_attempt",
     # tracking
     "ACTIVE_STATUSES",
     "TERMINAL_STATUSES",

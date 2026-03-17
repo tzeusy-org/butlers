@@ -161,6 +161,7 @@ class TestConstants:
         from butlers.core.healing.tracking import VALID_STATUSES
 
         expected = {
+            "dispatch_pending",
             "investigating",
             "pr_open",
             "pr_merged",
@@ -184,6 +185,12 @@ class TestConstants:
         assert "investigating" not in TERMINAL_STATUSES
 
     @pytest.mark.unit
+    def test_dispatch_pending_not_terminal(self) -> None:
+        from butlers.core.healing.tracking import TERMINAL_STATUSES
+
+        assert "dispatch_pending" not in TERMINAL_STATUSES
+
+    @pytest.mark.unit
     def test_pr_open_not_terminal(self) -> None:
         from butlers.core.healing.tracking import TERMINAL_STATUSES
 
@@ -193,8 +200,16 @@ class TestConstants:
     def test_active_statuses(self) -> None:
         from butlers.core.healing.tracking import ACTIVE_STATUSES
 
+        assert "dispatch_pending" in ACTIVE_STATUSES
         assert "investigating" in ACTIVE_STATUSES
         assert "pr_open" in ACTIVE_STATUSES
+
+    @pytest.mark.unit
+    def test_dispatch_pending_transitions(self) -> None:
+        from butlers.core.healing.tracking import _VALID_TRANSITIONS
+
+        # dispatch_pending can only go to investigating (agent dispatched) or failed (timeout)
+        assert _VALID_TRANSITIONS["dispatch_pending"] == frozenset({"investigating", "failed"})
 
 
 class TestUpdateAttemptStatusUnit:
@@ -1035,8 +1050,11 @@ class TestRecoverStaleAttemptsIntegration:
             healing_session_id,
         )
 
-        recovered = await recover_stale_attempts(healing_pool, timeout_minutes=30)
-        assert recovered >= 1
+        recovered_count, pending_rows = await recover_stale_attempts(
+            healing_pool, timeout_minutes=30
+        )
+        assert recovered_count >= 1
+        assert isinstance(pending_rows, list)
 
         row = await get_attempt(healing_pool, attempt_id)
         assert row is not None
@@ -1069,8 +1087,11 @@ class TestRecoverStaleAttemptsIntegration:
             attempt_id,
         )
 
-        recovered = await recover_stale_attempts(healing_pool, timeout_minutes=30)
-        assert recovered >= 1
+        recovered_count, pending_rows = await recover_stale_attempts(
+            healing_pool, timeout_minutes=30
+        )
+        assert recovered_count >= 1
+        assert isinstance(pending_rows, list)
 
         row = await get_attempt(healing_pool, attempt_id)
         assert row is not None
@@ -1097,7 +1118,10 @@ class TestRecoverStaleAttemptsIntegration:
             attempt_id,
         )
 
-        await recover_stale_attempts(healing_pool, timeout_minutes=30)
+        recovered_count, pending_rows = await recover_stale_attempts(
+            healing_pool, timeout_minutes=30
+        )
+        assert isinstance(pending_rows, list)
 
         row = await get_attempt(healing_pool, attempt_id)
         assert row is not None
@@ -1107,13 +1131,101 @@ class TestRecoverStaleAttemptsIntegration:
         await update_attempt_status(healing_pool, attempt_id, "failed")
 
     async def test_recover_returns_zero_when_no_stale(self, healing_pool: asyncpg.Pool) -> None:
-        """recover_stale_attempts returns 0 when there are no stale rows."""
+        """recover_stale_attempts returns (0, []) when there are no stale rows."""
         from butlers.core.healing.tracking import recover_stale_attempts
 
         # Use a very short timeout — so nothing newly created counts as stale
         # All existing rows are either already terminal or fresh
-        recovered = await recover_stale_attempts(healing_pool, timeout_minutes=9999)
-        assert recovered == 0
+        recovered_count, pending_rows = await recover_stale_attempts(
+            healing_pool, timeout_minutes=9999
+        )
+        assert recovered_count == 0
+        assert pending_rows == []
+
+    async def test_dispatch_pending_within_timeout_returned_for_redispatch(
+        self, healing_pool: asyncpg.Pool
+    ) -> None:
+        """dispatch_pending rows within the timeout are returned for re-dispatch, not failed."""
+        from butlers.core.healing.tracking import (
+            get_attempt,
+            recover_stale_attempts,
+        )
+
+        fingerprint = uuid.uuid4().hex * 2
+        # Insert a fresh dispatch_pending row directly
+        attempt_id = await healing_pool.fetchval(
+            """
+            INSERT INTO shared.healing_attempts (
+                fingerprint, butler_name, status, severity,
+                exception_type, call_site, session_ids
+            )
+            VALUES ($1, 'test-butler', 'dispatch_pending', 2, 'KeyError', 'src/foo.py:bar', '{}')
+            RETURNING id
+            """,
+            fingerprint,
+        )
+
+        recovered_count, pending_rows = await recover_stale_attempts(
+            healing_pool, timeout_minutes=30, dispatch_pending_timeout_minutes=60
+        )
+
+        # The row should NOT be counted as "recovered" (closed)
+        row = await get_attempt(healing_pool, attempt_id)
+        assert row is not None
+        assert row["status"] == "dispatch_pending"
+
+        # But it should appear in pending_rows
+        pending_ids = [str(r["id"]) for r in pending_rows]
+        assert str(attempt_id) in pending_ids
+
+        # Cleanup
+        await healing_pool.execute(
+            "DELETE FROM shared.healing_attempts WHERE id = $1", attempt_id
+        )
+
+    async def test_dispatch_pending_past_timeout_failed(
+        self, healing_pool: asyncpg.Pool
+    ) -> None:
+        """dispatch_pending rows older than the timeout are transitioned to failed."""
+        from butlers.core.healing.tracking import (
+            get_attempt,
+            recover_stale_attempts,
+        )
+
+        fingerprint = uuid.uuid4().hex * 2
+        # Insert an old dispatch_pending row
+        attempt_id = await healing_pool.fetchval(
+            """
+            INSERT INTO shared.healing_attempts (
+                fingerprint, butler_name, status, severity,
+                exception_type, call_site, session_ids,
+                created_at, updated_at
+            )
+            VALUES (
+                $1, 'test-butler', 'dispatch_pending', 2, 'KeyError', 'src/foo.py:bar', '{}',
+                now() - INTERVAL '35 minutes',
+                now() - INTERVAL '35 minutes'
+            )
+            RETURNING id
+            """,
+            fingerprint,
+        )
+
+        recovered_count, pending_rows = await recover_stale_attempts(
+            healing_pool, timeout_minutes=30, dispatch_pending_timeout_minutes=30
+        )
+
+        # The row should be failed
+        row = await get_attempt(healing_pool, attempt_id)
+        assert row is not None
+        assert row["status"] == "failed"
+        assert row["closed_at"] is not None
+        assert "extended timeout" in (row["error_detail"] or "").lower()
+        assert recovered_count >= 1
+
+        # It should NOT appear in pending_rows
+        pending_ids = [str(r["id"]) for r in pending_rows]
+        assert str(attempt_id) not in pending_ids
 
 
 @pytest.mark.integration

@@ -35,6 +35,7 @@ from butlers.core.healing import (
     list_attempts,
     reap_stale_worktrees,
     recover_stale_attempts,
+    redispatch_pending_attempt,
 )
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
@@ -156,7 +157,9 @@ class SelfHealingModule(Module):
         """Run recovery and cleanup before accepting dispatch calls.
 
         Transitions stale ``investigating`` rows to ``timeout``/``failed``
-        (from a prior crash) and reaps orphaned healing worktrees.
+        (from a prior crash), re-dispatches ``dispatch_pending`` rows that were
+        created by the retry endpoint while the daemon was down, and reaps
+        orphaned healing worktrees.
         """
         self._config = (
             config if isinstance(config, SelfHealingConfig) else SelfHealingConfig(**(config or {}))
@@ -170,9 +173,23 @@ class SelfHealingModule(Module):
             return
 
         try:
-            recovered = await recover_stale_attempts(pool, self._config.timeout_minutes)
+            recovered, pending_rows = await recover_stale_attempts(
+                pool, self._config.timeout_minutes
+            )
             if recovered:
                 logger.info("SelfHealingModule startup: recovered %d stale attempt(s)", recovered)
+            # Re-dispatch rows that were created as dispatch_pending by the retry
+            # endpoint while the daemon was not running.  Transition each row to
+            # 'investigating' before spawning so the watchdog can track it.
+            for pending_row in pending_rows:
+                try:
+                    await self._redispatch_pending(pending_row)
+                except Exception:
+                    logger.warning(
+                        "SelfHealingModule startup: failed to re-dispatch pending attempt %s",
+                        pending_row.get("id"),
+                        exc_info=True,
+                    )
         except Exception:
             logger.warning(
                 "SelfHealingModule startup: recover_stale_attempts failed", exc_info=True
@@ -182,6 +199,50 @@ class SelfHealingModule(Module):
             await reap_stale_worktrees(self._repo_root, pool)
         except Exception:
             logger.warning("SelfHealingModule startup: reap_stale_worktrees failed", exc_info=True)
+
+    async def _redispatch_pending(self, pending_row: dict) -> None:
+        """Re-dispatch a single ``dispatch_pending`` row from startup recovery.
+
+        Transitions the row to ``investigating``, creates a worktree, and
+        spawns the healing agent.  Errors are logged but not re-raised so that
+        one failed re-dispatch does not block the others.
+        """
+        if self._pool is None or self._spawner is None:
+            logger.warning(
+                "SelfHealingModule._redispatch_pending: no pool or spawner — skipping attempt=%s",
+                pending_row.get("id"),
+            )
+            return
+
+        healing_cfg = HealingConfig(
+            enabled=self._config.enabled,
+            severity_threshold=self._config.severity_threshold,
+            max_concurrent=self._config.max_concurrent,
+            cooldown_minutes=self._config.cooldown_minutes,
+            circuit_breaker_threshold=self._config.circuit_breaker_threshold,
+            timeout_minutes=self._config.timeout_minutes,
+        )
+
+        result = await redispatch_pending_attempt(
+            pool=self._pool,
+            attempt_row=pending_row,
+            config=healing_cfg,
+            repo_root=self._repo_root,
+            spawner=self._spawner,
+            task_registry=self._watchdog_tasks,
+        )
+
+        if result.accepted:
+            logger.info(
+                "SelfHealingModule startup: re-dispatched pending attempt=%s",
+                pending_row.get("id"),
+            )
+        else:
+            logger.warning(
+                "SelfHealingModule startup: re-dispatch rejected for attempt=%s reason=%s",
+                pending_row.get("id"),
+                result.reason,
+            )
 
     async def on_shutdown(self) -> None:
         """Cancel in-progress watchdog tasks (best-effort).
