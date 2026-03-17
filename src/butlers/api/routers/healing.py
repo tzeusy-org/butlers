@@ -13,16 +13,44 @@ Endpoints:
 
 All reads/writes query ``shared.healing_attempts`` via the shared credential pool.
 Retry rejection (HTTP 409) is enforced for non-terminal attempts.
+
+Dispatch hook
+-------------
+The retry endpoint creates a new ``investigating`` row and then attempts to
+dispatch the healing agent via a pluggable ``_get_dispatch_fn`` dependency.
+This hook is ``None`` by default (dashboard API is a separate process from the
+butler daemon and has no spawner), but can be overridden via
+``app.dependency_overrides[_get_dispatch_fn]`` when the dispatch pipeline is
+available in-process (e.g. embedded use, tests).
+
+When ``_get_dispatch_fn`` returns ``None`` the row is created and dispatch is
+deferred: the butler daemon will pick up the ``investigating`` row on its next
+startup (``SelfHealingModule.on_startup`` → ``recover_stale_attempts``).
+
+Callers that override ``_get_dispatch_fn`` must return an async callable with
+the following signature::
+
+    async def dispatch(
+        *,
+        attempt_id: uuid.UUID,
+        fingerprint: str,
+        butler_name: str,
+        severity: int,
+        exception_type: str,
+        call_site: str,
+        sanitized_msg: str | None,
+    ) -> None: ...
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable, Coroutine
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
@@ -40,10 +68,31 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/healing", tags=["healing"])
 
+# ---------------------------------------------------------------------------
+# Type alias for the dispatch callable
+# ---------------------------------------------------------------------------
+
+#: Type for an async dispatch callable injected via _get_dispatch_fn.
+#: Accepts keyword-only arguments matching the original attempt's metadata
+#: and triggers the healing agent dispatch pipeline.
+DispatchCallable = Callable[..., Coroutine[Any, Any, None]]
+
 
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
     raise RuntimeError("DatabaseManager not initialized")
+
+
+def _get_dispatch_fn() -> DispatchCallable | None:
+    """Dependency stub — returns None by default (no in-process dispatch available).
+
+    Override via ``app.dependency_overrides[_get_dispatch_fn]`` to inject a
+    dispatch callable when the healing dispatch pipeline is available in-process.
+    The callable receives keyword arguments matching the attempt's metadata:
+    ``attempt_id``, ``fingerprint``, ``butler_name``, ``severity``,
+    ``exception_type``, ``call_site``, ``sanitized_msg``.
+    """
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -256,15 +305,25 @@ async def get_healing_attempt(
 )
 async def retry_healing_attempt(
     attempt_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     db: DatabaseManager = Depends(_get_db_manager),
+    dispatch_fn: DispatchCallable | None = Depends(_get_dispatch_fn),
 ) -> RetryResponse:
-    """Create a new healing attempt for the same fingerprint as an existing attempt.
+    """Create a new healing attempt for the same fingerprint as an existing attempt
+    and dispatch the healing agent.
 
     Rejects with HTTP 409 when the attempt has a non-terminal status (investigating
     or pr_open), since the original investigation is still active.
 
     The new attempt is inserted directly with status ``investigating`` and an empty
     session_ids array (the retry is dashboard-triggered, not linked to a failing session).
+
+    After inserting the row, dispatch is attempted via the pluggable ``_get_dispatch_fn``
+    dependency.  When a dispatch callable is available (in-process or test override),
+    it is invoked as a background task.  When no dispatch callable is configured
+    (typical dashboard API deployment), the row is created and the butler daemon
+    will pick it up and dispatch the agent on its next startup via
+    ``recover_stale_attempts``.
     """
     pool = _shared_pool(db)
 
@@ -285,6 +344,11 @@ async def retry_healing_attempt(
         )
 
     fingerprint: str = original["fingerprint"]
+    butler_name: str = original["butler_name"]
+    severity: int = original["severity"]
+    exception_type: str = original["exception_type"]
+    call_site: str = original["call_site"]
+    sanitized_msg: str | None = original.get("sanitized_msg")
 
     # Insert a fresh investigating row bypassing the partial unique index
     # by using a direct INSERT (not create_or_join_attempt which is novelty-aware).
@@ -300,11 +364,11 @@ async def retry_healing_attempt(
             RETURNING id, fingerprint, status
             """,
             fingerprint,
-            original["butler_name"],
-            original["severity"],
-            original["exception_type"],
-            original["call_site"],
-            original.get("sanitized_msg"),
+            butler_name,
+            severity,
+            exception_type,
+            call_site,
+            sanitized_msg,
         )
     except Exception as exc:
         logger.error("Failed to create retry attempt for %s: %s", attempt_id, exc)
@@ -313,12 +377,42 @@ async def retry_healing_attempt(
     if new_row is None:
         raise HTTPException(status_code=500, detail="Retry insert returned no row")
 
+    new_attempt_id: uuid.UUID = new_row["id"]
+
     logger.info(
         "Retry attempt created: original=%s new=%s fingerprint=%s",
         attempt_id,
-        new_row["id"],
+        new_attempt_id,
         fingerprint[:12],
     )
+
+    if dispatch_fn is not None:
+        # Dispatch callable is available — schedule healing agent in the background.
+        background_tasks.add_task(
+            dispatch_fn,
+            attempt_id=new_attempt_id,
+            fingerprint=fingerprint,
+            butler_name=butler_name,
+            severity=severity,
+            exception_type=exception_type,
+            call_site=call_site,
+            sanitized_msg=sanitized_msg,
+        )
+        logger.info(
+            "Healing dispatch scheduled for retry attempt=%s fingerprint=%s",
+            new_attempt_id,
+            fingerprint[:12],
+        )
+    else:
+        # No in-process dispatch available (dashboard API is a separate process
+        # from the butler daemon).  The row is created; the daemon will dispatch
+        # on next startup via recover_stale_attempts.
+        logger.warning(
+            "No dispatch function available for retry attempt=%s; "
+            "dispatch deferred to daemon restart (recover_stale_attempts). "
+            "Override _get_dispatch_fn dependency to enable immediate dispatch.",
+            new_attempt_id,
+        )
 
     return RetryResponse(
         attempt_id=new_row["id"],

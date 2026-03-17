@@ -3,7 +3,8 @@
 Covers:
 - GET /api/healing/attempts — paginated list with optional status filter
 - GET /api/healing/attempts/{id} — full attempt detail
-- POST /api/healing/attempts/{id}/retry — create new attempt; reject non-terminal with 409
+- POST /api/healing/attempts/{id}/retry — create new attempt; reject non-terminal with 409;
+  dispatch function called when wired; no dispatch when no hook is configured
 - GET /api/healing/circuit-breaker — circuit breaker status
 - POST /api/healing/circuit-breaker/reset — reset circuit breaker
 """
@@ -20,7 +21,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.healing import _get_db_manager
+from butlers.api.routers.healing import _get_db_manager, _get_dispatch_fn
 
 pytestmark = pytest.mark.unit
 
@@ -427,6 +428,170 @@ class TestRetryHealingAttempt:
         assert response.status_code == 201, (
             f"Expected 201 for terminal status {terminal_status!r}, got {response.status_code}"
         )
+
+    async def test_dispatch_fn_called_when_wired(self) -> None:
+        """When a dispatch callable is injected, it is invoked as a background task."""
+        original_id = uuid.uuid4()
+        new_id = uuid.uuid4()
+        fingerprint = "d" * 64
+
+        original_row = _make_attempt_row(
+            attempt_id=original_id,
+            fingerprint=fingerprint,
+            status="failed",
+            butler_name="test-butler",
+            severity=2,
+            exception_type="builtins.ValueError",
+            call_site="src/butlers/foo.py:bar",
+            sanitized_msg="Something broke",
+        )
+        new_row = {
+            "id": new_id,
+            "fingerprint": fingerprint,
+            "status": "investigating",
+        }
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[
+                _mock_record(original_row),
+                _mock_record(new_row),
+            ]
+        )
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        # Track dispatch calls
+        dispatch_calls: list[dict] = []
+
+        async def _mock_dispatch(**kwargs: Any) -> None:
+            dispatch_calls.append(kwargs)
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[_get_dispatch_fn] = lambda: _mock_dispatch
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/healing/attempts/{original_id}/retry")
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["attempt_id"] == str(new_id)
+
+        # The dispatch callable must have been called with the attempt metadata
+        assert len(dispatch_calls) == 1
+        call = dispatch_calls[0]
+        assert call["attempt_id"] == new_id
+        assert call["fingerprint"] == fingerprint
+        assert call["butler_name"] == "test-butler"
+        assert call["severity"] == 2
+        assert call["exception_type"] == "builtins.ValueError"
+        assert call["call_site"] == "src/butlers/foo.py:bar"
+        assert call["sanitized_msg"] == "Something broke"
+
+    async def test_no_dispatch_when_hook_not_configured(self) -> None:
+        """When no dispatch callable is wired, the endpoint still returns 201."""
+        original_id = uuid.uuid4()
+        new_id = uuid.uuid4()
+        fingerprint = "e" * 64
+
+        original_row = _make_attempt_row(
+            attempt_id=original_id,
+            fingerprint=fingerprint,
+            status="failed",
+        )
+        new_row = {
+            "id": new_id,
+            "fingerprint": fingerprint,
+            "status": "investigating",
+        }
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[
+                _mock_record(original_row),
+                _mock_record(new_row),
+            ]
+        )
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        # Explicitly return None — no dispatch available
+        app.dependency_overrides[_get_dispatch_fn] = lambda: None
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/healing/attempts/{original_id}/retry")
+
+        # Row is created successfully even without dispatch
+        assert response.status_code == 201
+        data = response.json()
+        assert data["attempt_id"] == str(new_id)
+        assert data["status"] == "investigating"
+
+    async def test_dispatch_receives_correct_metadata_from_original_attempt(self) -> None:
+        """Dispatch callable receives all metadata fields from the original attempt row."""
+        original_id = uuid.uuid4()
+        new_id = uuid.uuid4()
+        fingerprint = "f" * 64
+
+        original_row = _make_attempt_row(
+            attempt_id=original_id,
+            fingerprint=fingerprint,
+            status="timeout",
+            butler_name="finance",
+            severity=0,
+            exception_type="asyncpg.exceptions.UndefinedTableError",
+            call_site="src/butlers/modules/finance/tools.py:get_transactions",
+            sanitized_msg="relation <ID> does not exist",
+        )
+        new_row = {
+            "id": new_id,
+            "fingerprint": fingerprint,
+            "status": "investigating",
+        }
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[
+                _mock_record(original_row),
+                _mock_record(new_row),
+            ]
+        )
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        captured: list[dict] = []
+
+        async def _capture_dispatch(**kwargs: Any) -> None:
+            captured.append(kwargs)
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[_get_dispatch_fn] = lambda: _capture_dispatch
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/healing/attempts/{original_id}/retry")
+
+        assert response.status_code == 201
+        assert len(captured) == 1
+        call = captured[0]
+        assert call["fingerprint"] == fingerprint
+        assert call["butler_name"] == "finance"
+        assert call["severity"] == 0
+        assert call["exception_type"] == "asyncpg.exceptions.UndefinedTableError"
+        assert call["call_site"] == "src/butlers/modules/finance/tools.py:get_transactions"
+        assert call["sanitized_msg"] == "relation <ID> does not exist"
 
 
 # ---------------------------------------------------------------------------
