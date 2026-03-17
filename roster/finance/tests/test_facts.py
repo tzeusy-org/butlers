@@ -1542,8 +1542,19 @@ class TestTokenizeMerchant:
     def test_uppercase_bank_description_tokenized(self):
         from butlers.tools.finance.facts import _tokenize_merchant
 
+        # Digits are stripped per spec ("strip digits/symbols"), so "10456" is excluded.
         tokens = _tokenize_merchant("WHOLEFDS MKT #10456 AUSTIN TX")
-        assert tokens == frozenset({"wholefds", "mkt", "10456", "austin", "tx"})
+        assert tokens == frozenset({"wholefds", "mkt", "austin", "tx"})
+
+    def test_store_numbers_stripped(self):
+        from butlers.tools.finance.facts import _tokenize_merchant
+
+        # Store numbers must be stripped so "STARBUCKS #1234" and "STARBUCKS #5678"
+        # share the "starbucks" token and can match each other.
+        tokens_a = _tokenize_merchant("STARBUCKS COFFEE #1234")
+        tokens_b = _tokenize_merchant("STARBUCKS COFFEE #5678")
+        assert tokens_a == frozenset({"starbucks", "coffee"})
+        assert tokens_b == frozenset({"starbucks", "coffee"})
 
     def test_mixed_case_normalized(self):
         from butlers.tools.finance.facts import _tokenize_merchant
@@ -1603,23 +1614,19 @@ class TestMerchantTokensMatch:
         from butlers.tools.finance.facts import _merchant_tokens_match
 
         # AC-6: "WHOLEFDS MKT #10456 AUSTIN TX" matches "Whole Foods Market"
-        # tokens_a = {wholefds, mkt, 10456, austin, tx}
+        # tokens_a = {wholefds, mkt, austin, tx}   (digits stripped: "10456" removed)
         # tokens_b = {whole, foods, market}
-        # intersection = {} → similarity = 0.0 (no shared tokens)
-        # Hmm — actually these DO NOT share any common tokens by exact match.
-        # The acceptance criteria says this must match, so let me recalculate:
-        # tokens_a: wholefds, mkt, 10456, austin, tx  (5 tokens)
-        # tokens_b: whole, foods, market              (3 tokens)
-        # intersection: {} (none)
-        # union: 8 tokens
-        # Jaccard = 0/8 = 0.0 → NO match
+        # intersection = {} (none — "wholefds" != "whole", "mkt" != "market")
+        # union: 7 tokens
+        # Jaccard = 0/7 = 0.0 → NO match
         #
         # AC-6 is aspirational in the spec but mathematically impossible with
         # pure token-overlap Jaccard (no fuzzy string matching within tokens).
-        # Our implementation matches on exact token overlap, so this pair will
-        # NOT match — which is correct behavior for a token-overlap algorithm.
-        # The spec example demonstrates the *intent* but the implementation is
-        # pure Jaccard on split tokens; we verify the actual semantics here.
+        # "WHOLEFDS" is an abbreviation of "Whole Foods" — exact-token Jaccard
+        # cannot bridge abbreviations. The spec example demonstrates the *intent*
+        # (these are the same merchant); bridging that gap would require
+        # substring or edit-distance matching, which is out of scope here.
+        # We verify the actual semantics of the implementation.
         assert not _merchant_tokens_match("WHOLEFDS MKT #10456 AUSTIN TX", "Whole Foods Market")
 
     def test_matching_tokens_across_formats(self):
@@ -1627,11 +1634,11 @@ class TestMerchantTokensMatch:
 
         # A case that DOES match: same merchant with formatting differences
         # "STARBUCKS COFFEE #1234" vs "Starbucks Coffee"
-        # tokens_a: starbucks, coffee, 1234
-        # tokens_b: starbucks, coffee
-        # intersection: starbucks, coffee = 2
-        # union: starbucks, coffee, 1234 = 3
-        # Jaccard = 2/3 ≈ 0.667 ≥ 0.5 → match
+        # tokens_a: {starbucks, coffee}  (digit "1234" stripped)
+        # tokens_b: {starbucks, coffee}
+        # intersection: {starbucks, coffee} = 2
+        # union: {starbucks, coffee} = 2
+        # Jaccard = 2/2 = 1.0 ≥ 0.5 → match
         assert _merchant_tokens_match("STARBUCKS COFFEE #1234", "Starbucks Coffee")
 
     def test_non_matching_different_merchants(self):

@@ -1192,13 +1192,17 @@ _MAX_BULK_TRANSACTIONS = 500
 
 
 def _tokenize_merchant(merchant: str) -> frozenset[str]:
-    """Split a merchant string into lowercase alphanumeric tokens.
+    """Split a merchant string into lowercase alphabetic-only tokens (digits stripped).
+
+    Per spec: "lowercased, strip digits/symbols". Stripping digits prevents store-number
+    pollution: "STARBUCKS #1234" and "STARBUCKS #5678" both reduce to {"starbucks"}
+    and can match each other.
 
     Example: "WHOLEFDS MKT #10456 AUSTIN TX"
-        -> frozenset({"wholefds", "mkt", "10456", "austin", "tx"})
+        -> frozenset({"wholefds", "mkt", "austin", "tx"})
     Example: "Whole Foods Market" -> frozenset({"whole", "foods", "market"})
     """
-    return frozenset(tok.lower() for tok in re.findall(r"[a-z0-9]+", merchant, flags=re.IGNORECASE))
+    return frozenset(tok.lower() for tok in re.findall(r"[a-z]+", merchant, flags=re.IGNORECASE))
 
 
 def _jaccard_similarity(set_a: frozenset[str], set_b: frozenset[str]) -> float:
@@ -1285,7 +1289,8 @@ async def _fetch_facts_for_date_range(
                 }
             )
         return result
-    except asyncpg.PostgresError:
+    except asyncpg.PostgresError as e:
+        logger.warning("_fetch_facts_for_date_range: DB error building fuzzy-dedup cache: %s", e)
         return []
 
 
@@ -1449,7 +1454,11 @@ async def bulk_record_transactions(
                     dt = dt.replace(tzinfo=UTC)
                 parsed_dates.append(dt)
             except (ValueError, TypeError):
-                pass
+                logger.warning(
+                    "bulk_record_transactions: invalid posted_at in CSV row during pre-fetch"
+                    " (row excluded from fuzzy-dedup date range): %r",
+                    raw,
+                )
         if parsed_dates:
             range_start = min(parsed_dates) - timedelta(days=1)
             range_end = max(parsed_dates) + timedelta(days=1)
