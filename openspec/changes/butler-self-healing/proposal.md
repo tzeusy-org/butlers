@@ -9,7 +9,7 @@ Butler sessions fail — LLM tool calls hit bugs, modules throw unexpected excep
 - **Spawner fallback path**: A lightweight fallback in the spawner's except block for hard crashes (OOM, process kill, adapter timeout) where the butler agent never gets a chance to call the MCP tool. This catches errors the agent couldn't self-report.
 - **Error fingerprinting**: Hash-based deduplication of errors so the same root cause doesn't spawn 100 investigation agents. Handles both structured agent reports (via MCP tool) and raw exceptions (via spawner fallback).
 - **Self-healing dispatcher**: The shared decision engine (used by both the module and the spawner fallback) that evaluates whether to spawn a healing agent based on the error fingerprint's novelty and severity.
-- **Isolated investigation worktrees**: Healing agents work exclusively in timestamped git worktrees (`hotfix/<butler>/<fingerprint>-<ts>`), never touching the main working tree.
+- **Isolated investigation worktrees**: Healing agents work exclusively in timestamped git worktrees (`self-healing/<butler>/<fingerprint>-<ts>`), never touching the main working tree.
 - **Anonymized PR pipeline**: Healing agents produce PRs against `main` with structured descriptions (root cause, fix summary, affected sessions) where all user data, PII, and sensitive content is scrubbed before any content reaches the public repo.
 - **Healing session records**: New DB table tracking healing attempts — fingerprint, status, branch, PR URL, linked session IDs — providing observability into the self-healing loop.
 - **Rate limiting & circuit breaker**: Guards against runaway healing: per-fingerprint cooldowns, global concurrent healing cap, and a kill switch.

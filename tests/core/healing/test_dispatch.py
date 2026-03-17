@@ -216,8 +216,8 @@ class TestNoRecursionGate:
                 "butlers.core.healing.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
                 return_value=(
-                    tmp_path / ".healing-worktrees/hotfix/email/abc-1",
-                    "hotfix/email/abc-1",
+                    tmp_path / ".healing-worktrees/self-healing/email/abc-1",
+                    "self-healing/email/abc-1",
                 ),
             ),
             patch(
@@ -317,7 +317,7 @@ class TestDualPathDispatch:
             patch(
                 "butlers.core.healing.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
-                return_value=(tmp_path / ".healing-worktrees/h/e/x", "hotfix/e/x"),
+                return_value=(tmp_path / ".healing-worktrees/h/e/x", "self-healing/e/x"),
             ),
             patch(
                 "butlers.core.healing.dispatch.update_attempt_status",
@@ -384,7 +384,7 @@ class TestDualPathDispatch:
             patch(
                 "butlers.core.healing.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
-                return_value=(tmp_path / ".healing-worktrees/h/e/x", "hotfix/e/x"),
+                return_value=(tmp_path / ".healing-worktrees/h/e/x", "self-healing/e/x"),
             ),
             patch(
                 "butlers.core.healing.dispatch.update_attempt_status",
@@ -508,7 +508,7 @@ class TestSeverityGate:
             patch(
                 "butlers.core.healing.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
-                return_value=(tmp_path / "wt", "hotfix/b/x"),
+                return_value=(tmp_path / "wt", "self-healing/b/x"),
             ),
             patch(
                 "butlers.core.healing.dispatch.update_attempt_status",
@@ -711,7 +711,7 @@ class TestCircuitBreaker:
             patch(
                 "butlers.core.healing.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
-                return_value=(tmp_path / "wt", "hotfix/b/x"),
+                return_value=(tmp_path / "wt", "self-healing/b/x"),
             ),
             patch(
                 "butlers.core.healing.dispatch.update_attempt_status",
@@ -953,7 +953,7 @@ class TestTimeoutWatchdog:
         """Watchdog cancels healing_task and sets status to timeout."""
         pool = _make_pool_all_pass()
         attempt_id = uuid.uuid4()
-        branch = "hotfix/email/abc-1"
+        branch = "self-healing/email/abc-1"
 
         # Create a task that never finishes
         async def long_running():
@@ -1002,7 +1002,7 @@ class TestTimeoutWatchdog:
         """Watchdog task is cancelled when healing completes before timeout."""
         pool = _make_pool_all_pass()
         attempt_id = uuid.uuid4()
-        branch = "hotfix/email/abc-2"
+        branch = "self-healing/email/abc-2"
 
         async def quick_task():
             pass
@@ -1046,7 +1046,7 @@ class TestCreatePr:
         """Full PR flow: push → validate → create → (url, number, None)."""
         fp = _make_fp()
         attempt_id = uuid.uuid4()
-        branch = "hotfix/email/abc-3"
+        branch = "self-healing/email/abc-3"
 
         async def mock_push(*args, **kwargs):
             proc = MagicMock()
@@ -1104,7 +1104,7 @@ class TestCreatePr:
         """git push failure returns (None, None, error_string)."""
         fp = _make_fp()
         attempt_id = uuid.uuid4()
-        branch = "hotfix/email/abc-4"
+        branch = "self-healing/email/abc-4"
 
         async def mock_create_subprocess(*args, **kwargs):
             proc = MagicMock()
@@ -1142,7 +1142,7 @@ class TestCreatePr:
         """Anonymization validation failure returns 'anonymization_failed' and deletes remote."""
         fp = _make_fp()
         attempt_id = uuid.uuid4()
-        branch = "hotfix/email/abc-5"
+        branch = "self-healing/email/abc-5"
 
         push_calls: list = []
         delete_calls: list = []
@@ -1321,7 +1321,7 @@ class TestHealingSessionCwd:
                 pool=pool,
                 repo_root=tmp_path,
                 attempt_id=attempt_id,
-                branch_name="hotfix/email/abc-99",
+                branch_name="self-healing/email/abc-99",
                 worktree_path=worktree_path,
                 fp=fp,
                 butler_name="email",
@@ -1384,7 +1384,7 @@ class TestDispatchHealingOtelSpan:
             patch(
                 "butlers.core.healing.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
-                return_value=(tmp_path / "wt", "hotfix/b/x"),
+                return_value=(tmp_path / "wt", "self-healing/b/x"),
             ),
             patch(
                 "butlers.core.healing.dispatch.update_attempt_status",

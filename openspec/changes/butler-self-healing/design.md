@@ -114,7 +114,7 @@ Referenced from `roster/shared/BUTLER_SKILLS.md` so every butler gets it automat
 ### 5. Worktree lifecycle: timestamped branch + auto-cleanup
 
 **Decision:** Each healing attempt gets its own worktree:
-- Branch: `hotfix/<butler-name>/<fingerprint-short>-<epoch>` (fingerprint-short = first 12 hex chars)
+- Branch: `self-healing/<butler-name>/<fingerprint-short>-<epoch>` (fingerprint-short = first 12 hex chars)
 - Worktree path: `<repo-root>/.healing-worktrees/<branch-name>/`
 - Created via `git worktree add`; branched from current `main` HEAD
 - Cleaned up via `git worktree remove` + `git branch -d` after healing completes (success or failure)
@@ -264,7 +264,7 @@ CREATE UNIQUE INDEX idx_healing_active_fingerprint
 **Decision:** On dispatcher startup (daemon boot), before accepting new errors:
 
 1. **Recover stale attempts**: Scan `healing_attempts` rows with status `investigating` and `updated_at` older than `timeout_minutes`. Transition to `timeout` (agent was interrupted). Rows with `healing_session_id = NULL` and `created_at` > 5 minutes transition to `failed` (agent was never spawned).
-2. **Reap stale worktrees**: Run the worktree reaper — removes terminal worktrees > 24h old AND orphaned worktrees with no matching attempt row AND orphaned `hotfix/*/` branches.
+2. **Reap stale worktrees**: Run the worktree reaper — removes terminal worktrees > 24h old AND orphaned worktrees with no matching attempt row AND orphaned `self-healing/*/` branches.
 3. **Begin accepting dispatches**: Only after recovery completes.
 
 **Why recovery before dispatch?** Without recovery, stale `investigating` rows block the novelty gate and concurrency cap forever. The daemon would never heal the same fingerprint again after a crash.

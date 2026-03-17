@@ -50,7 +50,7 @@
 - [ ] 6.1 Implement `src/butlers/core/healing/worktree.py` — `create_healing_worktree(repo_root, butler_name, fingerprint)` → `(Path, str)`, raises `WorktreeCreationError` on failure
 - [ ] 6.2 Implement worktree creation error handling: clean up orphaned branches on `git worktree add` failure, handle branch collision, handle git lock
 - [ ] 6.3 Implement `remove_healing_worktree(repo_root, branch_name, delete_branch, delete_remote)` — `git worktree remove` (with `--force` fallback for dirty worktrees) + conditional branch/remote cleanup
-- [ ] 6.4 Implement `reap_stale_worktrees(repo_root, pool)` — scan `.healing-worktrees/`, cross-reference `healing_attempts`, remove terminal + >24h old, remove orphaned worktrees with no matching attempt, remove orphaned `hotfix/*/` branches
+- [ ] 6.4 Implement `reap_stale_worktrees(repo_root, pool)` — scan `.healing-worktrees/`, cross-reference `healing_attempts`, remove terminal + >24h old, remove orphaned worktrees with no matching attempt, remove orphaned `self-healing/*/` branches
 - [ ] 6.5 Add `.healing-worktrees/` to `.gitignore`
 - [ ] 6.6 Write tests for worktree creation, creation failure cleanup, force-remove, orphan detection, and stale reaping
 

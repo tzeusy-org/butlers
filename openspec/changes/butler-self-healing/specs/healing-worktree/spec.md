@@ -11,12 +11,12 @@ The system SHALL create a dedicated git worktree for each healing attempt. The w
 
 #### Scenario: Worktree created for new healing attempt
 - **WHEN** the dispatcher spawns a healing attempt with fingerprint `abc123def456...` for butler `email`
-- **THEN** a new branch `hotfix/email/abc123def456-<epoch>` is created from `main` HEAD
-- **AND** a worktree is added at `<repo-root>/.healing-worktrees/hotfix/email/abc123def456-<epoch>/`
+- **THEN** a new branch `self-healing/email/abc123def456-<epoch>` is created from `main` HEAD
+- **AND** a worktree is added at `<repo-root>/.healing-worktrees/self-healing/email/abc123def456-<epoch>/`
 
 #### Scenario: Branch name format
 - **WHEN** a worktree is created for fingerprint `abc123def456789...` at epoch `1710700000`
-- **THEN** the branch name uses the first 12 hex chars of the fingerprint: `hotfix/email/abc123def456-1710700000`
+- **THEN** the branch name uses the first 12 hex chars of the fingerprint: `self-healing/email/abc123def456-1710700000`
 
 #### Scenario: .healing-worktrees in .gitignore
 - **WHEN** the `.gitignore` is checked
@@ -92,7 +92,7 @@ The system SHALL remove the worktree and conditionally delete the local branch a
 On dispatcher startup (daemon boot, after recovery), the system SHALL scan `.healing-worktrees/` and clean up worktrees that are no longer needed.
 
 #### Scenario: Stale worktree with terminal attempt cleaned
-- **WHEN** the daemon starts and `.healing-worktrees/hotfix/email/abc123-1710600000/` exists
+- **WHEN** the daemon starts and `.healing-worktrees/self-healing/email/abc123-1710600000/` exists
 - **AND** the corresponding healing attempt has status `failed` and `closed_at` is 36 hours ago
 - **THEN** the worktree and branch are removed
 
@@ -108,7 +108,7 @@ On dispatcher startup (daemon boot, after recovery), the system SHALL scan `.hea
 - **AND** a WARNING is logged: "Removing orphaned healing worktree with no matching attempt: {branch}"
 
 #### Scenario: Orphaned branch with no worktree
-- **WHEN** the daemon starts and a local branch matching `hotfix/*/` exists
+- **WHEN** the daemon starts and a local branch matching `self-healing/*/` exists
 - **AND** no worktree exists for it and no `healing_attempts` row with status `investigating` or `pr_open` references it
 - **THEN** the branch is deleted via `git branch -D`
 
@@ -120,7 +120,7 @@ The system SHALL expose:
 
 #### Scenario: Create returns path and branch
 - **WHEN** `create_healing_worktree(repo, "email", "abc123...")` is called
-- **THEN** it returns `(Path(".healing-worktrees/hotfix/email/abc123def456-<epoch>"), "hotfix/email/abc123def456-<epoch>")`
+- **THEN** it returns `(Path(".healing-worktrees/self-healing/email/abc123def456-<epoch>"), "self-healing/email/abc123def456-<epoch>")`
 
 #### Scenario: Reaper returns count
 - **WHEN** `reap_stale_worktrees(repo, pool)` finds and removes 3 stale worktrees (2 terminal + 1 orphan)

@@ -12,10 +12,10 @@ Worktree layout
 ---------------
 Each worktree lives at::
 
-    <repo_root>/.healing-worktrees/hotfix/<butler_name>/<fingerprint_short>-<epoch>/
+    <repo_root>/.healing-worktrees/self-healing/<butler_name>/<fingerprint_short>-<epoch>/
 
 The branch name matches the relative path under ``.healing-worktrees/``:
-``hotfix/<butler_name>/<fingerprint_short>-<epoch>``
+``self-healing/<butler_name>/<fingerprint_short>-<epoch>``
 
 ``<fingerprint_short>`` is the first 12 hex characters of the SHA-256 fingerprint.
 
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 _WORKTREE_BASE = ".healing-worktrees"
 
 #: Branch prefix for all healing branches.
-_BRANCH_PREFIX = "hotfix"
+_BRANCH_PREFIX = "self-healing"
 
 #: Number of hex characters from fingerprint to include in the branch name.
 _FINGERPRINT_SHORT_LEN = 12
@@ -124,15 +124,15 @@ async def _list_worktree_branches(repo_root: Path) -> list[str]:
     branches: list[str] = []
     for line in stdout.splitlines():
         if line.startswith("branch "):
-            # "branch refs/heads/hotfix/..."
+            # "branch refs/heads/self-healing/..."
             ref = line[len("branch "):].strip()
             if ref.startswith("refs/heads/"):
                 branches.append(ref[len("refs/heads/"):])
     return branches
 
 
-async def _list_hotfix_branches(repo_root: Path) -> list[str]:
-    """Return list of all local branches matching hotfix/*/*."""
+async def _list_healing_branches(repo_root: Path) -> list[str]:
+    """Return list of all local branches matching self-healing/*/*."""
     rc, stdout, _ = await _run_git(
         "branch", "--list", f"{_BRANCH_PREFIX}/*/*",
         cwd=repo_root,
@@ -199,7 +199,7 @@ async def create_healing_worktree(
     tuple[Path, str]
         ``(worktree_path, branch_name)`` where *worktree_path* is the absolute
         path to the new worktree directory and *branch_name* is the full branch
-        reference (e.g. ``"hotfix/email/abc123def456-1710700000"``).
+        reference (e.g. ``"self-healing/email/abc123def456-1710700000"``).
 
     Raises
     ------
@@ -272,7 +272,7 @@ async def remove_healing_worktree(
     repo_root:
         Absolute path to the repository root.
     branch_name:
-        The branch name (e.g. ``"hotfix/email/abc123def456-1710700000"``).
+        The branch name (e.g. ``"self-healing/email/abc123def456-1710700000"``).
         Used to derive the worktree path and to delete the branch.
     delete_branch:
         When ``True`` (default), delete the local branch after removing the
@@ -355,7 +355,7 @@ async def reap_stale_worktrees(
        (``failed``, ``timeout``, etc.) and ``closed_at`` older than 24 hours.
     2. **Orphaned worktrees**: directories in ``.healing-worktrees/`` with
        no matching ``healing_attempts`` row.
-    3. **Orphaned branches**: local ``hotfix/*/`` branches with no worktree
+    3. **Orphaned branches**: local ``self-healing/*/`` branches with no worktree
        and no active (``investigating`` / ``pr_open``) attempt.
 
     Parameters
@@ -381,13 +381,13 @@ async def reap_stale_worktrees(
     # -----------------------------------------------------------------------
     if worktree_base.exists():
         # Worktrees are stored at:
-        #   .healing-worktrees/hotfix/<butler_name>/<short>-<epoch>/
+        #   .healing-worktrees/self-healing/<butler_name>/<short>-<epoch>/
         # which is 3 levels under worktree_base.
-        # Scan:  worktree_base / "hotfix" / <butler_name> / <slug>
+        # Scan:  worktree_base / "self-healing" / <butler_name> / <slug>
         candidate_paths: list[Path] = []
-        hotfix_dir = worktree_base / _BRANCH_PREFIX
-        if hotfix_dir.is_dir():
-            for butler_dir in hotfix_dir.iterdir():
+        prefix_dir = worktree_base / _BRANCH_PREFIX
+        if prefix_dir.is_dir():
+            for butler_dir in prefix_dir.iterdir():
                 if not butler_dir.is_dir():
                     continue
                 for wt_dir in butler_dir.iterdir():
@@ -395,7 +395,7 @@ async def reap_stale_worktrees(
                         candidate_paths.append(wt_dir)
 
         # Reconstruct branch names from paths:
-        #   branch = "hotfix/<butler_name>/<slug>"
+        #   branch = "self-healing/<butler_name>/<slug>"
         def _branch_from_wt(wt_dir: Path) -> str:
             return f"{_BRANCH_PREFIX}/{wt_dir.parent.name}/{wt_dir.name}"
 
@@ -460,12 +460,12 @@ async def reap_stale_worktrees(
             reaped += 1
 
     # -----------------------------------------------------------------------
-    # Phase 2: orphaned hotfix branches with no worktree and no active attempt
+    # Phase 2: orphaned self-healing branches with no worktree and no active attempt
     # -----------------------------------------------------------------------
-    all_hotfix_branches = await _list_hotfix_branches(repo_root)
+    all_healing_branches = await _list_healing_branches(repo_root)
     worktree_branches = set(await _list_worktree_branches(repo_root))
 
-    orphan_branches = [b for b in all_hotfix_branches if b not in worktree_branches]
+    orphan_branches = [b for b in all_healing_branches if b not in worktree_branches]
     if orphan_branches:
         branch_attempts = await _healing_attempts_for_branches(pool, orphan_branches)
         for branch in orphan_branches:
@@ -476,7 +476,7 @@ async def reap_stale_worktrees(
                 if status in ("investigating", "pr_open"):
                     continue
             # No attempt or terminal attempt — delete the orphaned branch
-            logger.info("Deleting orphaned hotfix branch with no worktree: %s", branch)
+            logger.info("Deleting orphaned self-healing branch with no worktree: %s", branch)
             rc, _, stderr = await _run_git(
                 "branch", "-D", branch,
                 cwd=repo_root,
