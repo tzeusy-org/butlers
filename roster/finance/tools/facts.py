@@ -47,6 +47,7 @@ import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from decimal import InvalidOperation as DecimalInvalidOperation
 from typing import Any
 
 import asyncpg
@@ -1290,7 +1291,7 @@ async def bulk_record_transactions(
             if raw_amount is None:
                 raise ValueError("missing amount")
             amount_decimal = Decimal(str(raw_amount))
-        except Exception:
+        except (ValueError, TypeError, DecimalInvalidOperation):
             errors += 1
             error_details.append({"index": idx, "reason": "invalid_amount"})
             continue
@@ -1359,7 +1360,7 @@ async def bulk_record_transactions(
                     source_message_id,
                 ]
             )
-            idempotency_key = hashlib.sha256(idem_parts.encode()).hexdigest()[:32]
+            idempotency_key = hashlib.sha256(idem_parts.encode()).hexdigest()
         else:
             # Composite dedup key for CSV-sourced rows
             idempotency_key = _compute_composite_dedup_key(
@@ -1412,11 +1413,9 @@ async def bulk_record_transactions(
         #    embedding = NULL (zero-vector bypass per spec)
         #    search_vector computed via tsvector_sql
         # ------------------------------------------------------------------
-        import json as _json
-
         fact_id = uuid.uuid4()
         searchable = preprocess_text(f"owner {predicate} {content}")
-        meta_json = _json.dumps(fact_metadata)
+        meta_json = json.dumps(fact_metadata)
 
         try:
             sql = f"""

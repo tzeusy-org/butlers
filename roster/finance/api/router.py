@@ -588,21 +588,7 @@ async def bulk_ingest_transactions(
     pool = _pool(db)
     _facts_mod = _load_facts_tools()
 
-    txn_dicts = [
-        {
-            "posted_at": item.posted_at,
-            "merchant": item.merchant,
-            "amount": item.amount,
-            "currency": item.currency,
-            "category": item.category,
-            "description": item.description,
-            "payment_method": item.payment_method,
-            "account_id": item.account_id,
-            "source_message_id": item.source_message_id,
-            "metadata": item.metadata,
-        }
-        for item in request.transactions
-    ]
+    txn_dicts = [item.model_dump() for item in request.transactions]
 
     try:
         result = await _facts_mod.bulk_record_transactions(
