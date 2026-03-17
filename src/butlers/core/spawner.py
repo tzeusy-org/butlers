@@ -698,6 +698,8 @@ class Spawner:
         parent_context: Context | None = None,
         request_id: str | None = None,
         complexity: Complexity = Complexity.MEDIUM,
+        cwd: str | None = None,
+        bypass_butler_semaphore: bool = False,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -726,6 +728,15 @@ class Spawner:
             Task complexity tier used to select a model from the catalog.
             Defaults to ``Complexity.MEDIUM``.  The catalog is queried with this
             tier; when no catalog entry matches the TOML-configured model is used.
+        cwd:
+            Optional working directory for the runtime process.  When provided,
+            overrides the default ``config_dir``-based CWD.  Used by the
+            self-healing dispatcher to run the agent inside the healing worktree.
+        bypass_butler_semaphore:
+            When ``True``, skip the per-butler ``_session_semaphore`` but still
+            acquire the global semaphore.  Used by the self-healing dispatcher so
+            that a healing session spawned from within a failing session does not
+            deadlock against the per-butler slot that the failing session holds.
 
         Returns
         -------
@@ -812,8 +823,10 @@ class Spawner:
             # (after the global cap is acquired, so the metric reflects
             # per-butler queue depth, not global backpressure wait time).
             self._metrics.spawner_queued_triggers_inc()
-            async with self._session_semaphore:
-                # Slot acquired — no longer queued, now active
+            if bypass_butler_semaphore:
+                # Skip the per-butler semaphore (e.g. healing sessions spawned
+                # from within a failing session that already holds the slot).
+                # Global semaphore was already acquired above.
                 _semaphore_acquired = True
                 self._metrics.spawner_queued_triggers_dec()
                 self._metrics.spawner_active_sessions_inc()
@@ -826,9 +839,29 @@ class Spawner:
                         parent_context,
                         request_id,
                         complexity,
+                        cwd=cwd,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
+            else:
+                async with self._session_semaphore:
+                    # Slot acquired — no longer queued, now active
+                    _semaphore_acquired = True
+                    self._metrics.spawner_queued_triggers_dec()
+                    self._metrics.spawner_active_sessions_inc()
+                    try:
+                        return await self._run(
+                            prompt,
+                            trigger_source,
+                            context,
+                            max_turns,
+                            parent_context,
+                            request_id,
+                            complexity,
+                            cwd=cwd,
+                        )
+                    finally:
+                        self._metrics.spawner_active_sessions_dec()
         finally:
             # Release global semaphore if acquired (not released via context manager).
             if _global_semaphore_acquired:
@@ -904,6 +937,7 @@ class Spawner:
         parent_context: Context | None = None,
         request_id: str | None = None,
         complexity: Complexity = Complexity.MEDIUM,
+        cwd: str | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1121,7 +1155,7 @@ class Spawner:
                 "env": env,
                 "max_turns": max_turns,
                 "model": model,
-                "cwd": str(self._config_dir),
+                "cwd": cwd if cwd is not None else str(self._config_dir),
             }
             if merged_args:
                 invoke_kwargs["runtime_args"] = merged_args

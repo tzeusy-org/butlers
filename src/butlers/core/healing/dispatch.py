@@ -47,6 +47,7 @@ from butlers.core.healing.fingerprint import (
 from butlers.core.healing.tracking import (
     count_active_attempts,
     create_or_join_attempt,
+    get_attempt,
     get_recent_attempt,
     get_recent_terminal_statuses,
     update_attempt_status,
@@ -277,6 +278,8 @@ def _build_pr_body(
     attempt_id: uuid.UUID,
     repo_root: Path,
     agent_context: str | None,
+    first_seen: str = "unknown",
+    occurrences: int | str = "unknown",
 ) -> str:
     """Build anonymized PR body from the structured template."""
     context_section = ""
@@ -292,6 +295,8 @@ def _build_pr_body(
 **Call site:** {fp.call_site}
 **Fingerprint:** `{fp.fingerprint}`
 **Attempt ID:** `{attempt_id}`
+**First seen:** {first_seen}
+**Occurrences:** {occurrences}
 
 ### Root Cause
 *(Filled in by the healing agent's commit message and PR description.)*
@@ -304,6 +309,8 @@ def _build_pr_body(
 {context_section}
 ---
 *Automated fix proposed by butler self-healing. Review carefully before merging.*
+
+*Fingerprint: `{fp.fingerprint}`*
 """
     return raw_body
 
@@ -317,6 +324,8 @@ async def _create_pr(
     agent_context: str | None,
     labels: list[str],
     gh_token: str | None,
+    first_seen: str = "unknown",
+    occurrences: int | str = "unknown",
 ) -> tuple[str | None, int | None, str | None]:
     """Push branch and create a GitHub PR.
 
@@ -352,7 +361,11 @@ async def _create_pr(
     pr_title = f"fix(healing): {fp.exception_type} in {fp.call_site} [{fp.fingerprint[:12]}]"
     pr_title = anonymize(pr_title, repo_root)
 
-    pr_body = _build_pr_body(fp, butler_name, attempt_id, repo_root, agent_context)
+    pr_body = _build_pr_body(
+        fp, butler_name, attempt_id, repo_root, agent_context,
+        first_seen=first_seen,
+        occurrences=occurrences,
+    )
     pr_body = anonymize(pr_body, repo_root)
 
     # Step 3: Validate for residual PII
@@ -497,6 +510,8 @@ async def _run_healing_session(
             prompt=prompt,
             trigger_source="healing",
             complexity=Complexity.SELF_HEALING,
+            cwd=str(worktree_path),
+            bypass_butler_semaphore=True,
         )
 
         if result.session_id is not None:
@@ -523,7 +538,24 @@ async def _run_healing_session(
             )
             return
 
-        # Agent succeeded — create PR
+        # Agent succeeded — fetch attempt metadata for PR body, then create PR
+        first_seen = "unknown"
+        occurrences: int | str = "unknown"
+        try:
+            attempt_row = await get_attempt(pool, attempt_id)
+            if attempt_row is not None:
+                created_at = attempt_row.get("created_at")
+                if created_at is not None:
+                    first_seen = str(created_at)
+                session_ids = attempt_row.get("session_ids") or []
+                occurrences = len(session_ids)
+        except Exception as _meta_exc:
+            logger.debug(
+                "Failed to fetch attempt metadata for PR body (attempt=%s): %s",
+                attempt_id,
+                _meta_exc,
+            )
+
         pr_url, pr_number, pr_error = await _create_pr(
             repo_root=repo_root,
             branch_name=branch_name,
@@ -533,6 +565,8 @@ async def _run_healing_session(
             agent_context=agent_context,
             labels=config.pr_labels,
             gh_token=gh_token,
+            first_seen=first_seen,
+            occurrences=occurrences,
         )
 
         if pr_error == "anonymization_failed":
@@ -659,6 +693,26 @@ async def dispatch_healing(
     DispatchResult
         Always returned — never raises.
     """
+    # Start a root OTel span for this healing dispatch.
+    # A fresh context is used so the span is NOT a child of the failed session's trace,
+    # matching spec §12 (Trace Isolation).  Wrapped in try/except ImportError for
+    # environments that do not have opentelemetry installed.
+    _otel_span = None
+    _otel_token = None
+    try:
+        import opentelemetry.trace as _otel_trace
+        _otel_tracer = _otel_trace.get_tracer("butlers.healing")
+        _fresh_ctx = _otel_trace.context_api.Context()
+        _otel_span = _otel_tracer.start_span("healing.dispatch", context=_fresh_ctx)
+        _otel_span.set_attribute("healing.butler_name", butler_name)
+        _otel_span.set_attribute("healing.trigger_source", trigger_source)
+        _otel_span.set_attribute("healing.failed_session_id", str(session_id))
+        _otel_token = _otel_trace.context_api.attach(
+            _otel_trace.set_span_in_context(_otel_span)
+        )
+    except ImportError:
+        pass
+
     try:
         # -------------------------------------------------------------------
         # Gate 1: No-recursion guard (FIRST — before any other work)
@@ -935,3 +989,15 @@ async def dispatch_healing(
             fingerprint=_fp_str,
             reason="internal_error",
         )
+    finally:
+        if _otel_span is not None:
+            try:
+                _otel_span.end()
+            except Exception:
+                pass
+        if _otel_token is not None:
+            try:
+                import opentelemetry.trace as _otel_trace
+                _otel_trace.context_api.detach(_otel_token)
+            except Exception:
+                pass

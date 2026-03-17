@@ -2800,3 +2800,113 @@ class TestGlobalSpawnConcurrencyCap:
             assert log[i][0] == "start"
             assert log[i + 1][0] == "end"
             assert log[i][1] == log[i + 1][1]
+
+
+# ---------------------------------------------------------------------------
+# cwd parameter and bypass_butler_semaphore (self-healing support)
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnerCwdAndBypassSemaphore:
+    """Tests for cwd override and bypass_butler_semaphore parameter."""
+
+    def setup_method(self) -> None:
+        _reset_global_semaphore()
+
+    def teardown_method(self) -> None:
+        _reset_global_semaphore()
+
+    async def test_cwd_overrides_config_dir(self, tmp_path: Path) -> None:
+        """When cwd is provided to trigger(), the adapter receives it instead of config_dir."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        custom_cwd = tmp_path / "worktree"
+        custom_cwd.mkdir()
+
+        captured_cwd: list = []
+
+        class CwdCaptureAdapter(MockAdapter):
+            async def invoke(self, *args, **kwargs):
+                captured_cwd.append(kwargs.get("cwd"))
+                return "ok", [], None
+
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            runtime=CwdCaptureAdapter(),
+        )
+
+        result = await spawner.trigger("hello", "tick", cwd=str(custom_cwd))
+        assert result.success is True
+        assert len(captured_cwd) == 1
+        assert captured_cwd[0] == str(custom_cwd)
+
+    async def test_cwd_defaults_to_config_dir(self, tmp_path: Path) -> None:
+        """When cwd is not provided, adapter receives str(config_dir)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        captured_cwd: list = []
+
+        class CwdCaptureAdapter(MockAdapter):
+            async def invoke(self, *args, **kwargs):
+                captured_cwd.append(kwargs.get("cwd"))
+                return "ok", [], None
+
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            runtime=CwdCaptureAdapter(),
+        )
+
+        result = await spawner.trigger("hello", "tick")
+        assert result.success is True
+        assert len(captured_cwd) == 1
+        assert captured_cwd[0] == str(config_dir)
+
+    async def test_bypass_butler_semaphore_skips_per_butler_lock(self, tmp_path: Path) -> None:
+        """bypass_butler_semaphore=True proceeds even when per-butler semaphore is at 0."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Use max_concurrent_sessions=1 (serial dispatch)
+        config = _make_config(max_concurrent_sessions=1)
+        adapter = MockAdapter(result_text="ok")
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        # Manually drain the per-butler semaphore to simulate a slot being held
+        await spawner._session_semaphore.acquire()
+
+        # bypass_butler_semaphore=True should still proceed
+        trigger_task = asyncio.create_task(
+            spawner.trigger("healing prompt", "healing", bypass_butler_semaphore=True)
+        )
+        result = await asyncio.wait_for(trigger_task, timeout=2.0)
+
+        # Release the held slot
+        spawner._session_semaphore.release()
+
+        assert result.success is True
+
+    async def test_normal_trigger_waits_for_butler_semaphore(self, tmp_path: Path) -> None:
+        """Without bypass, trigger() waits when per-butler semaphore is held."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        config = _make_config(max_concurrent_sessions=1)
+        completed: list[bool] = []
+
+        class SlowAdapter(MockAdapter):
+            async def invoke(self, *args, **kwargs):
+                await asyncio.sleep(0.05)
+                completed.append(True)
+                return "ok", [], None
+
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=SlowAdapter())
+
+        results = await asyncio.gather(
+            spawner.trigger("A", "tick"),
+            spawner.trigger("B", "tick"),
+        )
+        assert all(r.success for r in results)
+        assert len(completed) == 2

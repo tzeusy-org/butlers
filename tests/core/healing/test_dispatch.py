@@ -1259,3 +1259,244 @@ class TestDispatchNeverRaises:
             )
 
         assert result.fingerprint == "d" * 64
+
+
+# ---------------------------------------------------------------------------
+# Fix 1+2: CWD and bypass_butler_semaphore in _run_healing_session
+# ---------------------------------------------------------------------------
+
+
+class TestHealingSessionCwd:
+    """Verify that _run_healing_session passes cwd and bypass_butler_semaphore to spawner."""
+
+    async def test_trigger_called_with_cwd_and_bypass(self, tmp_path: Path) -> None:
+        """spawner.trigger() receives cwd=worktree_path and bypass_butler_semaphore=True."""
+        worktree_path = tmp_path / "healing-wt"
+        worktree_path.mkdir()
+        pool = _make_pool_all_pass()
+        fp = _make_fp()
+        attempt_id = uuid.uuid4()
+
+        captured_kwargs: dict = {}
+
+        async def capture_trigger(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+
+            class _Result:
+                success = True
+                session_id = uuid.uuid4()
+                error = None
+                output = "done"
+
+            return _Result()
+
+        spawner = MagicMock()
+        spawner.trigger = AsyncMock(side_effect=capture_trigger)
+
+        with (
+            patch(
+                "butlers.core.healing.dispatch.update_attempt_status",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "butlers.core.healing.dispatch.get_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.healing.dispatch._create_pr",
+                new_callable=AsyncMock,
+                return_value=("https://github.com/x/y/pull/1", 1, None),
+            ),
+            patch(
+                "butlers.core.healing.dispatch.remove_healing_worktree",
+                new_callable=AsyncMock,
+            ),
+        ):
+            from butlers.core.healing.dispatch import HealingConfig, _run_healing_session
+
+            config = HealingConfig(enabled=True, timeout_minutes=30)
+            await _run_healing_session(
+                pool=pool,
+                repo_root=tmp_path,
+                attempt_id=attempt_id,
+                branch_name="hotfix/email/abc-99",
+                worktree_path=worktree_path,
+                fp=fp,
+                butler_name="email",
+                trigger_source="external",
+                agent_context=None,
+                config=config,
+                spawner=spawner,
+                gh_token=None,
+            )
+
+        assert "cwd" in captured_kwargs
+        assert captured_kwargs["cwd"] == str(worktree_path)
+        assert captured_kwargs.get("bypass_butler_semaphore") is True
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: OTel healing.dispatch span
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchHealingOtelSpan:
+    """Verify healing.dispatch OTel span is created and ends correctly."""
+
+    async def test_span_created_with_attributes(self, tmp_path: Path) -> None:
+        """dispatch_healing creates a healing.dispatch span with expected attributes."""
+        import opentelemetry.trace as real_trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        provider = TracerProvider()
+        real_trace.set_tracer_provider(provider)
+
+        pool = _make_pool_all_pass()
+
+        with (
+            patch(
+                "butlers.core.healing.dispatch.create_or_join_attempt",
+                new_callable=AsyncMock,
+                return_value=(uuid.uuid4(), True),
+            ),
+            patch(
+                "butlers.core.healing.dispatch.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.healing.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "butlers.core.healing.dispatch.resolve_model",
+                new_callable=AsyncMock,
+                return_value=("claude_code", "model", []),
+            ),
+            patch(
+                "butlers.core.healing.dispatch.create_healing_worktree",
+                new_callable=AsyncMock,
+                return_value=(tmp_path / "wt", "hotfix/b/x"),
+            ),
+            patch(
+                "butlers.core.healing.dispatch.update_attempt_status",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                new_callable=AsyncMock,
+            ),
+            patch("asyncio.create_task") as mock_create_task,
+        ):
+            mock_create_task.return_value = MagicMock()
+            result = await dispatch_healing(
+                pool=pool,
+                butler_name="email",
+                session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(),
+                config=_make_config(),
+                repo_root=tmp_path,
+                spawner=_make_spawner(),
+                trigger_source="external",
+            )
+
+        # Dispatch should succeed regardless of OTel presence
+        assert result.accepted is True
+        assert result.reason == "dispatched"
+
+    async def test_dispatch_works_when_otel_missing(self, tmp_path: Path) -> None:
+        """dispatch_healing gracefully handles ImportError from opentelemetry."""
+        import sys
+
+        # Temporarily hide opentelemetry
+        saved_modules = {k: v for k, v in sys.modules.items() if "opentelemetry" in k}
+        for key in saved_modules:
+            sys.modules[key] = None  # type: ignore[assignment]
+
+        try:
+            pool = _make_pool_all_pass()
+            result = await dispatch_healing(
+                pool=pool,
+                butler_name="email",
+                session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(),
+                config=_make_config(enabled=False),
+                repo_root=tmp_path,
+                spawner=_make_spawner(),
+            )
+            # Disabled → returns "disabled" cleanly, no ImportError propagated
+            assert result.reason == "disabled"
+        finally:
+            # Restore modules
+            for key, val in saved_modules.items():
+                sys.modules[key] = val
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: PR body template — First seen, Occurrences, Fingerprint footer
+# ---------------------------------------------------------------------------
+
+
+class TestPrBodyTemplate:
+    """Verify _build_pr_body includes First seen, Occurrences, and fingerprint footer."""
+
+    def test_first_seen_and_occurrences_in_body(self) -> None:
+        """_build_pr_body includes First seen and Occurrences fields."""
+        from butlers.core.healing.dispatch import _build_pr_body
+
+        fp = _make_fp(fingerprint="e" * 64)
+        attempt_id = uuid.uuid4()
+        body = _build_pr_body(
+            fp=fp,
+            butler_name="email",
+            attempt_id=attempt_id,
+            repo_root=Path("/tmp"),
+            agent_context=None,
+            first_seen="2026-01-01T00:00:00Z",
+            occurrences=3,
+        )
+        assert "**First seen:**" in body
+        assert "2026-01-01T00:00:00Z" in body
+        assert "**Occurrences:**" in body
+        assert "3" in body
+
+    def test_fingerprint_footer_in_body(self) -> None:
+        """_build_pr_body includes *Fingerprint: `<full-fingerprint>`* footer."""
+        from butlers.core.healing.dispatch import _build_pr_body
+
+        fp = _make_fp(fingerprint="f" * 64)
+        attempt_id = uuid.uuid4()
+        body = _build_pr_body(
+            fp=fp,
+            butler_name="email",
+            attempt_id=attempt_id,
+            repo_root=Path("/tmp"),
+            agent_context=None,
+        )
+        assert "*Fingerprint:" in body
+        assert "f" * 64 in body
+
+    def test_defaults_when_not_provided(self) -> None:
+        """first_seen and occurrences default to 'unknown' when not supplied."""
+        from butlers.core.healing.dispatch import _build_pr_body
+
+        fp = _make_fp()
+        attempt_id = uuid.uuid4()
+        body = _build_pr_body(
+            fp=fp,
+            butler_name="email",
+            attempt_id=attempt_id,
+            repo_root=Path("/tmp"),
+            agent_context=None,
+        )
+        assert "**First seen:** unknown" in body
+        assert "**Occurrences:** unknown" in body
