@@ -576,10 +576,10 @@ async def test_claude_usage_contract_int_tokens():
 
     from claude_agent_sdk import ResultMessage
 
-    mock_usage = MagicMock()
-    mock_usage.__iter__ = MagicMock(
-        return_value=iter([("input_tokens", 150), ("output_tokens", 60)])
-    )
+    # Use a plain dict so dict(message.usage) works correctly. MagicMock has a
+    # .keys() method by default, which causes dict() to use the mapping protocol
+    # and yield an empty result when keys() is not configured to return real keys.
+    mock_usage = {"input_tokens": 150, "output_tokens": 60}
     mock_result = MagicMock(spec=ResultMessage)
     mock_result.result = "Done"
     mock_result.usage = mock_usage
