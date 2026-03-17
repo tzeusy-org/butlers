@@ -27,28 +27,16 @@ When ``_get_dispatch_fn`` returns ``None`` the row is created and dispatch is
 deferred: the butler daemon will pick up the ``investigating`` row on its next
 startup (``SelfHealingModule.on_startup`` → ``recover_stale_attempts``).
 
-Callers that override ``_get_dispatch_fn`` must return an async callable with
-the following signature::
-
-    async def dispatch(
-        *,
-        attempt_id: uuid.UUID,
-        fingerprint: str,
-        butler_name: str,
-        severity: int,
-        exception_type: str,
-        call_site: str,
-        sanitized_msg: str | None,
-    ) -> None: ...
+Callers that override ``_get_dispatch_fn`` must return an async callable
+conforming to ``DispatchCallable`` (see class definition below).
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Coroutine
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -69,13 +57,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/healing", tags=["healing"])
 
 # ---------------------------------------------------------------------------
-# Type alias for the dispatch callable
+# Dispatch callable protocol
 # ---------------------------------------------------------------------------
 
-#: Type for an async dispatch callable injected via _get_dispatch_fn.
-#: Accepts keyword-only arguments matching the original attempt's metadata
-#: and triggers the healing agent dispatch pipeline.
-DispatchCallable = Callable[..., Coroutine[Any, Any, None]]
+
+class DispatchCallable(Protocol):
+    """Protocol for an async dispatch callable injected via _get_dispatch_fn.
+
+    Accepts keyword-only arguments matching the original attempt's metadata
+    and triggers the healing agent dispatch pipeline.
+    """
+
+    async def __call__(
+        self,
+        *,
+        attempt_id: uuid.UUID,
+        fingerprint: str,
+        butler_name: str,
+        severity: int,
+        exception_type: str,
+        call_site: str,
+        sanitized_msg: str | None,
+    ) -> None: ...
 
 
 def _get_db_manager() -> DatabaseManager:
