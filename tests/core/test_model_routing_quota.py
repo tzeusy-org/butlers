@@ -431,6 +431,46 @@ async def test_check_quota_reset_24h_at_respected(postgres_container: Any) -> No
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
+async def test_check_quota_reset_30d_at_respected(postgres_container: Any) -> None:
+    """reset_30d_at excludes old usage from 30d window."""
+    async with _make_pool(postgres_container) as pool:
+        entry_id = await _insert_catalog_entry(pool, alias="reset-30d")
+        # Limit of 100 for 30d
+        reset_time = datetime.now(UTC) - timedelta(days=10)
+        await _insert_limits(
+            pool,
+            catalog_entry_id=entry_id,
+            limit_24h=None,
+            limit_30d=100,
+            reset_30d_at=reset_time,
+        )
+        # Old row (before reset_30d_at) — should NOT count toward 30d window
+        old_time = datetime.now(UTC) - timedelta(days=20)
+        await _insert_ledger_row(
+            pool,
+            catalog_entry_id=entry_id,
+            input_tokens=80,
+            output_tokens=0,
+            recorded_at=old_time,
+        )
+        # Recent row (after reset_30d_at) — counts
+        await _insert_ledger_row(
+            pool,
+            catalog_entry_id=entry_id,
+            input_tokens=20,
+            output_tokens=0,
+        )
+
+        result = await check_token_quota(pool, entry_id)
+
+        # Only 20 tokens counted in 30d window (old 80 excluded by reset)
+        assert result.usage_30d == 20
+        assert result.allowed is True  # 20 < 100
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_check_quota_old_usage_outside_30d_excluded(postgres_container: Any) -> None:
     """Usage older than 30 days is excluded from the 30d window."""
     async with _make_pool(postgres_container) as pool:
