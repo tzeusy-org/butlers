@@ -1,7 +1,7 @@
 """sessions: add healing_fingerprint column for self-healing dispatch tracking
 
 Revision ID: core_036
-Revises: core_035
+Revises: core_035b
 Create Date: 2026-03-17 00:00:00.000000
 
 Adds a nullable TEXT column ``healing_fingerprint`` to the per-butler sessions
@@ -27,7 +27,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "core_036"
-down_revision = "core_035"
+down_revision = "core_035b"
 branch_labels = None
 depends_on = None
 
