@@ -28,6 +28,10 @@ if _spec is not None and _spec.loader is not None:
 
     AccountModel = _models.AccountModel
     BillModel = _models.BillModel
+    BulkTransactionErrorDetail = _models.BulkTransactionErrorDetail
+    BulkTransactionItem = _models.BulkTransactionItem
+    BulkTransactionRequest = _models.BulkTransactionRequest
+    BulkTransactionResponse = _models.BulkTransactionResponse
     BulkUpdateOpResultModel = _models.BulkUpdateOpResultModel
     BulkUpdateRequestModel = _models.BulkUpdateRequestModel
     BulkUpdateResponseModel = _models.BulkUpdateResponseModel
@@ -552,6 +556,76 @@ async def get_upcoming_bills(
         "days_ahead": days_ahead,
         "include_overdue": include_overdue,
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /transactions/bulk — bulk transaction ingestion
+# ---------------------------------------------------------------------------
+
+
+@router.post("/transactions/bulk", response_model=BulkTransactionResponse)
+async def bulk_ingest_transactions(
+    request: BulkTransactionRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> BulkTransactionResponse:
+    """Bulk-ingest normalized transaction objects.
+
+    Accepts 1–500 items per request. Returns per-row counts for imported,
+    skipped (dedup), and errored rows. Embeddings are skipped for performance;
+    tsvector (full-text search) is still computed.
+
+    error_details entries include an index and reason:
+    - "duplicate" — already exists (composite or source_message_id dedup)
+    - "invalid_date" — unparseable posted_at
+    - "invalid_amount" — non-numeric amount
+    """
+    if len(request.transactions) == 0 or len(request.transactions) > 500:
+        raise HTTPException(
+            status_code=422,
+            detail=f"transactions must contain 1–500 items; got {len(request.transactions)}",
+        )
+
+    pool = _pool(db)
+    _facts_mod = _load_facts_tools()
+
+    txn_dicts = [
+        {
+            "posted_at": item.posted_at,
+            "merchant": item.merchant,
+            "amount": item.amount,
+            "currency": item.currency,
+            "category": item.category,
+            "description": item.description,
+            "payment_method": item.payment_method,
+            "account_id": item.account_id,
+            "source_message_id": item.source_message_id,
+            "metadata": item.metadata,
+        }
+        for item in request.transactions
+    ]
+
+    try:
+        result = await _facts_mod.bulk_record_transactions(
+            pool,
+            transactions=txn_dicts,
+            account_id=request.account_id,
+            source=request.source,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    error_details = [
+        BulkTransactionErrorDetail(index=e["index"], reason=e["reason"])
+        for e in result.get("error_details", [])
+    ]
+
+    return BulkTransactionResponse(
+        total=result["total"],
+        imported=result["imported"],
+        skipped=result["skipped"],
+        errors=result["errors"],
+        error_details=error_details,
+    )
 
 
 # ---------------------------------------------------------------------------
