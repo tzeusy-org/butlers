@@ -11,6 +11,7 @@ const COMPLEXITY_LABELS: Record<ComplexityTier, string> = {
   high: "High",
   extra_high: "Extra High",
   discretion: "Discretion",
+  self_healing: "Self Healing",
 };
 
 const COMPLEXITY_COLORS: Record<ComplexityTier, string> = {
@@ -19,6 +20,7 @@ const COMPLEXITY_COLORS: Record<ComplexityTier, string> = {
   high: "bg-amber-600 text-white hover:bg-amber-600/90",
   extra_high: "bg-red-600 text-white hover:bg-red-600/90",
   discretion: "bg-purple-600 text-white hover:bg-purple-600/90",
+  self_healing: "bg-teal-600 text-white hover:bg-teal-600/90",
 };
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -28,6 +30,7 @@ export const COMPLEXITY_TIERS: ComplexityTier[] = [
   "high",
   "extra_high",
   "discretion",
+  "self_healing",
 ];
 
 // eslint-disable-next-line react-refresh/only-export-components

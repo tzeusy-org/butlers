@@ -2206,7 +2206,7 @@ export interface IngestionRuleListParams {
 // ---------------------------------------------------------------------------
 
 /** Valid complexity tier values for the model catalog. */
-export type ComplexityTier = "trivial" | "medium" | "high" | "extra_high" | "discretion";
+export type ComplexityTier = "trivial" | "medium" | "high" | "extra_high" | "discretion" | "self_healing";
 
 /** A single entry in the shared model catalog. */
 export interface ModelCatalogEntry {
