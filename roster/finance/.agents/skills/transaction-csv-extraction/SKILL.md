@@ -268,6 +268,7 @@ Date,Description,Amount
 **Generated script (key logic)**:
 ```python
 import csv, json, urllib.request, sys, argparse, os
+from datetime import datetime, timezone
 
 parser = argparse.ArgumentParser()
 parser.add_argument("csv_file")
@@ -288,11 +289,11 @@ except Exception as e:
 totals = {"total": 0, "imported": 0, "skipped": 0, "errors": 0}
 batch = []
 
-def post_batch(batch):
+def post_batch(rows):
     body = json.dumps({
         "account_id": args.account_id,
         "source": "csv-import",
-        "transactions": batch,
+        "transactions": rows,
     }).encode()
     req = urllib.request.Request(
         f"{api_url}/api/finance/transactions/bulk",
@@ -302,6 +303,18 @@ def post_batch(batch):
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
+def flush_batch(rows, totals_dict):
+    if not rows:
+        return
+    try:
+        result = post_batch(rows)
+        totals_dict["imported"] += result.get("imported", 0)
+        totals_dict["skipped"] += result.get("skipped", 0)
+        totals_dict["errors"] += result.get("errors", 0)
+    except Exception as e:
+        print(f"Batch post error: {e}", file=sys.stderr)
+        totals_dict["errors"] += len(rows)
+
 with open(args.csv_file, encoding="utf-8-sig", newline="") as f:
     reader = csv.DictReader(f)
     for row in reader:
@@ -309,7 +322,6 @@ with open(args.csv_file, encoding="utf-8-sig", newline="") as f:
             continue
         totals["total"] += 1
         try:
-            from datetime import datetime, timezone
             dt = datetime.strptime(row["Date"].strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
             amount = str(float(row["Amount"].strip().replace(",", "")))
             batch.append({
@@ -324,17 +336,10 @@ with open(args.csv_file, encoding="utf-8-sig", newline="") as f:
             continue
 
         if len(batch) >= 100:
-            result = post_batch(batch)
-            totals["imported"] += result["imported"]
-            totals["skipped"] += result["skipped"]
-            totals["errors"] += result.get("errors", 0)
+            flush_batch(batch, totals)
             batch = []
 
-if batch:
-    result = post_batch(batch)
-    totals["imported"] += result["imported"]
-    totals["skipped"] += result["skipped"]
-    totals["errors"] += result.get("errors", 0)
+flush_batch(batch, totals)
 
 print(json.dumps(totals))
 ```
