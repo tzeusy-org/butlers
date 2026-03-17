@@ -202,7 +202,7 @@ def test_complexity_enum_invalid_raises() -> None:
 async def test_resolve_global_only(postgres_container: Any) -> None:
     """Global-only entry (no override): resolve returns it for matching tier."""
     async with _make_pool(postgres_container) as pool:
-        await _insert_catalog_entry(
+        entry_id = await _insert_catalog_entry(
             pool,
             alias="sonnet",
             runtime_type="claude",
@@ -214,10 +214,11 @@ async def test_resolve_global_only(postgres_container: Any) -> None:
         result = await resolve_model(pool, "general", Complexity.MEDIUM)
 
         assert result is not None
-        runtime_type, model_id, extra_args = result
+        runtime_type, model_id, extra_args, catalog_entry_id = result
         assert runtime_type == "claude"
         assert model_id == "claude-sonnet-4"
         assert extra_args == []
+        assert str(catalog_entry_id) == entry_id
 
 
 @pytest.mark.integration
@@ -268,6 +269,7 @@ async def test_resolve_override_disable(postgres_container: Any) -> None:
         # other butler still sees the global entry
         other_result = await resolve_model(pool, "general", Complexity.MEDIUM)
         assert other_result is not None
+        assert len(other_result) == 4
         assert other_result[1] == "claude-sonnet-4"
 
 
@@ -300,6 +302,7 @@ async def test_resolve_tier_remap(postgres_container: Any) -> None:
 
         high_result = await resolve_model(pool, "relationship", Complexity.HIGH)
         assert high_result is not None
+        assert len(high_result) == 4
         assert high_result[1] == "claude-sonnet-4"
 
 
@@ -343,6 +346,7 @@ async def test_resolve_priority_override(postgres_container: Any) -> None:
 
         messenger_result = await resolve_model(pool, "messenger", Complexity.MEDIUM)
         assert messenger_result is not None
+        assert len(messenger_result) == 4
         assert messenger_result[1] == "claude-haiku-4"
 
 
@@ -375,6 +379,7 @@ async def test_resolve_tie_breaking_by_created_at(postgres_container: Any) -> No
         result = await resolve_model(pool, "general", Complexity.MEDIUM)
         assert result is not None
         # first entry (earlier created_at) wins when priority is equal
+        assert len(result) == 4
         assert result[1] == "model-first"
 
 
@@ -394,7 +399,8 @@ async def test_resolve_returns_extra_args(postgres_container: Any) -> None:
 
         result = await resolve_model(pool, "general", Complexity.EXTRA_HIGH)
         assert result is not None
-        _runtime_type, _model_id, extra_args = result
+        assert len(result) == 4
+        _runtime_type, _model_id, extra_args, _entry_id = result
         assert extra_args == ["--config", "model_reasoning_effort=high"]
 
 
@@ -415,4 +421,5 @@ async def test_resolve_accepts_string_tier(postgres_container: Any) -> None:
 
         result = await resolve_model(pool, "general", "trivial")
         assert result is not None
+        assert len(result) == 4
         assert result[1] == "claude-haiku-4"
