@@ -382,6 +382,54 @@ class TestSeverityScoring:
         )
         assert result.severity == SEVERITY_HIGH
 
+    @pytest.mark.parametrize(
+        "adapter_module",
+        [
+            "claude_code",
+            "codex",
+            "gemini",
+            "opencode",
+        ],
+    )
+    def test_adapter_init_error_is_high(self, adapter_module: str) -> None:
+        """Errors raised in any adapter __init__ must score SEVERITY_HIGH.
+
+        _HIGH_CALL_SITE_PREFIXES covers 'src/butlers/core/runtimes/' so the
+        file-path prefix check catches __init__ just like any other method in
+        the runtimes package — no special entry in _HIGH_FUNCTION_NAMES needed.
+        """
+        result = compute_fingerprint_from_report(
+            error_type="builtins.ValueError",
+            error_message="invalid configuration for adapter",
+            call_site=f"src/butlers/core/runtimes/{adapter_module}.py:__init__",
+            traceback_str=None,
+        )
+        assert result.severity == SEVERITY_HIGH
+
+    def test_adapter_init_error_via_traceback_str_is_high(self) -> None:
+        """__init__ errors detected via traceback string path also score SEVERITY_HIGH.
+
+        Verifies that the traceback-string call-site extraction honours the
+        _HIGH_CALL_SITE_PREFIXES rule for adapter __init__ frames.
+        """
+        tb_str = (
+            "Traceback (most recent call last):\n"
+            '  File "/usr/lib/python3.12/asyncio/tasks.py", line 314, in __step\n'
+            "    coro.send(None)\n"
+            '  File "/home/user/repo/src/butlers/core/runtimes/codex.py",'
+            " line 455, in __init__\n"
+            '    raise ValueError("codex binary not found")\n'
+        )
+        result = compute_fingerprint_from_report(
+            error_type="builtins.ValueError",
+            error_message="codex binary not found",
+            call_site=None,
+            traceback_str=tb_str,
+        )
+        assert "src/butlers/core/runtimes/codex.py" in result.call_site
+        assert "__init__" in result.call_site
+        assert result.severity == SEVERITY_HIGH
+
     def test_read_system_prompt_is_high(self) -> None:
         result = compute_fingerprint_from_report(
             error_type="builtins.FileNotFoundError",
