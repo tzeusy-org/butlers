@@ -161,10 +161,12 @@ async def test_resolve_discretion_tier(postgres_container: Any) -> None:
         result = await resolve_model(pool, "connector", Complexity.DISCRETION)
 
         assert result is not None
-        runtime_type, model_id, extra_args = result
+        assert len(result) == 4
+        runtime_type, model_id, extra_args, catalog_entry_id = result
         assert runtime_type == "opencode"
         assert model_id == "ollama/qwen3.5:9b"
         assert extra_args == []
+        assert isinstance(catalog_entry_id, uuid.UUID)
 
 
 @pytest.mark.integration
@@ -193,6 +195,7 @@ async def test_resolve_discretion_string_tier(postgres_container: Any) -> None:
         result = await resolve_model(pool, "connector", "discretion")
 
         assert result is not None
+        assert len(result) == 4
         assert result[1] == "ollama/qwen3.5:9b"
 
 
@@ -264,6 +267,7 @@ async def test_override_remap_to_discretion_tier(postgres_container: Any) -> Non
         # Should now be found under discretion tier for the connector butler
         result = await resolve_model(pool, "connector", Complexity.DISCRETION)
         assert result is not None
+        assert len(result) == 4
         assert result[1] == "ollama/phi4:3.8b"
 
         # Should NOT be found under medium tier for the connector butler (remapped away)

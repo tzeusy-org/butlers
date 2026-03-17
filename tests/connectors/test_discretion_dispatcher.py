@@ -34,13 +34,17 @@ def _mock_pool(
     *, runtime_type: str = "claude", model_id: str = "claude-haiku", extra_args: list | None = None
 ):
     """Return an asyncpg pool mock whose fetchrow returns a matching catalog row."""
+    import uuid
+
     # asyncpg returns JSONB columns as strings; simulate that behaviour here.
     extra_args_json = json.dumps(extra_args) if extra_args is not None else None
+    _fake_id = uuid.uuid4()
     row = MagicMock()
     row.__getitem__ = lambda self, key: {
         "runtime_type": runtime_type,
         "model_id": model_id,
         "extra_args": extra_args_json,
+        "id": _fake_id,
     }[key]
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=row)

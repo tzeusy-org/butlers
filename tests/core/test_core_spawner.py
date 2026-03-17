@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -36,6 +37,9 @@ from butlers.core.spawner import (
 )
 
 pytestmark = pytest.mark.unit
+
+# Fake catalog entry UUID used in resolve_model mock return values (4-tuple)
+_FAKE_CATALOG_ID = uuid.UUID("00000000-0000-0000-0000-000000000099")
 
 
 def test_append_runtime_session_query_adds_param():
@@ -1533,9 +1537,7 @@ class TestParametrizedSessionLogging:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
         ):
-            import uuid
-
-            fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000099")
+            fake_session_id = _FAKE_CATALOG_ID
             mock_create.return_value = fake_session_id
 
             adapter = adapter_factory()
@@ -2087,7 +2089,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", []),
+                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2233,7 +2235,12 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", ["--catalog-arg", "val"]),
+                return_value=(
+                    "claude",
+                    "claude-opus-4-20250514",
+                    ["--catalog-arg", "val"],
+                    _FAKE_CATALOG_ID,
+                ),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2283,7 +2290,12 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", ["--catalog-only"]),
+                return_value=(
+                    "claude",
+                    "claude-opus-4-20250514",
+                    ["--catalog-only"],
+                    _FAKE_CATALOG_ID,
+                ),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2327,7 +2339,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", []),
+                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2354,7 +2366,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "some-model", []),
+                return_value=("claude", "some-model", [], _FAKE_CATALOG_ID),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2453,11 +2465,9 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", []),
+                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
             ),
         ):
-            import uuid
-
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner.trigger("prompt", "tick")
 
@@ -2466,7 +2476,6 @@ class TestCatalogModelResolution:
 
     async def test_audit_log_includes_resolution_metadata(self, tmp_path: Path):
         """Audit log entry includes model, runtime_type, complexity, resolution_source."""
-        import uuid
 
         from butlers.core.model_routing import Complexity
 
@@ -2489,7 +2498,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", []),
+                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2573,7 +2582,7 @@ class TestCatalogModelResolution:
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
                 # Catalog returns an unregistered runtime type
-                return_value=("nonexistent-runtime", "some-model", []),
+                return_value=("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")

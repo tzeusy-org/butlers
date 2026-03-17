@@ -502,14 +502,11 @@ async def resolve_provider_config(
 
     try:
         row = await pool.fetchrow(
-            "SELECT config FROM shared.provider_config "
-            "WHERE provider_type = $1 AND enabled = true",
+            "SELECT config FROM shared.provider_config WHERE provider_type = $1 AND enabled = true",
             provider_type,
         )
     except Exception:
-        logger.debug(
-            "Failed to query provider_config for %s", provider_type, exc_info=True
-        )
+        logger.debug("Failed to query provider_config for %s", provider_type, exc_info=True)
         return None
 
     if row is None:
@@ -937,14 +934,15 @@ class Spawner:
         _catalog_valid = (
             catalog_result is not None
             and isinstance(catalog_result, tuple)
-            and len(catalog_result) == 3
+            and len(catalog_result) == 4
             and isinstance(catalog_result[0], str)
             and isinstance(catalog_result[1], str)
             and isinstance(catalog_result[2], list)
         )
+        catalog_entry_id = None
         if _catalog_valid:
             assert catalog_result is not None  # narrowing for type checker
-            resolved_runtime_type, model, catalog_extra_args = catalog_result
+            resolved_runtime_type, model, catalog_extra_args, catalog_entry_id = catalog_result
             resolution_source = "catalog"
         else:
             resolved_runtime_type = toml_runtime_type

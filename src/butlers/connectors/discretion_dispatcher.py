@@ -126,9 +126,7 @@ class DiscretionDispatcher:
         )
         return adapter
 
-    async def _resolve_provider_config(
-        self, model_id: str
-    ) -> dict[str, dict] | None:
+    async def _resolve_provider_config(self, model_id: str) -> dict[str, dict] | None:
         """Look up provider base URL from ``shared.provider_config``.
 
         When *model_id* starts with ``ollama/``, queries the DB for the
@@ -202,7 +200,7 @@ class DiscretionDispatcher:
                 "Add an enabled entry with complexity_tier='discretion'."
             )
 
-        runtime_type, model_id, extra_args = catalog_result
+        runtime_type, model_id, extra_args, _catalog_entry_id = catalog_result
 
         # Resolve provider config for models using external providers
         # (e.g. ollama/ prefix needs the base URL from shared.provider_config)
