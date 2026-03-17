@@ -309,6 +309,145 @@ class TestTransactionsOverlayFields:
 
 
 # ---------------------------------------------------------------------------
+# Tests: GET /api/finance/transactions — overlay filter behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestTransactionsOverlayFilters:
+    """Verify that merchant and category filters use COALESCE overlay fields in SQL."""
+
+    async def test_merchant_filter_uses_coalesce_in_sql(self):
+        """merchant= filter SQL must use COALESCE(metadata->>'normalized_merchant', merchant)."""
+        rows = [
+            _make_transaction_row(
+                merchant="AMZN Mktp US*1A2B3C",
+                metadata={"normalized_merchant": "Amazon"},
+            )
+        ]
+        app, mock_pool, _ = _build_finance_app(rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/finance/transactions", params={"merchant": "Amazon"})
+
+        assert resp.status_code == 200
+        # Verify the SQL sent to the pool uses COALESCE for the merchant filter
+        fetch_call_args = mock_pool.fetch.call_args[0]
+        sql = fetch_call_args[0]
+        assert "COALESCE(metadata->>'normalized_merchant', merchant)" in sql
+        assert "ILIKE" in sql
+
+    async def test_category_filter_uses_coalesce_in_sql(self):
+        """category= filter SQL must use COALESCE(metadata->>'inferred_category', category)."""
+        rows = [
+            _make_transaction_row(
+                category="shopping",
+                metadata={"inferred_category": "electronics"},
+            )
+        ]
+        app, mock_pool, _ = _build_finance_app(rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/finance/transactions", params={"category": "electronics"})
+
+        assert resp.status_code == 200
+        # Verify the SQL sent to the pool uses COALESCE for the category filter
+        fetch_call_args = mock_pool.fetch.call_args[0]
+        sql = fetch_call_args[0]
+        assert "COALESCE(metadata->>'inferred_category', category)" in sql
+
+    async def test_filtering_by_normalized_merchant_returns_matching_transactions(self):
+        """Filtering by a normalized merchant name returns transactions with that overlay value."""
+        rows = [
+            _make_transaction_row(
+                merchant="AMZN Mktp US*1A2B3C",
+                metadata={"normalized_merchant": "Amazon"},
+            )
+        ]
+        app, mock_pool, _ = _build_finance_app(rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/finance/transactions", params={"merchant": "Amazon"})
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["merchant"] == "AMZN Mktp US*1A2B3C"
+        assert data[0]["normalized_merchant"] == "Amazon"
+
+    async def test_filtering_by_inferred_category_returns_matching_transactions(self):
+        """Filtering by an inferred category returns transactions with that overlay value."""
+        rows = [
+            _make_transaction_row(
+                category="shopping",
+                metadata={"inferred_category": "electronics"},
+            )
+        ]
+        app, mock_pool, _ = _build_finance_app(rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/finance/transactions", params={"category": "electronics"})
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["category"] == "shopping"
+        assert data[0]["inferred_category"] == "electronics"
+
+    async def test_no_filter_does_not_add_coalesce_to_sql(self):
+        """When no merchant or category filter is provided, no COALESCE clause is injected."""
+        rows = [_make_transaction_row()]
+        app, mock_pool, _ = _build_finance_app(rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/finance/transactions")
+
+        assert resp.status_code == 200
+        fetch_call_args = mock_pool.fetch.call_args[0]
+        sql = fetch_call_args[0]
+        # No WHERE clause injected when no filters are provided
+        assert "WHERE" not in sql
+        assert "COALESCE" not in sql
+
+    async def test_combined_merchant_and_category_filters_use_coalesce(self):
+        """Both merchant and category COALESCE filters can be combined in one request."""
+        rows = [
+            _make_transaction_row(
+                merchant="SQ *BLUE BOTTLE",
+                category="food",
+                metadata={
+                    "normalized_merchant": "Blue Bottle Coffee",
+                    "inferred_category": "coffee",
+                },
+            )
+        ]
+        app, mock_pool, _ = _build_finance_app(rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/finance/transactions",
+                params={"merchant": "Blue Bottle Coffee", "category": "coffee"},
+            )
+
+        assert resp.status_code == 200
+        fetch_call_args = mock_pool.fetch.call_args[0]
+        sql = fetch_call_args[0]
+        assert "COALESCE(metadata->>'normalized_merchant', merchant)" in sql
+        assert "COALESCE(metadata->>'inferred_category', category)" in sql
+
+
+# ---------------------------------------------------------------------------
 # Tests: GET /api/finance/spending-summary — COALESCE group-by
 # ---------------------------------------------------------------------------
 

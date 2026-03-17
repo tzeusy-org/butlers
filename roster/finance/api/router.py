@@ -94,12 +94,14 @@ async def list_transactions(
     idx = 1
 
     if category is not None:
-        conditions.append(f"category = ${idx}")
+        conditions.append(f"COALESCE(metadata->>'inferred_category', category) = ${idx}")
         args.append(category)
         idx += 1
 
     if merchant is not None:
-        conditions.append(f"merchant ILIKE '%' || ${idx} || '%'")
+        conditions.append(
+            f"COALESCE(metadata->>'normalized_merchant', merchant) ILIKE '%' || ${idx} || '%'"
+        )
         args.append(merchant)
         idx += 1
 
