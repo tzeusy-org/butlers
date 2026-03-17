@@ -595,15 +595,14 @@ async def test_catalog_entry(
     extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
 
     try:
-        import inspect
-
         from butlers.core.runtimes.base import get_adapter
+        from butlers.core.spawner import resolve_provider_config
 
         adapter_cls = get_adapter(runtime_type)
-        sig = inspect.signature(adapter_cls.__init__)
-        if "db_pool" in sig.parameters:
-            adapter = adapter_cls(db_pool=pool)
-        else:
+        provider_config = await resolve_provider_config(pool, model_id)
+        try:
+            adapter = adapter_cls(provider_config=provider_config)
+        except TypeError:
             adapter = adapter_cls()
     except ValueError as exc:
         return ApiResponse[ModelTestResult](data=ModelTestResult(success=False, error=str(exc)))
