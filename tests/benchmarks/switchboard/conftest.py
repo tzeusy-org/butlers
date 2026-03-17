@@ -26,14 +26,8 @@ from .mock_mcp import MockMCPServer
 SCENARIOS_FILE = Path(__file__).parent / "scenarios.jsonl"
 RESULTS_FILE = Path(__file__).parent / "results.md"
 
-_RESULTS_HEADER = (
-    "| Model | Accuracy | p50 | p95 | p99"
-    " | Cold Start | req/s | Scenarios | Date |"
-)
-_RESULTS_SEP = (
-    "|-------|----------|-----|-----|-----"
-    "|------------|-------|-----------|------|"
-)
+_RESULTS_HEADER = "| Model | Accuracy | p50 | p95 | p99 | Cold Start | req/s | Scenarios | Date |"
+_RESULTS_SEP = "|-------|----------|-----|-----|-----|------------|-------|-----------|------|"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -77,6 +71,7 @@ def routing_results(
     scenarios: list[dict],
     mock_mcp_server: MockMCPServer,
     model_name: str,
+    ollama_url: str,
     bench_timeout: float,
     sw_report: dict,
     _require_opencode,
@@ -100,6 +95,7 @@ def routing_results(
             prompt,
             mock_mcp_url=mock_mcp_server.url,
             model=model_name,
+            ollama_url=ollama_url,
             timeout=120.0,
         )
         result["id"] = entry["id"]
@@ -207,9 +203,7 @@ def _persist_results(report: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def pytest_terminal_summary(
-    terminalreporter, exitstatus: int, config: pytest.Config
-) -> None:
+def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
     report: dict = getattr(config, "_switchboard_report", {})
     if not report:
         return
@@ -242,17 +236,12 @@ def pytest_terminal_summary(
         lines.append("")
         lines.append("  PER-BUTLER ACCURACY")
         lines.append(f"  {'-' * 52}")
-        lines.append(
-            f"  {'Butler':<16s} {'Correct':>8s} {'Total':>6s} {'Acc':>7s}"
-        )
+        lines.append(f"  {'Butler':<16s} {'Correct':>8s} {'Total':>6s} {'Acc':>7s}")
         lines.append(f"  {'-' * 52}")
         for butler in sorted(per_butler.keys()):
             s = per_butler[butler]
             pct = s["correct"] / s["total"] * 100 if s["total"] else 0
-            lines.append(
-                f"  {butler:<16s} {s['correct']:>8d} {s['total']:>6d}"
-                f" {pct:>6.1f}%"
-            )
+            lines.append(f"  {butler:<16s} {s['correct']:>8d} {s['total']:>6d} {pct:>6.1f}%")
         lines.append(f"  {'-' * 52}")
 
     cm = report.get("confusion_matrix")
@@ -277,16 +266,18 @@ def pytest_terminal_summary(
         lines.append(f"  {'-' * 40}")
         if lat is not None:
             for label, key in [
-                ("Mean", "mean"), ("p50", "p50"), ("p95", "p95"),
-                ("p99", "p99"), ("Min", "min"), ("Max", "max"),
+                ("Mean", "mean"),
+                ("p50", "p50"),
+                ("p95", "p95"),
+                ("p99", "p99"),
+                ("Min", "min"),
+                ("Max", "max"),
             ]:
                 val = lat.get(key)
                 if val is not None:
                     lines.append(f"  {label:<16s} {val:>8.0f}ms")
         if cold is not None:
-            lines.append(
-                f"  {'Cold start':<16s} {cold['value']:>8.0f}ms"
-            )
+            lines.append(f"  {'Cold start':<16s} {cold['value']:>8.0f}ms")
         lines.append(f"  {'-' * 40}")
         if lat and lat.get("throughput"):
             lines.append(f"  {lat['throughput']:.1f} req/s")
