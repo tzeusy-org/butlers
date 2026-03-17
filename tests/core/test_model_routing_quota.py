@@ -206,16 +206,19 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
     """)
 
 
-async def _insert_catalog_entry(pool: asyncpg.Pool, *, alias: str) -> uuid.UUID:
+async def _insert_catalog_entry(
+    pool: asyncpg.Pool, *, alias: str, enabled: bool = True
+) -> uuid.UUID:
     """Insert a minimal catalog entry and return its UUID."""
     row = await pool.fetchrow(
         """
         INSERT INTO shared.model_catalog
             (alias, runtime_type, model_id, complexity_tier, enabled, priority)
-        VALUES ($1, 'claude', 'test-model', 'medium', true, 0)
+        VALUES ($1, 'claude', 'test-model', 'medium', $2, 0)
         RETURNING id
         """,
         alias,
+        enabled,
     )
     return row["id"]
 
@@ -494,6 +497,68 @@ async def test_check_quota_old_usage_outside_30d_excluded(postgres_container: An
         assert result.allowed is True
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_check_quota_disabled_entry_with_override_still_enforces_limits(
+    postgres_container: Any,
+) -> None:
+    """Disabled entry with limits re-enabled via override still enforces those limits.
+
+    Scenario from spec: a catalog entry is globally disabled but a butler override
+    re-enables it. The global token_limits row still applies to that butler's usage
+    of the entry, and quota enforcement uses the same limits regardless of whether
+    the entry was enabled globally or via override.
+
+    This test verifies that check_token_quota does NOT check the enabled state —
+    it only uses catalog_entry_id to look up limits and ledger usage, so limits
+    are enforced regardless of the global enabled flag.
+    """
+    async with _make_pool(postgres_container) as pool:
+        # Create a globally disabled catalog entry
+        entry_id = await _insert_catalog_entry(pool, alias="disabled-with-limits", enabled=False)
+
+        # Configure token limits for this entry (even though it's globally disabled)
+        limit_24h = 500
+        await _insert_limits(
+            pool,
+            catalog_entry_id=entry_id,
+            limit_24h=limit_24h,
+            limit_30d=None,
+        )
+
+        # Add some usage to the ledger
+        await _insert_ledger_row(
+            pool,
+            catalog_entry_id=entry_id,
+            input_tokens=300,
+            output_tokens=100,  # Total: 400 tokens
+        )
+
+        # Even though the entry is globally disabled, check_token_quota should still
+        # enforce the limits using this entry's ID
+        result = await check_token_quota(pool, entry_id)
+
+        assert result.allowed is True  # 400 < 500
+        assert result.usage_24h == 400
+        assert result.limit_24h == limit_24h
+
+        # Add more usage to exceed the 24h limit
+        await _insert_ledger_row(
+            pool,
+            catalog_entry_id=entry_id,
+            input_tokens=60,
+            output_tokens=50,  # Total: 110 tokens, cumulative: 510 > 500
+        )
+
+        # Now the quota should be exceeded
+        result = await check_token_quota(pool, entry_id)
+
+        assert result.allowed is False  # 510 >= 500
+        assert result.usage_24h == 510
+        assert result.limit_24h == limit_24h
+
+
 # ---------------------------------------------------------------------------
 # record_token_usage integration tests
 # ---------------------------------------------------------------------------
@@ -583,3 +648,110 @@ async def test_record_then_quota_check_reflects_new_usage(postgres_container: An
         assert result.usage_24h == 500  # 300 + 200
         assert result.usage_30d == 500
         assert result.allowed is True  # 500 < 1000
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_delete_and_recreate_resets_usage_history(postgres_container: Any) -> None:
+    """When catalog entry is deleted and recreated with same alias, usage is reset.
+
+    This tests the spec scenario 'Delete and recreate resets usage history':
+    - Old entry accumulates token usage and is subject to limits
+    - Entry is deleted (CASCADE deletes ledger rows and limits row)
+    - New entry with same alias is created (new UUID)
+    - New entry has zero usage and no limits history
+    - New entry is not blocked by prior usage
+
+    This validates that the CASCADE constraint on token_usage_ledger and
+    token_limits tables properly enforces clean state separation between
+    the old and new catalog entries.
+    """
+    async with _make_pool(postgres_container) as pool:
+        # Create first entry with a limit
+        entry1_id = await _insert_catalog_entry(pool, alias="resettable-entry")
+        await _insert_limits(
+            pool,
+            catalog_entry_id=entry1_id,
+            limit_24h=500,
+            limit_30d=5000,
+        )
+
+        # Accumulate heavy usage for first entry
+        await _insert_ledger_row(
+            pool,
+            catalog_entry_id=entry1_id,
+            butler_name="test-butler",
+            input_tokens=400,
+            output_tokens=150,  # Total: 550 tokens, exceeds 24h limit of 500
+        )
+
+        # Verify first entry is quota-blocked
+        result1 = await check_token_quota(pool, entry1_id)
+        assert result1.allowed is False
+        assert result1.usage_24h == 550
+        assert result1.limit_24h == 500
+
+        # Delete the first entry (CASCADE removes ledger rows and limits)
+        await pool.execute(
+            "DELETE FROM shared.model_catalog WHERE id = $1",
+            entry1_id,
+        )
+
+        # Verify ledger rows are gone (CASCADE worked)
+        ledger_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM shared.token_usage_ledger WHERE catalog_entry_id = $1",
+            entry1_id,
+        )
+        assert ledger_count == 0
+
+        # Verify limits row is gone (CASCADE worked)
+        limits_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM shared.token_limits WHERE catalog_entry_id = $1",
+            entry1_id,
+        )
+        assert limits_count == 0
+
+        # Create a new entry with the same alias (will have a new UUID)
+        entry2_id = await _insert_catalog_entry(pool, alias="resettable-entry")
+
+        # Verify new entry has different UUID
+        assert entry2_id != entry1_id
+
+        # Verify new entry has zero usage history (no old ledger rows)
+        result2 = await check_token_quota(pool, entry2_id)
+        assert result2.allowed is True
+        assert result2.usage_24h == 0
+        assert result2.limit_24h is None  # No limits row for new entry
+        assert result2.usage_30d == 0
+        assert result2.limit_30d is None
+
+        # Set limits on new entry at same level as original
+        await _insert_limits(
+            pool,
+            catalog_entry_id=entry2_id,
+            limit_24h=500,
+            limit_30d=5000,
+        )
+
+        # Verify new entry is not blocked despite original entry's heavy usage
+        result2_with_limits = await check_token_quota(pool, entry2_id)
+        assert result2_with_limits.allowed is True
+        assert result2_with_limits.usage_24h == 0
+        assert result2_with_limits.limit_24h == 500
+
+        # Record some usage on the new entry (well within limits)
+        await record_token_usage(
+            pool,
+            catalog_entry_id=entry2_id,
+            butler_name="test-butler",
+            session_id=None,
+            input_tokens=100,
+            output_tokens=50,
+        )
+
+        # Verify new entry accurately reflects its own usage (not old entry's)
+        result2_after_usage = await check_token_quota(pool, entry2_id)
+        assert result2_after_usage.allowed is True
+        assert result2_after_usage.usage_24h == 150  # Only this entry's usage
+        assert result2_after_usage.limit_24h == 500
