@@ -215,7 +215,11 @@ class DispatchResult:
 # ---------------------------------------------------------------------------
 
 #: Statuses that count against the circuit breaker.
-_CIRCUIT_BREAKER_FAILURE_STATUSES = frozenset({"failed", "timeout", "anonymization_failed"})
+CIRCUIT_BREAKER_FAILURE_STATUSES = frozenset({"failed", "timeout", "anonymization_failed"})
+
+# Keep the private alias for backward compatibility with any callers that used
+# the old name during the transition period.
+_CIRCUIT_BREAKER_FAILURE_STATUSES = CIRCUIT_BREAKER_FAILURE_STATUSES
 
 
 async def _is_circuit_breaker_tripped(

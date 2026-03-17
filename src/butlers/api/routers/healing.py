@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
-from butlers.core.healing.dispatch import _CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.tracking import (
     TERMINAL_STATUSES,
     VALID_STATUSES,
@@ -152,6 +152,40 @@ async def _count_attempts(pool, status_filter: str | None) -> int:
     else:
         result = await pool.fetchval("SELECT COUNT(*) FROM shared.healing_attempts")
     return int(result)
+
+
+async def _compute_breaker_state(pool, threshold: int) -> tuple[bool, int, datetime | None]:
+    """Compute circuit breaker state from the last *threshold* terminal attempts.
+
+    Returns ``(tripped, consecutive_failures, last_failure_at)``.
+    """
+    recent_statuses = await get_recent_terminal_statuses(pool, limit=threshold)
+
+    consecutive_failures = 0
+    for s in recent_statuses:
+        if s in CIRCUIT_BREAKER_FAILURE_STATUSES:
+            consecutive_failures += 1
+        else:
+            break
+
+    tripped = len(recent_statuses) >= threshold and consecutive_failures >= threshold
+
+    last_failure_at: datetime | None = None
+    if consecutive_failures > 0:
+        row = await pool.fetchrow(
+            """
+            SELECT closed_at
+            FROM shared.healing_attempts
+            WHERE status = ANY($1::text[])
+            ORDER BY closed_at DESC
+            LIMIT 1
+            """,
+            list(CIRCUIT_BREAKER_FAILURE_STATUSES),
+        )
+        if row is not None and row["closed_at"] is not None:
+            last_failure_at = row["closed_at"]
+
+    return tripped, consecutive_failures, last_failure_at
 
 
 # ---------------------------------------------------------------------------
@@ -318,36 +352,7 @@ async def get_circuit_breaker_status(
     ``last_failure_at`` is the ``closed_at`` of the most recent failure-status attempt.
     """
     pool = _shared_pool(db)
-
-    # Fetch more than threshold to compute consecutive_failures accurately
-    recent_statuses = await get_recent_terminal_statuses(pool, limit=threshold)
-
-    # Count how many leading entries are failures
-    consecutive_failures = 0
-    for s in recent_statuses:
-        if s in _CIRCUIT_BREAKER_FAILURE_STATUSES:
-            consecutive_failures += 1
-        else:
-            break
-
-    tripped = len(recent_statuses) >= threshold and consecutive_failures >= threshold
-
-    # Fetch the timestamp of the most recent failure-status attempt
-    last_failure_at: datetime | None = None
-    if consecutive_failures > 0:
-        row = await pool.fetchrow(
-            """
-            SELECT closed_at
-            FROM shared.healing_attempts
-            WHERE status = ANY($1::text[])
-            ORDER BY closed_at DESC
-            LIMIT 1
-            """,
-            list(_CIRCUIT_BREAKER_FAILURE_STATUSES),
-        )
-        if row is not None and row["closed_at"] is not None:
-            last_failure_at = row["closed_at"]
-
+    tripped, consecutive_failures, last_failure_at = await _compute_breaker_state(pool, threshold)
     return CircuitBreakerStatus(
         tripped=tripped,
         consecutive_failures=consecutive_failures,
@@ -405,20 +410,12 @@ async def reset_circuit_breaker(
         logger.error("Failed to reset circuit breaker: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to reset circuit breaker")
 
-    # Return the updated state
-    recent_statuses = await get_recent_terminal_statuses(pool, limit=threshold)
-    consecutive_failures = 0
-    for s in recent_statuses:
-        if s in _CIRCUIT_BREAKER_FAILURE_STATUSES:
-            consecutive_failures += 1
-        else:
-            break
-
-    tripped = len(recent_statuses) >= threshold and consecutive_failures >= threshold
-
+    # Return the updated state — use the same helper as get_circuit_breaker_status
+    # so last_failure_at is correctly populated (previously was hard-coded None).
+    tripped, consecutive_failures, last_failure_at = await _compute_breaker_state(pool, threshold)
     return CircuitBreakerStatus(
         tripped=tripped,
         consecutive_failures=consecutive_failures,
         threshold=threshold,
-        last_failure_at=None,
+        last_failure_at=last_failure_at,
     )

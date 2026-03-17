@@ -460,12 +460,9 @@ class TestGetCircuitBreakerStatus:
         failure_statuses = [{"status": "failed"}] * 5
 
         mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(
-            side_effect=[
-                [_mock_record(r) for r in failure_statuses],
-                [],  # last_failure_at query
-            ]
-        )
+        # fetch is called once via get_recent_terminal_statuses
+        mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in failure_statuses])
+        # fetchrow is called once to retrieve last_failure_at
         last_failure_row = {"closed_at": datetime.now(tz=UTC)}
         mock_pool.fetchrow = AsyncMock(return_value=_mock_record(last_failure_row))
 
