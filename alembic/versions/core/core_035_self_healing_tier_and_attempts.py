@@ -1,6 +1,6 @@
 """self_healing_tier_and_attempts: widen CHECK constraints, create healing_attempts table
 
-Revision ID: core_035
+Revision ID: core_035b
 Revises: core_034
 Create Date: 2026-03-17 00:00:00.000000
 
@@ -39,7 +39,7 @@ from pathlib import Path
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_035"
+revision = "core_035b"
 down_revision = "core_034"
 branch_labels = None
 depends_on = None
