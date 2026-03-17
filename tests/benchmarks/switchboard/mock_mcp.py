@@ -43,7 +43,20 @@ class MockMCPServer:
             context: str | None = None,
             complexity: str | None = None,
         ) -> dict:
-            """Route a message to a specialist butler."""
+            """Route a message to a specific butler.
+
+            IMPORTANT: This tool accepts exactly four parameters: butler,
+            prompt, context, and complexity. Do NOT pass any other keyword
+            arguments such as 'message', 'subject', or 'intent'.
+
+            Args:
+                butler: Target butler name (e.g. "health", "relationship").
+                prompt: Self-contained prompt for the target butler.
+                context: Optional — key details and context the target butler
+                    needs to act on this request.
+                complexity: Task complexity tier — one of "trivial", "medium",
+                    "high", "extra_high". Defaults to "medium" when omitted.
+            """
             self._captures.append(
                 {
                     "tool": "route_to_butler",
@@ -62,7 +75,18 @@ class MockMCPServer:
             subject: str | None = None,
             intent: str | None = None,
         ) -> dict:
-            """Send an outbound notification."""
+            """Send an outbound notification (email or telegram).
+
+            Use this tool ONLY for outbound delivery — sending emails or
+            telegram messages. Do NOT use route_to_butler for outbound delivery.
+
+            Args:
+                channel: "email" or "telegram".
+                message: The message body to send.
+                recipient: Email address or telegram chat ID.
+                subject: Optional email subject line (email only).
+                intent: "send" for new messages, "reply" for thread replies.
+            """
             self._captures.append(
                 {
                     "tool": "notify",
