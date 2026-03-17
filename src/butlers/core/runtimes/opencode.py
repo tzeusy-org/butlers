@@ -381,9 +381,14 @@ def _extract_usage(obj: dict[str, Any]) -> dict[str, Any] | None:
     if input_tokens is None and output_tokens is None:
         return None
 
+    # Token reporting contract: both fields must be ints. When at least one
+    # is present as an int, default the other to 0 rather than None.
+    if not isinstance(input_tokens, int) and not isinstance(output_tokens, int):
+        return None
+
     return {
-        "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
-        "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+        "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
+        "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
     }
 
 

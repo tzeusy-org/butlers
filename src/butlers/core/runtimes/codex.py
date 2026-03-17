@@ -311,10 +311,13 @@ def _parse_codex_output(
             if isinstance(raw_usage, dict):
                 input_tokens = raw_usage.get("input_tokens")
                 output_tokens = raw_usage.get("output_tokens")
-                usage = {
-                    "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
-                    "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
-                }
+                # Token reporting contract: return ints when available, or None
+                # for usage entirely when token counts cannot be determined.
+                if isinstance(input_tokens, int) or isinstance(output_tokens, int):
+                    usage = {
+                        "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
+                        "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
+                    }
 
         else:
             # Unknown type — check for text or content fields

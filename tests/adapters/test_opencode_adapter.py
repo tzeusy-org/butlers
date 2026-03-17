@@ -687,10 +687,14 @@ def test_parse_no_usage_returns_none():
 
 
 def test_parse_usage_non_int_tokens_none():
-    """Non-integer token counts are stored as None."""
+    """Non-integer token counts yield usage=None (token reporting contract).
+
+    Per the adapter contract, usage is either a dict with int fields or None.
+    When token counts are present but non-int, usage=None so no ledger row is written.
+    """
     line = json.dumps({"type": "usage", "input_tokens": "many", "output_tokens": None})
     result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
-    assert usage == {"input_tokens": None, "output_tokens": None}
+    assert usage is None
 
 
 # ---------------------------------------------------------------------------
@@ -936,9 +940,14 @@ def test_extract_usage_returns_none_for_non_dict():
 
 
 def test_extract_usage_non_int_stored_as_none():
-    """Non-integer token counts are stored as None."""
+    """Non-integer token counts return None (token reporting contract).
+
+    Per the adapter contract, _extract_usage must return either a dict with
+    int-typed fields or None. When neither field is an int, None is returned
+    so the caller knows no reliable token data is available.
+    """
     result = _extract_usage({"input_tokens": "lots", "output_tokens": None})
-    assert result == {"input_tokens": None, "output_tokens": None}
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
