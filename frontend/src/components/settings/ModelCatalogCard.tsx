@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Info, Loader2, FlaskConical, Check, X, RefreshCw, Pencil } from "lucide-react";
+import { ChevronDown, ChevronUp, Info, Loader2, FlaskConical, Check, X, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import type { ComplexityTier, ModelCatalogCreate, ModelCatalogEntry, ModelTestResult, UsageWindow } from "@/api/types.ts";
@@ -54,6 +54,7 @@ import {
   useUpdateModelCatalogEntry,
   useSetModelTokenLimits,
   useResetModelUsage,
+  useModelUsageDetail,
 } from "@/hooks/use-model-catalog.ts";
 
 // ---------------------------------------------------------------------------
@@ -93,12 +94,16 @@ interface UsageBarProps {
   window: UsageWindow;
   used: number;
   limit: number | null;
-  resetAt?: string | null;
   onLimitClick?: () => void;
 }
 
-function UsageBar({ entryId, window: usageWindow, used, limit, resetAt, onLimitClick }: UsageBarProps) {
+function UsageBar({ entryId, window: usageWindow, used, limit, onLimitClick }: UsageBarProps) {
   const resetMutation = useResetModelUsage();
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  // Fetch per-entry detail (reset timestamps) lazily when tooltip is open.
+  const detailQuery = useModelUsageDetail(entryId, tooltipOpen);
+  const detail = detailQuery.data?.data;
+  const resetAt = usageWindow === "24h" ? detail?.reset_24h_at : detail?.reset_30d_at;
 
   const percent = limit != null ? (used / limit) * 100 : null;
   const isBlocked = limit != null && used >= limit;
@@ -138,7 +143,7 @@ function UsageBar({ entryId, window: usageWindow, used, limit, resetAt, onLimitC
 
   return (
     <TooltipProvider>
-      <Tooltip>
+      <Tooltip open={tooltipOpen} onOpenChange={setTooltipOpen}>
         <TooltipTrigger asChild>
           <div className="flex flex-col gap-0.5 min-w-[110px]">
             {/* Text label row */}
