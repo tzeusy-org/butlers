@@ -1007,8 +1007,7 @@ class TestRouteExecuteApprovalGate:
             result = await route_execute_fn(**envelope)
 
         assert result.get("status") == "error", (
-            f"route.execute reply to non-owner email MUST be blocked, "
-            f"got: {result.get('status')}"
+            f"route.execute reply to non-owner email MUST be blocked, got: {result.get('status')}"
         )
         error_obj = result.get("error", {})
         error_class = error_obj.get("class", "") if isinstance(error_obj, dict) else ""
@@ -1070,8 +1069,7 @@ class TestRouteExecuteApprovalGate:
             result = await route_execute_fn(**envelope)
 
         assert result.get("status") == "error", (
-            f"route.execute send to non-owner without standing rule MUST be blocked, "
-            f"got: {result}"
+            f"route.execute send to non-owner without standing rule MUST be blocked, got: {result}"
         )
 
 
@@ -1092,9 +1090,7 @@ class TestDBSIncidentReplay:
     Both bugs are now fixed. This test verifies the combined defense.
     """
 
-    async def test_dbs_reply_via_notify_contact_id_is_blocked(
-        self, butler_dir: Path
-    ) -> None:
+    async def test_dbs_reply_via_notify_contact_id_is_blocked(self, butler_dir: Path) -> None:
         """Exact DBS scenario: butler replies via notify(contact_id=...) → blocked."""
         daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
         assert notify_fn is not None

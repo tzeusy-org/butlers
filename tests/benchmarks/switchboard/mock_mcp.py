@@ -44,12 +44,14 @@ class MockMCPServer:
             complexity: str | None = None,
         ) -> dict:
             """Route a message to a specialist butler."""
-            self._captures.append({
-                "tool": "route_to_butler",
-                "butler": butler,
-                "prompt": prompt,
-                "complexity": complexity,
-            })
+            self._captures.append(
+                {
+                    "tool": "route_to_butler",
+                    "butler": butler,
+                    "prompt": prompt,
+                    "complexity": complexity,
+                }
+            )
             return {"status": "ok", "butler": butler}
 
         @self._mcp.tool()
@@ -61,11 +63,13 @@ class MockMCPServer:
             intent: str | None = None,
         ) -> dict:
             """Send an outbound notification."""
-            self._captures.append({
-                "tool": "notify",
-                "channel": channel,
-                "recipient": recipient,
-            })
+            self._captures.append(
+                {
+                    "tool": "notify",
+                    "channel": channel,
+                    "recipient": recipient,
+                }
+            )
             return {"status": "ok"}
 
     @property

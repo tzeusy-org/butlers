@@ -248,9 +248,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         lines.append(f"  {'-' * 64}")
         if lat is not None:
             for label, key, thresh in [
-                ("Mean", "mean", ""), ("p50", "p50", ""), ("p75", "p75", ""),
-                ("p90", "p90", ""), ("p95", "p95", "<= 3000ms"), ("p99", "p99", ""),
-                ("Min", "min", ""), ("Max", "max", ""), ("Std Dev", "stdev", ""),
+                ("Mean", "mean", ""),
+                ("p50", "p50", ""),
+                ("p75", "p75", ""),
+                ("p90", "p90", ""),
+                ("p95", "p95", "<= 3000ms"),
+                ("p99", "p99", ""),
+                ("Min", "min", ""),
+                ("Max", "max", ""),
+                ("Std Dev", "stdev", ""),
             ]:
                 val = lat.get(key)
                 if val is None:

@@ -153,6 +153,7 @@ def test_parse_system_prompt_ignores_claude_md(adapter_class: type, tmp_path: Pa
 # The shared contract only asserts on result_text and tool_calls.
 # ---------------------------------------------------------------------------
 
+
 def _codex_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None, list]:
     result_text, tool_calls, _usage = _parse_codex_output(stdout, stderr, returncode)
     return result_text, tool_calls

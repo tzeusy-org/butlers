@@ -84,9 +84,7 @@ def test_routing_accuracy(
         f"{len(unparseable)}/{len(evaluated)} responses unparseable — "
         f"model may not follow single-butler-name format"
     )
-    assert accuracy >= 0.70, (
-        f"Routing accuracy {accuracy:.1%} below 70% threshold for {model_name}"
-    )
+    assert accuracy >= 0.70, f"Routing accuracy {accuracy:.1%} below 70% threshold for {model_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +127,7 @@ def test_routing_latency(
         if v is not None:
             record_property(f"latency_{k}", f"{v:.2f}" if isinstance(v, float) else str(v))
 
-    assert p95 <= 3000.0, (
-        f"p95 latency {p95:.0f}ms exceeds 3000ms budget for {model_name}"
-    )
+    assert p95 <= 3000.0, f"p95 latency {p95:.0f}ms exceeds 3000ms budget for {model_name}"
 
 
 def test_routing_cold_start(

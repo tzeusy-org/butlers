@@ -609,9 +609,7 @@ async def retry_action(
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
     async with target_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-        )
+        row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Action {action_id} not found")
@@ -627,9 +625,7 @@ async def retry_action(
         )
 
     if row.get("execution_result") is not None:
-        raise HTTPException(
-            status_code=409, detail="Action already has an execution result"
-        )
+        raise HTTPException(status_code=409, detail="Action already has an execution result")
 
     tool_name = row["tool_name"]
     raw_args = row["tool_args"]
@@ -640,15 +636,11 @@ async def retry_action(
     )
 
     if dispatch_result is None:
-        raise HTTPException(
-            status_code=502, detail="No reachable butler to dispatch action"
-        )
+        raise HTTPException(status_code=502, detail="No reachable butler to dispatch action")
 
     # Re-read the row to get the final state after execution
     async with target_pool.acquire() as conn:
-        updated_row = await conn.fetchrow(
-            "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-        )
+        updated_row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
     pa = PendingAction.from_row(updated_row or row)
     tc = await _resolve_target_contact(db_mgr, pa)
     return ApiResponse(data=_pending_action_to_api(pa, tc))

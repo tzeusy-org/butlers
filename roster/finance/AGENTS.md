@@ -166,3 +166,4 @@ consult the `memory-classification` skill. Key rules:
 ## Notes to self
 
 - MCP memory tools validate structured params as real objects/lists (e.g. `context_hints` on `memory_entity_resolve`, `metadata` on `memory_entity_create`, `tags` on `memory_store_fact`). Passing JSON-encoded strings will fail Pydantic validation.
+- `modules.email` MCP tools only expose IMAP search/read and return a `text/plain` body; they do not surface email attachments or `storage_ref`. Attachment workflows must use canonical ingest `payload.attachments` + `get_attachment(storage_ref)` (or add explicit attachment support).

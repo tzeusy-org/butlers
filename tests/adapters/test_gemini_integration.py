@@ -103,15 +103,11 @@ class TestParserWithRealOutput:
 
     def test_tool_call_parsed_with_name_and_input(self):
         """Parser extracts tool calls with non-empty name and input from real output."""
-        stdout, stderr, rc = _run_gemini(
-            "Use the shell to run: echo 'parser-gemini-test'"
-        )
+        stdout, stderr, rc = _run_gemini("Use the shell to run: echo 'parser-gemini-test'")
         assert rc == 0, f"gemini failed: {stderr}"
 
         result_text, tool_calls = _parse_gemini_output(stdout, stderr, rc)
-        assert len(tool_calls) >= 1, (
-            f"Expected at least 1 tool call. stdout sample: {stdout[:500]}"
-        )
+        assert len(tool_calls) >= 1, f"Expected at least 1 tool call. stdout sample: {stdout[:500]}"
         tc = tool_calls[0]
         assert tc["name"], f"Tool call has empty name: {tc}"
         assert tc["id"], f"Tool call has empty id: {tc}"

@@ -23,9 +23,7 @@ logger = logging.getLogger(__name__)
 async def _resolve_entity_id(pool: asyncpg.Pool, contact_id: uuid.UUID) -> uuid.UUID | None:
     """Look up the entity_id linked to a contact. Returns None if unlinked."""
     try:
-        return await pool.fetchval(
-            "SELECT entity_id FROM contacts WHERE id = $1", contact_id
-        )
+        return await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact_id)
     except Exception:
         return None
 

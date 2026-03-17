@@ -170,21 +170,13 @@ class TestSchemaIsolation:
 
     async def test_shared_schema_visible_from_alpha(self, alpha_pool):
         """The shared schema's global_contacts table must be queryable from butler_alpha's path."""
-        row = await alpha_pool.fetchrow(
-            "SELECT name FROM global_contacts WHERE name = 'Alice'"
-        )
-        assert row is not None, (
-            "butler_alpha should be able to read from shared.global_contacts"
-        )
+        row = await alpha_pool.fetchrow("SELECT name FROM global_contacts WHERE name = 'Alice'")
+        assert row is not None, "butler_alpha should be able to read from shared.global_contacts"
 
     async def test_shared_schema_visible_from_beta(self, beta_pool):
         """The shared schema's global_contacts table must be queryable from butler_beta's path."""
-        row = await beta_pool.fetchrow(
-            "SELECT name FROM global_contacts WHERE name = 'Alice'"
-        )
-        assert row is not None, (
-            "butler_beta should be able to read from shared.global_contacts"
-        )
+        row = await beta_pool.fetchrow("SELECT name FROM global_contacts WHERE name = 'Alice'")
+        assert row is not None, "butler_beta should be able to read from shared.global_contacts"
 
     async def test_shared_write_visible_from_both_schemas(self, alpha_pool, beta_pool):
         """A row written to shared via alpha's path must be readable via beta's path."""

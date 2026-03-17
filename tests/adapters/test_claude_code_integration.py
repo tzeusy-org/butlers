@@ -87,9 +87,7 @@ class TestAdapterInvoke:
             timeout=120,
         )
 
-        assert len(tool_calls) >= 1, (
-            f"Expected at least 1 tool call, got: {tool_calls}"
-        )
+        assert len(tool_calls) >= 1, f"Expected at least 1 tool call, got: {tool_calls}"
         tc = tool_calls[0]
         assert tc["name"], f"Tool call has empty name: {tc}"
         assert tc["id"], f"Tool call has empty id: {tc}"

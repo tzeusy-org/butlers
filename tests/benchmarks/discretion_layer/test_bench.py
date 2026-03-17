@@ -90,9 +90,7 @@ def test_overall_accuracy(
         f"{len(unparseable)}/{len(evaluated)} responses unparseable — "
         f"model may not follow FORWARD/IGNORE format"
     )
-    assert accuracy >= 0.70, (
-        f"Overall accuracy {accuracy:.1%} below 70% threshold for {model_name}"
-    )
+    assert accuracy >= 0.70, f"Overall accuracy {accuracy:.1%} below 70% threshold for {model_name}"
 
 
 def test_forward_recall(
@@ -109,9 +107,7 @@ def test_forward_recall(
     bench_report["forward_recall"] = {"value": recall, "passed": recall >= 0.85}
     record_property("forward_recall", f"{recall:.4f}")
 
-    assert recall >= 0.85, (
-        f"FORWARD recall {recall:.1%} below 85% threshold for {model_name}"
-    )
+    assert recall >= 0.85, f"FORWARD recall {recall:.1%} below 85% threshold for {model_name}"
 
 
 def test_ignore_precision(
