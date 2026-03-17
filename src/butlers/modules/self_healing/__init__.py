@@ -418,9 +418,8 @@ class SelfHealingModule(Module):
                 "message": "Found healing attempt",
             }
 
-        # No fingerprint — return 5 most recent for this butler
-        all_attempts = await list_attempts(self._pool, limit=5)
-        butler_attempts = [a for a in all_attempts if a.get("butler_name") == self._butler_name]
+        # No fingerprint — return 5 most recent for this butler (SQL-filtered)
+        butler_attempts = await list_attempts(self._pool, limit=5, butler_name=self._butler_name)
 
         if not butler_attempts:
             return {

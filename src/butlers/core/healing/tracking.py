@@ -510,6 +510,7 @@ async def list_attempts(
     limit: int = 20,
     offset: int = 0,
     status_filter: str | None = None,
+    butler_name: str | None = None,
 ) -> list[HealingAttemptRow]:
     """Return paginated healing attempt rows for dashboard display.
 
@@ -523,13 +524,31 @@ async def list_attempts(
         Number of rows to skip (for pagination).
     status_filter:
         If provided, only return rows with this status value.
+    butler_name:
+        If provided, only return rows for this butler.  When omitted, rows
+        for all butlers are returned (used by admin/cross-butler dashboards).
 
     Returns
     -------
     list[HealingAttemptRow]
         Rows ordered by ``created_at DESC``.
     """
-    if status_filter is not None:
+    if status_filter is not None and butler_name is not None:
+        rows = await pool.fetch(
+            """
+            SELECT *
+            FROM shared.healing_attempts
+            WHERE status = $1
+              AND butler_name = $2
+            ORDER BY created_at DESC
+            LIMIT $3 OFFSET $4
+            """,
+            status_filter,
+            butler_name,
+            limit,
+            offset,
+        )
+    elif status_filter is not None:
         rows = await pool.fetch(
             """
             SELECT *
@@ -539,6 +558,19 @@ async def list_attempts(
             LIMIT $2 OFFSET $3
             """,
             status_filter,
+            limit,
+            offset,
+        )
+    elif butler_name is not None:
+        rows = await pool.fetch(
+            """
+            SELECT *
+            FROM shared.healing_attempts
+            WHERE butler_name = $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            """,
+            butler_name,
             limit,
             offset,
         )

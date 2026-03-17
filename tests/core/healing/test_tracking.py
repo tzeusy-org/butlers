@@ -380,6 +380,83 @@ class TestCollisionDetectionUnit:
             )
 
 
+class TestListAttemptsUnit:
+    """list_attempts passes butler_name filter into SQL (unit tests with mock pool)."""
+
+    @pytest.mark.unit
+    async def test_butler_name_filter_passes_to_sql(self) -> None:
+        """When butler_name is provided, list_attempts issues a WHERE butler_name = $1 query."""
+        from butlers.core.healing.tracking import list_attempts
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        await list_attempts(pool, limit=5, butler_name="my-butler")
+
+        pool.fetch.assert_awaited_once()
+        call_args = pool.fetch.call_args
+        sql: str = call_args[0][0]
+        assert "butler_name" in sql, "SQL must filter by butler_name"
+        # butler_name value must be passed as a positional argument
+        assert "my-butler" in call_args[0], "butler_name value must be passed to query"
+
+    @pytest.mark.unit
+    async def test_no_butler_name_omits_filter(self) -> None:
+        """When butler_name is None, list_attempts does not include a butler_name WHERE clause."""
+        from butlers.core.healing.tracking import list_attempts
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        await list_attempts(pool, limit=5)
+
+        pool.fetch.assert_awaited_once()
+        call_args = pool.fetch.call_args
+        sql: str = call_args[0][0]
+        assert "butler_name" not in sql, "SQL must not filter by butler_name when not provided"
+
+    @pytest.mark.unit
+    async def test_butler_name_and_status_filter_combined(self) -> None:
+        """When both butler_name and status_filter are provided, both are applied."""
+        from butlers.core.healing.tracking import list_attempts
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        await list_attempts(pool, limit=5, status_filter="investigating", butler_name="my-butler")
+
+        pool.fetch.assert_awaited_once()
+        call_args = pool.fetch.call_args
+        sql: str = call_args[0][0]
+        assert "butler_name" in sql
+        assert "status" in sql
+        positional_args = call_args[0]
+        assert "my-butler" in positional_args
+        assert "investigating" in positional_args
+
+    @pytest.mark.unit
+    async def test_list_attempts_returns_decoded_rows(self) -> None:
+        """list_attempts decodes asyncpg Records into plain dicts."""
+        from butlers.core.healing.tracking import list_attempts
+
+        fake_row = MagicMock()
+        fake_row.__iter__ = MagicMock(
+            return_value=iter([("status", "investigating"), ("butler_name", "my-butler")])
+        )
+        fake_row.keys = MagicMock(return_value=["status", "butler_name"])
+        # asyncpg Records behave like mappings; dict() on them works via __iter__ over items
+        # Use a simple dict-like object instead
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            return_value=[{"status": "investigating", "butler_name": "my-butler"}]
+        )
+
+        rows = await list_attempts(pool, limit=5, butler_name="my-butler")
+
+        assert isinstance(rows, list)
+        assert rows[0]["status"] == "investigating"
+
+
 # ===========================================================================
 # Integration tests — require Docker
 # ===========================================================================

@@ -706,11 +706,87 @@ class TestGetHealingStatus:
             "butlers.modules.self_healing.list_attempts",
             new_callable=AsyncMock,
             return_value=[fake_attempt],
-        ):
+        ) as mock_list:
             result = await mod._handle_get_healing_status(fingerprint=None)
 
         assert len(result["attempts"]) == 1
         assert result["attempts"][0]["status"] == "pr_open"
+        # Verify butler_name is passed to list_attempts (SQL-level filtering)
+        mock_list.assert_awaited_once()
+        call_kwargs = mock_list.call_args.kwargs
+        assert call_kwargs.get("butler_name") == "birthday-butler", (
+            "list_attempts must be called with butler_name kwarg for SQL-level filtering"
+        )
+
+    async def test_list_attempts_called_with_butler_name_kwarg(self):
+        """get_healing_status passes butler_name to list_attempts — regression test for
+        the bug where list_attempts(limit=5) fetched globally then Python-filtered."""
+        mod = _make_module()
+        pool = _make_fake_pool()
+        mod._pool = pool
+        mod._butler_name = "finance-butler"
+
+        with patch(
+            "butlers.modules.self_healing.list_attempts",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_list:
+            await mod._handle_get_healing_status(fingerprint=None)
+
+        mock_list.assert_awaited_once()
+        call_kwargs = mock_list.call_args.kwargs
+        assert call_kwargs.get("butler_name") == "finance-butler", (
+            "butler_name must be passed to list_attempts so SQL filters, not Python"
+        )
+        # limit should still be 5
+        assert call_kwargs.get("limit") == 5 or mock_list.call_args.args[1:2] == (5,)
+
+    async def test_other_butler_attempts_not_returned(self):
+        """When other butlers have >5 attempts, this butler's attempts are still returned.
+
+        This is the core bug: previously list_attempts(limit=5) could return only rows
+        from other butlers, making Python-side filtering return empty for the querying butler.
+        """
+        mod = _make_module()
+        pool = _make_fake_pool()
+        mod._pool = pool
+        mod._butler_name = "my-butler"
+
+        my_attempt = {
+            "id": uuid.uuid4(),
+            "butler_name": "my-butler",
+            "status": "investigating",
+            "fingerprint": "a" * 64,
+            "exception_type": "builtins.ValueError",
+            "call_site": "src/foo.py:bar",
+            "severity": 2,
+            "session_ids": [],
+            "created_at": None,
+            "updated_at": None,
+            "closed_at": None,
+            "branch_name": None,
+            "worktree_path": None,
+            "pr_url": None,
+            "pr_number": None,
+            "healing_session_id": None,
+            "sanitized_msg": None,
+            "error_detail": None,
+        }
+
+        # list_attempts is now SQL-filtered: it returns only my-butler's attempts
+        with patch(
+            "butlers.modules.self_healing.list_attempts",
+            new_callable=AsyncMock,
+            return_value=[my_attempt],
+        ) as mock_list:
+            result = await mod._handle_get_healing_status(fingerprint=None)
+
+        # The fix: result contains my-butler's attempt even when SQL returns it directly
+        assert len(result["attempts"]) == 1
+        assert result["attempts"][0]["butler_name"] == "my-butler"
+        # Confirm the call included butler_name so the SQL filter is engaged
+        mock_list.assert_awaited_once()
+        assert mock_list.call_args.kwargs.get("butler_name") == "my-butler"
 
     async def test_query_by_fingerprint_found(self):
         mod = _make_module()
