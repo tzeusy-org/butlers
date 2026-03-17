@@ -787,11 +787,24 @@ async def dispatch_healing(
     _span = None
     _span_token = None
     if _HAS_OTEL:
+        # Capture the failed session's trace_id from the current context BEFORE
+        # creating the new independent root span for healing.dispatch.
+        _failed_session_trace_id: str | None = None
+        _current_span = trace.get_current_span()
+        _current_ctx = _current_span.get_span_context()
+        if _current_ctx is not None and _current_ctx.trace_id:
+            _failed_session_trace_id = format(_current_ctx.trace_id, "032x")
+
         _span = _tracer.start_span(
             "butlers.healing.dispatch",
             attributes={
                 "butler.name": butler_name,
                 "healing.trigger_source": trigger_source,
+                **(
+                    {"healing.failed_session_trace_id": _failed_session_trace_id}
+                    if _failed_session_trace_id is not None
+                    else {}
+                ),
             },
         )
         _span_token = otel_context.attach(trace.set_span_in_context(_span))
