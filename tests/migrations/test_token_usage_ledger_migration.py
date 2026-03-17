@@ -168,8 +168,10 @@ class TestCore035LimitsTableDefinition:
 
     def test_catalog_entry_id_fk_cascade(self) -> None:
         src = self._src()
-        # Both tables reference shared.model_catalog(id) ON DELETE CASCADE
-        assert src.count("shared.model_catalog(id) ON DELETE CASCADE") >= 1
+        # Both token_usage_ledger and token_limits must reference
+        # shared.model_catalog(id) ON DELETE CASCADE; == 2 catches a regression
+        # where one table loses the constraint.
+        assert src.count("shared.model_catalog(id) ON DELETE CASCADE") == 2
 
     def test_limit_24h_bigint_nullable(self) -> None:
         src = self._src()
@@ -230,8 +232,9 @@ class TestCore035PartitioningPaths:
 
     def test_fallback_creates_6_partitions(self) -> None:
         src = self._src()
-        # The fallback loop runs 0..5 inclusive (6 months)
-        assert "0 .. 5" in src
+        # The fallback loop runs 0 .. (_FALLBACK_PARTITION_COUNT - 1) inclusive (6 months).
+        # Check that the constant reference is used rather than a magic number.
+        assert "_FALLBACK_PARTITION_COUNT - 1" in src
 
     def test_fallback_partition_naming_uses_yyyymm(self) -> None:
         src = self._src()

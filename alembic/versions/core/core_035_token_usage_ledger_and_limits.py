@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import logging
 
+import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -48,11 +50,7 @@ _FALLBACK_PARTITION_COUNT = 6
 def _pg_partman_available() -> bool:
     """Return True when the pg_partman extension is installed in this database."""
     bind = op.get_bind()
-    result = bind.execute(
-        __import__("sqlalchemy").text(
-            "SELECT COUNT(*) FROM pg_extension WHERE extname = 'pg_partman'"
-        )
-    )
+    result = bind.execute(sa.text("SELECT COUNT(*) FROM pg_extension WHERE extname = 'pg_partman'"))
     return bool(result.scalar())
 
 
@@ -134,7 +132,7 @@ def upgrade() -> None:
             "before each month begins.  "
             "Install pg_partman and run core_035 upgrade to switch to automatic management."
         )
-        op.execute("""
+        op.execute(f"""
             DO $$
             DECLARE
                 i           INT;
@@ -142,7 +140,7 @@ def upgrade() -> None:
                 month_end   TIMESTAMPTZ;
                 part_name   TEXT;
             BEGIN
-                FOR i IN 0 .. 5 LOOP
+                FOR i IN 0 .. {_FALLBACK_PARTITION_COUNT - 1} LOOP
                     month_start := date_trunc('month', now() + (i || ' months')::interval);
                     month_end   := month_start + INTERVAL '1 month';
                     part_name   := format(
