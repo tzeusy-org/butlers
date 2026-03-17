@@ -15,11 +15,13 @@ class TransactionModel(BaseModel):
     id: str
     posted_at: str
     merchant: str
+    normalized_merchant: str | None = None
     description: str | None = None
     amount: str  # numeric as string to preserve precision
     currency: str
     direction: str
     category: str
+    inferred_category: str | None = None
     payment_method: str | None = None
     account_id: str | None = None
     receipt_url: str | None = None

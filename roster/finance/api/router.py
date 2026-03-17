@@ -149,11 +149,13 @@ async def list_transactions(
             id=str(r["id"]),
             posted_at=str(r["posted_at"]),
             merchant=r["merchant"],
+            normalized_merchant=(r["metadata"] or {}).get("normalized_merchant"),
             description=r["description"],
             amount=str(r["amount"]),
             currency=r["currency"],
             direction=r["direction"],
             category=r["category"],
+            inferred_category=(r["metadata"] or {}).get("inferred_category"),
             payment_method=r["payment_method"],
             account_id=str(r["account_id"]) if r["account_id"] else None,
             receipt_url=r["receipt_url"],
@@ -418,11 +420,11 @@ async def get_spending_summary(
 
     where = " WHERE " + " AND ".join(conditions)
 
-    # Build group expression
+    # Build group expression — prefer overlay fields when present
     if group_by == "category":
-        group_expr = "category"
+        group_expr = "COALESCE(metadata->>'inferred_category', category)"
     elif group_by == "merchant":
-        group_expr = "merchant"
+        group_expr = "COALESCE(metadata->>'normalized_merchant', merchant)"
     elif group_by == "week":
         group_expr = "to_char(posted_at, 'IYYY-\"W\"IW')"
     else:  # month
