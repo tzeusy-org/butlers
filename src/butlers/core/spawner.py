@@ -1429,6 +1429,12 @@ class Spawner:
                     if _gh_token is None:
                         _gh_token = os.environ.get(healing_config.gh_token_env_var)
 
+                    _task_registry: list[asyncio.Task] | None = None
+                    if self._healing_module is not None and hasattr(
+                        self._healing_module, "_watchdog_tasks"
+                    ):
+                        _task_registry = self._healing_module._watchdog_tasks
+
                     _fallback_task = asyncio.create_task(
                         dispatch_healing(
                             pool=self._pool,
@@ -1441,6 +1447,7 @@ class Spawner:
                             agent_context=None,  # Hard crash — no agent context
                             trigger_source=trigger_source,
                             gh_token=_gh_token,
+                            task_registry=_task_registry,
                         ),
                         name=f"healing-fallback-{session_id}",
                     )

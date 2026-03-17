@@ -349,6 +349,7 @@ class TestDualPathDispatch:
             raise exc
         except ValueError:
             import sys
+
             tb = sys.exc_info()[2]
 
         with (
@@ -1110,9 +1111,7 @@ class TestCreatePr:
             proc = MagicMock()
             if "push" in args:
                 proc.returncode = 1
-                proc.communicate = AsyncMock(
-                    return_value=(b"", b"error: remote rejected")
-                )
+                proc.communicate = AsyncMock(return_value=(b"", b"error: remote rejected"))
             else:
                 proc.returncode = 0
                 proc.communicate = AsyncMock(return_value=(b"", b""))
@@ -1500,3 +1499,172 @@ class TestPrBodyTemplate:
         )
         assert "**First seen:** unknown" in body
         assert "**Occurrences:** unknown" in body
+
+
+# ---------------------------------------------------------------------------
+# task_registry — watchdog task surfaced to caller [bu-wjmw]
+# ---------------------------------------------------------------------------
+
+
+def _all_gates_pass_patches(tmp_path: Path):
+    """Return a context-manager stack that makes all dispatch gates pass."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "butlers.core.healing.dispatch.session_set_healing_fingerprint",
+            new_callable=AsyncMock,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "butlers.core.healing.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(uuid.uuid4(), True),
+        )
+    )
+    stack.enter_context(
+        patch(
+            "butlers.core.healing.dispatch.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value=None,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "butlers.core.healing.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=1,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "butlers.core.healing.dispatch.get_recent_terminal_statuses",
+            new_callable=AsyncMock,
+            return_value=[],
+        )
+    )
+    stack.enter_context(
+        patch(
+            "butlers.core.healing.dispatch.resolve_model",
+            new_callable=AsyncMock,
+            return_value=("claude_code", "model", []),
+        )
+    )
+    stack.enter_context(
+        patch(
+            "butlers.core.healing.dispatch.create_healing_worktree",
+            new_callable=AsyncMock,
+            return_value=(tmp_path / "wt", "self-healing/email/x"),
+        )
+    )
+    stack.enter_context(
+        patch(
+            "butlers.core.healing.dispatch.update_attempt_status",
+            new_callable=AsyncMock,
+            return_value=True,
+        )
+    )
+    return stack
+
+
+class TestTaskRegistry:
+    """dispatch_healing appends watchdog task to task_registry when provided."""
+
+    async def test_watchdog_task_appended_to_registry(self, tmp_path: Path) -> None:
+        """When task_registry is provided, the watchdog task is appended to it."""
+        registry: list[asyncio.Task] = []
+        fake_watchdog = MagicMock(spec=asyncio.Task)
+
+        with _all_gates_pass_patches(tmp_path) as _:
+            with patch("asyncio.create_task") as mock_create_task:
+                # First call returns healing_task, second returns watchdog_task
+                mock_create_task.side_effect = [MagicMock(spec=asyncio.Task), fake_watchdog]
+                result = await dispatch_healing(
+                    pool=_make_pool_all_pass(),
+                    butler_name="email",
+                    session_id=uuid.uuid4(),
+                    fingerprint_input=_make_fp(),
+                    config=_make_config(),
+                    repo_root=tmp_path,
+                    spawner=_make_spawner(),
+                    task_registry=registry,
+                )
+
+        assert result.accepted is True
+        assert fake_watchdog in registry
+
+    async def test_no_task_registry_does_not_raise(self, tmp_path: Path) -> None:
+        """When task_registry is None (default), dispatch succeeds without error."""
+        with _all_gates_pass_patches(tmp_path) as _:
+            with patch("asyncio.create_task") as mock_create_task:
+                mock_create_task.return_value = MagicMock(spec=asyncio.Task)
+                result = await dispatch_healing(
+                    pool=_make_pool_all_pass(),
+                    butler_name="email",
+                    session_id=uuid.uuid4(),
+                    fingerprint_input=_make_fp(),
+                    config=_make_config(),
+                    repo_root=tmp_path,
+                    spawner=_make_spawner(),
+                    # task_registry omitted → None
+                )
+
+        assert result.accepted is True
+
+    async def test_registry_not_populated_on_gate_rejection(self, tmp_path: Path) -> None:
+        """When dispatch is rejected (any gate), registry must remain empty."""
+        registry: list[asyncio.Task] = []
+        result = await dispatch_healing(
+            pool=_make_pool_all_pass(),
+            butler_name="email",
+            session_id=uuid.uuid4(),
+            fingerprint_input=_make_fp(),
+            config=_make_config(enabled=False),  # gate 2 rejects
+            repo_root=tmp_path,
+            spawner=_make_spawner(),
+            task_registry=registry,
+        )
+        assert result.accepted is False
+        assert registry == []
+
+    async def test_multiple_dispatches_accumulate_in_registry(self, tmp_path: Path) -> None:
+        """Multiple successful dispatches each append their watchdog to the same registry."""
+        registry: list[asyncio.Task] = []
+        watchdog_a = MagicMock(spec=asyncio.Task)
+        watchdog_b = MagicMock(spec=asyncio.Task)
+
+        # First dispatch
+        with _all_gates_pass_patches(tmp_path) as _:
+            with patch("asyncio.create_task") as mock_create_task:
+                mock_create_task.side_effect = [MagicMock(spec=asyncio.Task), watchdog_a]
+                await dispatch_healing(
+                    pool=_make_pool_all_pass(),
+                    butler_name="email",
+                    session_id=uuid.uuid4(),
+                    fingerprint_input=_make_fp(fingerprint="a" * 64),
+                    config=_make_config(),
+                    repo_root=tmp_path,
+                    spawner=_make_spawner(),
+                    task_registry=registry,
+                )
+
+        # Second dispatch
+        with _all_gates_pass_patches(tmp_path) as _:
+            with patch("asyncio.create_task") as mock_create_task:
+                mock_create_task.side_effect = [MagicMock(spec=asyncio.Task), watchdog_b]
+                await dispatch_healing(
+                    pool=_make_pool_all_pass(),
+                    butler_name="email",
+                    session_id=uuid.uuid4(),
+                    fingerprint_input=_make_fp(fingerprint="b" * 64),
+                    config=_make_config(),
+                    repo_root=tmp_path,
+                    spawner=_make_spawner(),
+                    task_registry=registry,
+                )
+
+        assert watchdog_a in registry
+        assert watchdog_b in registry
+        assert len(registry) == 2

@@ -690,6 +690,7 @@ async def dispatch_healing(
     agent_context: str | None = None,
     trigger_source: str = "external",
     gh_token: str | None = None,
+    task_registry: list[asyncio.Task] | None = None,
 ) -> DispatchResult:
     """Evaluate gates and, if all pass, spawn a healing agent.
 
@@ -728,6 +729,12 @@ async def dispatch_healing(
     gh_token:
         GitHub token for ``gh pr create``.  When ``None``, the environment's
         ``GH_TOKEN`` is used.
+    task_registry:
+        Optional list to which the watchdog ``asyncio.Task`` will be appended
+        when dispatch succeeds.  The caller is responsible for cancelling tasks
+        in this list during shutdown.  When ``None``, no reference is kept
+        (old behaviour — the task is still scheduled, but cannot be cancelled
+        externally).
 
     Returns
     -------
@@ -992,7 +999,7 @@ async def dispatch_healing(
             name=f"healing-{attempt_id}",
         )
 
-        asyncio.create_task(
+        watchdog_task = asyncio.create_task(
             _timeout_watchdog(
                 pool=pool,
                 attempt_id=attempt_id,
@@ -1003,6 +1010,9 @@ async def dispatch_healing(
             ),
             name=f"healing-watchdog-{attempt_id}",
         )
+
+        if task_registry is not None:
+            task_registry.append(watchdog_task)
 
         return DispatchResult(
             accepted=True,

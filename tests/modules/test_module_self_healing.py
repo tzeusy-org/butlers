@@ -373,6 +373,115 @@ class TestOnShutdown:
         await mod.on_shutdown()
         await mod.on_shutdown()
 
+    async def test_on_shutdown_cancels_tasks_registered_via_dispatch(self):
+        """_watchdog_tasks populated by dispatch_healing are cancelled on shutdown."""
+        mod = _make_module()
+        attempt_id = uuid.uuid4()
+        pool = _make_fake_pool()
+        fake_spawner = MagicMock()
+
+        mod._pool = pool
+        mod._spawner = fake_spawner
+        mod._butler_name = "test-butler"
+        mod._repo_root = Path("/tmp/repo")
+
+        from butlers.core.healing.dispatch import DispatchResult
+
+        # Simulate dispatch_healing accepting and appending a real watchdog task
+        async def _never():
+            await asyncio.sleep(999)
+
+        watchdog_task = asyncio.create_task(_never())
+
+        def _fake_dispatch(*args, task_registry=None, **kwargs):
+            if task_registry is not None:
+                task_registry.append(watchdog_task)
+            return DispatchResult(
+                accepted=True,
+                fingerprint="b" * 64,
+                reason="dispatched",
+                attempt_id=attempt_id,
+            )
+
+        with (
+            patch(
+                "butlers.modules.self_healing.get_active_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.modules.self_healing.dispatch_healing",
+                side_effect=_fake_dispatch,
+            ),
+        ):
+            await mod._handle_report_error(
+                error_type="builtins.ValueError",
+                error_message="test",
+                traceback_str=None,
+                call_site=None,
+                context=None,
+                tool_name=None,
+                severity_hint=None,
+            )
+
+        # The watchdog task should now be in the registry
+        assert watchdog_task in mod._watchdog_tasks
+
+        # on_shutdown should cancel it
+        await mod.on_shutdown()
+
+        assert watchdog_task.cancelled()
+        assert mod._watchdog_tasks == []
+
+    async def test_watchdog_tasks_list_passed_as_registry_to_dispatch(self):
+        """dispatch_healing is called with task_registry=self._watchdog_tasks."""
+        mod = _make_module()
+        pool = _make_fake_pool()
+        fake_spawner = MagicMock()
+
+        mod._pool = pool
+        mod._spawner = fake_spawner
+        mod._butler_name = "test-butler"
+        mod._repo_root = Path("/tmp/repo")
+
+        from butlers.core.healing.dispatch import DispatchResult
+
+        captured_registry = []
+
+        def _capture_dispatch(*args, task_registry=None, **kwargs):
+            captured_registry.append(task_registry)
+            return DispatchResult(
+                accepted=True,
+                fingerprint="c" * 64,
+                reason="dispatched",
+                attempt_id=uuid.uuid4(),
+            )
+
+        with (
+            patch(
+                "butlers.modules.self_healing.get_active_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.modules.self_healing.dispatch_healing",
+                side_effect=_capture_dispatch,
+            ),
+        ):
+            await mod._handle_report_error(
+                error_type="builtins.ValueError",
+                error_message="test",
+                traceback_str=None,
+                call_site=None,
+                context=None,
+                tool_name=None,
+                severity_hint=None,
+            )
+
+        # task_registry passed to dispatch_healing must be the module's list
+        assert len(captured_registry) == 1
+        assert captured_registry[0] is mod._watchdog_tasks
+
 
 # ---------------------------------------------------------------------------
 # report_error — not configured (no pool/spawner)
@@ -565,9 +674,7 @@ class TestReportErrorAccepted:
 class TestReportErrorRejected:
     """report_error returns accepted=False with reason when dispatch gate rejects."""
 
-    async def _call_rejected(
-        self, mod: SelfHealingModule, reason: str
-    ) -> dict:
+    async def _call_rejected(self, mod: SelfHealingModule, reason: str) -> dict:
         pool = _make_fake_pool()
         fake_spawner = MagicMock()
         mod._pool = pool

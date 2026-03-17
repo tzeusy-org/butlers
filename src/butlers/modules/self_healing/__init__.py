@@ -159,9 +159,7 @@ class SelfHealingModule(Module):
         (from a prior crash) and reaps orphaned healing worktrees.
         """
         self._config = (
-            config
-            if isinstance(config, SelfHealingConfig)
-            else SelfHealingConfig(**(config or {}))
+            config if isinstance(config, SelfHealingConfig) else SelfHealingConfig(**(config or {}))
         )
 
         pool = getattr(db, "pool", None) if db is not None else None
@@ -183,9 +181,7 @@ class SelfHealingModule(Module):
         try:
             await reap_stale_worktrees(self._repo_root, pool)
         except Exception:
-            logger.warning(
-                "SelfHealingModule startup: reap_stale_worktrees failed", exc_info=True
-            )
+            logger.warning("SelfHealingModule startup: reap_stale_worktrees failed", exc_info=True)
 
     async def on_shutdown(self) -> None:
         """Cancel in-progress watchdog tasks (best-effort).
@@ -210,9 +206,7 @@ class SelfHealingModule(Module):
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         """Register report_error and get_healing_status tools on the MCP server."""
         self._config = (
-            config
-            if isinstance(config, SelfHealingConfig)
-            else SelfHealingConfig(**(config or {}))
+            config if isinstance(config, SelfHealingConfig) else SelfHealingConfig(**(config or {}))
         )
         self._pool = getattr(db, "pool", None) if db is not None else None
 
@@ -342,6 +336,9 @@ class SelfHealingModule(Module):
                 "message": "Self-healing module not fully initialised (no DB pool or spawner)",
             }
 
+        # Prune completed tasks before dispatching to prevent unbounded accumulation.
+        self._watchdog_tasks = [t for t in self._watchdog_tasks if not t.done()]
+
         result = await dispatch_healing(
             pool=self._pool,
             butler_name=self._butler_name,
@@ -353,6 +350,7 @@ class SelfHealingModule(Module):
             agent_context=context,
             trigger_source="external",  # Not a healing session
             gh_token=None,
+            task_registry=self._watchdog_tasks,
         )
 
         if result.accepted:
@@ -403,7 +401,9 @@ class SelfHealingModule(Module):
         if fingerprint:
             # Return the most recent attempt for this specific fingerprint
             attempt = await get_recent_attempt(
-                self._pool, fingerprint, window_minutes=60 * 24 * 365  # 1 year
+                self._pool,
+                fingerprint,
+                window_minutes=60 * 24 * 365,  # 1 year
             )
             if attempt is None:
                 # Also check for active attempts
