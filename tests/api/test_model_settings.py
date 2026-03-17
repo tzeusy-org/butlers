@@ -627,15 +627,65 @@ class TestDeleteButlerModelOverride:
 # ---------------------------------------------------------------------------
 
 
+def _make_resolve_model_row(
+    *,
+    catalog_entry_id: uuid.UUID | None = None,
+    runtime_type: str = "claude",
+    model_id: str = "claude-sonnet-4-6",
+    extra_args: str = "[]",
+) -> dict[str, Any]:
+    """Build a fake catalog row for resolve-model queries (includes catalog_entry_id)."""
+    return {
+        "catalog_entry_id": catalog_entry_id or uuid.uuid4(),
+        "runtime_type": runtime_type,
+        "model_id": model_id,
+        "extra_args": extra_args,
+    }
+
+
+def _make_quota_row(
+    *,
+    limit_24h: int | None = None,
+    limit_30d: int | None = None,
+    usage_24h: int = 0,
+    usage_30d: int = 0,
+) -> dict[str, Any]:
+    """Build a fake quota/usage row for resolve-model quota sub-query."""
+    return {
+        "limit_24h": limit_24h,
+        "limit_30d": limit_30d,
+        "usage_24h": usage_24h,
+        "usage_30d": usage_30d,
+    }
+
+
+def _build_resolve_model_pool(
+    catalog_row: dict[str, Any] | None,
+    quota_row: dict[str, Any] | None = None,
+) -> AsyncMock:
+    """Create a mock pool where fetchrow returns catalog row first, quota row second."""
+    mock_pool = AsyncMock()
+    call_count = 0
+
+    async def _fetchrow(sql, *args):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First call: catalog resolution
+            return _mock_record(catalog_row) if catalog_row is not None else None
+        else:
+            # Second call: quota query
+            return _mock_record(quota_row) if quota_row is not None else None
+
+    mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    return mock_pool
+
+
 class TestResolveModelPreview:
     async def test_returns_resolved_model(self, app):
-        row = {
-            "runtime_type": "claude",
-            "model_id": "claude-sonnet-4-6",
-            "extra_args": "[]",
-        }
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=_mock_record(row))
+        catalog_row = _make_resolve_model_row()
+        quota_row = _make_quota_row()
+        mock_pool = _build_resolve_model_pool(catalog_row, quota_row)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = mock_pool
 
@@ -655,8 +705,7 @@ class TestResolveModelPreview:
         assert data["butler_name"] == "general"
 
     async def test_returns_resolved_false_when_no_match(self, app):
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=None)
+        mock_pool = _build_resolve_model_pool(None, None)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = mock_pool
 
@@ -673,13 +722,9 @@ class TestResolveModelPreview:
         assert data["runtime_type"] is None
 
     async def test_defaults_to_medium_complexity(self, app):
-        row = {
-            "runtime_type": "claude",
-            "model_id": "claude-sonnet-4-6",
-            "extra_args": "[]",
-        }
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=_mock_record(row))
+        catalog_row = _make_resolve_model_row()
+        quota_row = _make_quota_row()
+        mock_pool = _build_resolve_model_pool(catalog_row, quota_row)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = mock_pool
 
@@ -710,8 +755,7 @@ class TestResolveModelPreview:
 
     @pytest.mark.parametrize("tier", _VALID_COMPLEXITY_TIERS)
     async def test_all_valid_complexity_tiers_accepted(self, app, tier: str):
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=None)
+        mock_pool = _build_resolve_model_pool(None, None)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = mock_pool
 
@@ -723,6 +767,90 @@ class TestResolveModelPreview:
             response = await client.get(f"/api/butlers/general/resolve-model?complexity={tier}")
 
         assert response.status_code == 200
+
+    async def test_quota_fields_present_when_resolved(self, app):
+        """Resolved response includes quota fields with real usage."""
+        catalog_row = _make_resolve_model_row()
+        quota_row = _make_quota_row(limit_24h=1000, limit_30d=10000, usage_24h=600, usage_30d=5000)
+        mock_pool = _build_resolve_model_pool(catalog_row, quota_row)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers/general/resolve-model?complexity=medium")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["resolved"] is True
+        assert data["usage_24h"] == 600
+        assert data["limit_24h"] == 1000
+        assert data["usage_30d"] == 5000
+        assert data["limit_30d"] == 10000
+        assert data["quota_blocked"] is False
+
+    async def test_quota_blocked_when_24h_exceeded(self, app):
+        """quota_blocked=True when usage_24h >= limit_24h."""
+        catalog_row = _make_resolve_model_row()
+        quota_row = _make_quota_row(limit_24h=500, usage_24h=500, usage_30d=800)
+        mock_pool = _build_resolve_model_pool(catalog_row, quota_row)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers/general/resolve-model?complexity=medium")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["quota_blocked"] is True
+
+    async def test_quota_blocked_when_30d_exceeded(self, app):
+        """quota_blocked=True when usage_30d >= limit_30d."""
+        catalog_row = _make_resolve_model_row()
+        quota_row = _make_quota_row(limit_30d=1000, usage_24h=10, usage_30d=1001)
+        mock_pool = _build_resolve_model_pool(catalog_row, quota_row)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers/general/resolve-model?complexity=medium")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["quota_blocked"] is True
+
+    async def test_quota_not_blocked_for_unlimited_entries(self, app):
+        """quota_blocked=False and usage is returned for entries without limits."""
+        catalog_row = _make_resolve_model_row()
+        # No limit_24h or limit_30d — unlimited
+        quota_row = _make_quota_row(usage_24h=9999, usage_30d=99999)
+        mock_pool = _build_resolve_model_pool(catalog_row, quota_row)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers/general/resolve-model?complexity=medium")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["quota_blocked"] is False
+        assert data["usage_24h"] == 9999
+        assert data["limit_24h"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -794,3 +922,463 @@ class TestTriggerRequestComplexityField:
         mock_client.call_tool.assert_called_once_with(
             "trigger", {"prompt": "run something", "complexity": "high"}
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/models — list entries with usage/limit fields
+# ---------------------------------------------------------------------------
+
+
+class TestListCatalogEntriesWithUsage:
+    async def test_entries_include_usage_and_limit_fields(self, app):
+        """List endpoint should include usage_24h, usage_30d, limit_24h, limit_30d per entry."""
+        entry_id = uuid.uuid4()
+        row = {
+            **_make_catalog_row(entry_id=entry_id, alias="claude-sonnet"),
+            "usage_24h": 300,
+            "usage_30d": 2500,
+            "limit_24h": 5000,
+            "limit_30d": 50000,
+        }
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[_mock_record(row)])
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/settings/models")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert len(data) == 1
+        entry = data[0]
+        assert entry["usage_24h"] == 300
+        assert entry["usage_30d"] == 2500
+        assert entry["limit_24h"] == 5000
+        assert entry["limit_30d"] == 50000
+
+    async def test_entries_with_null_limits_show_usage_only(self, app):
+        """Entries with no limits should show usage with null limit fields."""
+        row = {
+            **_make_catalog_row(alias="unlimited-model"),
+            "usage_24h": 42,
+            "usage_30d": 420,
+            "limit_24h": None,
+            "limit_30d": None,
+        }
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[_mock_record(row)])
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/settings/models")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert len(data) == 1
+        entry = data[0]
+        assert entry["usage_24h"] == 42
+        assert entry["limit_24h"] is None
+        assert entry["limit_30d"] is None
+
+    async def test_entries_default_to_zero_usage_when_missing(self, app):
+        """Entries with no usage/limit rows in mock get defaults of 0/None."""
+        row = _make_catalog_row(alias="fresh-model")
+        # No usage/limit keys in the row — _row_to_catalog_entry should default to 0/None
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[_mock_record(row)])
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/settings/models")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert len(data) == 1
+        entry = data[0]
+        assert entry["usage_24h"] == 0
+        assert entry["usage_30d"] == 0
+        assert entry["limit_24h"] is None
+        assert entry["limit_30d"] is None
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/settings/models/{entry_id}/limits
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertTokenLimits:
+    async def test_sets_limits_successfully(self, app):
+        """PUT limits with valid values upserts and returns the limits."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)  # entry exists
+        mock_pool.execute = AsyncMock(return_value="INSERT 0 1")
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/settings/models/{entry_id}/limits",
+                json={"limit_24h": 5000, "limit_30d": 50000},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["limit_24h"] == 5000
+        assert data["limit_30d"] == 50000
+        assert data["deleted"] is False
+
+    async def test_deletes_limits_row_when_both_null(self, app):
+        """PUT with both null deletes the limits row."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)  # entry exists
+        mock_pool.execute = AsyncMock(return_value="DELETE 1")
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/settings/models/{entry_id}/limits",
+                json={"limit_24h": None, "limit_30d": None},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["deleted"] is True
+        assert data["limit_24h"] is None
+        assert data["limit_30d"] is None
+
+    async def test_rejects_zero_limit_with_422(self, app):
+        """PUT with limit_24h=0 must return 422."""
+        entry_id = uuid.uuid4()
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = AsyncMock()
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/settings/models/{entry_id}/limits",
+                json={"limit_24h": 0, "limit_30d": None},
+            )
+
+        assert response.status_code == 422
+
+    async def test_rejects_negative_limit_with_422(self, app):
+        """PUT with limit_30d=-100 must return 422."""
+        entry_id = uuid.uuid4()
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = AsyncMock()
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/settings/models/{entry_id}/limits",
+                json={"limit_24h": None, "limit_30d": -100},
+            )
+
+        assert response.status_code == 422
+
+    async def test_returns_404_for_nonexistent_entry(self, app):
+        """PUT returns 404 when the catalog entry doesn't exist."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=None)  # entry not found
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/settings/models/{entry_id}/limits",
+                json={"limit_24h": 1000, "limit_30d": None},
+            )
+
+        assert response.status_code == 404
+
+    async def test_allows_partial_limits_one_null(self, app):
+        """PUT with one null limit (only 24h set) should succeed."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.execute = AsyncMock(return_value="INSERT 0 1")
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/settings/models/{entry_id}/limits",
+                json={"limit_24h": 1000, "limit_30d": None},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["limit_24h"] == 1000
+        assert data["limit_30d"] is None
+        assert data["deleted"] is False
+
+
+# ---------------------------------------------------------------------------
+# POST /api/settings/models/{entry_id}/reset-usage
+# ---------------------------------------------------------------------------
+
+
+class TestResetTokenUsage:
+    async def test_resets_24h_window(self, app):
+        """POST reset-usage with window=24h resets the 24h window."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.execute = AsyncMock(return_value="INSERT 0 1")
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/settings/models/{entry_id}/reset-usage",
+                json={"window": "24h"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["window"] == "24h"
+        assert data["reset"] is True
+
+    async def test_resets_30d_window(self, app):
+        """POST reset-usage with window=30d resets the 30d window."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.execute = AsyncMock(return_value="INSERT 0 1")
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/settings/models/{entry_id}/reset-usage",
+                json={"window": "30d"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["window"] == "30d"
+        assert data["reset"] is True
+
+    async def test_resets_both_windows(self, app):
+        """POST reset-usage with window=both resets both windows."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.execute = AsyncMock(return_value="INSERT 0 1")
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/settings/models/{entry_id}/reset-usage",
+                json={"window": "both"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["window"] == "both"
+        assert data["reset"] is True
+
+    async def test_rejects_invalid_window_value(self, app):
+        """POST with window='week' must return 422."""
+        entry_id = uuid.uuid4()
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = AsyncMock()
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/settings/models/{entry_id}/reset-usage",
+                json={"window": "week"},
+            )
+
+        assert response.status_code == 422
+
+    async def test_returns_404_for_nonexistent_entry(self, app):
+        """POST returns 404 when the catalog entry doesn't exist."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=None)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/settings/models/{entry_id}/reset-usage",
+                json={"window": "24h"},
+            )
+
+        assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/models/{entry_id}/usage
+# ---------------------------------------------------------------------------
+
+
+class TestGetTokenUsage:
+    async def test_returns_usage_with_limits_and_percentages(self, app):
+        """Usage endpoint returns usage, limits, and percentage fields."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)  # entry exists
+
+        usage_data = {
+            "usage_24h": 300,
+            "usage_30d": 2500,
+            "limit_24h": 1000,
+            "limit_30d": 10000,
+            "reset_24h_at": None,
+            "reset_30d_at": None,
+        }
+        mock_pool.fetchrow = AsyncMock(return_value=_mock_record(usage_data))
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/settings/models/{entry_id}/usage")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["usage_24h"] == 300
+        assert data["usage_30d"] == 2500
+        assert data["limit_24h"] == 1000
+        assert data["limit_30d"] == 10000
+        # Percentages: 300/1000=30%, 2500/10000=25%
+        assert data["percent_24h"] == pytest.approx(30.0)
+        assert data["percent_30d"] == pytest.approx(25.0)
+
+    async def test_returns_null_percentages_when_no_limits(self, app):
+        """percent_24h and percent_30d are null when limits are null."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+
+        usage_data = {
+            "usage_24h": 42,
+            "usage_30d": 420,
+            "limit_24h": None,
+            "limit_30d": None,
+            "reset_24h_at": None,
+            "reset_30d_at": None,
+        }
+        mock_pool.fetchrow = AsyncMock(return_value=_mock_record(usage_data))
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/settings/models/{entry_id}/usage")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["percent_24h"] is None
+        assert data["percent_30d"] is None
+        assert data["usage_24h"] == 42
+
+    async def test_returns_zero_usage_when_no_db_row(self, app):
+        """When fetchrow returns None, usage defaults to zeroes."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
+        mock_pool.fetchrow = AsyncMock(return_value=None)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/settings/models/{entry_id}/usage")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["usage_24h"] == 0
+        assert data["usage_30d"] == 0
+        assert data["limit_24h"] is None
+        assert data["percent_24h"] is None
+
+    async def test_returns_404_for_nonexistent_entry(self, app):
+        """GET usage returns 404 when the catalog entry doesn't exist."""
+        entry_id = uuid.uuid4()
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=None)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/settings/models/{entry_id}/usage")
+
+        assert response.status_code == 404
