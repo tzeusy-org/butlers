@@ -361,29 +361,43 @@ def _extract_usage(obj: dict[str, Any]) -> dict[str, Any] | None:
     Returns
     -------
     dict[str, Any] | None
-        A dict with ``input_tokens`` and ``output_tokens`` (int or None),
-        or None if no recognizable usage fields are found.
+        A dict with ``input_tokens: int`` and ``output_tokens: int``,
+        or None if no recognizable usage fields are found or neither field
+        is an int. When exactly one field is present as an int, the other
+        defaults to 0.
     """
     if not isinstance(obj, dict):
         return None
 
     # Primary: input_tokens / output_tokens (Anthropic / OpenCode native)
-    input_tokens = obj.get("input_tokens") or obj.get("prompt_tokens")
-    output_tokens = obj.get("output_tokens") or obj.get("completion_tokens")
+    # Use explicit None-checking to avoid treating 0 as missing (falsy-or bug).
+    _raw_input = obj.get("input_tokens")
+    input_tokens = _raw_input if _raw_input is not None else obj.get("prompt_tokens")
+    _raw_output = obj.get("output_tokens")
+    output_tokens = _raw_output if _raw_output is not None else obj.get("completion_tokens")
 
     # Also check a nested "usage" key (e.g. turn.completed with usage={...})
     if input_tokens is None and output_tokens is None:
         nested = obj.get("usage")
         if isinstance(nested, dict):
-            input_tokens = nested.get("input_tokens") or nested.get("prompt_tokens")
-            output_tokens = nested.get("output_tokens") or nested.get("completion_tokens")
+            _raw_input = nested.get("input_tokens")
+            input_tokens = _raw_input if _raw_input is not None else nested.get("prompt_tokens")
+            _raw_output = nested.get("output_tokens")
+            output_tokens = (
+                _raw_output if _raw_output is not None else nested.get("completion_tokens")
+            )
 
     if input_tokens is None and output_tokens is None:
         return None
 
+    # Token reporting contract: both fields must be ints. When at least one
+    # is present as an int, default the other to 0 rather than None.
+    if not isinstance(input_tokens, int) and not isinstance(output_tokens, int):
+        return None
+
     return {
-        "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
-        "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+        "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
+        "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
     }
 
 

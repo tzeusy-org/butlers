@@ -29,6 +29,7 @@ from butlers.core.runtimes.codex import _extract_tool_call as codex_extract_tool
 from butlers.core.runtimes.codex import _parse_codex_output
 from butlers.core.runtimes.gemini import _extract_tool_call as gemini_extract_tool_call
 from butlers.core.runtimes.gemini import _parse_gemini_output
+from butlers.core.runtimes.opencode import _extract_usage as opencode_extract_usage
 from butlers.core.runtimes.opencode import _parse_opencode_output
 
 pytestmark = pytest.mark.unit
@@ -467,3 +468,150 @@ async def test_invoke_with_tool_calls(
     assert tool_calls[0]["name"] == "state_get"
     assert tool_calls[0]["input"] == {"key": "foo"}
     assert usage is None
+
+
+# ---------------------------------------------------------------------------
+# Token reporting contract — usage dict must have int fields or be None
+# ---------------------------------------------------------------------------
+
+
+def _usage_satisfies_contract(usage: dict | None) -> bool:
+    """Return True when the usage value satisfies the adapter token reporting contract.
+
+    Contract: usage is either None (adapter cannot report) or a dict
+    with ``input_tokens: int`` and ``output_tokens: int``.
+    """
+    if usage is None:
+        return True
+    if not isinstance(usage, dict):
+        return False
+    return isinstance(usage.get("input_tokens"), int) and isinstance(
+        usage.get("output_tokens"), int
+    )
+
+
+def test_codex_usage_contract_int_tokens():
+    """Codex parser returns int-typed usage fields when turn.completed provides ints."""
+    line = json.dumps(
+        {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 50}}
+    )
+    _, _, usage = _parse_codex_output(line, "", 0)
+    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
+    assert usage == {"input_tokens": 100, "output_tokens": 50}
+
+
+def test_codex_usage_contract_none_when_no_token_event():
+    """Codex parser returns usage=None when no turn.completed event is present."""
+    line = json.dumps({"type": "message", "content": "hello"})
+    _, _, usage = _parse_codex_output(line, "", 0)
+    assert usage is None
+
+
+def test_codex_usage_contract_partial_tokens_defaults_to_zero():
+    """Codex parser normalises partial token data: missing field defaults to 0."""
+    line = json.dumps(
+        {"type": "turn.completed", "usage": {"input_tokens": 42}}  # no output_tokens
+    )
+    _, _, usage = _parse_codex_output(line, "", 0)
+    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
+    assert usage is not None
+    assert isinstance(usage["input_tokens"], int)
+    assert isinstance(usage["output_tokens"], int)
+
+
+def test_codex_usage_contract_non_int_tokens_returns_none():
+    """Codex parser returns usage=None when token fields are non-int strings."""
+    line = json.dumps(
+        {"type": "turn.completed", "usage": {"input_tokens": "nan", "output_tokens": "nan"}}
+    )
+    _, _, usage = _parse_codex_output(line, "", 0)
+    assert usage is None, f"Expected None usage for non-int tokens, got: {usage}"
+
+
+def test_opencode_usage_contract_int_tokens():
+    """OpenCode parser returns int-typed usage fields from step_finish events."""
+    lines = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "step_finish",
+                    "sessionID": "s1",
+                    "part": {"tokens": {"input": 200, "output": 80}},
+                }
+            ),
+        ]
+    )
+    _, _, usage = _parse_opencode_output(lines, "", 0)
+    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
+    assert usage == {"input_tokens": 200, "output_tokens": 80}
+
+
+def test_opencode_usage_contract_none_when_no_usage_event():
+    """OpenCode parser returns usage=None when no usage event is present."""
+    line = json.dumps({"type": "message", "content": "hello"})
+    _, _, usage = _parse_opencode_output(line, "", 0)
+    assert usage is None
+
+
+def test_opencode_usage_contract_non_int_tokens_returns_none():
+    """OpenCode _extract_usage returns None when both token fields are non-int."""
+    result = opencode_extract_usage({"input_tokens": "nan", "output_tokens": "nan"})
+    assert result is None, f"Expected None for non-int tokens, got: {result}"
+
+
+def test_opencode_usage_contract_partial_tokens_defaults_to_zero():
+    """OpenCode _extract_usage normalises partial token data: missing field defaults to 0."""
+    result = opencode_extract_usage({"input_tokens": 42})  # no output_tokens
+    assert _usage_satisfies_contract(result), f"Usage violates contract: {result}"
+    assert result is not None
+    assert isinstance(result["input_tokens"], int)
+    assert result["input_tokens"] == 42
+    assert isinstance(result["output_tokens"], int)
+    assert result["output_tokens"] == 0
+
+
+async def test_claude_usage_contract_int_tokens():
+    """ClaudeCodeAdapter.invoke() returns int-typed usage fields from the SDK ResultMessage."""
+    from unittest.mock import MagicMock
+
+    from claude_agent_sdk import ResultMessage
+
+    # Use a plain dict so dict(message.usage) works correctly. MagicMock has a
+    # .keys() method by default, which causes dict() to use the mapping protocol
+    # and yield an empty result when keys() is not configured to return real keys.
+    mock_usage = {"input_tokens": 150, "output_tokens": 60}
+    mock_result = MagicMock(spec=ResultMessage)
+    mock_result.result = "Done"
+    mock_result.usage = mock_usage
+
+    async def mock_sdk_query(**kwargs):
+        yield mock_result
+
+    adapter = ClaudeCodeAdapter(sdk_query=mock_sdk_query)
+    result_text, tool_calls, usage = await adapter.invoke(
+        prompt="hello",
+        system_prompt="",
+        mcp_servers={},
+        env={},
+    )
+
+    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
+    assert usage is not None
+    assert isinstance(usage["input_tokens"], int)
+    assert isinstance(usage["output_tokens"], int)
+
+
+def test_gemini_usage_is_none():
+    """GeminiAdapter.invoke() returns usage=None (Gemini CLI does not expose token counts).
+
+    _parse_gemini_output returns a 2-tuple (result_text, tool_calls) without a
+    usage field because the Gemini CLI does not emit token counts. GeminiAdapter.invoke()
+    always passes None as the third tuple element to satisfy the adapter contract.
+    """
+    result = _parse_gemini_output("hello world", "", 0)
+    # _parse_gemini_output returns (result_text, tool_calls) — a 2-tuple.
+    # Usage=None is returned by GeminiAdapter.invoke() itself, not by the parser.
+    assert len(result) == 2, f"_parse_gemini_output should return a 2-tuple, got: {result}"
+    result_text, tool_calls = result
+    assert result_text == "hello world"
+    assert tool_calls == []
