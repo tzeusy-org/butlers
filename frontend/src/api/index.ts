@@ -422,6 +422,9 @@ export {
   upsertButlerModelOverrides,
   deleteButlerModelOverride,
   resolveButlerModel,
+  setModelTokenLimits,
+  resetModelUsage,
+  getModelUsageDetail,
 } from "./client.ts";
 
 export type {
@@ -433,6 +436,11 @@ export type {
   ButlerModelOverride,
   ButlerModelOverrideUpsert,
   ResolveModelResponse,
+  TokenLimitsRequest,
+  TokenLimitsResponse,
+  ResetUsageRequest,
+  TokenUsageDetail,
+  UsageWindow,
 } from "./types.ts";
 
 export {
