@@ -2092,3 +2092,491 @@ class TestBulkRecordTransactionsCrossSourceDedup:
         assert result["skipped"] == 1  # Amazon cross_source_match
         assert result["imported"] == 2  # Spotify and Lyft imported
         assert result["error_details"][0]["reason"] == "cross_source_match"
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: bulk_record_transactions (composite dedup, error paths,
+# embedding bypass, tsvector, account_id inheritance, source metadata)
+# ---------------------------------------------------------------------------
+
+# Partial unique index DDL for composite dedup (migration 016)
+_DDL_IDEMPOTENCY_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_temporal_idempotency
+ON facts (tenant_id, idempotency_key)
+WHERE idempotency_key IS NOT NULL
+"""
+
+
+class TestBulkRecordTransactions:
+    """Integration tests for bulk_record_transactions — CSV ingest path."""
+
+    @pytest.fixture
+    async def idem_pool(self, pool_with_owner):
+        """pool_with_owner + the partial unique idempotency index."""
+        await pool_with_owner.execute(_DDL_IDEMPOTENCY_INDEX)
+        yield pool_with_owner
+
+    # ------------------------------------------------------------------
+    # Basic import
+    # ------------------------------------------------------------------
+
+    async def test_basic_import_returns_counts(self, idem_pool):
+        """A single valid row is imported and counts are correct."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        result = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-06-15T00:00:00Z",
+                    "merchant": "Trader Joe's",
+                    "amount": "-55.00",
+                    "currency": "USD",
+                    "category": "groceries",
+                }
+            ],
+        )
+
+        assert result["total"] == 1
+        assert result["imported"] == 1
+        assert result["skipped"] == 0
+        assert result["errors"] == 0
+        assert result["error_details"] == []
+
+    async def test_row_stored_in_db(self, idem_pool):
+        """Imported row is persisted in facts table with correct fields."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-07-01T12:00:00Z",
+                    "merchant": "Netflix",
+                    "amount": "-15.49",
+                    "currency": "USD",
+                    "category": "subscriptions",
+                }
+            ],
+        )
+
+        row = await idem_pool.fetchrow(
+            "SELECT * FROM facts WHERE predicate = 'transaction_debit' LIMIT 1"
+        )
+        assert row is not None
+        meta = json.loads(row["metadata"])
+        assert meta["merchant"] == "Netflix"
+        assert meta["amount"] == "15.49"
+        assert meta["currency"] == "USD"
+        assert meta["category"] == "subscriptions"
+        assert meta["direction"] == "debit"
+
+    # ------------------------------------------------------------------
+    # Idempotency / composite dedup
+    # ------------------------------------------------------------------
+
+    async def test_second_identical_batch_all_skipped(self, idem_pool):
+        """Submitting the same batch twice → second batch entirely skipped."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        txn = {
+            "posted_at": "2025-06-15T00:00:00Z",
+            "merchant": "Whole Foods",
+            "amount": "-92.10",
+            "currency": "USD",
+            "category": "groceries",
+        }
+        r1 = await bulk_record_transactions(pool=idem_pool, transactions=[txn])
+        r2 = await bulk_record_transactions(pool=idem_pool, transactions=[txn])
+
+        assert r1["imported"] == 1
+        assert r2["imported"] == 0
+        assert r2["skipped"] == 1
+        assert r2["error_details"][0]["reason"] == "duplicate"
+
+    # ------------------------------------------------------------------
+    # Per-row error handling
+    # ------------------------------------------------------------------
+
+    async def test_invalid_date_counted_as_error(self, idem_pool):
+        """Row with invalid posted_at is counted as error, reason='invalid_date'."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        result = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "not-a-date",
+                    "merchant": "Amazon",
+                    "amount": "-20.00",
+                    "currency": "USD",
+                    "category": "shopping",
+                }
+            ],
+        )
+
+        assert result["errors"] == 1
+        assert result["imported"] == 0
+        assert result["error_details"][0]["reason"] == "invalid_date"
+
+    async def test_invalid_amount_counted_as_error(self, idem_pool):
+        """Row with non-numeric amount is counted as error, reason='invalid_amount'."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        result = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-06-15T00:00:00Z",
+                    "merchant": "Starbucks",
+                    "amount": "twenty",
+                    "currency": "USD",
+                    "category": "dining",
+                }
+            ],
+        )
+
+        assert result["errors"] == 1
+        assert result["error_details"][0]["reason"] == "invalid_amount"
+
+    async def test_missing_merchant_counted_as_error(self, idem_pool):
+        """Row with empty merchant is counted as error, reason='missing_merchant'."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        result = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-06-15T00:00:00Z",
+                    "merchant": "",
+                    "amount": "-10.00",
+                    "currency": "USD",
+                    "category": "other",
+                }
+            ],
+        )
+
+        assert result["errors"] == 1
+        assert result["error_details"][0]["reason"] == "missing_merchant"
+
+    async def test_batch_limit_exceeded_raises_value_error(self, idem_pool):
+        """Batch > 500 rows raises ValueError before any DB access."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        txns = [
+            {
+                "posted_at": "2025-06-15T00:00:00Z",
+                "merchant": f"Merchant{i}",
+                "amount": "-1.00",
+            }
+            for i in range(501)
+        ]
+        with pytest.raises(ValueError, match="exceeds maximum"):
+            await bulk_record_transactions(pool=idem_pool, transactions=txns)
+
+    async def test_mixed_valid_and_invalid_rows(self, idem_pool):
+        """Batch with some valid and some invalid rows — only valid rows imported."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        result = await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "not-a-date",
+                    "merchant": "Bad Date",
+                    "amount": "-10.00",
+                },
+                {
+                    "posted_at": "2025-06-15T00:00:00Z",
+                    "merchant": "Good Row",
+                    "amount": "-25.00",
+                },
+                {
+                    "posted_at": "2025-06-15T00:00:00Z",
+                    "merchant": "",
+                    "amount": "-5.00",
+                },
+            ],
+        )
+
+        assert result["total"] == 3
+        assert result["imported"] == 1
+        assert result["errors"] == 2
+
+    # ------------------------------------------------------------------
+    # account_id inheritance and per-row override
+    # ------------------------------------------------------------------
+
+    async def test_top_level_account_id_inherited(self, idem_pool):
+        """Top-level account_id is stored in fact metadata when not overridden per row."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-08-01T00:00:00Z",
+                    "merchant": "Shell Gas",
+                    "amount": "-45.00",
+                }
+            ],
+            account_id="acct-chase-1111",
+        )
+
+        row = await idem_pool.fetchrow(
+            "SELECT metadata FROM facts WHERE predicate = 'transaction_debit' LIMIT 1"
+        )
+        meta = json.loads(row["metadata"])
+        assert meta["account_id"] == "acct-chase-1111"
+
+    async def test_per_row_account_id_overrides_top_level(self, idem_pool):
+        """Per-row account_id takes precedence over top-level account_id."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-08-01T00:00:00Z",
+                    "merchant": "Costco",
+                    "amount": "-123.45",
+                    "account_id": "acct-amex-row",
+                }
+            ],
+            account_id="acct-chase-top",
+        )
+
+        row = await idem_pool.fetchrow(
+            "SELECT metadata FROM facts WHERE predicate = 'transaction_debit' LIMIT 1"
+        )
+        meta = json.loads(row["metadata"])
+        assert meta["account_id"] == "acct-amex-row"
+
+    # ------------------------------------------------------------------
+    # source metadata
+    # ------------------------------------------------------------------
+
+    async def test_source_stored_as_import_source(self, idem_pool):
+        """source parameter is stored as import_source in fact metadata."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-09-01T00:00:00Z",
+                    "merchant": "IKEA",
+                    "amount": "-299.00",
+                }
+            ],
+            source="csv-import",
+        )
+
+        row = await idem_pool.fetchrow(
+            "SELECT metadata FROM facts WHERE predicate = 'transaction_debit' LIMIT 1"
+        )
+        meta = json.loads(row["metadata"])
+        assert meta["import_source"] == "csv-import"
+
+    # ------------------------------------------------------------------
+    # Embedding bypass
+    # ------------------------------------------------------------------
+
+    async def test_embedding_engine_not_called(self, idem_pool):
+        """bulk_record_transactions never calls the embedding engine."""
+        from unittest.mock import MagicMock, patch
+
+        mock_engine = MagicMock()
+        mock_engine.embed = MagicMock(return_value=[0.1] * 384)
+
+        with patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=mock_engine,
+        ):
+            from butlers.tools.finance.facts import bulk_record_transactions
+
+            await bulk_record_transactions(
+                pool=idem_pool,
+                transactions=[
+                    {
+                        "posted_at": "2025-06-15T00:00:00Z",
+                        "merchant": "Embed Test",
+                        "amount": "-1.00",
+                    }
+                ],
+            )
+
+        mock_engine.embed.assert_not_called()
+
+    async def test_embedding_column_is_null(self, idem_pool):
+        """Imported facts store NULL in the embedding column."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-06-15T00:00:00Z",
+                    "merchant": "Null Embed Corp",
+                    "amount": "-7.77",
+                }
+            ],
+        )
+
+        row = await idem_pool.fetchrow(
+            "SELECT embedding FROM facts WHERE predicate = 'transaction_debit' LIMIT 1"
+        )
+        assert row["embedding"] is None
+
+    async def test_tsvector_computed(self, idem_pool):
+        """search_vector tsvector is populated (not NULL) for imported rows."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        await bulk_record_transactions(
+            pool=idem_pool,
+            transactions=[
+                {
+                    "posted_at": "2025-06-15T00:00:00Z",
+                    "merchant": "Tsvector Market",
+                    "amount": "-3.50",
+                }
+            ],
+        )
+
+        row = await idem_pool.fetchrow(
+            "SELECT search_vector FROM facts WHERE predicate = 'transaction_debit' LIMIT 1"
+        )
+        assert row["search_vector"] is not None
+
+    # ------------------------------------------------------------------
+    # UTC normalization and decimal quantization
+    # ------------------------------------------------------------------
+
+    async def test_utc_tz_normalization_dedup(self, idem_pool):
+        """Same datetime in UTC and with +00:00 offset → composite key matches → dedup."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        txn_z = {
+            "posted_at": "2025-06-15T00:00:00Z",
+            "merchant": "UTC Cafe",
+            "amount": "-9.99",
+        }
+        txn_offset = {
+            "posted_at": "2025-06-15T00:00:00+00:00",
+            "merchant": "UTC Cafe",
+            "amount": "-9.99",
+        }
+
+        r1 = await bulk_record_transactions(pool=idem_pool, transactions=[txn_z])
+        r2 = await bulk_record_transactions(pool=idem_pool, transactions=[txn_offset])
+
+        assert r1["imported"] == 1
+        assert r2["skipped"] == 1
+        assert r2["imported"] == 0
+
+    async def test_decimal_quantization_dedup(self, idem_pool):
+        """Amount -55.00 and -55.0 both quantize to -55.00 → same key → dedup."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        txn_2dec = {
+            "posted_at": "2025-06-15T00:00:00Z",
+            "merchant": "Decimal Store",
+            "amount": "-55.00",
+        }
+        txn_1dec = {
+            "posted_at": "2025-06-15T00:00:00Z",
+            "merchant": "Decimal Store",
+            "amount": "-55.0",
+        }
+
+        r1 = await bulk_record_transactions(pool=idem_pool, transactions=[txn_2dec])
+        r2 = await bulk_record_transactions(pool=idem_pool, transactions=[txn_1dec])
+
+        assert r1["imported"] == 1
+        assert r2["skipped"] == 1
+
+    async def test_account_id_case_insensitive_dedup(self, idem_pool):
+        """account_id lowercasing means ACCT-A and acct-a produce the same key → dedup."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        txn_upper = {
+            "posted_at": "2025-06-15T00:00:00Z",
+            "merchant": "Case Bank",
+            "amount": "-20.00",
+            "account_id": "ACCT-UPPER",
+        }
+        txn_lower = {
+            "posted_at": "2025-06-15T00:00:00Z",
+            "merchant": "Case Bank",
+            "amount": "-20.00",
+            "account_id": "acct-upper",
+        }
+
+        r1 = await bulk_record_transactions(pool=idem_pool, transactions=[txn_upper])
+        r2 = await bulk_record_transactions(pool=idem_pool, transactions=[txn_lower])
+
+        assert r1["imported"] == 1
+        assert r2["skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: _compute_composite_dedup_key canonicalization
+# ---------------------------------------------------------------------------
+
+
+class TestCompositeDedupKeyCanonicalisation:
+    """Pure unit tests for _compute_composite_dedup_key."""
+
+    def _key(self, posted_at, amount, merchant="Merchant", account_id=None) -> str:
+        from butlers.tools.finance.facts import _compute_composite_dedup_key
+
+        return _compute_composite_dedup_key(
+            posted_at=posted_at,
+            amount=amount,
+            merchant=merchant,
+            account_id=account_id,
+        )
+
+    def test_utc_and_z_suffix_produce_same_key(self):
+        # datetime with explicit UTC tzinfo
+        dt_z = datetime(2025, 6, 15, 0, 0, 0, tzinfo=UTC)
+        # fromisoformat of ISO8601 string with Z suffix produces UTC-aware datetime
+        dt_offset = datetime.fromisoformat("2025-06-15T00:00:00Z")
+        assert self._key(dt_z, "-55.00") == self._key(dt_offset, "-55.00")
+
+    def test_naive_datetime_treated_as_utc(self):
+        dt_naive = datetime(2025, 6, 15, 0, 0, 0)
+        dt_utc = datetime(2025, 6, 15, 0, 0, 0, tzinfo=UTC)
+        assert self._key(dt_naive, "-55.00") == self._key(dt_utc, "-55.00")
+
+    def test_amount_quantized_to_two_decimal_places(self):
+        assert self._key(datetime(2025, 6, 15, tzinfo=UTC), "-55.0") == self._key(
+            datetime(2025, 6, 15, tzinfo=UTC), "-55.00"
+        )
+
+    def test_different_amounts_different_keys(self):
+        dt = datetime(2025, 6, 15, tzinfo=UTC)
+        assert self._key(dt, "-55.00") != self._key(dt, "-56.00")
+
+    def test_account_id_lowercased(self):
+        dt = datetime(2025, 6, 15, tzinfo=UTC)
+        assert self._key(dt, "-10.00", account_id="ACCT-A") == self._key(
+            dt, "-10.00", account_id="acct-a"
+        )
+
+    def test_none_and_empty_account_id_equivalent(self):
+        dt = datetime(2025, 6, 15, tzinfo=UTC)
+        assert self._key(dt, "-10.00", account_id=None) == self._key(dt, "-10.00", account_id="")
+
+    def test_different_merchants_different_keys(self):
+        dt = datetime(2025, 6, 15, tzinfo=UTC)
+        assert self._key(dt, "-10.00", merchant="Starbucks") != self._key(
+            dt, "-10.00", merchant="Netflix"
+        )
+
+    def test_key_is_hex_sha256(self):
+        import re
+
+        dt = datetime(2025, 6, 15, tzinfo=UTC)
+        key = self._key(dt, "-55.00")
+        assert re.fullmatch(r"[0-9a-f]{64}", key)

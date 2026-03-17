@@ -1155,3 +1155,274 @@ async def test_subscriptions_503_when_pool_unavailable():
         response = await client.get("/api/finance/subscriptions")
 
     assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /api/finance/transactions/bulk
+# ---------------------------------------------------------------------------
+
+_BULK_TXN = {
+    "posted_at": "2025-06-15T00:00:00Z",
+    "merchant": "Trader Joe's",
+    "amount": "-55.00",
+    "currency": "USD",
+    "category": "groceries",
+}
+
+
+def _make_bulk_facts_mock(
+    *,
+    total: int = 1,
+    imported: int = 1,
+    skipped: int = 0,
+    errors: int = 0,
+    error_details: list | None = None,
+):
+    from unittest.mock import AsyncMock
+
+    mock_facts = MagicMock()
+    mock_facts.bulk_record_transactions = AsyncMock(
+        return_value={
+            "total": total,
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors,
+            "error_details": error_details or [],
+        }
+    )
+    return mock_facts
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_success():
+    """POST /api/finance/transactions/bulk imports 2 valid rows."""
+    from unittest.mock import patch
+
+    mock_facts = _make_bulk_facts_mock(total=2, imported=2)
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={"transactions": [_BULK_TXN, {**_BULK_TXN, "merchant": "Whole Foods"}]},
+            )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert body["imported"] == 2
+    assert body["skipped"] == 0
+    assert body["errors"] == 0
+    assert body["error_details"] == []
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_second_batch_all_skipped():
+    """POST /api/finance/transactions/bulk — second identical batch → all skipped."""
+    from unittest.mock import patch
+
+    mock_facts = _make_bulk_facts_mock(
+        total=1,
+        imported=0,
+        skipped=1,
+        errors=0,
+        error_details=[{"index": 0, "reason": "duplicate"}],
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={"transactions": [_BULK_TXN]},
+            )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["imported"] == 0
+    assert body["skipped"] == 1
+    assert body["errors"] == 0
+    assert body["error_details"][0]["reason"] == "duplicate"
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_per_row_errors():
+    """POST /api/finance/transactions/bulk — mix of valid and invalid rows."""
+    from unittest.mock import patch
+
+    mock_facts = _make_bulk_facts_mock(
+        total=3,
+        imported=1,
+        skipped=0,
+        errors=2,
+        error_details=[
+            {"index": 0, "reason": "invalid_date"},
+            {"index": 2, "reason": "missing_merchant"},
+        ],
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={
+                    "transactions": [
+                        {**_BULK_TXN, "posted_at": "not-a-date"},
+                        _BULK_TXN,
+                        {**_BULK_TXN, "merchant": ""},
+                    ]
+                },
+            )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 3
+    assert body["imported"] == 1
+    assert body["errors"] == 2
+    reasons = {d["reason"] for d in body["error_details"]}
+    assert "invalid_date" in reasons
+    assert "missing_merchant" in reasons
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_too_many_rows_422():
+    """POST /api/finance/transactions/bulk with 501 items → 422."""
+    from unittest.mock import patch
+
+    mock_facts = _make_bulk_facts_mock()
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={"transactions": [_BULK_TXN] * 501},
+            )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_empty_batch_422():
+    """POST /api/finance/transactions/bulk with empty list → 422."""
+    from unittest.mock import patch
+
+    mock_facts = _make_bulk_facts_mock()
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={"transactions": []},
+            )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_account_id_inheritance():
+    """POST /api/finance/transactions/bulk passes top-level account_id to facts layer."""
+    from unittest.mock import patch
+
+    mock_facts = _make_bulk_facts_mock(total=1, imported=1)
+    acct = "acct-chase-9876"
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={"transactions": [_BULK_TXN], "account_id": acct},
+            )
+
+    assert response.status_code == 200
+    call_kwargs = mock_facts.bulk_record_transactions.call_args[1]
+    assert call_kwargs["account_id"] == acct
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_source_metadata():
+    """POST /api/finance/transactions/bulk passes source tag to facts layer."""
+    from unittest.mock import patch
+
+    mock_facts = _make_bulk_facts_mock(total=1, imported=1)
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={"transactions": [_BULK_TXN], "source": "csv-import"},
+            )
+
+    assert response.status_code == 200
+    call_kwargs = mock_facts.bulk_record_transactions.call_args[1]
+    assert call_kwargs["source"] == "csv-import"
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_503_when_pool_unavailable():
+    """POST /api/finance/transactions/bulk returns 503 when DB pool is not available."""
+    from unittest.mock import patch
+
+    from fastapi import FastAPI
+
+    mock_db = MagicMock()
+    mock_db.pool.side_effect = KeyError("finance")
+    mock_facts = _make_bulk_facts_mock()
+
+    app = FastAPI()
+    app.include_router(_finance_router_mod.router)
+    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={"transactions": [_BULK_TXN]},
+            )
+
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_transactions_value_error_propagates_422():
+    """POST /api/finance/transactions/bulk propagates ValueError from facts layer as 422."""
+    from unittest.mock import AsyncMock, patch
+
+    mock_facts = MagicMock()
+    mock_facts.bulk_record_transactions = AsyncMock(
+        side_effect=ValueError("Batch too large: 501 exceeds maximum of 500")
+    )
+
+    app, _ = _make_app()
+    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/finance/transactions/bulk",
+                json={"transactions": [_BULK_TXN]},
+            )
+
+    assert response.status_code == 422

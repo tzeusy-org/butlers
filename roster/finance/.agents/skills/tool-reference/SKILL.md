@@ -122,6 +122,48 @@ Returns grouped totals and a grand total.
 
 ---
 
+## bulk_record_transactions
+
+Bulk-ingest a batch of transactions in a single call, with per-row validation and idempotency.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `transactions` | list of objects | Yes | Batch of transaction rows; each row has the same fields as `record_transaction` (see below). Maximum 500 rows per call. |
+| `account_id` | string | No | Default account label applied to every row that does not supply its own `account_id`. |
+| `source` | string | No | Source label for the batch (e.g., `"csv-import"`, `"bank-export"`). Stored as `metadata.source` on each row. |
+
+**Row fields** (each element in `transactions`):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `posted_at` | TIMESTAMPTZ string | Yes | When the transaction was posted. ISO 8601 with timezone. |
+| `merchant` | string | Yes | Payee or merchant name. |
+| `amount` | NUMERIC(14,2) string | Yes | Transaction amount as a precise decimal string (e.g., `"23.50"`). |
+| `currency` | string | Yes | ISO-4217 code (e.g., `"USD"`). |
+| `category` | string | No | Spending category. |
+| `direction` | string | No | `"debit"` (default) or `"credit"`. |
+| `payment_method` | string | No | Card or payment method label. |
+| `account_id` | string | No | Per-row account override; takes precedence over the batch-level `account_id`. |
+| `source_message_id` | string | No | Source provenance for deduplication. |
+| `metadata` | JSONB dict | No | Extra context. |
+
+**Response shape:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total` | int | Total number of rows submitted. |
+| `imported` | int | Rows successfully written. |
+| `skipped` | int | Rows skipped due to deduplication (already present). |
+| `errors` | int | Rows that failed validation or encountered an error. |
+| `error_details` | list | Per-row error objects with `row_index`, `error`, and `row` fields. |
+
+**Notes:**
+- Raises `ValueError` (→ 422) if the batch exceeds 500 rows or is empty.
+- Deduplication uses a composite key over `(posted_at UTC, amount quantized, merchant, account_id lowercased)`. Identical rows across calls are skipped (not double-inserted).
+- `embed()` is bypassed for bulk inserts; `tsvector` is populated directly.
+
+---
+
 ## Module Tools
 
 Tools provided by enabled modules (calendar, memory, email) are listed in the butler's tool list
