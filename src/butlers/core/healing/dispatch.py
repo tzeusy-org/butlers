@@ -115,6 +115,45 @@ class HealingConfig:
         Default ``"GH_TOKEN"``.
     pr_labels:
         Labels to apply to self-healing PRs.  Default ``["self-healing", "automated"]``.
+
+    Example butler.toml configuration::
+
+        # Enable self-healing for a butler (all options shown with defaults)
+        [modules.self_healing]
+        enabled = true
+
+        # Only heal errors with severity <= this threshold (0=critical, 4=info).
+        # Default: 2 (medium). Set to 1 to only heal high/critical errors.
+        severity_threshold = 2
+
+        # Minutes to wait before re-investigating the same fingerprint.
+        # Default: 60
+        cooldown_minutes = 60
+
+        # Maximum simultaneous healing investigations.
+        # Default: 2
+        max_concurrent = 2
+
+        # Number of consecutive failures before the circuit breaker trips.
+        # Default: 5  (unfixable does not count as a failure)
+        circuit_breaker_threshold = 5
+
+        # Maximum minutes a healing agent session may run before being cancelled.
+        # Default: 30
+        timeout_minutes = 30
+
+        # Environment variable holding the GitHub token for PR creation.
+        # Default: "GH_TOKEN"
+        gh_token_env_var = "GH_TOKEN"
+
+        # Labels applied to self-healing PRs on GitHub.
+        # Default: ["self-healing", "automated"]
+        pr_labels = ["self-healing", "automated"]
+
+    Minimal opt-in configuration (all other fields use defaults)::
+
+        [modules.self_healing]
+        enabled = true
     """
 
     enabled: bool = False
