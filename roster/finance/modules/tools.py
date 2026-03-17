@@ -459,3 +459,57 @@ def register_tools(mcp: Any, module: Any) -> None:
             module._get_pool(),
             ops=parsed_ops,
         )
+
+    # =================================================================
+    # Bulk transaction ingestion (embedding-bypass path)
+    # =================================================================
+
+    @mcp.tool()
+    async def bulk_record_transactions(
+        transactions: str,
+        account_id: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        """Bulk-ingest normalized transaction objects as bitemporal facts.
+
+        Processes up to 500 transactions per call. Embeddings are skipped for
+        performance (zero vector stored); tsvector (full-text search) is still
+        computed. Returns per-row counts for imported, skipped, and errored rows.
+
+        transactions: JSON string — array of transaction objects. Each must have:
+          - posted_at: ISO 8601 datetime string (required)
+          - merchant: string (required)
+          - amount: string-encoded decimal (required); negative=debit, positive=credit
+          Optional per row:
+          - currency: ISO-4217 code (default "USD")
+          - category: string (default "uncategorized")
+          - description: string
+          - payment_method: string
+          - account_id: per-row account_id (overrides top-level account_id)
+          - source_message_id: string (uses email-based dedup when present)
+          - metadata: dict of additional fields
+
+        account_id: Top-level account_id inherited by all rows unless overridden
+          per row. Included in composite dedup key.
+
+        source: Stored as import_source in fact metadata for all rows.
+          Use e.g. "csv-import" to tag the ingestion origin.
+
+        Returns: {total, imported, skipped, errors, error_details}
+        error_details entries: [{index, reason}]
+          reason: "duplicate" (dedup skip), "invalid_date", "invalid_amount",
+          "missing_merchant"
+        """
+        import json as _json
+
+        parsed_txns = _json.loads(transactions)
+        if not isinstance(parsed_txns, list):
+            raise ValueError("transactions must be a JSON array")
+        if len(parsed_txns) > 500:
+            raise ValueError(f"Batch too large: {len(parsed_txns)} exceeds maximum of 500")
+        return await _facts.bulk_record_transactions(
+            module._get_pool(),
+            transactions=parsed_txns,
+            account_id=account_id,
+            source=source,
+        )

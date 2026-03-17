@@ -26,6 +26,13 @@ before inserting a new temporal fact, the code checks whether an active fact
 with the same (entity_id, predicate, valid_at) AND the same source_message_id
 already exists. When found, the existing fact_id is returned without inserting.
 
+Bulk ingestion
+--------------
+bulk_record_transactions() provides high-throughput ingestion without calling
+embedding_engine.embed() per row. A zero vector is stored as the embedding
+placeholder while search_vector (tsvector) is still computed. Composite
+idempotency keys are used for rows without source_message_id.
+
 Spending summary
 ----------------
 spending_summary_facts() aggregates debit transaction facts via JSONB extraction
@@ -40,6 +47,7 @@ import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from decimal import InvalidOperation as DecimalInvalidOperation
 from typing import Any
 
 import asyncpg
@@ -1167,4 +1175,295 @@ async def bulk_update_transactions(
     return {
         "updated_total": updated_total,
         "results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Bulk transaction ingestion (embedding-bypass path)
+# ---------------------------------------------------------------------------
+
+_MAX_BULK_TRANSACTIONS = 500
+
+
+def _compute_composite_dedup_key(
+    posted_at: datetime,
+    amount: Decimal | float | int | str,
+    merchant: str,
+    account_id: str | None,
+) -> str:
+    """Compute the composite idempotency key for CSV-sourced transactions.
+
+    Key = sha256(canonical_posted_at|canonical_amount|merchant|canonical_account_id)
+
+    Canonicalization rules:
+      - posted_at: UTC ISO 8601 with Z suffix at second precision
+        (e.g. "2025-01-15T00:00:00Z")
+      - amount: str(Decimal(amount).quantize(Decimal("0.01")))
+        (e.g. "-47.32")
+      - merchant: used as-is (case-sensitive)
+      - account_id: lowercased or empty string when absent
+    """
+    # Canonicalize posted_at: convert to UTC, strip microseconds, use Z suffix
+    if posted_at.tzinfo is None:
+        dt_utc = posted_at.replace(tzinfo=UTC)
+    else:
+        dt_utc = posted_at.astimezone(UTC)
+    canonical_posted_at = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Canonicalize amount
+    canonical_amount = str(Decimal(str(amount)).quantize(Decimal("0.01")))
+
+    # Canonicalize account_id
+    canonical_account_id = account_id.lower() if account_id else ""
+
+    key_input = f"{canonical_posted_at}|{canonical_amount}|{merchant}|{canonical_account_id}"
+    return hashlib.sha256(key_input.encode()).hexdigest()
+
+
+async def bulk_record_transactions(
+    pool: asyncpg.Pool,
+    transactions: list[dict[str, Any]],
+    account_id: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Bulk-ingest normalized transaction objects as bitemporal facts.
+
+    Embeddings are SKIPPED for this path (no embedding_engine.embed() call).
+    A zero-vector placeholder is stored. tsvector (search_vector) is computed.
+
+    Deduplication:
+    - Rows with source_message_id: use existing source_message_id-based dedup
+      (same logic as record_transaction_fact).
+    - Rows without source_message_id: use composite key
+      sha256(posted_at|amount|merchant|account_id) with canonicalized inputs.
+
+    Args:
+        pool: Database connection pool.
+        transactions: List of normalized transaction dicts. Each must have:
+            posted_at (ISO 8601 str), merchant (str), amount (str decimal).
+            Optional: currency, category, description, payment_method,
+            account_id (per-row override), source_message_id, metadata.
+        account_id: Top-level account_id inherited by all rows unless per-row
+            account_id is set.
+        source: Stored as import_source in fact metadata for all rows.
+
+    Returns:
+        {total, imported, skipped, errors, error_details}
+        error_details items have: {index, reason}
+        reason is "duplicate" for dedup skips, "invalid_date" for unparseable
+        dates, "invalid_amount" for non-numeric amounts.
+    """
+    if len(transactions) > _MAX_BULK_TRANSACTIONS:
+        raise ValueError(
+            f"Batch too large: {len(transactions)} exceeds maximum of {_MAX_BULK_TRANSACTIONS}"
+        )
+
+    owner_entity_id = await _get_owner_entity_id(pool)
+
+    # Lazy-load search_vector helpers (avoids import-time side effects)
+    from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
+
+    imported = 0
+    skipped = 0
+    errors = 0
+    error_details: list[dict[str, Any]] = []
+
+    now = datetime.now(UTC)
+
+    for idx, txn in enumerate(transactions):
+        # ------------------------------------------------------------------
+        # 1. Parse and validate required fields
+        # ------------------------------------------------------------------
+        try:
+            raw_posted_at = txn.get("posted_at")
+            if not raw_posted_at:
+                raise ValueError("missing posted_at")
+            posted_at = datetime.fromisoformat(str(raw_posted_at))
+            if posted_at.tzinfo is None:
+                posted_at = posted_at.replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            errors += 1
+            error_details.append({"index": idx, "reason": "invalid_date"})
+            continue
+
+        try:
+            raw_amount = txn.get("amount")
+            if raw_amount is None:
+                raise ValueError("missing amount")
+            amount_decimal = Decimal(str(raw_amount))
+        except (ValueError, TypeError, DecimalInvalidOperation):
+            errors += 1
+            error_details.append({"index": idx, "reason": "invalid_amount"})
+            continue
+
+        merchant = txn.get("merchant")
+        if not merchant:
+            errors += 1
+            error_details.append({"index": idx, "reason": "missing_merchant"})
+            continue
+
+        # ------------------------------------------------------------------
+        # 2. Resolve account_id (per-row overrides top-level)
+        # ------------------------------------------------------------------
+        effective_account_id: str | None = txn.get("account_id") or account_id
+
+        # ------------------------------------------------------------------
+        # 3. Compute derived fields
+        # ------------------------------------------------------------------
+        currency = (txn.get("currency") or "USD").upper()
+        category = txn.get("category") or "uncategorized"
+        description = txn.get("description")
+        payment_method = txn.get("payment_method")
+        source_message_id = txn.get("source_message_id")
+        extra_metadata: dict[str, Any] = dict(txn.get("metadata") or {})
+
+        direction = _infer_direction(amount_decimal)
+        predicate = (
+            _PREDICATE_TRANSACTION_DEBIT if direction == "debit" else _PREDICATE_TRANSACTION_CREDIT
+        )
+        stored_amount = _abs_decimal(amount_decimal)
+
+        content = f"{merchant} {_str_amount(stored_amount)} {currency}"
+
+        # ------------------------------------------------------------------
+        # 4. Determine idempotency key
+        # ------------------------------------------------------------------
+        if source_message_id is not None:
+            # Email-based dedup: check existing active fact by source_message_id
+            try:
+                existing = await pool.fetchrow(
+                    """
+                    SELECT id FROM facts
+                    WHERE predicate = $1
+                      AND validity = 'active'
+                      AND valid_at = $2
+                      AND metadata->>'source_message_id' = $3
+                    LIMIT 1
+                    """,
+                    predicate,
+                    posted_at,
+                    source_message_id,
+                )
+                if existing is not None:
+                    skipped += 1
+                    error_details.append({"index": idx, "reason": "duplicate"})
+                    continue
+            except asyncpg.PostgresError:
+                pass
+
+            # Build a source_message_id-based idempotency key
+            idem_parts = "|".join(
+                [
+                    str(owner_entity_id) if owner_entity_id else "",
+                    predicate,
+                    posted_at.isoformat(),
+                    source_message_id,
+                ]
+            )
+            idempotency_key = hashlib.sha256(idem_parts.encode()).hexdigest()
+        else:
+            # Composite dedup key for CSV-sourced rows
+            idempotency_key = _compute_composite_dedup_key(
+                posted_at=posted_at,
+                amount=amount_decimal,
+                merchant=merchant,
+                account_id=effective_account_id,
+            )
+
+        # ------------------------------------------------------------------
+        # 5. Check idempotency key (dedup)
+        # ------------------------------------------------------------------
+        try:
+            existing_idem = await pool.fetchval(
+                "SELECT id FROM facts WHERE tenant_id = 'owner' AND idempotency_key = $1",
+                idempotency_key,
+            )
+            if existing_idem is not None:
+                skipped += 1
+                error_details.append({"index": idx, "reason": "duplicate"})
+                continue
+        except asyncpg.PostgresError:
+            pass
+
+        # ------------------------------------------------------------------
+        # 6. Build fact metadata
+        # ------------------------------------------------------------------
+        fact_metadata: dict[str, Any] = {
+            "merchant": merchant,
+            "amount": _str_amount(stored_amount),
+            "currency": currency,
+            "category": category,
+            "direction": direction,
+        }
+        if description is not None:
+            fact_metadata["description"] = description
+        if payment_method is not None:
+            fact_metadata["payment_method"] = payment_method
+        if effective_account_id is not None:
+            fact_metadata["account_id"] = effective_account_id
+        if source_message_id is not None:
+            fact_metadata["source_message_id"] = source_message_id
+        if source is not None:
+            fact_metadata["import_source"] = source
+        if extra_metadata:
+            fact_metadata.update(extra_metadata)
+
+        # ------------------------------------------------------------------
+        # 7. Insert fact directly (no embedding_engine.embed() call)
+        #    embedding = NULL (zero-vector bypass per spec)
+        #    search_vector computed via tsvector_sql
+        # ------------------------------------------------------------------
+        fact_id = uuid.uuid4()
+        searchable = preprocess_text(f"owner {predicate} {content}")
+        meta_json = json.dumps(fact_metadata)
+
+        try:
+            sql = f"""
+                INSERT INTO facts (
+                    id, subject, predicate, content, embedding, search_vector,
+                    importance, confidence, decay_rate, permanence, source_butler,
+                    source_episode_id, supersedes_id, validity, scope,
+                    created_at, last_confirmed_at, tags, metadata, entity_id,
+                    valid_at, tenant_id, idempotency_key, observed_at,
+                    retention_class, sensitivity
+                )
+                VALUES (
+                    $1, $2, $3, $4, NULL, {tsvector_sql("$5")},
+                    5.0, 1.0, 0.002, 'stable', NULL,
+                    NULL, NULL, 'active', 'finance',
+                    $6, $6, '[]'::jsonb, $7::jsonb, $8,
+                    $9, 'owner', $10, $6,
+                    'operational', 'normal'
+                )
+                ON CONFLICT DO NOTHING
+            """
+            await pool.execute(
+                sql,
+                fact_id,  # $1
+                "owner",  # $2 subject
+                predicate,  # $3
+                content,  # $4
+                searchable,  # $5 search_vector text
+                now,  # $6 created_at / last_confirmed_at / observed_at
+                meta_json,  # $7 metadata
+                owner_entity_id,  # $8 entity_id (may be None)
+                posted_at,  # $9 valid_at
+                idempotency_key,  # $10
+            )
+            imported += 1
+        except asyncpg.UniqueViolationError:
+            # Race condition: another process inserted same idempotency_key
+            skipped += 1
+            error_details.append({"index": idx, "reason": "duplicate"})
+        except asyncpg.PostgresError as exc:
+            logger.warning("bulk_record_transactions: row %d failed: %s", idx, exc)
+            errors += 1
+            error_details.append({"index": idx, "reason": f"db_error: {exc}"})
+
+    return {
+        "total": len(transactions),
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+        "error_details": error_details,
     }
