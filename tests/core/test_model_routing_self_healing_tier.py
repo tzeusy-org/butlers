@@ -173,10 +173,11 @@ async def test_resolve_self_healing_tier(postgres_container: Any) -> None:
         result = await resolve_model(pool, "email", Complexity.SELF_HEALING)
 
         assert result is not None
-        runtime_type, model_id, extra_args = result
+        runtime_type, model_id, extra_args, catalog_entry_id = result
         assert runtime_type == "claude"
         assert model_id == "claude-sonnet-4-6"
         assert extra_args == []
+        assert catalog_entry_id is not None
 
 
 @pytest.mark.integration
