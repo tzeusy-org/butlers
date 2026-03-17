@@ -116,7 +116,9 @@ async def _run_git(
 async def _list_worktree_branches(repo_root: Path) -> list[str]:
     """Return list of branches that have an active worktree (from git worktree list)."""
     rc, stdout, _ = await _run_git(
-        "worktree", "list", "--porcelain",
+        "worktree",
+        "list",
+        "--porcelain",
         cwd=repo_root,
     )
     if rc != 0:
@@ -125,16 +127,18 @@ async def _list_worktree_branches(repo_root: Path) -> list[str]:
     for line in stdout.splitlines():
         if line.startswith("branch "):
             # "branch refs/heads/self-healing/..."
-            ref = line[len("branch "):].strip()
+            ref = line[len("branch ") :].strip()
             if ref.startswith("refs/heads/"):
-                branches.append(ref[len("refs/heads/"):])
+                branches.append(ref[len("refs/heads/") :])
     return branches
 
 
 async def _list_healing_branches(repo_root: Path) -> list[str]:
     """Return list of all local branches matching self-healing/*/*."""
     rc, stdout, _ = await _run_git(
-        "branch", "--list", f"{_BRANCH_PREFIX}/*/*",
+        "branch",
+        "--list",
+        f"{_BRANCH_PREFIX}/*/*",
         cwd=repo_root,
     )
     if rc != 0:
@@ -216,7 +220,9 @@ async def create_healing_worktree(
 
     # Step 1: Create branch from main HEAD
     rc, _, stderr = await _run_git(
-        "branch", branch, "main",
+        "branch",
+        branch,
+        "main",
         cwd=repo_root,
     )
     if rc != 0:
@@ -227,13 +233,18 @@ async def create_healing_worktree(
 
     # Step 2: Create worktree at the computed path
     rc, _, stderr = await _run_git(
-        "worktree", "add", str(wt_path), branch,
+        "worktree",
+        "add",
+        str(wt_path),
+        branch,
         cwd=repo_root,
     )
     if rc != 0:
         # Clean up the orphaned branch we just created
         delete_rc, _, delete_stderr = await _run_git(
-            "branch", "-D", branch,
+            "branch",
+            "-D",
+            branch,
             cwd=repo_root,
         )
         if delete_rc != 0:
@@ -287,13 +298,18 @@ async def remove_healing_worktree(
     # Step 1: Remove worktree
     if wt_path.exists():
         rc, _, stderr = await _run_git(
-            "worktree", "remove", str(wt_path),
+            "worktree",
+            "remove",
+            str(wt_path),
             cwd=repo_root,
         )
         if rc != 0:
             # Try force-remove for dirty worktrees (uncommitted changes)
             rc2, _, stderr2 = await _run_git(
-                "worktree", "remove", "--force", str(wt_path),
+                "worktree",
+                "remove",
+                "--force",
+                str(wt_path),
                 cwd=repo_root,
             )
             if rc2 != 0:
@@ -312,7 +328,10 @@ async def remove_healing_worktree(
     # Step 2: Delete remote branch (before local, so we still have the ref)
     if delete_remote:
         rc, _, stderr = await _run_git(
-            "push", "origin", "--delete", branch_name,
+            "push",
+            "origin",
+            "--delete",
+            branch_name,
             cwd=repo_root,
         )
         if rc != 0:
@@ -325,7 +344,9 @@ async def remove_healing_worktree(
     # Step 3: Delete local branch
     if delete_branch:
         rc, _, stderr = await _run_git(
-            "branch", "-D", branch_name,
+            "branch",
+            "-D",
+            branch_name,
             cwd=repo_root,
         )
         if rc != 0:
@@ -414,7 +435,8 @@ async def reap_stale_worktrees(
                     branch,
                 )
                 await remove_healing_worktree(
-                    repo_root, branch,
+                    repo_root,
+                    branch,
                     delete_branch=True,
                     delete_remote=False,
                 )
@@ -453,7 +475,8 @@ async def reap_stale_worktrees(
                 closed_at,
             )
             await remove_healing_worktree(
-                repo_root, branch,
+                repo_root,
+                branch,
                 delete_branch=delete_branch,
                 delete_remote=False,
             )
@@ -478,7 +501,9 @@ async def reap_stale_worktrees(
             # No attempt or terminal attempt — delete the orphaned branch
             logger.info("Deleting orphaned self-healing branch with no worktree: %s", branch)
             rc, _, stderr = await _run_git(
-                "branch", "-D", branch,
+                "branch",
+                "-D",
+                branch,
                 cwd=repo_root,
             )
             if rc != 0:

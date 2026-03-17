@@ -76,7 +76,9 @@ class TestBranchNameFormat:
     def test_worktree_path_derived_from_branch(self, tmp_path: Path) -> None:
         branch = "self-healing/email/abc123def456-1710700000"
         wt = _worktree_path(tmp_path, branch)
-        expected = tmp_path / ".healing-worktrees" / "self-healing" / "email" / "abc123def456-1710700000"
+        expected = (
+            tmp_path / ".healing-worktrees" / "self-healing" / "email" / "abc123def456-1710700000"
+        )
         assert wt == expected
 
 
@@ -389,9 +391,7 @@ class TestReapStaleWorktrees:
         assert count == 0
         assert branch not in remove_calls
 
-    async def test_orphaned_worktree_is_reaped_with_warning(
-        self, tmp_path: Path, caplog
-    ) -> None:
+    async def test_orphaned_worktree_is_reaped_with_warning(self, tmp_path: Path, caplog) -> None:
         """Orphaned worktree (no DB row) is reaped with a WARNING log."""
         import logging
 
@@ -532,6 +532,4 @@ class TestGitignore:
         gitignore = root / ".gitignore"
         assert gitignore.exists(), f".gitignore not found at {gitignore}"
         content = gitignore.read_text()
-        assert ".healing-worktrees/" in content, (
-            ".healing-worktrees/ not found in .gitignore"
-        )
+        assert ".healing-worktrees/" in content, ".healing-worktrees/ not found in .gitignore"

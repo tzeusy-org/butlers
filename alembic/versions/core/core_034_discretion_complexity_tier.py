@@ -34,14 +34,14 @@ branch_labels = None
 depends_on = None
 
 _OLD_CATALOG_CHECK = "('trivial', 'medium', 'high', 'extra_high')"
-_NEW_CATALOG_CHECK = "('trivial', 'medium', 'high', 'extra_high', 'discretion')"
+_NEW_CATALOG_CHECK = "('trivial', 'medium', 'high', 'extra_high', 'discretion', 'self_healing')"
 
 _OLD_OVERRIDES_CHECK = (
     "complexity_tier IS NULL OR complexity_tier IN ('trivial', 'medium', 'high', 'extra_high')"
 )
 _NEW_OVERRIDES_CHECK = (
     "complexity_tier IS NULL OR complexity_tier IN "
-    "('trivial', 'medium', 'high', 'extra_high', 'discretion')"
+    "('trivial', 'medium', 'high', 'extra_high', 'discretion', 'self_healing')"
 )
 
 

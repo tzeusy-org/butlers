@@ -149,9 +149,7 @@ def _build_env() -> dict[str, str]:
     return dict(os.environ)
 
 
-def _build_ollama_provider_config(
-    model: str, ollama_url: str
-) -> dict[str, dict[str, Any]] | None:
+def _build_ollama_provider_config(model: str, ollama_url: str) -> dict[str, dict[str, Any]] | None:
     """Build OpenCode provider config for ollama/* models.
 
     OpenCode requires the Ollama provider to declare its npm adapter package,

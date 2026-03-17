@@ -337,4 +337,3 @@ async def test_connectivity(
         )
     result.latency_ms = int((time.monotonic() - t0) * 1000)
     return ApiResponse[ConnectivityResult](data=result)
-

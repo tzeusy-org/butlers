@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -1158,19 +1158,11 @@ async def test_subscriptions_503_when_pool_unavailable():
 
 
 # ---------------------------------------------------------------------------
-<<<<<<< Updated upstream
-# Tests: POST /api/finance/transactions/bulk
-# ---------------------------------------------------------------------------
-
-_BULK_TXN = {
-    "posted_at": "2025-06-15T00:00:00Z",
-=======
 # Tests: POST /api/finance/transactions/bulk — bulk transaction ingestion
 # ---------------------------------------------------------------------------
 
 _BULK_TXN = {
     "posted_at": "2026-01-15T10:00:00Z",
->>>>>>> Stashed changes
     "merchant": "Trader Joe's",
     "amount": "-55.00",
     "currency": "USD",
@@ -1178,44 +1170,15 @@ _BULK_TXN = {
 }
 
 
-<<<<<<< Updated upstream
-def _make_bulk_facts_mock(
-    *,
-    total: int = 1,
-    imported: int = 1,
-    skipped: int = 0,
-    errors: int = 0,
-    error_details: list | None = None,
-):
-    from unittest.mock import AsyncMock
-
-    mock_facts = MagicMock()
-    mock_facts.bulk_record_transactions = AsyncMock(
-        return_value={
-            "total": total,
-            "imported": imported,
-            "skipped": skipped,
-            "errors": errors,
-            "error_details": error_details or [],
-        }
-    )
-=======
 def _make_bulk_facts_mock(result: dict) -> MagicMock:
     """Return a mock finance_facts_tools module with bulk_record_transactions."""
     mock_facts = MagicMock()
     mock_facts.bulk_record_transactions = AsyncMock(return_value=result)
->>>>>>> Stashed changes
     return mock_facts
 
 
 @pytest.mark.asyncio
 async def test_bulk_ingest_transactions_success():
-<<<<<<< Updated upstream
-    """POST /api/finance/transactions/bulk imports 2 valid rows."""
-    from unittest.mock import patch
-
-    mock_facts = _make_bulk_facts_mock(total=2, imported=2)
-=======
     """POST /api/finance/transactions/bulk imports rows and returns counts."""
     mock_facts = _make_bulk_facts_mock(
         {
@@ -1226,7 +1189,6 @@ async def test_bulk_ingest_transactions_success():
             "error_details": [],
         }
     )
->>>>>>> Stashed changes
 
     app, _ = _make_app()
     with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
@@ -1235,47 +1197,29 @@ async def test_bulk_ingest_transactions_success():
         ) as client:
             response = await client.post(
                 "/api/finance/transactions/bulk",
-<<<<<<< Updated upstream
-                json={"transactions": [_BULK_TXN, {**_BULK_TXN, "merchant": "Whole Foods"}]},
-=======
                 json={
                     "transactions": [
                         _BULK_TXN,
-                        {**_BULK_TXN, "merchant": "Whole Foods", "posted_at": "2026-01-16T00:00:00Z"},
+                        {
+                            **_BULK_TXN,
+                            "merchant": "Whole Foods",
+                            "posted_at": "2026-01-16T00:00:00Z",
+                        },
                     ]
                 },
->>>>>>> Stashed changes
             )
 
     assert response.status_code == 200
     body = response.json()
-<<<<<<< Updated upstream
-    assert body["total"] == 2
-    assert body["imported"] == 2
-    assert body["skipped"] == 0
-    assert body["errors"] == 0
-=======
     assert body["imported"] == 2
     assert body["skipped"] == 0
     assert body["errors"] == 0
     assert body["total"] == 2
->>>>>>> Stashed changes
     assert body["error_details"] == []
 
 
 @pytest.mark.asyncio
 async def test_bulk_ingest_transactions_second_batch_all_skipped():
-<<<<<<< Updated upstream
-    """POST /api/finance/transactions/bulk — second identical batch → all skipped."""
-    from unittest.mock import patch
-
-    mock_facts = _make_bulk_facts_mock(
-        total=1,
-        imported=0,
-        skipped=1,
-        errors=0,
-        error_details=[{"index": 0, "reason": "duplicate"}],
-=======
     """POST /api/finance/transactions/bulk — submitting same batch twice, second run all skipped."""
     mock_facts = _make_bulk_facts_mock(
         {
@@ -1285,7 +1229,6 @@ async def test_bulk_ingest_transactions_second_batch_all_skipped():
             "errors": 0,
             "error_details": [{"index": 0, "reason": "duplicate"}],
         }
->>>>>>> Stashed changes
     )
 
     app, _ = _make_app()
@@ -1300,35 +1243,14 @@ async def test_bulk_ingest_transactions_second_batch_all_skipped():
 
     assert response.status_code == 200
     body = response.json()
-<<<<<<< Updated upstream
-    assert body["total"] == 1
-    assert body["imported"] == 0
-    assert body["skipped"] == 1
-    assert body["errors"] == 0
-=======
     assert body["imported"] == 0
     assert body["skipped"] == 1
     assert body["total"] == 1
->>>>>>> Stashed changes
     assert body["error_details"][0]["reason"] == "duplicate"
 
 
 @pytest.mark.asyncio
 async def test_bulk_ingest_transactions_per_row_errors():
-<<<<<<< Updated upstream
-    """POST /api/finance/transactions/bulk — mix of valid and invalid rows."""
-    from unittest.mock import patch
-
-    mock_facts = _make_bulk_facts_mock(
-        total=3,
-        imported=1,
-        skipped=0,
-        errors=2,
-        error_details=[
-            {"index": 0, "reason": "invalid_date"},
-            {"index": 2, "reason": "missing_merchant"},
-        ],
-=======
     """POST /api/finance/transactions/bulk — mixed valid/invalid rows returns partial success."""
     mock_facts = _make_bulk_facts_mock(
         {
@@ -1341,7 +1263,6 @@ async def test_bulk_ingest_transactions_per_row_errors():
                 {"index": 2, "reason": "missing_merchant"},
             ],
         }
->>>>>>> Stashed changes
     )
 
     app, _ = _make_app()
@@ -1353,54 +1274,23 @@ async def test_bulk_ingest_transactions_per_row_errors():
                 "/api/finance/transactions/bulk",
                 json={
                     "transactions": [
-<<<<<<< Updated upstream
-                        {**_BULK_TXN, "posted_at": "not-a-date"},
-                        _BULK_TXN,
-                        {**_BULK_TXN, "merchant": ""},
-=======
                         {**_BULK_TXN, "posted_at": "not-a-date"},  # row 0: bad date
                         _BULK_TXN,  # row 1: valid
                         {**_BULK_TXN, "merchant": ""},  # row 2: missing merchant
->>>>>>> Stashed changes
                     ]
                 },
             )
 
     assert response.status_code == 200
     body = response.json()
-<<<<<<< Updated upstream
-    assert body["total"] == 3
-    assert body["imported"] == 1
-    assert body["errors"] == 2
-    reasons = {d["reason"] for d in body["error_details"]}
-    assert "invalid_date" in reasons
-    assert "missing_merchant" in reasons
-=======
     assert body["imported"] == 1
     assert body["errors"] == 2
     assert body["error_details"][0]["reason"] == "invalid_date"
     assert body["error_details"][1]["reason"] == "missing_merchant"
->>>>>>> Stashed changes
 
 
 @pytest.mark.asyncio
 async def test_bulk_ingest_transactions_too_many_rows_422():
-<<<<<<< Updated upstream
-    """POST /api/finance/transactions/bulk with 501 items → 422."""
-    from unittest.mock import patch
-
-    mock_facts = _make_bulk_facts_mock()
-
-    app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                "/api/finance/transactions/bulk",
-                json={"transactions": [_BULK_TXN] * 501},
-            )
-=======
     """POST /api/finance/transactions/bulk with >500 rows returns 422."""
     app, _ = _make_app()
 
@@ -1413,26 +1303,17 @@ async def test_bulk_ingest_transactions_too_many_rows_422():
             "/api/finance/transactions/bulk",
             json={"transactions": transactions},
         )
->>>>>>> Stashed changes
 
     assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-<<<<<<< Updated upstream
-async def test_bulk_ingest_transactions_empty_batch_422():
-    """POST /api/finance/transactions/bulk with empty list → 422."""
-    from unittest.mock import patch
-
-    mock_facts = _make_bulk_facts_mock()
-=======
 async def test_bulk_ingest_transactions_account_id_inheritance():
     """POST /api/finance/transactions/bulk — top-level account_id inherited by rows."""
     acct_id = str(uuid.uuid4())
     mock_facts = _make_bulk_facts_mock(
         {"total": 1, "imported": 1, "skipped": 0, "errors": 0, "error_details": []}
     )
->>>>>>> Stashed changes
 
     app, _ = _make_app()
     with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
@@ -1441,21 +1322,6 @@ async def test_bulk_ingest_transactions_account_id_inheritance():
         ) as client:
             response = await client.post(
                 "/api/finance/transactions/bulk",
-<<<<<<< Updated upstream
-                json={"transactions": []},
-            )
-
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_bulk_ingest_transactions_account_id_inheritance():
-    """POST /api/finance/transactions/bulk passes top-level account_id to facts layer."""
-    from unittest.mock import patch
-
-    mock_facts = _make_bulk_facts_mock(total=1, imported=1)
-    acct = "acct-chase-9876"
-=======
                 json={"transactions": [_BULK_TXN], "account_id": acct_id},
             )
 
@@ -1473,7 +1339,6 @@ async def test_bulk_ingest_transactions_source_metadata():
     mock_facts = _make_bulk_facts_mock(
         {"total": 1, "imported": 1, "skipped": 0, "errors": 0, "error_details": []}
     )
->>>>>>> Stashed changes
 
     app, _ = _make_app()
     with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
@@ -1482,36 +1347,6 @@ async def test_bulk_ingest_transactions_source_metadata():
         ) as client:
             response = await client.post(
                 "/api/finance/transactions/bulk",
-<<<<<<< Updated upstream
-                json={"transactions": [_BULK_TXN], "account_id": acct},
-            )
-
-    assert response.status_code == 200
-    call_kwargs = mock_facts.bulk_record_transactions.call_args[1]
-    assert call_kwargs["account_id"] == acct
-
-
-@pytest.mark.asyncio
-async def test_bulk_ingest_transactions_source_metadata():
-    """POST /api/finance/transactions/bulk passes source tag to facts layer."""
-    from unittest.mock import patch
-
-    mock_facts = _make_bulk_facts_mock(total=1, imported=1)
-
-    app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                "/api/finance/transactions/bulk",
-                json={"transactions": [_BULK_TXN], "source": "csv-import"},
-            )
-
-    assert response.status_code == 200
-    call_kwargs = mock_facts.bulk_record_transactions.call_args[1]
-    assert call_kwargs["source"] == "csv-import"
-=======
                 json={"transactions": [_BULK_TXN], "source": "csv_import"},
             )
 
@@ -1536,41 +1371,20 @@ async def test_bulk_ingest_transactions_empty_batch_422():
         )
 
     assert response.status_code == 422
->>>>>>> Stashed changes
 
 
 @pytest.mark.asyncio
 async def test_bulk_ingest_transactions_503_when_pool_unavailable():
-<<<<<<< Updated upstream
-    """POST /api/finance/transactions/bulk returns 503 when DB pool is not available."""
-    from unittest.mock import patch
-
-=======
     """POST /api/finance/transactions/bulk returns 503 when DB pool not available."""
->>>>>>> Stashed changes
     from fastapi import FastAPI
 
     mock_db = MagicMock()
     mock_db.pool.side_effect = KeyError("finance")
-<<<<<<< Updated upstream
-    mock_facts = _make_bulk_facts_mock()
-=======
->>>>>>> Stashed changes
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
     app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
 
-<<<<<<< Updated upstream
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                "/api/finance/transactions/bulk",
-                json={"transactions": [_BULK_TXN]},
-            )
-=======
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -1578,26 +1392,16 @@ async def test_bulk_ingest_transactions_503_when_pool_unavailable():
             "/api/finance/transactions/bulk",
             json={"transactions": [_BULK_TXN]},
         )
->>>>>>> Stashed changes
 
     assert response.status_code == 503
 
 
 @pytest.mark.asyncio
 async def test_bulk_ingest_transactions_value_error_propagates_422():
-<<<<<<< Updated upstream
-    """POST /api/finance/transactions/bulk propagates ValueError from facts layer as 422."""
-    from unittest.mock import AsyncMock, patch
-
-    mock_facts = MagicMock()
-    mock_facts.bulk_record_transactions = AsyncMock(
-        side_effect=ValueError("Batch too large: 501 exceeds maximum of 500")
-=======
     """POST /api/finance/transactions/bulk propagates ValueError from tool as 422."""
     mock_facts = MagicMock()
     mock_facts.bulk_record_transactions = AsyncMock(
         side_effect=ValueError("Batch too large: 999 exceeds maximum of 500")
->>>>>>> Stashed changes
     )
 
     app, _ = _make_app()
