@@ -29,6 +29,7 @@ from butlers.core.runtimes.codex import _extract_tool_call as codex_extract_tool
 from butlers.core.runtimes.codex import _parse_codex_output
 from butlers.core.runtimes.gemini import _extract_tool_call as gemini_extract_tool_call
 from butlers.core.runtimes.gemini import _parse_gemini_output
+from butlers.core.runtimes.opencode import _extract_usage as opencode_extract_usage
 from butlers.core.runtimes.opencode import _parse_opencode_output
 
 pytestmark = pytest.mark.unit
@@ -554,10 +555,50 @@ def test_opencode_usage_contract_none_when_no_usage_event():
 
 def test_opencode_usage_contract_non_int_tokens_returns_none():
     """OpenCode _extract_usage returns None when both token fields are non-int."""
-    from butlers.core.runtimes.opencode import _extract_usage
-
-    result = _extract_usage({"input_tokens": "nan", "output_tokens": "nan"})
+    result = opencode_extract_usage({"input_tokens": "nan", "output_tokens": "nan"})
     assert result is None, f"Expected None for non-int tokens, got: {result}"
+
+
+def test_opencode_usage_contract_partial_tokens_defaults_to_zero():
+    """OpenCode _extract_usage normalises partial token data: missing field defaults to 0."""
+    result = opencode_extract_usage({"input_tokens": 42})  # no output_tokens
+    assert _usage_satisfies_contract(result), f"Usage violates contract: {result}"
+    assert result is not None
+    assert isinstance(result["input_tokens"], int)
+    assert result["input_tokens"] == 42
+    assert isinstance(result["output_tokens"], int)
+    assert result["output_tokens"] == 0
+
+
+async def test_claude_usage_contract_int_tokens():
+    """ClaudeCodeAdapter.invoke() returns int-typed usage fields from the SDK ResultMessage."""
+    from unittest.mock import MagicMock
+
+    from claude_agent_sdk import ResultMessage
+
+    mock_usage = MagicMock()
+    mock_usage.__iter__ = MagicMock(
+        return_value=iter([("input_tokens", 150), ("output_tokens", 60)])
+    )
+    mock_result = MagicMock(spec=ResultMessage)
+    mock_result.result = "Done"
+    mock_result.usage = mock_usage
+
+    async def mock_sdk_query(**kwargs):
+        yield mock_result
+
+    adapter = ClaudeCodeAdapter(sdk_query=mock_sdk_query)
+    result_text, tool_calls, usage = await adapter.invoke(
+        prompt="hello",
+        system_prompt="",
+        mcp_servers={},
+        env={},
+    )
+
+    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
+    assert usage is not None
+    assert isinstance(usage["input_tokens"], int)
+    assert isinstance(usage["output_tokens"], int)
 
 
 def test_gemini_usage_is_none():
