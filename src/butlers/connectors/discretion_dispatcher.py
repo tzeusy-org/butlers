@@ -33,7 +33,12 @@ import logging
 
 import asyncpg
 
-from butlers.core.model_routing import Complexity, resolve_model
+from butlers.core.model_routing import (
+    Complexity,
+    check_token_quota,
+    record_token_usage,
+    resolve_model,
+)
 from butlers.core.runtimes.base import RuntimeAdapter, get_adapter
 
 logger = logging.getLogger(__name__)
@@ -200,15 +205,31 @@ class DiscretionDispatcher:
                 "Add an enabled entry with complexity_tier='discretion'."
             )
 
-        runtime_type, model_id, extra_args, _catalog_entry_id = catalog_result
+        runtime_type, model_id, extra_args, catalog_entry_id = catalog_result
+
+        # Pre-call quota check: block if catalog entry token budget is exhausted.
+        quota = await check_token_quota(self._pool, catalog_entry_id)
+        if not quota.allowed:
+            windows_exceeded = []
+            if quota.limit_24h is not None and quota.usage_24h >= quota.limit_24h:
+                windows_exceeded.append(f"24h (used={quota.usage_24h}, limit={quota.limit_24h})")
+            if quota.limit_30d is not None and quota.usage_30d >= quota.limit_30d:
+                windows_exceeded.append(f"30d (used={quota.usage_30d}, limit={quota.limit_30d})")
+            raise RuntimeError(
+                f"Token quota exhausted for catalog entry '{model_id}': "
+                + "; ".join(windows_exceeded)
+            )
 
         # Resolve provider config for models using external providers
         # (e.g. ollama/ prefix needs the base URL from shared.provider_config)
         provider_config = await self._resolve_provider_config(model_id)
         adapter = self._get_or_create_adapter(runtime_type, provider_config)
 
+        _usage_dict: dict | None = None
+
         async def _invoke() -> str:
-            result_text, _tool_calls, _usage = await adapter.invoke(
+            nonlocal _usage_dict
+            result_text, _tool_calls, _usage_dict = await adapter.invoke(
                 prompt=prompt,
                 system_prompt=system_prompt,
                 mcp_servers={},
@@ -220,4 +241,21 @@ class DiscretionDispatcher:
             return result_text or ""
 
         async with self._semaphore:
-            return await asyncio.wait_for(_invoke(), timeout=self._timeout_s)
+            try:
+                result = await asyncio.wait_for(_invoke(), timeout=self._timeout_s)
+            finally:
+                # Record token usage best-effort (success and failure).
+                # Tokens are consumed by the provider on invocation regardless of outcome.
+                if _usage_dict:
+                    input_tokens = _usage_dict.get("input_tokens")
+                    output_tokens = _usage_dict.get("output_tokens")
+                    if input_tokens is not None:
+                        await record_token_usage(
+                            self._pool,
+                            catalog_entry_id=catalog_entry_id,
+                            butler_name=self._butler_name,
+                            session_id=None,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens or 0,
+                        )
+            return result
