@@ -319,11 +319,12 @@ class TestRetryHealingAttempt:
             "status": "investigating",
         }
 
-        # First fetchrow call returns original, second returns the new row
+        # fetchrow calls: get_attempt → original, get_active_attempt → None, INSERT → new row
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(
             side_effect=[
                 _mock_record(original_row),
+                None,  # get_active_attempt: no existing active row
                 _mock_record(new_attempt_row),
             ]
         )
@@ -411,6 +412,7 @@ class TestRetryHealingAttempt:
         mock_pool.fetchrow = AsyncMock(
             side_effect=[
                 _mock_record(original_row),
+                None,  # get_active_attempt: no existing active row
                 _mock_record(new_row),
             ]
         )
@@ -456,6 +458,7 @@ class TestRetryHealingAttempt:
         mock_pool.fetchrow = AsyncMock(
             side_effect=[
                 _mock_record(original_row),
+                None,  # get_active_attempt: no existing active row
                 _mock_record(new_row),
             ]
         )
@@ -515,6 +518,7 @@ class TestRetryHealingAttempt:
         mock_pool.fetchrow = AsyncMock(
             side_effect=[
                 _mock_record(original_row),
+                None,  # get_active_attempt: no existing active row
                 _mock_record(new_row),
             ]
         )
@@ -539,7 +543,8 @@ class TestRetryHealingAttempt:
         assert data["status"] == "dispatch_pending"
 
         # Verify the INSERT used 'dispatch_pending' as the status
-        insert_call = mock_pool.fetchrow.call_args_list[1]
+        # (fetchrow call order: 0=original, 1=active_check, 2=INSERT)
+        insert_call = mock_pool.fetchrow.call_args_list[2]
         insert_args = insert_call[0][1:]
         assert "dispatch_pending" in insert_args
 
@@ -564,6 +569,7 @@ class TestRetryHealingAttempt:
         mock_pool.fetchrow = AsyncMock(
             side_effect=[
                 _mock_record(original_row),
+                None,  # get_active_attempt: no existing active row
                 _mock_record(new_row),
             ]
         )
@@ -588,7 +594,8 @@ class TestRetryHealingAttempt:
         assert data["status"] == "investigating"
 
         # Verify the INSERT used 'investigating' (not 'dispatch_pending')
-        insert_call = mock_pool.fetchrow.call_args_list[1]
+        # (fetchrow call order: 0=original, 1=active_check, 2=INSERT)
+        insert_call = mock_pool.fetchrow.call_args_list[2]
         insert_args = insert_call[0][1:]
         assert "investigating" in insert_args
         assert "dispatch_pending" not in insert_args
@@ -609,6 +616,52 @@ class TestRetryHealingAttempt:
 
         assert response.status_code == 409
         assert "dispatch_pending" in response.json()["detail"]
+
+    async def test_retry_rejects_when_active_row_exists_for_fingerprint(self) -> None:
+        """When attempt A is terminal but a separate active row B exists for the same
+        fingerprint, retry should return 409 (not 500 from UniqueViolationError)."""
+        original_id = uuid.uuid4()
+        active_id = uuid.uuid4()
+        fingerprint = "g" * 64
+
+        # Original attempt is terminal (failed)
+        original_row = _make_attempt_row(
+            attempt_id=original_id,
+            fingerprint=fingerprint,
+            status="failed",
+        )
+        # A separate active row already exists for the same fingerprint
+        active_row = _make_attempt_row(
+            attempt_id=active_id,
+            fingerprint=fingerprint,
+            status="dispatch_pending",
+        )
+
+        mock_pool = AsyncMock()
+        # get_attempt → original row; get_active_attempt → active row
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[
+                _mock_record(original_row),
+                _mock_record(active_row),
+            ]
+        )
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/healing/attempts/{original_id}/retry")
+
+        # Should return 409 (not 500), referencing the existing active attempt
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert str(active_id) in detail
+        assert "dispatch_pending" in detail
 
     async def test_dispatch_receives_correct_metadata_from_original_attempt(self) -> None:
         """Dispatch callable receives all metadata fields from the original attempt row."""
@@ -636,6 +689,7 @@ class TestRetryHealingAttempt:
         mock_pool.fetchrow = AsyncMock(
             side_effect=[
                 _mock_record(original_row),
+                None,  # get_active_attempt: no existing active row
                 _mock_record(new_row),
             ]
         )

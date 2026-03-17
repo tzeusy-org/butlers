@@ -53,6 +53,7 @@ from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.tracking import (
     TERMINAL_STATUSES,
     VALID_STATUSES,
+    get_active_attempt,
     get_attempt,
     get_recent_terminal_statuses,
     list_attempts,
@@ -321,10 +322,13 @@ async def retry_healing_attempt(
     """Create a new healing attempt for the same fingerprint as an existing attempt
     and dispatch the healing agent.
 
-    Rejects with HTTP 409 when the attempt has a non-terminal status (investigating
-    or pr_open), since the original investigation is still active.
+    Rejects with HTTP 409 when the attempt has a non-terminal status (dispatch_pending,
+    investigating, or pr_open), since the original investigation is still active.  Also
+    rejects with HTTP 409 if a separate active row already exists for the same fingerprint
+    (e.g. a prior retry left a dispatch_pending row), to avoid a UniqueViolationError.
 
-    The new attempt is inserted directly with status ``investigating`` and an empty
+    The new attempt is inserted directly with status ``investigating`` (when an in-process
+    dispatch hook is available) or ``dispatch_pending`` (when deferred) and an empty
     session_ids array (the retry is dashboard-triggered, not linked to a failing session).
 
     After inserting the row, dispatch is attempted via the pluggable ``_get_dispatch_fn``
@@ -358,6 +362,20 @@ async def retry_healing_attempt(
     exception_type: str = original["exception_type"]
     call_site: str = original["call_site"]
     sanitized_msg: str | None = original.get("sanitized_msg")
+
+    # Guard: reject if there is already an active row for this fingerprint.
+    # This prevents a UniqueViolationError (→ 500) when a prior retry left a
+    # dispatch_pending or investigating row for the same fingerprint.
+    existing_active = await get_active_attempt(pool, fingerprint)
+    if existing_active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Active attempt {existing_active['id']} already exists for "
+                f"this fingerprint (status={existing_active['status']}). "
+                "Wait for the active investigation to complete or timeout."
+            ),
+        )
 
     # Choose the initial status based on whether an in-process dispatch callable
     # is available.  When dispatch is deferred (no hook), use 'dispatch_pending'

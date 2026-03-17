@@ -172,7 +172,7 @@ async def create_or_join_attempt(
         active attempt was joined.
     """
     # The INSERT targets the partial unique index:
-    #   UNIQUE (fingerprint) WHERE status IN ('investigating', 'pr_open')
+    #   UNIQUE (fingerprint) WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
     #
     # On conflict we:
     # 1. Append the session_id (only if not already present — idempotent).
@@ -189,7 +189,8 @@ async def create_or_join_attempt(
                 exception_type, call_site, sanitized_msg, session_ids
             )
             VALUES ($1, $2, 'investigating', $3, $4, $5, $6, ARRAY[$7::uuid])
-            ON CONFLICT (fingerprint) WHERE status IN ('investigating', 'pr_open')
+            ON CONFLICT (fingerprint)
+            WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
             DO UPDATE
                 SET session_ids = CASE
                     WHEN $7::uuid = ANY(shared.healing_attempts.session_ids)
