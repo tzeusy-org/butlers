@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -330,9 +331,7 @@ class SelfHealingModule(Module):
         # Use a zero UUID as a sentinel — the dispatch engine uses it only for
         # fingerprint persistence and session_ids seeding. The healing agent will
         # have its own real session_id.
-        import uuid as _uuid
-
-        sentinel_session_id = _uuid.UUID(int=0)
+        sentinel_session_id = uuid.UUID(int=0)
 
         if self._pool is None or self._spawner is None:
             # No DB pool or spawner available — return gracefully
@@ -462,17 +461,15 @@ class SelfHealingModule(Module):
 
 def _serialize_attempt(row: dict) -> dict:
     """Convert a HealingAttemptRow to a JSON-serialisable dict."""
-    import uuid as _uuid
-
     result: dict = {}
     for key, value in row.items():
-        if isinstance(value, _uuid.UUID):
+        if isinstance(value, uuid.UUID):
             result[key] = str(value)
         elif hasattr(value, "isoformat"):
             result[key] = value.isoformat()
         elif isinstance(value, list):
             # session_ids array — may contain UUID objects
-            result[key] = [str(v) if isinstance(v, _uuid.UUID) else v for v in value]
+            result[key] = [str(v) if isinstance(v, uuid.UUID) else v for v in value]
         else:
             result[key] = value
     return result

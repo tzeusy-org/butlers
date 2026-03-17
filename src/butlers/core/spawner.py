@@ -1420,8 +1420,12 @@ class Spawner:
                             _gh_token = await self._credential_store.resolve(
                                 healing_config.gh_token_env_var
                             )
-                        except Exception:
-                            pass
+                        except Exception as _cred_exc:
+                            logger.debug(
+                                "Failed to resolve %s from credential store: %s",
+                                healing_config.gh_token_env_var,
+                                _cred_exc,
+                            )
                     if _gh_token is None:
                         _gh_token = os.environ.get(healing_config.gh_token_env_var)
 
@@ -1442,7 +1446,7 @@ class Spawner:
                     )
 
                     def _log_fallback_error(t: asyncio.Task) -> None:
-                        if t.exception() is not None:
+                        if not t.cancelled() and t.exception() is not None:
                             logger.warning(
                                 "Self-healing fallback task failed (session=%s): %s",
                                 session_id,
