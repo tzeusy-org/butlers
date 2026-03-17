@@ -62,6 +62,15 @@ from butlers.core.sessions import session_set_healing_fingerprint
 
 logger = logging.getLogger(__name__)
 
+try:
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace
+
+    _tracer = trace.get_tracer("butlers.healing")
+    _HAS_OTEL = True
+except ImportError:
+    _HAS_OTEL = False
+
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
@@ -278,14 +287,17 @@ def _build_pr_body(
     attempt_id: uuid.UUID,
     repo_root: Path,
     agent_context: str | None,
-    first_seen: str = "unknown",
-    occurrences: int | str = "unknown",
+    first_seen: str | None = None,
+    occurrences: int | None = None,
 ) -> str:
     """Build anonymized PR body from the structured template."""
     context_section = ""
     if agent_context and agent_context.strip():
         anon_context = anonymize(agent_context.strip(), repo_root)
         context_section = f"\n### Butler Diagnostic Context\n{anon_context}\n"
+
+    first_seen_line = f"\n**First seen:** {first_seen}" if first_seen is not None else ""
+    occurrences_line = f"\n**Occurrences:** {occurrences}" if occurrences is not None else ""
 
     raw_body = f"""\
 ## Self-Healing Fix: {fp.fingerprint[:12]}
@@ -294,9 +306,7 @@ def _build_pr_body(
 **Error:** {fp.exception_type}
 **Call site:** {fp.call_site}
 **Fingerprint:** `{fp.fingerprint}`
-**Attempt ID:** `{attempt_id}`
-**First seen:** {first_seen}
-**Occurrences:** {occurrences}
+**Attempt ID:** `{attempt_id}`{first_seen_line}{occurrences_line}
 
 ### Root Cause
 *(Filled in by the healing agent's commit message and PR description.)*
@@ -346,7 +356,10 @@ async def _create_pr(
 
     # Step 1: git push
     push_proc = await asyncio.create_subprocess_exec(
-        "git", "push", "origin", branch_name,
+        "git",
+        "push",
+        "origin",
+        branch_name,
         cwd=str(repo_root),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -362,7 +375,11 @@ async def _create_pr(
     pr_title = anonymize(pr_title, repo_root)
 
     pr_body = _build_pr_body(
-        fp, butler_name, attempt_id, repo_root, agent_context,
+        fp,
+        butler_name,
+        attempt_id,
+        repo_root,
+        agent_context,
         first_seen=first_seen,
         occurrences=occurrences,
     )
@@ -381,7 +398,11 @@ async def _create_pr(
         )
         # Delete the remote branch that was just pushed
         await asyncio.create_subprocess_exec(
-            "git", "push", "origin", "--delete", branch_name,
+            "git",
+            "push",
+            "origin",
+            "--delete",
+            branch_name,
             cwd=str(repo_root),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -395,11 +416,17 @@ async def _create_pr(
         label_args.extend(["--label", label])
 
     gh_cmd = [
-        "gh", "pr", "create",
-        "--base", "main",
-        "--head", branch_name,
-        "--title", pr_title,
-        "--body", pr_body,
+        "gh",
+        "pr",
+        "create",
+        "--base",
+        "main",
+        "--head",
+        branch_name,
+        "--title",
+        pr_title,
+        "--body",
+        pr_body,
         *label_args,
     ]
 
@@ -412,8 +439,10 @@ async def _create_pr(
     )
     gh_stdout, gh_stderr = await gh_proc.communicate()
     if gh_proc.returncode != 0:
-        return None, None, (
-            f"gh pr create failed: {gh_stderr.decode('utf-8', errors='replace').strip()}"
+        return (
+            None,
+            None,
+            (f"gh pr create failed: {gh_stderr.decode('utf-8', errors='replace').strip()}"),
         )
 
     # Parse PR URL and number from stdout
@@ -463,7 +492,8 @@ async def _timeout_watchdog(
                 error_detail=f"Healing session cancelled after {timeout_minutes} minute timeout",
             )
             await remove_healing_worktree(
-                repo_root, branch_name,
+                repo_root,
+                branch_name,
                 delete_branch=True,
                 delete_remote=False,
             )
@@ -517,22 +547,25 @@ async def _run_healing_session(
         if result.session_id is not None:
             healing_session_id = result.session_id
             await update_attempt_status(
-                pool, attempt_id, "investigating",
+                pool,
+                attempt_id,
+                "investigating",
                 healing_session_id=healing_session_id,
             )
 
         if not result.success:
             error_detail = result.error or "Healing agent returned non-success result"
-            logger.warning(
-                "Healing agent failed (attempt=%s): %s", attempt_id, error_detail
-            )
+            logger.warning("Healing agent failed (attempt=%s): %s", attempt_id, error_detail)
             await update_attempt_status(
-                pool, attempt_id, "failed",
+                pool,
+                attempt_id,
+                "failed",
                 error_detail=error_detail,
                 healing_session_id=healing_session_id,
             )
             await remove_healing_worktree(
-                repo_root, branch_name,
+                repo_root,
+                branch_name,
                 delete_branch=True,
                 delete_remote=False,
             )
@@ -571,13 +604,16 @@ async def _run_healing_session(
 
         if pr_error == "anonymization_failed":
             await update_attempt_status(
-                pool, attempt_id, "anonymization_failed",
+                pool,
+                attempt_id,
+                "anonymization_failed",
                 error_detail="PR blocked: residual PII or credentials detected after anonymization",
                 healing_session_id=healing_session_id,
             )
             # Remote branch already deleted by _create_pr; only remove local + worktree
             await remove_healing_worktree(
-                repo_root, branch_name,
+                repo_root,
+                branch_name,
                 delete_branch=True,
                 delete_remote=False,
             )
@@ -585,12 +621,15 @@ async def _run_healing_session(
 
         if pr_error is not None:
             await update_attempt_status(
-                pool, attempt_id, "failed",
+                pool,
+                attempt_id,
+                "failed",
                 error_detail=pr_error,
                 healing_session_id=healing_session_id,
             )
             await remove_healing_worktree(
-                repo_root, branch_name,
+                repo_root,
+                branch_name,
                 delete_branch=True,
                 delete_remote=False,
             )
@@ -598,17 +637,18 @@ async def _run_healing_session(
 
         # PR created successfully
         await update_attempt_status(
-            pool, attempt_id, "pr_open",
+            pool,
+            attempt_id,
+            "pr_open",
             pr_url=pr_url,
             pr_number=pr_number,
             healing_session_id=healing_session_id,
         )
-        logger.info(
-            "Healing PR created: attempt=%s pr_url=%s", attempt_id, pr_url
-        )
+        logger.info("Healing PR created: attempt=%s pr_url=%s", attempt_id, pr_url)
         # Worktree removed after PR creation; branch kept (backs the open PR)
         await remove_healing_worktree(
-            repo_root, branch_name,
+            repo_root,
+            branch_name,
             delete_branch=False,
             delete_remote=False,
         )
@@ -618,16 +658,17 @@ async def _run_healing_session(
         raise
 
     except Exception as exc:
-        logger.exception(
-            "Unexpected error in healing session (attempt=%s): %s", attempt_id, exc
-        )
+        logger.exception("Unexpected error in healing session (attempt=%s): %s", attempt_id, exc)
         await update_attempt_status(
-            pool, attempt_id, "failed",
+            pool,
+            attempt_id,
+            "failed",
             error_detail=f"{type(exc).__name__}: {exc}",
             healing_session_id=healing_session_id,
         )
         await remove_healing_worktree(
-            repo_root, branch_name,
+            repo_root,
+            branch_name,
             delete_branch=True,
             delete_remote=False,
         )
@@ -693,43 +734,31 @@ async def dispatch_healing(
     DispatchResult
         Always returned — never raises.
     """
-    # Start a root OTel span for this healing dispatch.
-    # A fresh context is used so the span is NOT a child of the failed session's trace,
-    # matching spec §12 (Trace Isolation).  Wrapped in try/except ImportError for
-    # environments that do not have opentelemetry installed.
-    _otel_span = None
-    _otel_token = None
-    try:
-        import opentelemetry.trace as _otel_trace
-        _otel_tracer = _otel_trace.get_tracer("butlers.healing")
-        _fresh_ctx = _otel_trace.context_api.Context()
-        _otel_span = _otel_tracer.start_span("healing.dispatch", context=_fresh_ctx)
-        _otel_span.set_attribute("healing.butler_name", butler_name)
-        _otel_span.set_attribute("healing.trigger_source", trigger_source)
-        _otel_span.set_attribute("healing.failed_session_id", str(session_id))
-        _otel_token = _otel_trace.context_api.attach(
-            _otel_trace.set_span_in_context(_otel_span)
+    _span = None
+    _span_token = None
+    if _HAS_OTEL:
+        _span = _tracer.start_span(
+            "butlers.healing.dispatch",
+            attributes={
+                "butler.name": butler_name,
+                "healing.trigger_source": trigger_source,
+            },
         )
-    except ImportError:
-        pass
+        _span_token = otel_context.attach(trace.set_span_in_context(_span))
 
     try:
         # -------------------------------------------------------------------
         # Gate 1: No-recursion guard (FIRST — before any other work)
         # -------------------------------------------------------------------
         if trigger_source == "healing":
-            logger.debug(
-                "Healing dispatch skipped: trigger_source=healing (no recursive healing)"
-            )
+            logger.debug("Healing dispatch skipped: trigger_source=healing (no recursive healing)")
             return DispatchResult(accepted=False, fingerprint=None, reason="no_recursion")
 
         # -------------------------------------------------------------------
         # Gate 2: Opt-in check (before fingerprint computation)
         # -------------------------------------------------------------------
         if not config.enabled:
-            logger.debug(
-                "Healing dispatch skipped: healing not enabled for butler=%s", butler_name
-            )
+            logger.debug("Healing dispatch skipped: healing not enabled for butler=%s", butler_name)
             return DispatchResult(accepted=False, fingerprint=None, reason="disabled")
 
         # -------------------------------------------------------------------
@@ -811,7 +840,9 @@ async def dispatch_healing(
                 fp.fingerprint[:12],
             )
             await update_attempt_status(
-                pool, attempt_id, "failed",
+                pool,
+                attempt_id,
+                "failed",
                 error_detail="Dispatch rejected by cooldown gate",
             )
             return DispatchResult(
@@ -828,14 +859,15 @@ async def dispatch_healing(
         # threshold comparison uses >.
         if active_count > config.max_concurrent:
             logger.debug(
-                "Healing dispatch skipped: concurrency cap reached "
-                "(active=%d, max=%d, butler=%s)",
+                "Healing dispatch skipped: concurrency cap reached (active=%d, max=%d, butler=%s)",
                 active_count,
                 config.max_concurrent,
                 butler_name,
             )
             await update_attempt_status(
-                pool, attempt_id, "failed",
+                pool,
+                attempt_id,
+                "failed",
                 error_detail="Dispatch rejected by concurrency cap",
             )
             return DispatchResult(
@@ -851,13 +883,14 @@ async def dispatch_healing(
             tripped = await _is_circuit_breaker_tripped(pool, config.circuit_breaker_threshold)
             if tripped:
                 logger.warning(
-                    "Healing dispatch skipped: circuit breaker tripped "
-                    "(threshold=%d, butler=%s)",
+                    "Healing dispatch skipped: circuit breaker tripped (threshold=%d, butler=%s)",
                     config.circuit_breaker_threshold,
                     butler_name,
                 )
                 await update_attempt_status(
-                    pool, attempt_id, "failed",
+                    pool,
+                    attempt_id,
+                    "failed",
                     error_detail="Dispatch rejected by circuit breaker",
                 )
                 return DispatchResult(
@@ -881,12 +914,13 @@ async def dispatch_healing(
 
         if model_result is None:
             logger.warning(
-                "Healing dispatch skipped: no self_healing tier model available "
-                "for butler=%s",
+                "Healing dispatch skipped: no self_healing tier model available for butler=%s",
                 butler_name,
             )
             await update_attempt_status(
-                pool, attempt_id, "failed",
+                pool,
+                attempt_id,
+                "failed",
                 error_detail="No self_healing tier model available",
             )
             return DispatchResult(
@@ -909,7 +943,9 @@ async def dispatch_healing(
                 wt_exc,
             )
             await update_attempt_status(
-                pool, attempt_id, "failed",
+                pool,
+                attempt_id,
+                "failed",
                 error_detail=f"Worktree creation failed: {wt_exc.git_output or str(wt_exc)}",
             )
             return DispatchResult(
@@ -920,7 +956,9 @@ async def dispatch_healing(
 
         # Store the worktree path and branch on the attempt row
         await update_attempt_status(
-            pool, attempt_id, "investigating",
+            pool,
+            attempt_id,
+            "investigating",
             branch_name=branch_name,
             worktree_path=str(worktree_path),
         )
@@ -990,14 +1028,7 @@ async def dispatch_healing(
             reason="internal_error",
         )
     finally:
-        if _otel_span is not None:
-            try:
-                _otel_span.end()
-            except Exception:
-                pass
-        if _otel_token is not None:
-            try:
-                import opentelemetry.trace as _otel_trace
-                _otel_trace.context_api.detach(_otel_token)
-            except Exception:
-                pass
+        if _HAS_OTEL and _span is not None:
+            _span.end()
+            if _span_token is not None:
+                otel_context.detach(_span_token)

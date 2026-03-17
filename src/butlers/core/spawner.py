@@ -729,14 +729,14 @@ class Spawner:
             Defaults to ``Complexity.MEDIUM``.  The catalog is queried with this
             tier; when no catalog entry matches the TOML-configured model is used.
         cwd:
-            Optional working directory for the runtime process.  When provided,
-            overrides the default ``config_dir``-based CWD.  Used by the
-            self-healing dispatcher to run the agent inside the healing worktree.
+            Optional working directory for the runtime invocation. When ``None``,
+            defaults to the butler's config directory. Used by the self-healing
+            dispatcher to set the CWD to an isolated worktree path.
         bypass_butler_semaphore:
-            When ``True``, skip the per-butler ``_session_semaphore`` but still
-            acquire the global semaphore.  Used by the self-healing dispatcher so
-            that a healing session spawned from within a failing session does not
-            deadlock against the per-butler slot that the failing session holds.
+            When ``True``, skip the per-butler ``_session_semaphore`` and run the
+            session directly after acquiring the global semaphore. Intended for
+            the self-healing dispatcher, which manages its own concurrency cap and
+            must not block behind ordinary butler sessions.
 
         Returns
         -------
@@ -819,16 +819,11 @@ class Spawner:
             finally:
                 self._metrics.spawner_global_queue_depth_dec()
 
-            # Track triggers waiting for the per-butler semaphore slot only
-            # (after the global cap is acquired, so the metric reflects
-            # per-butler queue depth, not global backpressure wait time).
-            self._metrics.spawner_queued_triggers_inc()
             if bypass_butler_semaphore:
-                # Skip the per-butler semaphore (e.g. healing sessions spawned
-                # from within a failing session that already holds the slot).
-                # Global semaphore was already acquired above.
+                # Healing path: skip per-butler semaphore to avoid deadlock with
+                # in-flight ordinary sessions. The healing dispatcher enforces its
+                # own concurrency cap (Gate 8) before reaching here.
                 _semaphore_acquired = True
-                self._metrics.spawner_queued_triggers_dec()
                 self._metrics.spawner_active_sessions_inc()
                 try:
                     return await self._run(
@@ -844,6 +839,10 @@ class Spawner:
                 finally:
                     self._metrics.spawner_active_sessions_dec()
             else:
+                # Track triggers waiting for the per-butler semaphore slot only
+                # (after the global cap is acquired, so the metric reflects
+                # per-butler queue depth, not global backpressure wait time).
+                self._metrics.spawner_queued_triggers_inc()
                 async with self._session_semaphore:
                     # Slot acquired — no longer queued, now active
                     _semaphore_acquired = True
@@ -870,7 +869,12 @@ class Spawner:
             # (e.g. cancelled after global acquire but before/during per-butler acquire),
             # queued_triggers_dec was never called inside the async-with block;
             # decrement here to keep the gauge accurate.
-            if _global_semaphore_acquired and not _semaphore_acquired:
+            # Skip this in bypass mode: spawner_queued_triggers was never incremented.
+            if (
+                _global_semaphore_acquired
+                and not _semaphore_acquired
+                and not bypass_butler_semaphore
+            ):
                 self._metrics.spawner_queued_triggers_dec()
             if task is not None:
                 self._in_flight.discard(task)
