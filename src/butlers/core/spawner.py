@@ -646,6 +646,8 @@ class Spawner:
         }
         if provider_config:
             kwargs["provider_config"] = provider_config
+        if self._pool is not None:
+            kwargs["db_pool"] = self._pool
         try:
             adapter = adapter_cls(**kwargs)  # type: ignore[call-arg]
         except TypeError:
