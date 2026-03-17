@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, Info, Loader2, FlaskConical, Check, X, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -109,26 +109,30 @@ function UsageBar({ entryId, window: usageWindow, used, limit, onLimitClick }: U
   const isBlocked = limit != null && used >= limit;
   const windowLabel = usageWindow === "24h" ? "Rolling 24h window" : "Rolling 30d window";
 
-  // Tooltip lines
-  const tooltipLines: string[] = [];
-  if (limit != null) {
-    tooltipLines.push(`${formatTokensExact(used)} / ${formatTokensExact(limit)} tokens`);
-    tooltipLines.push(`${Math.round((used / limit) * 100)}% used · ${windowLabel}`);
-  } else {
-    tooltipLines.push(`${formatTokensExact(used)} tokens used`);
-    tooltipLines.push(`No limit · ${windowLabel}`);
-  }
-  if (resetAt) {
-    const resetDate = new Date(resetAt);
-    const diffMs = Date.now() - resetDate.getTime();
-    const diffH = diffMs / (1000 * 60 * 60);
-    const relativeStr = diffH < 1
-      ? `${Math.round(diffH * 60)}m ago`
-      : diffH < 24
-        ? `${Math.round(diffH)}h ago`
-        : `${Math.round(diffH / 24)}d ago`;
-    tooltipLines.push(`Last reset: ${relativeStr}`);
-  }
+  // Tooltip lines — derived via useMemo so Date.now() is not called on every render.
+  const tooltipLines = useMemo(() => {
+    const lines: string[] = [];
+    if (limit != null) {
+      lines.push(`${formatTokensExact(used)} / ${formatTokensExact(limit)} tokens`);
+      lines.push(`${Math.round((used / limit) * 100)}% used · ${windowLabel}`);
+    } else {
+      lines.push(`${formatTokensExact(used)} tokens used`);
+      lines.push(`No limit · ${windowLabel}`);
+    }
+    if (resetAt) {
+      const resetDate = new Date(resetAt);
+      const now = Date.now();
+      const diffMs = now - resetDate.getTime();
+      const diffH = diffMs / (1000 * 60 * 60);
+      const relativeStr = diffH < 1
+        ? `${Math.round(diffH * 60)}m ago`
+        : diffH < 24
+          ? `${Math.round(diffH)}h ago`
+          : `${Math.round(diffH / 24)}d ago`;
+      lines.push(`Last reset: ${relativeStr}`);
+    }
+    return lines;
+  }, [used, limit, windowLabel, resetAt]);
 
   function handleReset(e: React.MouseEvent) {
     e.stopPropagation();
@@ -191,9 +195,8 @@ function UsageBar({ entryId, window: usageWindow, used, limit, onLimitClick }: U
         </TooltipTrigger>
         <TooltipContent side="top" className="max-w-64">
           <div className="space-y-0.5 text-xs">
-            {tooltipLines.map((line, i) => (
-              // eslint-disable-next-line react/no-array-index-key
-              <div key={i}>{line}</div>
+            {tooltipLines.map((line) => (
+              <div key={line}>{line}</div>
             ))}
           </div>
         </TooltipContent>
