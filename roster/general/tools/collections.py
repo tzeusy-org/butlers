@@ -31,14 +31,14 @@ async def collection_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 
 
 async def collection_delete(pool: asyncpg.Pool, collection_id: uuid.UUID) -> None:
-    """Delete a collection and all its entities (CASCADE)."""
+    """Delete a collection and all its items (CASCADE)."""
     result = await pool.execute("DELETE FROM collections WHERE id = $1", collection_id)
     if result == "DELETE 0":
         raise ValueError(f"Collection {collection_id} not found")
 
 
 async def collection_export(pool: asyncpg.Pool, collection_name: str) -> list[dict[str, Any]]:
-    """Export all entities from a collection as a list of dicts."""
+    """Export all items from a collection as a list of dicts."""
     rows = await pool.fetch(
         """
         SELECT e.id, e.data, e.tags, e.created_at, e.updated_at

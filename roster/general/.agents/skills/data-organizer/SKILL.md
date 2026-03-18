@@ -1,30 +1,30 @@
 ---
 name: data-organizer
-description: Structured patterns for organizing collections and entities in the General butler's freeform data store
+description: Structured patterns for organizing collections and items in the General butler's freeform data store
 trigger_patterns:
   - organize my data
   - set up collections
   - how should I structure
-  - clean up my entities
+  - clean up my items
   - merge duplicates
   - archive old data
 ---
 
 # Data Organizer
 
-This skill provides structured patterns, conventions, and workflows for organizing freeform data in the General butler's JSONB-based entity store.
+This skill provides structured patterns, conventions, and workflows for organizing freeform data in the General butler's JSONB-based item store.
 
 ## Quick Start
 
-The General butler stores arbitrary JSON entities in named collections. Use this skill when you need to:
+The General butler stores arbitrary JSON items in named collections. Use this skill when you need to:
 - Design a collection taxonomy
-- Create consistent entity schemas
-- Query entities effectively
+- Create consistent item schemas
+- Query items effectively
 - Maintain data hygiene over time
 
 ## Collection Naming Conventions
 
-Collections organize entities by domain or purpose. Follow these patterns for consistency:
+Collections organize items by domain or purpose. Follow these patterns for consistency:
 
 ### Format Rules
 - **kebab-case**: Use lowercase letters, digits, and hyphens only (`projects`, `reading-list`)
@@ -60,9 +60,9 @@ archive              # Historical records
 #### Recommendation
 Start simple with top-level collections (`project`, `note`, `bookmark`). Add domain prefixes only when you have overlapping types across domains.
 
-## Entity Schema Templates
+## Item Schema Templates
 
-Entities are freeform JSONB, but consistency helps with querying and maintenance. Here are proven templates:
+Items are freeform JSONB, but consistency helps with querying and maintenance. Here are proven templates:
 
 ### Template 1: Project
 
@@ -136,7 +136,7 @@ Capture thoughts, journal entries, meeting notes, or observations.
   "note_type": "journal",
   "tags": ["standup", "progress"],
   "created_at": "2026-02-09T10:00:00Z",
-  "related_entities": [
+  "related_items": [
     "uuid-of-related-project"
   ],
   "private": false
@@ -147,7 +147,7 @@ Capture thoughts, journal entries, meeting notes, or observations.
 - `title`: Optional subject line
 - `content` (required): Main text body (markdown supported)
 - `note_type`: `journal` | `meeting` | `idea` | `reference` | `task`
-- `related_entities`: Array of UUIDs linking to other entities
+- `related_items`: Array of UUIDs linking to other items
 - `private`: Boolean for visibility control
 
 ### Template 4: List
@@ -260,18 +260,18 @@ The General butler uses PostgreSQL's JSONB containment operator (`@>`) with a GI
 
 ### Basic Containment
 
-Find entities with specific top-level fields:
+Find items with specific top-level fields:
 
 ```python
 # Find all active projects
-await entity_search(
+await item_search(
     pool,
     collection_name="project",
     query={"status": "active"}
 )
 
 # Find high-priority items
-await entity_search(
+await item_search(
     pool,
     collection_name="project",
     query={"priority": "high"}
@@ -284,7 +284,7 @@ Query nested objects using path notation:
 
 ```python
 # Find projects with specific milestone status
-await entity_search(
+await item_search(
     pool,
     collection_name="project",
     query={
@@ -295,23 +295,23 @@ await entity_search(
 )
 ```
 
-**Note**: JSONB containment requires exact substructure match. The query `{"milestones": [{"status": "in_progress"}]}` matches entities where `milestones` contains at least one object with `status: "in_progress"`, but it also requires other fields in that milestone object to match if present in the query.
+**Note**: JSONB containment requires exact substructure match. The query `{"milestones": [{"status": "in_progress"}]}` matches items where `milestones` contains at least one object with `status: "in_progress"`, but it also requires other fields in that milestone object to match if present in the query.
 
 ### Tag Filtering
 
 Tags are arrays, so use array containment:
 
 ```python
-# Find entities tagged with "ai"
-await entity_search(
+# Find items tagged with "ai"
+await item_search(
     pool,
     collection_name="bookmark",
     query={"tags": ["ai"]}
 )
 
-# Find entities with multiple tags (AND logic via containment)
-# This finds entities where tags array contains BOTH "ai" AND "reference"
-await entity_search(
+# Find items with multiple tags (AND logic via containment)
+# This finds items where tags array contains BOTH "ai" AND "reference"
+await item_search(
     pool,
     query={"tags": ["ai", "reference"]}
 )
@@ -325,7 +325,7 @@ Combine multiple field queries in a single containment check:
 
 ```python
 # Find unread technical bookmarks
-await entity_search(
+await item_search(
     pool,
     collection_name="bookmark",
     query={
@@ -338,24 +338,24 @@ await entity_search(
 ### Full-Text Search Alternative
 
 For text content searches (not supported by basic containment), consider:
-1. Fetching all entities and filtering in Python
+1. Fetching all items and filtering in Python
 2. Adding a separate full-text search index in a future migration
 3. Using regex patterns on exported data
 
 ### Performance Tips
 
 - **Use collection_name filter**: Always specify the collection when possible to reduce scan size
-- **Index coverage**: The GIN index on `entities.data` covers all JSONB queries
-- **Avoid wildcards**: Containment is exact-match; partial string matching requires fetching all entities
+- **Index coverage**: The GIN index on `collection_items.data` covers all JSONB queries
+- **Avoid wildcards**: Containment is exact-match; partial string matching requires fetching all items
 - **Query specificity**: More specific queries (more fields) = faster results
 
 ## Data Hygiene Workflows
 
-Over time, entity stores accumulate duplicates, stale data, and inconsistencies. Use these workflows to maintain quality.
+Over time, item stores accumulate duplicates, stale data, and inconsistencies. Use these workflows to maintain quality.
 
 ### Workflow 1: Deduplication
 
-**Goal**: Identify and merge duplicate entities within a collection.
+**Goal**: Identify and merge duplicate items within a collection.
 
 **Steps:**
 1. **Export the collection**:
@@ -376,7 +376,7 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
    duplicates = {k: v for k, v in seen.items() if len(v) > 1}
    ```
 
-3. **Merge duplicates**: For each duplicate group, choose a canonical entity (e.g., oldest by `created_at` or most complete by field count), then merge fields:
+3. **Merge duplicates**: For each duplicate group, choose a canonical item (e.g., oldest by `created_at` or most complete by field count), then merge fields:
    ```python
    for url, dupes in duplicates.items():
        # Sort by created_at to prefer oldest
@@ -390,24 +390,24 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
                if field not in merged_data:
                    merged_data[field] = value
        
-       # Update canonical entity
-       await entity_update(pool, canonical["id"], merged_data)
+       # Update canonical item
+       await item_update(pool, canonical["id"], merged_data)
        
        # Delete duplicates
        for dupe in dupes_sorted[1:]:
-           await entity_delete(pool, dupe["id"])
+           await item_delete(pool, dupe["id"])
    ```
 
 **Caution**: This is a destructive operation. Consider exporting a backup before running.
 
 ### Workflow 2: Archive Stale Entities
 
-**Goal**: Move old or inactive entities to an archive collection to reduce active data clutter.
+**Goal**: Move old or inactive items to an archive collection to reduce active data clutter.
 
 **Steps:**
 1. **Create an archive collection**:
    ```python
-   await collection_create(pool, "archive", "Historical entities no longer active")
+   await collection_create(pool, "archive", "Historical items no longer active")
    ```
 
 2. **Define staleness criteria** (e.g., `status: "completed"` and `completed_at` older than 6 months):
@@ -419,7 +419,7 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
 
 3. **Fetch candidates**:
    ```python
-   all_projects = await entity_search(pool, collection_name="project")
+   all_projects = await item_search(pool, collection_name="project")
    stale = [
        e for e in all_projects
        if e["data"].get("status") == "completed"
@@ -427,7 +427,7 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
    ]
    ```
 
-4. **Move to archive**: Create new entities in `archive` collection, then delete originals:
+4. **Move to archive**: Create new items in `archive` collection, then delete originals:
    ```python
    for entity in stale:
        # Add source collection to metadata
@@ -435,8 +435,8 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
        archive_data["_archived_from"] = "project"
        archive_data["_archived_at"] = datetime.now().isoformat()
        
-       await entity_create(pool, "archive", archive_data)
-       await entity_delete(pool, entity["id"])
+       await item_create(pool, "archive", archive_data)
+       await item_delete(pool, entity["id"])
    ```
 
 **Alternative**: Add an `archived: true` field instead of moving to a separate collection, then filter queries with `{"archived": False}`.
@@ -448,7 +448,7 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
 **Steps:**
 1. **Audit existing tags**:
    ```python
-   all_entities = await entity_search(pool)  # All collections
+   all_entities = await item_search(pool)  # All collections
    tag_set = set()
    for entity in all_entities:
        tags = entity["data"].get("tags", [])
@@ -467,19 +467,19 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
    }
    ```
 
-3. **Update entities**:
+3. **Update items**:
    ```python
    for entity in all_entities:
        tags = entity["data"].get("tags", [])
        normalized = [tag_map.get(tag, tag) for tag in tags]
        
        if normalized != tags:
-           await entity_update(pool, entity["id"], {"tags": normalized})
+           await item_update(pool, entity["id"], {"tags": normalized})
    ```
 
 ### Workflow 4: Schema Validation
 
-**Goal**: Ensure all entities in a collection conform to an expected schema.
+**Goal**: Ensure all items in a collection conform to an expected schema.
 
 **Steps:**
 1. **Define required fields** (e.g., for `project`: `title`, `status`):
@@ -487,9 +487,9 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
    required_fields = ["title", "status"]
    ```
 
-2. **Validate entities**:
+2. **Validate items**:
    ```python
-   projects = await entity_search(pool, collection_name="project")
+   projects = await item_search(pool, collection_name="project")
    invalid = []
    
    for entity in projects:
@@ -498,26 +498,26 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
            invalid.append((entity["id"], missing))
    ```
 
-3. **Fix or flag invalid entities**:
+3. **Fix or flag invalid items**:
    ```python
    for entity_id, missing_fields in invalid:
-       print(f"Entity {entity_id} missing: {missing_fields}")
+       print(f"Item {entity_id} missing: {missing_fields}")
        # Option 1: Add default values
        defaults = {"status": "unknown", "title": "Untitled"}
-       await entity_update(pool, entity_id, {f: defaults[f] for f in missing_fields})
+       await item_update(pool, entity_id, {f: defaults[f] for f in missing_fields})
        
        # Option 2: Tag for manual review
-       await entity_update(pool, entity_id, {"_validation_errors": missing_fields})
+       await item_update(pool, entity_id, {"_validation_errors": missing_fields})
    ```
 
 ### Workflow 5: Bulk Tagging
 
-**Goal**: Add tags to a batch of entities based on criteria.
+**Goal**: Add tags to a batch of items based on criteria.
 
 **Steps:**
-1. **Fetch target entities** (e.g., all bookmarks with `category: "technical"`):
+1. **Fetch target items** (e.g., all bookmarks with `category: "technical"`):
    ```python
-   technical_bookmarks = await entity_search(
+   technical_bookmarks = await item_search(
        pool,
        collection_name="bookmark",
        query={"category": "technical"}
@@ -529,7 +529,7 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
    for entity in technical_bookmarks:
        existing_tags = entity["data"].get("tags", [])
        new_tags = list(set(existing_tags + ["reference", "dev"]))
-       await entity_update(pool, entity["id"], {"tags": new_tags})
+       await item_update(pool, entity["id"], {"tags": new_tags})
    ```
 
 **Tip**: Use Python's `set` operations to ensure no duplicate tags.
@@ -543,7 +543,7 @@ Over time, entity stores accumulate duplicates, stale data, and inconsistencies.
 await collection_create(pool, "project", "Personal and work projects")
 
 # Add first project
-project_id = await entity_create(
+project_id = await item_create(
     pool,
     "project",
     {
@@ -561,7 +561,7 @@ project_id = await entity_create(
 
 ```python
 # Find all active high-priority projects
-active_high = await entity_search(
+active_high = await item_search(
     pool,
     collection_name="project",
     query={"status": "active", "priority": "high"}
@@ -570,7 +570,7 @@ active_high = await entity_search(
 # Mark the first one as completed
 if active_high:
     project_id = active_high[0]["id"]
-    await entity_update(
+    await item_update(
         pool,
         project_id,
         {"status": "completed", "completed_at": "2026-02-09"}
@@ -591,16 +591,16 @@ with open("bookmarks_backup.json", "w") as f:
 ## Best Practices
 
 1. **Start Simple**: Begin with a few collections and templates. Add complexity as needs grow.
-2. **Consistent Naming**: Stick to kebab-case for collections and consistent field names across entities of the same type.
+2. **Consistent Naming**: Stick to kebab-case for collections and consistent field names across items of the same type.
 3. **Tag Early**: Add tags from the start for easier filtering and future organization.
 4. **Regular Hygiene**: Schedule periodic reviews (monthly or quarterly) to deduplicate, archive, and normalize.
-5. **Document Schemas**: Keep this skill updated with new templates as you discover new entity types.
-6. **Use Scripts for Bulk Ops**: For operations touching 10+ entities, write a Python script in the skill directory or use `entity_search` + loops.
+5. **Document Schemas**: Keep this skill updated with new templates as you discover new item types.
+6. **Use Scripts for Bulk Ops**: For operations touching 10+ items, write a Python script in the skill directory or use `item_search` + loops.
 7. **Backup Before Destructive Ops**: Always export collections before running deduplication or bulk deletions.
 
 ## Extending This Skill
 
-As you use the General butler, you may discover new entity types or workflows. To extend this skill:
+As you use the General butler, you may discover new item types or workflows. To extend this skill:
 
 1. **Add new templates**: Follow the format of existing templates (required fields + key fields + example JSON)
 2. **Document new query patterns**: If you find useful JSONB queries, add them to the Query Patterns section
@@ -611,12 +611,12 @@ As you use the General butler, you may discover new entity types or workflows. T
 
 - `collection_create(name, description)`: Initialize a new collection
 - `collection_list()`: View all collections
-- `entity_create(collection_name, data)`: Add a new entity
-- `entity_get(entity_id)`: Retrieve a single entity
-- `entity_update(entity_id, data)`: Merge updates into an entity (deep merge)
-- `entity_search(collection_name, query)`: Find entities using JSONB containment
-- `entity_delete(entity_id)`: Remove an entity
-- `collection_export(collection_name)`: Export all entities from a collection
+- `item_create(collection_name, data)`: Add a new item to a collection
+- `item_get(item_id)`: Retrieve a single item
+- `item_update(item_id, data)`: Merge updates into an item (deep merge)
+- `item_search(collection_name, query)`: Find items using JSONB containment
+- `item_delete(item_id)`: Remove an item
+- `collection_export(collection_name)`: Export all items from a collection
 
 ---
 

@@ -91,7 +91,7 @@ memory_store_fact(
 When the user asks a question:
 
 1. **Search memory first**: `memory_search(query=<question>)` or `memory_recall(topic=<subject>)`
-2. **Search entities**: `entity_search()` with relevant query terms
+2. **Search entities**: `item_search()` with relevant query terms
 3. **Combine sources**: Synthesize information from memory and entity storage
 4. **Respond**: `notify(channel=<channel>, message=<answer>, intent="reply", request_context=<ctx>)`
 
@@ -99,7 +99,7 @@ Example:
 ```
 User: "What was that coffee shop I liked?"
 1. memory_search(query="coffee shop recommendation")
-2. entity_search(collection="places", query={"type": "coffee"})
+2. item_search(collection="places", query={"type": "coffee"})
 3. Find: "Blue Bottle on 5th St"
 4. notify(channel="telegram", message="Blue Bottle on 5th St — you saved that as a good coffee spot.",
           intent="reply", request_context=<from session>)

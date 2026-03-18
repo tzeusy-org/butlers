@@ -14,7 +14,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.general import collections as _coll
-    from butlers.tools.general import entities as _ent
+    from butlers.tools.general import items as _items
 
     # =============================================================
     # Collection tools
@@ -34,31 +34,31 @@ def register_tools(mcp: Any, module: Any) -> None:
     async def collection_delete(
         collection_id: uuid.UUID,
     ) -> None:
-        """Delete a collection and all its entities (CASCADE)."""
+        """Delete a collection and all its items (CASCADE)."""
         await _coll.collection_delete(module._get_pool(), collection_id)
 
     @mcp.tool()
     async def collection_export(
         collection_name: str,
     ) -> list[dict[str, Any]]:
-        """Export all entities from a collection as a list of dicts."""
+        """Export all items from a collection as a list of dicts."""
         return await _coll.collection_export(module._get_pool(), collection_name)
 
     # =============================================================
-    # Entity tools
+    # Item tools
     # =============================================================
 
     @mcp.tool()
-    async def entity_create(
+    async def item_create(
         collection_name: str,
         data: dict[str, Any],
         tags: list[str] | None = None,
     ) -> uuid.UUID:
-        """Create an entity in a collection (by collection name).
+        """Create an item in a collection (by collection name).
 
         Raises ValueError if collection not found.
         """
-        return await _ent.entity_create(
+        return await _items.item_create(
             module._get_pool(),
             collection_name,
             data,
@@ -66,45 +66,45 @@ def register_tools(mcp: Any, module: Any) -> None:
         )
 
     @mcp.tool()
-    async def entity_get(
-        entity_id: uuid.UUID,
+    async def item_get(
+        item_id: uuid.UUID,
     ) -> dict[str, Any] | None:
-        """Get an entity by ID."""
-        return await _ent.entity_get(module._get_pool(), entity_id)
+        """Get an item by ID."""
+        return await _items.item_get(module._get_pool(), item_id)
 
     @mcp.tool()
-    async def entity_update(
-        entity_id: uuid.UUID,
+    async def item_update(
+        item_id: uuid.UUID,
         data: dict[str, Any],
         tags: list[str] | None = None,
     ) -> None:
-        """Update an entity with deep merge for data, full replace
+        """Update an item with deep merge for data, full replace
         for tags.
 
         Fetches current data, deep merges in Python, then writes
         back. If tags is provided, it fully replaces the existing
         tags array.
         """
-        await _ent.entity_update(
+        await _items.item_update(
             module._get_pool(),
-            entity_id,
+            item_id,
             data,
             tags=tags,
         )
 
     @mcp.tool()
-    async def entity_search(
+    async def item_search(
         collection_name: str | None = None,
         query: dict[str, Any] | None = None,
         tags: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Search entities using JSONB containment (@>).
+        """Search items using JSONB containment (@>).
 
         Optionally filter by collection name, JSONB query, and/or
         tags. Tag filtering uses JSONB containment: each tag must
         be present in the tags array.
         """
-        return await _ent.entity_search(
+        return await _items.item_search(
             module._get_pool(),
             collection_name=collection_name,
             query=query,
@@ -112,6 +112,6 @@ def register_tools(mcp: Any, module: Any) -> None:
         )
 
     @mcp.tool()
-    async def entity_delete(entity_id: uuid.UUID) -> None:
-        """Delete an entity."""
-        await _ent.entity_delete(module._get_pool(), entity_id)
+    async def item_delete(item_id: uuid.UUID) -> None:
+        """Delete an item."""
+        await _items.item_delete(module._get_pool(), item_id)
