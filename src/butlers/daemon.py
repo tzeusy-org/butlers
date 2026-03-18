@@ -2997,12 +2997,73 @@ class ButlerDaemon:
                                         if _email_contact is not None
                                         else "unknown contact"
                                     )
+                                    # Park as pending_action so it appears on
+                                    # the approvals dashboard for owner review.
+                                    import datetime as _dt
+
+                                    from butlers.modules.approvals.models import (
+                                        ActionStatus as _ActionStatus,
+                                    )
+
+                                    _park_id = uuid.uuid4()
+                                    _now = _dt.datetime.now(_dt.UTC)
+                                    _expires = _now + _dt.timedelta(hours=72)
+                                    _park_tool = _gate_tool
+                                    _park_args = {
+                                        "to": _email_target,
+                                        "channel": channel,
+                                        "intent": intent,
+                                        "message": message_text,
+                                        "subject": (
+                                            notify_request.delivery.subject
+                                            if notify_request.delivery.subject
+                                            else None
+                                        ),
+                                        "origin_butler": origin,
+                                    }
+                                    _park_summary = (
+                                        f"route.execute blocked: email target "
+                                        f"{_email_target!r} is a {_contact_desc}. "
+                                        f"Message: {message_text!r}"
+                                    )
+                                    try:
+                                        await _approval_pool.execute(
+                                            "INSERT INTO pending_actions "
+                                            "(id, tool_name, tool_args, "
+                                            "agent_summary, session_id, status, "
+                                            "requested_at, expires_at) "
+                                            "VALUES ($1, $2, $3, $4, $5, $6, "
+                                            "$7, $8)",
+                                            _park_id,
+                                            _park_tool,
+                                            json.dumps(_park_args),
+                                            _park_summary,
+                                            None,
+                                            _ActionStatus.PENDING.value,
+                                            _now,
+                                            _expires,
+                                        )
+                                        logger.warning(
+                                            "route.execute email gate: blocked "
+                                            "delivery to %r — parked as "
+                                            "pending_action %s",
+                                            _email_target,
+                                            _park_id,
+                                        )
+                                    except Exception:
+                                        logger.warning(
+                                            "route.execute email gate: failed "
+                                            "to park pending_action for %r",
+                                            _email_target,
+                                            exc_info=True,
+                                        )
                                     raise ValueError(
                                         f"Delivery blocked: email target "
                                         f"'{_email_target}' is a {_contact_desc} "
                                         f"and no standing approval rule matches. "
-                                        f"Create a standing rule or approve via "
-                                        f"the approval dashboard."
+                                        f"Parked for owner review on the "
+                                        f"approval dashboard "
+                                        f"(action_id={_park_id})."
                                     )
                                 else:
                                     logger.info(
