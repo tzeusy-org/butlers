@@ -198,11 +198,13 @@ class MemoryModule(Module):
                 str | None,
                 Field(
                     description=(
-                        "Optional UUID of a resolved entity to anchor this fact. "
-                        "When provided, uniqueness is enforced via "
-                        "(entity_id, scope, predicate) instead of (subject, predicate). "
-                        "Use the entity_id from the identity preamble when available "
-                        "(e.g. from [Source: Owner (contact_id: ..., entity_id: ...)])."
+                        "UUID of the resolved entity this fact is about. "
+                        "Required for all facts — the call will be rejected without it. "
+                        "For facts about the message sender, this is auto-injected from "
+                        "routing context when omitted. For facts about third-party "
+                        "entities (organizations, places, other people), you MUST "
+                        "call memory_entity_resolve(identifier=<name>) first, then "
+                        "pass the returned entity_id here."
                     )
                 ),
             ] = None,
@@ -271,12 +273,15 @@ class MemoryModule(Module):
                 ),
             ] = None,
         ) -> dict[str, Any]:
-            """Store a fact and supersede any active match.
+            """Store a fact anchored to a resolved entity.
 
-            Property facts use `(subject, predicate)` for uniqueness.
-            When `entity_id` is provided, uniqueness uses
-            `(entity_id, scope, predicate)` instead — the `subject` field
-            becomes a human-readable label only.
+            Every fact MUST have an `entity_id`. For sender-about-self facts,
+            entity_id is auto-injected from routing context when omitted. For
+            third-party entities, you MUST resolve first via
+            `memory_entity_resolve(identifier=<name>)` and pass the result.
+
+            Uniqueness uses `(entity_id, scope, predicate)` — the `subject`
+            field is a human-readable label only.
             Edge-facts (when `object_entity_id` is set) use
             `(entity_id, object_entity_id, scope, predicate)`.
 
@@ -285,9 +290,11 @@ class MemoryModule(Module):
             timestamps can coexist for the same entity/predicate.
 
             Required fields:
-            - `subject` (string)
+            - `subject` (string) — human-readable label
             - `predicate` (string)
             - `content` (string)
+            - `entity_id` (string, UUID) — auto-injected for sender facts;
+              required explicitly for third-party entities
 
             Optional fields:
             - `importance` (float)
@@ -296,37 +303,35 @@ class MemoryModule(Module):
             - `tags` (array[string]) — must be a JSON array of strings (a list)
               and NOT a JSON-encoded string.
               A single string is invalid and will fail validation.
-            - `entity_id` (string, UUID) — anchor fact to a resolved entity
             - `object_entity_id` (string, UUID) — target entity for edge-facts
             - `valid_at` (string, ISO-8601) — when the fact was true (temporal facts)
 
-            Valid JSON example (entity-anchored property fact):
+            Valid JSON example (sender fact — entity_id auto-injected):
             {
               "subject": "Owner",
               "predicate": "favorite_coffee",
               "content": "drinks espresso",
-              "entity_id": "550e8400-e29b-41d4-a716-446655440000",
               "permanence": "stable",
               "tags": ["preferences", "coffee"]
             }
 
-            Valid JSON example (edge fact):
+            Valid JSON example (third-party entity — entity_id required):
             {
-              "subject": "Alice",
-              "predicate": "works_at",
-              "content": "software engineer",
-              "entity_id": "550e8400-e29b-41d4-a716-446655440000",
-              "object_entity_id": "660e8400-e29b-41d4-a716-446655440001"
-            }
-
-            Valid JSON example (temporal fact):
-            {
-              "subject": "Owner",
-              "predicate": "meal_breakfast",
-              "content": "oatmeal with berries",
+              "subject": "Endowus",
+              "predicate": "investment_portfolio",
+              "content": "~$210k SGD across 11 equity funds",
               "entity_id": "550e8400-e29b-41d4-a716-446655440000",
               "permanence": "stable",
-              "valid_at": "2026-03-06T08:00:00Z"
+              "tags": ["investment", "portfolio"]
+            }
+
+            Valid JSON example (edge fact — linking two entities):
+            {
+              "subject": "Endowus Portfolio",
+              "predicate": "has_constituent",
+              "content": "Amundi Index MSCI World — 20% allocation",
+              "entity_id": "550e8400-e29b-41d4-a716-446655440000",
+              "object_entity_id": "660e8400-e29b-41d4-a716-446655440001"
             }
             """
             # If the caller did not supply entity_id, fall back to the sender
@@ -340,6 +345,27 @@ class MemoryModule(Module):
                     _ctx_entity_id = _routing_ctx.get("source_entity_id")
                     if isinstance(_ctx_entity_id, str) and _ctx_entity_id.strip():
                         effective_entity_id = _ctx_entity_id.strip()
+
+            # Hard-reject facts without an entity anchor.  Every fact must be
+            # tied to a resolved entity — either the sender (auto-injected from
+            # routing context above) or a third-party entity resolved by the
+            # caller.  Returning a structured error gives the LLM enough context
+            # to self-recover by resolving the entity and retrying.
+            if effective_entity_id is None:
+                return {
+                    "error": "entity_id is required",
+                    "message": (
+                        f"Cannot store fact with subject={subject!r} without an entity_id. "
+                        "Every fact must be anchored to a resolved entity. "
+                        "To fix: call memory_entity_resolve(identifier=<subject>) first. "
+                        "If zero candidates are returned, call memory_entity_create() to "
+                        "create a transitory entity. Then retry memory_store_fact() with "
+                        "the resolved entity_id."
+                    ),
+                    "subject": subject,
+                    "predicate": predicate,
+                }
+
             return await _writing.memory_store_fact(
                 module._get_pool(),
                 module._get_embedding_engine(),

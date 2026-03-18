@@ -343,7 +343,10 @@ class TestToolDelegation:
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
         writing.memory_store_fact = AsyncMock(return_value={"id": "abc"})
-        await tools["memory_store_fact"](subject="user", predicate="likes", content="coffee")
+        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        await tools["memory_store_fact"](
+            subject="user", predicate="likes", content="coffee", entity_id=entity_uuid
+        )
         writing.memory_store_fact.assert_called_once_with(
             pool,
             mod._embedding_engine,
@@ -354,7 +357,7 @@ class TestToolDelegation:
             permanence="standard",
             scope="global",
             tags=None,
-            entity_id=None,
+            entity_id=entity_uuid,
             object_entity_id=None,
             valid_at=None,
             idempotency_key=None,
@@ -369,10 +372,12 @@ class TestToolDelegation:
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
         writing.memory_store_fact = AsyncMock(return_value={"id": "abc", "superseded_id": None})
+        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
         await tools["memory_store_fact"](
             subject="Owner",
             predicate="meal_breakfast",
             content="oatmeal",
+            entity_id=entity_uuid,
             valid_at="2026-03-06T08:00:00Z",
         )
         writing.memory_store_fact.assert_called_once_with(
@@ -385,7 +390,7 @@ class TestToolDelegation:
             permanence="standard",
             scope="global",
             tags=None,
-            entity_id=None,
+            entity_id=entity_uuid,
             object_entity_id=None,
             valid_at="2026-03-06T08:00:00Z",
             idempotency_key=None,
@@ -451,10 +456,12 @@ class TestToolDelegation:
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
         writing.memory_store_fact = AsyncMock(return_value={"id": "abc"})
+        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
         await tools["memory_store_fact"](
             subject="owner",
             predicate="weight",
             content="72kg",
+            entity_id=entity_uuid,
             retention_class="health_log",
             sensitivity="pii",
         )
@@ -468,7 +475,7 @@ class TestToolDelegation:
             permanence="standard",
             scope="global",
             tags=None,
-            entity_id=None,
+            entity_id=entity_uuid,
             object_entity_id=None,
             valid_at=None,
             idempotency_key=None,
@@ -567,8 +574,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
         mock_writing.memory_store_fact = AsyncMock(return_value={"id": "xyz"})
         return mod, registered_tools["memory_store_fact"], fake_db.pool, mock_writing
 
-    async def test_no_entity_id_and_no_routing_ctx_passes_none(self):
-        """When no routing context exists, entity_id defaults to None."""
+    async def test_no_entity_id_and_no_routing_ctx_rejects(self):
+        """When no routing context exists and no entity_id, the call is rejected."""
         from unittest.mock import patch as _patch
 
         mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
@@ -577,28 +584,13 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             "butlers.modules.memory.get_current_runtime_session_routing_context",
             return_value=None,
         ):
-            await fact_tool(subject="user", predicate="likes", content="coffee")
+            result = await fact_tool(subject="user", predicate="likes", content="coffee")
 
-        writing.memory_store_fact.assert_called_once_with(
-            pool,
-            mod._embedding_engine,
-            "user",
-            "likes",
-            "coffee",
-            importance=5.0,
-            permanence="standard",
-            scope="global",
-            tags=None,
-            entity_id=None,
-            object_entity_id=None,
-            valid_at=None,
-            idempotency_key=None,
-            request_context=None,
-            retention_class="operational",
-            sensitivity="normal",
-            enable_shared_catalog=False,
-            source_schema=None,
-        )
+        assert result["error"] == "entity_id is required"
+        assert "memory_entity_resolve" in result["message"]
+        assert result["subject"] == "user"
+        assert result["predicate"] == "likes"
+        writing.memory_store_fact.assert_not_called()
 
     async def test_no_entity_id_with_routing_ctx_uses_sender_entity(self):
         """When routing context has source_entity_id, it is used as entity_id fallback."""
@@ -674,8 +666,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             source_schema=None,
         )
 
-    async def test_routing_ctx_missing_source_entity_id_key_passes_none(self):
-        """When routing context exists but lacks source_entity_id, entity_id stays None."""
+    async def test_routing_ctx_missing_source_entity_id_key_rejects(self):
+        """When routing context exists but lacks source_entity_id, the call is rejected."""
         from unittest.mock import patch as _patch
 
         mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
@@ -684,28 +676,11 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             "butlers.modules.memory.get_current_runtime_session_routing_context",
             return_value={"source_contact_id": "contact-123"},
         ):
-            await fact_tool(subject="user", predicate="likes", content="coffee")
+            result = await fact_tool(subject="user", predicate="likes", content="coffee")
 
-        writing.memory_store_fact.assert_called_once_with(
-            pool,
-            mod._embedding_engine,
-            "user",
-            "likes",
-            "coffee",
-            importance=5.0,
-            permanence="standard",
-            scope="global",
-            tags=None,
-            entity_id=None,
-            object_entity_id=None,
-            valid_at=None,
-            idempotency_key=None,
-            request_context=None,
-            retention_class="operational",
-            sensitivity="normal",
-            enable_shared_catalog=False,
-            source_schema=None,
-        )
+        assert result["error"] == "entity_id is required"
+        assert result["subject"] == "user"
+        writing.memory_store_fact.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
