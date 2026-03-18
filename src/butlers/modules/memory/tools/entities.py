@@ -31,7 +31,8 @@ def _parse_metadata(raw: Any) -> dict[str, Any]:
 # Minimum composite score to include a candidate in resolution results.
 _MIN_SCORE: float = 0.0
 
-# Base scores for name-match quality (out of 100).
+# Base scores for match quality (out of 100+).
+_SCORE_ROLE: float = 120.0
 _SCORE_EXACT_NAME: float = 100.0
 _SCORE_EXACT_ALIAS: float = 80.0
 _SCORE_PREFIX: float = 50.0
@@ -242,23 +243,34 @@ async def entity_update(
 
 async def entity_resolve(
     pool: Pool,
-    name: str,
+    name: str | None = None,
     *,
+    identifier: str | None = None,
     tenant_id: str,
     entity_type: str | None = None,
     context_hints: dict[str, Any] | None = None,
     enable_fuzzy: bool = False,
 ) -> list[dict[str, Any]]:
-    """Resolve an ambiguous name string to a ranked list of entity candidates.
+    """Resolve an ambiguous string to a ranked list of entity candidates.
 
-    Performs four-tier candidate discovery (exact canonical, exact alias,
-    prefix/substring, optional fuzzy) and composite scoring combining
-    name-match quality with graph neighborhood similarity when context_hints
+    Performs tiered candidate discovery and composite scoring combining
+    match quality with graph neighborhood similarity when context_hints
     are provided.
+
+    When ``identifier`` is provided it triggers a waterfall lookup:
+      1. Role match — case-insensitive match against the ``roles`` array.
+      2. Name match — falls through to the standard four-tier name discovery
+         (exact canonical, exact alias, prefix/substring, optional fuzzy).
+
+    When only ``name`` is provided, only the name-based tiers execute
+    (backward-compatible behavior).
 
     Args:
         pool: asyncpg connection pool.
-        name: The ambiguous name string to resolve.
+        name: Name string to resolve (legacy, name-only lookup).
+        identifier: Unified identifier string.  Tries role match first,
+            then falls through to name-based tiers.  Mutually exclusive
+            with ``name`` — provide one or the other.
         tenant_id: Tenant scope for isolation.
         entity_type: Optional entity type filter (person/organization/place/other).
         context_hints: Optional dict with keys ``topic`` (str),
@@ -271,13 +283,23 @@ async def entity_resolve(
         Each dict has keys: entity_id, canonical_name, entity_type, score,
         name_match, aliases.
         Returns empty list when no candidates found above minimum threshold.
+
+    Raises:
+        ValueError: If both ``name`` and ``identifier`` are provided, or
+            neither is provided.
     """
-    if not name or not name.strip():
+    if name and identifier:
+        raise ValueError("Provide either 'name' or 'identifier', not both.")
+
+    # Resolve which string to use for lookup
+    lookup = identifier or name
+    if not lookup or not lookup.strip():
         return []
 
-    name_stripped = name.strip()
+    name_stripped = lookup.strip()
     name_lower = name_stripped.lower()
     hints = context_hints or {}
+    use_identifier = identifier is not None
 
     # Build type filter clause
     type_params: list[Any] = [tenant_id, name_lower]
@@ -292,13 +314,31 @@ async def entity_resolve(
     # Each tier returns: id, canonical_name, entity_type, aliases, match_type
     # We use DISTINCT ON to keep the best match type per entity (ordered by tier priority).
     #
-    # Tier numbering: 1=exact_canonical, 2=exact_alias, 3=prefix, 4=fuzzy
+    # Tier numbering: 0=role, 1=exact_canonical, 2=exact_alias, 3=prefix, 4=fuzzy
     # Lower tier number = higher priority.
+
+    # Tier 0: role-based match (only when identifier mode is active)
+    role_tier = ""
+    if use_identifier:
+        role_tier = f"""
+            -- Tier 0: role-based match (case-insensitive against roles array)
+            SELECT id, canonical_name, entity_type, aliases, 0 AS tier, 'role' AS match_type
+            FROM shared.entities
+            WHERE tenant_id = $1
+              AND LOWER($2) = ANY(SELECT LOWER(r) FROM UNNEST(roles) AS r)
+              AND (metadata->>'merged_into') IS NULL
+              AND (metadata->>'deleted_at') IS NULL
+              AND NOT ('google_account' = ANY(roles))
+              {type_filter}
+
+            UNION ALL
+        """
 
     discovery_sql = f"""
         SELECT DISTINCT ON (id)
             id, canonical_name, entity_type, aliases, match_type
         FROM (
+            {role_tier}
             -- Tier 1: exact canonical_name match (case-insensitive)
             SELECT id, canonical_name, entity_type, aliases, 1 AS tier, 'exact' AS match_type
             FROM shared.entities
@@ -359,8 +399,8 @@ async def entity_resolve(
     # -------------------------------------------------------------------------
     # Step 2: build candidate set (dedup by entity id, prefer higher-priority tier)
     # -------------------------------------------------------------------------
-    # match_type priority: exact > alias > prefix > fuzzy
-    _TIER_RANK = {"exact": 0, "alias": 1, "prefix": 2, "fuzzy": 3}
+    # match_type priority: role > exact > alias > prefix > fuzzy
+    _TIER_RANK = {"role": -1, "exact": 0, "alias": 1, "prefix": 2, "fuzzy": 3}
 
     candidates: dict[str, dict[str, Any]] = {}
 
@@ -394,6 +434,7 @@ async def entity_resolve(
     # Step 3: compute name-match base scores
     # -------------------------------------------------------------------------
     _MATCH_BASE: dict[str, float] = {
+        "role": _SCORE_ROLE,
         "exact": _SCORE_EXACT_NAME,
         "alias": _SCORE_EXACT_ALIAS,
         "prefix": _SCORE_PREFIX,

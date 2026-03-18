@@ -836,17 +836,26 @@ class MemoryModule(Module):
 
         @mcp.tool()
         async def memory_entity_resolve(
-            name: str,
+            name: str | None = None,
+            identifier: str | None = None,
             tenant_id: str = "shared",
             entity_type: str | None = None,
             context_hints: dict[str, Any] | None = None,
             enable_fuzzy: bool = False,
         ) -> list[dict[str, Any]]:
-            """Resolve an ambiguous name string to ranked memory entity candidates.
+            """Resolve an ambiguous string to ranked memory entity candidates.
 
-            Returns a list of candidate entities ordered by composite score
-            (name-match quality + graph neighborhood similarity). Returns an
-            empty list when no candidates are found — does not auto-create.
+            Two modes:
+            - **name**: Name-only lookup (exact, alias, prefix/substring, fuzzy).
+            - **identifier**: Waterfall lookup — tries role match first (e.g.
+              identifier="Owner" matches entities with roles=['owner']), then
+              falls through to name-based tiers.
+
+            Provide one of ``name`` or ``identifier``, not both.
+
+            Returns a list of candidate entities ordered by composite score.
+            Returns an empty list when no candidates are found — does not
+            auto-create.
 
             context_hints keys: topic (str), mentioned_with (list),
             domain_scores (dict of entity_id -> numeric score).
@@ -854,6 +863,7 @@ class MemoryModule(Module):
             return await _entities.entity_resolve(
                 module._get_pool(),
                 name,
+                identifier=identifier,
                 tenant_id=tenant_id,
                 entity_type=entity_type,
                 context_hints=context_hints,

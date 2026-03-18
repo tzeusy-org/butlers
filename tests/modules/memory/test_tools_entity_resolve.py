@@ -11,6 +11,7 @@ Tests cover:
 - Tenant-bounded queries only
 - entity_type filter
 - Empty/whitespace name handling
+- identifier param: role-first waterfall, then name fallback
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from butlers.modules.memory.tools.entities import (
     _SCORE_EXACT_NAME,
     _SCORE_FUZZY,
     _SCORE_PREFIX,
+    _SCORE_ROLE,
     entity_resolve,
 )
 
@@ -85,6 +87,10 @@ ENTITY_ID_3 = str(uuid.uuid4())
 # ---------------------------------------------------------------------------
 # Helper: build UNION ALL rows for different tiers
 # ---------------------------------------------------------------------------
+
+
+def _rows_role(entity_id: str, canonical_name: str, aliases: list[str] | None = None):
+    return [_make_entity_row(entity_id, canonical_name, aliases=aliases, match_type="role")]
 
 
 def _rows_exact(entity_id: str, canonical_name: str, aliases: list[str] | None = None):
@@ -600,3 +606,102 @@ class TestEntityResolveFuzzyMatching:
         assert len(results) == 1
         assert results[0]["name_match"] == "exact"
         assert results[0]["score"] == _SCORE_EXACT_NAME
+
+
+# ---------------------------------------------------------------------------
+# Tests: identifier parameter (role-first waterfall)
+# ---------------------------------------------------------------------------
+
+
+class TestEntityResolveIdentifier:
+    """identifier param tries role match first, then falls through to name tiers."""
+
+    async def test_identifier_role_match_returns_role_score(self, mock_pool: AsyncMock) -> None:
+        """identifier='Owner' matches entity with roles=['owner'] at highest score."""
+        mock_pool.fetch = AsyncMock(
+            return_value=_rows_role(ENTITY_ID_1, "Tze", aliases=["Owner"])
+        )
+        results = await entity_resolve(
+            mock_pool, identifier="Owner", tenant_id=TENANT
+        )
+        assert len(results) == 1
+        assert results[0]["entity_id"] == ENTITY_ID_1
+        assert results[0]["canonical_name"] == "Tze"
+        assert results[0]["score"] == _SCORE_ROLE
+        assert results[0]["name_match"] == "role"
+
+    async def test_identifier_falls_through_to_name_when_no_role(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """When no role matches, identifier falls through to name-based tiers."""
+        mock_pool.fetch = AsyncMock(
+            return_value=_rows_exact(ENTITY_ID_1, "Mount Sinai Hospital")
+        )
+        results = await entity_resolve(
+            mock_pool, identifier="Mount Sinai Hospital", tenant_id=TENANT
+        )
+        assert len(results) == 1
+        assert results[0]["name_match"] == "exact"
+        assert results[0]["score"] == _SCORE_EXACT_NAME
+
+    async def test_identifier_role_wins_over_name_for_same_entity(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """If same entity matches both role (Tier 0) and exact name (Tier 1),
+        the role tier wins via DISTINCT ON."""
+        role_row = _make_entity_row(ENTITY_ID_1, "Owner", match_type="role")
+        exact_row = _make_entity_row(ENTITY_ID_1, "Owner", match_type="exact")
+        mock_pool.fetch = AsyncMock(return_value=[role_row, exact_row])
+        results = await entity_resolve(
+            mock_pool, identifier="Owner", tenant_id=TENANT
+        )
+        assert len(results) == 1
+        assert results[0]["name_match"] == "role"
+        assert results[0]["score"] == _SCORE_ROLE
+
+    async def test_role_score_beats_exact_name_score(self) -> None:
+        """_SCORE_ROLE must be strictly higher than _SCORE_EXACT_NAME."""
+        assert _SCORE_ROLE > _SCORE_EXACT_NAME
+
+    async def test_identifier_case_insensitive_role_match(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """Role match is case-insensitive (LOWER on both sides)."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await entity_resolve(mock_pool, identifier="OWNER", tenant_id=TENANT)
+        call_args = mock_pool.fetch.call_args
+        # The SQL uses LOWER($2) and the param should be lowercased
+        assert call_args[0][2] == "owner"
+
+    async def test_identifier_empty_returns_empty(self, mock_pool: AsyncMock) -> None:
+        """Empty identifier returns empty list without querying DB."""
+        result = await entity_resolve(mock_pool, identifier="", tenant_id=TENANT)
+        assert result == []
+        mock_pool.fetch.assert_not_called()
+
+    async def test_identifier_whitespace_returns_empty(self, mock_pool: AsyncMock) -> None:
+        result = await entity_resolve(mock_pool, identifier="   ", tenant_id=TENANT)
+        assert result == []
+        mock_pool.fetch.assert_not_called()
+
+    async def test_name_and_identifier_raises(self, mock_pool: AsyncMock) -> None:
+        """Providing both name and identifier raises ValueError."""
+        with pytest.raises(ValueError, match="not both"):
+            await entity_resolve(
+                mock_pool, "Alice", identifier="Owner", tenant_id=TENANT
+            )
+
+    async def test_name_only_has_no_role_tier(self, mock_pool: AsyncMock) -> None:
+        """Legacy name-only call does NOT include the role tier in SQL."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await entity_resolve(mock_pool, "Alice", tenant_id=TENANT)
+        sql = mock_pool.fetch.call_args[0][0]
+        assert "Tier 0" not in sql
+        assert "'role'" not in sql
+
+    async def test_identifier_sql_includes_role_tier(self, mock_pool: AsyncMock) -> None:
+        """identifier mode includes the role tier in the discovery SQL."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await entity_resolve(mock_pool, identifier="Owner", tenant_id=TENANT)
+        sql = mock_pool.fetch.call_args[0][0]
+        assert "role" in sql
