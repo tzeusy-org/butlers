@@ -675,7 +675,7 @@ The Memory module SHALL register MCP tools on the hosting butler's MCP server wh
 - **WHEN** the memory module registers tools
 - **THEN** tools `memory_store_episode`, `memory_store_fact`, and `memory_store_rule` MUST be available
 - **AND** `memory_store_episode` MUST accept `content` (required), `butler` (required), `session_id` (optional), `importance` (optional, default 5.0), `request_context` (optional dict)
-- **AND** `memory_store_fact` MUST accept `subject`, `predicate`, `content` (required), `importance` (default 5.0), `permanence` (default 'standard'), `scope` (default 'global'), `valid_at` (optional TIMESTAMPTZ, default NULL), `tags` (optional list), `entity_id` (optional UUID), `object_entity_id` (optional UUID), `request_context` (optional dict), `retention_class` (optional), `sensitivity` (optional)
+- **AND** `memory_store_fact` MUST accept `subject`, `predicate`, `content` (required), `importance` (default 5.0), `permanence` (default 'standard'), `scope` (default 'global'), `valid_at` (optional TIMESTAMPTZ, default NULL), `tags` (optional list), `entity_id` (UUID — auto-injected from routing context for sender facts; required explicitly for third-party entities; call is rejected with a recovery error if missing after fallback), `object_entity_id` (optional UUID), `request_context` (optional dict), `retention_class` (optional), `sensitivity` (optional)
 - **AND** `memory_store_rule` MUST accept `content` (required), `scope` (default 'global'), `tags` (optional list), `request_context` (optional dict), `retention_class` (optional)
 
 #### Scenario: Reading tools registered
@@ -1062,12 +1062,12 @@ This rule applies to all butlers with the memory module enabled: health, finance
 - **AND** if resolved, MUST pass the resolved `entity_id` to `memory_store_fact`
 - **AND** if unresolved (zero candidates), MUST call `memory_entity_create` with `metadata.unidentified = true` first, then use the new `entity_id`
 
-#### Scenario: Fact stored without entity_id is a spec violation
+#### Scenario: Fact stored without entity_id is rejected
 
-- **WHEN** a butler calls `memory_store_fact` with a fact about an external entity (person, organization, place, or other)
-- **AND** `entity_id` is `None`
-- **THEN** this is a spec violation — facts about external entities MUST always be entity-anchored
-- **AND** the shared `butler-memory` skill instructs all runtime instances to follow this rule
+- **WHEN** a butler calls `memory_store_fact` and `entity_id` is `None` after the routing context fallback
+- **THEN** the tool MUST return a structured error (not raise an exception) with `error='entity_id is required'`
+- **AND** the error `message` MUST instruct the caller to resolve the entity via `memory_entity_resolve(identifier=<subject>)` and retry
+- **AND** the error MUST include the `subject` and `predicate` from the rejected call so the caller can retry without re-deriving them
 
 #### Scenario: Transitory entity for unknown organization from email processing
 
