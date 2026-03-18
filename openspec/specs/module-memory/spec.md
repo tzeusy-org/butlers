@@ -552,7 +552,24 @@ The module SHALL maintain an `entities` table providing stable identity anchors 
 
 ### Requirement: Entity resolution with tiered candidate discovery
 
-The `entity_resolve` tool SHALL resolve an ambiguous name string to a ranked list of entity candidates using four-tier candidate discovery: exact canonical name match, exact alias match, prefix/substring match, and optional fuzzy match (edit distance via pg_trgm). Tombstoned entities (those with `metadata->>'merged_into'` set) SHALL be excluded from resolution results.
+The `entity_resolve` tool SHALL resolve an ambiguous string to a ranked list of entity candidates using tiered candidate discovery. Tombstoned entities (those with `metadata->>'merged_into'` set) SHALL be excluded from resolution results.
+
+The tool accepts two mutually exclusive lookup modes:
+- **`name`** (legacy): Name-only lookup using tiers 1–4 (exact canonical, exact alias, prefix/substring, optional fuzzy).
+- **`identifier`**: Waterfall lookup — tries a case-insensitive role match (tier 0) first, then falls through to name-based tiers 1–4 using the same string.
+
+Providing both `name` and `identifier` SHALL raise a `ValueError`. Providing neither (or empty/whitespace) SHALL return an empty list.
+
+#### Scenario: Identifier role match (tier 0)
+
+- **WHEN** `entity_resolve` is called with `identifier` and an entity's `roles` array contains a case-insensitive match for the identifier string (e.g., `identifier='Owner'` matches `roles=['owner']`)
+- **THEN** the candidate MUST be returned with `name_match='role'` and base score 120.0
+- **AND** the role tier MUST take priority over all name-based tiers for the same entity
+
+#### Scenario: Identifier falls through to name tiers
+
+- **WHEN** `entity_resolve` is called with `identifier` and no entity's roles match the string
+- **THEN** the identifier string MUST be used as the lookup for name-based tiers 1–4 (same behavior as `name`)
 
 #### Scenario: Exact canonical name match (tier 1)
 
@@ -695,7 +712,7 @@ The Memory module SHALL register MCP tools on the hosting butler's MCP server wh
 - **WHEN** the memory module registers tools
 - **THEN** tools `entity_create`, `entity_get`, `entity_update`, `entity_resolve`, `entity_merge`, and `entity_neighbors` MUST be available
 - **AND** `entity_create` MUST accept `canonical_name`, `entity_type` (required), `tenant_id` (default `'shared'`), `aliases` (optional), `metadata` (optional)
-- **AND** `entity_resolve` MUST accept `name` (required), `tenant_id` (default `'shared'`), `entity_type` (optional), `context_hints` (optional), `enable_fuzzy` (default False)
+- **AND** `entity_resolve` MUST accept `name` (optional), `identifier` (optional), `tenant_id` (default `'shared'`), `entity_type` (optional), `context_hints` (optional), `enable_fuzzy` (default False). Exactly one of `name` or `identifier` MUST be provided.
 - **AND** `entity_neighbors` MUST accept `entity_id` (required UUID), `max_depth` (default 1, max 5), `predicate_filter` (optional list), `direction` (default 'both')
 
 #### Scenario: Consolidation and cleanup tools registered
@@ -1245,7 +1262,7 @@ Domain butlers (health, relationship, finance, home) migrate dedicated CRUD tabl
 - **THEN** the fact MUST carry a resolved `entity_id` UUID — never NULL for domain facts
 - **AND** the `subject` field MAY contain a human-readable label but MUST NOT be the sole identifier
 - **AND** the string `"user"` MUST NOT be used as the `entity_id` value or as a bare subject for any migrated fact
-- **AND** self-data (health, finance) MUST use the owner entity resolved from `shared.contacts WHERE roles @> '["owner"]'`
+- **AND** self-data (health, finance) MUST use the owner entity resolved via `entity_resolve(identifier='Owner')` (which matches `roles=['owner']` via tier 0) or from `shared.contacts WHERE roles @> '["owner"]'`
 - **AND** contact-data (relationship) MUST use the resolved entity for each contact via `shared.contacts.entity_id`
 - **AND** HA device data (home) MUST use an entity created with `entity_type='other'` and `metadata.entity_class='ha_device'` per distinct HA entity ID string
 
