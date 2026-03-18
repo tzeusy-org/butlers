@@ -45,7 +45,7 @@ Session completion is the only mutation allowed after creation (append-only cont
 - **THEN** a `ValueError` is raised
 
 ### Requirement: Minimum Persisted Session Fields
-The sessions table stores all fields required by the base butler contract: `id`, `prompt`, `trigger_source`, `started_at`, `completed_at`, `result`, `tool_calls` (JSONB), `success`, `error`, `duration_ms`, `trace_id`, `model`, `input_tokens`, `output_tokens`, `cost` (JSONB), `request_id` (UUID7, NOT NULL), and `ingestion_event_id` (UUID, nullable FK → `shared.ingestion_events.id`).
+The sessions table stores all fields required by the base butler contract: `id`, `prompt`, `trigger_source`, `started_at`, `completed_at`, `result`, `tool_calls` (JSONB), `success`, `error`, `duration_ms`, `trace_id`, `model`, `input_tokens`, `output_tokens`, `cost` (JSONB), `request_id` (UUID7, NOT NULL), `ingestion_event_id` (UUID, nullable FK → `shared.ingestion_events.id`), `complexity`, `resolution_source`, and `healing_fingerprint` (TEXT, nullable).
 
 #### Scenario: Token counts captured
 - **WHEN** the runtime adapter returns usage data with `input_tokens` and `output_tokens`
@@ -65,8 +65,20 @@ The sessions table stores all fields required by the base butler contract: `id`,
 - **WHEN** a session was triggered internally (tick, schedule, trigger)
 - **THEN** `ingestion_event_id` is NULL
 
+#### Scenario: Healing fingerprint populated on failed sessions
+- **WHEN** a session fails and the self-healing dispatcher computes a fingerprint
+- **THEN** `healing_fingerprint` is set to the 64-character hex fingerprint string
+
+#### Scenario: Healing fingerprint null on success
+- **WHEN** a session completes successfully
+- **THEN** `healing_fingerprint` is NULL
+
+#### Scenario: Healing fingerprint null on healing sessions
+- **WHEN** a session with `trigger_source = "healing"` completes (success or failure)
+- **THEN** `healing_fingerprint` is NULL (healing sessions are not fingerprinted)
+
 ### Requirement: Trigger Source Tracking
-Valid trigger sources are: `tick`, `external`, `trigger`, `route`, and `schedule:<task-name>` (where task-name is any non-empty string). The trigger source is validated at session creation.
+Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, and `schedule:<task-name>` (where task-name is any non-empty string). The trigger source is validated at session creation.
 
 #### Scenario: Schedule trigger source
 - **WHEN** `trigger_source="schedule:daily_digest"` is provided
@@ -74,6 +86,10 @@ Valid trigger sources are: `tick`, `external`, `trigger`, `route`, and `schedule
 
 #### Scenario: Route trigger source
 - **WHEN** `trigger_source="route"` is provided
+- **THEN** validation passes (exact match in the `TRIGGER_SOURCES` frozenset)
+
+#### Scenario: Healing trigger source
+- **WHEN** `trigger_source="healing"` is provided
 - **THEN** validation passes (exact match in the `TRIGGER_SOURCES` frozenset)
 
 ### Requirement: Session Detail Query
@@ -148,3 +164,14 @@ The session detail endpoint (`GET /api/butlers/{name}/sessions/{session_id}`) SH
 #### Scenario: Session detail before migration
 - **WHEN** the session detail endpoint is called on a database that has not yet run migration core_022
 - **THEN** the response includes `process_log: null` and no error is raised
+
+### Requirement: Healing Fingerprint Update
+The system SHALL expose a `session_set_healing_fingerprint(pool, session_id, fingerprint)` function that sets the `healing_fingerprint` column on an existing session row.
+
+#### Scenario: Fingerprint set after session failure
+- **WHEN** `session_set_healing_fingerprint(pool, session_id, "abc123...")` is called
+- **THEN** the session row's `healing_fingerprint` is updated to `"abc123..."`
+
+#### Scenario: Setting fingerprint on non-existent session
+- **WHEN** `session_set_healing_fingerprint(pool, invalid_id, "abc123...")` is called
+- **THEN** no error is raised (best-effort update, 0 rows affected)

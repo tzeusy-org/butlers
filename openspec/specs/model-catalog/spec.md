@@ -19,9 +19,10 @@ The system SHALL maintain a `shared.model_catalog` table as the canonical regist
 
 #### Scenario: Valid complexity tiers
 - **WHEN** a catalog entry specifies a `complexity_tier`
-- **THEN** the value MUST be one of: `trivial`, `medium`, `high`, `extra_high`, `discretion`
+- **THEN** the value MUST be one of: `trivial`, `medium`, `high`, `extra_high`, `discretion`, `self_healing`
 - **AND** any other value is rejected with a validation error
 - **AND** the `discretion` tier is reserved for lightweight, latency-sensitive evaluations (e.g. noise filtering) that run outside the butler session spawner
+- **AND** the `self_healing` tier is reserved for healing agent sessions that investigate and propose fixes for butler errors
 
 #### Scenario: Valid runtime types
 - **WHEN** a catalog entry specifies a `runtime_type`
@@ -73,7 +74,7 @@ The system SHALL provide a `resolve_model(butler_name, complexity_tier)` functio
 #### Scenario: Resolution with global defaults only
 - **WHEN** `resolve_model("finance", "medium")` is called and no overrides exist for `finance`
 - **THEN** the function returns the enabled global catalog entry for tier `medium` with the lowest `priority` value
-- **AND** the return value is a tuple of `(runtime_type, model_id, extra_args)`
+- **AND** the return value is a tuple of `(runtime_type, model_id, extra_args, catalog_entry_id)`
 
 #### Scenario: Resolution with butler overrides
 - **WHEN** `resolve_model("switchboard", "trivial")` is called and an override remaps a `medium` entry to `trivial` for `switchboard`
@@ -91,6 +92,11 @@ The system SHALL provide a `resolve_model(butler_name, complexity_tier)` functio
 #### Scenario: Priority tie-breaking
 - **WHEN** multiple enabled entries exist for the same butler+tier with the same effective priority
 - **THEN** the entry with the earliest `created_at` is selected (stable ordering)
+
+#### Scenario: Return type includes catalog_entry_id
+- **WHEN** `resolve_model()` returns a match
+- **THEN** the return type is `tuple[str, str, list[str], UUID]` — `(runtime_type, model_id, extra_args, catalog_entry_id)`
+- **AND** `catalog_entry_id` is the UUID primary key of the matched `shared.model_catalog` row
 
 ### Requirement: Seed Data Migration
 The system SHALL seed the model catalog with sensible defaults on first migration, covering known runtime adapters and common alias patterns.
@@ -115,7 +121,24 @@ The system SHALL seed the model catalog with sensible defaults on first migratio
 | `kimi-k2.5` | `opencode` | `moonshot/Kimi-K2.5` | `[]` | `high` | 20 |
 
 | `discretion-qwen3.5-9b` | `opencode` | `ollama/qwen3.5:9b` | `[]` | `discretion` | 10 |
+| `healing-sonnet` | `claude` | `claude-sonnet-4-6` | `[]` | `self_healing` | 10 |
 
 #### Scenario: Seed is idempotent
 - **WHEN** the migration runs on a database where seed entries already exist
 - **THEN** existing entries are not duplicated (ON CONFLICT DO NOTHING on alias)
+
+### Requirement: Adapter Token Reporting Contract
+All runtime adapters SHALL return `input_tokens` and `output_tokens` in their usage dict from `invoke()`.
+
+#### Scenario: Adapter reports token usage
+- **WHEN** a runtime adapter completes an invocation
+- **THEN** it returns a usage dict containing at minimum `{"input_tokens": int, "output_tokens": int}`
+
+#### Scenario: Adapter cannot determine token counts
+- **WHEN** a runtime adapter genuinely cannot determine token counts (e.g., CLI process does not expose them)
+- **THEN** it returns `{}` or `None` for usage
+- **AND** the ledger does not record a row for that invocation
+
+#### Scenario: Known adapters to audit
+- **WHEN** the adapter token reporting contract is enforced
+- **THEN** the following adapters are verified: `claude`, `codex`, `gemini`, `opencode` (including ollama via opencode)
