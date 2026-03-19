@@ -900,35 +900,66 @@ class MessagePipeline:
             "metadata": raw_metadata_payload,
         }
 
+        # Use advisory-lock-based dedup (same pattern as ingest_v1) to avoid
+        # the broken ON CONFLICT which includes received_at.  On a partitioned
+        # table the unique index is (dedupe_key, received_at), so two inserts
+        # with the same dedupe_key but different received_at timestamps both
+        # succeed — the ON CONFLICT clause never fires.
+        #
+        # The advisory lock serialises concurrent inserts for the same
+        # dedupe_key.  An explicit SELECT inside the lock detects prior inserts
+        # regardless of received_at / partition boundaries.
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO message_inbox (
-                    received_at,
-                    request_context,
-                    raw_payload,
-                    normalized_text,
-                    lifecycle_state,
-                    schema_version
-                ) VALUES (
-                    $1, $2::jsonb, $3::jsonb, $4, 'accepted', 'message_inbox.v2'
+            async with conn.transaction():
+                # Serialise on dedupe_key to prevent concurrent duplicate inserts
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedupe_key)
+
+                # Check for an existing row with the same dedupe_key
+                existing = await conn.fetchrow(
+                    """
+                    SELECT id AS request_id
+                    FROM message_inbox
+                    WHERE request_context ->> 'dedupe_key' = $1
+                    ORDER BY received_at DESC
+                    LIMIT 1
+                    """,
+                    dedupe_key,
                 )
-                ON CONFLICT ((request_context ->> 'dedupe_key'), received_at)
-                WHERE request_context ->> 'dedupe_key' IS NOT NULL
-                DO UPDATE SET updated_at = now()
-                RETURNING id AS request_id, (xmax = 0) AS inserted
-                """,
-                received_at,
-                json.dumps(request_context, default=str),
-                json.dumps(raw_payload, default=str),
-                message_text,
-            )
 
-        if row is None:
-            return None
+                if existing is not None:
+                    request_id = existing["request_id"]
+                    decision = "deduped"
+                else:
+                    # Ensure partition exists for this received_at
+                    await conn.execute(
+                        "SELECT switchboard_message_inbox_ensure_partition($1)",
+                        received_at,
+                    )
 
-        request_id = row["request_id"]
-        decision = "accepted" if bool(row["inserted"]) else "deduped"
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO message_inbox (
+                            received_at,
+                            request_context,
+                            raw_payload,
+                            normalized_text,
+                            lifecycle_state,
+                            schema_version
+                        ) VALUES (
+                            $1, $2::jsonb, $3::jsonb, $4, 'accepted', 'message_inbox.v2'
+                        )
+                        RETURNING id AS request_id
+                        """,
+                        received_at,
+                        json.dumps(request_context, default=str),
+                        json.dumps(raw_payload, default=str),
+                        message_text,
+                    )
+                    if row is None:
+                        return None
+                    request_id = row["request_id"]
+                    decision = "accepted"
+
         logger.info(
             "Ingress dedupe decision",
             extra=self._log_fields(

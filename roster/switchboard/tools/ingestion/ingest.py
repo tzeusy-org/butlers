@@ -223,11 +223,25 @@ def _compute_content_hash_key(envelope: IngestEnvelopeV1) -> str:
 
     Used as a secondary dedup check to catch the same logical message submitted
     by different connectors (e.g. telegram_bot and telegram_user_client) that may
-    produce different primary idempotency keys.
+    produce different primary idempotency keys, or the same email received by
+    different Gmail accounts.
+
+    For the ``email`` channel the key excludes ``endpoint_identity`` so that
+    the same email arriving on different Gmail accounts produces the same hash
+    key.  For other channels (e.g. Telegram) the endpoint_identity is kept
+    because the same update legitimately arrives on different bots and each
+    bot should process it independently.
     """
     content_repr = f"{envelope.payload.normalized_text}:{envelope.sender.identity}"
     content_hash = hashlib.sha256(content_repr.encode()).hexdigest()[:16]
     time_bucket = envelope.event.observed_at.strftime("%Y%m%d%H")  # hourly window
+    # Email: omit endpoint_identity so the same email from different accounts dedupes.
+    # Other channels: include endpoint_identity to avoid false cross-bot dedup.
+    if envelope.source.channel == "email":
+        return (
+            f"hash:{envelope.source.channel}"
+            f":{envelope.sender.identity}:{time_bucket}:{content_hash}"
+        )
     return (
         f"hash:{envelope.source.channel}:{envelope.source.endpoint_identity}"
         f":{envelope.sender.identity}:{time_bucket}:{content_hash}"

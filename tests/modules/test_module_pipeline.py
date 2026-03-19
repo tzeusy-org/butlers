@@ -936,6 +936,16 @@ class TestMessagePipelineProcess:
 # ---------------------------------------------------------------------------
 
 
+class _FakeTransaction:
+    """Fake async context manager mimicking asyncpg's conn.transaction()."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        return False
+
+
 class _FakeAcquire:
     def __init__(self, conn: _FakeIngressConn) -> None:
         self._conn = conn
@@ -943,7 +953,7 @@ class _FakeAcquire:
     async def __aenter__(self) -> _FakeIngressConn:
         return self._conn
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         return False
 
 
@@ -952,21 +962,31 @@ class _FakeIngressConn:
         self.request_by_key: dict[str, uuid.UUID] = {}
         self.dedupe_keys_seen: list[str] = []
 
-    async def fetchrow(self, _query: str, *params: Any) -> dict[str, Any]:
-        # params[1] is the request_context JSON string ($2 in INSERT query).
-        # The dedupe_key is embedded there as request_context['dedupe_key'].
-        request_context = json.loads(params[1])
-        dedupe_key = str(request_context["dedupe_key"])
-        self.dedupe_keys_seen.append(dedupe_key)
-        if dedupe_key in self.request_by_key:
-            return {
-                "request_id": self.request_by_key[dedupe_key],
-                "inserted": False,
-            }
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
 
-        request_id = uuid.uuid4()
-        self.request_by_key[dedupe_key] = request_id
-        return {"request_id": request_id, "inserted": True}
+    async def fetchrow(self, query: str, *params: Any) -> dict[str, Any] | None:
+        # The advisory-lock-based _accept_ingress issues two fetchrow calls:
+        #   1. SELECT ... WHERE request_context ->> 'dedupe_key' = $1  (dedup check)
+        #   2. INSERT INTO message_inbox ... RETURNING id AS request_id   (new row)
+        # Detect which call this is by inspecting the query text.
+        if "SELECT" in query and "dedupe_key" in query:
+            # Dedup SELECT — params[0] is the dedupe_key string
+            dedupe_key = str(params[0])
+            self.dedupe_keys_seen.append(dedupe_key)
+            if dedupe_key in self.request_by_key:
+                return {"request_id": self.request_by_key[dedupe_key]}
+            return None  # no existing row
+
+        if "INSERT" in query:
+            # INSERT — params[1] is the request_context JSON string
+            request_context = json.loads(params[1])
+            dedupe_key = str(request_context["dedupe_key"])
+            request_id = uuid.uuid4()
+            self.request_by_key[dedupe_key] = request_id
+            return {"request_id": request_id}
+
+        return None
 
     async def execute(self, _query: str, *args: Any) -> str:
         return "UPDATE 1"

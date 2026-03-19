@@ -2176,6 +2176,18 @@ class GmailConnectorRuntime:
         # Process attachments
         attachments = await self._process_attachments(message_id, message_data.get("payload", {}))
 
+        # Stable idempotency key for Tier 1, matching the Tier 2 pattern.
+        # Without this, dedup relies solely on external_event_id (Priority 2
+        # in _compute_dedupe_key), which works but is less explicit.  Setting
+        # an idempotency key promotes this to Priority 1 and makes the dedup
+        # key independent of provider/endpoint_identity, improving resilience
+        # against re-fetches when the cursor save fails after ingestion.
+        idempotency_key = (
+            f"{self._config.connector_provider}:"
+            f"{self._config.connector_endpoint_identity}:"
+            f"{rfc_message_id}"
+        )
+
         return {
             "schema_version": "ingest.v1",
             "source": {
@@ -2197,6 +2209,7 @@ class GmailConnectorRuntime:
                 "attachments": attachments,
             },
             "control": {
+                "idempotency_key": idempotency_key,
                 "policy_tier": effective_policy_tier,
             },
         }
