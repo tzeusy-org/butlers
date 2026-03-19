@@ -13,6 +13,7 @@ import asyncpg
 from opentelemetry import trace
 from pydantic import ValidationError
 
+from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.tools.switchboard.notification.log import log_notification
 from butlers.tools.switchboard.routing.contracts import (
     NotifyRequestV1,
@@ -186,6 +187,7 @@ async def _deliver_via_notify_request(
     source_butler: str,
     metadata: dict[str, Any] | None,
     call_fn: Any | None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     channel = notify_request.delivery.channel
     recipient = notify_request.delivery.recipient or ""
@@ -234,6 +236,7 @@ async def _deliver_via_notify_request(
             metadata=log_metadata,
             status="failed",
             error=error_msg,
+            session_id=session_id,
         )
         return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
@@ -253,6 +256,7 @@ async def _deliver_via_notify_request(
             metadata=log_metadata,
             status="failed",
             error=error_msg,
+            session_id=session_id,
         )
         return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
@@ -269,6 +273,7 @@ async def _deliver_via_notify_request(
         message=message,
         metadata=log_metadata,
         status="sent",
+        session_id=session_id,
         trace_id=current_trace_id,
     )
 
@@ -335,6 +340,9 @@ async def deliver(
     with tracer.start_as_current_span("switchboard.deliver") as span:
         span.set_attribute("source_butler", source_butler)
 
+        # Resolve session_id from runtime context for notification tracing.
+        session_id = get_current_runtime_session_id()
+
         envelope_payload: dict[str, Any] | None = notify_request
         if envelope_payload is None and source_butler != "switchboard":
             error_msg = (
@@ -374,6 +382,7 @@ async def deliver(
                 source_butler=source_butler,
                 metadata=metadata,
                 call_fn=call_fn,
+                session_id=session_id,
             )
 
         if channel not in SUPPORTED_CHANNELS:
@@ -413,6 +422,7 @@ async def deliver(
                 metadata=metadata,
                 status="failed",
                 error=error_msg,
+                session_id=session_id,
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
@@ -431,6 +441,7 @@ async def deliver(
                 metadata=metadata,
                 status="failed",
                 error=error_msg,
+                session_id=session_id,
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
@@ -470,6 +481,7 @@ async def deliver(
                 metadata=metadata,
                 status="failed",
                 error=error_msg,
+                session_id=session_id,
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
@@ -490,6 +502,7 @@ async def deliver(
             message=message or "",
             metadata=metadata,
             status="sent",
+            session_id=session_id,
             trace_id=current_trace_id,
         )
 
