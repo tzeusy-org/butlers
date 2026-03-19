@@ -1740,8 +1740,17 @@ class GmailConnectorRuntime:
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_history")
             raise
 
+    # Labels that indicate transient messages which should never be ingested.
+    # DRAFT messages are auto-saved during composition and deleted on send;
+    # attempting to fetch them after send produces 404 errors.
+    _SKIP_LABELS: frozenset[str] = frozenset({"DRAFT"})
+
     def _extract_message_ids_from_history(self, history: list[dict[str, Any]]) -> list[str]:
-        """Extract new message IDs from history changes."""
+        """Extract new message IDs from history changes.
+
+        Filters out messages with transient labels (e.g. DRAFT) to avoid
+        404 errors when Gmail deletes drafts upon send.
+        """
         message_ids: set[str] = set()
 
         for record in history:
@@ -1750,8 +1759,19 @@ class GmailConnectorRuntime:
             for added in record.get("messagesAdded", []):
                 message = added.get("message", {})
                 message_id = message.get("id")
-                if message_id:
-                    message_ids.add(message_id)
+                if not message_id:
+                    continue
+                # Skip transient messages (e.g. drafts) — they are almost
+                # always deleted by the time we try to fetch them.
+                label_ids = set(message.get("labelIds") or [])
+                if label_ids & self._SKIP_LABELS:
+                    logger.debug(
+                        "Skipping message %s with transient labels %s",
+                        message_id,
+                        label_ids & self._SKIP_LABELS,
+                    )
+                    continue
+                message_ids.add(message_id)
 
         return list(message_ids)
 
@@ -1939,6 +1959,17 @@ class GmailConnectorRuntime:
                     policy_result.policy_tier,
                 )
 
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    # Message was deleted between history fetch and message
+                    # fetch (common for drafts that are removed on send).
+                    logger.debug(
+                        "Message %s no longer exists (404), skipping",
+                        message_id,
+                    )
+                    return
+                # Other HTTP errors fall through to general handler
+                raise
             except self._TRANSIENT_DELIVERY_ERRORS as exc:
                 # Re-raise transient connectivity errors so the batch loop
                 # can skip cursor advancement and retry.

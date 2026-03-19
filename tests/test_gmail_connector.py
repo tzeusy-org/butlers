@@ -444,6 +444,44 @@ class TestGmailConnectorRuntime:
 
         assert set(message_ids) == {"msg1", "msg2", "msg3"}
 
+    def test_extract_message_ids_skips_drafts(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Draft messages in history are filtered out to avoid 404s on send."""
+        history = [
+            {
+                "id": "100",
+                "messagesAdded": [
+                    {"message": {"id": "msg_inbox", "labelIds": ["INBOX"]}},
+                    {"message": {"id": "msg_draft", "labelIds": ["DRAFT"]}},
+                    {"message": {"id": "msg_sent", "labelIds": ["SENT"]}},
+                ],
+            },
+        ]
+
+        message_ids = gmail_runtime._extract_message_ids_from_history(history)
+
+        assert set(message_ids) == {"msg_inbox", "msg_sent"}
+        assert "msg_draft" not in message_ids
+
+    def test_extract_message_ids_skips_drafts_no_labels(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Messages without labelIds are still included (not filtered)."""
+        history = [
+            {
+                "id": "100",
+                "messagesAdded": [
+                    {"message": {"id": "msg_no_labels"}},
+                    {"message": {"id": "msg_empty_labels", "labelIds": []}},
+                ],
+            },
+        ]
+
+        message_ids = gmail_runtime._extract_message_ids_from_history(history)
+
+        assert set(message_ids) == {"msg_no_labels", "msg_empty_labels"}
+
     async def test_build_ingest_envelope(self, gmail_runtime: GmailConnectorRuntime) -> None:
         """Test building ingest.v1 envelope from Gmail message data."""
         message_data = {
@@ -1097,6 +1135,24 @@ class TestGmailConnectorRuntime:
         ):
             # Should not raise — non-transient errors are swallowed
             await gmail_runtime._ingest_single_message("msg_bad")
+
+    async def test_ingest_single_message_skips_404(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """404 from Gmail API (deleted draft) is silently skipped, not recorded as error."""
+        req = httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/messages/x")
+        response_404 = httpx.Response(status_code=404, request=req)
+        exc = httpx.HTTPStatusError("Not Found", request=req, response=response_404)
+        with patch.object(
+            gmail_runtime,
+            "_fetch_message",
+            new=AsyncMock(side_effect=exc),
+        ):
+            # Should not raise and should not record an error event
+            await gmail_runtime._ingest_single_message("msg_gone")
+
+        # Verify no error was recorded in the filtered event buffer
+        assert gmail_runtime._filtered_event_buffer._rows == []
 
     async def test_ingest_messages_propagates_connection_error(
         self, gmail_runtime: GmailConnectorRuntime
