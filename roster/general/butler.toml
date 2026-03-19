@@ -1,7 +1,7 @@
 [butler]
 name = "general"
 port = 41101
-description = "Flexible catch-all assistant for freeform data. IMPORTANT: This is a fallback butler, routing to this butler should be MUTUALLY EXCLUSIVE from routing to any other butler!"
+description = "Flexible catch-all assistant for freeform data"
 
 [butler.runtime]
 max_concurrent_sessions = 3
@@ -21,14 +21,12 @@ route_contract_min = 1
 route_contract_max = 1
 
 [modules.calendar]
-account = "uniquosity@gmail.com"
 provider = "google"
 
 [modules.calendar.conflicts]
 policy = "suggest"
 
 [modules.contacts]
-account = "uniquosity@gmail.com"
 provider = "google"
 include_other_contacts = false
 

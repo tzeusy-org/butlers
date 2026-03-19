@@ -23,7 +23,6 @@ route_contract_max = 1
 [modules.email]
 
 [modules.calendar]
-account = "uniquosity@gmail.com"
 provider = "google"
 
 [modules.calendar.conflicts]

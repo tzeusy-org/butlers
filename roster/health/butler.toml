@@ -52,14 +52,12 @@ dispatch_mode = "job"
 job_name = "memory_purge_superseded"
 
 [modules.calendar]
-account = "uniquosity@gmail.com"
 provider = "google"
 
 [modules.calendar.conflicts]
 policy = "suggest"
 
 [modules.contacts]
-account = "uniquosity@gmail.com"
 provider = "google"
 include_other_contacts = false
 
