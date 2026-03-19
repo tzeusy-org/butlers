@@ -2955,114 +2955,50 @@ class ButlerDaemon:
                     if _email_target:
                         _approval_pool = daemon.db.pool if daemon.db is not None else None
                         if _approval_pool is not None:
-                            from butlers.identity import (
-                                resolve_contact_by_channel as _resolve_email_contact,
+                            from butlers.modules.approvals.email_guard import (
+                                check_email_recipient as _check_email,
                             )
 
-                            _email_contact = await _resolve_email_contact(
-                                _approval_pool, "email", _email_target
+                            _gate_tool = (
+                                "email_send_message"
+                                if intent == "send"
+                                else "email_reply_to_thread"
                             )
-                            if _email_contact is None or "owner" not in _email_contact.roles:
-                                # Non-owner or unknown: check standing approval rules
-                                _gate_tool = (
-                                    "email_send_message"
-                                    if intent == "send"
-                                    else "email_reply_to_thread"
+                            _decision = await _check_email(
+                                _approval_pool,
+                                email_target=_email_target,
+                                rule_tool_name=_gate_tool,
+                                rule_match_args={"to": _email_target},
+                                park_tool_name=_gate_tool,
+                                park_tool_args={
+                                    "to": _email_target,
+                                    "channel": channel,
+                                    "intent": intent,
+                                    "message": message_text,
+                                    "subject": (
+                                        notify_request.delivery.subject
+                                        if notify_request.delivery.subject
+                                        else None
+                                    ),
+                                    "origin_butler": origin,
+                                },
+                                park_summary=(
+                                    f"route.execute blocked: email to "
+                                    f"{_email_target!r}. "
+                                    f"Message: {message_text!r}"
+                                ),
+                                session_id=get_current_runtime_session_id(),
+                            )
+                            if not _decision.allowed:
+                                raise ValueError(
+                                    f"Delivery blocked: email target "
+                                    f"'{_email_target}' is a "
+                                    f"{_decision.contact_desc} "
+                                    f"and no standing approval rule matches. "
+                                    f"Parked for owner review on the "
+                                    f"approval dashboard "
+                                    f"(action_id={_decision.action_id})."
                                 )
-                                _gate_args = {"to": _email_target}
-                                _gate_rule = None
-                                try:
-                                    from butlers.modules.approvals.rules import (
-                                        match_rules as _match_gate_rules,
-                                    )
-
-                                    _gate_rule = await _match_gate_rules(
-                                        _approval_pool, _gate_tool, _gate_args
-                                    )
-                                except Exception:  # noqa: BLE001
-                                    pass
-
-                                if _gate_rule is None:
-                                    _contact_desc = (
-                                        "known non-owner contact"
-                                        if _email_contact is not None
-                                        else "unknown contact"
-                                    )
-                                    # Park as pending_action so it appears on
-                                    # the approvals dashboard for owner review.
-                                    import datetime as _dt
-
-                                    from butlers.modules.approvals.models import (
-                                        ActionStatus as _ActionStatus,
-                                    )
-
-                                    _park_id = uuid.uuid4()
-                                    _now = _dt.datetime.now(_dt.UTC)
-                                    _expires = _now + _dt.timedelta(hours=72)
-                                    _park_tool = _gate_tool
-                                    _park_args = {
-                                        "to": _email_target,
-                                        "channel": channel,
-                                        "intent": intent,
-                                        "message": message_text,
-                                        "subject": (
-                                            notify_request.delivery.subject
-                                            if notify_request.delivery.subject
-                                            else None
-                                        ),
-                                        "origin_butler": origin,
-                                    }
-                                    _park_summary = (
-                                        f"route.execute blocked: email target "
-                                        f"{_email_target!r} is a {_contact_desc}. "
-                                        f"Message: {message_text!r}"
-                                    )
-                                    try:
-                                        await _approval_pool.execute(
-                                            "INSERT INTO pending_actions "
-                                            "(id, tool_name, tool_args, "
-                                            "agent_summary, session_id, status, "
-                                            "requested_at, expires_at) "
-                                            "VALUES ($1, $2, $3, $4, $5, $6, "
-                                            "$7, $8)",
-                                            _park_id,
-                                            _park_tool,
-                                            json.dumps(_park_args),
-                                            _park_summary,
-                                            get_current_runtime_session_id(),
-                                            _ActionStatus.PENDING.value,
-                                            _now,
-                                            _expires,
-                                        )
-                                        logger.warning(
-                                            "route.execute email gate: blocked "
-                                            "delivery to %r — parked as "
-                                            "pending_action %s",
-                                            _email_target,
-                                            _park_id,
-                                        )
-                                    except Exception:
-                                        logger.warning(
-                                            "route.execute email gate: failed "
-                                            "to park pending_action for %r",
-                                            _email_target,
-                                            exc_info=True,
-                                        )
-                                    raise ValueError(
-                                        f"Delivery blocked: email target "
-                                        f"'{_email_target}' is a {_contact_desc} "
-                                        f"and no standing approval rule matches. "
-                                        f"Parked for owner review on the "
-                                        f"approval dashboard "
-                                        f"(action_id={_park_id})."
-                                    )
-                                else:
-                                    logger.info(
-                                        "route.execute email gate: standing rule %s "
-                                        "permits delivery to %r",
-                                        _gate_rule.id,
-                                        _email_target,
-                                    )
 
                     raw_subject = notify_request.delivery.subject or "Notification"
                     normalized_subject = (
@@ -4483,102 +4419,42 @@ class ButlerDaemon:
             if channel == "email" and resolved_recipient is not None:
                 pool = daemon.db.pool if daemon.db is not None else None
                 if pool is not None:
-                    from butlers.identity import resolve_contact_by_channel
+                    from butlers.modules.approvals.email_guard import (
+                        check_email_recipient,
+                    )
 
-                    known_contact = await resolve_contact_by_channel(
+                    _notify_args = {
+                        "channel": channel,
+                        "message": message,
+                        "recipient": resolved_recipient,
+                        "intent": intent,
+                    }
+                    _decision = await check_email_recipient(
                         pool,
-                        "email",
-                        resolved_recipient,
+                        email_target=resolved_recipient,
+                        rule_tool_name="notify",
+                        rule_match_args=_notify_args,
+                        park_tool_name="notify",
+                        park_tool_args=_notify_args,
+                        park_summary=(
+                            f"notify() rejected: email to "
+                            f"{resolved_recipient!r}. Message: {message!r}"
+                        ),
+                        session_id=get_current_runtime_session_id(),
                     )
-                    # Block both unknown contacts AND known non-owner contacts.
-                    # Owner-targeted emails auto-approve; everything else needs
-                    # a standing rule or gets parked for human review.
-                    _is_owner = (
-                        known_contact is not None and "owner" in known_contact.roles
-                    )
-                    if not _is_owner:
-                        # Check standing approval rules before parking
-                        _notify_args = {
-                            "channel": channel,
-                            "message": message,
-                            "recipient": resolved_recipient,
-                            "intent": intent,
+                    if not _decision.allowed:
+                        return {
+                            "status": "pending_approval",
+                            "error": (
+                                f"Delivery blocked: email target "
+                                f"'{resolved_recipient}' is a "
+                                f"{_decision.contact_desc} "
+                                f"and no standing approval rule matches. "
+                                f"Create a standing rule or approve via the "
+                                f"approval dashboard."
+                            ),
+                            "pending_action_id": str(_decision.action_id),
                         }
-                        _rule_match = None
-                        try:
-                            from butlers.modules.approvals.rules import match_rules
-
-                            _rule_match = await match_rules(pool, "notify", _notify_args)
-                        except Exception:
-                            # Table may not exist in this schema — that's fine
-                            pass
-
-                        if _rule_match is not None:
-                            logger.info(
-                                "notify() email guard: standing rule %s permits "
-                                "non-owner recipient %r — allowing delivery",
-                                _rule_match.id,
-                                resolved_recipient,
-                            )
-                            # Bump rule use_count
-                            try:
-                                await pool.execute(
-                                    "UPDATE approval_rules SET use_count = use_count + 1 "
-                                    "WHERE id = $1",
-                                    _rule_match.id,
-                                )
-                            except Exception:
-                                pass
-                        else:
-                            import datetime as _dt
-
-                            from butlers.modules.approvals.models import ActionStatus
-
-                            _contact_desc = (
-                                "known non-owner contact"
-                                if known_contact is not None
-                                else "unknown contact"
-                            )
-                            _park_id = uuid.uuid4()
-                            _now = _dt.datetime.now(_dt.UTC)
-                            _expires = _now + _dt.timedelta(hours=72)
-                            _park_summary = (
-                                f"notify() rejected: email recipient "
-                                f"{resolved_recipient!r} "
-                                f"is a {_contact_desc}. Message: {message!r}"
-                            )
-                            await pool.execute(
-                                "INSERT INTO pending_actions "
-                                "(id, tool_name, tool_args, agent_summary, session_id, "
-                                "status, requested_at, expires_at) "
-                                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                                _park_id,
-                                "notify",
-                                json.dumps(_notify_args),
-                                _park_summary,
-                                get_current_runtime_session_id(),
-                                ActionStatus.PENDING.value,
-                                _now,
-                                _expires,
-                            )
-                            logger.warning(
-                                "notify() rejected %s email recipient %r "
-                                "(parked as pending_action %s)",
-                                _contact_desc,
-                                resolved_recipient,
-                                _park_id,
-                            )
-                            return {
-                                "status": "pending_approval",
-                                "error": (
-                                    f"Delivery blocked: email target "
-                                    f"'{resolved_recipient}' is a {_contact_desc} "
-                                    f"and no standing approval rule matches. "
-                                    f"Create a standing rule or approve via the "
-                                    f"approval dashboard."
-                                ),
-                                "pending_action_id": str(_park_id),
-                            }
 
             delivery_message = message if message is not None else ""
             notify_request: dict[str, Any] = {
