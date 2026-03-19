@@ -212,9 +212,14 @@ class MemoryModule(Module):
                 str | None,
                 Field(
                     description=(
-                        "Optional UUID of the target entity for edge-facts. "
+                        "UUID of the target entity for relationship/edge facts. "
+                        "REQUIRED when the fact describes a relationship between "
+                        "two entities (e.g. parent-of, knows, works-at, member-of). "
                         "Creates a directed relationship from subject entity "
-                        "to this object entity. Requires entity_id to also be set."
+                        "to this object entity. Requires entity_id to also be set. "
+                        "NEVER embed entity UUIDs or names in the content field — "
+                        "use this parameter instead. Resolve the target entity "
+                        "first via memory_entity_resolve(identifier=<name>)."
                     )
                 ),
             ] = None,

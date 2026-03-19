@@ -12,6 +12,7 @@ import importlib.util
 import json
 import logging
 import math
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -497,6 +498,29 @@ async def store_fact(
                     raise ValueError(
                         f"object_entity_id {object_entity_id!r} does not exist in entities table"
                     )
+
+            # Guard: reject facts that embed entity UUIDs in content without
+            # using object_entity_id.  This catches the common mistake of
+            # encoding a relationship target as freeform text instead of a
+            # proper edge-fact link.
+            if object_entity_id is None and re.search(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                content,
+                re.IGNORECASE,
+            ):
+                embedded_uuid = re.search(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    content,
+                    re.IGNORECASE,
+                ).group()  # type: ignore[union-attr]
+                raise ValueError(
+                    f"content contains an embedded UUID ({embedded_uuid}) but "
+                    f"object_entity_id is not set. If this fact describes a "
+                    f"relationship between entities, pass the target entity's UUID "
+                    f"as object_entity_id instead of embedding it in content. "
+                    f"Call memory_entity_resolve(identifier=<name>) to resolve "
+                    f"the target entity first."
+                )
 
             # Idempotency check for temporal facts.
             # If a fact with the same (tenant_id, idempotency_key) already exists,

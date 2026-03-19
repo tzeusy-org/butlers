@@ -935,3 +935,67 @@ class TestMemoryStoreFactValidAtTool:
             )
             call_kwargs = mock_store.call_args.kwargs
             assert call_kwargs["valid_at"].tzinfo == UTC
+
+
+# ---------------------------------------------------------------------------
+# Tests: UUID-in-content guard
+# ---------------------------------------------------------------------------
+
+
+class TestUuidInContentGuard:
+    """Reject facts that embed entity UUIDs in content without object_entity_id."""
+
+    async def test_uuid_in_content_without_object_entity_id_raises(self, embedding_engine):
+        """Content containing a UUID without object_entity_id raises ValueError."""
+        eid = uuid.uuid4()
+        target_uuid = uuid.uuid4()
+        # entity_id valid (fetchval returns 1), then no supersession match (None)
+        conn = _make_conn(fetchval_side_effect=[1, None])
+        pool = _make_pool(conn)
+
+        with pytest.raises(ValueError, match="embedded UUID"):
+            await store_fact(
+                pool,
+                "Chloe",
+                "relationship",
+                f"Added 'parent' relationship with {target_uuid}",
+                embedding_engine,
+                entity_id=eid,
+            )
+
+    async def test_uuid_in_content_with_object_entity_id_passes(self, embedding_engine):
+        """Content with UUID is allowed when object_entity_id is properly set."""
+        eid = uuid.uuid4()
+        obj_eid = uuid.uuid4()
+        # fetchval sequence: entity_id valid (1), object_entity_id valid (1),
+        # no supersession match (None)
+        conn = _make_conn(fetchval_side_effect=[1, 1, None])
+        pool = _make_pool(conn)
+
+        # Should not raise — object_entity_id is set
+        await store_fact(
+            pool,
+            "Chloe",
+            "parent",
+            f"Parent relationship with {obj_eid}",
+            embedding_engine,
+            entity_id=eid,
+            object_entity_id=obj_eid,
+        )
+
+    async def test_content_without_uuid_passes(self, embedding_engine):
+        """Normal content without UUIDs is not affected by the guard."""
+        eid = uuid.uuid4()
+        # entity_id valid (1), no supersession match (None)
+        conn = _make_conn(fetchval_side_effect=[1, None])
+        pool = _make_pool(conn)
+
+        # Should not raise
+        await store_fact(
+            pool,
+            "Phillip",
+            "family_father_of",
+            "Phillip is Chloe's dad",
+            embedding_engine,
+            entity_id=eid,
+        )
