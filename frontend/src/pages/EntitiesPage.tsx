@@ -56,14 +56,14 @@ import {
 
 const PAGE_SIZE = 50;
 
-const ENTITY_TYPES = ["", "person", "organization", "place", "other"] as const;
+const ENTITY_TYPES = ["person", "organization", "place", "other"] as const;
 const TYPE_LABELS: Record<string, string> = {
-  "": "All Types",
   person: "Person",
   organization: "Organization",
   place: "Place",
   other: "Other",
 };
+const DEFAULT_TYPES = new Set(["person", "organization", "place"]);
 
 function entityTypeBadgeVariant(
   entityType: string,
@@ -534,16 +534,20 @@ function UnidentifiedEntitiesSection({
 export default function EntitiesPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState("person");
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set(DEFAULT_TYPES));
   const [page, setPage] = useState(0);
   const [mergeTarget, setMergeTarget] = useState<EntitySummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EntitySummary | null>(null);
   const deleteMutation = useDeleteEntity();
 
   // Fetch confirmed entities (excluding unidentified) for the main table
+  const typeParam =
+    typeFilter.size === 0 || typeFilter.size === ENTITY_TYPES.length
+      ? undefined
+      : [...typeFilter].join(",");
   const params: EntityParams = {
     q: search || undefined,
-    entity_type: typeFilter || undefined,
+    entity_type: typeParam,
     unidentified: false,
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
@@ -567,8 +571,13 @@ export default function EntitiesPage() {
     setPage(0);
   }
 
-  function handleTypeChange(value: string) {
-    setTypeFilter(value);
+  function toggleType(value: string) {
+    setTypeFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
     setPage(0);
   }
 
@@ -604,17 +613,18 @@ export default function EntitiesPage() {
               onChange={(e) => handleSearchChange(e.target.value)}
               className="max-w-sm"
             />
-            <select
-              value={typeFilter}
-              onChange={(e) => handleTypeChange(e.target.value)}
-              className="rounded-md border border-input bg-background px-3 py-2 text-sm"
-            >
+            <div className="flex items-center gap-1">
               {ENTITY_TYPES.map((t) => (
-                <option key={t} value={t}>
+                <Button
+                  key={t}
+                  variant={typeFilter.has(t) ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => toggleType(t)}
+                >
                   {TYPE_LABELS[t]}
-                </option>
+                </Button>
               ))}
-            </select>
+            </div>
           </div>
 
           {/* Table */}

@@ -710,9 +710,15 @@ async def list_entities(
         idx += 1
 
     if entity_type is not None:
-        conditions.append(f"e.entity_type = ${idx}")
-        args.append(entity_type)
-        idx += 1
+        types = [t.strip() for t in entity_type.split(",") if t.strip()]
+        if len(types) == 1:
+            conditions.append(f"e.entity_type = ${idx}")
+            args.append(types[0])
+            idx += 1
+        elif types:
+            conditions.append(f"e.entity_type = ANY(${idx}::text[])")
+            args.append(types)
+            idx += 1
 
     if unidentified is True:
         conditions.append("COALESCE((e.metadata->>'unidentified')::boolean, false) IS TRUE")
