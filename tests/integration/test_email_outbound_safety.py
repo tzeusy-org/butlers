@@ -412,16 +412,24 @@ class TestNotifyRecipientValidation:
         )
         daemon.switchboard_client.call_tool.assert_awaited_once()
 
-    async def test_known_non_owner_email_is_allowed(self, butler_dir: Path) -> None:
-        """A known non-owner contact MUST also be allowed (they're in the DB)."""
+    async def test_known_non_owner_email_is_blocked_without_rule(
+        self, butler_dir: Path
+    ) -> None:
+        """A known non-owner contact WITHOUT a standing rule MUST be blocked."""
         daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
         assert notify_fn is not None
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_non_owner_contact()),
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             result = await notify_fn(
                 channel="email",
@@ -429,7 +437,55 @@ class TestNotifyRecipientValidation:
                 recipient=KNOWN_NON_OWNER_EMAIL,
             )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "pending_approval", (
+            f"Known non-owner email '{KNOWN_NON_OWNER_EMAIL}' MUST be blocked "
+            f"without a standing rule, got status={result.get('status')}"
+        )
+
+    async def test_standing_rule_permits_known_non_owner_email(
+        self, butler_dir: Path
+    ) -> None:
+        """A known non-owner contact WITH a matching standing rule MUST be allowed."""
+        from butlers.modules.approvals.models import ApprovalRule
+
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        rule = ApprovalRule(
+            id=uuid.uuid4(),
+            tool_name="notify",
+            arg_constraints={
+                "recipient": {"type": "exact", "value": KNOWN_NON_OWNER_EMAIL},
+                "channel": {"type": "any"},
+                "message": {"type": "any"},
+                "intent": {"type": "any"},
+            },
+            description="Allow emails to known non-owner",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+        )
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=rule),
+            ),
+        ):
+            result = await notify_fn(
+                channel="email",
+                message="Hello friend",
+                recipient=KNOWN_NON_OWNER_EMAIL,
+            )
+
+        assert result["status"] == "ok", (
+            f"Known non-owner email WITH standing rule MUST be allowed, "
+            f"got status={result.get('status')}"
+        )
 
     async def test_standing_rule_permits_unknown_email(self, butler_dir: Path) -> None:
         """Unknown email WITH a matching standing rule MUST be allowed through."""

@@ -17,6 +17,7 @@ pytestmark = pytest.mark.unit
 EXPECTED_TELEGRAM_TOOLS = {
     "telegram_send_message",
     "telegram_reply_to_message",
+    "telegram_react_to_message",
 }
 # ---------------------------------------------------------------------------
 # Fixtures

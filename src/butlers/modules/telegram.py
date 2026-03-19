@@ -215,8 +215,15 @@ class TelegramModule(Module):
             """Reply to a Telegram message."""
             return await module._reply_to_message(chat_id, message_id, text)
 
+        async def telegram_react_to_message(
+            chat_id: str, message_id: int, emoji: str
+        ) -> dict[str, Any]:
+            """React to a Telegram message with an emoji."""
+            return await module._react_to_message(chat_id, message_id, emoji)
+
         mcp.tool()(telegram_send_message)
         mcp.tool()(telegram_reply_to_message)
+        mcp.tool()(telegram_react_to_message)
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Set webhook if configured. Ingestion is handled by TelegramBotConnector.
@@ -372,11 +379,10 @@ class TelegramModule(Module):
         data: dict[str, Any] = resp.json()
         return data
 
-    async def _set_message_reaction(
-        self, *, chat_id: str, message_id: int, reaction: str
+    async def _react_to_message(
+        self, chat_id: str, message_id: int, emoji: str
     ) -> dict[str, Any]:
-        """Call Telegram setMessageReaction API with a mapped lifecycle reaction emoji."""
-        emoji = REACTION_TO_EMOJI[reaction]
+        """Call Telegram setMessageReaction API with an arbitrary emoji."""
         url = f"{self._base_url()}/setMessageReaction"
         client = self._get_client()
         resp = await client.post(
@@ -390,6 +396,13 @@ class TelegramModule(Module):
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return data
+
+    async def _set_message_reaction(
+        self, *, chat_id: str, message_id: int, reaction: str
+    ) -> dict[str, Any]:
+        """Call Telegram setMessageReaction API with a mapped lifecycle reaction emoji."""
+        emoji = REACTION_TO_EMOJI[reaction]
+        return await self._react_to_message(chat_id, message_id, emoji)
 
 
 def _extract_text(update: dict[str, Any]) -> str | None:

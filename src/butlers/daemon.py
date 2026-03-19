@@ -102,6 +102,7 @@ from butlers.core.state import state_set as _state_set
 from butlers.core.telemetry import extract_trace_context, init_telemetry, tag_butler_span, tool_span
 from butlers.core.tool_call_capture import (
     capture_tool_call,
+    get_current_runtime_session_id,
     get_current_runtime_session_routing_context,
     reset_current_runtime_session_id,
     set_current_runtime_session_id,
@@ -2930,19 +2931,9 @@ class ButlerDaemon:
                         emoji = notify_request.delivery.emoji
                         if not emoji:
                             raise ValueError("React intent requires delivery.emoji.")
-                        # Call Telegram setMessageReaction API directly
-                        url = f"{telegram_module._base_url()}/setMessageReaction"
-                        client = telegram_module._get_client()
-                        resp = await client.post(
-                            url,
-                            json={
-                                "chat_id": chat_id,
-                                "message_id": target_message_id,
-                                "reaction": [{"type": "emoji", "emoji": emoji}],
-                            },
+                        adapter_result = await telegram_module._react_to_message(
+                            chat_id, target_message_id, emoji
                         )
-                        resp.raise_for_status()
-                        adapter_result = resp.json()
                     else:
                         raise ValueError(f"Unsupported telegram intent: {intent}")
 
@@ -3038,7 +3029,7 @@ class ButlerDaemon:
                                             _park_tool,
                                             json.dumps(_park_args),
                                             _park_summary,
-                                            None,
+                                            get_current_runtime_session_id(),
                                             _ActionStatus.PENDING.value,
                                             _now,
                                             _expires,
@@ -4398,7 +4389,7 @@ class ButlerDaemon:
                                 }
                             ),
                             agent_summary,
-                            None,  # session_id
+                            get_current_runtime_session_id(),
                             ActionStatus.PENDING.value,
                             now,
                             expires_at,
@@ -4499,7 +4490,13 @@ class ButlerDaemon:
                         "email",
                         resolved_recipient,
                     )
-                    if known_contact is None:
+                    # Block both unknown contacts AND known non-owner contacts.
+                    # Owner-targeted emails auto-approve; everything else needs
+                    # a standing rule or gets parked for human review.
+                    _is_owner = (
+                        known_contact is not None and "owner" in known_contact.roles
+                    )
+                    if not _is_owner:
                         # Check standing approval rules before parking
                         _notify_args = {
                             "channel": channel,
@@ -4519,7 +4516,7 @@ class ButlerDaemon:
                         if _rule_match is not None:
                             logger.info(
                                 "notify() email guard: standing rule %s permits "
-                                "unknown recipient %r — allowing delivery",
+                                "non-owner recipient %r — allowing delivery",
                                 _rule_match.id,
                                 resolved_recipient,
                             )
@@ -4537,13 +4534,18 @@ class ButlerDaemon:
 
                             from butlers.modules.approvals.models import ActionStatus
 
+                            _contact_desc = (
+                                "known non-owner contact"
+                                if known_contact is not None
+                                else "unknown contact"
+                            )
                             _park_id = uuid.uuid4()
                             _now = _dt.datetime.now(_dt.UTC)
                             _expires = _now + _dt.timedelta(hours=72)
                             _park_summary = (
                                 f"notify() rejected: email recipient "
                                 f"{resolved_recipient!r} "
-                                f"is not a known contact. Message: {message!r}"
+                                f"is a {_contact_desc}. Message: {message!r}"
                             )
                             await pool.execute(
                                 "INSERT INTO pending_actions "
@@ -4554,24 +4556,26 @@ class ButlerDaemon:
                                 "notify",
                                 json.dumps(_notify_args),
                                 _park_summary,
-                                None,
+                                get_current_runtime_session_id(),
                                 ActionStatus.PENDING.value,
                                 _now,
                                 _expires,
                             )
                             logger.warning(
-                                "notify() rejected unknown email recipient %r "
+                                "notify() rejected %s email recipient %r "
                                 "(parked as pending_action %s)",
+                                _contact_desc,
                                 resolved_recipient,
                                 _park_id,
                             )
                             return {
                                 "status": "pending_approval",
                                 "error": (
-                                    f"Email recipient '{resolved_recipient}' is not a "
-                                    f"known contact. The notification has been parked "
-                                    f"for owner review. Use contact_id to target known "
-                                    f"contacts, or notify via telegram instead."
+                                    f"Delivery blocked: email target "
+                                    f"'{resolved_recipient}' is a {_contact_desc} "
+                                    f"and no standing approval rule matches. "
+                                    f"Create a standing rule or approve via the "
+                                    f"approval dashboard."
                                 ),
                                 "pending_action_id": str(_park_id),
                             }
@@ -5052,7 +5056,7 @@ class ButlerDaemon:
                 tool_name,
                 json.dumps(tool_args),
                 agent_summary,
-                None,  # session_id
+                get_current_runtime_session_id(),
                 ActionStatus.PENDING.value,
                 now,
                 expires_at,
