@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
@@ -256,10 +257,17 @@ class TestOnStartupResolvesCalendarId:
         db.pool = MagicMock()
         mod = CalendarModule()
 
-        with patch(
-            "butlers.credential_store.resolve_owner_entity_info",
-            new_callable=AsyncMock,
-            return_value="test-refresh-token",
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            ),
+            patch(
+                "butlers.google_credentials._resolve_entity_refresh_token",
+                new_callable=AsyncMock,
+                return_value="test-refresh-token",
+            ),
         ):
             await mod.on_startup({"provider": "google"}, db=db, credential_store=store)
 

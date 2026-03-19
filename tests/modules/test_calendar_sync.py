@@ -56,11 +56,18 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def _mock_resolve_owner_entity_info():
-    """Patch resolve_owner_entity_info so CalendarModule gets a refresh token."""
-    with patch(
-        "butlers.credential_store.resolve_owner_entity_info",
-        new_callable=AsyncMock,
-        return_value="test-refresh-token",
+    """Patch Google credential helpers so CalendarModule gets a refresh token."""
+    with (
+        patch(
+            "butlers.google_credentials._resolve_account_entity_id",
+            new_callable=AsyncMock,
+            return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        ),
+        patch(
+            "butlers.google_credentials._resolve_entity_refresh_token",
+            new_callable=AsyncMock,
+            return_value="test-refresh-token",
+        ),
     ):
         yield
 

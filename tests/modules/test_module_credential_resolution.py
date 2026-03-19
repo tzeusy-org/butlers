@@ -7,6 +7,7 @@ All tests use a minimal in-memory CredentialStore mock — no real DB required.
 from __future__ import annotations
 
 import os
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -307,10 +308,17 @@ class TestCalendarModuleCredentialStore:
         db = MagicMock()
         db.pool = MagicMock()
         mod = CalendarModule()
-        with patch(
-            "butlers.credential_store.resolve_owner_entity_info",
-            new_callable=AsyncMock,
-            return_value="cs-refresh-token",
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            ),
+            patch(
+                "butlers.google_credentials._resolve_entity_refresh_token",
+                new_callable=AsyncMock,
+                return_value="cs-refresh-token",
+            ),
         ):
             await mod.on_startup(
                 {"provider": "google"},
@@ -346,10 +354,17 @@ class TestCalendarModuleCredentialStore:
         db = MagicMock()
         db.pool = MagicMock()
         mod = CalendarModule()
-        with patch(
-            "butlers.credential_store.resolve_owner_entity_info",
-            new_callable=AsyncMock,
-            return_value="db-refresh-token",
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            ),
+            patch(
+                "butlers.google_credentials._resolve_entity_refresh_token",
+                new_callable=AsyncMock,
+                return_value="db-refresh-token",
+            ),
         ):
             await mod.on_startup(
                 {"provider": "google"},

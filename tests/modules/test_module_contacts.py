@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -194,6 +196,30 @@ def _make_db_with_pool() -> MagicMock:
     return db
 
 
+@contextlib.contextmanager
+def _mock_primary_account_resolution(refresh_token: str = "rtoken"):
+    """Mock the primary-account credential resolution chain.
+
+    Replaces ``_resolve_account_entity_id`` and ``_resolve_entity_refresh_token``
+    from ``google_credentials`` so the contacts module resolves credentials via
+    the primary Google account path (the default when no explicit account is set).
+    """
+    fake_entity_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    with (
+        patch(
+            "butlers.google_credentials._resolve_account_entity_id",
+            new_callable=AsyncMock,
+            return_value=fake_entity_id,
+        ),
+        patch(
+            "butlers.google_credentials._resolve_entity_refresh_token",
+            new_callable=AsyncMock,
+            return_value=refresh_token,
+        ),
+    ):
+        yield
+
+
 class TestModuleStartup:
     """Verify startup provider selection behavior."""
 
@@ -223,11 +249,7 @@ class TestModuleStartup:
 
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock) as mock_start,
-            patch(
-                "butlers.credential_store.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value="rtoken",
-            ),
+            _mock_primary_account_resolution(),
         ):
             await mod.on_startup(
                 {"provider": "google"},
@@ -297,11 +319,7 @@ class TestModuleStartup:
 
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock) as mock_start,
-            patch(
-                "butlers.credential_store.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value="rtoken",
-            ),
+            _mock_primary_account_resolution(),
             patch.object(
                 ContactsModule,
                 "_create_telegram_provider",
@@ -328,11 +346,7 @@ class TestModuleStartup:
 
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
-            patch(
-                "butlers.credential_store.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value="rtoken",
-            ),
+            _mock_primary_account_resolution(),
             patch.object(
                 ContactsModule,
                 "_create_telegram_provider",
@@ -508,11 +522,7 @@ class TestModuleShutdown:
 
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
-            patch(
-                "butlers.credential_store.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value="rtoken",
-            ),
+            _mock_primary_account_resolution(),
         ):
             await mod.on_startup(
                 {"provider": "google"},
@@ -538,11 +548,7 @@ class TestModuleShutdown:
 
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
-            patch(
-                "butlers.credential_store.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value="rtoken",
-            ),
+            _mock_primary_account_resolution(),
         ):
             await mod.on_startup(
                 {"provider": "google"},
@@ -598,11 +604,7 @@ class TestRuntimeAccessibility:
 
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
-            patch(
-                "butlers.credential_store.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value="rtoken",
-            ),
+            _mock_primary_account_resolution(),
         ):
             await mod.on_startup(
                 {"provider": "google"},
@@ -622,11 +624,7 @@ class TestRuntimeAccessibility:
 
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
-            patch(
-                "butlers.credential_store.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value="rtoken",
-            ),
+            _mock_primary_account_resolution(),
         ):
             await mod.on_startup(
                 {"provider": "google"},

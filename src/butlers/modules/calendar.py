@@ -221,27 +221,45 @@ class _GoogleOAuthClient:
         return datetime.now(UTC) < self._access_token_expires_at
 
     async def _refresh_access_token(self) -> None:
-        try:
-            response = await self._http_client.post(
-                GOOGLE_OAUTH_TOKEN_URL,
-                data={
-                    "client_id": self._credentials.client_id,
-                    "client_secret": self._credentials.client_secret,
-                    "refresh_token": self._credentials.refresh_token,
-                    "grant_type": "refresh_token",
-                },
-                headers={"Accept": "application/json"},
-            )
-        except httpx.HTTPError as exc:
-            raise CalendarTokenRefreshError(
-                f"Google OAuth token refresh request failed: {exc}"
-            ) from exc
+        max_retries = 2
+        last_exc: CalendarTokenRefreshError | None = None
 
-        if response.status_code < 200 or response.status_code >= 300:
-            raise CalendarTokenRefreshError(
-                "Google OAuth token refresh failed "
-                f"({response.status_code}): {_safe_google_error_message(response)}"
-            )
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self._http_client.post(
+                    GOOGLE_OAUTH_TOKEN_URL,
+                    data={
+                        "client_id": self._credentials.client_id,
+                        "client_secret": self._credentials.client_secret,
+                        "refresh_token": self._credentials.refresh_token,
+                        "grant_type": "refresh_token",
+                    },
+                    headers={"Accept": "application/json"},
+                )
+            except httpx.HTTPError as exc:
+                raise CalendarTokenRefreshError(
+                    f"Google OAuth token refresh request failed: {exc}"
+                ) from exc
+
+            if response.status_code < 200 or response.status_code >= 300:
+                last_exc = CalendarTokenRefreshError(
+                    "Google OAuth token refresh failed "
+                    f"({response.status_code}): {_safe_google_error_message(response)}"
+                )
+                if attempt < max_retries:
+                    delay = 2**attempt  # 1s, 2s
+                    logger.warning(
+                        "CalendarModule: token refresh attempt %d/%d failed (%d), retrying in %ds",
+                        attempt + 1,
+                        max_retries + 1,
+                        response.status_code,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise last_exc
+
+            break
 
         try:
             payload = response.json()
@@ -4259,10 +4277,20 @@ class CalendarModule(Module):
                         refresh_token=refresh_token,
                     )
             elif pool is not None:
-                # Backward compat: primary account via owner entity_info.
-                from butlers.credential_store import resolve_owner_entity_info
+                # No explicit account configured — resolve via primary Google account.
+                from butlers.google_credentials import (
+                    _resolve_account_entity_id,
+                    _resolve_entity_refresh_token,
+                )
 
-                refresh_token = await resolve_owner_entity_info(pool, "google_oauth_refresh")
+                primary_entity_id = await _resolve_account_entity_id(pool, None)
+                if primary_entity_id is not None:
+                    refresh_token = await _resolve_entity_refresh_token(pool, primary_entity_id)
+                else:
+                    # Legacy fallback: owner entity (pre-multi-account deployments).
+                    from butlers.credential_store import resolve_owner_entity_info
+
+                    refresh_token = await resolve_owner_entity_info(pool, "google_oauth_refresh")
 
                 if client_id and client_secret and refresh_token:
                     logger.debug("CalendarModule: resolved Google credentials from CredentialStore")

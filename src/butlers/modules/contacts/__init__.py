@@ -867,19 +867,42 @@ class ContactsModule(Module):
                 if row is not None:
                     refresh_token = row["value"]
         elif pool is not None:
-            # Backward compat: primary account via owner entity_info.
-            from butlers.credential_store import resolve_owner_entity_info
+            # No explicit account — resolve via primary Google account.
+            from butlers.google_credentials import (
+                _resolve_account_entity_id,
+                _resolve_entity_refresh_token,
+            )
 
-            refresh_token = await resolve_owner_entity_info(pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE)
+            primary_entity_id = await _resolve_account_entity_id(pool, None)
+            if primary_entity_id is not None:
+                refresh_token = await _resolve_entity_refresh_token(pool, primary_entity_id)
+            else:
+                # Legacy fallback: owner entity (pre-multi-account deployments).
+                from butlers.credential_store import resolve_owner_entity_info
+
+                refresh_token = await resolve_owner_entity_info(
+                    pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
+                )
         else:
             # No pool: fall back to owner entity_info via db.pool
             db_pool = getattr(self._db, "pool", None)
             if db_pool is not None:
-                from butlers.credential_store import resolve_owner_entity_info
-
-                refresh_token = await resolve_owner_entity_info(
-                    db_pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
+                from butlers.google_credentials import (
+                    _resolve_account_entity_id as _resolve_acct,
                 )
+                from butlers.google_credentials import (
+                    _resolve_entity_refresh_token as _resolve_token,
+                )
+
+                primary_entity_id = await _resolve_acct(db_pool, None)
+                if primary_entity_id is not None:
+                    refresh_token = await _resolve_token(db_pool, primary_entity_id)
+                else:
+                    from butlers.credential_store import resolve_owner_entity_info
+
+                    refresh_token = await resolve_owner_entity_info(
+                        db_pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
+                    )
 
         if client_id and client_secret and refresh_token:
             logger.debug(
