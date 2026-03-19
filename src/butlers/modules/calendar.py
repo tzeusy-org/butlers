@@ -4286,11 +4286,6 @@ class CalendarModule(Module):
                 primary_entity_id = await _resolve_account_entity_id(pool, None)
                 if primary_entity_id is not None:
                     refresh_token = await _resolve_entity_refresh_token(pool, primary_entity_id)
-                else:
-                    # Legacy fallback: owner entity (pre-multi-account deployments).
-                    from butlers.credential_store import resolve_owner_entity_info
-
-                    refresh_token = await resolve_owner_entity_info(pool, "google_oauth_refresh")
 
                 if client_id and client_secret and refresh_token:
                     logger.debug("CalendarModule: resolved Google credentials from CredentialStore")

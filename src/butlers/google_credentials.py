@@ -48,12 +48,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from butlers.credential_store import (
-    CredentialStore,
-    delete_owner_entity_info,
-    resolve_owner_entity_info,
-    upsert_owner_entity_info,
-)
+from butlers.credential_store import CredentialStore
 
 if TYPE_CHECKING:
     import asyncpg
@@ -366,8 +361,7 @@ async def store_google_credentials(
         Space-separated OAuth scopes granted (optional).
     account:
         Google account selector. May be an email string, a UUID (account id),
-        or ``None`` (default: use the primary account). When no google_accounts
-        table exists (legacy), falls back to the owner entity.
+        or ``None`` (default: use the primary account).
     """
     # Validate and normalise via the model (raises ValueError on empty/whitespace fields).
     validated = GoogleCredentials(
@@ -407,9 +401,10 @@ async def store_google_credentials(
         if entity_id is not None:
             await _upsert_entity_refresh_token(pool, entity_id, validated.refresh_token)
         else:
-            # Fallback: legacy single-account — store on owner entity
-            await upsert_owner_entity_info(
-                pool, CONTACT_INFO_REFRESH_TOKEN, validated.refresh_token
+            logger.warning(
+                "Cannot store refresh token: no google_accounts row found for account=%r. "
+                "App credentials were stored; refresh token was skipped.",
+                account,
             )
 
     logger.info(
@@ -460,9 +455,6 @@ async def load_google_credentials(
         entity_id = await _resolve_account_entity_id(pool, account)
         if entity_id is not None:
             refresh_token = await _resolve_entity_refresh_token(pool, entity_id)
-        else:
-            # Fallback: legacy single-account — read from owner entity
-            refresh_token = await resolve_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
 
     missing = [
         field
@@ -576,9 +568,6 @@ async def load_app_credentials(
         entity_id = await _resolve_account_entity_id(pool, account)
         if entity_id is not None:
             refresh_token = await _resolve_entity_refresh_token(pool, entity_id)
-        else:
-            # Fallback: legacy single-account — read from owner entity
-            refresh_token = await resolve_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
 
     scope = await store.load(KEY_SCOPES)
 
@@ -637,28 +626,20 @@ async def delete_google_credentials(
 
         # Delete ALL refresh tokens across all companion entities (bulk DELETE).
         if pool is not None:
-            try:
-                async with _pool_acquire(pool) as conn:
-                    rows = await conn.fetch("SELECT entity_id FROM shared.google_accounts")
-                    entity_ids = [row["entity_id"] for row in rows]
-                    if entity_ids:
-                        delete_result = await conn.execute(
-                            "DELETE FROM shared.entity_info"
-                            " WHERE entity_id = ANY($1) AND type = $2",
-                            entity_ids,
-                            CONTACT_INFO_REFRESH_TOKEN,
-                        )
-                        # asyncpg returns e.g. "DELETE 3"; check count > 0
-                        deleted_count = int(delete_result.split()[-1]) if delete_result else 0
-                        results.append(deleted_count > 0)
-                    # Update all accounts to revoked.
-                    await conn.execute("UPDATE shared.google_accounts SET status = 'revoked'")
-            except Exception as exc:  # noqa: BLE001
-                if not _is_missing_table_or_schema_error(exc):
-                    raise
-                # Fallback: legacy single-account
-                ci_deleted = await delete_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
-                results.append(ci_deleted)
+            async with _pool_acquire(pool) as conn:
+                rows = await conn.fetch("SELECT entity_id FROM shared.google_accounts")
+                entity_ids = [row["entity_id"] for row in rows]
+                if entity_ids:
+                    delete_result = await conn.execute(
+                        "DELETE FROM shared.entity_info WHERE entity_id = ANY($1) AND type = $2",
+                        entity_ids,
+                        CONTACT_INFO_REFRESH_TOKEN,
+                    )
+                    # asyncpg returns e.g. "DELETE 3"; check count > 0
+                    deleted_count = int(delete_result.split()[-1]) if delete_result else 0
+                    results.append(deleted_count > 0)
+                # Update all accounts to revoked.
+                await conn.execute("UPDATE shared.google_accounts SET status = 'revoked'")
     else:
         # Only delete the refresh token for the specified (or primary) account.
         if pool is not None:
@@ -672,10 +653,6 @@ async def delete_google_credentials(
                 except Exception as exc:  # noqa: BLE001
                     if not _is_missing_table_or_schema_error(exc):
                         raise
-            else:
-                # Fallback: legacy single-account
-                ci_deleted = await delete_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
-                results.append(ci_deleted)
 
     deleted = any(results)
     if deleted:
@@ -734,27 +711,20 @@ async def resolve_google_credentials(
         If credentials cannot be found in DB, or if the specified account does
         not exist, or if no primary account exists when account=None.
     """
-    # Validate account exists when pool is provided and google_accounts table exists.
+    # Validate account exists when pool is provided.
     if pool is not None:
         entity_id = await _resolve_account_entity_id(pool, account)
         if entity_id is None:
-            # Could be no primary, or account not found, or legacy (no google_accounts table).
-            # Check if the legacy owner entity has a token.
-            legacy_token = await resolve_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
-            if legacy_token is None:
-                # Check if google_accounts table exists to give a better error message.
-                has_table = await _google_accounts_table_exists(pool)
-                if has_table:
-                    if account is None:
-                        raise MissingGoogleCredentialsError(
-                            f"[{caller}] No primary Google account is configured. "
-                            "Connect a Google account via GET /api/oauth/google/start."
-                        )
-                    else:
-                        raise MissingGoogleCredentialsError(
-                            f"[{caller}] Google account {account!r} is not connected. "
-                            "Connect the account via GET /api/oauth/google/start."
-                        )
+            if account is None:
+                raise MissingGoogleCredentialsError(
+                    f"[{caller}] No primary Google account is configured. "
+                    "Connect a Google account via GET /api/oauth/google/start."
+                )
+            else:
+                raise MissingGoogleCredentialsError(
+                    f"[{caller}] Google account {account!r} is not connected. "
+                    "Connect the account via GET /api/oauth/google/start."
+                )
 
     try:
         creds = await load_google_credentials(store, pool=pool, account=account)
@@ -773,16 +743,6 @@ async def resolve_google_credentials(
         f"[{caller}] Google OAuth credentials are not available in butler_secrets. "
         "Bootstrap via GET /api/oauth/google/start and persist credentials in DB."
     )
-
-
-async def _google_accounts_table_exists(pool: asyncpg.Pool) -> bool:
-    """Return True if the shared.google_accounts table exists."""
-    try:
-        async with _pool_acquire(pool) as conn:
-            await conn.fetchval("SELECT 1 FROM shared.google_accounts LIMIT 0")
-        return True
-    except Exception:  # noqa: BLE001
-        return False
 
 
 async def _resolve_account_entity_id(

@@ -86,11 +86,6 @@ def _make_empty_pool() -> MagicMock:
     return _make_pool_with_values({})
 
 
-def _make_contact_info_pool(value: str | None = None) -> MagicMock:
-    """Build a pool mock for resolve_owner_entity_info calls."""
-    return MagicMock()
-
-
 # ---------------------------------------------------------------------------
 # KEY_* constants
 # ---------------------------------------------------------------------------
@@ -314,8 +309,8 @@ class TestStoreGoogleCredentialsWithCredentialStore:
         mock_resolve.assert_awaited_once_with(ci_pool, "work@gmail.com")
         mock_upsert.assert_awaited_once_with(ci_pool, _ENTITY_ID_2, "rtoken2")
 
-    async def test_falls_back_to_owner_entity_when_no_account_entity(self) -> None:
-        """When _resolve_account_entity_id returns None, fall back to owner entity."""
+    async def test_skips_refresh_token_when_no_account_entity(self) -> None:
+        """When _resolve_account_entity_id returns None, refresh token is not persisted."""
         pool = _make_empty_pool()
         store = CredentialStore(pool)
         ci_pool = MagicMock()
@@ -328,10 +323,9 @@ class TestStoreGoogleCredentialsWithCredentialStore:
                 return_value=None,
             ),
             patch(
-                "butlers.google_credentials.upsert_owner_entity_info",
+                "butlers.google_credentials._upsert_entity_refresh_token",
                 new_callable=AsyncMock,
-                return_value=True,
-            ) as mock_owner_upsert,
+            ) as mock_upsert,
         ):
             await store_google_credentials(
                 store,
@@ -341,7 +335,8 @@ class TestStoreGoogleCredentialsWithCredentialStore:
                 refresh_token="rtoken",
             )
 
-        mock_owner_upsert.assert_awaited_once_with(ci_pool, CONTACT_INFO_REFRESH_TOKEN, "rtoken")
+        # No entity found → refresh token is NOT persisted anywhere
+        mock_upsert.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -508,8 +503,8 @@ class TestLoadGoogleCredentialsWithCredentialStore:
             assert creds is not None
             assert creds.refresh_token == expected_token
 
-    async def test_falls_back_to_owner_entity_when_no_account_entity(self) -> None:
-        """When _resolve_account_entity_id returns None, fall back to owner entity."""
+    async def test_raises_when_no_account_entity(self) -> None:
+        """When _resolve_account_entity_id returns None, no refresh token is loaded."""
         pool = _make_pool_with_values(
             {
                 KEY_CLIENT_ID: "cid",
@@ -519,22 +514,13 @@ class TestLoadGoogleCredentialsWithCredentialStore:
         store = CredentialStore(pool)
         ci_pool = MagicMock()
 
-        with (
-            patch(
-                "butlers.google_credentials._resolve_account_entity_id",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value="legacy-rtoken",
-            ),
+        with patch(
+            "butlers.google_credentials._resolve_account_entity_id",
+            new_callable=AsyncMock,
+            return_value=None,
         ):
-            creds = await load_google_credentials(store, pool=ci_pool)
-
-        assert creds is not None
-        assert creds.refresh_token == "legacy-rtoken"
+            with pytest.raises(InvalidGoogleCredentialsError, match="refresh_token"):
+                await load_google_credentials(store, pool=ci_pool)
 
 
 # ---------------------------------------------------------------------------
@@ -775,28 +761,20 @@ class TestDeleteGoogleCredentialsWithCredentialStore:
 
         assert result is False
 
-    async def test_falls_back_to_owner_entity_when_no_account_entity(self) -> None:
-        """When no account entity, falls back to deleting from owner entity."""
+    async def test_returns_false_when_no_account_entity(self) -> None:
+        """When _resolve_account_entity_id returns None, nothing is deleted."""
         pool = _make_empty_pool()
         store = CredentialStore(pool)
         ci_pool = MagicMock()
 
-        with (
-            patch(
-                "butlers.google_credentials._resolve_account_entity_id",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.google_credentials.delete_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value=True,
-            ) as mock_owner_del,
+        with patch(
+            "butlers.google_credentials._resolve_account_entity_id",
+            new_callable=AsyncMock,
+            return_value=None,
         ):
             result = await delete_google_credentials(store, pool=ci_pool)
 
-        mock_owner_del.assert_awaited_once_with(ci_pool, CONTACT_INFO_REFRESH_TOKEN)
-        assert result is True
+        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -825,11 +803,6 @@ class TestResolveGoogleCredentialsWithCredentialStore:
                 "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value="db-rtoken",
-            ),
-            patch(
-                "butlers.google_credentials._google_accounts_table_exists",
-                new_callable=AsyncMock,
-                return_value=True,
             ),
         ):
             creds = await resolve_google_credentials(store, pool=ci_pool, caller="test")
@@ -876,11 +849,6 @@ class TestResolveGoogleCredentialsWithCredentialStore:
                 new_callable=AsyncMock,
                 return_value="ei-rtoken",
             ),
-            patch(
-                "butlers.google_credentials._google_accounts_table_exists",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
         ):
             creds = await resolve_google_credentials(store, pool=ci_pool, caller="test")
 
@@ -902,16 +870,6 @@ class TestResolveGoogleCredentialsWithCredentialStore:
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
                 return_value=None,
-            ),
-            patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.google_credentials._google_accounts_table_exists",
-                new_callable=AsyncMock,
-                return_value=True,
             ),
         ):
             with pytest.raises(MissingGoogleCredentialsError, match="not connected"):
@@ -935,16 +893,6 @@ class TestResolveGoogleCredentialsWithCredentialStore:
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
                 return_value=None,
-            ),
-            patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.google_credentials._google_accounts_table_exists",
-                new_callable=AsyncMock,
-                return_value=True,
             ),
         ):
             with pytest.raises(MissingGoogleCredentialsError, match="primary"):

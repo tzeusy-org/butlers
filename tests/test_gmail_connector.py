@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2168,10 +2169,10 @@ class TestResolveGmailCredentialsFromDb:
             patch(
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
+                "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value="db-refresh-token",
             ),
@@ -2225,10 +2226,10 @@ class TestResolveGmailCredentialsFromDb:
             patch(
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
+                "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value="db-refresh-token",
             ),
@@ -2280,10 +2281,10 @@ class TestResolveGmailCredentialsFromDb:
             patch(
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
+                "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value="db-refresh-token",
             ),
@@ -2353,10 +2354,17 @@ class TestResolveGmailCredentialsFromDb:
             raise AssertionError(f"Unexpected search_path: {search_path!r}")
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-        with patch(
-            "butlers.google_credentials.resolve_owner_entity_info",
-            new_callable=AsyncMock,
-            return_value="db-refresh-token",
+        with (
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            ),
+            patch(
+                "butlers.google_credentials._resolve_entity_refresh_token",
+                new_callable=AsyncMock,
+                return_value="db-refresh-token",
+            ),
         ):
             result = await _resolve_gmail_credentials_from_db()
         assert result is not None

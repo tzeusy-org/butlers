@@ -16,9 +16,6 @@ from pydantic import (
 )
 
 from butlers.google_credentials import (
-    CONTACT_INFO_REFRESH_TOKEN as _GOOGLE_CONTACT_INFO_REFRESH_TYPE,
-)
-from butlers.google_credentials import (
     KEY_CLIENT_ID as _GOOGLE_OAUTH_CLIENT_ID_KEY,
 )
 from butlers.google_credentials import (
@@ -876,15 +873,8 @@ class ContactsModule(Module):
             primary_entity_id = await _resolve_account_entity_id(pool, None)
             if primary_entity_id is not None:
                 refresh_token = await _resolve_entity_refresh_token(pool, primary_entity_id)
-            else:
-                # Legacy fallback: owner entity (pre-multi-account deployments).
-                from butlers.credential_store import resolve_owner_entity_info
-
-                refresh_token = await resolve_owner_entity_info(
-                    pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
-                )
         else:
-            # No pool: fall back to owner entity_info via db.pool
+            # No pool: fall back to primary account via db.pool
             db_pool = getattr(self._db, "pool", None)
             if db_pool is not None:
                 from butlers.google_credentials import (
@@ -897,12 +887,6 @@ class ContactsModule(Module):
                 primary_entity_id = await _resolve_acct(db_pool, None)
                 if primary_entity_id is not None:
                     refresh_token = await _resolve_token(db_pool, primary_entity_id)
-                else:
-                    from butlers.credential_store import resolve_owner_entity_info
-
-                    refresh_token = await resolve_owner_entity_info(
-                        db_pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
-                    )
 
         if client_id and client_secret and refresh_token:
             logger.debug(
