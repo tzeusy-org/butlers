@@ -48,7 +48,7 @@ function isGroup(item: NavItem): item is NavGroupItem {
 // Nav sections configuration
 // ---------------------------------------------------------------------------
 
-const navSections: NavSection[] = [
+export const navSections: NavSection[] = [
   {
     title: 'Main',
     items: [

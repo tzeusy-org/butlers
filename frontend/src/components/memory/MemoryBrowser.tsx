@@ -266,7 +266,17 @@ function FactsTab({ butlerScope }: { butlerScope?: string }) {
                   </TableCell>
                   <TableCell>{f.predicate}</TableCell>
                   <TableCell className="max-w-xs truncate">
-                    {truncate(f.content)}
+                    {f.object_entity_id ? (
+                      <Link
+                        to={`/entities/${f.object_entity_id}`}
+                        className="text-primary hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {f.object_entity_name ?? truncate(f.content)}
+                      </Link>
+                    ) : (
+                      truncate(f.content)
+                    )}
                   </TableCell>
                   <TableCell>{confidenceBar(f.confidence)}</TableCell>
                   <TableCell>{permanenceBadge(f.permanence)}</TableCell>

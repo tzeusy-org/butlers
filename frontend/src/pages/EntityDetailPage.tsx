@@ -782,7 +782,31 @@ export default function EntityDetailPage() {
                     </Button>
                   </div>
                 )}
-                <Badge>{entity.entity_type}</Badge>
+                <Select
+                  value={entity.entity_type}
+                  onValueChange={(val) => {
+                    if (!entityId || val === entity.entity_type) return;
+                    updateEntity.mutate(
+                      { entityId, request: { entity_type: val } },
+                      {
+                        onSuccess: () => toast.success(`Type changed to ${val}`),
+                        onError: (err) =>
+                          toast.error(`Failed: ${(err as Error).message}`),
+                      },
+                    );
+                  }}
+                >
+                  <SelectTrigger className="h-7 w-auto gap-1 text-xs font-medium border-none bg-secondary px-2.5 py-0.5 rounded-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["person", "organization", "place", "other"].map((t) => (
+                      <SelectItem key={t} value={t} className="text-xs capitalize">
+                        {t}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 {entity.roles?.includes("owner") && (
                   <Badge
                     style={{ backgroundColor: "#7c3aed", color: "#fff" }}
@@ -1065,7 +1089,16 @@ export default function EntityDetailPage() {
                             {fact.predicate}
                           </td>
                           <td className="py-2 pr-4 max-w-md truncate">
-                            {fact.content}
+                            {fact.object_entity_id ? (
+                              <Link
+                                to={`/entities/${fact.object_entity_id}`}
+                                className="text-primary hover:underline"
+                              >
+                                {fact.object_entity_name ?? fact.content}
+                              </Link>
+                            ) : (
+                              fact.content
+                            )}
                           </td>
                           <td className="py-2 pr-4 text-right tabular-nums">
                             {(fact.confidence * 100).toFixed(0)}%

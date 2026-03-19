@@ -1,44 +1,50 @@
 """Search-specific Pydantic models.
 
 Provides ``SearchResult`` and ``SearchResponse`` for the cross-butler
-fan-out search endpoint that queries sessions and state across all butler
-databases.
+fan-out search endpoint that queries sessions, state, entities, and
+contacts across butler databases and the shared schema.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 class SearchResult(BaseModel):
-    """A single search result from a cross-butler fan-out search.
+    """A single search result rendered in the command palette.
 
     Attributes
     ----------
+    id:
+        Unique identifier for the result (used as React key).
     butler:
-        Name of the butler whose database produced this result.
-    matched_field:
-        Which column/field matched the query (e.g. ``"prompt"``,
-        ``"result"``, ``"key"``, ``"value"``).
+        Name of the butler or source (e.g. ``"relationship"``, ``"system"``).
+    type:
+        Result category (e.g. ``"session"``, ``"entity"``, ``"contact"``).
+    title:
+        Display title for the result row.
     snippet:
-        Relevant text excerpt containing the matched content.
-    data:
-        Full record data for constructing links and detail views.
+        Secondary text shown below the title.
+    url:
+        Client-side route to navigate to when selected.
     """
 
+    id: str
     butler: str
-    matched_field: str
+    type: str
+    title: str
     snippet: str
-    data: dict[str, Any] = Field(default_factory=dict)
+    url: str
 
 
 class SearchResponse(BaseModel):
     """Grouped search results from a cross-butler fan-out search.
 
-    Results are grouped by source table: sessions and state entries.
+    Results are grouped by category: entities, contacts, sessions, and
+    state entries.
     """
 
+    entities: list[SearchResult] = Field(default_factory=list)
+    contacts: list[SearchResult] = Field(default_factory=list)
     sessions: list[SearchResult] = Field(default_factory=list)
     state: list[SearchResult] = Field(default_factory=list)

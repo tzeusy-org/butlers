@@ -64,7 +64,7 @@ BUTLER_REGISTRY: list[dict[str, Any]] = [
     },
     {
         "name": "general",
-        "description": "Flexible catch-all assistant for freeform data",
+        "description": "Flexible catch-all assistant for freeform data. IMPORTANT: This is a fallback butler, routing to this butler should be MUTUALLY EXCLUSIVE from routing to any other butler!",
         "modules": ["calendar", "contacts", "general", "memory"],
     },
     {

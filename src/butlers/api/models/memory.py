@@ -49,6 +49,7 @@ class Fact(BaseModel):
     entity_id: str | None = None
     entity_name: str | None = None
     object_entity_id: str | None = None
+    object_entity_name: str | None = None
     validity: str = "active"
     scope: str = "global"
     tenant_id: str = "owner"
@@ -150,6 +151,7 @@ class UpdateEntityRequest(BaseModel):
     """Patch request for updating entity core fields."""
 
     canonical_name: str | None = None
+    entity_type: str | None = None
     aliases: list[str] | None = None
     metadata: dict | None = None
     roles: list[str] | None = None

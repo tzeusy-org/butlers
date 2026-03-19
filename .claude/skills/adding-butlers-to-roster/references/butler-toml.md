@@ -268,7 +268,7 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 [butler]
 name = "general"
 port = 41101
-description = "Flexible catch-all assistant for freeform data"
+description = "Flexible catch-all assistant for freeform data. IMPORTANT: This is a fallback butler, routing to this butler should be MUTUALLY EXCLUSIVE from routing to any other butler!"
 
 [butler.runtime]
 model = "gpt-5.1"

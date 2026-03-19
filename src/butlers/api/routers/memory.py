@@ -123,8 +123,9 @@ def _sort_rows_by_created_at(rows: list[object]) -> list[object]:
 
 
 async def _resolve_entity_names(db: DatabaseManager, facts: list[Fact]) -> list[Fact]:
-    """Batch-resolve entity_id → canonical_name for a list of Facts."""
+    """Batch-resolve entity_id and object_entity_id → canonical_name for a list of Facts."""
     entity_ids = {f.entity_id for f in facts if f.entity_id}
+    entity_ids |= {f.object_entity_id for f in facts if f.object_entity_id}
     if not entity_ids:
         return facts
     pool = _any_pool(db)
@@ -136,6 +137,8 @@ async def _resolve_entity_names(db: DatabaseManager, facts: list[Fact]) -> list[
     for f in facts:
         if f.entity_id and f.entity_id in name_map:
             f.entity_name = name_map[f.entity_id]
+        if f.object_entity_id and f.object_entity_id in name_map:
+            f.object_entity_name = name_map[f.object_entity_id]
     return facts
 
 
@@ -401,7 +404,8 @@ async def list_facts(
         rows = await pool.fetch(
             f"SELECT id, subject, predicate, content, importance, confidence,"
             f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            f" entity_id, validity, scope, reference_count, created_at, last_referenced_at,"
+            f" entity_id, object_entity_id, validity, scope, reference_count,"
+            f" created_at, last_referenced_at,"
             f" last_confirmed_at, tags, metadata"
             f" FROM facts{where}"
             f" ORDER BY created_at DESC"
@@ -449,7 +453,8 @@ async def get_fact(
         return await pool.fetchrow(
             "SELECT id, subject, predicate, content, importance, confidence,"
             " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            " entity_id, validity, scope, reference_count, created_at, last_referenced_at,"
+            " entity_id, object_entity_id, validity, scope, reference_count,"
+            " created_at, last_referenced_at,"
             " last_confirmed_at, tags, metadata"
             " FROM facts WHERE id = $1",
             fact_id,
@@ -846,7 +851,8 @@ async def get_entity(
         rows = await fpool.fetch(
             "SELECT id, subject, predicate, content, importance, confidence,"
             " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            " validity, scope, reference_count, created_at, last_referenced_at,"
+            " object_entity_id, validity, scope, reference_count,"
+            " created_at, last_referenced_at,"
             " last_confirmed_at, tags, metadata"
             " FROM facts WHERE entity_id = $1 AND validity = 'active'"
             " ORDER BY created_at DESC LIMIT 20",
@@ -875,6 +881,7 @@ async def get_entity(
         info_rows = []
 
     recent_facts = [_row_to_fact(f) for f in merged_fact_rows]
+    recent_facts = await _resolve_entity_names(db, recent_facts)
 
     entity_info = [
         EntityInfoEntry(
@@ -933,6 +940,17 @@ async def update_entity(
     if body.canonical_name is not None:
         sets.append(f"canonical_name = ${idx}")
         args.append(body.canonical_name)
+        idx += 1
+
+    if body.entity_type is not None:
+        _VALID_ENTITY_TYPES = {"person", "organization", "place", "other"}
+        if body.entity_type not in _VALID_ENTITY_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid entity_type. Must be one of: {', '.join(sorted(_VALID_ENTITY_TYPES))}",
+            )
+        sets.append(f"entity_type = ${idx}")
+        args.append(body.entity_type)
         idx += 1
 
     if body.aliases is not None:
@@ -1319,6 +1337,7 @@ def _row_to_fact(r) -> Fact:
         source_episode_id=str(r["source_episode_id"]) if r["source_episode_id"] else None,
         supersedes_id=str(r["supersedes_id"]) if r["supersedes_id"] else None,
         entity_id=str(r["entity_id"]) if r.get("entity_id") else None,
+        object_entity_id=str(r["object_entity_id"]) if r.get("object_entity_id") else None,
         validity=r["validity"],
         scope=r["scope"],
         reference_count=r["reference_count"],

@@ -124,7 +124,16 @@ export default function FactDetailPage() {
                 </p>
                 <div className="rounded-md bg-muted/30 p-4">
                   <p className="text-sm whitespace-pre-wrap break-words">
-                    {fact.content}
+                    {fact.object_entity_id ? (
+                      <Link
+                        to={`/entities/${fact.object_entity_id}`}
+                        className="text-primary hover:underline"
+                      >
+                        {fact.object_entity_name ?? fact.content}
+                      </Link>
+                    ) : (
+                      fact.content
+                    )}
                   </p>
                 </div>
               </div>

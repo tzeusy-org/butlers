@@ -69,16 +69,50 @@ def _make_state_search_row(
     }
 
 
+def _make_entity_search_row(
+    *,
+    entity_id=None,
+    canonical_name="Test Entity",
+    entity_type="person",
+    aliases=None,
+):
+    """Create a dict mimicking an asyncpg Record for entity search results."""
+    return {
+        "id": entity_id or uuid4(),
+        "canonical_name": canonical_name,
+        "entity_type": entity_type,
+        "aliases": aliases or [],
+    }
+
+
+def _make_contact_search_row(
+    *,
+    contact_id=None,
+    name="Test Contact",
+    email=None,
+    phone=None,
+):
+    """Create a dict mimicking an asyncpg Record for contact search results."""
+    return {
+        "id": contact_id or uuid4(),
+        "name": name,
+        "email": email,
+        "phone": phone,
+    }
+
+
 def _app_with_mock_db(
     app: FastAPI,
     *,
     fan_out_results: list[dict[str, list]] | None = None,
+    shared_pool_results: list[list] | None = None,
 ) -> FastAPI:
     """Wire a FastAPI app with a mocked DatabaseManager.
 
     Accepts the shared module-scoped ``app`` fixture so that create_app()
     is not called per test.  fan_out_results is a list of dicts — one per
-    fan_out call in order.
+    fan_out call in order.  shared_pool_results is a list of row lists — one
+    per pool.fetch() call in order (for entity/contact queries).
     """
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "switchboard"]
@@ -87,6 +121,14 @@ def _app_with_mock_db(
         mock_db.fan_out = AsyncMock(side_effect=fan_out_results)
     else:
         mock_db.fan_out = AsyncMock(return_value={})
+
+    # Mock pool() for shared-schema queries (entities, contacts)
+    mock_pool = MagicMock()
+    if shared_pool_results is not None:
+        mock_pool.fetch = AsyncMock(side_effect=shared_pool_results)
+    else:
+        mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db.pool = MagicMock(return_value=mock_pool)
 
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
@@ -135,7 +177,7 @@ class TestExtractSnippet:
 
 class TestSearchResponseStructure:
     async def test_returns_grouped_results(self, app):
-        """Response must have 'sessions' and 'state' arrays."""
+        """Response must have all category arrays inside 'data' envelope."""
         _app_with_mock_db(app, fan_out_results=[{}, {}])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -144,10 +186,13 @@ class TestSearchResponseStructure:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert "sessions" in body
-        assert "state" in body
-        assert isinstance(body["sessions"], list)
-        assert isinstance(body["state"], list)
+        data = body["data"]
+        assert "entities" in data
+        assert "contacts" in data
+        assert "sessions" in data
+        assert "state" in data
+        for key in ("entities", "contacts", "sessions", "state"):
+            assert isinstance(data[key], list)
 
     async def test_empty_query_returns_empty_results(self, app):
         """An empty query string should return empty groups immediately."""
@@ -158,9 +203,11 @@ class TestSearchResponseStructure:
             resp = await client.get("/api/search", params={"q": ""})
 
         assert resp.status_code == 200
-        body = resp.json()
-        assert body["sessions"] == []
-        assert body["state"] == []
+        data = resp.json()["data"]
+        assert data["entities"] == []
+        assert data["contacts"] == []
+        assert data["sessions"] == []
+        assert data["state"] == []
 
     async def test_whitespace_query_returns_empty_results(self, app):
         """A whitespace-only query should return empty groups."""
@@ -171,9 +218,11 @@ class TestSearchResponseStructure:
             resp = await client.get("/api/search", params={"q": "   "})
 
         assert resp.status_code == 200
-        body = resp.json()
-        assert body["sessions"] == []
-        assert body["state"] == []
+        data = resp.json()["data"]
+        assert data["entities"] == []
+        assert data["contacts"] == []
+        assert data["sessions"] == []
+        assert data["state"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +232,7 @@ class TestSearchResponseStructure:
 
 class TestSearchFanOut:
     async def test_sessions_search_results(self, app):
-        """Session search results should include butler, matched_field, snippet, data."""
+        """Session search results should include id, butler, type, title, snippet, url."""
         sid = uuid4()
         row = _make_session_search_row(
             session_id=sid,
@@ -205,16 +254,18 @@ class TestSearchFanOut:
             resp = await client.get("/api/search", params={"q": "deploy"})
 
         assert resp.status_code == 200
-        sessions = resp.json()["sessions"]
+        sessions = resp.json()["data"]["sessions"]
         assert len(sessions) == 1
         result = sessions[0]
+        assert result["id"] == str(sid)
         assert result["butler"] == "atlas"
-        assert result["matched_field"] == "prompt"
+        assert result["type"] == "session"
+        assert "deploy" in result["title"]
         assert "deploy" in result["snippet"]
-        assert result["data"]["id"] == str(sid)
+        assert result["url"] == f"/sessions/{sid}"
 
     async def test_state_search_results(self, app):
-        """State search results should include butler, matched_field, snippet, data."""
+        """State search results should include id, butler, type, title, snippet, url."""
         row = _make_state_search_row(
             key="last_deploy_time",
             value_text="2025-01-15T10:00:00Z",
@@ -235,13 +286,14 @@ class TestSearchFanOut:
             resp = await client.get("/api/search", params={"q": "deploy"})
 
         assert resp.status_code == 200
-        state = resp.json()["state"]
+        state = resp.json()["data"]["state"]
         assert len(state) == 1
         result = state[0]
         assert result["butler"] == "atlas"
-        assert result["matched_field"] == "key"
+        assert result["type"] == "state"
+        assert result["title"] == "last_deploy_time"
         assert "deploy" in result["snippet"]
-        assert result["data"]["key"] == "last_deploy_time"
+        assert "/butlers/atlas" in result["url"]
 
     async def test_cross_butler_results(self, app):
         """Results from multiple butlers should all appear."""
@@ -262,7 +314,7 @@ class TestSearchFanOut:
             resp = await client.get("/api/search", params={"q": "deploy"})
 
         assert resp.status_code == 200
-        sessions = resp.json()["sessions"]
+        sessions = resp.json()["data"]["sessions"]
         assert len(sessions) == 2
         butlers = {s["butler"] for s in sessions}
         assert butlers == {"atlas", "switchboard"}
@@ -283,9 +335,86 @@ class TestSearchFanOut:
             resp = await client.get("/api/search", params={"q": "nonexistent"})
 
         assert resp.status_code == 200
-        body = resp.json()
-        assert body["sessions"] == []
-        assert body["state"] == []
+        data = resp.json()["data"]
+        assert data["sessions"] == []
+        assert data["state"] == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: Entity and contact search
+# ---------------------------------------------------------------------------
+
+
+class TestSearchEntitiesContacts:
+    async def test_entity_search_results(self, app):
+        """Entity search should return results with proper shape."""
+        eid = uuid4()
+        entity_row = _make_entity_search_row(
+            entity_id=eid,
+            canonical_name="Acme Corp",
+            entity_type="organization",
+            aliases=["ACME", "Acme Inc"],
+        )
+
+        _app_with_mock_db(
+            app,
+            shared_pool_results=[
+                [entity_row],  # entity fetch
+                [],  # contact fetch
+            ],
+            fan_out_results=[{}, {}],
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/search", params={"q": "acme"})
+
+        assert resp.status_code == 200
+        entities = resp.json()["data"]["entities"]
+        assert len(entities) == 1
+        result = entities[0]
+        assert result["id"] == str(eid)
+        assert result["butler"] == "memory"
+        assert result["type"] == "entity"
+        assert result["title"] == "Acme Corp"
+        assert "organization" in result["snippet"]
+        assert result["url"] == f"/entities/{eid}"
+
+    async def test_contact_search_results(self, app):
+        """Contact search should return results with proper shape."""
+        cid = uuid4()
+        contact_row = _make_contact_search_row(
+            contact_id=cid,
+            name="Jane Doe",
+            email="jane@example.com",
+            phone="+1234567890",
+        )
+
+        _app_with_mock_db(
+            app,
+            shared_pool_results=[
+                [],  # entity fetch
+                [contact_row],  # contact fetch
+            ],
+            fan_out_results=[{}, {}],
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/search", params={"q": "jane"})
+
+        assert resp.status_code == 200
+        contacts = resp.json()["data"]["contacts"]
+        assert len(contacts) == 1
+        result = contacts[0]
+        assert result["id"] == str(cid)
+        assert result["butler"] == "relationship"
+        assert result["type"] == "contact"
+        assert result["title"] == "Jane Doe"
+        assert "jane@example.com" in result["snippet"]
+        assert result["url"] == f"/contacts/{cid}"
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +442,9 @@ class TestSearchResultGrouping:
             resp = await client.get("/api/search", params={"q": "search"})
 
         assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["sessions"]) == 1
-        assert len(body["state"]) == 1
+        data = resp.json()["data"]
+        assert len(data["sessions"]) == 1
+        assert len(data["state"]) == 1
 
     async def test_limit_parameter_respected(self, app):
         """The limit parameter should cap the number of results per category."""
@@ -335,11 +464,11 @@ class TestSearchResultGrouping:
             resp = await client.get("/api/search", params={"q": "match", "limit": 3})
 
         assert resp.status_code == 200
-        sessions = resp.json()["sessions"]
+        sessions = resp.json()["data"]["sessions"]
         assert len(sessions) <= 3
 
-    async def test_result_matched_field_prompt(self, app):
-        """When a session matches on prompt, matched_field should be 'prompt'."""
+    async def test_result_type_session(self, app):
+        """Session results should have type='session'."""
         row = _make_session_search_row(
             prompt="specific query text",
             result="other text",
@@ -360,11 +489,12 @@ class TestSearchResultGrouping:
             resp = await client.get("/api/search", params={"q": "specific"})
 
         assert resp.status_code == 200
-        result = resp.json()["sessions"][0]
-        assert result["matched_field"] == "prompt"
+        result = resp.json()["data"]["sessions"][0]
+        assert result["type"] == "session"
+        assert "specific" in result["title"]
 
-    async def test_result_matched_field_result(self, app):
-        """When a session matches on result, matched_field should be 'result'."""
+    async def test_result_snippet_from_result_field(self, app):
+        """When a session matches on result, snippet should contain the match."""
         row = _make_session_search_row(
             prompt="other text",
             result="specific query text",
@@ -385,6 +515,5 @@ class TestSearchResultGrouping:
             resp = await client.get("/api/search", params={"q": "specific"})
 
         assert resp.status_code == 200
-        result = resp.json()["sessions"][0]
-        assert result["matched_field"] == "result"
+        result = resp.json()["data"]["sessions"][0]
         assert "specific" in result["snippet"]

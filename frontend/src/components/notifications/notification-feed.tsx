@@ -116,6 +116,7 @@ export function NotificationFeed({
         <TableRow>
           <TableHead>Status</TableHead>
           <TableHead>Butler</TableHead>
+          <TableHead>Recipient</TableHead>
           <TableHead>Channel</TableHead>
           <TableHead>Message</TableHead>
           <TableHead className="text-right">Time</TableHead>
@@ -129,6 +130,7 @@ export function NotificationFeed({
           >
             <TableCell>{statusBadge(n.status)}</TableCell>
             <TableCell className="font-medium">{n.source_butler}</TableCell>
+            <TableCell className="text-muted-foreground">{n.recipient ?? "—"}</TableCell>
             <TableCell>{channelBadge(n.channel)}</TableCell>
             <TableCell
               className="max-w-xs"

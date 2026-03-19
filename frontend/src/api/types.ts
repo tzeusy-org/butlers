@@ -571,6 +571,8 @@ export interface SearchResult {
 
 /** Grouped search results keyed by category. */
 export interface SearchResults {
+  entities: SearchResult[];
+  contacts: SearchResult[];
   sessions: SearchResult[];
   state: SearchResult[];
   [key: string]: SearchResult[];
@@ -1175,6 +1177,8 @@ export interface Fact {
   supersedes_id: string | null;
   entity_id: string | null;
   entity_name: string | null;
+  object_entity_id: string | null;
+  object_entity_name: string | null;
   validity: string;
   scope: string;
   reference_count: number;
@@ -1332,6 +1336,7 @@ export interface UpdateEntityInfoRequest {
 /** Request body for updating entity core fields. */
 export interface UpdateEntityRequest {
   canonical_name?: string;
+  entity_type?: string;
   aliases?: string[];
   metadata?: Record<string, unknown>;
   roles?: string[];
