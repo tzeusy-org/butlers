@@ -3888,6 +3888,9 @@ class ButlerDaemon:
                 Field(
                     description=(
                         "Minutes from now to deliver the reminder. "
+                        "Only for reminders relative to the current moment "
+                        "(e.g. 'remind me in 30 minutes'). "
+                        "Do NOT use for event-based reminders — use remind_at instead. "
                         "Mutually exclusive with remind_at."
                     )
                 ),
@@ -3897,6 +3900,9 @@ class ButlerDaemon:
                 Field(
                     description=(
                         "Absolute UTC datetime to deliver the reminder. "
+                        "PREFERRED for event-based reminders: compute the target time "
+                        "from the event's start time (e.g. event at 2026-03-20T06:00Z "
+                        "minus 1 hour = remind_at 2026-03-20T05:00Z). "
                         "Mutually exclusive with delay_minutes."
                     )
                 ),
@@ -3914,9 +3920,14 @@ class ButlerDaemon:
             """Set a one-shot reminder that delivers a message via notify().
 
             Exactly one of ``delay_minutes`` or ``remind_at`` must be provided.
-            Internally creates a one-shot scheduled task that fires at the target
-            time and calls ``notify()`` with the given message, channel, and
-            optional request_context.
+
+            IMPORTANT: When setting a reminder for a known future event (interview,
+            flight, meeting, etc.), ALWAYS use ``remind_at`` with an absolute UTC
+            time computed from the event's start time. For example, to remind 1 hour
+            before an event at 2026-03-20T14:00+08:00, use
+            remind_at=2026-03-20T05:00:00+00:00. Never use ``delay_minutes`` for
+            event-based reminders — it sets the reminder relative to *now*, not
+            relative to the event.
             """
             # --- validate inputs ---
             if delay_minutes is not None and remind_at is not None:
