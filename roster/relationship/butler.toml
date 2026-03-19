@@ -52,12 +52,14 @@ dispatch_mode = "job"
 job_name = "memory_episode_cleanup"
 
 [modules.calendar]
+account = "uniquosity@gmail.com"
 provider = "google"
 
 [modules.calendar.conflicts]
 policy = "suggest"
 
 [modules.contacts]
+account = "uniquosity@gmail.com"
 providers = [{type = "google"}, {type = "telegram"}]
 include_other_contacts = false
 

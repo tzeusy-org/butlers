@@ -25,6 +25,7 @@ route_contract_max = 1
 [modules.memory]
 
 [modules.contacts]
+account = "uniquosity@gmail.com"
 provider = "google"
 include_other_contacts = false
 

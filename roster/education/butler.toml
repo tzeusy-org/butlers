@@ -78,4 +78,5 @@ Delivery:
 [modules.memory]
 
 [modules.contacts]
+account = "uniquosity@gmail.com"
 provider = "google"

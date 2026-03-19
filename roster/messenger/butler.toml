@@ -21,6 +21,7 @@ name = "butlers"
 schema = "messenger"
 
 [modules.calendar]
+account = "uniquosity@gmail.com"
 provider = "google"
 
 [modules.calendar.conflicts]
