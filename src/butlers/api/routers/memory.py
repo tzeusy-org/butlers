@@ -940,6 +940,11 @@ async def update_entity(
         args.append(body.aliases)
         idx += 1
 
+    if body.roles is not None:
+        sets.append(f"roles = ${idx}")
+        args.append(body.roles)
+        idx += 1
+
     if body.metadata is not None:
         # Filter out system-managed keys to prevent unauthorized state manipulation.
         # deleted_at/merged_into are managed by delete_entity/merge_entity endpoints.

@@ -637,6 +637,8 @@ export default function EntityDetailPage() {
 
   const [addingAlias, setAddingAlias] = useState(false);
   const [draftAlias, setDraftAlias] = useState("");
+  const [addingRole, setAddingRole] = useState(false);
+  const [draftRole, setDraftRole] = useState("");
 
   const handleRemoveAlias = (alias: string) => {
     if (!entityId || !entity) return;
@@ -667,6 +669,39 @@ export default function EntityDetailPage() {
           setAddingAlias(false);
         },
         onError: (err) => toast.error(`Failed to add alias: ${(err as Error).message}`),
+      },
+    );
+  };
+
+  const handleRemoveRole = (role: string) => {
+    if (!entityId || !entity) return;
+    const updated = (entity.roles ?? []).filter((r) => r !== role);
+    updateEntity.mutate(
+      { entityId, request: { roles: updated } },
+      {
+        onSuccess: () => toast.success(`Removed role "${role}"`),
+        onError: (err) => toast.error(`Failed to remove role: ${(err as Error).message}`),
+      },
+    );
+  };
+
+  const handleAddRole = () => {
+    const trimmed = draftRole.trim().toLowerCase();
+    if (!entityId || !entity || !trimmed) return;
+    if ((entity.roles ?? []).includes(trimmed)) {
+      toast.error("Role already exists.");
+      return;
+    }
+    const updated = [...(entity.roles ?? []), trimmed];
+    updateEntity.mutate(
+      { entityId, request: { roles: updated } },
+      {
+        onSuccess: () => {
+          toast.success(`Added role "${trimmed}"`);
+          setDraftRole("");
+          setAddingRole(false);
+        },
+        onError: (err) => toast.error(`Failed to add role: ${(err as Error).message}`),
       },
     );
   };
@@ -822,6 +857,69 @@ export default function EntityDetailPage() {
                       size="sm"
                       className="h-6 text-xs text-muted-foreground"
                       onClick={() => setAddingAlias(true)}
+                    >
+                      <Plus className="mr-0.5 h-3 w-3" />
+                      Add
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Roles */}
+              <div>
+                <p className="text-muted-foreground mb-1 text-sm font-medium">
+                  Roles
+                </p>
+                <div className="flex flex-wrap gap-1.5 items-center">
+                  {(entity.roles ?? []).map((role) => (
+                    <Badge key={role} variant="outline" className="group/role">
+                      {role}
+                      <button
+                        type="button"
+                        className="ml-1 opacity-0 group-hover/role:opacity-100 transition-opacity"
+                        onClick={() => handleRemoveRole(role)}
+                        title="Remove role"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </Badge>
+                  ))}
+                  {addingRole ? (
+                    <div className="flex items-center gap-1">
+                      <Input
+                        className="h-6 w-32 text-xs"
+                        value={draftRole}
+                        onChange={(e) => setDraftRole(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleAddRole();
+                          if (e.key === "Escape") setAddingRole(false);
+                        }}
+                        autoFocus
+                        placeholder="New role..."
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        onClick={handleAddRole}
+                      >
+                        <Check className="h-3 w-3" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        onClick={() => setAddingRole(false)}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs text-muted-foreground"
+                      onClick={() => setAddingRole(true)}
                     >
                       <Plus className="mr-0.5 h-3 w-3" />
                       Add
