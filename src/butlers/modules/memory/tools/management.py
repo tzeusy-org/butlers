@@ -149,11 +149,11 @@ async def predicate_list(
         edges_only: If True, return only edge predicates (is_edge = true).
 
     Returns:
-        List of dicts with keys: name, expected_subject_type,
+        List of dicts with keys: name, scope, expected_subject_type,
         expected_object_type, is_edge, is_temporal, description.
     """
     query = (
-        "SELECT name, expected_subject_type, expected_object_type,"
+        "SELECT name, scope, expected_subject_type, expected_object_type,"
         " is_edge, is_temporal, description FROM predicate_registry"
     )
     params: list[Any] = []
