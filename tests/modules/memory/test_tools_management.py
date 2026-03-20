@@ -415,6 +415,7 @@ class TestMemoryContext:
 def _make_predicate_row(
     name: str,
     *,
+    scope: str = "global",
     expected_subject_type: str = "entity",
     expected_object_type: str = "entity",
     is_edge: bool = False,
@@ -423,6 +424,7 @@ def _make_predicate_row(
 ) -> dict:
     return {
         "name": name,
+        "scope": scope,
         "expected_subject_type": expected_subject_type,
         "expected_object_type": expected_object_type,
         "is_edge": is_edge,
@@ -453,9 +455,10 @@ class TestPredicateList:
             assert "is_temporal" in row, f"Row missing is_temporal: {row}"
 
     async def test_row_shape_includes_all_expected_keys(self, mock_pool: AsyncMock) -> None:
-        """Every returned row includes name, subject/object types, is_edge, is_temporal, description."""  # noqa: E501
+        """Every returned row includes name, scope, subject/object types, is_edge, is_temporal, description."""  # noqa: E501
         expected_keys = {
             "name",
+            "scope",
             "expected_subject_type",
             "expected_object_type",
             "is_edge",
@@ -576,35 +579,36 @@ class TestPredicateSearch:
         assert "lower(name)" not in sql
 
     async def test_scope_filter_applied(self, mock_pool: AsyncMock) -> None:
-        """scope parameter adds an expected_subject_type filter to the query."""
-        row = _make_predicate_row("measurement", expected_subject_type="health")
+        """scope parameter adds a scope column filter to the query."""
+        row = _make_predicate_row("measurement", scope="health")
         mock_pool.fetch = AsyncMock(return_value=[row])
 
         result = await predicate_search(mock_pool, "measurement", scope="health")
 
         assert len(result) == 1
-        assert result[0]["expected_subject_type"] == "health"
+        assert result[0]["scope"] == "health"
 
         call_args = mock_pool.fetch.call_args
         sql = call_args.args[0]
-        assert "expected_subject_type" in sql
+        assert "scope =" in sql
 
     async def test_scope_filter_without_query(self, mock_pool: AsyncMock) -> None:
         """scope filter works even when query is empty."""
-        rows = [_make_predicate_row("bmi", expected_subject_type="person")]
+        rows = [_make_predicate_row("bmi", scope="health")]
         mock_pool.fetch = AsyncMock(return_value=rows)
 
-        result = await predicate_search(mock_pool, "", scope="person")
+        result = await predicate_search(mock_pool, "", scope="health")
 
         assert len(result) == 1
         call_args = mock_pool.fetch.call_args
         sql = call_args.args[0]
-        assert "expected_subject_type" in sql
+        assert "scope =" in sql
 
     async def test_result_shape_includes_required_keys(self, mock_pool: AsyncMock) -> None:
-        """Every returned row includes all required keys."""
+        """Every returned row includes all required keys including scope."""
         expected_keys = {
             "name",
+            "scope",
             "expected_subject_type",
             "expected_object_type",
             "is_edge",
@@ -646,11 +650,11 @@ class TestPredicateSearch:
         # Substring param should be %parent%
         assert "%parent%" in bind_params
 
-    async def test_no_scope_no_subject_type_filter(self, mock_pool: AsyncMock) -> None:
-        """When scope is None, the SQL WHERE clause does not filter on expected_subject_type."""
+    async def test_no_scope_no_scope_filter(self, mock_pool: AsyncMock) -> None:
+        """When scope is None, the SQL WHERE clause does not filter on scope."""
         mock_pool.fetch = AsyncMock(return_value=[])
         await predicate_search(mock_pool, "some_query", scope=None)
         call_args = mock_pool.fetch.call_args
         sql = call_args.args[0]
-        # The column appears in SELECT; the WHERE must not filter on it
-        assert "WHERE" not in sql or "expected_subject_type =" not in sql
+        # scope appears in SELECT; the WHERE must not filter on it
+        assert "WHERE" not in sql or "scope =" not in sql
