@@ -104,7 +104,9 @@ class TestStoreFactBasic:
     async def test_returns_uuid(self, mock_pool, embedding_engine):
         pool, _conn = mock_pool
         result = await store_fact(pool, "user", "favorite_color", "blue", embedding_engine)
-        assert isinstance(result, uuid.UUID)
+        # store_fact() now returns a dict with 'id' (UUID) and optional keys
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
     async def test_embedding_called_with_searchable_text(self, mock_pool, embedding_engine):
         pool, _conn = mock_pool
@@ -222,7 +224,9 @@ class TestSupersession:
 
     async def test_memory_link_created(self, mock_pool_with_existing, embedding_engine):
         pool, conn, old_id = mock_pool_with_existing
-        new_id = await store_fact(pool, "user", "city", "Munich", embedding_engine)
+        result = await store_fact(pool, "user", "city", "Munich", embedding_engine)
+        # store_fact() now returns a dict with 'id'
+        new_id = result["id"]
 
         # Third execute: INSERT memory_link
         link_call = conn.execute.call_args_list[2]
@@ -349,9 +353,12 @@ class TestTemporalFacts:
         )
         id2 = await store_fact(pool, "user", "meal_lunch", "salad", embedding_engine, valid_at=ts2)
 
-        assert isinstance(id1, uuid.UUID)
-        assert isinstance(id2, uuid.UUID)
-        assert id1 != id2
+        # store_fact() now returns a dict with 'id' (UUID) and optional keys
+        assert isinstance(id1, dict)
+        assert isinstance(id1["id"], uuid.UUID)
+        assert isinstance(id2, dict)
+        assert isinstance(id2["id"], uuid.UUID)
+        assert id1["id"] != id2["id"]
         # Four execute calls: INSERT facts x2 + INSERT predicate_registry x2.
         # No UPDATEs (temporal facts never supersede).
         assert conn.execute.call_count == 4

@@ -100,6 +100,10 @@ def _make_pool(*, registry_row=None, entity_exists=True, obj_entity_exists=True)
     # Return 1 (truthy) by default so entity checks pass.
     conn.fetchval = AsyncMock(return_value=1 if entity_exists else None)
 
+    # fetch is used by _fuzzy_match_predicates for novel predicate suggestions.
+    # Return empty list by default so no suggestions are generated.
+    conn.fetch = AsyncMock(return_value=[])
+
     pool = MagicMock()
     pool.acquire = MagicMock(return_value=_AsyncCM(conn))
     return pool, conn
@@ -167,7 +171,9 @@ class TestIsEdgeEnforcement:
             object_entity_id=object_entity_id,
         )
 
-        assert isinstance(result, uuid.UUID)
+        # store_fact() now returns a dict with at least 'id'
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
     async def test_non_edge_predicate_without_object_entity_id_succeeds(self, embedding_engine):
         """Non-edge predicate without object_entity_id is stored successfully.
@@ -190,7 +196,8 @@ class TestIsEdgeEnforcement:
             # object_entity_id intentionally omitted
         )
 
-        assert isinstance(result, uuid.UUID)
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
     async def test_unregistered_predicate_without_object_entity_id_succeeds(self, embedding_engine):
         """Unregistered predicate without object_entity_id is stored successfully.
@@ -212,7 +219,8 @@ class TestIsEdgeEnforcement:
             embedding_engine,
         )
 
-        assert isinstance(result, uuid.UUID)
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +282,8 @@ class TestIsTemporalEnforcement:
             valid_at=ts,
         )
 
-        assert isinstance(result, uuid.UUID)
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
     async def test_non_temporal_predicate_without_valid_at_succeeds(self, embedding_engine):
         """Non-temporal predicate without valid_at is stored successfully.
@@ -296,7 +305,8 @@ class TestIsTemporalEnforcement:
             # valid_at intentionally omitted
         )
 
-        assert isinstance(result, uuid.UUID)
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
     async def test_unregistered_predicate_without_valid_at_succeeds(self, embedding_engine):
         """Unregistered predicate without valid_at is stored successfully.
@@ -317,7 +327,8 @@ class TestIsTemporalEnforcement:
             embedding_engine,
         )
 
-        assert isinstance(result, uuid.UUID)
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
 
 # ---------------------------------------------------------------------------

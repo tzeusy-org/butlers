@@ -136,9 +136,12 @@ class TestStoreAndGet:
         assert simple_pool.fetchrow.call_args[0][1] == episode_id
 
     async def test_store_fact_then_get_memory(self, fact_pool, embedding_engine: MagicMock) -> None:
-        """store_fact returns a UUID; get_memory('fact', id) queries the facts table."""
+        """store_fact returns a dict with 'id'; get_memory('fact', id) queries the facts table."""
         pool, _conn = fact_pool
-        fact_id = await store_fact(pool, "user", "city", "Berlin", embedding_engine)
+        store_result = await store_fact(pool, "user", "city", "Berlin", embedding_engine)
+        # store_fact() now returns a dict with 'id' (UUID) and optional keys
+        assert isinstance(store_result, dict)
+        fact_id = store_result["id"]
         assert isinstance(fact_id, uuid.UUID)
 
         # Wire up a simple pool for get_memory (it uses pool.fetchrow directly)
@@ -280,12 +283,16 @@ class TestFactSupersessionFlow:
         conn1 = AsyncMock()
         conn1.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
         conn1.fetchrow = AsyncMock(return_value=None)
+        conn1.fetch = AsyncMock(return_value=[])  # fuzzy match: no registry rows
         conn1.execute = AsyncMock()
         conn1.transaction = MagicMock(return_value=_AsyncCM(None))
         pool1 = MagicMock()
         pool1.acquire = MagicMock(return_value=_AsyncCM(conn1))
 
-        first_id = await store_fact(pool1, "user", "city", "Berlin", embedding_engine)
+        # store_fact() now returns a dict with 'id' (UUID) and optional keys
+        first_result = await store_fact(pool1, "user", "city", "Berlin", embedding_engine)
+        assert isinstance(first_result, dict)
+        first_id = first_result["id"]
         # First store: 2 execute calls (INSERT facts + INSERT predicate_registry), no supersession
         assert conn1.execute.call_count == 2
         assert "INSERT INTO facts" in conn1.execute.call_args_list[0].args[0]
@@ -296,12 +303,15 @@ class TestFactSupersessionFlow:
         conn2 = AsyncMock()
         conn2.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
         conn2.fetchrow = AsyncMock(side_effect=[None, {"id": first_id}])
+        conn2.fetch = AsyncMock(return_value=[])  # fuzzy match: no registry rows
         conn2.execute = AsyncMock()
         conn2.transaction = MagicMock(return_value=_AsyncCM(None))
         pool2 = MagicMock()
         pool2.acquire = MagicMock(return_value=_AsyncCM(conn2))
 
-        new_id = await store_fact(pool2, "user", "city", "Munich", embedding_engine)
+        new_result = await store_fact(pool2, "user", "city", "Munich", embedding_engine)
+        assert isinstance(new_result, dict)
+        new_id = new_result["id"]
 
         # Verify exactly 4 execute calls:
         # UPDATE old fact, INSERT new fact, INSERT memory_links, INSERT predicate_registry
@@ -550,8 +560,10 @@ class TestStoreGetForgetRoundTrip:
         """Fact: store -> get (bumps reference) -> forget (sets validity='retracted')."""
         pool, _conn = fact_pool
 
-        # Store
-        fact_id = await store_fact(pool, "user", "language", "Python", embedding_engine)
+        # Store — store_fact() now returns a dict with 'id' (UUID) and optional keys
+        store_result = await store_fact(pool, "user", "language", "Python", embedding_engine)
+        assert isinstance(store_result, dict)
+        fact_id = store_result["id"]
         assert isinstance(fact_id, uuid.UUID)
 
         # Get (uses pool.fetchrow directly, so we need a pool with fetchrow)

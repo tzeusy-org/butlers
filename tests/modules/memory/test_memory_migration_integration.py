@@ -412,7 +412,7 @@ class TestStorageRoundTrips:
     async def test_store_fact_persists_tenant_id(self, memory_pool, embedding_engine) -> None:
         """store_fact writes tenant_id to the facts table."""
         tenant = "test-tenant-fact"
-        fact_id = await store_fact(
+        store_result = await store_fact(
             memory_pool,
             "user",
             "preferred_language",
@@ -420,6 +420,7 @@ class TestStorageRoundTrips:
             embedding_engine,
             tenant_id=tenant,
         )
+        fact_id = store_result["id"]  # store_fact() now returns a dict with 'id'
         row = await memory_pool.fetchrow("SELECT tenant_id FROM facts WHERE id = $1", fact_id)
         assert row is not None, "Fact row not found after store_fact"
         assert row["tenant_id"] == tenant, (
@@ -428,7 +429,7 @@ class TestStorageRoundTrips:
 
     async def test_store_fact_persists_retention_class(self, memory_pool, embedding_engine) -> None:
         """store_fact writes the caller-supplied retention_class."""
-        fact_id = await store_fact(
+        store_result = await store_fact(
             memory_pool,
             "user",
             "city",
@@ -436,6 +437,7 @@ class TestStorageRoundTrips:
             embedding_engine,
             retention_class="personal_profile",
         )
+        fact_id = store_result["id"]  # store_fact() now returns a dict with 'id'
         row = await memory_pool.fetchrow("SELECT retention_class FROM facts WHERE id = $1", fact_id)
         assert row is not None, "Fact row not found after store_fact"
         assert row["retention_class"] == "personal_profile", (
@@ -444,7 +446,7 @@ class TestStorageRoundTrips:
 
     async def test_store_fact_persists_sensitivity(self, memory_pool, embedding_engine) -> None:
         """store_fact writes the caller-supplied sensitivity."""
-        fact_id = await store_fact(
+        store_result = await store_fact(
             memory_pool,
             "user",
             "health_condition",
@@ -452,6 +454,7 @@ class TestStorageRoundTrips:
             embedding_engine,
             sensitivity="pii",
         )
+        fact_id = store_result["id"]  # store_fact() now returns a dict with 'id'
         row = await memory_pool.fetchrow("SELECT sensitivity FROM facts WHERE id = $1", fact_id)
         assert row is not None, "Fact row not found after store_fact"
         assert row["sensitivity"] == "pii", (
@@ -528,7 +531,7 @@ class TestStorageRoundTrips:
         assert ep_row["retention_class"] == "transient"
 
         # --- fact ---
-        fact_id = await store_fact(
+        fact_store_result = await store_fact(
             memory_pool,
             "user",
             "medication",
@@ -539,6 +542,7 @@ class TestStorageRoundTrips:
             retention_class="health_log",
             sensitivity="pii",
         )
+        fact_id = fact_store_result["id"]  # store_fact() now returns a dict with 'id'
         fact_row = await memory_pool.fetchrow(
             "SELECT tenant_id, request_id, retention_class, sensitivity FROM facts WHERE id = $1",
             fact_id,
@@ -795,7 +799,7 @@ class TestSchemaVsCodeDrift:
         self, memory_pool, embedding_engine
     ) -> None:
         """store_fact INSERT columns all exist in the live facts schema."""
-        fact_id = await store_fact(
+        store_result = await store_fact(
             memory_pool,
             "drift-subject",
             "drift-predicate",
@@ -806,6 +810,7 @@ class TestSchemaVsCodeDrift:
             retention_class="financial_log",
             sensitivity="pii",
         )
+        fact_id = store_result["id"]  # store_fact() now returns a dict with 'id'
         row = await memory_pool.fetchrow(
             """
             SELECT tenant_id, request_id, retention_class, sensitivity

@@ -220,18 +220,26 @@ async def memory_store_fact(
     # Backward-compatible: older storage variants may return a mapping.
     if isinstance(result, dict):
         fact_id = result["id"]
-        superseded_id = result.get("superseded_id")
+        superseded_id = result.get("supersedes_id")
+        suggestions = result.get("suggestions")
     else:
         fact_id = result
         superseded_id = await pool.fetchval(
             "SELECT supersedes_id FROM facts WHERE id = $1",
             fact_id,
         )
+        suggestions = None
 
-    return {
+    response: dict[str, Any] = {
         "id": str(fact_id),
         "superseded_id": str(superseded_id) if superseded_id else None,
     }
+    # Forward fuzzy suggestions when present — omit the key entirely when
+    # there are no close matches (keeps the response minimal for registered
+    # predicates and truly novel predicates with no similar canonical form).
+    if suggestions:
+        response["suggestions"] = suggestions
+    return response
 
 
 async def memory_store_rule(

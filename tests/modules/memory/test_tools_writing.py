@@ -228,7 +228,7 @@ class TestMemoryStoreFact:
         """superseded_id should be a string UUID when storage returns one."""
         fact_id = uuid.uuid4()
         old_id = uuid.uuid4()
-        storage_result = {"id": fact_id, "superseded_id": old_id}
+        storage_result = {"id": fact_id, "supersedes_id": old_id}
 
         with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
             mock_store.return_value = storage_result

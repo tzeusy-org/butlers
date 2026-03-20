@@ -101,6 +101,113 @@ _TYPE_TABLE: dict[str, str] = {
     "rule": "rules",
 }
 
+# ---------------------------------------------------------------------------
+# Fuzzy predicate matching helpers
+# ---------------------------------------------------------------------------
+
+_FUZZY_EDIT_DISTANCE_THRESHOLD = 2
+_FUZZY_PREFIX_LENGTH_THRESHOLD = 5
+
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    """Compute the Levenshtein edit distance between two strings.
+
+    Uses a space-efficient two-row DP approach.  Suitable for short predicate
+    names (typically ≤ 40 chars).
+
+    Args:
+        a: First string.
+        b: Second string.
+
+    Returns:
+        Minimum number of single-character edits (insertions, deletions,
+        substitutions) required to transform *a* into *b*.
+
+    Examples:
+        >>> _levenshtein_distance("parent_of", "parnet_of")
+        2
+        >>> _levenshtein_distance("parent_of", "parent_of")
+        0
+    """
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    # Optimise: if lengths differ by more than threshold, early exit.
+    # The edit distance can't be smaller than the absolute length difference.
+    if abs(len(a) - len(b)) > _FUZZY_EDIT_DISTANCE_THRESHOLD:
+        return _FUZZY_EDIT_DISTANCE_THRESHOLD + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            curr[j] = min(
+                prev[j] + 1,  # deletion
+                curr[j - 1] + 1,  # insertion
+                prev[j - 1] + (0 if ca == cb else 1),  # substitution
+            )
+        prev = curr
+    return prev[len(b)]
+
+
+async def _fuzzy_match_predicates(
+    conn,
+    predicate: str,
+) -> list[dict]:
+    """Find registered predicates similar to *predicate* via Levenshtein and prefix overlap.
+
+    Fetches all predicate names (and optional descriptions) from
+    ``predicate_registry``, then filters to those that satisfy at least one of:
+
+    - Edit distance ≤ ``_FUZZY_EDIT_DISTANCE_THRESHOLD`` (2)
+    - Shared prefix of ≥ ``_FUZZY_PREFIX_LENGTH_THRESHOLD`` (5) characters
+
+    The input predicate itself is excluded from results (exact match means it
+    IS registered — the caller should not call this in that case).
+
+    Args:
+        conn: asyncpg connection (inside an open transaction).
+        predicate: Normalised predicate string that was NOT found in the registry.
+
+    Returns:
+        List of ``{"predicate": str, "description": str | None}`` dicts,
+        ordered by edit distance ascending (closest matches first).
+        Empty list when no close matches exist.
+    """
+    rows = await conn.fetch("SELECT name, description FROM predicate_registry ORDER BY name")
+    if not rows:
+        return []
+
+    results: list[tuple[int, str, str | None]] = []
+    for row in rows:
+        name: str = row["name"]
+        description: str | None = row["description"]
+        dist = _levenshtein_distance(predicate, name)
+        if dist <= _FUZZY_EDIT_DISTANCE_THRESHOLD:
+            results.append((dist, name, description))
+            continue
+        # Prefix overlap check — only if both strings are long enough.
+        min_len = min(len(predicate), len(name))
+        if min_len >= _FUZZY_PREFIX_LENGTH_THRESHOLD:
+            for prefix_len in range(_FUZZY_PREFIX_LENGTH_THRESHOLD, min_len + 1):
+                if predicate[:prefix_len] == name[:prefix_len]:
+                    # Rank prefix matches slightly lower than near-exact edits.
+                    results.append((_FUZZY_EDIT_DISTANCE_THRESHOLD + 1, name, description))
+                    break
+
+    # Deduplicate (a predicate can't match twice, but guard just in case).
+    seen: set[str] = set()
+    deduped: list[tuple[int, str, str | None]] = []
+    for item in results:
+        if item[1] not in seen:
+            seen.add(item[1])
+            deduped.append(item)
+
+    deduped.sort(key=lambda t: t[0])
+    return [{"predicate": name, "description": desc} for _, name, desc in deduped]
+
 
 # ---------------------------------------------------------------------------
 # Temporal fact idempotency
@@ -434,7 +541,12 @@ async def store_fact(
             ``enable_shared_catalog=True``; ignored otherwise.
 
     Returns:
-        The UUID of the newly created (or pre-existing, idempotent) fact.
+        A dict with:
+        - ``"id"``: UUID of the newly created (or pre-existing, idempotent) fact.
+        - ``"supersedes_id"``: UUID of the superseded fact, or ``None``.
+        - ``"suggestions"``: list of ``{"predicate": str, "description": str | None}``
+          dicts of registered predicates similar to the novel predicate, or absent
+          when the predicate was found in the registry or no close matches exist.
     """
     fact_id = uuid.uuid4()
     searchable = f"{subject} {predicate} {content}"
@@ -506,6 +618,7 @@ async def store_fact(
                 "SELECT is_edge, is_temporal FROM predicate_registry WHERE name = $1",
                 predicate,
             )
+            _predicate_is_novel = _registry_row is None
             if _registry_row is not None:
                 if _registry_row["is_edge"] and object_entity_id is None:
                     raise ValueError(
@@ -522,6 +635,12 @@ async def store_fact(
                         f"records for this predicate. Provide an ISO-8601 valid_at "
                         f"timestamp for when this fact was true."
                     )
+
+            # D3: Fuzzy matching — for novel predicates (not found in registry),
+            # compute suggestions inside the same transaction to reuse the connection.
+            _fuzzy_suggestions: list[dict] = []
+            if _predicate_is_novel:
+                _fuzzy_suggestions = await _fuzzy_match_predicates(conn, predicate)
 
             # Guard: reject facts that embed entity UUIDs in content without
             # using object_entity_id.  This catches the common mistake of
@@ -556,7 +675,10 @@ async def store_fact(
                     effective_idempotency_key,
                 )
                 if existing_idem_id is not None:
-                    return existing_idem_id
+                    # Return early with a dict — same shape as the non-idempotent path.
+                    # Novel-predicate suggestions are omitted for idempotent hits (the
+                    # fact already exists; no new guidance is needed).
+                    return {"id": existing_idem_id, "supersedes_id": None}
 
             # Supersession applies only to property facts (valid_at IS NULL).
             # Temporal facts (valid_at IS NOT NULL) always coexist as independent
@@ -743,7 +865,13 @@ async def store_fact(
                 exc_info=True,
             )
 
-    return fact_id
+    # Build the return dict.  Include "suggestions" only when there are close
+    # matches — omit the key entirely when there are none (per spec: "the
+    # response MUST NOT include a 'suggestions' key" for no-match cases).
+    result: dict = {"id": fact_id, "supersedes_id": supersedes_id}
+    if _fuzzy_suggestions:
+        result["suggestions"] = _fuzzy_suggestions
+    return result
 
 
 async def store_rule(

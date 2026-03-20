@@ -167,7 +167,9 @@ class TestEntityIdValidation:
             entity_id=eid,
         )
 
-        assert isinstance(result, uuid.UUID)
+        # store_fact() now returns a dict with 'id' (UUID) and optional keys
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
     async def test_no_entity_validation_when_entity_id_omitted(self, embedding_engine):
         """Neither entity check nor predicate_registry is queried when entity_id is None.
@@ -321,9 +323,11 @@ class TestEntityKeyedSupersession:
         """A memory_links supersedes row is created for entity-keyed supersession."""
         pool, conn, old_id, eid = pool_with_existing_entity_fact
 
-        new_id = await store_fact(
+        result = await store_fact(
             pool, "Alice", "job_title", "Senior Engineer", embedding_engine, entity_id=eid
         )
+        # store_fact() now returns a dict with 'id'
+        new_id = result["id"]
 
         link_call = next(
             c for c in conn.execute.call_args_list if "INSERT INTO memory_links" in c.args[0]
@@ -499,7 +503,7 @@ class TestMemoryStoreFactEntityIdTool:
         pool = AsyncMock()
         engine = MagicMock()
         eid = uuid.uuid4()
-        storage_result = {"id": uuid.uuid4(), "superseded_id": uuid.uuid4()}
+        storage_result = {"id": uuid.uuid4(), "supersedes_id": uuid.uuid4()}
 
         with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
             mock_store.return_value = storage_result
@@ -590,7 +594,9 @@ class TestObjectEntityIdValidation:
             object_entity_id=obj_eid,
         )
 
-        assert isinstance(result, uuid.UUID)
+        # store_fact() now returns a dict with 'id' (UUID) and optional keys
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
     async def test_object_entity_id_validation_calls_fetchval_twice(self, embedding_engine):
         """fetchval called for: entity_id, object_entity_id, and entity_type lookup."""
@@ -773,7 +779,7 @@ class TestEdgeFactSupersession:
         """A memory_links supersedes row is created for edge-fact supersession."""
         pool, conn, old_id, eid, obj_eid = pool_with_existing_edge_fact
 
-        new_id = await store_fact(
+        result = await store_fact(
             pool,
             "Alice",
             "works_at",
@@ -782,6 +788,8 @@ class TestEdgeFactSupersession:
             entity_id=eid,
             object_entity_id=obj_eid,
         )
+        # store_fact() now returns a dict with 'id'
+        new_id = result["id"]
 
         link_call = next(
             c for c in conn.execute.call_args_list if "INSERT INTO memory_links" in c.args[0]

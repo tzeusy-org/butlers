@@ -218,8 +218,10 @@ class TestStoreFactIdempotency:
             pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts
         )
 
-        # Should return the pre-existing fact's ID without executing any INSERT
-        assert result == existing_id
+        # Should return a dict with the pre-existing fact's ID (no INSERT)
+        # store_fact() now returns a dict with 'id' and 'supersedes_id'
+        assert isinstance(result, dict)
+        assert result["id"] == existing_id
         # No INSERT should have been executed
         conn.execute.assert_not_awaited()
 
@@ -237,7 +239,9 @@ class TestStoreFactIdempotency:
             pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts
         )
 
-        assert isinstance(result, uuid.UUID)
+        # store_fact() now returns a dict with 'id' (UUID) and optional keys
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
         # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
         assert conn.execute.call_count == 2
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]

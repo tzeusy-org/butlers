@@ -159,7 +159,7 @@ class TestStoreFACTCatalog:
         pool.execute.side_effect = _execute_side_effect
 
         # Should NOT raise — catalog failure is logged as warning only
-        fact_id = await store_fact(
+        result = await store_fact(
             pool,
             "Alice",
             "works_at",
@@ -168,7 +168,9 @@ class TestStoreFACTCatalog:
             enable_shared_catalog=True,
             source_schema="health",
         )
-        assert isinstance(fact_id, uuid.UUID)
+        # store_fact() now returns a dict with 'id' (UUID) and optional keys
+        assert isinstance(result, dict)
+        assert isinstance(result["id"], uuid.UUID)
 
     async def test_catalog_failure_logged(self, mock_pool, embedding_engine, caplog):
         """Catalog write failure is logged at WARNING level."""
