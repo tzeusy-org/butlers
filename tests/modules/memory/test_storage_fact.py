@@ -240,9 +240,9 @@ class TestSupersession:
         pool, conn = mock_pool
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
-        # No UPDATE or memory_links INSERT (no supersession).
-        assert conn.execute.call_count == 2
+        # Three execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        # + UPDATE usage_count (mem_023). No UPDATE or memory_links INSERT (no supersession).
+        assert conn.execute.call_count == 3
         insert_call = conn.execute.call_args_list[0]
         sql = insert_call.args[0]
         assert "INSERT INTO facts" in sql
@@ -253,8 +253,9 @@ class TestSupersession:
         pool, conn, _old_id = mock_pool_with_existing
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
-        # Four execute calls: UPDATE old, INSERT new, INSERT link, INSERT predicate_registry
-        assert conn.execute.call_count == 4
+        # Five execute calls: UPDATE old, INSERT new, INSERT link, INSERT predicate_registry,
+        # UPDATE usage_count (mem_023)
+        assert conn.execute.call_count == 5
 
 
 class TestTemporalFacts:
@@ -295,9 +296,9 @@ class TestTemporalFacts:
 
         await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts)
 
-        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
-        # No UPDATE supersession, no memory_links INSERT.
-        assert conn.execute.call_count == 2
+        # Three execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        # + UPDATE usage_count (mem_023). No UPDATE supersession, no memory_links INSERT.
+        assert conn.execute.call_count == 3
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
         # Only one fetchrow call total (the registry lookup) — no supersession check
         assert conn.fetchrow.call_count == 1
@@ -312,8 +313,9 @@ class TestTemporalFacts:
 
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
-        # Four execute calls: UPDATE, INSERT facts, INSERT link, INSERT predicate_registry
-        assert conn.execute.call_count == 4
+        # Five execute calls: UPDATE, INSERT facts, INSERT link, INSERT predicate_registry,
+        # UPDATE usage_count (mem_023)
+        assert conn.execute.call_count == 5
         update_call = conn.execute.call_args_list[0]
         assert "UPDATE facts SET validity = 'superseded'" in update_call.args[0]
 
@@ -359,9 +361,9 @@ class TestTemporalFacts:
         assert isinstance(id2, dict)
         assert isinstance(id2["id"], uuid.UUID)
         assert id1["id"] != id2["id"]
-        # Four execute calls: INSERT facts x2 + INSERT predicate_registry x2.
-        # No UPDATEs (temporal facts never supersede).
-        assert conn.execute.call_count == 4
+        # Six execute calls: INSERT facts x2 + INSERT predicate_registry x2
+        # + UPDATE usage_count x2 (mem_023). No UPDATEs (temporal facts never supersede).
+        assert conn.execute.call_count == 6
         facts_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(facts_calls) == 2
 
@@ -382,9 +384,9 @@ class TestTemporalFacts:
 
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
-        # No supersession UPDATE.
-        assert conn.execute.call_count == 2
+        # Three execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        # + UPDATE usage_count (mem_023). No supersession UPDATE.
+        assert conn.execute.call_count == 3
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
 
     async def test_temporal_fact_does_not_supersede_property_fact(
@@ -400,8 +402,8 @@ class TestTemporalFacts:
         ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
         await store_fact(pool, "user", "city", "Berlin", embedding_engine, valid_at=ts)
 
-        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
-        # No supersession check, no UPDATE.
-        assert conn.execute.call_count == 2
+        # Three execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        # + UPDATE usage_count (mem_023). No supersession check, no UPDATE.
+        assert conn.execute.call_count == 3
         # Only one fetchrow call (registry lookup), no supersession check
         assert conn.fetchrow.call_count == 1

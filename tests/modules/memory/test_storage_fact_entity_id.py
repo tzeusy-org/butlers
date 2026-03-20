@@ -356,14 +356,16 @@ class TestEntityKeyedSupersession:
     async def test_entity_keyed_execute_count_with_supersession(
         self, pool_with_existing_entity_fact, embedding_engine
     ):
-        """Four execute calls: UPDATE old, INSERT fact, INSERT link, INSERT predicate_registry."""
+        """Five execute calls: UPDATE old, INSERT fact, INSERT link, INSERT predicate_registry,
+        UPDATE usage_count."""
         pool, conn, _old_id, eid = pool_with_existing_entity_fact
 
         await store_fact(
             pool, "Alice", "job_title", "Senior Engineer", embedding_engine, entity_id=eid
         )
 
-        assert conn.execute.call_count == 4
+        # +1 vs previous: UPDATE predicate_registry SET usage_count (mem_023)
+        assert conn.execute.call_count == 5
 
     async def test_entity_keyed_no_supersession_when_no_existing(self, embedding_engine):
         """No supersession when no existing entity-keyed property fact found."""
@@ -374,8 +376,9 @@ class TestEntityKeyedSupersession:
 
         await store_fact(pool, "Alice", "job_title", "Engineer", embedding_engine, entity_id=eid)
 
-        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
-        assert conn.execute.call_count == 2
+        # Three execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        # + UPDATE usage_count (mem_023).
+        assert conn.execute.call_count == 3
         insert_call = conn.execute.call_args_list[0]
         assert "INSERT INTO facts" in insert_call.args[0]
         assert insert_call.args[13] is None  # supersedes_id = None
@@ -429,8 +432,9 @@ class TestSubjectKeyedSupersessionUnchanged:
 
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
-        # Four calls: UPDATE old, INSERT facts, INSERT link, INSERT predicate_registry
-        assert conn.execute.call_count == 4
+        # Five calls: UPDATE old, INSERT facts, INSERT link, INSERT predicate_registry,
+        # UPDATE usage_count (mem_023)
+        assert conn.execute.call_count == 5
 
     async def test_subject_keyed_null_entity_id_in_insert(
         self, pool_with_existing_subject_fact, embedding_engine
@@ -849,7 +853,8 @@ class TestEdgeFactSupersession:
     async def test_edge_fact_execute_count_with_supersession(
         self, pool_with_existing_edge_fact, embedding_engine
     ):
-        """Four execute calls: UPDATE old, INSERT fact, INSERT link, INSERT predicate_registry."""
+        """Five execute calls: UPDATE old, INSERT fact, INSERT link, INSERT predicate_registry,
+        UPDATE usage_count (mem_023)."""
         pool, conn, _old_id, eid, obj_eid = pool_with_existing_edge_fact
 
         await store_fact(
@@ -862,7 +867,8 @@ class TestEdgeFactSupersession:
             object_entity_id=obj_eid,
         )
 
-        assert conn.execute.call_count == 4
+        # +1 vs previous: UPDATE predicate_registry SET usage_count (mem_023)
+        assert conn.execute.call_count == 5
 
     async def test_edge_fact_no_supersession_when_no_existing(self, embedding_engine):
         """No supersession when no existing edge-fact found."""
@@ -889,8 +895,9 @@ class TestEdgeFactSupersession:
             object_entity_id=obj_eid,
         )
 
-        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
-        assert conn.execute.call_count == 2
+        # Three execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        # + UPDATE usage_count (mem_023). No supersession.
+        assert conn.execute.call_count == 3
         insert_call = conn.execute.call_args_list[0]
         assert "INSERT INTO facts" in insert_call.args[0]
         assert insert_call.args[13] is None  # supersedes_id = None

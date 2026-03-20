@@ -293,8 +293,9 @@ class TestFactSupersessionFlow:
         first_result = await store_fact(pool1, "user", "city", "Berlin", embedding_engine)
         assert isinstance(first_result, dict)
         first_id = first_result["id"]
-        # First store: 2 execute calls (INSERT facts + INSERT predicate_registry), no supersession
-        assert conn1.execute.call_count == 2
+        # First store: 3 execute calls (INSERT facts + INSERT predicate_registry
+        # + UPDATE usage_count), no supersession
+        assert conn1.execute.call_count == 3
         assert "INSERT INTO facts" in conn1.execute.call_args_list[0].args[0]
 
         # Second store: existing fact found.
@@ -313,9 +314,10 @@ class TestFactSupersessionFlow:
         assert isinstance(new_result, dict)
         new_id = new_result["id"]
 
-        # Verify exactly 4 execute calls:
-        # UPDATE old fact, INSERT new fact, INSERT memory_links, INSERT predicate_registry
-        assert conn2.execute.call_count == 4
+        # Verify exactly 5 execute calls:
+        # UPDATE old fact, INSERT new fact, INSERT memory_links, INSERT predicate_registry,
+        # UPDATE usage_count (mem_023)
+        assert conn2.execute.call_count == 5
 
         # Call 1: UPDATE old fact to 'superseded'
         update_call = conn2.execute.call_args_list[0]
@@ -339,6 +341,8 @@ class TestFactSupersessionFlow:
         reg_call = conn2.execute.call_args_list[3]
         assert "INSERT INTO predicate_registry" in reg_call.args[0]
 
+        # Call 5: UPDATE usage_count (mem_023 — no-op if column doesn't exist yet)
+
     async def test_no_supersession_without_existing(
         self, fact_pool, embedding_engine: MagicMock
     ) -> None:
@@ -348,8 +352,9 @@ class TestFactSupersessionFlow:
 
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        # 2 execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
-        assert conn.execute.call_count == 2
+        # 3 execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        # + UPDATE usage_count (mem_023)
+        assert conn.execute.call_count == 3
         insert_call = conn.execute.call_args_list[0]
         assert "INSERT INTO facts" in insert_call.args[0]
         # supersedes_id ($13) should be None

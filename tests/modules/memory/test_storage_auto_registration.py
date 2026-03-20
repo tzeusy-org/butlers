@@ -489,3 +489,69 @@ class TestAutoRegistrationSkipIfRegistered:
         assert reg_call is None, (
             "predicate_registry INSERT must not be called for already-registered predicates"
         )
+
+
+# ---------------------------------------------------------------------------
+# Usage tracking: usage_count / last_used_at incremented after successful write
+# Task 7.8 (usage tracking aspect from spec requirement "Usage tracking per predicate")
+# ---------------------------------------------------------------------------
+
+
+def _get_usage_tracking_execute_call(conn):
+    """Return the conn.execute call that updates usage_count/last_used_at, or None."""
+    for c in conn.execute.call_args_list:
+        sql = c.args[0] if c.args else ""
+        if "usage_count" in sql and "UPDATE" in sql and "predicate_registry" in sql:
+            return c
+    return None
+
+
+class TestUsageTracking:
+    """usage_count is incremented and last_used_at updated after each successful store_fact."""
+
+    async def test_usage_count_incremented_for_registered_predicate(self, embedding_engine):
+        """store_fact() issues UPDATE usage_count+1 for a registered predicate.
+
+        WHEN store_fact() successfully stores a fact with a registered predicate
+        THEN usage_count MUST be incremented by 1 and last_used_at set to now().
+        """
+        registry_row = {"is_edge": False, "is_temporal": False, "expected_subject_type": None, "expected_object_type": None, "status": "active", "superseded_by": None}
+        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        pool = _make_pool(conn)
+
+        await store_fact(pool, "Alice", "birthday", "1990-01-01", embedding_engine)
+
+        usage_call = _get_usage_tracking_execute_call(conn)
+        assert usage_call is not None, "Expected usage_count UPDATE to be called"
+        sql = usage_call.args[0]
+        assert "usage_count" in sql
+        assert "last_used_at" in sql
+        # The predicate name should be passed as a parameter.
+        assert usage_call.args[1] == "birthday"
+
+    async def test_usage_count_incremented_for_novel_predicate(self, embedding_engine):
+        """store_fact() also increments usage_count for a novel (auto-registered) predicate.
+
+        WHEN store_fact() succeeds with a predicate not in the registry,
+        THEN usage_count MUST still be incremented (after auto-registration).
+        """
+        conn = _make_conn(fetchrow_side_effect=[None, None])
+        pool = _make_pool(conn)
+
+        await store_fact(pool, "user", "custom_novel_pred_x", "value", embedding_engine)
+
+        usage_call = _get_usage_tracking_execute_call(conn)
+        assert usage_call is not None, "Expected usage_count UPDATE for novel predicate"
+        assert usage_call.args[1] == "custom_novel_pred_x"
+
+    async def test_usage_tracking_update_targets_correct_predicate(self, embedding_engine):
+        """The UPDATE is issued with the exact predicate name as parameter."""
+        registry_row = {"is_edge": False, "is_temporal": False, "expected_subject_type": None, "expected_object_type": None, "status": "active", "superseded_by": None}
+        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        pool = _make_pool(conn)
+
+        await store_fact(pool, "Alice", "occupation", "engineer", embedding_engine)
+
+        usage_call = _get_usage_tracking_execute_call(conn)
+        assert usage_call is not None
+        assert usage_call.args[1] == "occupation"
