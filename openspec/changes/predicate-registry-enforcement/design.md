@@ -112,6 +112,22 @@ If existing facts use `Father_Of` and normalization produces `father_of`, new fa
 **[Risk: Registry lookup adds latency to every store_fact call]**
 Single-row PK lookup on a small table (~100 rows). **Mitigation:** Measured overhead is ~0.1ms, negligible vs. embedding computation (~50-200ms).
 
+### D7: Domain/range type validation is soft (warnings, not errors)
+
+**Decision:** When a predicate specifies `expected_subject_type` or `expected_object_type`, `store_fact()` checks the actual entity types and includes a `"warning"` in the response if they don't match. The fact is still stored.
+
+**Why soft, not hard?** Following Wikidata's philosophy: constraints are guidance for editors, not enforcement gates. Hard-blocking on type mismatch would prevent legitimate edge cases (e.g., an organization acting as a parent entity in a corporate hierarchy — `parent_of(OrgA, OrgB)` is valid even though `expected_subject_type = 'person'`). Warnings teach the LLM without blocking creative usage.
+
+**Implementation:** The entity existence check in `store_fact()` already queries `shared.entities`. Extend it to `SELECT id, entity_type FROM shared.entities WHERE id = $1` (fetching `entity_type` in the same query, no additional round-trip). Compare against the registry's expectations. If mismatch, append to a `warnings` list that propagates through the response.
+
+### D8: Example payloads in predicate registry via example_json
+
+**Decision:** Add `example_json JSONB` column to `predicate_registry`. Seeded predicates include a sample `{"content": "...", "metadata": {...}}` with realistic values. Auto-registered predicates get `NULL`. The `memory_predicate_search` tool returns `example_json` alongside other fields.
+
+**Why in the registry, not just in predicate-taxonomy.md?** The taxonomy spec has detailed metadata schemas, but LLMs don't read markdown specs at write time. Putting examples in the registry makes them available via the search tool — the LLM can see exactly what a `measurement_weight` fact should look like before creating one.
+
+**Why JSONB, not TEXT?** Structured data can be validated, queried, and extended. A JSONB example can include both `content` and `metadata` keys, matching the actual `store_fact()` parameters.
+
 ## Open Questions
 
 - Should the `is_temporal` enforcement be a hard error or a warning? Hard error is safer (prevents silent data loss) but could break consolidation flows that create facts without registry awareness. Recommend: hard error for registered predicates, no enforcement for unregistered ones.

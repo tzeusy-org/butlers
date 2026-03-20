@@ -362,3 +362,60 @@ The registry MUST support a `scope` column matching the fact-level scope values,
 - **WHEN** `store_fact()` successfully stores a fact
 - **THEN** the predicate's `usage_count` MUST be incremented by 1
 - **AND** `last_used_at` MUST be set to the current timestamp
+
+---
+
+### Requirement: Domain and range type validation (soft)
+
+When a predicate in the registry specifies `expected_subject_type` and/or `expected_object_type`, `store_fact()` MUST validate the actual entity types against these expectations. Violations produce warnings, not errors — the fact is still stored.
+
+#### Scenario: Subject type mismatch produces warning
+
+- **WHEN** `store_fact()` is called with predicate `parent_of` (registered with `expected_subject_type = 'person'`) and the subject entity has `entity_type = 'organization'`
+- **THEN** the fact MUST still be stored successfully
+- **AND** the response MUST include a `"warning"` stating the expected subject type is `'person'` but the actual entity type is `'organization'`
+
+#### Scenario: Object type mismatch produces warning
+
+- **WHEN** `store_fact()` is called with predicate `works_at` (registered with `expected_object_type = 'organization'`) and the object entity has `entity_type = 'person'`
+- **THEN** the fact MUST still be stored successfully
+- **AND** the response MUST include a `"warning"` stating the expected object type is `'organization'` but the actual entity type is `'person'`
+
+#### Scenario: NULL expected types skip validation
+
+- **WHEN** a predicate has `expected_subject_type = NULL` or `expected_object_type = NULL`
+- **THEN** no type validation MUST be performed for that side
+- **AND** no warning MUST be produced
+
+#### Scenario: Matching types produce no warning
+
+- **WHEN** `store_fact()` is called with predicate `parent_of` and both subject and object entities have `entity_type = 'person'`
+- **THEN** no type-related warning MUST be produced
+
+#### Scenario: Type validation uses entity lookup already in transaction
+
+- **WHEN** `store_fact()` validates entity types
+- **THEN** it MUST reuse the entity existence check already performed within the transaction (no additional query)
+- **AND** if `entity_id` is provided, the entity's `entity_type` MUST be fetched in the same query as the existence check
+
+---
+
+### Requirement: Example payloads in predicate registry
+
+Each predicate in the registry SHOULD carry a structured example showing the expected `content` and `metadata` format. This enables LLMs to follow concrete templates when creating facts.
+
+#### Scenario: example_json column stores sample payload
+
+- **WHEN** a predicate is seeded via migration
+- **THEN** it SHOULD include an `example_json` JSONB column containing a sample `{"content": "...", "metadata": {...}}` payload
+- **AND** the example MUST use realistic values, not placeholders
+
+#### Scenario: Predicate search returns examples
+
+- **WHEN** `memory_predicate_search()` returns results
+- **THEN** each result MUST include the `example_json` field if non-NULL
+
+#### Scenario: Auto-registered predicates have no example
+
+- **WHEN** a novel predicate is auto-registered
+- **THEN** `example_json` MUST be NULL (no example can be inferred from a single usage)

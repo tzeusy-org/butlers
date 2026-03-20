@@ -80,8 +80,22 @@
 - [ ] 11.3 Update memory_predicate_search scope parameter to filter on registry scope column (replace expected_subject_type workaround)
 - [ ] 11.4 Write tests: scope filtering in search, backfill correctness
 
-## 12. Integration Tests and Audit
+## 12. Domain/Range Type Validation (bu-typc)
 
-- [ ] 12.1 Audit all direct callers of `store_fact()` in `roster/*/tools/` — verify they pass correct `object_entity_id` for edge predicates and `valid_at` for temporal predicates
-- [ ] 12.2 Run full memory module test suite — verify no regressions from all predicate registry changes
-- [ ] 12.3 Run full API test suite — verify dashboard endpoints still work
+- [ ] 12.1 Extend entity existence check in `store_fact()` to also fetch `entity_type`: `SELECT id, entity_type FROM shared.entities WHERE id = $1`
+- [ ] 12.2 After registry lookup, compare actual entity types against `expected_subject_type` and `expected_object_type`; if mismatch, append to `warnings` list
+- [ ] 12.3 Propagate `warnings` through write response: `{"id": ..., "warnings": [...]}`
+- [ ] 12.4 Write tests: subject type mismatch warns, object type mismatch warns, NULL expected types skip check, matching types produce no warning
+
+## 13. Example Payloads in Registry (bu-exjn)
+
+- [ ] 13.1 Add `example_json JSONB` column to predicate_registry via migration
+- [ ] 13.2 Backfill `example_json` for all seeded predicates with realistic `{"content": "...", "metadata": {...}}` payloads from predicate-taxonomy.md
+- [ ] 13.3 Include `example_json` in `memory_predicate_search` results and `memory_predicate_list` output
+- [ ] 13.4 Write tests: example_json returned in search, NULL for auto-registered predicates
+
+## 14. Integration Tests and Audit
+
+- [ ] 14.1 Audit all direct callers of `store_fact()` in `roster/*/tools/` — verify they pass correct `object_entity_id` for edge predicates and `valid_at` for temporal predicates
+- [ ] 14.2 Run full memory module test suite — verify no regressions from all predicate registry changes
+- [ ] 14.3 Run full API test suite — verify dashboard endpoints still work

@@ -82,6 +82,7 @@ The `predicate_registry` table governs which predicates are valid, what constrai
 | `description_embedding` | vector(384) | Semantic search via MiniLM |
 | `search_vector` | tsvector | Full-text search on name + description |
 | `usage_count` | INTEGER | Popularity ranking signal |
+| `example_json` | JSONB | Sample `{"content": "...", "metadata": {...}}` payload |
 
 ### Predicate lifecycle
 
@@ -132,6 +133,29 @@ Edge predicates can declare bidirectional pairs:
 | `lives_with` | — | Yes |
 
 Inverse resolution is virtual (read-path only) — no duplicate facts stored. When querying entity Bob, a fact `parent_of(Alice, Bob)` is presented as `child_of(Bob, Alice)`.
+
+### Domain/range type validation
+
+When a predicate specifies `expected_subject_type` (e.g., `parent_of` expects `person`) or `expected_object_type`, `store_fact()` checks the actual entity types. Mismatches produce **warnings, not errors** — the fact is still stored. This follows Wikidata's philosophy: constraints are guidance for editors, not enforcement gates.
+
+Example: `works_at(Alice[person], Bob[person])` produces a warning because `expected_object_type = 'organization'` but Bob is a person. The fact is stored, and the LLM learns from the warning.
+
+### Example payloads
+
+Each seeded predicate carries an `example_json` JSONB field with a realistic sample payload:
+
+```json
+// measurement_weight
+{"content": "Weight: 72.5 kg", "metadata": {"value": "72.5", "unit": "kg"}}
+
+// gift
+{"content": "Noise-cancelling headphones", "metadata": {"occasion": "birthday", "status": "idea"}}
+
+// transaction_debit
+{"content": "Whole Foods 47.32 USD", "metadata": {"merchant": "Whole Foods", "amount": "47.32", "currency": "USD"}}
+```
+
+The `memory_predicate_search` tool returns these examples alongside results, giving the LLM a concrete template to follow when creating facts. Auto-registered predicates have `example_json = NULL`.
 
 ---
 
