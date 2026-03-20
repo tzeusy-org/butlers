@@ -140,20 +140,22 @@ async def predicate_search(
     predicate_list).  When query is non-empty, rows matching by name prefix OR
     description text (case-insensitive substring) are returned.
 
-    The optional ``scope`` parameter filters by ``expected_subject_type``.
+    The optional ``scope`` parameter filters by the ``scope`` column (domain
+    namespace added in mem_023: health, relationship, finance, home, global).
 
     Args:
         pool: asyncpg connection pool.
         query: Search string — matched as a case-insensitive prefix on ``name``
             and as a case-insensitive substring on ``description``.
-        scope: Optional filter on ``expected_subject_type`` (exact match).
+        scope: Optional filter on the ``scope`` column (exact match).
 
     Returns:
-        List of dicts with keys: name, expected_subject_type, expected_object_type,
-        is_edge, is_temporal, description.  Results are ordered by name ASC.
+        List of dicts with keys: name, scope, expected_subject_type,
+        expected_object_type, is_edge, is_temporal, description.
+        Results are ordered by name ASC.
     """
     select = (
-        "SELECT name, expected_subject_type, expected_object_type,"
+        "SELECT name, scope, expected_subject_type, expected_object_type,"
         " is_edge, is_temporal, description"
         " FROM predicate_registry"
     )
@@ -173,7 +175,7 @@ async def predicate_search(
     if scope is not None:
         param_idx = len(params) + 1
         params.append(scope)
-        conditions.append(f"expected_subject_type = ${param_idx}")
+        conditions.append(f"scope = ${param_idx}")
 
     if conditions:
         select += " WHERE " + " AND ".join(conditions)
