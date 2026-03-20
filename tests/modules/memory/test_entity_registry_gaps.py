@@ -663,7 +663,7 @@ _FULL_COLS = frozenset(
     }
 )
 
-_sync_entity_create = _contacts_mod._sync_entity_create
+_ensure_entity = _contacts_mod._ensure_entity
 _sync_entity_update = _contacts_mod._sync_entity_update
 _build_canonical_name = _contacts_mod._build_canonical_name
 _build_entity_aliases = _contacts_mod._build_entity_aliases
@@ -708,67 +708,65 @@ def _asyncpg_record(d: dict):
     return rec
 
 
-class TestSyncEntityCreateFailOpen:
-    """_sync_entity_create fail-open and edge-case behaviour."""
+class TestEnsureEntity:
+    """_ensure_entity resolve-or-create behaviour."""
 
-    async def test_returns_none_on_value_error(self) -> None:
-        """_sync_entity_create returns None when entity_create raises ValueError."""
-        memory_pool = AsyncMock()
-        with patch.object(
-            _contacts_mod,
-            "entity_create" if hasattr(_contacts_mod, "entity_create") else "_sync_entity_create",
-        ):
-            pass  # module-level patch not needed for this test
-
-        with patch(
-            "butlers.modules.memory.tools.entities.entity_create",
-            AsyncMock(side_effect=ValueError("duplicate entity")),
-        ):
-            result = await _sync_entity_create(
-                memory_pool, "Alice", "Smith", "Ali", tenant_id="relationship"
-            )
-        assert result is None
-
-    async def test_returns_entity_id_string_on_success(self) -> None:
-        """_sync_entity_create returns entity_id as a string on success."""
-        memory_pool = AsyncMock()
+    async def test_returns_entity_id_on_create_success(self) -> None:
+        """_ensure_entity returns entity_id as a string when entity_create succeeds."""
+        pool = AsyncMock()
         eid = str(uuid.uuid4())
         with patch(
             "butlers.modules.memory.tools.entities.entity_create",
             AsyncMock(return_value={"entity_id": eid}),
         ):
-            result = await _sync_entity_create(
-                memory_pool, "Alice", "Smith", None, tenant_id="relationship"
-            )
+            result = await _ensure_entity(pool, "Alice", "Smith", None, tenant_id="relationship")
+        assert result == eid
+
+    async def test_resolves_on_duplicate_value_error(self) -> None:
+        """_ensure_entity falls back to entity_resolve when entity_create raises ValueError."""
+        pool = AsyncMock()
+        eid = str(uuid.uuid4())
+        with (
+            patch(
+                "butlers.modules.memory.tools.entities.entity_create",
+                AsyncMock(side_effect=ValueError("duplicate entity")),
+            ),
+            patch(
+                "butlers.modules.memory.tools.entities.entity_resolve",
+                AsyncMock(return_value=[{"entity_id": eid, "canonical_name": "Alice Smith"}]),
+            ),
+        ):
+            result = await _ensure_entity(pool, "Alice", "Smith", "Ali", tenant_id="relationship")
         assert result == eid
 
     async def test_first_name_only_creates_entity(self) -> None:
-        """_sync_entity_create works with only first_name provided."""
-        memory_pool = AsyncMock()
+        """_ensure_entity works with only first_name provided."""
+        pool = AsyncMock()
         eid = str(uuid.uuid4())
         with patch(
             "butlers.modules.memory.tools.entities.entity_create",
             AsyncMock(return_value={"entity_id": eid}),
         ) as mock_create:
-            result = await _sync_entity_create(
-                memory_pool, "Alice", None, None, tenant_id="relationship"
-            )
+            result = await _ensure_entity(pool, "Alice", None, None, tenant_id="relationship")
         assert result == eid
-        # canonical_name should be "Alice" (first name only)
         call_args = mock_create.call_args
         assert call_args[0][1] == "Alice"  # canonical_name positional arg
 
-    async def test_returns_none_on_runtime_error(self) -> None:
-        """_sync_entity_create returns None on any unexpected exception."""
-        memory_pool = AsyncMock()
-        with patch(
-            "butlers.modules.memory.tools.entities.entity_create",
-            AsyncMock(side_effect=RuntimeError("DB connection error")),
+    async def test_raises_when_both_create_and_resolve_fail(self) -> None:
+        """_ensure_entity raises RuntimeError when both entity_create and entity_resolve fail."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.modules.memory.tools.entities.entity_create",
+                AsyncMock(side_effect=RuntimeError("DB connection error")),
+            ),
+            patch(
+                "butlers.modules.memory.tools.entities.entity_resolve",
+                AsyncMock(return_value=[]),
+            ),
         ):
-            result = await _sync_entity_create(
-                memory_pool, "Alice", "Smith", None, tenant_id="relationship"
-            )
-        assert result is None
+            with pytest.raises(RuntimeError, match="Cannot resolve or create entity"):
+                await _ensure_entity(pool, "Alice", "Smith", None, tenant_id="relationship")
 
 
 class TestSyncEntityUpdateFailOpen:
@@ -892,27 +890,20 @@ class TestContactUpdateNicknameSync:
 class TestContactEntityBridgeEdgeCases:
     """Additional edge cases for contact-entity bridge not in existing tests."""
 
-    async def test_contact_create_entity_id_stored_as_uuid_in_db(self) -> None:
-        """After entity_create, the entity_id is stored as UUID in the contacts table."""
+    async def test_contact_create_entity_id_included_in_insert(self) -> None:
+        """contact_create includes entity_id in the INSERT (not a post-INSERT update)."""
         cid = uuid.uuid4()
-        contact_row = _make_contact_row(contact_id=cid, entity_id=None)
-        contact_with_entity = _make_contact_row(contact_id=cid, entity_id=ENTITY_UUID)
+        contact_row = _make_contact_row(contact_id=cid, entity_id=ENTITY_UUID)
 
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                _asyncpg_record(contact_row),  # INSERT
-                _asyncpg_record(contact_with_entity),  # UPDATE entity_id
-            ]
-        )
-        memory_pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
 
         with (
             patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
             patch.object(_contacts_mod, "_log_activity", AsyncMock()),
             patch.object(
                 _contacts_mod,
-                "_sync_entity_create",
+                "_ensure_entity",
                 AsyncMock(return_value=ENTITY_ID),
             ),
         ):
@@ -920,14 +911,13 @@ class TestContactEntityBridgeEdgeCases:
                 pool,
                 first_name="Alice",
                 last_name="Smith",
-                memory_pool=memory_pool,
             )
 
-        # Second fetchrow (UPDATE entity_id) should have been called with UUID
-        update_call = pool.fetchrow.call_args_list[1]
-        # First positional arg after SQL is the entity_id UUID
-        entity_id_arg = update_call[0][1]
-        assert entity_id_arg == ENTITY_UUID
+        # Only one fetchrow call (INSERT with entity_id), no separate UPDATE
+        assert pool.fetchrow.call_count == 1
+        # The INSERT SQL should contain entity_id
+        insert_sql = pool.fetchrow.call_args[0][0]
+        assert "entity_id" in insert_sql
 
     async def test_contact_merge_both_null_entity_ids_skips_entity_merge(self) -> None:
         """contact_merge with both contacts having NULL entity_ids skips entity_merge."""

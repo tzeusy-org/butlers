@@ -1,12 +1,12 @@
 """Unit tests for contact-entity lifecycle bridge.
 
 Tests cover:
-- contact_create: entity_create called and entity_id stored
-- contact_create: entity_create failure is fail-open
-- contact_create: no memory_pool -> no entity call
+- contact_create: entity always resolved-or-created (mandatory)
+- contact_create: entity_create failure raises (not fail-open)
+- contact_create: uses pool for entity ops when memory_pool absent
 - contact_update: name change syncs entity
 - contact_update: NULL entity_id handled gracefully
-- contact_update: no memory_pool -> no entity call
+- contact_update: uses pool for entity ops when memory_pool absent
 - contact_merge: entity_merge called when both have entity_ids
 - contact_merge: one or both NULL entity_ids handled gracefully
 - contact_merge: entity_merge failure is fail-open
@@ -233,104 +233,84 @@ class TestInferEntityType:
 
 
 class TestContactCreateEntityBridge:
-    async def test_entity_create_called_on_create_with_memory_pool(self):
-        """contact_create calls entity_create and stores entity_id when memory_pool given."""
-        contact_row = _make_contact_row(entity_id=None)
-        contact_row_with_entity = _make_contact_row(entity_id=ENTITY_UUID)
+    async def test_entity_always_created_on_contact_create(self):
+        """contact_create always resolves-or-creates an entity (entity_id in INSERT)."""
+        contact_row = _make_contact_row(entity_id=ENTITY_UUID)
 
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                _asyncpg_record(contact_row),  # INSERT RETURNING
-                _asyncpg_record(contact_row_with_entity),  # UPDATE entity_id RETURNING
-            ]
-        )
-        memory_pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
 
         with (
             patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
             patch.object(_contacts_mod, "_log_activity", AsyncMock()),
             patch.object(
                 _contacts_mod,
-                "_sync_entity_create",
+                "_ensure_entity",
                 AsyncMock(return_value=str(ENTITY_UUID)),
-            ) as mock_create,
+            ) as mock_ensure,
         ):
-            await contact_create(
+            result = await contact_create(
                 pool,
                 first_name="Alice",
                 last_name="Smith",
                 nickname="Ali",
-                memory_pool=memory_pool,
             )
-            mock_create.assert_awaited_once()
-            # entity_id UPDATE was called (second fetchrow call)
-            assert pool.fetchrow.call_count == 2
+            mock_ensure.assert_awaited_once()
+            # entity_id included in INSERT — only one fetchrow call
+            assert pool.fetchrow.call_count == 1
+            assert result["entity_id"] == ENTITY_UUID
 
     async def test_organization_entity_type_inferred_from_company(self):
         """contact_create with company but no names creates an organization entity."""
         contact_row = _make_contact_row(first_name="", last_name="")
         contact_row["name"] = "Acme Corp"
         contact_row["company"] = "Acme Corp"
-        contact_row_with_entity = dict(contact_row, entity_id=ENTITY_UUID)
+        contact_row["entity_id"] = ENTITY_UUID
 
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                _asyncpg_record(contact_row),
-                _asyncpg_record(contact_row_with_entity),
-            ]
-        )
-        memory_pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
 
         with (
             patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
             patch.object(_contacts_mod, "_log_activity", AsyncMock()),
             patch.object(
                 _contacts_mod,
-                "_sync_entity_create",
+                "_ensure_entity",
                 AsyncMock(return_value=str(ENTITY_UUID)),
-            ) as mock_create,
+            ) as mock_ensure,
         ):
             await contact_create(
                 pool,
                 company="Acme Corp",
-                memory_pool=memory_pool,
             )
-            mock_create.assert_awaited_once()
-            call_kwargs = mock_create.call_args
+            mock_ensure.assert_awaited_once()
+            call_kwargs = mock_ensure.call_args
             assert call_kwargs.kwargs["entity_type"] == "organization"
 
-    async def test_entity_create_failure_is_fail_open(self):
-        """contact_create succeeds even when entity_create raises."""
-        contact_row = _make_contact_row(entity_id=None)
+    async def test_entity_create_failure_raises(self):
+        """contact_create raises when entity creation fails (not fail-open)."""
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
-
-        memory_pool = AsyncMock()
+        pool.fetchrow = AsyncMock()
 
         with (
             patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
             patch.object(_contacts_mod, "_log_activity", AsyncMock()),
             patch.object(
                 _contacts_mod,
-                "_sync_entity_create",
-                AsyncMock(return_value=None),  # failure returns None
+                "_ensure_entity",
+                AsyncMock(side_effect=RuntimeError("entity creation failed")),
             ),
         ):
-            result = await contact_create(
-                pool,
-                first_name="Alice",
-                last_name="Smith",
-                memory_pool=memory_pool,
-            )
-        assert result["first_name"] == "Alice"
-        # No entity_id update attempted since _sync_entity_create returned None
-        assert pool.fetchrow.call_count == 1  # only INSERT, no UPDATE
+            with pytest.raises(RuntimeError, match="entity creation failed"):
+                await contact_create(
+                    pool,
+                    first_name="Alice",
+                    last_name="Smith",
+                )
 
-    async def test_no_memory_pool_skips_entity_create(self):
-        """contact_create without memory_pool does not call entity functions."""
-        contact_row = _make_contact_row(entity_id=None)
+    async def test_uses_pool_when_no_memory_pool(self):
+        """contact_create uses pool for entity ops when memory_pool absent."""
+        contact_row = _make_contact_row(entity_id=ENTITY_UUID)
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
 
@@ -339,22 +319,23 @@ class TestContactCreateEntityBridge:
             patch.object(_contacts_mod, "_log_activity", AsyncMock()),
             patch.object(
                 _contacts_mod,
-                "_sync_entity_create",
+                "_ensure_entity",
                 AsyncMock(return_value=str(ENTITY_UUID)),
-            ) as mock_create,
+            ) as mock_ensure,
         ):
             await contact_create(pool, first_name="Alice", last_name="Smith")
-            mock_create.assert_not_awaited()
+            mock_ensure.assert_awaited_once()
+            # First positional arg to _ensure_entity should be pool (not a separate memory_pool)
+            assert mock_ensure.call_args.args[0] is pool
 
     async def test_no_entity_id_column_skips_entity_create(self):
-        """contact_create with memory_pool but no entity_id column skips entity sync."""
+        """contact_create with no entity_id column skips entity creation."""
         contact_row = _make_contact_row(entity_id=None)
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
 
         # No entity_id in cols
         cols_without_entity = _FULL_COLS - {"entity_id"}
-        memory_pool = AsyncMock()
 
         with (
             patch.object(
@@ -365,17 +346,16 @@ class TestContactCreateEntityBridge:
             patch.object(_contacts_mod, "_log_activity", AsyncMock()),
             patch.object(
                 _contacts_mod,
-                "_sync_entity_create",
+                "_ensure_entity",
                 AsyncMock(return_value=str(ENTITY_UUID)),
-            ) as mock_create,
+            ) as mock_ensure,
         ):
             await contact_create(
                 pool,
                 first_name="Alice",
                 last_name="Smith",
-                memory_pool=memory_pool,
             )
-            mock_create.assert_not_awaited()
+            mock_ensure.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -451,8 +431,8 @@ class TestContactUpdateEntityBridge:
             mock_update.assert_not_awaited()
             assert result["first_name"] == "Alicia"
 
-    async def test_no_memory_pool_skips_entity_update(self):
-        """contact_update without memory_pool does not call entity sync."""
+    async def test_no_memory_pool_uses_pool_for_entity_update(self):
+        """contact_update without memory_pool uses pool for entity sync."""
         contact_row = _make_contact_row(entity_id=ENTITY_UUID)
         updated_row = _make_contact_row(first_name="Alicia", entity_id=ENTITY_UUID)
 
@@ -474,7 +454,8 @@ class TestContactUpdateEntityBridge:
             ) as mock_update,
         ):
             await contact_update(pool, CONTACT_UUID, first_name="Alicia")
-            mock_update.assert_not_awaited()
+            # Entity sync now always runs (uses pool when memory_pool absent)
+            mock_update.assert_awaited_once()
 
     async def test_non_name_fields_do_not_trigger_entity_sync(self):
         """contact_update with only company change does not call entity sync."""
@@ -659,8 +640,8 @@ class TestContactMergeEntityBridge:
         with pytest.raises(ValueError, match="Target contact"):
             await contact_merge(pool, source_id=CONTACT_UUID, target_id=CONTACT_UUID2)
 
-    async def test_no_memory_pool_skips_entity_merge(self):
-        """contact_merge without memory_pool skips entity_merge."""
+    async def test_no_memory_pool_uses_pool_for_entity_merge(self):
+        """contact_merge without memory_pool uses pool for entity_merge."""
         pool = self._make_pool(src_entity_id=ENTITY_UUID, tgt_entity_id=ENTITY_UUID2)
 
         with (
@@ -668,16 +649,21 @@ class TestContactMergeEntityBridge:
             patch.object(_contacts_mod, "_log_activity", AsyncMock()),
             patch(
                 "butlers.modules.memory.tools.entities.entity_merge",
-                AsyncMock(),
+                AsyncMock(return_value={"entity_id": str(ENTITY_UUID2)}),
             ) as mock_entity_merge,
         ):
             await contact_merge(
                 pool,
                 source_id=CONTACT_UUID,
                 target_id=CONTACT_UUID2,
-                # No memory_pool
+                # No memory_pool — should use pool instead
             )
-            mock_entity_merge.assert_not_awaited()
+            mock_entity_merge.assert_awaited_once_with(
+                pool,
+                str(ENTITY_UUID),
+                str(ENTITY_UUID2),
+                tenant_id="relationship",
+            )
 
 
 # ---------------------------------------------------------------------------

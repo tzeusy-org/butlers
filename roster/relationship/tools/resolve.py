@@ -181,21 +181,16 @@ async def contact_resolve(
         # Multiple exact matches -- ambiguous, need disambiguation
         candidates = _build_candidates(exact_rows, base_score=90)
 
-        # Integrate with entity_resolve when memory_pool is available
-        if memory_pool is not None:
-            candidates = await _resolve_via_entity_resolve(
-                pool,
-                memory_pool,
-                candidates,
-                name,
-                context,
-                memory_tenant_id,
-            )
-        else:
-            # Fallback: local salience + context boost
-            candidates = await _compute_salience(pool, candidates)
-            if context:
-                candidates = await _boost_by_context(pool, candidates, context)
+        # Integrate with entity_resolve (uses pool for shared.entities access)
+        entity_pool = memory_pool or pool
+        candidates = await _resolve_via_entity_resolve(
+            pool,
+            entity_pool,
+            candidates,
+            name,
+            context,
+            memory_tenant_id,
+        )
 
         candidates.sort(key=lambda c: c["score"], reverse=True)
 
@@ -275,21 +270,16 @@ async def contact_resolve(
     candidates = _score_partial_matches(partial_rows, name, name_parts)
 
     if len(candidates) >= 2:
-        # Integrate with entity_resolve when memory_pool is available
-        if memory_pool is not None:
-            candidates = await _resolve_via_entity_resolve(
-                pool,
-                memory_pool,
-                candidates,
-                name,
-                context,
-                memory_tenant_id,
-            )
-        else:
-            # Fallback: local salience + context boost
-            candidates = await _compute_salience(pool, candidates)
-            if context:
-                candidates = await _boost_by_context(pool, candidates, context)
+        # Integrate with entity_resolve (uses pool for shared.entities access)
+        entity_pool = memory_pool or pool
+        candidates = await _resolve_via_entity_resolve(
+            pool,
+            entity_pool,
+            candidates,
+            name,
+            context,
+            memory_tenant_id,
+        )
     elif context:
         # Single candidate still benefits from context boosting for score accuracy
         candidates = await _boost_by_context(pool, candidates, context)
@@ -483,7 +473,7 @@ async def _compute_salience(
     For each candidate, queries:
     - relationships: type-to-user weight
     - interactions: count in last 90 days + recency
-    - quick_facts + notes: row count (density)
+    - facts + notes: row count (density via entity_id)
     - contacts.stay_in_touch_days: cadence importance
     - group_members → groups.type: group type weight
 
@@ -522,22 +512,21 @@ async def _compute_salience(
 
     # Batch query 3: Interaction counts and recency (last 90 days).
     # Interactions are stored as SPO facts (predicate='interaction', valid_at=occurred_at).
-    # Graceful degradation if facts table is unavailable.
     try:
         interaction_rows = await pool.fetch(
             """
             SELECT
-                ('contact:' || c.id::text) AS subject_key,
                 c.id AS contact_id,
                 COUNT(*) FILTER (WHERE f.valid_at >= NOW() - INTERVAL '90 days') as count_90d,
                 MAX(f.valid_at) as most_recent
             FROM contacts c
             LEFT JOIN facts f
-                ON f.subject = 'contact:' || c.id::text
+                ON f.entity_id = c.entity_id
                AND f.predicate = 'interaction'
                AND f.scope = 'relationship'
                AND f.validity = 'active'
             WHERE c.id = ANY($1)
+              AND c.entity_id IS NOT NULL
             GROUP BY c.id
             """,
             candidate_ids,
@@ -549,38 +538,29 @@ async def _compute_salience(
             if row["count_90d"] or row["most_recent"]
         }
     except asyncpg.PostgresError:
-        # Graceful degradation: no interaction data available
         interactions = {}
 
-    # Batch query 4: Fact and note counts.
-    # Count from both the facts table (SPO-migrated data) and legacy quick_facts/notes tables.
+    # Batch query 4: Fact and note counts from SPO facts table.
     try:
         fact_note_rows = await pool.fetch(
             """
             SELECT
-                contact_id,
-                SUM(CASE WHEN source = 'fact' THEN 1 ELSE 0 END) as fact_count,
-                SUM(CASE WHEN source = 'note' THEN 1 ELSE 0 END) as note_count
-            FROM (
-                -- SPO facts: contact_note predicate
-                SELECT
-                    SUBSTRING(subject FROM 9)::uuid AS contact_id,
-                    'note' as source
-                FROM facts
-                WHERE predicate = 'contact_note'
-                  AND scope = 'relationship'
-                  AND validity = 'active'
-                  AND subject = ANY(
-                      SELECT 'contact:' || id::text FROM contacts WHERE id = ANY($1)
-                  )
-                UNION ALL
-                -- Legacy quick_facts table (if still populated)
-                SELECT contact_id, 'fact' as source FROM quick_facts WHERE contact_id = ANY($1)
-                UNION ALL
-                -- Legacy notes table (if still populated)
-                SELECT contact_id, 'note' as source FROM notes WHERE contact_id = ANY($1)
-            ) combined
-            GROUP BY contact_id
+                c.id AS contact_id,
+                COUNT(*) FILTER (
+                    WHERE f.predicate != 'contact_note'
+                      AND f.predicate != 'interaction'
+                ) as fact_count,
+                COUNT(*) FILTER (
+                    WHERE f.predicate = 'contact_note'
+                ) as note_count
+            FROM contacts c
+            LEFT JOIN facts f
+                ON f.entity_id = c.entity_id
+               AND f.scope IN ('global', 'relationship')
+               AND f.validity = 'active'
+            WHERE c.id = ANY($1)
+              AND c.entity_id IS NOT NULL
+            GROUP BY c.id
             """,
             candidate_ids,
         )
@@ -721,90 +701,52 @@ async def _boost_single_by_context(
                 candidate["score"] += 10
                 break
 
-    # Check notes — stored as SPO facts (predicate='contact_note', content=note text).
-    # Also fall back to legacy notes table rows if any exist.
-    subject_key = f"contact:{cid}"
-    note_boost = False
+    # Check notes and interactions via entity_id (SPO facts table)
+    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", cid)
+    if entity_id is None:
+        return
+
+    # Notes (predicate='contact_note')
     try:
-        fact_note_rows = await pool.fetch(
+        note_rows = await pool.fetch(
             """
             SELECT content FROM facts
-            WHERE predicate = 'contact_note'
+            WHERE entity_id = $1
+              AND predicate = 'contact_note'
               AND scope = 'relationship'
               AND validity = 'active'
-              AND subject = $1
             LIMIT 10
             """,
-            subject_key,
+            entity_id,
         )
-        for fact_row in fact_note_rows:
-            note_text = str(fact_row["content"] or "").lower()
+        for row in note_rows:
+            note_text = str(row["content"] or "").lower()
             for word in context_words:
                 if word in note_text:
                     candidate["score"] += 5
-                    note_boost = True
                     break
-            if note_boost:
-                break
     except asyncpg.PostgresError:
         pass
 
-    if not note_boost:
-        # Legacy fallback: notes table with body column
-        try:
-            note_rows = await pool.fetch(
-                "SELECT body FROM notes WHERE contact_id = $1 LIMIT 10", cid
-            )
-            for note in note_rows:
-                note_text = str(note["body"] or "").lower()
-                for word in context_words:
-                    if word in note_text:
-                        candidate["score"] += 5
-                        break
-        except asyncpg.PostgresError:
-            pass
-
-    # Check interactions — stored as SPO facts (predicate='interaction', content=summary).
-    # Also fall back to legacy interactions table rows if any exist.
-    interaction_boost = False
+    # Interactions (predicate='interaction')
     try:
-        fact_interaction_rows = await pool.fetch(
+        interaction_rows = await pool.fetch(
             """
             SELECT content FROM facts
-            WHERE predicate = 'interaction'
+            WHERE entity_id = $1
+              AND predicate = 'interaction'
               AND scope = 'relationship'
               AND validity = 'active'
-              AND subject = $1
               AND content IS NOT NULL
             LIMIT 10
             """,
-            subject_key,
+            entity_id,
         )
-        for fact_row in fact_interaction_rows:
-            int_text = str(fact_row["content"] or "").lower()
+        for row in interaction_rows:
+            int_text = str(row["content"] or "").lower()
             for word in context_words:
                 if word in int_text:
                     candidate["score"] += 5
-                    interaction_boost = True
                     break
-            if interaction_boost:
-                break
     except asyncpg.PostgresError:
         pass
-
-    if not interaction_boost:
-        # Legacy fallback: interactions table with summary column
-        try:
-            interaction_rows = await pool.fetch(
-                "SELECT summary FROM interactions"
-                " WHERE contact_id = $1 AND summary IS NOT NULL LIMIT 10",
-                cid,
-            )
-            for interaction in interaction_rows:
-                int_text = interaction["summary"].lower()
-                for word in context_words:
-                    if word in int_text:
-                        candidate["score"] += 5
-                        break
-        except asyncpg.PostgresError:
-            pass

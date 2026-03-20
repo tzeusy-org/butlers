@@ -128,7 +128,11 @@ async def _load_realtime_history(
                         )
                     )
                 )
-                AND ($5::text IS NULL OR request_context ->> 'source_channel' = $5)
+                AND (
+                    $5::text IS NULL
+                    OR request_context ->> 'source_channel' = $5
+                    OR direction = 'outbound'
+                )
                 AND received_at >= $2
                 AND received_at < $3
             ORDER BY received_at ASC
@@ -160,7 +164,11 @@ async def _load_realtime_history(
                         )
                     )
                 )
-                AND ($4::text IS NULL OR request_context ->> 'source_channel' = $4)
+                AND (
+                    $4::text IS NULL
+                    OR request_context ->> 'source_channel' = $4
+                    OR direction = 'outbound'
+                )
                 AND received_at < $2
             ORDER BY received_at DESC
             LIMIT $5

@@ -1266,8 +1266,46 @@ def _make_uuid7() -> str:
 class TestWriteOutboundMessageInbox:
     """Unit tests for _write_outbound_message_inbox helper."""
 
-    async def test_skips_when_no_request_context(self) -> None:
-        """Skips write when notify_request has no request_context."""
+    async def test_derives_thread_from_recipient_when_no_request_context(self) -> None:
+        """Derives thread identity from delivery.recipient for telegram send-intent."""
+        import json as _json
+
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.routing.contracts import (
+            NotifyRequestV1,
+        )
+
+        pool = AsyncMock()
+        delivered_at = datetime(2026, 3, 19, 13, 21, 0, tzinfo=UTC)
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "relationship",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "telegram",
+                    "message": "Got it!",
+                    "recipient": "206570151",
+                },
+                # No request_context
+            }
+        )
+
+        await _write_outbound_message_inbox(
+            pool,
+            notify_request=notify_request,
+            delivered_at=delivered_at,
+        )
+
+        pool.execute.assert_awaited_once()
+        call_args = pool.execute.call_args
+        req_ctx = _json.loads(call_args[0][2])
+        assert req_ctx["source_thread_identity"] == "206570151"
+        assert req_ctx["source_sender_identity"] == "relationship"
+        assert req_ctx["source_channel"] == "telegram_bot"
+
+    async def test_skips_when_no_thread_and_no_recipient(self) -> None:
+        """Skips write when neither thread identity nor recipient is available."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
         from butlers.tools.switchboard.routing.contracts import (
             NotifyRequestV1,
@@ -1280,11 +1318,11 @@ class TestWriteOutboundMessageInbox:
                 "origin_butler": "relationship",
                 "delivery": {
                     "intent": "send",
-                    "channel": "telegram",
+                    "channel": "email",
                     "message": "Got it!",
-                    "recipient": "user123",
+                    "recipient": "user@example.com",
                 },
-                # No request_context
+                # No request_context — email channel, no thread derivation
             }
         )
 
@@ -1296,12 +1334,15 @@ class TestWriteOutboundMessageInbox:
 
         pool.execute.assert_not_awaited()
 
-    async def test_skips_when_no_thread_identity(self) -> None:
-        """Skips write when request_context has no source_thread_identity."""
+    async def test_derives_thread_from_recipient_when_no_thread_identity(self) -> None:
+        """Derives thread identity from recipient when request_context lacks it."""
+        import json as _json
+
         from butlers.tools.switchboard import _write_outbound_message_inbox
         from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
 
         pool = AsyncMock()
+        delivered_at = datetime(2026, 3, 20, 1, 31, 0, tzinfo=UTC)
         notify_request = NotifyRequestV1.model_validate(
             {
                 "schema_version": "notify.v1",
@@ -1310,14 +1351,14 @@ class TestWriteOutboundMessageInbox:
                     "intent": "send",
                     "channel": "telegram",
                     "message": "Medication recorded.",
-                    "recipient": "user456",
+                    "recipient": "206570151",
                 },
                 "request_context": {
                     "request_id": _make_uuid7(),
                     "source_channel": "telegram_bot",
                     "source_endpoint_identity": "telegram:bot",
                     "source_sender_identity": "user456",
-                    # No source_thread_identity
+                    # No source_thread_identity — derived from recipient
                 },
             }
         )
@@ -1325,10 +1366,17 @@ class TestWriteOutboundMessageInbox:
         await _write_outbound_message_inbox(
             pool,
             notify_request=notify_request,
-            delivered_at=datetime.now(UTC),
+            delivered_at=delivered_at,
         )
 
-        pool.execute.assert_not_awaited()
+        pool.execute.assert_awaited_once()
+        call_args = pool.execute.call_args
+        req_ctx = _json.loads(call_args[0][2])
+        # Thread identity derived from delivery.recipient
+        assert req_ctx["source_thread_identity"] == "206570151"
+        # source_channel from request_context (not derived)
+        assert req_ctx["source_channel"] == "telegram_bot"
+        assert req_ctx["source_sender_identity"] == "health"
 
     async def test_writes_outbound_row_when_thread_identity_present(self) -> None:
         """Writes outbound row to message_inbox when source_thread_identity is available."""

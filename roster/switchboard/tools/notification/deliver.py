@@ -123,22 +123,41 @@ async def _write_outbound_message_inbox(
 ) -> None:
     """Write a delivered outbound message to message_inbox for conversation history.
 
-    Only writes rows when source_thread_identity is available (i.e., reply-intent
-    messages where the thread context is known). Send-intent messages without a
-    thread identity are skipped because they cannot be correlated with inbound history.
+    For reply-intent messages the thread identity comes from request_context.
+    For send-intent messages (proactive notifications) the thread identity is
+    derived from delivery.recipient when the channel is telegram — the recipient
+    IS the chat_id that the message was delivered to.
 
     Errors are logged but never propagate — the delivery has already succeeded.
     """
     ctx = notify_request.request_context
-    if ctx is None or ctx.source_thread_identity is None:
+    thread_identity = ctx.source_thread_identity if ctx is not None else None
+
+    # Derive thread identity from delivery.recipient for telegram send-intent
+    # notifications that lack explicit thread context.
+    if thread_identity is None:
+        delivery = notify_request.delivery
+        if delivery.channel == "telegram" and delivery.recipient:
+            thread_identity = delivery.recipient
+
+    if thread_identity is None:
         return
 
-    thread_identity = ctx.source_thread_identity
     origin_butler = notify_request.origin_butler
     message_text = notify_request.delivery.message
 
+    # Resolve source_channel: prefer request_context, fall back to delivery channel
+    # mapped to its ingestion-side equivalent.
+    _DELIVERY_TO_SOURCE_CHANNEL = {"telegram": "telegram_bot"}
+    if ctx is not None:
+        source_channel = ctx.source_channel
+    else:
+        source_channel = _DELIVERY_TO_SOURCE_CHANNEL.get(
+            notify_request.delivery.channel, notify_request.delivery.channel
+        )
+
     request_context_payload = {
-        "source_channel": ctx.source_channel,
+        "source_channel": source_channel,
         "source_endpoint_identity": f"butler:{origin_butler}",
         "source_sender_identity": origin_butler,
         "source_thread_identity": thread_identity,
@@ -173,7 +192,7 @@ async def _write_outbound_message_inbox(
             "Failed to write outbound message to message_inbox",
             extra={
                 "origin_butler": origin_butler,
-                "channel": ctx.source_channel,
+                "channel": source_channel,
                 "thread_identity": thread_identity,
             },
         )

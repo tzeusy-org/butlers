@@ -107,38 +107,66 @@ def _infer_entity_type(
     return "person"
 
 
-async def _sync_entity_create(
-    memory_pool: asyncpg.Pool,
+async def _ensure_entity(
+    pool: asyncpg.Pool,
     first_name: str | None,
     last_name: str | None,
     nickname: str | None,
     tenant_id: str,
     entity_type: str = "person",
-) -> str | None:
-    """Create a memory entity for a new contact. Returns entity_id or None on failure."""
-    from butlers.modules.memory.tools.entities import entity_create
+) -> str:
+    """Resolve or create a memory entity for a contact. Returns entity_id.
+
+    Contacts must always link to an entity.  This function tries to create
+    a new entity first (common path for genuinely new people), falls back to
+    resolving an existing one if a duplicate-name constraint fires, and raises
+    ``RuntimeError`` only if both paths fail.
+    """
+    from butlers.modules.memory.tools.entities import entity_create, entity_resolve
 
     canonical_name = _build_canonical_name(first_name, last_name)
     aliases = _build_entity_aliases(first_name, last_name, nickname)
+
+    # Try create first (common case: new entity)
     try:
         result = await entity_create(
-            memory_pool,
+            pool,
             canonical_name,
             entity_type,
             tenant_id=tenant_id,
             aliases=aliases,
         )
         return result["entity_id"]
+    except ValueError:
+        # Duplicate name — resolve below
+        pass
     except Exception:
         logger.exception(
-            "entity_create failed for contact (canonical_name=%r); continuing without entity link",
+            "_ensure_entity: entity_create failed for %r; falling back to resolve",
             canonical_name,
         )
-        return None
+
+    # Resolve existing entity
+    try:
+        candidates = await entity_resolve(
+            pool, canonical_name, tenant_id=tenant_id, entity_type=entity_type
+        )
+        if candidates:
+            return candidates[0]["entity_id"]
+    except Exception:
+        logger.exception(
+            "_ensure_entity: entity_resolve also failed for %r",
+            canonical_name,
+        )
+
+    raise RuntimeError(
+        f"Cannot resolve or create entity for canonical_name={canonical_name!r}. "
+        "Entity creation is mandatory — contacts must always link to an entity."
+    )
 
 
 async def _sync_entity_update(
-    memory_pool: asyncpg.Pool,
+    pool: asyncpg.Pool,
     entity_id: str,
     first_name: str | None,
     last_name: str | None,
@@ -152,7 +180,7 @@ async def _sync_entity_update(
     aliases = _build_entity_aliases(first_name, last_name, nickname)
     try:
         await entity_update(
-            memory_pool,
+            pool,
             entity_id,
             tenant_id=tenant_id,
             canonical_name=canonical_name,
@@ -183,11 +211,15 @@ async def contact_create(
     memory_pool: asyncpg.Pool | None = None,
     memory_tenant_id: str = _MEMORY_TENANT_ID,
 ) -> dict[str, Any]:
-    """Create a contact with compatibility for both legacy and spec schemas.
+    """Create a contact linked to a memory entity.
 
-    When ``memory_pool`` is provided, a corresponding memory entity is created
-    and the returned ``entity_id`` is stored on the contact row. Entity creation
-    is fail-open: if it fails the contact is still returned without an entity link.
+    Every contact MUST resolve to an entity (the entity may be 'unidentified').
+    The entity is resolved-or-created *before* the contact row is inserted so
+    that ``entity_id`` is set on the INSERT — never NULL.
+
+    ``memory_pool`` is accepted for backward compatibility with callers that
+    supply a separate pool for the memory schema; when omitted, ``pool`` is
+    used directly (shared.entities is accessible from any pool in the same DB).
     """
     if (first_name is None and last_name is None) and name:
         first_name, last_name = _split_name(name)
@@ -197,6 +229,22 @@ async def contact_create(
         composed_name = nickname or company or "Unknown"
 
     cols = await table_columns(pool, "contacts")
+
+    # --- Entity creation (mandatory) ---
+    entity_pool = memory_pool or pool
+    entity_uuid: uuid.UUID | None = None
+    if "entity_id" in cols:
+        entity_id_str = await _ensure_entity(
+            entity_pool,
+            first_name=first_name,
+            last_name=last_name,
+            nickname=nickname,
+            tenant_id=memory_tenant_id,
+            entity_type=_infer_entity_type(first_name, last_name, company),
+        )
+        entity_uuid = uuid.UUID(entity_id_str)
+
+    # --- Build payload (entity_id included in INSERT) ---
     payload: dict[str, Any] = {}
 
     if "name" in cols:
@@ -223,6 +271,8 @@ async def contact_create(
         payload["listed"] = listed
     if "metadata" in cols:
         payload["metadata"] = merged_meta
+    if entity_uuid is not None and "entity_id" in cols:
+        payload["entity_id"] = entity_uuid
 
     if not payload:
         raise ValueError("Cannot create contact: no writable columns found (schema mismatch?)")
@@ -248,27 +298,6 @@ async def contact_create(
         *values,
     )
     result = _parse_contact(row)
-
-    # Sync memory entity (fail-open)
-    if memory_pool is not None and "entity_id" in cols:
-        entity_id = await _sync_entity_create(
-            memory_pool,
-            first_name=result.get("first_name"),
-            last_name=result.get("last_name"),
-            nickname=result.get("nickname"),
-            tenant_id=memory_tenant_id,
-            entity_type=_infer_entity_type(
-                result.get("first_name"), result.get("last_name"), result.get("company")
-            ),
-        )
-        if entity_id is not None:
-            updated_row = await pool.fetchrow(
-                "UPDATE contacts SET entity_id = $1 WHERE id = $2 RETURNING *",
-                uuid.UUID(entity_id),
-                result["id"],
-            )
-            if updated_row is not None:
-                result = _parse_contact(updated_row)
 
     await _log_activity(
         pool,
@@ -367,15 +396,15 @@ async def contact_update(
     )
     result = _parse_contact(row)
 
-    # Sync entity name fields if any name field changed (fail-open)
+    # Sync entity name fields if any name field changed (best-effort)
     _name_fields = {"name", "first_name", "last_name", "nickname"}
-    if memory_pool is not None and _name_fields & set(fields) and "entity_id" in cols:
+    if _name_fields & set(fields) and "entity_id" in cols:
         existing_dict = dict(existing) if not isinstance(existing, dict) else existing
         entity_id_val = existing_dict.get("entity_id")
+        entity_pool = memory_pool or pool
         if entity_id_val is not None:
-            # Resolve the current name state from the result
             await _sync_entity_update(
-                memory_pool,
+                entity_pool,
                 entity_id=str(entity_id_val),
                 first_name=result.get("first_name"),
                 last_name=result.get("last_name"),
@@ -579,16 +608,17 @@ async def contact_merge(
                     source_id,
                 )
 
-    # Merge memory entities (fail-open)
-    if memory_pool is not None and "entity_id" in cols:
+    # Merge memory entities (best-effort)
+    if "entity_id" in cols:
         src_entity_id = dict(source).get("entity_id")
         tgt_entity_id = dict(target).get("entity_id")
+        entity_pool = memory_pool or pool
         if src_entity_id is not None and tgt_entity_id is not None:
             from butlers.modules.memory.tools.entities import entity_merge
 
             try:
                 await entity_merge(
-                    memory_pool,
+                    entity_pool,
                     str(src_entity_id),
                     str(tgt_entity_id),
                     tenant_id=memory_tenant_id,

@@ -865,8 +865,105 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         - EMAIL -> contact_info(type=email)
         - ADR -> addresses
         - BDAY -> important_dates (birthday)
-        - ORG -> quick_facts (company)
-        - TITLE -> quick_facts (job_title)
+        - ORG -> facts (company)
+        - TITLE -> facts (job_title)
         - NOTE -> notes
         """
         return await _vcard.contact_import_vcard(module._get_pool(), vcf_content)
+
+    # =================================================================
+    # Entity tools (from memory module, exposed for entity-first workflows)
+    # =================================================================
+
+    from butlers.modules.memory.tools import entities as _entities
+
+    _ENTITY_TENANT_ID = "relationship"
+
+    @mcp.tool()
+    async def entity_resolve(
+        name: str,
+        entity_type: str | None = None,
+        context_topic: str | None = None,
+        context_mentioned_with: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Resolve a name to ranked entity candidates.
+
+        Use this BEFORE contact_create to check if a person/org already
+        exists.  Returns a ranked list of candidates with entity_id,
+        canonical_name, score, and match quality.
+
+        Args:
+            name: Name string to resolve.
+            entity_type: Optional filter (person/organization/place/other).
+            context_topic: Optional topic hint for graph-based scoring.
+            context_mentioned_with: Optional list of co-mentioned names.
+        """
+        hints: dict[str, Any] | None = None
+        if context_topic or context_mentioned_with:
+            hints = {}
+            if context_topic:
+                hints["topic"] = context_topic
+            if context_mentioned_with:
+                hints["mentioned_with"] = context_mentioned_with
+        return await _entities.entity_resolve(
+            module._get_pool(),
+            name,
+            tenant_id=_ENTITY_TENANT_ID,
+            entity_type=entity_type,
+            context_hints=hints,
+        )
+
+    @mcp.tool()
+    async def entity_get(
+        entity_id: str,
+    ) -> dict[str, Any] | None:
+        """Get full entity record by ID (canonical name, aliases, metadata)."""
+        return await _entities.entity_get(
+            module._get_pool(),
+            entity_id,
+            tenant_id=_ENTITY_TENANT_ID,
+        )
+
+    @mcp.tool()
+    async def entity_update(
+        entity_id: str,
+        canonical_name: str | None = None,
+        aliases: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Update entity fields (name, aliases, metadata)."""
+        return await _entities.entity_update(
+            module._get_pool(),
+            entity_id,
+            tenant_id=_ENTITY_TENANT_ID,
+            canonical_name=canonical_name,
+            aliases=aliases,
+            metadata=metadata,
+        )
+
+    @mcp.tool()
+    async def entity_neighbors(
+        entity_id: str,
+        max_depth: int = 2,
+        predicate_filter: list[str] | None = None,
+        direction: str = "both",
+    ) -> list[dict[str, Any]]:
+        """Traverse the entity graph and return neighboring entities.
+
+        Follows edge-facts (facts with object_entity_id) to discover
+        related entities up to max_depth hops.
+
+        Args:
+            entity_id: Starting entity UUID string.
+            max_depth: Maximum traversal depth (1-5, default 2).
+            predicate_filter: Optional predicates to restrict traversal.
+            direction: Edge direction: outgoing, incoming, or both.
+        """
+        return await _entities.entity_neighbors(
+            module._get_pool(),
+            entity_id,
+            tenant_id=_ENTITY_TENANT_ID,
+            max_depth=max_depth,
+            predicate_filter=predicate_filter,
+            direction=direction,
+        )
