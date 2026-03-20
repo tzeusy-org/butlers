@@ -636,6 +636,54 @@ class MemoryModule(Module):
                 edges_only=edges_only,
             )
 
+        @mcp.tool()
+        async def memory_predicate_search(
+            query: Annotated[
+                str,
+                Field(
+                    description=(
+                        "Search string matched as a name prefix and description substring. "
+                        "Pass an empty string to return all registered predicates."
+                    )
+                ),
+            ],
+            scope: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional filter on expected_subject_type "
+                        "(e.g. 'person', 'organization'). When omitted, all types are searched."
+                    )
+                ),
+            ] = None,
+        ) -> list[dict[str, Any]]:
+            """Search the predicate registry by name prefix and description text.
+
+            Use this tool BEFORE inventing a new predicate to check whether a
+            canonical predicate already exists.  Pass the concept you want to
+            express (e.g. ``"parent"``, ``"father"``, ``"measurement"``) and the
+            tool returns all registered predicates whose name starts with that
+            string or whose description contains it.
+
+            When ``query`` is empty, all registered predicates are returned
+            (equivalent to ``memory_predicate_list``).
+
+            The optional ``scope`` parameter further restricts results to
+            predicates with a matching ``expected_subject_type``.
+
+            Each result includes:
+            - ``name`` — the canonical predicate string to use in ``memory_store_fact``
+            - ``is_edge`` — True if the predicate requires ``object_entity_id``
+            - ``is_temporal`` — True if the predicate requires ``valid_at``
+            - ``description`` — human-readable explanation
+            - ``expected_subject_type`` / ``expected_object_type`` — guidance on entity types
+            """
+            return await _reading.predicate_search(
+                module._get_pool(),
+                query,
+                scope=scope,
+            )
+
         # --- Context tool ---
 
         @mcp.tool()

@@ -19,6 +19,7 @@ from butlers.modules.memory.tools import (
     memory_forget,
     memory_stats,
     predicate_list,
+    predicate_search,
 )
 
 pytestmark = pytest.mark.unit
@@ -516,3 +517,140 @@ class TestPredicateList:
         mock_pool.fetch = AsyncMock(return_value=[])
         result = await predicate_list(mock_pool)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# predicate_search tests
+# ---------------------------------------------------------------------------
+
+
+class TestPredicateSearch:
+    """Tests for predicate_search tool wrapper (tasks 6.1–6.3)."""
+
+    async def test_prefix_search_matches_name(self, mock_pool: AsyncMock) -> None:
+        """Prefix search on 'parent' returns predicates whose name starts with 'parent'."""
+        parent_row = _make_predicate_row("parent_of", is_edge=True, description="Parent relation")
+        mock_pool.fetch = AsyncMock(return_value=[parent_row])
+
+        result = await predicate_search(mock_pool, "parent")
+
+        assert len(result) == 1
+        assert result[0]["name"] == "parent_of"
+
+        # Verify the SQL query includes the prefix condition
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "lower(name) LIKE" in sql
+
+    async def test_description_text_search(self, mock_pool: AsyncMock) -> None:
+        """Description text search returns rows whose description contains the query term."""
+        row = _make_predicate_row("parent_of", description="Indicates a father or mother relation")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        result = await predicate_search(mock_pool, "father")
+
+        assert len(result) == 1
+        assert result[0]["name"] == "parent_of"
+
+        # Verify the SQL includes description substring search
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "COALESCE(description" in sql or "description" in sql
+
+    async def test_empty_query_returns_all(self, mock_pool: AsyncMock) -> None:
+        """An empty query returns all registered predicates (no WHERE clause)."""
+        rows = [
+            _make_predicate_row("birthday"),
+            _make_predicate_row("occupation"),
+            _make_predicate_row("parent_of", is_edge=True),
+        ]
+        mock_pool.fetch = AsyncMock(return_value=rows)
+
+        result = await predicate_search(mock_pool, "")
+
+        assert len(result) == 3
+
+        # Empty query must not inject a WHERE filter on name/description
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "lower(name)" not in sql
+
+    async def test_scope_filter_applied(self, mock_pool: AsyncMock) -> None:
+        """scope parameter adds an expected_subject_type filter to the query."""
+        row = _make_predicate_row("measurement", expected_subject_type="health")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        result = await predicate_search(mock_pool, "measurement", scope="health")
+
+        assert len(result) == 1
+        assert result[0]["expected_subject_type"] == "health"
+
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "expected_subject_type" in sql
+
+    async def test_scope_filter_without_query(self, mock_pool: AsyncMock) -> None:
+        """scope filter works even when query is empty."""
+        rows = [_make_predicate_row("bmi", expected_subject_type="person")]
+        mock_pool.fetch = AsyncMock(return_value=rows)
+
+        result = await predicate_search(mock_pool, "", scope="person")
+
+        assert len(result) == 1
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "expected_subject_type" in sql
+
+    async def test_result_shape_includes_required_keys(self, mock_pool: AsyncMock) -> None:
+        """Every returned row includes all required keys."""
+        expected_keys = {
+            "name",
+            "expected_subject_type",
+            "expected_object_type",
+            "is_edge",
+            "is_temporal",
+            "description",
+        }
+        row = _make_predicate_row("knows", is_edge=True)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        result = await predicate_search(mock_pool, "knows")
+
+        assert len(result) == 1
+        assert set(result[0].keys()) == expected_keys
+
+    async def test_no_match_returns_empty_list(self, mock_pool: AsyncMock) -> None:
+        """When no predicates match the query, an empty list is returned."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        result = await predicate_search(mock_pool, "xyzzy_nonexistent")
+        assert result == []
+
+    async def test_ordered_by_name_asc(self, mock_pool: AsyncMock) -> None:
+        """Results are ordered by name ASC."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await predicate_search(mock_pool, "p")
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "ORDER BY name ASC" in sql
+
+    async def test_query_params_passed_to_pool(self, mock_pool: AsyncMock) -> None:
+        """Non-empty query passes correct bind parameters to pool.fetch."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await predicate_search(mock_pool, "Parent")
+
+        call_args = mock_pool.fetch.call_args
+        # First arg is SQL, remaining args are bind params
+        bind_params = call_args.args[1:]
+        # Prefix param should be lowercased query
+        assert "parent" in bind_params
+        # Substring param should be %parent%
+        assert "%parent%" in bind_params
+
+    async def test_no_scope_no_subject_type_filter(self, mock_pool: AsyncMock) -> None:
+        """When scope is None, the SQL WHERE clause does not filter on expected_subject_type."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await predicate_search(mock_pool, "some_query", scope=None)
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        # The column appears in SELECT; the WHERE must not filter on it
+        assert "WHERE" not in sql or "expected_subject_type =" not in sql

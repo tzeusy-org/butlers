@@ -126,3 +126,59 @@ async def memory_catalog_search(
         mode=mode,
     )
     return [_serialize_row(r) for r in results]
+
+
+async def predicate_search(
+    pool: Pool,
+    query: str,
+    *,
+    scope: str | None = None,
+) -> list[dict[str, Any]]:
+    """Search predicate_registry by name prefix and description text.
+
+    When query is empty, all registered predicates are returned (equivalent to
+    predicate_list).  When query is non-empty, rows matching by name prefix OR
+    description text (case-insensitive substring) are returned.
+
+    The optional ``scope`` parameter filters by ``expected_subject_type``.
+
+    Args:
+        pool: asyncpg connection pool.
+        query: Search string — matched as a case-insensitive prefix on ``name``
+            and as a case-insensitive substring on ``description``.
+        scope: Optional filter on ``expected_subject_type`` (exact match).
+
+    Returns:
+        List of dicts with keys: name, expected_subject_type, expected_object_type,
+        is_edge, is_temporal, description.  Results are ordered by name ASC.
+    """
+    select = (
+        "SELECT name, expected_subject_type, expected_object_type,"
+        " is_edge, is_temporal, description"
+        " FROM predicate_registry"
+    )
+
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    if query:
+        # Param index 1: prefix match on name
+        # Param index 2: substring match on description (COALESCE so NULL desc is safe)
+        params.append(query.lower())
+        params.append(f"%{query.lower()}%")
+        conditions.append(
+            "(lower(name) LIKE $1 || '%' OR lower(COALESCE(description, '')) LIKE $2)"
+        )
+
+    if scope is not None:
+        param_idx = len(params) + 1
+        params.append(scope)
+        conditions.append(f"expected_subject_type = ${param_idx}")
+
+    if conditions:
+        select += " WHERE " + " AND ".join(conditions)
+
+    select += " ORDER BY name ASC"
+
+    rows = await pool.fetch(select, *params)
+    return [dict(row) for row in rows]
