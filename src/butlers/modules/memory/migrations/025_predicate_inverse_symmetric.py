@@ -126,10 +126,14 @@ def downgrade() -> None:
             f" SET inverse_of = NULL"
             f" WHERE name IN ('{forward}', '{inverse}')"
         )
-        # Remove inverse predicate rows that were inserted by this migration
-        # only if they have no facts referencing them (safe: inverse predicates
-        # are new, so no prior facts exist).
-        op.execute(f"DELETE FROM predicate_registry WHERE name = '{inverse}'")
+        # Remove inverse predicate rows only when no facts reference them.
+        # Guarded DELETE: if facts were created using the inverse predicate after
+        # upgrade, we skip the delete to avoid leaving dangling predicate references.
+        op.execute(
+            f"DELETE FROM predicate_registry"
+            f" WHERE name = '{inverse}'"
+            f" AND NOT EXISTS (SELECT 1 FROM facts WHERE predicate = '{inverse}')"
+        )
     # Reset is_symmetric
     for name in _SYMMETRIC_PREDICATES:
         op.execute(

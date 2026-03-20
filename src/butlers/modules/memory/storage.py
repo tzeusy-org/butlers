@@ -874,7 +874,8 @@ async def store_fact(
             #   (b) The registry row signals inverse_of or is_symmetric.
             # The mirrored fact swaps (entity_id ↔ object_entity_id) and swaps
             # subject/content labels.  It is stored inside the same transaction.
-            # Best-effort: column-not-found errors (pre-mem_025 env) are swallowed.
+            # Requires mem_025 migration to be applied (inverse_of and is_symmetric
+            # columns must exist on predicate_registry).
             if (
                 _registry_row is not None
                 and entity_id is not None
