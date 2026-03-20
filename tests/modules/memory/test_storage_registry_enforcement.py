@@ -85,20 +85,47 @@ def _make_pool(*, registry_row=None, entity_exists=True, obj_entity_exists=True)
     """Build (pool, conn) mocks.
 
     registry_row: the value returned by conn.fetchrow for predicate_registry lookups.
-    entity_exists: controls whether entity-validation fetchval returns truthy.
+    entity_exists: controls whether entity-validation fetchrow returns a row.
+    obj_entity_exists: controls whether object entity validation fetchrow returns a row.
+
+    fetchrow call order (when entity_id and object_entity_id are both provided):
+      1. entity existence check → {"id": ..., "entity_type": "person"} or None
+      2. object entity existence check → {"id": ..., "entity_type": "person"} or None
+      3. registry lookup → registry_row
+      4. supersession check → None (no prior fact by default)
     """
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
     conn.execute = AsyncMock()
 
-    # fetchrow is used for both registry lookup and supersession check.
-    # Registry lookup is the first call (made before supersession); supersession
-    # calls come after.  We set the registry result as the return value.
-    conn.fetchrow = AsyncMock(return_value=registry_row)
+    _entity_row = {"id": uuid.uuid4(), "entity_type": "person"} if entity_exists else None
+    _obj_entity_row = {"id": uuid.uuid4(), "entity_type": "person"} if obj_entity_exists else None
 
-    # fetchval is used for entity validation (entity_id / object_entity_id checks).
-    # Return 1 (truthy) by default so entity checks pass.
-    conn.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+    # fetchrow is used for: entity validation, object entity validation,
+    # registry lookup, and supersession check.  We use a side_effect that
+    # dispatches based on the SQL query so tests with a fixed registry_row
+    # still work correctly without needing explicit side_effect lists.
+    async def _fetchrow_dispatch(sql, *args):
+        if "shared.entities" in sql:
+            # Determine which entity is being checked from the arg (UUID).
+            # Entity validation always precedes object entity validation.
+            # We track call count to distinguish first vs second call.
+            _fetchrow_dispatch._entity_call_count += 1
+            if _fetchrow_dispatch._entity_call_count == 1:
+                return _entity_row
+            else:
+                return _obj_entity_row
+        elif "predicate_registry" in sql:
+            return registry_row
+        else:
+            # supersession check and any other queries
+            return None
+
+    _fetchrow_dispatch._entity_call_count = 0
+    conn.fetchrow = AsyncMock(side_effect=_fetchrow_dispatch)
+
+    # fetchval is used for idempotency dedup check.
+    conn.fetchval = AsyncMock(return_value=None)
 
     # fetch is used by _fuzzy_match_predicates for novel predicate suggestions.
     # Return empty list by default so no suggestions are generated.
@@ -125,7 +152,12 @@ class TestIsEdgeEnforcement:
         THEN a ValueError MUST be raised naming the predicate and suggesting
         memory_entity_resolve().
         """
-        registry_row = {"is_edge": True, "is_temporal": False}
+        registry_row = {
+            "is_edge": True,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         pool, _conn = _make_pool(registry_row=registry_row)
 
         with pytest.raises(ValueError) as exc_info:
@@ -151,15 +183,24 @@ class TestIsEdgeEnforcement:
         with is_edge=true) and a valid object_entity_id,
         THEN the fact MUST be stored (no ValueError raised).
         """
-        registry_row = {"is_edge": True, "is_temporal": False}
+        registry_row = {
+            "is_edge": True,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         entity_id = uuid.uuid4()
         object_entity_id = uuid.uuid4()
 
+        # fetchrow call order:
+        #   1. entity_id existence check → entity row
+        #   2. object_entity_id existence check → entity row
+        #   3. registry lookup → registry_row
+        #   4. supersession check → None (no prior fact)
+        _entity_row = {"id": entity_id, "entity_type": "person"}
+        _obj_entity_row = {"id": object_entity_id, "entity_type": "person"}
         pool, conn = _make_pool(registry_row=registry_row)
-        # fetchrow will be called multiple times: registry check (returns
-        # registry_row), then supersession check (should return None for no
-        # prior fact).  We need to return different values per call.
-        conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
+        conn.fetchrow = AsyncMock(side_effect=[_entity_row, _obj_entity_row, registry_row, None])
 
         result = await store_fact(
             pool,
@@ -182,9 +223,14 @@ class TestIsEdgeEnforcement:
         with is_edge=false) and object_entity_id is NULL,
         THEN the fact MUST be stored normally.
         """
-        registry_row = {"is_edge": False, "is_temporal": False}
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         pool, conn = _make_pool(registry_row=registry_row)
-        # Registry returns non-edge row; supersession check returns None.
+        # No entity_id: fetchrow call order is registry lookup → supersession check.
         conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
 
         result = await store_fact(
@@ -239,7 +285,12 @@ class TestIsTemporalEnforcement:
         THEN a ValueError MUST be raised naming the predicate, explaining
         the supersession risk, and directing the caller to provide valid_at.
         """
-        registry_row = {"is_edge": False, "is_temporal": True}
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": True,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         pool, _conn = _make_pool(registry_row=registry_row)
 
         with pytest.raises(ValueError) as exc_info:
@@ -266,9 +317,14 @@ class TestIsTemporalEnforcement:
         with is_temporal=true) and valid_at is set,
         THEN the fact MUST be stored as a temporal fact.
         """
-        registry_row = {"is_edge": False, "is_temporal": True}
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": True,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         pool, conn = _make_pool(registry_row=registry_row)
-        # Registry returns temporal row; no idempotency duplicate.
+        # No entity_id: only registry lookup returns registry_row; idempotency check is fetchval.
         conn.fetchrow = AsyncMock(return_value=registry_row)
         conn.fetchval = AsyncMock(return_value=None)  # idempotency check: no dup
 
@@ -292,8 +348,14 @@ class TestIsTemporalEnforcement:
         with is_temporal=false) and valid_at is NULL,
         THEN the fact MUST be stored normally as a property fact.
         """
-        registry_row = {"is_edge": False, "is_temporal": False}
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         pool, conn = _make_pool(registry_row=registry_row)
+        # No entity_id: registry lookup → supersession check.
         conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
 
         result = await store_fact(
@@ -341,8 +403,14 @@ class TestRegistryLookupPlacement:
 
     async def test_registry_query_uses_predicate_name(self, embedding_engine):
         """The registry lookup queries by predicate name."""
-        registry_row = {"is_edge": False, "is_temporal": False}
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         pool, conn = _make_pool(registry_row=registry_row)
+        # No entity_id: first fetchrow is registry lookup, second is supersession.
         conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
 
         await store_fact(
@@ -361,9 +429,15 @@ class TestRegistryLookupPlacement:
         assert first_call.args[1] == "birthday"
 
     async def test_registry_lookup_happens_before_supersession_check(self, embedding_engine):
-        """Registry lookup is the first fetchrow call; supersession follows."""
-        registry_row = {"is_edge": False, "is_temporal": False}
+        """Registry lookup is the first fetchrow call; supersession follows (no entity_id)."""
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         pool, conn = _make_pool(registry_row=registry_row)
+        # No entity_id: first fetchrow call is the registry lookup.
         conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
 
         await store_fact(pool, "Alice", "birthday", "1990-01-01", embedding_engine)

@@ -116,7 +116,9 @@ class TestEntityIdValidation:
     async def test_invalid_entity_id_raises_value_error(self, embedding_engine):
         """Providing a non-existent entity_id raises ValueError."""
         bad_eid = uuid.uuid4()
-        conn = _make_conn(fetchval_return=None)  # entity not found
+        # Entity validation now uses fetchrow (SELECT id, entity_type).
+        # Return None to simulate entity not found.
+        conn = _make_conn(fetchrow_return=None)
         pool = _make_pool(conn)
 
         with pytest.raises(ValueError, match="does not exist in entities table"):
@@ -132,7 +134,9 @@ class TestEntityIdValidation:
     async def test_entity_validation_query_uses_correct_id(self, embedding_engine):
         """Validation SELECT is called with the supplied entity_id."""
         eid = uuid.uuid4()
-        conn = _make_conn(fetchval_return=None)
+        # Entity validation uses fetchrow (SELECT id, entity_type).
+        # Return None → triggers ValueError.
+        conn = _make_conn(fetchrow_return=None)
         pool = _make_pool(conn)
 
         with pytest.raises(ValueError):
@@ -145,17 +149,18 @@ class TestEntityIdValidation:
                 entity_id=eid,
             )
 
-        conn.fetchval.assert_awaited_once()
-        call_args = conn.fetchval.call_args
+        # Entity validation must use fetchrow (not fetchval)
+        conn.fetchrow.assert_awaited_once()
+        call_args = conn.fetchrow.call_args
         assert "entities" in call_args.args[0]
         assert call_args.args[1] == eid
 
     async def test_valid_entity_id_does_not_raise(self, embedding_engine):
         """Valid entity_id (exists in DB) proceeds without error."""
         eid = uuid.uuid4()
-        # fetchval returns: entity=1 (exists); no is_temporal check (supersession
-        # is now based on valid_at nullness, not predicate_registry).
-        conn = _make_conn(fetchval_return=1)
+        # Entity validation uses fetchrow returning a row with id and entity_type.
+        # fetchrow side_effect: entity check row, registry lookup (None=novel), supersession None.
+        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -172,18 +177,26 @@ class TestEntityIdValidation:
         assert isinstance(result["id"], uuid.UUID)
 
     async def test_no_entity_validation_when_entity_id_omitted(self, embedding_engine):
-        """Neither entity check nor predicate_registry is queried when entity_id is None.
+        """Entity validation fetchrow is not called when entity_id is omitted.
 
-        Supersession is now determined by valid_at nullness, not registry lookup.
-        No fetchval calls are expected when entity_id is not provided.
+        Without entity_id, no entity existence check or entity_type lookup is performed.
+        fetchval is also not called (no idempotency check for property facts).
+        The registry lookup still uses fetchrow for novel-predicate tracking.
         """
         conn = _make_conn()
         pool = _make_pool(conn)
 
         await store_fact(pool, "user", "color", "blue", embedding_engine)
 
-        # No fetchval calls at all — entity check skipped, predicate registry not consulted
+        # No fetchval calls at all — entity check skipped, no idempotency for property facts.
         conn.fetchval.assert_not_awaited()
+        # No entity-validation fetchrow calls (only registry + supersession fetchrow calls).
+        entity_calls = [
+            c
+            for c in conn.fetchrow.call_args_list
+            if "shared.entities" in (c.args[0] if c.args else "")
+        ]
+        assert len(entity_calls) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +210,8 @@ class TestEntityIdStoredInFact:
     async def test_entity_id_included_in_insert(self, embedding_engine):
         """When entity_id is provided, it appears in the INSERT args."""
         eid = uuid.uuid4()
-        # fetchval returns: entity=1 (exists); no is_temporal check needed.
-        conn = _make_conn(fetchval_return=1)
+        # Entity validation uses fetchrow: entity row, registry=None (novel), supersession=None.
+        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -250,15 +263,19 @@ class TestEntityKeyedSupersession:
     def pool_with_existing_entity_fact(self):
         """Pool/conn where an existing entity-keyed fact is found.
 
-        First fetchrow: predicate_registry lookup → None (unregistered predicate).
-        Second fetchrow: supersession check → existing fact row.
+        fetchrow call order:
+          1. entity_id existence+type check → entity row
+          2. registry lookup → None (unregistered predicate)
+          3. supersession check → existing fact row
         """
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
-        # fetchval: entity=1 (exists); supersession is now valid_at-based, not registry-based.
         conn = _make_conn(
-            fetchval_return=1,
-            fetchrow_side_effect=[None, {"id": old_id}],
+            fetchrow_side_effect=[
+                {"id": eid, "entity_type": "person"},  # entity validation
+                None,  # registry lookup (novel predicate)
+                {"id": old_id},  # supersession check
+            ],
         )
         pool = _make_pool(conn)
         return pool, conn, old_id, eid
@@ -351,9 +368,8 @@ class TestEntityKeyedSupersession:
     async def test_entity_keyed_no_supersession_when_no_existing(self, embedding_engine):
         """No supersession when no existing entity-keyed property fact found."""
         eid = uuid.uuid4()
-        # fetchval: entity=1 (exists), entity_type='person' (for auto-registration);
-        # fetchrow: no existing property fact.
-        conn = _make_conn(fetchval_side_effect=[1, "person"], fetchrow_return=None)
+        # fetchrow: entity check row, registry=None (novel), supersession=None.
+        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
         pool = _make_pool(conn)
 
         await store_fact(pool, "Alice", "job_title", "Engineer", embedding_engine, entity_id=eid)
@@ -542,7 +558,9 @@ class TestObjectEntityIdValidation:
         """entity_id == object_entity_id raises ValueError."""
         eid = uuid.uuid4()
         conn = _make_conn()
-        conn.fetchval = AsyncMock(return_value=1)
+        # Entity validation uses fetchrow — return a valid row for entity_id check.
+        # The self-reference check happens before the object entity fetchrow call.
+        conn.fetchrow = AsyncMock(return_value={"id": eid, "entity_type": "person"})
         pool = _make_pool(conn)
 
         with pytest.raises(ValueError, match="[Ss]elf-referencing"):
@@ -560,9 +578,8 @@ class TestObjectEntityIdValidation:
         """Providing a non-existent object_entity_id raises ValueError."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # First fetchval (entity_id check) returns 1, second (object_entity_id) returns None
-        conn = _make_conn()
-        conn.fetchval = AsyncMock(side_effect=[1, None])
+        # fetchrow: entity_id check → valid row, object_entity_id check → None (not found).
+        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None])
         pool = _make_pool(conn)
 
         with pytest.raises(ValueError, match="object_entity_id.*does not exist"):
@@ -580,8 +597,15 @@ class TestObjectEntityIdValidation:
         """Valid object_entity_id (exists in DB) proceeds without error."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup)
-        conn = _make_conn(fetchval_side_effect=[1, 1, "person"])
+        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        conn = _make_conn(
+            fetchrow_side_effect=[
+                {"id": eid, "entity_type": "person"},
+                {"id": obj_eid, "entity_type": "person"},
+                None,  # registry lookup (novel)
+                None,  # supersession check
+            ]
+        )
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -598,12 +622,22 @@ class TestObjectEntityIdValidation:
         assert isinstance(result, dict)
         assert isinstance(result["id"], uuid.UUID)
 
-    async def test_object_entity_id_validation_calls_fetchval_twice(self, embedding_engine):
-        """fetchval called for: entity_id, object_entity_id, and entity_type lookup."""
+    async def test_object_entity_id_validation_uses_fetchrow_for_both_entities(
+        self, embedding_engine
+    ):
+        """Both entity_id and object_entity_id are validated via fetchrow
+        (SELECT id, entity_type), enabling type validation without extra round-trips."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup)
-        conn = _make_conn(fetchval_side_effect=[1, 1, "person"])
+        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        conn = _make_conn(
+            fetchrow_side_effect=[
+                {"id": eid, "entity_type": "person"},
+                {"id": obj_eid, "entity_type": "person"},
+                None,  # registry lookup
+                None,  # supersession check
+            ]
+        )
         pool = _make_pool(conn)
 
         await store_fact(
@@ -616,13 +650,15 @@ class TestObjectEntityIdValidation:
             object_entity_id=obj_eid,
         )
 
-        # Three fetchval calls: entity_id check, object_entity_id check,
-        # entity_type lookup for auto-registration.
-        assert conn.fetchval.call_count == 3
-        assert conn.fetchval.call_args_list[0].args[1] == eid
-        assert conn.fetchval.call_args_list[1].args[1] == obj_eid
-        # Third call: entity_type lookup for auto-registration subject type inference
-        assert conn.fetchval.call_args_list[2].args[1] == eid
+        # Both entity validation calls use fetchrow targeting shared.entities.
+        entity_calls = [
+            c
+            for c in conn.fetchrow.call_args_list
+            if "shared.entities" in (c.args[0] if c.args else "")
+        ]
+        assert len(entity_calls) == 2
+        assert entity_calls[0].args[1] == eid
+        assert entity_calls[1].args[1] == obj_eid
 
 
 # ---------------------------------------------------------------------------
@@ -637,8 +673,15 @@ class TestObjectEntityIdStoredInFact:
         """When object_entity_id is provided, it appears in the INSERT args."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup)
-        conn = _make_conn(fetchval_side_effect=[1, 1, "person"])
+        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        conn = _make_conn(
+            fetchrow_side_effect=[
+                {"id": eid, "entity_type": "person"},
+                {"id": obj_eid, "entity_type": "person"},
+                None,  # registry lookup
+                None,  # supersession check
+            ]
+        )
         pool = _make_pool(conn)
 
         await store_fact(
@@ -690,17 +733,22 @@ class TestEdgeFactSupersession:
     def pool_with_existing_edge_fact(self):
         """Pool/conn where an existing edge-fact is found.
 
-        First fetchrow: registry lookup → None (unregistered predicate).
-        Second fetchrow: supersession check → existing edge-fact row.
+        fetchrow call order:
+          1. entity_id existence+type check → entity row
+          2. object_entity_id existence+type check → object entity row
+          3. registry lookup → None (unregistered predicate)
+          4. supersession check → existing edge-fact row
         """
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup).
-        # Supersession is now valid_at-based, not registry-based.
         conn = _make_conn(
-            fetchrow_side_effect=[None, {"id": old_id}],
-            fetchval_side_effect=[1, 1, "person"],
+            fetchrow_side_effect=[
+                {"id": eid, "entity_type": "person"},  # entity validation
+                {"id": obj_eid, "entity_type": "person"},  # object entity validation
+                None,  # registry lookup (novel)
+                {"id": old_id},  # supersession check
+            ],
         )
         pool = _make_pool(conn)
         return pool, conn, old_id, eid, obj_eid
@@ -820,8 +868,15 @@ class TestEdgeFactSupersession:
         """No supersession when no existing edge-fact found."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup)
-        conn = _make_conn(fetchrow_return=None, fetchval_side_effect=[1, 1, "person"])
+        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        conn = _make_conn(
+            fetchrow_side_effect=[
+                {"id": eid, "entity_type": "person"},
+                {"id": obj_eid, "entity_type": "person"},
+                None,  # registry lookup (novel)
+                None,  # supersession check
+            ]
+        )
         pool = _make_pool(conn)
 
         await store_fact(
@@ -998,8 +1053,8 @@ class TestUuidInContentGuard:
         """Content containing a UUID without object_entity_id raises ValueError."""
         eid = uuid.uuid4()
         target_uuid = uuid.uuid4()
-        # entity_id valid (fetchval returns 1), then no supersession match (None)
-        conn = _make_conn(fetchval_side_effect=[1, None])
+        # fetchrow: entity check row, registry=None (novel). UUID guard fires before supersession.
+        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None])
         pool = _make_pool(conn)
 
         with pytest.raises(ValueError, match="embedded UUID"):
@@ -1016,9 +1071,15 @@ class TestUuidInContentGuard:
         """Content with UUID is allowed when object_entity_id is properly set."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval sequence: entity_id valid (1), object_entity_id valid (1),
-        # no supersession match (None)
-        conn = _make_conn(fetchval_side_effect=[1, 1, None])
+        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        conn = _make_conn(
+            fetchrow_side_effect=[
+                {"id": eid, "entity_type": "person"},
+                {"id": obj_eid, "entity_type": "person"},
+                None,  # registry lookup
+                None,  # supersession check
+            ]
+        )
         pool = _make_pool(conn)
 
         # Should not raise — object_entity_id is set
@@ -1035,8 +1096,8 @@ class TestUuidInContentGuard:
     async def test_content_without_uuid_passes(self, embedding_engine):
         """Normal content without UUIDs is not affected by the guard."""
         eid = uuid.uuid4()
-        # entity_id valid (1), no supersession match (None)
-        conn = _make_conn(fetchval_side_effect=[1, None])
+        # fetchrow: entity check, registry=None (novel), supersession=None.
+        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
         pool = _make_pool(conn)
 
         # Should not raise

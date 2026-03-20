@@ -586,15 +586,20 @@ async def store_fact(
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Validate entity_id when provided.
+            # D7: fetch entity_type in the same query as the existence check — no extra round-trip.
+            _subject_entity_type: str | None = None
             if entity_id is not None:
-                entity_exists = await conn.fetchval(
-                    "SELECT 1 FROM shared.entities WHERE id = $1",
+                _entity_row = await conn.fetchrow(
+                    "SELECT id, entity_type FROM shared.entities WHERE id = $1",
                     entity_id,
                 )
-                if not entity_exists:
+                if _entity_row is None:
                     raise ValueError(f"entity_id {entity_id!r} does not exist in entities table")
+                _subject_entity_type = _entity_row["entity_type"]
 
             # Validate object_entity_id when provided.
+            # D7: fetch entity_type in the same query as the existence check.
+            _object_entity_type: str | None = None
             if object_entity_id is not None:
                 if entity_id is None:
                     raise ValueError(
@@ -606,14 +611,15 @@ async def store_fact(
                         "Self-referencing edges are not allowed: "
                         "entity_id and object_entity_id must differ"
                     )
-                obj_exists = await conn.fetchval(
-                    "SELECT 1 FROM shared.entities WHERE id = $1",
+                _obj_entity_row = await conn.fetchrow(
+                    "SELECT id, entity_type FROM shared.entities WHERE id = $1",
                     object_entity_id,
                 )
-                if not obj_exists:
+                if _obj_entity_row is None:
                     raise ValueError(
                         f"object_entity_id {object_entity_id!r} does not exist in entities table"
                     )
+                _object_entity_type = _obj_entity_row["entity_type"]
 
             # Registry enforcement: look up predicate flags and enforce constraints.
             # D1: single cached query inside the existing transaction, PK lookup on
@@ -623,14 +629,18 @@ async def store_fact(
             # the migration (status column exists but row was inserted before DEFAULT
             # took effect, which is not possible given NOT NULL DEFAULT, but kept as
             # a defensive measure). Test mocks without status use .get() below.
+            # D7: also fetch expected_subject_type and expected_object_type for soft
+            # type validation (warnings, not errors).
             _registry_row = await conn.fetchrow(
                 "SELECT is_edge, is_temporal,"
                 " COALESCE(status, 'active') AS status,"
-                " superseded_by"
+                " superseded_by,"
+                " expected_subject_type, expected_object_type"
                 " FROM predicate_registry WHERE name = $1",
                 predicate,
             )
             _predicate_is_novel = _registry_row is None
+            _type_warnings: list[str] = []
             if _registry_row is not None:
                 if _registry_row["is_edge"] and object_entity_id is None:
                     raise ValueError(
@@ -665,6 +675,35 @@ async def store_fact(
                             f"direct replacement. Consider using a domain-specific "
                             f"predicate from the registry."
                         )
+
+                # D7: Soft domain/range type validation.
+                # NULL expected types skip validation; mismatches produce warnings, not errors.
+                _exp_subject_type = _registry_row["expected_subject_type"]
+                _exp_object_type = _registry_row["expected_object_type"]
+
+                if (
+                    _exp_subject_type is not None
+                    and _subject_entity_type is not None
+                    and _subject_entity_type != _exp_subject_type
+                ):
+                    _type_warnings.append(
+                        f"Subject type mismatch for predicate {predicate!r}: "
+                        f"expected '{_exp_subject_type}' but subject entity has "
+                        f"entity_type='{_subject_entity_type}'. "
+                        f"The fact has been stored; this is a soft warning."
+                    )
+
+                if (
+                    _exp_object_type is not None
+                    and _object_entity_type is not None
+                    and _object_entity_type != _exp_object_type
+                ):
+                    _type_warnings.append(
+                        f"Object type mismatch for predicate {predicate!r}: "
+                        f"expected '{_exp_object_type}' but object entity has "
+                        f"entity_type='{_object_entity_type}'. "
+                        f"The fact has been stored; this is a soft warning."
+                    )
 
             # D3: Fuzzy matching — for novel predicates (not found in registry),
             # compute suggestions inside the same transaction to reuse the connection.
@@ -838,14 +877,9 @@ async def store_fact(
                 _inferred_is_edge = object_entity_id is not None
                 _inferred_is_temporal = valid_at is not None
 
-                # Infer expected_subject_type from the entity's entity_type
-                # when entity_id is provided (already validated above).
-                _inferred_subject_type: str | None = None
-                if entity_id is not None:
-                    _inferred_subject_type = await conn.fetchval(
-                        "SELECT entity_type FROM shared.entities WHERE id = $1",
-                        entity_id,
-                    )
+                # Reuse _subject_entity_type already fetched in the entity-validation
+                # step above — no additional round-trip needed.
+                _inferred_subject_type: str | None = _subject_entity_type
 
                 await conn.execute(
                     """
@@ -901,11 +935,14 @@ async def store_fact(
     # matches — omit the key entirely when there are none (per spec: "the
     # response MUST NOT include a 'suggestions' key" for no-match cases).
     # Include "warning" when the predicate is deprecated.
+    # D7: Include "warnings" when type mismatches were detected; omit otherwise.
     result: dict = {"id": fact_id, "supersedes_id": supersedes_id}
     if _fuzzy_suggestions:
         result["suggestions"] = _fuzzy_suggestions
     if _deprecation_warning:
         result["warning"] = _deprecation_warning
+    if _type_warnings:
+        result["warnings"] = _type_warnings
     return result
 
 

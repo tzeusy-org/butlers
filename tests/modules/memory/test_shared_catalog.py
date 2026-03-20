@@ -481,7 +481,16 @@ class TestFactCatalogEnrichmentFields:
         # validate entity existence checks happen on the conn, not pool
         pool.execute.side_effect = _capture_execute
         conn = _conn
-        conn.fetchval.return_value = 1  # both entities "exist"
+        # Entity validation now uses fetchrow (SELECT id, entity_type).
+        # Side effect order: entity check, object entity check, registry lookup, supersession.
+        conn.fetchrow = AsyncMock(
+            side_effect=[
+                {"id": entity_id, "entity_type": "person"},
+                {"id": obj_entity_id, "entity_type": "person"},
+                None,  # registry lookup (novel predicate)
+                None,  # supersession check
+            ]
+        )
         conn.execute = AsyncMock(return_value=None)
 
         await store_fact(
