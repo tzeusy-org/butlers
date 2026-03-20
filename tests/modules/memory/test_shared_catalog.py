@@ -481,12 +481,12 @@ class TestFactCatalogEnrichmentFields:
         # validate entity existence checks happen on the conn, not pool
         pool.execute.side_effect = _capture_execute
         conn = _conn
-        # Entity validation now uses fetchrow (SELECT id, entity_type).
-        # Side effect order: entity check, object entity check, registry lookup, supersession.
+        # fetchrow order: entity, object entity, alias (None), registry, supersession.
         conn.fetchrow = AsyncMock(
             side_effect=[
                 {"id": entity_id, "entity_type": "person"},
                 {"id": obj_entity_id, "entity_type": "person"},
+                None,  # alias resolution
                 None,  # registry lookup (novel predicate)
                 None,  # supersession check
             ]

@@ -158,9 +158,10 @@ class TestEntityIdValidation:
     async def test_valid_entity_id_does_not_raise(self, embedding_engine):
         """Valid entity_id (exists in DB) proceeds without error."""
         eid = uuid.uuid4()
-        # Entity validation uses fetchrow returning a row with id and entity_type.
-        # fetchrow side_effect: entity check row, registry lookup (None=novel), supersession None.
-        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
+        # fetchrow order: entity, alias (None), registry (None=novel), supersession.
+        conn = _make_conn(
+            fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None, None]
+        )
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -210,8 +211,10 @@ class TestEntityIdStoredInFact:
     async def test_entity_id_included_in_insert(self, embedding_engine):
         """When entity_id is provided, it appears in the INSERT args."""
         eid = uuid.uuid4()
-        # Entity validation uses fetchrow: entity row, registry=None (novel), supersession=None.
-        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
+        # fetchrow order: entity, alias (None), registry (None=novel), supersession.
+        conn = _make_conn(
+            fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None, None]
+        )
         pool = _make_pool(conn)
 
         await store_fact(
@@ -265,14 +268,16 @@ class TestEntityKeyedSupersession:
 
         fetchrow call order:
           1. entity_id existence+type check → entity row
-          2. registry lookup → None (unregistered predicate)
-          3. supersession check → existing fact row
+          2. alias resolution → None (not an alias)
+          3. registry lookup → None (unregistered predicate)
+          4. supersession check → existing fact row
         """
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
         conn = _make_conn(
             fetchrow_side_effect=[
                 {"id": eid, "entity_type": "person"},  # entity validation
+                None,  # alias resolution
                 None,  # registry lookup (novel predicate)
                 {"id": old_id},  # supersession check
             ],
@@ -370,8 +375,10 @@ class TestEntityKeyedSupersession:
     async def test_entity_keyed_no_supersession_when_no_existing(self, embedding_engine):
         """No supersession when no existing entity-keyed property fact found."""
         eid = uuid.uuid4()
-        # fetchrow: entity check row, registry=None (novel), supersession=None.
-        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
+        # fetchrow: entity check, alias resolution (None), registry (None=novel), supersession None.
+        conn = _make_conn(
+            fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None, None]
+        )
         pool = _make_pool(conn)
 
         await store_fact(pool, "Alice", "job_title", "Engineer", embedding_engine, entity_id=eid)
@@ -395,8 +402,8 @@ class TestSubjectKeyedSupersessionUnchanged:
     @pytest.fixture()
     def pool_with_existing_subject_fact(self):
         old_id = uuid.uuid4()
-        # First fetchrow: registry lookup → None; second: supersession → existing fact.
-        conn = _make_conn(fetchrow_side_effect=[None, {"id": old_id}])
+        # fetchrow order (no entity_id): alias resolution (None), registry (None), supersession.
+        conn = _make_conn(fetchrow_side_effect=[None, None, {"id": old_id}])
         pool = _make_pool(conn)
         return pool, conn, old_id
 
@@ -601,11 +608,12 @@ class TestObjectEntityIdValidation:
         """Valid object_entity_id (exists in DB) proceeds without error."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        # fetchrow: entity check, object entity check, alias (None), registry (novel), supersession.
         conn = _make_conn(
             fetchrow_side_effect=[
                 {"id": eid, "entity_type": "person"},
                 {"id": obj_eid, "entity_type": "person"},
+                None,  # alias resolution
                 None,  # registry lookup (novel)
                 None,  # supersession check
             ]
@@ -633,11 +641,12 @@ class TestObjectEntityIdValidation:
         (SELECT id, entity_type), enabling type validation without extra round-trips."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        # fetchrow: entity check, object entity check, alias (None), registry (novel), supersession.
         conn = _make_conn(
             fetchrow_side_effect=[
                 {"id": eid, "entity_type": "person"},
                 {"id": obj_eid, "entity_type": "person"},
+                None,  # alias resolution
                 None,  # registry lookup
                 None,  # supersession check
             ]
@@ -677,11 +686,12 @@ class TestObjectEntityIdStoredInFact:
         """When object_entity_id is provided, it appears in the INSERT args."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        # fetchrow: entity check, object entity check, alias (None), registry (novel), supersession.
         conn = _make_conn(
             fetchrow_side_effect=[
                 {"id": eid, "entity_type": "person"},
                 {"id": obj_eid, "entity_type": "person"},
+                None,  # alias resolution
                 None,  # registry lookup
                 None,  # supersession check
             ]
@@ -740,8 +750,9 @@ class TestEdgeFactSupersession:
         fetchrow call order:
           1. entity_id existence+type check → entity row
           2. object_entity_id existence+type check → object entity row
-          3. registry lookup → None (unregistered predicate)
-          4. supersession check → existing edge-fact row
+          3. alias resolution → None (not an alias)
+          4. registry lookup → None (unregistered predicate)
+          5. supersession check → existing edge-fact row
         """
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
@@ -750,6 +761,7 @@ class TestEdgeFactSupersession:
             fetchrow_side_effect=[
                 {"id": eid, "entity_type": "person"},  # entity validation
                 {"id": obj_eid, "entity_type": "person"},  # object entity validation
+                None,  # alias resolution
                 None,  # registry lookup (novel)
                 {"id": old_id},  # supersession check
             ],
@@ -874,11 +886,12 @@ class TestEdgeFactSupersession:
         """No supersession when no existing edge-fact found."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        # fetchrow: entity check, object entity check, alias (None), registry (novel), supersession.
         conn = _make_conn(
             fetchrow_side_effect=[
                 {"id": eid, "entity_type": "person"},
                 {"id": obj_eid, "entity_type": "person"},
+                None,  # alias resolution
                 None,  # registry lookup (novel)
                 None,  # supersession check
             ]
@@ -1060,8 +1073,8 @@ class TestUuidInContentGuard:
         """Content containing a UUID without object_entity_id raises ValueError."""
         eid = uuid.uuid4()
         target_uuid = uuid.uuid4()
-        # fetchrow: entity check row, registry=None (novel). UUID guard fires before supersession.
-        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None])
+        # fetchrow: entity check, alias resolution (None), registry (novel). UUID guard fires next.
+        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
         pool = _make_pool(conn)
 
         with pytest.raises(ValueError, match="embedded UUID"):
@@ -1078,11 +1091,12 @@ class TestUuidInContentGuard:
         """Content with UUID is allowed when object_entity_id is properly set."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchrow: entity check, object entity check, registry=None (novel), supersession=None.
+        # fetchrow: entity check, object entity check, alias (None), registry (novel), supersession.
         conn = _make_conn(
             fetchrow_side_effect=[
                 {"id": eid, "entity_type": "person"},
                 {"id": obj_eid, "entity_type": "person"},
+                None,  # alias resolution
                 None,  # registry lookup
                 None,  # supersession check
             ]
@@ -1103,8 +1117,10 @@ class TestUuidInContentGuard:
     async def test_content_without_uuid_passes(self, embedding_engine):
         """Normal content without UUIDs is not affected by the guard."""
         eid = uuid.uuid4()
-        # fetchrow: entity check, registry=None (novel), supersession=None.
-        conn = _make_conn(fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None])
+        # fetchrow: entity check, alias resolution (None), registry (novel), supersession.
+        conn = _make_conn(
+            fetchrow_side_effect=[{"id": eid, "entity_type": "person"}, None, None, None]
+        )
         pool = _make_pool(conn)
 
         # Should not raise
