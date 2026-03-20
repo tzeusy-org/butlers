@@ -234,16 +234,6 @@ class TestAliasResolution:
         AND 'resolved_from' MUST NOT be present in the response.
         """
 
-        async def alias_raises(*args, **kwargs):
-            # First call (alias lookup) raises; subsequent calls behave normally.
-            if hasattr(alias_raises, "_called"):
-                # Registry lookup → active row; supersession → None
-                return (
-                    _active_registry_row() if not hasattr(alias_raises, "_second_called") else None
-                )
-            alias_raises._called = True
-            raise Exception("column aliases does not exist")
-
         # Use a custom fetchrow that raises on the first call.
         conn = AsyncMock()
 
