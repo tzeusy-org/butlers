@@ -190,8 +190,8 @@ class TestStoreFactTenantLineage:
 
         conn = AsyncMock()
         conn.fetchval = AsyncMock(return_value=None)
-        # First fetchrow: registry lookup → None; second: supersession → existing fact.
-        conn.fetchrow = AsyncMock(side_effect=[None, {"id": existing_id}])
+        # fetchrow order: alias resolution (None), registry (None=novel), supersession check.
+        conn.fetchrow = AsyncMock(side_effect=[None, None, {"id": existing_id}])
         conn.execute = AsyncMock()
         conn.transaction = MagicMock(return_value=_AsyncCM(None))
         pool = MagicMock()

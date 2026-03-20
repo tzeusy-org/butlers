@@ -193,13 +193,14 @@ class TestSupersession:
     def mock_pool_with_existing(self, mock_pool):
         """Pool where fetchrow returns an existing fact row.
 
-        The first fetchrow call is the predicate_registry lookup (returns None,
-        simulating an unregistered predicate).  The second call is the
-        supersession check and returns the existing fact row.
+        fetchrow call order (no entity_id):
+          1. alias resolution → None (not an alias)
+          2. predicate_registry lookup → None (novel predicate)
+          3. supersession check → existing fact row
         """
         pool, conn = mock_pool
         old_id = uuid.uuid4()
-        conn.fetchrow = AsyncMock(side_effect=[None, {"id": old_id}])
+        conn.fetchrow = AsyncMock(side_effect=[None, None, {"id": old_id}])
         return pool, conn, old_id
 
     async def test_old_fact_marked_superseded(self, mock_pool_with_existing, embedding_engine):
@@ -289,7 +290,7 @@ class TestTemporalFacts:
         """When valid_at is provided (temporal fact), no supersession check is done."""
         pool, conn = mock_pool
         ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
-        # First fetchrow: registry lookup returns None (unregistered predicate).
+        # fetchrow calls: alias resolution (None) + registry lookup (None).
         # No supersession fetchrow should follow for temporal facts.
         conn.fetchrow = AsyncMock(return_value=None)
         conn.fetchval = AsyncMock(return_value=None)  # idempotency check: no dup
@@ -300,16 +301,15 @@ class TestTemporalFacts:
         # + UPDATE usage_count (mem_023). No UPDATE supersession, no memory_links INSERT.
         assert conn.execute.call_count == 3
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
-        # Only one fetchrow call total (the registry lookup) — no supersession check
-        assert conn.fetchrow.call_count == 1
+        # Two fetchrow calls: alias resolution + registry lookup (no supersession for temporal)
+        assert conn.fetchrow.call_count == 2
 
     async def test_property_fact_still_supersedes(self, mock_pool, embedding_engine):
         """When valid_at is None (property fact), supersession happens normally."""
         pool, conn = mock_pool
         old_id = uuid.uuid4()
-        # First fetchrow: registry lookup returns None (unregistered predicate).
-        # Second fetchrow: supersession check returns the existing fact.
-        conn.fetchrow = AsyncMock(side_effect=[None, {"id": old_id}])
+        # fetchrow call order: alias resolution (None), registry lookup (None), supersession check.
+        conn.fetchrow = AsyncMock(side_effect=[None, None, {"id": old_id}])
 
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
@@ -333,13 +333,13 @@ class TestTemporalFacts:
     async def test_supersession_sql_filters_valid_at_null(self, mock_pool, embedding_engine):
         """Supersession lookup SQL includes AND valid_at IS NULL filter."""
         pool, conn = mock_pool
-        # Two fetchrow calls: registry lookup (None) then supersession check (None).
-        conn.fetchrow = AsyncMock(side_effect=[None, None])
+        # fetchrow order: alias (None), registry (None), supersession (None).
+        conn.fetchrow = AsyncMock(side_effect=[None, None, None])
 
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        # Second fetchrow call is the supersession check
-        fetchrow_call = conn.fetchrow.call_args_list[1]
+        # Third fetchrow call is the supersession check (index 2)
+        fetchrow_call = conn.fetchrow.call_args_list[2]
         sql = fetchrow_call.args[0]
         assert "valid_at IS NULL" in sql
 
@@ -394,8 +394,8 @@ class TestTemporalFacts:
     ):
         """A new temporal fact (valid_at=T1) never supersedes any fact."""
         pool, conn = mock_pool
-        # First fetchrow: registry lookup returns None (unregistered predicate).
-        # Temporal facts skip supersession so no second fetchrow call.
+        # fetchrow calls: alias resolution (None) + registry lookup (None).
+        # Temporal facts skip supersession so no additional fetchrow calls.
         conn.fetchrow = AsyncMock(return_value=None)
         conn.fetchval = AsyncMock(return_value=None)  # idempotency check: no dup
 
@@ -405,5 +405,5 @@ class TestTemporalFacts:
         # Three execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
         # + UPDATE usage_count (mem_023). No supersession check, no UPDATE.
         assert conn.execute.call_count == 3
-        # Only one fetchrow call (registry lookup), no supersession check
-        assert conn.fetchrow.call_count == 1
+        # Two fetchrow calls (alias resolution + registry lookup), no supersession check
+        assert conn.fetchrow.call_count == 2

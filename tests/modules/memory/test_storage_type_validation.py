@@ -109,6 +109,9 @@ def _make_pool_and_conn(
         _obj_row = {"id": _oid, "entity_type": object_entity_type}
         side_effects.append(_obj_row)
 
+    # Alias resolution (always called, returns None = not an alias)
+    side_effects.append(None)
+
     # Registry lookup
     side_effects.append(registry_row)
 
@@ -151,6 +154,7 @@ class TestSubjectTypeMismatch:
         conn.fetchrow = AsyncMock(
             side_effect=[
                 {"id": entity_id, "entity_type": "organization"},  # entity check
+                None,  # alias resolution
                 registry_row,  # registry lookup
                 None,  # supersession check
             ]
@@ -197,6 +201,7 @@ class TestSubjectTypeMismatch:
         conn.fetchrow = AsyncMock(
             side_effect=[
                 {"id": entity_id, "entity_type": "organization"},
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -234,6 +239,7 @@ class TestSubjectTypeMismatch:
         conn.fetchrow = AsyncMock(
             side_effect=[
                 {"id": entity_id, "entity_type": "location"},  # wrong type
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -286,6 +292,7 @@ class TestObjectTypeMismatch:
             side_effect=[
                 {"id": entity_id, "entity_type": "person"},  # subject entity check
                 {"id": object_entity_id, "entity_type": "person"},  # object entity (wrong type)
+                None,  # alias resolution
                 registry_row,  # registry lookup
                 None,  # supersession check
             ]
@@ -333,6 +340,7 @@ class TestObjectTypeMismatch:
             side_effect=[
                 {"id": entity_id, "entity_type": "person"},
                 {"id": object_entity_id, "entity_type": "person"},
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -380,6 +388,7 @@ class TestNullExpectedTypesSkipValidation:
         conn.fetchrow = AsyncMock(
             side_effect=[
                 {"id": entity_id, "entity_type": "organization"},  # any entity_type
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -419,6 +428,7 @@ class TestNullExpectedTypesSkipValidation:
             side_effect=[
                 {"id": entity_id, "entity_type": "person"},
                 {"id": object_entity_id, "entity_type": "location"},  # mismatched but NULL expected
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -456,8 +466,8 @@ class TestNullExpectedTypesSkipValidation:
         conn.execute = AsyncMock()
         conn.fetchval = AsyncMock(return_value=None)
         conn.fetch = AsyncMock(return_value=[])
-        # No entity_id → no entity validation fetchrow; fetchrow calls: registry, supersession
-        conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
+        # No entity_id → fetchrow calls: alias, registry, supersession
+        conn.fetchrow = AsyncMock(side_effect=[None, registry_row, None])
         pool = MagicMock()
         pool.acquire = MagicMock(return_value=_AsyncCM(conn))
 
@@ -499,6 +509,7 @@ class TestMatchingTypesNoWarning:
         conn.fetchrow = AsyncMock(
             side_effect=[
                 {"id": entity_id, "entity_type": "person"},  # matching type
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -537,6 +548,7 @@ class TestMatchingTypesNoWarning:
             side_effect=[
                 {"id": entity_id, "entity_type": "person"},  # subject matches
                 {"id": object_entity_id, "entity_type": "person"},  # object matches
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -588,6 +600,7 @@ class TestEntityTypeFetchedInSameQuery:
         conn.fetchrow = AsyncMock(
             side_effect=[
                 {"id": entity_id, "entity_type": "person"},
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -635,6 +648,7 @@ class TestEntityTypeFetchedInSameQuery:
             side_effect=[
                 {"id": entity_id, "entity_type": "person"},
                 {"id": object_entity_id, "entity_type": "organization"},
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -692,6 +706,7 @@ class TestBothTypesMismatch:
             side_effect=[
                 {"id": entity_id, "entity_type": "organization"},  # subject wrong
                 {"id": object_entity_id, "entity_type": "person"},  # object wrong
+                None,  # alias resolution
                 registry_row,
                 None,
             ]
@@ -742,6 +757,7 @@ class TestUnregisteredPredicateNoTypeWarnings:
         conn.fetchrow = AsyncMock(
             side_effect=[
                 {"id": entity_id, "entity_type": "organization"},
+                None,  # alias resolution
                 None,  # registry lookup → not found
                 None,  # supersession check
             ]

@@ -299,11 +299,12 @@ class TestFactSupersessionFlow:
         assert "INSERT INTO facts" in conn1.execute.call_args_list[0].args[0]
 
         # Second store: existing fact found.
-        # First fetchrow call is the predicate_registry lookup → None (unregistered).
-        # Second fetchrow call is the supersession check → existing fact.
+        # First fetchrow call is the alias resolution → None (not an alias).
+        # Second fetchrow call is the predicate_registry lookup → None (unregistered).
+        # Third fetchrow call is the supersession check → existing fact.
         conn2 = AsyncMock()
         conn2.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
-        conn2.fetchrow = AsyncMock(side_effect=[None, {"id": first_id}])
+        conn2.fetchrow = AsyncMock(side_effect=[None, None, {"id": first_id}])
         conn2.fetch = AsyncMock(return_value=[])  # fuzzy match: no registry rows
         conn2.execute = AsyncMock()
         conn2.transaction = MagicMock(return_value=_AsyncCM(None))
@@ -366,8 +367,8 @@ class TestFactSupersessionFlow:
 
         conn = AsyncMock()
         conn.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
-        # First fetchrow: registry lookup → None; second: supersession → existing fact.
-        conn.fetchrow = AsyncMock(side_effect=[None, {"id": old_id}])
+        # fetchrow order: alias (None), registry (None), supersession (existing fact).
+        conn.fetchrow = AsyncMock(side_effect=[None, None, {"id": old_id}])
         conn.execute = AsyncMock()
         conn.transaction = MagicMock(return_value=_AsyncCM(None))
         pool = MagicMock()

@@ -210,9 +210,7 @@ class TestSymmetricPredicates:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 2, (
             f"Expected 2 INSERT INTO facts calls (forward + inverse), got {len(insert_calls)}"
         )
@@ -238,9 +236,7 @@ class TestSymmetricPredicates:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 2
         # Both INSERTs must use 'sibling_of' as the predicate (param index 3).
         for ic in insert_calls:
@@ -270,9 +266,7 @@ class TestSymmetricPredicates:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 2
 
         # Collect (entity_id, object_entity_id) from both INSERTs.
@@ -314,9 +308,7 @@ class TestSymmetricPredicates:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 1, (
             f"Expected exactly 1 INSERT for non-symmetric predicate, got {len(insert_calls)}"
         )
@@ -356,9 +348,7 @@ class TestInversePredicates:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 2
 
     async def test_inverse_fact_uses_inverse_predicate_name(self, embedding_engine):
@@ -382,9 +372,7 @@ class TestInversePredicates:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 2
         predicates = {ic.args[3] for ic in insert_calls}
         assert "parent_of" in predicates
@@ -411,9 +399,7 @@ class TestInversePredicates:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 2
 
         # Find the inverse INSERT (predicate == 'child_of').
@@ -439,7 +425,8 @@ class TestNoInverseForNonEdge:
         conn = AsyncMock()
         conn.transaction = MagicMock(return_value=_AsyncCM(None))
         conn.execute = AsyncMock()
-        conn.fetchrow = AsyncMock(side_effect=[None, None])  # registry=None, supersession=None
+        # fetchrow order: alias (None), registry (None), supersession (None)
+        conn.fetchrow = AsyncMock(side_effect=[None, None, None])
         conn.fetchval = AsyncMock(return_value=None)
         conn.fetch = AsyncMock(return_value=[])
         pool = MagicMock()
@@ -454,9 +441,7 @@ class TestNoInverseForNonEdge:
             # No entity_id or object_entity_id
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 1
 
     async def test_novel_predicate_no_inverse(self, embedding_engine):
@@ -497,9 +482,7 @@ class TestNoInverseForNonEdge:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         # Only the forward fact; novel predicates have no inverse_of or is_symmetric.
         assert len(insert_calls) == 1
 
@@ -524,9 +507,7 @@ class TestNoInverseForNonEdge:
             object_entity_id=object_entity_id,
         )
 
-        insert_calls = [
-            c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
-        ]
+        insert_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
         assert len(insert_calls) == 1
 
 

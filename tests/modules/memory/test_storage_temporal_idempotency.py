@@ -283,9 +283,8 @@ class TestSupersededFactInvalidAt:
         """UPDATE on superseded fact includes invalid_at."""
         pool, conn = mock_pool
         old_id = uuid.uuid4()
-        # First fetchrow: registry lookup → None (unregistered predicate).
-        # Second fetchrow: supersession check → existing fact.
-        conn.fetchrow = AsyncMock(side_effect=[None, {"id": old_id}])
+        # fetchrow order: alias resolution (None), registry (None=novel), supersession check.
+        conn.fetchrow = AsyncMock(side_effect=[None, None, {"id": old_id}])
 
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
