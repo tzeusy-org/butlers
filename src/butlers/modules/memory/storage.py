@@ -455,6 +455,118 @@ async def store_episode(
     return episode_id
 
 
+async def _insert_fact_record(
+    conn,
+    *,
+    fact_id: uuid.UUID,
+    subject: str,
+    predicate: str,
+    content: str,
+    embedding: list[float],
+    search_text: str,
+    importance: float,
+    decay_rate: float,
+    permanence: str,
+    source_butler: str | None,
+    source_episode_id: uuid.UUID | None,
+    supersedes_id: uuid.UUID | None,
+    scope: str,
+    now: datetime,
+    tags_json: str,
+    meta_json: str,
+    entity_id: uuid.UUID | None,
+    object_entity_id: uuid.UUID | None,
+    fact_valid_at: datetime | None,
+    tenant_id: str,
+    request_id: str | None,
+    idempotency_key: str | None,
+    retention_class: str,
+    sensitivity: str,
+) -> None:
+    """Insert a single fact row into the ``facts`` table.
+
+    Extracted from :func:`store_fact` to eliminate the near-duplicate INSERT
+    block required for inverse / symmetric edge facts.  All parameters map
+    directly to ``facts`` columns; the caller is responsible for computing the
+    correct values (including any entity swaps for inverse facts).
+
+    Args:
+        conn: asyncpg connection inside an open transaction.
+        fact_id: UUID for the new fact row.
+        subject: Human-readable subject label.
+        predicate: Predicate string.
+        content: Human-readable content / object label.
+        embedding: Pre-computed semantic embedding vector.
+        search_text: Pre-processed full-text search string.
+        importance: Importance score.
+        decay_rate: Memory decay rate derived from *permanence*.
+        permanence: Permanence level string (e.g. ``'standard'``).
+        source_butler: Name of the originating butler, or ``None``.
+        source_episode_id: Source episode UUID, or ``None``.
+        supersedes_id: UUID of the fact being superseded, or ``None``.
+        scope: Fact scope string (e.g. ``'global'``).
+        now: Timestamp used for ``created_at``, ``last_confirmed_at``, and
+            ``observed_at``.
+        tags_json: JSON-serialised tags list.
+        meta_json: JSON-serialised metadata dict.
+        entity_id: Subject entity UUID, or ``None``.
+        object_entity_id: Object entity UUID (edge-facts only), or ``None``.
+        fact_valid_at: Temporal validity timestamp, or ``None`` for property facts.
+        tenant_id: Tenant scope string.
+        request_id: Optional request trace ID.
+        idempotency_key: Deduplication key for temporal facts, or ``None``.
+        retention_class: Retention policy class string.
+        sensitivity: Data sensitivity classification string.
+    """
+    sql = f"""
+        INSERT INTO facts (
+            id, subject, predicate, content, embedding, search_vector,
+            importance, confidence, decay_rate, permanence, source_butler,
+            source_episode_id, supersedes_id, validity, scope,
+            created_at, last_confirmed_at, tags, metadata, entity_id,
+            object_entity_id, valid_at, tenant_id, request_id,
+            idempotency_key, observed_at, retention_class, sensitivity
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, {tsvector_sql("$6")},
+            $7, $8, $9, $10, $11,
+            $12, $13, 'active', $14,
+            $15, $15, $16, $17, $18,
+            $19, $20, $21, $22,
+            $23, $24, $25, $26
+        )
+    """
+    await conn.execute(
+        sql,
+        fact_id,
+        subject,
+        predicate,
+        content,
+        str(embedding),
+        search_text,
+        importance,
+        1.0,  # confidence
+        decay_rate,
+        permanence,
+        source_butler,
+        source_episode_id,
+        supersedes_id,
+        scope,
+        now,
+        tags_json,
+        meta_json,
+        entity_id,
+        object_entity_id,
+        fact_valid_at,
+        tenant_id,
+        request_id,
+        idempotency_key,
+        now,  # observed_at = insertion time
+        retention_class,
+        sensitivity,
+    )
+
+
 async def store_fact(
     pool: Pool,
     subject: str,
@@ -833,52 +945,32 @@ async def store_fact(
             # Insert new fact — include idempotency_key and observed_at columns
             # added by migration mem_016.  Falls back gracefully on older schemas
             # because the columns have safe defaults (NULL and now()).
-            sql = f"""
-                INSERT INTO facts (
-                    id, subject, predicate, content, embedding, search_vector,
-                    importance, confidence, decay_rate, permanence, source_butler,
-                    source_episode_id, supersedes_id, validity, scope,
-                    created_at, last_confirmed_at, tags, metadata, entity_id,
-                    object_entity_id, valid_at, tenant_id, request_id,
-                    idempotency_key, observed_at, retention_class, sensitivity
-                )
-                VALUES (
-                    $1, $2, $3, $4, $5, {tsvector_sql("$6")},
-                    $7, $8, $9, $10, $11,
-                    $12, $13, 'active', $14,
-                    $15, $15, $16, $17, $18,
-                    $19, $20, $21, $22,
-                    $23, $24, $25, $26
-                )
-            """
-            await conn.execute(
-                sql,
-                fact_id,
-                subject,
-                predicate,
-                content,
-                str(embedding),
-                search_text,
-                importance,
-                1.0,  # confidence
-                decay_rate,
-                permanence,
-                source_butler,
-                source_episode_id,
-                supersedes_id,
-                scope,
-                now,
-                tags_json,
-                meta_json,
-                entity_id,
-                object_entity_id,
-                fact_valid_at,
-                tenant_id,
-                request_id,
-                effective_idempotency_key,
-                now,  # observed_at = insertion time
-                retention_class,
-                sensitivity,
+            await _insert_fact_record(
+                conn,
+                fact_id=fact_id,
+                subject=subject,
+                predicate=predicate,
+                content=content,
+                embedding=embedding,
+                search_text=search_text,
+                importance=importance,
+                decay_rate=decay_rate,
+                permanence=permanence,
+                source_butler=source_butler,
+                source_episode_id=source_episode_id,
+                supersedes_id=supersedes_id,
+                scope=scope,
+                now=now,
+                tags_json=tags_json,
+                meta_json=meta_json,
+                entity_id=entity_id,
+                object_entity_id=object_entity_id,
+                fact_valid_at=fact_valid_at,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                idempotency_key=effective_idempotency_key,
+                retention_class=retention_class,
+                sensitivity=sensitivity,
             )
 
             # Create supersedes link if applicable
@@ -899,11 +991,7 @@ async def store_fact(
             # subject/content labels.  It is stored inside the same transaction.
             # Requires mem_025 migration to be applied (inverse_of and is_symmetric
             # columns must exist on predicate_registry).
-            if (
-                _registry_row is not None
-                and entity_id is not None
-                and object_entity_id is not None
-            ):
+            if _registry_row is not None and entity_id is not None and object_entity_id is not None:
                 _inverse_predicate: str | None = None
                 _is_symmetric = _registry_row.get("is_symmetric") or False
                 _inverse_of = _registry_row.get("inverse_of")
@@ -926,8 +1014,7 @@ async def store_fact(
                         )
                         # Skip if inverse already exists (idempotent temporal).
                         _inv_exists = await conn.fetchval(
-                            "SELECT id FROM facts"
-                            " WHERE tenant_id = $1 AND idempotency_key = $2",
+                            "SELECT id FROM facts WHERE tenant_id = $1 AND idempotency_key = $2",
                             tenant_id,
                             _inv_idem_key,
                         )
@@ -965,57 +1052,35 @@ async def store_fact(
                         # Inverse subject/content: swap labels.
                         _inv_subject = content  # object entity label used as subject
                         _inv_content = subject  # forward subject becomes content
-                        _inv_searchable = (
-                            f"{_inv_subject} {_inverse_predicate} {_inv_content}"
-                        )
+                        _inv_searchable = f"{_inv_subject} {_inverse_predicate} {_inv_content}"
                         _inv_embedding = embedding_engine.embed(_inv_searchable)
                         _inv_search_text = preprocess_text(_inv_searchable)
-                        _inv_sql = f"""
-                            INSERT INTO facts (
-                                id, subject, predicate, content, embedding, search_vector,
-                                importance, confidence, decay_rate, permanence, source_butler,
-                                source_episode_id, supersedes_id, validity, scope,
-                                created_at, last_confirmed_at, tags, metadata, entity_id,
-                                object_entity_id, valid_at, tenant_id, request_id,
-                                idempotency_key, observed_at, retention_class, sensitivity
-                            )
-                            VALUES (
-                                $1, $2, $3, $4, $5, {tsvector_sql("$6")},
-                                $7, $8, $9, $10, $11,
-                                $12, $13, 'active', $14,
-                                $15, $15, $16, $17, $18,
-                                $19, $20, $21, $22,
-                                $23, $24, $25, $26
-                            )
-                        """
-                        await conn.execute(
-                            _inv_sql,
-                            _inv_fact_id,
-                            _inv_subject,
-                            _inverse_predicate,
-                            _inv_content,
-                            str(_inv_embedding),
-                            _inv_search_text,
-                            importance,
-                            1.0,  # confidence
-                            decay_rate,
-                            permanence,
-                            source_butler,
-                            source_episode_id,
-                            _inv_supersedes_id,
-                            scope,
-                            now,
-                            tags_json,
-                            meta_json,
-                            object_entity_id,  # swapped
-                            entity_id,         # swapped
-                            fact_valid_at,
-                            tenant_id,
-                            request_id,
-                            _inv_idem_key,
-                            now,
-                            retention_class,
-                            sensitivity,
+                        await _insert_fact_record(
+                            conn,
+                            fact_id=_inv_fact_id,
+                            subject=_inv_subject,
+                            predicate=_inverse_predicate,
+                            content=_inv_content,
+                            embedding=_inv_embedding,
+                            search_text=_inv_search_text,
+                            importance=importance,
+                            decay_rate=decay_rate,
+                            permanence=permanence,
+                            source_butler=source_butler,
+                            source_episode_id=source_episode_id,
+                            supersedes_id=_inv_supersedes_id,
+                            scope=scope,
+                            now=now,
+                            tags_json=tags_json,
+                            meta_json=meta_json,
+                            entity_id=object_entity_id,  # swapped
+                            object_entity_id=entity_id,  # swapped
+                            fact_valid_at=fact_valid_at,
+                            tenant_id=tenant_id,
+                            request_id=request_id,
+                            idempotency_key=_inv_idem_key,
+                            retention_class=retention_class,
+                            sensitivity=sensitivity,
                         )
 
                         if _inv_supersedes_id:
