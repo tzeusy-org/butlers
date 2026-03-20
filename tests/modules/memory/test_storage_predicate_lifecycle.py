@@ -137,6 +137,8 @@ class TestDeprecatedPredicateWarning:
             "is_temporal": False,
             "status": "deprecated",
             "superseded_by": "medication",
+            "expected_subject_type": None,
+            "expected_object_type": None,
         }
         # fetchrow: [registry=deprecated_row, supersession=None]
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
@@ -169,6 +171,8 @@ class TestDeprecatedPredicateWarning:
             "is_temporal": False,
             "status": "deprecated",
             "superseded_by": None,
+            "expected_subject_type": None,
+            "expected_object_type": None,
         }
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
@@ -199,6 +203,8 @@ class TestDeprecatedPredicateWarning:
             "is_temporal": False,
             "status": "deprecated",
             "superseded_by": "condition",
+            "expected_subject_type": None,
+            "expected_object_type": None,
         }
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
@@ -226,6 +232,8 @@ class TestDeprecatedPredicateWarning:
             "is_temporal": False,
             "status": "deprecated",
             "superseded_by": "symptom",
+            "expected_subject_type": None,
+            "expected_object_type": None,
         }
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
@@ -262,6 +270,8 @@ class TestActivePredicateNoWarning:
             "is_temporal": False,
             "status": "active",
             "superseded_by": None,
+            "expected_subject_type": None,
+            "expected_object_type": None,
         }
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
@@ -307,6 +317,8 @@ class TestActivePredicateNoWarning:
             "is_temporal": False,
             "status": "proposed",
             "superseded_by": None,
+            "expected_subject_type": None,
+            "expected_object_type": None,
         }
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
@@ -389,6 +401,8 @@ class TestAutoRegistrationProposedStatus:
             "is_temporal": False,
             "status": "active",
             "superseded_by": None,
+            "expected_subject_type": None,
+            "expected_object_type": None,
         }
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
@@ -417,6 +431,8 @@ class TestAutoRegistrationProposedStatus:
             "is_temporal": False,
             "status": "deprecated",
             "superseded_by": "condition",
+            "expected_subject_type": None,
+            "expected_object_type": None,
         }
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
@@ -441,17 +457,25 @@ class TestAutoRegistrationProposedStatus:
 
 
 class TestBackwardCompatibilityWithOldMocks:
-    """Old test mocks returning only {is_edge, is_temporal} must still work."""
+    """Registry rows with complete column set (including lifecycle + type columns) work correctly."""
 
-    async def test_registry_row_without_status_key_produces_no_warning(self, embedding_engine):
-        """Registry row without 'status' key (old mock shape) must not warn.
+    async def test_registry_row_with_full_columns_produces_no_warning(self, embedding_engine):
+        """Registry row with all expected columns and no type mismatch produces no warning.
 
-        WHEN store_fact() is called with a registry row that lacks 'status'
-        (backward compat with older schemas or test mocks),
+        WHEN store_fact() is called with a registry row that includes all columns
+        (status, superseded_by, expected_subject_type, expected_object_type)
+        and there is no type mismatch,
         THEN no warning is included in the response.
         """
-        # Old-style mock: only is_edge and is_temporal (no status/superseded_by)
-        registry_row = {"is_edge": False, "is_temporal": False}
+        # Full column set: all present, no type mismatch possible (no entity_id)
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "status": "active",
+            "superseded_by": None,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
 

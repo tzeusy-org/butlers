@@ -399,11 +399,16 @@ class TestStoreFuzzyMatchingIntegration:
 
         Fuzzy matching only runs when the predicate is NOT found in the registry.
         """
-        registry_row = {"is_edge": False, "is_temporal": False}
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         pool, conn = _make_pool(
             registry_row=registry_row,
         )
-        # Override fetchrow: first call returns registry row, second (supersession) None
+        # No entity_id: fetchrow order is registry lookup → supersession check.
         conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
 
         result = await store_fact(

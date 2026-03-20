@@ -90,10 +90,14 @@ def _make_conn(
 ):
     """Build a mock asyncpg connection.
 
-    fetchval is used for: entity validation, idempotency dedup check,
-    and entity_type lookup (in auto-registration).
+    fetchval is used for: idempotency dedup check only.
 
-    fetchrow is used for: predicate_registry lookup, supersession check.
+    fetchrow is used for: entity validation (SELECT id, entity_type),
+    object entity validation, predicate_registry lookup, supersession check.
+
+    Pass fetchrow_side_effect as a list of return values in the order the
+    calls will be made (entity validation rows first, then registry, then
+    supersession).
     """
     conn = AsyncMock()
     if fetchval_side_effect is not None:
@@ -106,6 +110,7 @@ def _make_conn(
         conn.fetchrow = AsyncMock(return_value=fetchrow_return)
     conn.execute = AsyncMock()
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
+    conn.fetch = AsyncMock(return_value=[])
     return conn
 
 
@@ -191,11 +196,15 @@ class TestAutoRegistrationIsEdge:
         entity_id = uuid.uuid4()
         object_entity_id = uuid.uuid4()
 
-        # fetchval: [entity_id=1, object_entity_id=1, entity_type='person']
-        # fetchrow: [registry=None, supersession=None]
+        # fetchrow call order:
+        #   1. entity_id existence+type check → entity row with entity_type='person'
+        #   2. object_entity_id existence+type check → entity row
+        #   3. registry lookup → None (novel)
+        #   4. supersession check → None (no prior fact)
+        _entity_row = {"id": entity_id, "entity_type": "person"}
+        _obj_entity_row = {"id": object_entity_id, "entity_type": "person"}
         conn = _make_conn(
-            fetchval_side_effect=[1, 1, "person"],
-            fetchrow_side_effect=[None, None],
+            fetchrow_side_effect=[_entity_row, _obj_entity_row, None, None],
         )
         pool = _make_pool(conn)
 
@@ -222,11 +231,13 @@ class TestAutoRegistrationIsEdge:
         """Novel predicate without object_entity_id → auto-registered with is_edge=False."""
         entity_id = uuid.uuid4()
 
-        # fetchval: [entity_id=1, entity_type='person'] — only one entity validation
-        # fetchrow: [registry=None, supersession=None]
+        # fetchrow call order:
+        #   1. entity_id existence+type check → entity row
+        #   2. registry lookup → None (novel)
+        #   3. supersession check → None
+        _entity_row = {"id": entity_id, "entity_type": "person"}
         conn = _make_conn(
-            fetchval_side_effect=[1, "person"],
-            fetchrow_side_effect=[None, None],
+            fetchrow_side_effect=[_entity_row, None, None],
         )
         pool = _make_pool(conn)
 
@@ -319,18 +330,19 @@ class TestAutoRegistrationExpectedSubjectType:
         WHEN store_fact() succeeds with a predicate not in the registry and
         entity_id resolves to an entity with entity_type='person',
         THEN the auto-registered row MUST have expected_subject_type='person'.
+        The entity_type is now fetched in the same query as the existence check
+        (no separate fetchval round-trip).
         """
         entity_id = uuid.uuid4()
 
-        # fetchval sequence:
-        # 1. entity validation: returns 1 (entity exists)
-        # 2. entity_type lookup (for auto-registration): returns 'person'
-        # fetchrow sequence:
-        # 1. registry lookup: None (novel)
-        # 2. supersession check: None (no prior fact)
+        # fetchrow call order:
+        #   1. entity existence+type check → entity row with entity_type='person'
+        #   2. registry lookup → None (novel predicate)
+        #   3. supersession check → None (no prior fact)
+        # fetchval: not used (no idempotency check for property facts)
+        _entity_row = {"id": entity_id, "entity_type": "person"}
         conn = _make_conn(
-            fetchval_side_effect=[1, "person"],
-            fetchrow_side_effect=[None, None],
+            fetchrow_side_effect=[_entity_row, None, None],
         )
         pool = _make_pool(conn)
 
@@ -414,8 +426,13 @@ class TestAutoRegistrationSkipIfRegistered:
         THEN predicate_registry MUST NOT receive a second INSERT.
         """
         # Registry lookup returns a row (predicate is registered, non-edge, non-temporal)
-        registry_row = {"is_edge": False, "is_temporal": False}
-        # fetchrow: [registry=registered_row, supersession=None]
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
+        # No entity_id: fetchrow order is registry lookup → supersession check.
         conn = _make_conn(fetchrow_side_effect=[registry_row, None])
         pool = _make_pool(conn)
 
@@ -437,15 +454,24 @@ class TestAutoRegistrationSkipIfRegistered:
         self, embedding_engine
     ):
         """Registered edge predicate (is_edge=True) with both entities: no re-insert."""
-        registry_row = {"is_edge": True, "is_temporal": False}
+        registry_row = {
+            "is_edge": True,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+        }
         entity_id = uuid.uuid4()
         object_entity_id = uuid.uuid4()
 
-        # fetchval: [entity=1, object_entity=1]
-        # fetchrow: [registry=registered_row, supersession=None]
+        # fetchrow call order:
+        #   1. entity_id existence+type check → entity row
+        #   2. object_entity_id existence+type check → entity row
+        #   3. registry lookup → registered_row
+        #   4. supersession check → None
+        _entity_row = {"id": entity_id, "entity_type": "person"}
+        _obj_entity_row = {"id": object_entity_id, "entity_type": "person"}
         conn = _make_conn(
-            fetchval_side_effect=[1, 1],
-            fetchrow_side_effect=[registry_row, None],
+            fetchrow_side_effect=[_entity_row, _obj_entity_row, registry_row, None],
         )
         pool = _make_pool(conn)
 
