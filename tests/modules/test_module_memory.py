@@ -111,6 +111,7 @@ EXPECTED_TOOL_NAMES = {
     "memory_entity_resolve",
     "memory_entity_merge",
     "memory_predicate_list",
+    "memory_predicate_search",
     "memory_catalog_search",
 }
 
@@ -153,7 +154,7 @@ class TestRegisterTools:
 
     async def test_registers_expected_tool_count(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 22
+        assert len(registered) == 23
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
@@ -185,7 +186,7 @@ class TestRegisterTools:
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
-        assert mcp.tool.call_count == 22
+        assert mcp.tool.call_count == 23
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""
