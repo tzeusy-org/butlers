@@ -51,12 +51,13 @@ _BACKFILL: dict[str, str] = {
     "food_allergy": "relationship",
     "current_project": "relationship",
     "travel_intent": "relationship",
-    "knows": "relationship",
-    "works_at": "relationship",
-    "lives_with": "relationship",
-    "manages": "relationship",
-    "parent_of": "relationship",
-    "sibling_of": "relationship",
+    # Edge predicates — global per spec (available to all butlers, graph topology)
+    "knows": "global",
+    "works_at": "global",
+    "lives_with": "global",
+    "manages": "global",
+    "parent_of": "global",
+    "sibling_of": "global",
     # From migration 011
     "interaction": "relationship",
     "life_event": "relationship",
@@ -112,6 +113,7 @@ def upgrade() -> None:
     op.execute("""
         ALTER TABLE predicate_registry
         ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'global'
+        CHECK (scope IN ('global', 'health', 'relationship', 'finance', 'home'))
     """)
 
     # Backfill known predicates to their correct domain.
