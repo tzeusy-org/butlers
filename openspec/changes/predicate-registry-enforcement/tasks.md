@@ -31,19 +31,22 @@
 - [ ] 5.2 Wrap `_writing.memory_store_fact()` call in `__init__.py::memory_store_fact` with `try/except ValueError` — return `{"error": ..., "message": ..., "recovery": ...}` dict
 - [ ] 5.3 Write unit tests: each validation failure type returns structured dict with correct recovery message, MCP response is `isError=false`
 
-## 6. Predicate Registry Search Indexes (Migration)
+## 6. memory_predicate_search MCP Tool (Basic — bu-awe0, PR #692)
 
-- [ ] 6.1 Write migration: `CREATE EXTENSION IF NOT EXISTS pg_trgm`, add `search_vector` tsvector column with trigger, add `description_embedding` vector(384) column to `predicate_registry`
-- [ ] 6.2 Write migration: create GIN index on `name` using `gin_trgm_ops`, create GIN index on `search_vector`
-- [ ] 6.3 Backfill `search_vector` for existing seeded predicates; generate `description_embedding` for predicates with non-NULL descriptions
-- [ ] 6.4 Enrich seed predicate descriptions with synonyms and related concepts (e.g., `parent_of` description should mention "father", "mother", "parent", "child relationship")
+- [x] 6.1 Add `predicate_search(pool, query, scope=None)` in `tools/reading.py` — prefix + substring matching
+- [x] 6.2 Add `memory_predicate_search(query, scope=None)` MCP tool in `__init__.py`
+- [x] 6.3 Write unit tests: prefix search, description text search, empty query returns all, scope filter
 
-## 7. memory_predicate_search MCP Tool (Hybrid Retrieval)
+## 7. Upgrade to Hybrid Retrieval with RRF Fusion (bu-2kk9)
 
-- [ ] 7.1 Add `predicate_search(pool, query, embedding_engine, scope=None)` in `tools/reading.py` — three-signal retrieval: trigram on name, full-text on search_vector, semantic on description_embedding
-- [ ] 7.2 Implement RRF fusion: `score = SUM(1 / (60 + rank_i))` across trigram, full-text, and semantic result lists
-- [ ] 7.3 Add `memory_predicate_search(query, scope=None)` MCP tool in `__init__.py` — delegates to predicate_search, returns results with scores
-- [ ] 7.4 Write unit tests: trigram typo recovery, full-text description match, semantic conceptual match, RRF ordering, empty query returns all, scope filter
+- [ ] 7.1 Write migration: `CREATE EXTENSION IF NOT EXISTS pg_trgm`, add `search_vector` tsvector column with auto-update trigger, add `description_embedding` vector(384) column to `predicate_registry`
+- [ ] 7.2 Write migration: create GIN index on `name` using `gin_trgm_ops`, create GIN index on `search_vector`
+- [ ] 7.3 Backfill `search_vector` for existing seeded predicates; generate `description_embedding` for predicates with non-NULL descriptions
+- [ ] 7.4 Enrich seed predicate descriptions with synonyms and related concepts (e.g., `parent_of` description should mention "father", "mother", "parent", "child relationship")
+- [ ] 7.5 Replace `predicate_search()` with three-signal retrieval: trigram on name (pg_trgm), full-text on search_vector (tsvector), semantic on description_embedding (cosine)
+- [ ] 7.6 Implement RRF fusion: `score = SUM(1 / (60 + rank_i))` across trigram, full-text, and semantic result lists
+- [ ] 7.7 Update MCP tool response to include `score` field, order by fused score DESC
+- [ ] 7.8 Write/update tests: trigram typo recovery, full-text description match, semantic conceptual match ('dad' → parent_of), RRF ordering, empty query, scope filter
 
 ## 8. Integration Tests and Audit
 
