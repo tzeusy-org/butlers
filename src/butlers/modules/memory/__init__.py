@@ -37,6 +37,98 @@ def _coerce_json_list(v: Any) -> Any:
 logger = logging.getLogger(__name__)
 
 
+def _infer_recovery_steps(exc: ValueError) -> str:
+    """Infer actionable recovery steps from a ValueError raised by memory_store_fact.
+
+    Pattern-matches the error message to return specific next steps that an LLM
+    caller can follow to self-recover without human intervention.
+
+    Args:
+        exc: The ValueError raised by the storage layer.
+
+    Returns:
+        A human-readable string with specific recovery instructions.
+    """
+    msg = str(exc)
+
+    # Invalid entity_id — entity does not exist in the entities table.
+    if (
+        "does not exist in entities table" in msg
+        and "entity_id" in msg
+        and "object_entity_id" not in msg
+    ):
+        return (
+            "Call memory_entity_resolve(identifier=<name>) to resolve the entity, "
+            "or memory_entity_create() to create a new one. "
+            "Then retry memory_store_fact() with the resolved entity_id."
+        )
+
+    # Edge predicate missing object_entity_id.
+    if "edge predicate" in msg or ("is_edge" in msg and "object_entity_id" in msg):
+        return (
+            "This predicate requires a target entity. "
+            "Call memory_entity_resolve(identifier=<target_name>) to resolve the target entity, "
+            "then retry with the resolved UUID as object_entity_id."
+        )
+
+    # Temporal predicate missing valid_at.
+    if "temporal predicate" in msg or ("is_temporal" in msg and "valid_at" in msg):
+        return (
+            "This predicate requires a valid_at timestamp. "
+            "Provide an ISO-8601 valid_at value (e.g. '2026-03-15T10:00:00Z') "
+            "for when the fact was true, then retry memory_store_fact()."
+        )
+
+    # Self-referencing edge — entity_id == object_entity_id.
+    if "Self-referencing edges are not allowed" in msg or (
+        "entity_id and object_entity_id must differ" in msg
+    ):
+        return (
+            "entity_id and object_entity_id must be different entities. "
+            "Resolve the correct target entity via memory_entity_resolve(identifier=<target_name>) "
+            "and pass its UUID as object_entity_id."
+        )
+
+    # UUID embedded in content without object_entity_id.
+    if "content contains an embedded UUID" in msg:
+        return (
+            "Do not embed entity UUIDs in the content field. "
+            "Instead, resolve the target entity via memory_entity_resolve(identifier=<name>) "
+            "and pass its UUID as object_entity_id to create a proper edge-fact."
+        )
+
+    # Invalid permanence value.
+    if "Invalid permanence" in msg:
+        return (
+            "Valid permanence values are: permanent, stable, standard, volatile, ephemeral. "
+            "Retry memory_store_fact() with one of these values."
+        )
+
+    # object_entity_id provided without entity_id.
+    if "object_entity_id requires entity_id" in msg:
+        return (
+            "object_entity_id can only be set when entity_id is also set. "
+            "Resolve the subject entity first via memory_entity_resolve(identifier=<name>), "
+            "then pass both entity_id and object_entity_id."
+        )
+
+    # Invalid object_entity_id — target entity does not exist.
+    if "object_entity_id" in msg and "does not exist in entities table" in msg:
+        return (
+            "The target entity does not exist. "
+            "Call memory_entity_resolve(identifier=<target_name>) to resolve the target entity, "
+            "or memory_entity_create() to create a new one. "
+            "Then retry with the resolved UUID as object_entity_id."
+        )
+
+    # Generic fallback.
+    return (
+        "Check the error message for details and review the memory_store_fact() parameter "
+        "requirements. Use memory_predicate_list() to discover valid predicates and "
+        "memory_entity_resolve() to resolve entity identifiers."
+    )
+
+
 class MemoryModuleConfig(BaseModel):
     """Configuration for the Memory module."""
 
@@ -371,26 +463,33 @@ class MemoryModule(Module):
                     "predicate": predicate,
                 }
 
-            return await _writing.memory_store_fact(
-                module._get_pool(),
-                module._get_embedding_engine(),
-                subject,
-                predicate,
-                content,
-                importance=importance,
-                permanence=permanence,
-                scope=scope,
-                tags=tags,
-                entity_id=effective_entity_id,
-                object_entity_id=object_entity_id,
-                valid_at=valid_at,
-                idempotency_key=idempotency_key,
-                request_context=request_context,
-                retention_class=retention_class or "operational",
-                sensitivity=sensitivity or "normal",
-                enable_shared_catalog=module._config.enable_shared_catalog,
-                source_schema=module._config.catalog_source_schema or None,
-            )
+            try:
+                return await _writing.memory_store_fact(
+                    module._get_pool(),
+                    module._get_embedding_engine(),
+                    subject,
+                    predicate,
+                    content,
+                    importance=importance,
+                    permanence=permanence,
+                    scope=scope,
+                    tags=tags,
+                    entity_id=effective_entity_id,
+                    object_entity_id=object_entity_id,
+                    valid_at=valid_at,
+                    idempotency_key=idempotency_key,
+                    request_context=request_context,
+                    retention_class=retention_class or "operational",
+                    sensitivity=sensitivity or "normal",
+                    enable_shared_catalog=module._config.enable_shared_catalog,
+                    source_schema=module._config.catalog_source_schema or None,
+                )
+            except ValueError as exc:
+                return {
+                    "error": str(exc),
+                    "message": str(exc),
+                    "recovery": _infer_recovery_steps(exc),
+                }
 
         @mcp.tool()
         async def memory_store_rule(
