@@ -108,9 +108,9 @@ def _make_pool(
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
     conn.execute = AsyncMock()
 
-    # fetchrow drives both registry lookup (1st call) and supersession (2nd+).
-    # For novel predicates the first call returns None (not registered).
-    conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
+    # fetchrow call order: alias lookup (1st), registry lookup (2nd), supersession (3rd+).
+    # For novel predicates the registry lookup returns None (not registered).
+    conn.fetchrow = AsyncMock(side_effect=[None, registry_row, None])
 
     # fetchval drives entity validation (returns 1 = exists) and idempotency checks.
     conn.fetchval = AsyncMock(return_value=1 if entity_exists else None)
@@ -408,8 +408,8 @@ class TestStoreFuzzyMatchingIntegration:
         pool, conn = _make_pool(
             registry_row=registry_row,
         )
-        # No entity_id: fetchrow order is registry lookup → supersession check.
-        conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
+        # No entity_id: fetchrow order is alias lookup → registry lookup → supersession check.
+        conn.fetchrow = AsyncMock(side_effect=[None, registry_row, None])
 
         result = await store_fact(
             pool,

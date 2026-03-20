@@ -621,6 +621,29 @@ async def store_fact(
                     )
                 _object_entity_type = _obj_entity_row["entity_type"]
 
+            # Alias resolution: before registry enforcement, check whether the
+            # predicate name matches an alias for a canonical predicate.  If it
+            # does, silently rewrite predicate to the canonical name so that all
+            # subsequent logic (enforcement, supersession, auto-registration,
+            # usage tracking) operates on the canonical predicate.
+            # Best-effort: if the aliases column does not exist yet (pre-mem_025
+            # environment) the query will raise; we catch and skip resolution.
+            _resolved_from: str | None = None
+            try:
+                _alias_row = await conn.fetchrow(
+                    "SELECT name FROM predicate_registry WHERE $1 = ANY(aliases)",
+                    predicate,
+                )
+                if _alias_row is not None:
+                    _resolved_from = predicate
+                    predicate = _alias_row["name"]
+            except Exception:
+                # Pre-migration environment — aliases column absent. Skip.
+                logger.debug(
+                    "Alias resolution skipped (pre-mem_025 environment or unexpected error).",
+                    exc_info=True,
+                )
+
             # Registry enforcement: look up predicate flags and enforce constraints.
             # D1: single cached query inside the existing transaction, PK lookup on
             # a small table (~100 rows), overhead negligible vs. embedding computation.
@@ -1047,7 +1070,11 @@ async def store_fact(
             except Exception:
                 # usage_count column may not exist yet (pre-mem_023 env).
                 # Log at debug so unexpected failures (e.g. SQL bugs) are discoverable.
-                logger.debug("Failed to update predicate usage tracking; expected in pre-migration environments.", exc_info=True)
+                logger.debug(
+                    "Failed to update predicate usage tracking;"
+                    " expected in pre-migration environments.",
+                    exc_info=True,
+                )
 
     # -------------------------------------------------------------------------
     # Write-behind to shared.memory_catalog (best-effort, non-blocking).
@@ -1090,6 +1117,8 @@ async def store_fact(
     # response MUST NOT include a 'suggestions' key" for no-match cases).
     # Include "warning" when the predicate is deprecated.
     # D7: Include "warnings" when type mismatches were detected; omit otherwise.
+    # Include "resolved_from" when the input predicate was an alias that was
+    # transparently rewritten to the canonical predicate name.
     result: dict = {"id": fact_id, "supersedes_id": supersedes_id}
     if _fuzzy_suggestions:
         result["suggestions"] = _fuzzy_suggestions
@@ -1097,6 +1126,8 @@ async def store_fact(
         result["warning"] = _deprecation_warning
     if _type_warnings:
         result["warnings"] = _type_warnings
+    if _resolved_from:
+        result["resolved_from"] = _resolved_from
     return result
 
 

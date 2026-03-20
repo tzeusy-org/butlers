@@ -139,8 +139,8 @@ class TestAutoRegistrationBasic:
         THEN predicate_registry INSERT is issued with is_edge=False, is_temporal=False,
         expected_subject_type=None.
         """
-        # fetchrow: [registry_row=None, supersession=None]
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        # fetchrow: [alias=None, registry_row=None, supersession=None]
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -166,7 +166,7 @@ class TestAutoRegistrationBasic:
         self, embedding_engine
     ):
         """The auto-registration INSERT targets predicate_registry."""
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         await store_fact(pool, "user", "brand_new_predicate", "value", embedding_engine)
@@ -199,12 +199,13 @@ class TestAutoRegistrationIsEdge:
         # fetchrow call order:
         #   1. entity_id existence+type check → entity row with entity_type='person'
         #   2. object_entity_id existence+type check → entity row
-        #   3. registry lookup → None (novel)
-        #   4. supersession check → None (no prior fact)
+        #   3. alias lookup → None (no alias match)
+        #   4. registry lookup → None (novel)
+        #   5. supersession check → None (no prior fact)
         _entity_row = {"id": entity_id, "entity_type": "person"}
         _obj_entity_row = {"id": object_entity_id, "entity_type": "person"}
         conn = _make_conn(
-            fetchrow_side_effect=[_entity_row, _obj_entity_row, None, None],
+            fetchrow_side_effect=[_entity_row, _obj_entity_row, None, None, None],
         )
         pool = _make_pool(conn)
 
@@ -233,11 +234,12 @@ class TestAutoRegistrationIsEdge:
 
         # fetchrow call order:
         #   1. entity_id existence+type check → entity row
-        #   2. registry lookup → None (novel)
-        #   3. supersession check → None
+        #   2. alias lookup → None (no alias match)
+        #   3. registry lookup → None (novel)
+        #   4. supersession check → None
         _entity_row = {"id": entity_id, "entity_type": "person"}
         conn = _make_conn(
-            fetchrow_side_effect=[_entity_row, None, None],
+            fetchrow_side_effect=[_entity_row, None, None, None],
         )
         pool = _make_pool(conn)
 
@@ -273,10 +275,10 @@ class TestAutoRegistrationIsTemporal:
         """
         ts = datetime(2026, 3, 15, 10, 0, 0, tzinfo=UTC)
         # fetchval: [idempotency_check=None] (no entity_id so no entity validation)
-        # fetchrow: [registry=None] (no supersession for temporal facts)
+        # fetchrow: [alias=None (no match), registry=None] (no supersession for temporal facts)
         conn = _make_conn(
             fetchval_return=None,  # idempotency check: no duplicate
-            fetchrow_side_effect=[None],
+            fetchrow_side_effect=[None, None],
         )
         pool = _make_pool(conn)
 
@@ -300,7 +302,7 @@ class TestAutoRegistrationIsTemporal:
         self, embedding_engine
     ):
         """Novel predicate without valid_at → auto-registered with is_temporal=False."""
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -337,12 +339,13 @@ class TestAutoRegistrationExpectedSubjectType:
 
         # fetchrow call order:
         #   1. entity existence+type check → entity row with entity_type='person'
-        #   2. registry lookup → None (novel predicate)
-        #   3. supersession check → None (no prior fact)
+        #   2. alias lookup → None (no alias match)
+        #   3. registry lookup → None (novel predicate)
+        #   4. supersession check → None (no prior fact)
         # fetchval: not used (no idempotency check for property facts)
         _entity_row = {"id": entity_id, "entity_type": "person"}
         conn = _make_conn(
-            fetchrow_side_effect=[_entity_row, None, None],
+            fetchrow_side_effect=[_entity_row, None, None, None],
         )
         pool = _make_pool(conn)
 
@@ -362,7 +365,7 @@ class TestAutoRegistrationExpectedSubjectType:
 
     async def test_no_entity_id_means_no_subject_type_inference(self, embedding_engine):
         """Without entity_id, expected_subject_type is None (no lookup possible)."""
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -393,7 +396,7 @@ class TestAutoRegistrationConcurrentSafety:
         THEN the ON CONFLICT DO NOTHING clause ensures the second writer does not
         raise an error (the conflict is handled at the SQL level).
         """
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -432,8 +435,8 @@ class TestAutoRegistrationSkipIfRegistered:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        # No entity_id: fetchrow order is registry lookup → supersession check.
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        # No entity_id: fetchrow order is alias lookup → registry lookup → supersession check.
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -466,12 +469,13 @@ class TestAutoRegistrationSkipIfRegistered:
         # fetchrow call order:
         #   1. entity_id existence+type check → entity row
         #   2. object_entity_id existence+type check → entity row
-        #   3. registry lookup → registered_row
-        #   4. supersession check → None
+        #   3. alias lookup → None (no alias match)
+        #   4. registry lookup → registered_row
+        #   5. supersession check → None
         _entity_row = {"id": entity_id, "entity_type": "person"}
         _obj_entity_row = {"id": object_entity_id, "entity_type": "person"}
         conn = _make_conn(
-            fetchrow_side_effect=[_entity_row, _obj_entity_row, registry_row, None],
+            fetchrow_side_effect=[_entity_row, _obj_entity_row, None, registry_row, None],
         )
         pool = _make_pool(conn)
 
@@ -515,8 +519,15 @@ class TestUsageTracking:
         WHEN store_fact() successfully stores a fact with a registered predicate
         THEN usage_count MUST be incremented by 1 and last_used_at set to now().
         """
-        registry_row = {"is_edge": False, "is_temporal": False, "expected_subject_type": None, "expected_object_type": None, "status": "active", "superseded_by": None}
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+            "status": "active",
+            "superseded_by": None,
+        }
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         await store_fact(pool, "Alice", "birthday", "1990-01-01", embedding_engine)
@@ -535,7 +546,7 @@ class TestUsageTracking:
         WHEN store_fact() succeeds with a predicate not in the registry,
         THEN usage_count MUST still be incremented (after auto-registration).
         """
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         await store_fact(pool, "user", "custom_novel_pred_x", "value", embedding_engine)
@@ -546,8 +557,15 @@ class TestUsageTracking:
 
     async def test_usage_tracking_update_targets_correct_predicate(self, embedding_engine):
         """The UPDATE is issued with the exact predicate name as parameter."""
-        registry_row = {"is_edge": False, "is_temporal": False, "expected_subject_type": None, "expected_object_type": None, "status": "active", "superseded_by": None}
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        registry_row = {
+            "is_edge": False,
+            "is_temporal": False,
+            "expected_subject_type": None,
+            "expected_object_type": None,
+            "status": "active",
+            "superseded_by": None,
+        }
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         await store_fact(pool, "Alice", "occupation", "engineer", embedding_engine)
