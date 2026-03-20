@@ -635,7 +635,8 @@ async def store_fact(
                 "SELECT is_edge, is_temporal,"
                 " COALESCE(status, 'active') AS status,"
                 " superseded_by,"
-                " expected_subject_type, expected_object_type"
+                " expected_subject_type, expected_object_type,"
+                " inverse_of, is_symmetric"
                 " FROM predicate_registry WHERE name = $1",
                 predicate,
             )
@@ -866,6 +867,141 @@ async def store_fact(
                     fact_id,
                     supersedes_id,
                 )
+
+            # Auto-create inverse / mirrored facts for edge predicates.
+            # Applies when:
+            #   (a) The predicate is an edge fact (entity_id + object_entity_id both set).
+            #   (b) The registry row signals inverse_of or is_symmetric.
+            # The mirrored fact swaps (entity_id ↔ object_entity_id) and swaps
+            # subject/content labels.  It is stored inside the same transaction.
+            # Best-effort: column-not-found errors (pre-mem_025 env) are swallowed.
+            if (
+                _registry_row is not None
+                and entity_id is not None
+                and object_entity_id is not None
+            ):
+                _inverse_predicate: str | None = None
+                _is_symmetric = _registry_row.get("is_symmetric") or False
+                _inverse_of = _registry_row.get("inverse_of")
+                if _is_symmetric:
+                    _inverse_predicate = predicate
+                elif _inverse_of:
+                    _inverse_predicate = _inverse_of
+
+                if _inverse_predicate is not None:
+                    # Compute the inverse fact's idempotency key when applicable.
+                    _inv_idem_key: str | None = None
+                    if fact_valid_at is not None:
+                        _inv_idem_key = _generate_temporal_idempotency_key(
+                            object_entity_id,
+                            entity_id,
+                            scope,
+                            _inverse_predicate,
+                            fact_valid_at,
+                            source_episode_id,
+                        )
+                        # Skip if inverse already exists (idempotent temporal).
+                        _inv_exists = await conn.fetchval(
+                            "SELECT id FROM facts"
+                            " WHERE tenant_id = $1 AND idempotency_key = $2",
+                            tenant_id,
+                            _inv_idem_key,
+                        )
+                        if _inv_exists is not None:
+                            _inverse_predicate = None  # suppress insert below
+
+                    if _inverse_predicate is not None:
+                        # For property inverse facts check supersession too.
+                        _inv_supersedes_id: uuid.UUID | None = None
+                        if fact_valid_at is None:
+                            _inv_existing = await conn.fetchrow(
+                                "SELECT id FROM facts"
+                                " WHERE tenant_id = $1"
+                                " AND entity_id = $2 AND object_entity_id = $3"
+                                " AND scope = $4 AND predicate = $5"
+                                " AND validity = 'active' AND valid_at IS NULL",
+                                tenant_id,
+                                object_entity_id,
+                                entity_id,
+                                scope,
+                                _inverse_predicate,
+                            )
+                            if _inv_existing:
+                                _inv_old_id = _inv_existing["id"]
+                                _inv_supersedes_id = _inv_old_id
+                                await conn.execute(
+                                    "UPDATE facts"
+                                    " SET validity = 'superseded', invalid_at = $2"
+                                    " WHERE id = $1",
+                                    _inv_old_id,
+                                    now,
+                                )
+
+                        _inv_fact_id = uuid.uuid4()
+                        # Inverse subject/content: swap labels.
+                        _inv_subject = content  # object entity label used as subject
+                        _inv_content = subject  # forward subject becomes content
+                        _inv_searchable = (
+                            f"{_inv_subject} {_inverse_predicate} {_inv_content}"
+                        )
+                        _inv_embedding = embedding_engine.embed(_inv_searchable)
+                        _inv_search_text = preprocess_text(_inv_searchable)
+                        _inv_sql = f"""
+                            INSERT INTO facts (
+                                id, subject, predicate, content, embedding, search_vector,
+                                importance, confidence, decay_rate, permanence, source_butler,
+                                source_episode_id, supersedes_id, validity, scope,
+                                created_at, last_confirmed_at, tags, metadata, entity_id,
+                                object_entity_id, valid_at, tenant_id, request_id,
+                                idempotency_key, observed_at, retention_class, sensitivity
+                            )
+                            VALUES (
+                                $1, $2, $3, $4, $5, {tsvector_sql("$6")},
+                                $7, $8, $9, $10, $11,
+                                $12, $13, 'active', $14,
+                                $15, $15, $16, $17, $18,
+                                $19, $20, $21, $22,
+                                $23, $24, $25, $26
+                            )
+                        """
+                        await conn.execute(
+                            _inv_sql,
+                            _inv_fact_id,
+                            _inv_subject,
+                            _inverse_predicate,
+                            _inv_content,
+                            str(_inv_embedding),
+                            _inv_search_text,
+                            importance,
+                            1.0,  # confidence
+                            decay_rate,
+                            permanence,
+                            source_butler,
+                            source_episode_id,
+                            _inv_supersedes_id,
+                            scope,
+                            now,
+                            tags_json,
+                            meta_json,
+                            object_entity_id,  # swapped
+                            entity_id,         # swapped
+                            fact_valid_at,
+                            tenant_id,
+                            request_id,
+                            _inv_idem_key,
+                            now,
+                            retention_class,
+                            sensitivity,
+                        )
+
+                        if _inv_supersedes_id:
+                            await conn.execute(
+                                "INSERT INTO memory_links"
+                                " (source_type, source_id, target_type, target_id, relation)"
+                                " VALUES ('fact', $1, 'fact', $2, 'supersedes')",
+                                _inv_fact_id,
+                                _inv_supersedes_id,
+                            )
 
             # D4: Auto-registration of novel predicates.
             # When a predicate is NOT in the registry, insert it with flags
