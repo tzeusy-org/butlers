@@ -189,10 +189,15 @@ class TestSupersession:
 
     @pytest.fixture()
     def mock_pool_with_existing(self, mock_pool):
-        """Pool where fetchrow returns an existing fact row."""
+        """Pool where fetchrow returns an existing fact row.
+
+        The first fetchrow call is the predicate_registry lookup (returns None,
+        simulating an unregistered predicate).  The second call is the
+        supersession check and returns the existing fact row.
+        """
         pool, conn = mock_pool
         old_id = uuid.uuid4()
-        conn.fetchrow = AsyncMock(return_value={"id": old_id})
+        conn.fetchrow = AsyncMock(side_effect=[None, {"id": old_id}])
         return pool, conn, old_id
 
     async def test_old_fact_marked_superseded(self, mock_pool_with_existing, embedding_engine):
@@ -278,22 +283,26 @@ class TestTemporalFacts:
         """When valid_at is provided (temporal fact), no supersession check is done."""
         pool, conn = mock_pool
         ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
-        # fetchrow would return an existing fact if supersession were attempted
-        conn.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        # First fetchrow: registry lookup returns None (unregistered predicate).
+        # No supersession fetchrow should follow for temporal facts.
+        conn.fetchrow = AsyncMock(return_value=None)
+        conn.fetchval = AsyncMock(return_value=None)  # idempotency check: no dup
 
         await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts)
 
         # Only INSERT — no UPDATE supersession, no memory_links INSERT
         assert conn.execute.call_count == 1
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
-        # fetchrow (supersession check) should never be called for temporal facts
-        conn.fetchrow.assert_not_awaited()
+        # Only one fetchrow call total (the registry lookup) — no supersession check
+        assert conn.fetchrow.call_count == 1
 
     async def test_property_fact_still_supersedes(self, mock_pool, embedding_engine):
         """When valid_at is None (property fact), supersession happens normally."""
         pool, conn = mock_pool
         old_id = uuid.uuid4()
-        conn.fetchrow = AsyncMock(return_value={"id": old_id})
+        # First fetchrow: registry lookup returns None (unregistered predicate).
+        # Second fetchrow: supersession check returns the existing fact.
+        conn.fetchrow = AsyncMock(side_effect=[None, {"id": old_id}])
 
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
@@ -316,11 +325,13 @@ class TestTemporalFacts:
     async def test_supersession_sql_filters_valid_at_null(self, mock_pool, embedding_engine):
         """Supersession lookup SQL includes AND valid_at IS NULL filter."""
         pool, conn = mock_pool
-        conn.fetchrow = AsyncMock(return_value=None)  # no existing fact
+        # Two fetchrow calls: registry lookup (None) then supersession check (None).
+        conn.fetchrow = AsyncMock(side_effect=[None, None])
 
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        fetchrow_call = conn.fetchrow.call_args
+        # Second fetchrow call is the supersession check
+        fetchrow_call = conn.fetchrow.call_args_list[1]
         sql = fetchrow_call.args[0]
         assert "valid_at IS NULL" in sql
 
@@ -370,12 +381,15 @@ class TestTemporalFacts:
     ):
         """A new temporal fact (valid_at=T1) never supersedes any fact."""
         pool, conn = mock_pool
-        # Even if a property fact exists in DB, temporal facts skip supersession
-        conn.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        # First fetchrow: registry lookup returns None (unregistered predicate).
+        # Temporal facts skip supersession so no second fetchrow call.
+        conn.fetchrow = AsyncMock(return_value=None)
+        conn.fetchval = AsyncMock(return_value=None)  # idempotency check: no dup
 
         ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
         await store_fact(pool, "user", "city", "Berlin", embedding_engine, valid_at=ts)
 
         # Only INSERT — no supersession check, no UPDATE
         assert conn.execute.call_count == 1
-        conn.fetchrow.assert_not_awaited()
+        # Only one fetchrow call (registry lookup), no supersession check
+        assert conn.fetchrow.call_count == 1

@@ -190,7 +190,8 @@ class TestStoreFactTenantLineage:
 
         conn = AsyncMock()
         conn.fetchval = AsyncMock(return_value=None)
-        conn.fetchrow = AsyncMock(return_value={"id": existing_id})
+        # First fetchrow: registry lookup → None; second: supersession → existing fact.
+        conn.fetchrow = AsyncMock(side_effect=[None, {"id": existing_id}])
         conn.execute = AsyncMock()
         conn.transaction = MagicMock(return_value=_AsyncCM(None))
         pool = MagicMock()
@@ -199,7 +200,8 @@ class TestStoreFactTenantLineage:
         await _storage.store_fact(
             pool, "user", "city", "Munich", embedding_engine, tenant_id="tenant-a"
         )
-        # fetchrow call: first positional after SQL should be tenant_id
+        # call_args gets the last fetchrow call, which is the supersession check.
+        # First positional after SQL should be tenant_id.
         fetchrow_args = conn.fetchrow.call_args[0]
         assert fetchrow_args[1] == "tenant-a"
 

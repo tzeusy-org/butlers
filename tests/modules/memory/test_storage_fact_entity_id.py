@@ -69,20 +69,37 @@ def _make_pool(conn):
     return pool
 
 
-def _make_conn(*, fetchval_return=None, fetchrow_return=None, fetchval_side_effect=None):
+def _make_conn(
+    *,
+    fetchval_return=None,
+    fetchrow_return=None,
+    fetchval_side_effect=None,
+    fetchrow_side_effect=None,
+):
     """Build a mock conn with configurable fetchval/fetchrow returns.
 
     fetchval_side_effect overrides fetchval_return when provided. Use it to
     supply a sequence of return values for multiple fetchval calls (e.g.
     [1, 1] means entity-valid then object-entity-valid; no is_temporal call
     is made since supersession is now based on valid_at nullness, not registry).
+
+    fetchrow_side_effect overrides fetchrow_return when provided. Use it to
+    supply a sequence of return values for multiple fetchrow calls. The first
+    fetchrow call is always the predicate_registry lookup inside store_fact();
+    subsequent calls are supersession checks. When a supersession fixture needs
+    to return an existing fact row, pass side_effect=[None, {"id": old_id}] so
+    the registry lookup gets None (unregistered predicate) and the supersession
+    check gets the existing row.
     """
     conn = AsyncMock()
     if fetchval_side_effect is not None:
         conn.fetchval = AsyncMock(side_effect=fetchval_side_effect)
     else:
         conn.fetchval = AsyncMock(return_value=fetchval_return)
-    conn.fetchrow = AsyncMock(return_value=fetchrow_return)
+    if fetchrow_side_effect is not None:
+        conn.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+    else:
+        conn.fetchrow = AsyncMock(return_value=fetchrow_return)
     conn.execute = AsyncMock()
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
     return conn
@@ -229,11 +246,18 @@ class TestEntityKeyedSupersession:
 
     @pytest.fixture()
     def pool_with_existing_entity_fact(self):
-        """Pool/conn where an existing entity-keyed fact is found."""
+        """Pool/conn where an existing entity-keyed fact is found.
+
+        First fetchrow: predicate_registry lookup → None (unregistered predicate).
+        Second fetchrow: supersession check → existing fact row.
+        """
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
         # fetchval: entity=1 (exists); supersession is now valid_at-based, not registry-based.
-        conn = _make_conn(fetchval_return=1, fetchrow_return={"id": old_id})
+        conn = _make_conn(
+            fetchval_return=1,
+            fetchrow_side_effect=[None, {"id": old_id}],
+        )
         pool = _make_pool(conn)
         return pool, conn, old_id, eid
 
@@ -346,7 +370,8 @@ class TestSubjectKeyedSupersessionUnchanged:
     @pytest.fixture()
     def pool_with_existing_subject_fact(self):
         old_id = uuid.uuid4()
-        conn = _make_conn(fetchrow_return={"id": old_id})
+        # First fetchrow: registry lookup → None; second: supersession → existing fact.
+        conn = _make_conn(fetchrow_side_effect=[None, {"id": old_id}])
         pool = _make_pool(conn)
         return pool, conn, old_id
 
@@ -650,12 +675,19 @@ class TestEdgeFactSupersession:
 
     @pytest.fixture()
     def pool_with_existing_edge_fact(self):
-        """Pool/conn where an existing edge-fact is found."""
+        """Pool/conn where an existing edge-fact is found.
+
+        First fetchrow: registry lookup → None (unregistered predicate).
+        Second fetchrow: supersession check → existing edge-fact row.
+        """
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
         # fetchval: entity=1, obj=1; supersession is now valid_at-based, not registry-based.
-        conn = _make_conn(fetchrow_return={"id": old_id}, fetchval_side_effect=[1, 1])
+        conn = _make_conn(
+            fetchrow_side_effect=[None, {"id": old_id}],
+            fetchval_side_effect=[1, 1],
+        )
         pool = _make_pool(conn)
         return pool, conn, old_id, eid, obj_eid
 
