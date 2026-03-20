@@ -421,6 +421,7 @@ def _make_predicate_row(
     is_edge: bool = False,
     is_temporal: bool = False,
     description: str = "A predicate",
+    example_json: dict | None = None,
 ) -> dict:
     return {
         "name": name,
@@ -430,6 +431,7 @@ def _make_predicate_row(
         "is_edge": is_edge,
         "is_temporal": is_temporal,
         "description": description,
+        "example_json": example_json,
     }
 
 
@@ -455,7 +457,7 @@ class TestPredicateList:
             assert "is_temporal" in row, f"Row missing is_temporal: {row}"
 
     async def test_row_shape_includes_all_expected_keys(self, mock_pool: AsyncMock) -> None:
-        """Every returned row includes name, scope, subject/object types, is_edge, is_temporal, description."""  # noqa: E501
+        """Every returned row includes name, scope, subject/object types, is_edge, is_temporal, description, example_json."""  # noqa: E501
         expected_keys = {
             "name",
             "scope",
@@ -464,6 +466,7 @@ class TestPredicateList:
             "is_edge",
             "is_temporal",
             "description",
+            "example_json",
         }
         row = _make_predicate_row("prefers")
         mock_pool.fetch = AsyncMock(return_value=[row])
@@ -660,7 +663,7 @@ class TestPredicateSearch:
             assert r["score"] > 0.0
 
     async def test_result_shape_includes_required_keys(self, mock_pool: AsyncMock) -> None:
-        """Every returned row includes all required metadata keys including scope and score."""
+        """Every returned row includes all required metadata keys including scope, example_json, and score."""  # noqa: E501
         expected_keys = {
             "name",
             "scope",
@@ -669,6 +672,7 @@ class TestPredicateSearch:
             "is_edge",
             "is_temporal",
             "description",
+            "example_json",
             "score",
         }
         row = _make_predicate_row("knows", is_edge=True)
@@ -826,3 +830,52 @@ class TestPredicateSearch:
                 f"args[{placeholder_idx}]={args[placeholder_idx]!r} but expected scope={scope_value!r}; "
                 f"query was {sql!r} with args {args!r}"
             )
+
+    # -------------------------------------------------------------------------
+    # example_json passthrough
+    # -------------------------------------------------------------------------
+
+    async def test_example_json_included_when_populated(self, mock_pool: AsyncMock) -> None:
+        """When example_json is set on a predicate, it appears in the result dict."""
+        example = {"content": "82.5 kg", "metadata": {"value": 82.5, "unit": "kg"}}
+        row = _make_predicate_row("measurement_weight", scope="health", example_json=example)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        result = await predicate_search(mock_pool, "")
+
+        assert len(result) == 1
+        assert result[0]["example_json"] == example
+
+    async def test_example_json_none_when_not_set(self, mock_pool: AsyncMock) -> None:
+        """When example_json is NULL (None), the key is present in the result with value None."""
+        row = _make_predicate_row("note", example_json=None)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        result = await predicate_search(mock_pool, "")
+
+        assert len(result) == 1
+        assert "example_json" in result[0]
+        assert result[0]["example_json"] is None
+
+    async def test_predicate_list_sql_includes_example_json(self, mock_pool: AsyncMock) -> None:
+        """predicate_list SELECT includes example_json column."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await predicate_list(mock_pool)
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "example_json" in sql
+
+    async def test_predicate_search_sql_includes_example_json(self, mock_pool: AsyncMock) -> None:
+        """predicate_search metadata SELECT includes example_json column."""
+        row = _make_predicate_row("knows", is_edge=True)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        await predicate_search(mock_pool, "knows")
+
+        # At least one of the fetch calls must select example_json (the metadata fetch).
+        all_calls = mock_pool.fetch.call_args_list
+        sqls_with_example_json = [c.args[0] for c in all_calls if "example_json" in c.args[0]]
+        assert sqls_with_example_json, (
+            "No pool.fetch call selected example_json. "
+            f"Calls: {[c.args[0][:80] for c in all_calls]}"
+        )

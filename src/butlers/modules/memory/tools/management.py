@@ -150,11 +150,13 @@ async def predicate_list(
 
     Returns:
         List of dicts with keys: name, scope, expected_subject_type,
-        expected_object_type, is_edge, is_temporal, description.
+        expected_object_type, is_edge, is_temporal, description, example_json.
+        ``example_json`` is a JSONB object with keys ``content`` and optionally
+        ``metadata`` showing a concrete usage example, or None if not set.
     """
     query = (
         "SELECT name, scope, expected_subject_type, expected_object_type,"
-        " is_edge, is_temporal, description FROM predicate_registry"
+        " is_edge, is_temporal, description, example_json FROM predicate_registry"
     )
     params: list[Any] = []
     if edges_only:

@@ -129,7 +129,8 @@ async def memory_catalog_search(
 
 
 _PREDICATE_RESULT_COLUMNS = (
-    "name, scope, expected_subject_type, expected_object_type, is_edge, is_temporal, description"
+    "name, scope, expected_subject_type, expected_object_type,"
+    " is_edge, is_temporal, description, example_json"
 )
 
 # RRF constant K — standard value that balances precision/recall.
@@ -196,7 +197,9 @@ async def predicate_search(
 
     Returns:
         List of dicts with keys: name, scope, expected_subject_type,
-        expected_object_type, is_edge, is_temporal, description, score.
+        expected_object_type, is_edge, is_temporal, description, example_json, score.
+        ``example_json`` is a JSONB object with keys ``content`` and optionally
+        ``metadata`` showing a concrete usage example, or None if not set.
         When query is empty, score is always 0.0 and results are ordered by
         name ASC.
     """
@@ -229,6 +232,7 @@ async def predicate_search(
     scope_params: list[Any] = []
     if scope is not None:
         scope_params.append(scope)
+
     # Helper: build " AND scope = $<offset>" when scope is set.
     # offset = 1-based position of scope_params[0] in the full params list.
     def _scope_extra(offset: int) -> str:
