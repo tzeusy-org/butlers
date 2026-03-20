@@ -119,6 +119,12 @@ def _mock_pool_with_connection(
     the lease claim transaction (conn.fetch + conn.execute inside
     conn.transaction()).
 
+    conn.fetch is SQL-aware: queries against ``predicate_registry`` return an
+    empty list (no registered predicates, so no fuzzy suggestions), while any
+    other query (e.g. the episode claim query) returns ``claim_rows``.  This
+    prevents ``_fuzzy_match_predicates`` from receiving episode-shaped rows and
+    raising ``KeyError: 'name'``.
+
     Returns:
         (pool, mock_conn)
     """
@@ -131,12 +137,18 @@ def _mock_pool_with_connection(
     mock_transaction.__aenter__ = AsyncMock(return_value=None)
     mock_transaction.__aexit__ = AsyncMock(return_value=None)
 
+    async def _conn_fetch_side_effect(sql: str, *args, **kwargs):
+        """Return predicate-registry rows or episode rows based on the SQL."""
+        if "predicate_registry" in sql:
+            return []
+        return claim_rows
+
     # Mock connection
     mock_conn = SyncMock()
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.execute = AsyncMock(return_value="UPDATE 1")
-    mock_conn.fetch = AsyncMock(return_value=claim_rows)
+    mock_conn.fetch = AsyncMock(side_effect=_conn_fetch_side_effect)
     mock_conn.transaction = SyncMock(return_value=mock_transaction)
 
     # Mock pool.acquire()
