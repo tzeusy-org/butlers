@@ -47,11 +47,8 @@ def normalize_predicate(predicate: str) -> str:
         >>> normalize_predicate("parent_of")
         'parent_of'
     """
-    result = predicate.lower()
-    result = result.replace("-", "_").replace(" ", "_")
-    if result.startswith("is_"):
-        result = result[3:]
-    return result
+    normalized = predicate.lower().replace("-", "_").replace(" ", "_")
+    return normalized.removeprefix("is_")
 
 
 def _extract_request_context(
