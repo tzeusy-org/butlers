@@ -140,8 +140,8 @@ class TestDeprecatedPredicateWarning:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        # fetchrow: [registry=deprecated_row, supersession=None]
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        # fetchrow: [alias=None, registry=deprecated_row, supersession=None]
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -174,7 +174,7 @@ class TestDeprecatedPredicateWarning:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -206,7 +206,7 @@ class TestDeprecatedPredicateWarning:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -235,7 +235,7 @@ class TestDeprecatedPredicateWarning:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -273,7 +273,7 @@ class TestActivePredicateNoWarning:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -292,8 +292,8 @@ class TestActivePredicateNoWarning:
         WHEN store_fact() is called with a predicate NOT in the registry,
         THEN the response MUST NOT include a 'warning' key.
         """
-        # fetchrow returns None (novel predicate), then None (supersession check)
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        # fetchrow: [alias=None (no match), registry=None (novel), supersession=None]
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -320,7 +320,7 @@ class TestActivePredicateNoWarning:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -348,7 +348,7 @@ class TestAutoRegistrationProposedStatus:
         WHEN store_fact() succeeds with a predicate NOT in the registry,
         THEN the auto-registration INSERT MUST specify status='proposed'.
         """
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -373,7 +373,7 @@ class TestAutoRegistrationProposedStatus:
         THEN the INSERT MUST explicitly set status='proposed' — not 'active'.
         Auto-registered predicates need curator review before promotion to 'active'.
         """
-        conn = _make_conn(fetchrow_side_effect=[None, None])
+        conn = _make_conn(fetchrow_side_effect=[None, None, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -404,7 +404,7 @@ class TestAutoRegistrationProposedStatus:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -434,7 +434,7 @@ class TestAutoRegistrationProposedStatus:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -457,7 +457,7 @@ class TestAutoRegistrationProposedStatus:
 
 
 class TestBackwardCompatibilityWithOldMocks:
-    """Registry rows with complete column set (including lifecycle + type columns) work correctly."""
+    """Registry rows with complete column set (including lifecycle + type columns) work."""
 
     async def test_registry_row_with_full_columns_produces_no_warning(self, embedding_engine):
         """Registry row with all expected columns and no type mismatch produces no warning.
@@ -476,7 +476,7 @@ class TestBackwardCompatibilityWithOldMocks:
             "expected_subject_type": None,
             "expected_object_type": None,
         }
-        conn = _make_conn(fetchrow_side_effect=[registry_row, None])
+        conn = _make_conn(fetchrow_side_effect=[None, registry_row, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
