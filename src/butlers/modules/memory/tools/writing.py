@@ -15,6 +15,45 @@ from butlers.modules.memory.tools._helpers import _storage, get_embedding_engine
 logger = logging.getLogger(__name__)
 
 
+def normalize_predicate(predicate: str) -> str:
+    """Normalize a predicate to canonical snake_case form.
+
+    Applies transformations in order:
+    1. Lowercase the predicate.
+    2. Replace hyphens and spaces with underscores.
+    3. Strip a leading ``is_`` prefix.
+
+    This is applied at the MCP tool layer so that LLM-provided predicates
+    like ``"Birthday"``, ``"job-title"``, or ``"Is-Parent Of"`` all map to
+    their canonical stored forms.  Internal callers of ``store_fact()`` that
+    already use canonical predicates are unaffected because they bypass this
+    layer.
+
+    Args:
+        predicate: Raw predicate string from the MCP caller.
+
+    Returns:
+        Normalized predicate string.
+
+    Examples:
+        >>> normalize_predicate("Birthday")
+        'birthday'
+        >>> normalize_predicate("job-title")
+        'job_title'
+        >>> normalize_predicate("is_parent_of")
+        'parent_of'
+        >>> normalize_predicate("Is-Parent Of")
+        'parent_of'
+        >>> normalize_predicate("parent_of")
+        'parent_of'
+    """
+    result = predicate.lower()
+    result = result.replace("-", "_").replace(" ", "_")
+    if result.startswith("is_"):
+        result = result[3:]
+    return result
+
+
 def _extract_request_context(
     request_context: dict[str, Any] | None,
 ) -> tuple[str, str | None]:
@@ -143,6 +182,11 @@ async def memory_store_fact(
     new fact's ID and the superseded fact's ID (if any).
     """
     import uuid as _uuid
+
+    # Normalize predicate at the MCP tool layer (D2: normalization is a writing-
+    # tool concern, not a storage concern).  Internal callers of store_fact()
+    # already use canonical snake_case predicates and bypass this path.
+    predicate = normalize_predicate(predicate)
 
     parsed_entity_id = _uuid.UUID(entity_id) if entity_id is not None else None
     parsed_object_entity_id = _uuid.UUID(object_entity_id) if object_entity_id is not None else None
