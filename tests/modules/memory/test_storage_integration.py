@@ -286,8 +286,8 @@ class TestFactSupersessionFlow:
         pool1.acquire = MagicMock(return_value=_AsyncCM(conn1))
 
         first_id = await store_fact(pool1, "user", "city", "Berlin", embedding_engine)
-        # First store: only 1 execute (INSERT), no supersession
-        assert conn1.execute.call_count == 1
+        # First store: 2 execute calls (INSERT facts + INSERT predicate_registry), no supersession
+        assert conn1.execute.call_count == 2
         assert "INSERT INTO facts" in conn1.execute.call_args_list[0].args[0]
 
         # Second store: existing fact found.
@@ -303,8 +303,9 @@ class TestFactSupersessionFlow:
 
         new_id = await store_fact(pool2, "user", "city", "Munich", embedding_engine)
 
-        # Verify exactly 3 execute calls
-        assert conn2.execute.call_count == 3
+        # Verify exactly 4 execute calls:
+        # UPDATE old fact, INSERT new fact, INSERT memory_links, INSERT predicate_registry
+        assert conn2.execute.call_count == 4
 
         # Call 1: UPDATE old fact to 'superseded'
         update_call = conn2.execute.call_args_list[0]
@@ -324,6 +325,10 @@ class TestFactSupersessionFlow:
         assert link_call.args[1] == new_id  # source is new fact
         assert link_call.args[2] == first_id  # target is old fact
 
+        # Call 4: INSERT predicate_registry (auto-registration of novel predicate)
+        reg_call = conn2.execute.call_args_list[3]
+        assert "INSERT INTO predicate_registry" in reg_call.args[0]
+
     async def test_no_supersession_without_existing(
         self, fact_pool, embedding_engine: MagicMock
     ) -> None:
@@ -333,8 +338,8 @@ class TestFactSupersessionFlow:
 
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        # Only 1 execute: the INSERT
-        assert conn.execute.call_count == 1
+        # 2 execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        assert conn.execute.call_count == 2
         insert_call = conn.execute.call_args_list[0]
         assert "INSERT INTO facts" in insert_call.args[0]
         # supersedes_id ($13) should be None

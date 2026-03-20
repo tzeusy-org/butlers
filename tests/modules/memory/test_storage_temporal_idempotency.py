@@ -238,8 +238,8 @@ class TestStoreFactIdempotency:
         )
 
         assert isinstance(result, uuid.UUID)
-        # INSERT should have been called
-        assert conn.execute.call_count == 1
+        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        assert conn.execute.call_count == 2
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
 
     async def test_idempotency_key_not_checked_for_property_facts(
@@ -301,11 +301,12 @@ class TestSupersededFactInvalidAt:
 
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        # Only one execute call (INSERT), no UPDATE
-        assert conn.execute.call_count == 1
-        sql = conn.execute.call_args_list[0].args[0]
-        assert "INSERT INTO facts" in sql
-        assert "UPDATE" not in sql
+        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration)
+        # No UPDATE (no supersession)
+        assert conn.execute.call_count == 2
+        facts_sql = conn.execute.call_args_list[0].args[0]
+        assert "INSERT INTO facts" in facts_sql
+        assert "UPDATE" not in facts_sql
 
 
 # ---------------------------------------------------------------------------

@@ -335,25 +335,27 @@ class TestEntityKeyedSupersession:
     async def test_entity_keyed_execute_count_with_supersession(
         self, pool_with_existing_entity_fact, embedding_engine
     ):
-        """Three execute calls: UPDATE old, INSERT fact, INSERT link."""
+        """Four execute calls: UPDATE old, INSERT fact, INSERT link, INSERT predicate_registry."""
         pool, conn, _old_id, eid = pool_with_existing_entity_fact
 
         await store_fact(
             pool, "Alice", "job_title", "Senior Engineer", embedding_engine, entity_id=eid
         )
 
-        assert conn.execute.call_count == 3
+        assert conn.execute.call_count == 4
 
     async def test_entity_keyed_no_supersession_when_no_existing(self, embedding_engine):
         """No supersession when no existing entity-keyed property fact found."""
         eid = uuid.uuid4()
-        # fetchval: entity=1 (exists); fetchrow: no existing property fact
-        conn = _make_conn(fetchval_return=1, fetchrow_return=None)
+        # fetchval: entity=1 (exists), entity_type='person' (for auto-registration);
+        # fetchrow: no existing property fact.
+        conn = _make_conn(fetchval_side_effect=[1, "person"], fetchrow_return=None)
         pool = _make_pool(conn)
 
         await store_fact(pool, "Alice", "job_title", "Engineer", embedding_engine, entity_id=eid)
 
-        assert conn.execute.call_count == 1
+        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
+        assert conn.execute.call_count == 2
         insert_call = conn.execute.call_args_list[0]
         assert "INSERT INTO facts" in insert_call.args[0]
         assert insert_call.args[13] is None  # supersedes_id = None
@@ -407,7 +409,8 @@ class TestSubjectKeyedSupersessionUnchanged:
 
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
-        assert conn.execute.call_count == 3
+        # Four calls: UPDATE old, INSERT facts, INSERT link, INSERT predicate_registry
+        assert conn.execute.call_count == 4
 
     async def test_subject_keyed_null_entity_id_in_insert(
         self, pool_with_existing_subject_fact, embedding_engine
@@ -573,8 +576,8 @@ class TestObjectEntityIdValidation:
         """Valid object_entity_id (exists in DB) proceeds without error."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval returns: entity=1, obj=1; no is_temporal check (valid_at-based now)
-        conn = _make_conn(fetchval_side_effect=[1, 1])
+        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup)
+        conn = _make_conn(fetchval_side_effect=[1, 1, "person"])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -590,11 +593,11 @@ class TestObjectEntityIdValidation:
         assert isinstance(result, uuid.UUID)
 
     async def test_object_entity_id_validation_calls_fetchval_twice(self, embedding_engine):
-        """Two fetchval calls: entity_id and object_entity_id (no is_temporal call)."""
+        """fetchval called for: entity_id, object_entity_id, and entity_type lookup."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval returns: entity=1, obj=1
-        conn = _make_conn(fetchval_side_effect=[1, 1])
+        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup)
+        conn = _make_conn(fetchval_side_effect=[1, 1, "person"])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -607,9 +610,13 @@ class TestObjectEntityIdValidation:
             object_entity_id=obj_eid,
         )
 
-        assert conn.fetchval.call_count == 2
+        # Three fetchval calls: entity_id check, object_entity_id check,
+        # entity_type lookup for auto-registration.
+        assert conn.fetchval.call_count == 3
         assert conn.fetchval.call_args_list[0].args[1] == eid
         assert conn.fetchval.call_args_list[1].args[1] == obj_eid
+        # Third call: entity_type lookup for auto-registration subject type inference
+        assert conn.fetchval.call_args_list[2].args[1] == eid
 
 
 # ---------------------------------------------------------------------------
@@ -624,8 +631,8 @@ class TestObjectEntityIdStoredInFact:
         """When object_entity_id is provided, it appears in the INSERT args."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval returns: entity=1, obj=1; no is_temporal check needed
-        conn = _make_conn(fetchval_side_effect=[1, 1])
+        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup)
+        conn = _make_conn(fetchval_side_effect=[1, 1, "person"])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -683,10 +690,11 @@ class TestEdgeFactSupersession:
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval: entity=1, obj=1; supersession is now valid_at-based, not registry-based.
+        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup).
+        # Supersession is now valid_at-based, not registry-based.
         conn = _make_conn(
             fetchrow_side_effect=[None, {"id": old_id}],
-            fetchval_side_effect=[1, 1],
+            fetchval_side_effect=[1, 1, "person"],
         )
         pool = _make_pool(conn)
         return pool, conn, old_id, eid, obj_eid
@@ -785,7 +793,7 @@ class TestEdgeFactSupersession:
     async def test_edge_fact_execute_count_with_supersession(
         self, pool_with_existing_edge_fact, embedding_engine
     ):
-        """Three execute calls: UPDATE old, INSERT fact, INSERT link."""
+        """Four execute calls: UPDATE old, INSERT fact, INSERT link, INSERT predicate_registry."""
         pool, conn, _old_id, eid, obj_eid = pool_with_existing_edge_fact
 
         await store_fact(
@@ -798,14 +806,14 @@ class TestEdgeFactSupersession:
             object_entity_id=obj_eid,
         )
 
-        assert conn.execute.call_count == 3
+        assert conn.execute.call_count == 4
 
     async def test_edge_fact_no_supersession_when_no_existing(self, embedding_engine):
         """No supersession when no existing edge-fact found."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # fetchval: entity=1, obj=1; no is_temporal call (valid_at-based supersession)
-        conn = _make_conn(fetchrow_return=None, fetchval_side_effect=[1, 1])
+        # fetchval: entity=1, obj=1, entity_type='person' (auto-registration lookup)
+        conn = _make_conn(fetchrow_return=None, fetchval_side_effect=[1, 1, "person"])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -818,7 +826,8 @@ class TestEdgeFactSupersession:
             object_entity_id=obj_eid,
         )
 
-        assert conn.execute.call_count == 1
+        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
+        assert conn.execute.call_count == 2
         insert_call = conn.execute.call_args_list[0]
         assert "INSERT INTO facts" in insert_call.args[0]
         assert insert_call.args[13] is None  # supersedes_id = None
