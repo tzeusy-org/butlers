@@ -353,19 +353,6 @@ class TestRegistryLookupPlacement:
         """Registry lookup is the first fetchrow call; supersession follows."""
         registry_row = {"is_edge": False, "is_temporal": False}
         pool, conn = _make_pool(registry_row=registry_row)
-        call_order: list[str] = []
-
-        original_fetchrow = conn.fetchrow
-
-        async def tracking_fetchrow(*args, **kwargs):
-            sql = args[0] if args else ""
-            if "predicate_registry" in sql:
-                call_order.append("registry")
-            else:
-                call_order.append("other")
-            return await original_fetchrow(*args, **kwargs)
-
-        conn.fetchrow = tracking_fetchrow
         conn.fetchrow = AsyncMock(side_effect=[registry_row, None])
 
         await store_fact(pool, "Alice", "birthday", "1990-01-01", embedding_engine)
