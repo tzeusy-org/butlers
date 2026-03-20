@@ -205,8 +205,8 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     async def meal_log(
         type: str,
         description: str,
+        eaten_at: datetime,
         nutrition: dict[str, Any] | None = None,
-        eaten_at: datetime | None = None,
         notes: str | None = None,
         mood_before: int | None = None,
         satisfaction: int | None = None,
@@ -214,6 +214,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         tags: list[str] | None = None,
     ) -> dict[str, Any]:
         """Log a meal. Type must be one of: breakfast, lunch, dinner, snack.
+
+        REQUIRED:
+        - eaten_at: when the meal was (or will be) eaten. An estimate is fine
+          (e.g. "today at noon"). Future times are accepted for planned meals.
 
         Optional contextual metadata:
         - mood_before: mood rating before the meal (1-10)
@@ -225,8 +229,8 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(),
             type,
             description,
-            nutrition=nutrition,
             eaten_at=eaten_at,
+            nutrition=nutrition,
             notes=notes,
             mood_before=mood_before,
             satisfaction=satisfaction,

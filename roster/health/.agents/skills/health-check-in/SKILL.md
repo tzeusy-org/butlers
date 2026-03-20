@@ -95,8 +95,9 @@ For each reported symptom:
 Ask: "Would you like to log any meals from today?"
 
 If yes:
-- For each meal: Get description, approximate calories if known, and any relevant nutrients
-- Use: `meal_log(description=..., calories=..., nutrients={...})`
+- For each meal: Ask **when** it was eaten (approximate time is fine), get description, approximate calories if known, and any relevant nutrients
+- **Always pass `eaten_at`** — this is required. Use the user's stated or estimated time. If they say "lunch around noon", use today at 12:00. For planned/future meals, use the expected time.
+- Use: `meal_log(type=..., description=..., eaten_at=..., nutrition={...})`
 
 If user is tracking specific dietary concerns (based on conditions):
 - **Diabetes:** Ask about carbohydrate intake

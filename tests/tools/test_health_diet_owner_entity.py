@@ -10,12 +10,16 @@ Verifies the post-core_016 owner-entity resolution path:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
 
 from butlers.tools.health.diet import _get_owner_entity_id, meal_log
+
+# Shared eaten_at for tests that need a required timestamp
+_EATEN_AT = datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC)
 
 # butlers.tools.health.diet is auto-registered by the tools loader, which
 # maps roster/health/tools/diet.py → butlers.tools.health.diet
@@ -162,7 +166,9 @@ class TestMealLogOwnerEntityFallback:
                 return_value=MagicMock(),
             ),
         ):
-            result = await meal_log(pool, type="breakfast", description="Eggs and toast")
+            result = await meal_log(
+                pool, type="breakfast", description="Eggs and toast", eaten_at=_EATEN_AT
+            )
 
         assert result["id"] == str(fact_id)
         assert result["type"] == "breakfast"
@@ -185,7 +191,9 @@ class TestMealLogOwnerEntityFallback:
                 return_value=MagicMock(),
             ),
         ):
-            result = await meal_log(pool, type="lunch", description="Salad")
+            result = await meal_log(
+                pool, type="lunch", description="Salad", eaten_at=_EATEN_AT
+            )
 
         assert result["id"] == str(fact_id)
         # store_fact must be called with entity_id=None
@@ -211,7 +219,9 @@ class TestMealLogOwnerEntityFallback:
                 return_value=MagicMock(),
             ),
         ):
-            result = await meal_log(pool, type="dinner", description="Pasta")
+            result = await meal_log(
+                pool, type="dinner", description="Pasta", eaten_at=_EATEN_AT
+            )
 
         assert result["id"] == str(fact_id)
         # entity_id must be None when table is absent
@@ -222,4 +232,6 @@ class TestMealLogOwnerEntityFallback:
         """meal_log raises ValueError for invalid meal types (unrelated to entity lookup)."""
         pool = _make_full_pool()
         with pytest.raises(ValueError, match="Invalid meal type"):
-            await meal_log(pool, type="brunch", description="French toast")
+            await meal_log(
+                pool, type="brunch", description="French toast", eaten_at=_EATEN_AT
+            )

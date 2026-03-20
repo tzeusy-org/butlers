@@ -752,6 +752,7 @@ async def test_meal_log(pool, mock_embedding_engine):
             pool,
             "lunch",
             "Grilled chicken salad",
+            eaten_at=_utcnow(),
             nutrition={"calories": 450, "protein_g": 30},
         )
     assert meal["type"] == "lunch"
@@ -767,7 +768,7 @@ async def test_meal_log_without_nutrition(pool, mock_embedding_engine):
 
     mock_sf = AsyncMock(return_value=uuid.uuid4())
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
-        meal = await meal_log(pool, "snack", "Apple")
+        meal = await meal_log(pool, "snack", "Apple", eaten_at=_utcnow())
     assert meal["description"] == "Apple"
     assert meal["estimated_calories"] is None
     assert meal["macros"] is None
@@ -779,8 +780,16 @@ async def test_meal_log_with_notes(pool, mock_embedding_engine):
 
     mock_sf = AsyncMock(return_value=uuid.uuid4())
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
-        meal = await meal_log(pool, "dinner", "Pasta", notes="Homemade")
+        meal = await meal_log(pool, "dinner", "Pasta", eaten_at=_utcnow(), notes="Homemade")
     assert meal["notes"] == "Homemade"
+
+
+async def test_meal_log_rejects_missing_eaten_at(pool):
+    """meal_log rejects None eaten_at with an actionable error message."""
+    from butlers.tools.health import meal_log
+
+    with pytest.raises(ValueError, match="eaten_at is required"):
+        await meal_log(pool, "lunch", "Salad", eaten_at=None)
 
 
 async def test_meal_log_rejects_invalid_type(pool):
@@ -788,7 +797,7 @@ async def test_meal_log_rejects_invalid_type(pool):
     from butlers.tools.health import meal_log
 
     with pytest.raises(ValueError, match="Invalid meal type"):
-        await meal_log(pool, "brunch", "Eggs Benedict")
+        await meal_log(pool, "brunch", "Eggs Benedict", eaten_at=_utcnow())
 
 
 async def test_meal_log_valid_types(pool, mock_embedding_engine):
@@ -799,7 +808,7 @@ async def test_meal_log_valid_types(pool, mock_embedding_engine):
         with patch(
             "butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=uuid.uuid4())
         ):
-            meal = await meal_log(pool, mtype, f"Test {mtype}")
+            meal = await meal_log(pool, mtype, f"Test {mtype}", eaten_at=_utcnow())
         assert meal["type"] == mtype
 
 
@@ -1009,6 +1018,7 @@ async def test_meal_log_with_contextual_metadata(pool, mock_embedding_engine):
             pool,
             "lunch",
             "Grilled salmon",
+            eaten_at=_utcnow(),
             mood_before=7,
             satisfaction=9,
             symptom_notes="Felt slightly bloated afterwards",
@@ -1031,6 +1041,7 @@ async def test_meal_log_contextual_metadata_stored_in_fact(pool, mock_embedding_
             pool,
             "dinner",
             "Pasta carbonara",
+            eaten_at=_utcnow(),
             mood_before=5,
             satisfaction=8,
             symptom_notes="Heartburn",
@@ -1052,7 +1063,7 @@ async def test_meal_log_omitted_contextual_fields_absent_from_metadata(pool, moc
 
     mock_sf = AsyncMock(return_value=uuid.uuid4())
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
-        meal = await meal_log(pool, "breakfast", "Oatmeal")
+        meal = await meal_log(pool, "breakfast", "Oatmeal", eaten_at=_utcnow())
 
     mock_sf.assert_called_once()
     _, kwargs = mock_sf.call_args
@@ -1079,6 +1090,7 @@ async def test_meal_log_partial_contextual_fields(pool, mock_embedding_engine):
             pool,
             "snack",
             "Apple",
+            eaten_at=_utcnow(),
             tags=["fruit", "low-calorie"],
         )
 

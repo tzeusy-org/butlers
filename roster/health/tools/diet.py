@@ -89,8 +89,8 @@ async def meal_log(
     pool: asyncpg.Pool,
     type: str,
     description: str,
+    eaten_at: datetime,
     nutrition: dict[str, Any] | None = None,
-    eaten_at: datetime | None = None,
     notes: str | None = None,
     mood_before: int | None = None,
     satisfaction: int | None = None,
@@ -98,10 +98,20 @@ async def meal_log(
     tags: list[str] | None = None,
     create_calendar_event_fn: Any = None,
 ) -> dict[str, Any]:
-    """Log a meal. Type must be one of: breakfast, lunch, dinner, snack."""
+    """Log a meal. Type must be one of: breakfast, lunch, dinner, snack.
+
+    eaten_at is required — the approximate time the meal was (or will be) eaten.
+    An estimate is fine (e.g. "today at noon"); a future time is fine for planned meals.
+    """
     if type not in VALID_MEAL_TYPES:
         raise ValueError(
             f"Invalid meal type: {type!r}. Must be one of: {', '.join(sorted(VALID_MEAL_TYPES))}"
+        )
+    if eaten_at is None:
+        raise ValueError(
+            "eaten_at is required. Provide the approximate time the meal was (or will be) eaten. "
+            "An estimate is fine (e.g. 'today at 12:00'), and future times are accepted for "
+            "planned meals. Example: eaten_at='2026-03-20T12:00:00Z'"
         )
 
     from butlers.modules.memory.storage import store_fact
@@ -110,7 +120,7 @@ async def meal_log(
     owner_entity_id = await _get_owner_entity_id(pool)
     embedding_engine = _get_embedding_engine()
     now = datetime.now(UTC)
-    valid_at = eaten_at if eaten_at is not None else now
+    valid_at = eaten_at
 
     metadata: dict[str, Any] = {
         "logged_at": now.isoformat(),
