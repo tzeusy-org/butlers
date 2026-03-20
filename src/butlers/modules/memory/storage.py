@@ -676,6 +676,37 @@ async def store_fact(
                     supersedes_id,
                 )
 
+            # D4: Auto-registration of novel predicates.
+            # When a predicate is NOT in the registry, insert it with flags
+            # inferred from the call parameters.  ON CONFLICT DO NOTHING makes
+            # this concurrent-safe: the first writer wins; subsequent writers
+            # for the same predicate silently succeed.
+            if _registry_row is None:
+                _inferred_is_edge = object_entity_id is not None
+                _inferred_is_temporal = valid_at is not None
+
+                # Infer expected_subject_type from the entity's entity_type
+                # when entity_id is provided (already validated above).
+                _inferred_subject_type: str | None = None
+                if entity_id is not None:
+                    _inferred_subject_type = await conn.fetchval(
+                        "SELECT entity_type FROM shared.entities WHERE id = $1",
+                        entity_id,
+                    )
+
+                await conn.execute(
+                    """
+                    INSERT INTO predicate_registry
+                        (name, is_edge, is_temporal, expected_subject_type, description)
+                    VALUES ($1, $2, $3, $4, NULL)
+                    ON CONFLICT (name) DO NOTHING
+                    """,
+                    predicate,
+                    _inferred_is_edge,
+                    _inferred_is_temporal,
+                    _inferred_subject_type,
+                )
+
     # -------------------------------------------------------------------------
     # Write-behind to shared.memory_catalog (best-effort, non-blocking).
     # The canonical fact is already committed above.  Any failure here is

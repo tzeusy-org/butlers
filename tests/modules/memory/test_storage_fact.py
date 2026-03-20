@@ -236,8 +236,9 @@ class TestSupersession:
         pool, conn = mock_pool
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        # Only one execute call: the INSERT (no UPDATE, no link INSERT)
-        assert conn.execute.call_count == 1
+        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
+        # No UPDATE or memory_links INSERT (no supersession).
+        assert conn.execute.call_count == 2
         insert_call = conn.execute.call_args_list[0]
         sql = insert_call.args[0]
         assert "INSERT INTO facts" in sql
@@ -248,8 +249,8 @@ class TestSupersession:
         pool, conn, _old_id = mock_pool_with_existing
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
-        # Three execute calls: UPDATE old, INSERT new, INSERT link
-        assert conn.execute.call_count == 3
+        # Four execute calls: UPDATE old, INSERT new, INSERT link, INSERT predicate_registry
+        assert conn.execute.call_count == 4
 
 
 class TestTemporalFacts:
@@ -290,8 +291,9 @@ class TestTemporalFacts:
 
         await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts)
 
-        # Only INSERT — no UPDATE supersession, no memory_links INSERT
-        assert conn.execute.call_count == 1
+        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
+        # No UPDATE supersession, no memory_links INSERT.
+        assert conn.execute.call_count == 2
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
         # Only one fetchrow call total (the registry lookup) — no supersession check
         assert conn.fetchrow.call_count == 1
@@ -306,8 +308,8 @@ class TestTemporalFacts:
 
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
 
-        # Three execute calls: UPDATE, INSERT, INSERT link
-        assert conn.execute.call_count == 3
+        # Four execute calls: UPDATE, INSERT facts, INSERT link, INSERT predicate_registry
+        assert conn.execute.call_count == 4
         update_call = conn.execute.call_args_list[0]
         assert "UPDATE facts SET validity = 'superseded'" in update_call.args[0]
 
@@ -350,10 +352,11 @@ class TestTemporalFacts:
         assert isinstance(id1, uuid.UUID)
         assert isinstance(id2, uuid.UUID)
         assert id1 != id2
-        # Two INSERT calls, no UPDATEs
-        assert conn.execute.call_count == 2
-        for call in conn.execute.call_args_list:
-            assert "INSERT INTO facts" in call.args[0]
+        # Four execute calls: INSERT facts x2 + INSERT predicate_registry x2.
+        # No UPDATEs (temporal facts never supersede).
+        assert conn.execute.call_count == 4
+        facts_calls = [c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]]
+        assert len(facts_calls) == 2
 
     async def test_property_fact_does_not_supersede_temporal_fact(
         self, mock_pool, embedding_engine
@@ -372,8 +375,9 @@ class TestTemporalFacts:
 
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
 
-        # Only INSERT — no supersession
-        assert conn.execute.call_count == 1
+        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
+        # No supersession UPDATE.
+        assert conn.execute.call_count == 2
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
 
     async def test_temporal_fact_does_not_supersede_property_fact(
@@ -389,7 +393,8 @@ class TestTemporalFacts:
         ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
         await store_fact(pool, "user", "city", "Berlin", embedding_engine, valid_at=ts)
 
-        # Only INSERT — no supersession check, no UPDATE
-        assert conn.execute.call_count == 1
+        # Two execute calls: INSERT facts + INSERT predicate_registry (auto-registration).
+        # No supersession check, no UPDATE.
+        assert conn.execute.call_count == 2
         # Only one fetchrow call (registry lookup), no supersession check
         assert conn.fetchrow.call_count == 1
