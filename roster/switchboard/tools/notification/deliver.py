@@ -209,7 +209,11 @@ async def _deliver_via_notify_request(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     channel = notify_request.delivery.channel
+    # Prefer explicit delivery recipient; fall back to thread identity from
+    # request context (e.g. Telegram chat_id for reply-intent notifications).
     recipient = notify_request.delivery.recipient or ""
+    if not recipient and notify_request.request_context:
+        recipient = notify_request.request_context.source_thread_identity or ""
     message = notify_request.delivery.message
     log_metadata = dict(metadata or {})
     log_metadata["notify_request"] = notify_request.model_dump(mode="json")

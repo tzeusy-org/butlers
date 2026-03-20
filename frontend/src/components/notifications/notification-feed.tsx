@@ -130,13 +130,20 @@ export function NotificationFeed({
           >
             <TableCell>{statusBadge(n.status)}</TableCell>
             <TableCell className="font-medium">{n.source_butler}</TableCell>
-            <TableCell className="text-muted-foreground">{n.recipient ?? "—"}</TableCell>
+            <TableCell className="text-muted-foreground">
+              {n.recipient ? n.recipient : "—"}
+            </TableCell>
             <TableCell>{channelBadge(n.channel)}</TableCell>
             <TableCell
               className="max-w-xs"
               title={n.message}
             >
               <p className="truncate text-muted-foreground">{truncate(n.message)}</p>
+              {n.status === "failed" && n.error && (
+                <p className="mt-1 text-xs text-destructive" title={n.error}>
+                  {truncate(n.error, 80)}
+                </p>
+              )}
               {(n.session_id || n.trace_id) && (
                 <div className="mt-1 flex items-center gap-3 text-xs">
                   {n.session_id && (
