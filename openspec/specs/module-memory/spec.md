@@ -1108,6 +1108,40 @@ This rule applies to all butlers with the memory module enabled: health, finance
 
 ---
 
+### Requirement: Entity_id enforcement across all butlers
+
+All fact writes across ALL butlers MUST include a resolved `entity_id`. This is enforced at multiple layers:
+
+**Relationship butler:** `resolve_contact_entity_id()` raises `ValueError` when a contact has no linked entity. The `_log_activity()` helper catches this gracefully (activity logging is auxiliary and must not crash the primary operation). All relationship tools (notes, interactions, life_events, gifts, tasks, reminders, loans) propagate the error.
+
+**Health butler:** Conditions, medications, and research tools resolve the owner entity via `_get_owner_entity_id(pool)` and pass it to `store_fact()`. Previously these used `entity_id=None` with subject-based keying.
+
+**Finance butler:** Account, subscription, and bill tracking tools resolve the owner entity via `_get_owner_entity_id(pool)` and pass it to `store_fact()`. Previously these used `entity_id=None` with subject-based keying.
+
+**Google Contacts backfill:** `ContactBackfillWriter.create_contact()` resolves or creates an entity before inserting the contact row. Falls back gracefully if `shared.entities` table does not exist.
+
+**Consolidation executor:** Logs a warning when LLM-parsed facts lack `entity_id`. Does not block consolidation but surfaces the gap for investigation.
+
+#### Scenario: Relationship tool with unlinked contact
+
+- **WHEN** a relationship tool (e.g., `note_create`) calls `resolve_contact_entity_id()` for a contact with `entity_id IS NULL`
+- **THEN** `resolve_contact_entity_id` MUST raise `ValueError`
+- **AND** the tool MUST propagate the error to the LLM session
+
+#### Scenario: Health tool stores condition without owner entity
+
+- **WHEN** `condition_add()` is called and `_get_owner_entity_id()` returns `None`
+- **THEN** the fact MAY be stored with `entity_id=None` (graceful degradation)
+- **AND** the fact MUST still be retrievable via subject-based queries
+
+#### Scenario: Finance tool stores account fact
+
+- **WHEN** `track_account_fact()` is called
+- **THEN** it MUST resolve the owner entity via `_get_owner_entity_id(pool)`
+- **AND** pass the result as `entity_id` to `store_fact()`
+
+---
+
 ### Requirement: Entity anchoring via request_context
 
 When a routed message arrives at a downstream butler via a `route.v1` envelope, the `request_context` carries resolved sender identity as `source_sender_entity_id` and `source_sender_contact_id`. Butlers MUST use `source_sender_entity_id` directly as the `entity_id` when storing facts about the message sender — they MUST NOT call `memory_entity_resolve` or `memory_entity_create` for the sender when this field is already populated.

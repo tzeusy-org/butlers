@@ -76,6 +76,32 @@ Affected tools: `entity_create`, `entity_resolve`, `entity_get`, `entity_update`
 
 ---
 
+### Requirement: Entity-first data model
+
+The canonical data model hierarchy is **Entity → Contact → Contact Details**.
+
+- **Entity** (`shared.entities`) is the top-level identity anchor. Facts, relationships, and knowledge graph edges attach to entities. Every known person, organization, or place is an entity.
+- **Contact** (`shared.contacts`) is a child of entity. A CRM record with name fields, linked to exactly one entity via `entity_id`. Created when reachable contact details (phone, email, address) are known.
+- **Contact Details** (`shared.contact_info`, addresses, etc.) attach to contacts.
+
+An entity may exist without a contact (e.g., a person known from memory/conversation but no contact details). A contact MUST NOT exist without an entity. Facts MUST always be anchored to an entity via `entity_id`.
+
+The relationship butler exposes entity tools (`entity_resolve`, `entity_get`, `entity_update`, `entity_neighbors`) as MCP tools so that LLM sessions can adopt the entity-first workflow: resolve entity first, then create contact only when genuinely needed.
+
+#### Scenario: Entity without contact
+
+- **WHEN** a person is mentioned in a conversation but no contact details are known
+- **THEN** an entity SHOULD be created (possibly with `metadata.unidentified = true`)
+- **AND** a contact MUST NOT be created until contact details (phone, email, etc.) are available
+
+#### Scenario: Contact always linked to entity
+
+- **WHEN** `contact_create()` is called
+- **THEN** an entity MUST be resolved or created BEFORE the contact INSERT
+- **AND** `entity_id` MUST be included in the INSERT payload (never NULL)
+
+---
+
 ### Requirement: Roles column on entities
 
 The `shared.entities` table SHALL have a `roles TEXT[] NOT NULL DEFAULT '{}'` column. Each element in the array represents an identity role. The initial supported role value is `'owner'`. This column is the authoritative source of truth for identity roles, replacing `contacts.roles`.

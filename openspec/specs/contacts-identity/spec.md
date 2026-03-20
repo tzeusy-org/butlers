@@ -66,8 +66,8 @@ The operation MUST be idempotent across concurrent butler startups. See the `ent
 #### Scenario: Entities table not ready
 
 - **WHEN** a butler daemon starts and `shared.entities` does not yet exist
-- **THEN** the daemon MUST fall back to creating a contact without entity link
-- **AND** the contact MUST still have `roles = ['owner']` (backward compat)
+- **THEN** the daemon MUST defer contact creation until the entities table is available
+- **AND** subsequent startup attempts MUST retry entity-first bootstrap
 
 #### Scenario: Multiple butlers start concurrently
 
@@ -79,6 +79,39 @@ The operation MUST be idempotent across concurrent butler startups. See the `ent
 - **WHEN** a butler daemon starts and the owner entity already exists
 - **THEN** the daemon MUST NOT create a new entity or contact
 - **AND** startup MUST proceed normally
+
+---
+
+### Requirement: Contacts must always link to an entity
+
+The data model hierarchy is **Entity → Contact → Contact Details**. Every contact in `shared.contacts` MUST have a non-NULL `entity_id` referencing `shared.entities`. There are no valid code paths that create contacts without entity links.
+
+- `contact_create()` resolves or creates an entity BEFORE inserting the contact row, including `entity_id` in the INSERT.
+- Google Contacts backfill (`ContactBackfillWriter.create_contact`) resolves or creates an entity before INSERT.
+- Temporary contacts for unknown senders (`create_temp_contact`) create an unidentified entity first.
+- The dashboard API's `POST /contacts/{id}/create-entity` endpoint exists to remediate legacy contacts that predate this invariant.
+
+Entities may be flagged as `metadata.unidentified = true` when created for unknown senders or unresolved names. These appear in the dashboard "Unidentified Entities" section for user review and promotion to regular entities.
+
+#### Scenario: contact_create always links entity
+
+- **WHEN** `contact_create()` is called with any combination of name fields
+- **THEN** the function MUST resolve or create an entity via `_ensure_entity()` BEFORE the contact INSERT
+- **AND** the contact row MUST have `entity_id` set to the resolved/created entity UUID
+- **AND** if both entity creation and resolution fail, the function MUST raise `RuntimeError`
+
+#### Scenario: Google Contacts backfill links entity
+
+- **WHEN** `ContactBackfillWriter.create_contact()` syncs a new contact from Google
+- **THEN** it MUST attempt to create an entity in `shared.entities` before the contact INSERT
+- **AND** if entity creation succeeds, `entity_id` MUST be included in the INSERT
+- **AND** if entity creation fails (e.g., `shared.entities` not available), the contact MAY be created without `entity_id` (graceful degradation for pre-migration schemas)
+
+#### Scenario: Unidentified entity for unknown sender
+
+- **WHEN** an inbound message arrives from an unknown sender
+- **THEN** `create_temp_contact()` MUST create an entity with `metadata.unidentified = true` BEFORE creating the contact
+- **AND** the contact MUST link to this unidentified entity
 
 ---
 
