@@ -290,10 +290,12 @@ class TestFactSupersessionFlow:
         assert conn1.execute.call_count == 1
         assert "INSERT INTO facts" in conn1.execute.call_args_list[0].args[0]
 
-        # Second store: existing fact found
+        # Second store: existing fact found.
+        # First fetchrow call is the predicate_registry lookup → None (unregistered).
+        # Second fetchrow call is the supersession check → existing fact.
         conn2 = AsyncMock()
         conn2.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
-        conn2.fetchrow = AsyncMock(return_value={"id": first_id})
+        conn2.fetchrow = AsyncMock(side_effect=[None, {"id": first_id}])
         conn2.execute = AsyncMock()
         conn2.transaction = MagicMock(return_value=_AsyncCM(None))
         pool2 = MagicMock()
@@ -344,7 +346,8 @@ class TestFactSupersessionFlow:
 
         conn = AsyncMock()
         conn.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
-        conn.fetchrow = AsyncMock(return_value={"id": old_id})
+        # First fetchrow: registry lookup → None; second: supersession → existing fact.
+        conn.fetchrow = AsyncMock(side_effect=[None, {"id": old_id}])
         conn.execute = AsyncMock()
         conn.transaction = MagicMock(return_value=_AsyncCM(None))
         pool = MagicMock()

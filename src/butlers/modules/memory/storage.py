@@ -499,6 +499,30 @@ async def store_fact(
                         f"object_entity_id {object_entity_id!r} does not exist in entities table"
                     )
 
+            # Registry enforcement: look up predicate flags and enforce constraints.
+            # D1: single cached query inside the existing transaction, PK lookup on
+            # a small table (~100 rows), overhead negligible vs. embedding computation.
+            _registry_row = await conn.fetchrow(
+                "SELECT is_edge, is_temporal FROM predicate_registry WHERE name = $1",
+                predicate,
+            )
+            if _registry_row is not None:
+                if _registry_row["is_edge"] and object_entity_id is None:
+                    raise ValueError(
+                        f"Predicate {predicate!r} is registered as an edge predicate "
+                        f"(is_edge=true) and requires object_entity_id to be set. "
+                        f"Call memory_entity_resolve(identifier=<target_name>) to resolve "
+                        f"the target entity, then retry with object_entity_id."
+                    )
+                if _registry_row["is_temporal"] and valid_at is None:
+                    raise ValueError(
+                        f"Predicate {predicate!r} is registered as a temporal predicate "
+                        f"(is_temporal=true) and requires valid_at to be set. "
+                        f"Omitting valid_at would cause supersession to destroy previous "
+                        f"records for this predicate. Provide an ISO-8601 valid_at "
+                        f"timestamp for when this fact was true."
+                    )
+
             # Guard: reject facts that embed entity UUIDs in content without
             # using object_entity_id.  This catches the common mistake of
             # encoding a relationship target as freeform text instead of a
