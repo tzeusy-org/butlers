@@ -72,11 +72,31 @@ The `_infer_recovery_steps()` function pattern-matches the error message to prov
 
 **Why in __init__.py, not writing.py?** The MCP tool layer is the boundary where exceptions become LLM-visible responses. Writing.py is a shared utility; adding error formatting there would couple it to the MCP protocol.
 
-### D6: memory_predicate_search is a new MCP tool, not an extension of predicate_list
+### D6: memory_predicate_search uses hybrid retrieval with RRF fusion
 
-**Decision:** New `memory_predicate_search(query: str, scope: str | None = None)` tool that does prefix matching and description text search. Returns matching predicates with `is_edge`, `is_temporal`, and usage guidance.
+**Decision:** New `memory_predicate_search(query: str, scope: str | None = None)` tool using three-signal hybrid retrieval fused via Reciprocal Rank Fusion (RRF). Inspired by [CASS](https://github.com/Dicklesworthstone/coding_agent_session_search) search architecture.
+
+**Three retrieval signals:**
+
+1. **Trigram fuzzy matching on name** (`pg_trgm` GIN index): Catches typos and partial matches. `similarity(name, $query) > 0.3` as candidate filter. Handles snake_case splitting naturally since trigrams span underscore boundaries.
+
+2. **Full-text search on name + description** (tsvector GIN index): Weighted vector with name at weight A, description at weight B. `search_vector @@ plainto_tsquery('english', $query)` ranked by `ts_rank()`. Handles stemming, stop words, and multi-word queries.
+
+3. **Semantic similarity on description embedding** (vector column): The memory module's existing embedding engine generates a 384-dim vector for each description. At query time, embed the query and compute cosine similarity. Handles conceptual matching — "dad" finds `parent_of` whose description mentions "father/mother/parent relationship".
+
+**RRF fusion:** `score = SUM(1 / (60 + rank_i))` across all three ranked lists. K=60 is the standard RRF constant that balances precision/recall. Results ordered by fused score descending.
+
+**Schema additions to `predicate_registry`:**
+- `search_vector` tsvector — auto-maintained via trigger: `setweight(to_tsvector('english', name), 'A') || setweight(to_tsvector('english', coalesce(description, '')), 'B')`
+- `description_embedding` vector(384) — populated by embedding engine on insert/update
+- GIN index on `name` using `gin_trgm_ops` (pg_trgm)
+- GIN index on `search_vector`
+
+**Why not just prefix matching?** Prefix matching fails for conceptual queries ("dad" doesn't prefix-match "parent_of"), typo recovery ("parnet" doesn't prefix-match "parent"), and description-based discovery ("blood pressure reading" needs to find `measurement_blood_pressure`). The hybrid approach handles all three with minimal overhead on a ~100-row table.
 
 **Why not extend predicate_list?** `predicate_list` returns all predicates and is used for full-registry dumps. Adding search semantics to it changes its contract. A separate tool has a clear purpose for LLM callers: "search before you invent."
+
+**Embedding generation for auto-registered predicates:** Auto-registered predicates have `description=NULL` and therefore `description_embedding=NULL`. They are discoverable via trigram name matching only. When a description is later added (via migration or dashboard), the embedding is generated and semantic search becomes available.
 
 ## Risks / Trade-offs
 
@@ -95,4 +115,4 @@ Single-row PK lookup on a small table (~100 rows). **Mitigation:** Measured over
 ## Open Questions
 
 - Should the `is_temporal` enforcement be a hard error or a warning? Hard error is safer (prevents silent data loss) but could break consolidation flows that create facts without registry awareness. Recommend: hard error for registered predicates, no enforcement for unregistered ones.
-- Should normalization strip common suffixes like `_of` when doing fuzzy matching? e.g., `father` matches `parent_of`? This risks false positives. Recommend: prefix-only matching for now, extend later if needed.
+- Should `pg_trgm` be required via `CREATE EXTENSION IF NOT EXISTS pg_trgm`? It's a contrib extension bundled with PostgreSQL but may not be enabled. The migration should enable it idempotently.

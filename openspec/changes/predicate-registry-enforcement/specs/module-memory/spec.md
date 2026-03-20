@@ -64,20 +64,21 @@ The module MUST maintain a `predicate_registry` table that enforces `is_edge` an
 
 ## ADDED Requirements
 
-### Requirement: memory_predicate_search MCP tool
+### Requirement: memory_predicate_search MCP tool with hybrid retrieval
 
-The module MUST expose a `memory_predicate_search` MCP tool that allows LLMs to search the predicate registry by name prefix and description text before creating facts.
+The module MUST expose a `memory_predicate_search` MCP tool that uses hybrid retrieval (trigram fuzzy matching, full-text search, and semantic embedding similarity) fused via Reciprocal Rank Fusion to help LLMs discover canonical predicates.
 
-#### Scenario: Search returns matching predicates
+#### Scenario: Search returns ranked results from hybrid pipeline
 
-- **WHEN** `memory_predicate_search(query="parent")` is called
-- **THEN** predicates matching by name prefix or description text MUST be returned
-- **AND** each result MUST include `name`, `is_edge`, `is_temporal`, `description`, `expected_subject_type`, `expected_object_type`
+- **WHEN** `memory_predicate_search(query="father")` is called
+- **THEN** the tool MUST execute trigram name matching, full-text search on name+description, and semantic similarity on description embeddings
+- **AND** results MUST be fused using RRF scoring and returned ordered by fused score
+- **AND** each result MUST include `name`, `is_edge`, `is_temporal`, `description`, `expected_subject_type`, `expected_object_type`, and `score`
 
 #### Scenario: Search with empty query returns all
 
 - **WHEN** `memory_predicate_search(query="")` is called
-- **THEN** all registered predicates MUST be returned
+- **THEN** all registered predicates MUST be returned ordered by name
 
 ### Requirement: Structured error responses from memory_store_fact MCP tool
 

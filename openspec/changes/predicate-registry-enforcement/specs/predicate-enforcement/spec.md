@@ -147,29 +147,80 @@ When a fact is stored with a predicate not in the registry, the system MUST auto
 
 ---
 
-### Requirement: Predicate search MCP tool
+### Requirement: Predicate registry description and search indexes
 
-A new `memory_predicate_search` MCP tool MUST be provided for LLMs to discover canonical predicates before inventing new ones.
+Every predicate in the registry MUST have a meaningful description. The registry MUST maintain three complementary search indexes for hybrid retrieval.
 
-#### Scenario: Search by prefix
+#### Scenario: Description is required for seeded predicates
 
-- **WHEN** `memory_predicate_search(query="parent")` is called
-- **THEN** the result MUST include all registered predicates whose name starts with `"parent"` (e.g., `parent_of`)
+- **WHEN** a predicate is seeded via migration
+- **THEN** it MUST have a non-NULL `description` that explains what the predicate represents, when to use it, and common synonyms or related concepts (e.g., `parent_of` description SHOULD mention "father", "mother", "parent", "child relationship")
 
-#### Scenario: Search by description text
+#### Scenario: Trigram index on predicate name
 
-- **WHEN** `memory_predicate_search(query="father")` is called and the description of `parent_of` contains the word "father" or "parent"
-- **THEN** `parent_of` MUST be included in the results
+- **WHEN** the predicate registry schema is created
+- **THEN** a GIN trigram index (`pg_trgm`) MUST be created on the `name` column
+- **AND** fuzzy name matching MUST use `similarity(name, $query)` with a threshold of 0.3 for candidate retrieval
+
+#### Scenario: Full-text search vector on name and description
+
+- **WHEN** a predicate is inserted or updated in the registry
+- **THEN** a `search_vector` tsvector column MUST be maintained as `setweight(to_tsvector('english', name), 'A') || setweight(to_tsvector('english', coalesce(description, '')), 'B')`
+- **AND** a GIN index MUST be created on `search_vector` for full-text queries
+
+#### Scenario: Semantic embedding on description
+
+- **WHEN** a predicate is inserted or updated with a non-NULL description
+- **THEN** a `description_embedding` vector column MUST be populated using the memory module's embedding engine
+- **AND** the embedding MUST enable cosine similarity search for conceptual matching (e.g., query "father" matches `parent_of` even without lexical overlap)
+
+---
+
+### Requirement: Predicate search MCP tool with hybrid retrieval
+
+A new `memory_predicate_search` MCP tool MUST be provided for LLMs to discover canonical predicates before inventing new ones. The tool MUST use hybrid retrieval combining trigram, full-text, and semantic signals via Reciprocal Rank Fusion (RRF).
+
+#### Scenario: Hybrid search pipeline
+
+- **WHEN** `memory_predicate_search(query="father")` is called
+- **THEN** the system MUST execute three parallel retrieval paths:
+  1. **Trigram**: `SELECT name, similarity(name, $query) AS score FROM predicate_registry WHERE similarity(name, $query) > 0.3 ORDER BY score DESC`
+  2. **Full-text**: `SELECT name, ts_rank(search_vector, plainto_tsquery('english', $query)) AS score FROM predicate_registry WHERE search_vector @@ plainto_tsquery('english', $query) ORDER BY score DESC`
+  3. **Semantic**: Embed the query, compute cosine similarity against `description_embedding`, rank by similarity
+- **AND** results MUST be fused using Reciprocal Rank Fusion: `RRF_score = SUM(1 / (K + rank_i))` where K=60
+- **AND** results MUST be returned ordered by fused score descending
+
+#### Scenario: Trigram fuzzy name matching
+
+- **WHEN** `memory_predicate_search(query="parnet_of")` is called (typo)
+- **THEN** `parent_of` MUST appear in results via trigram similarity even though there is no exact prefix match
+
+#### Scenario: Semantic conceptual matching
+
+- **WHEN** `memory_predicate_search(query="dad")` is called
+- **THEN** `parent_of` MUST appear in results via semantic similarity between the query embedding and the description embedding (which mentions "father", "parent", etc.)
+- **AND** this MUST work even when there is zero lexical overlap between query and predicate name
+
+#### Scenario: Full-text description matching
+
+- **WHEN** `memory_predicate_search(query="blood pressure reading")` is called
+- **THEN** `measurement_blood_pressure` MUST appear in results via full-text search on the description
 
 #### Scenario: Filter by scope via optional parameter
 
 - **WHEN** `memory_predicate_search(query="measurement", scope="health")` is called
 - **THEN** only predicates with `expected_subject_type` matching health domain usage MUST be returned
+- **AND** the scope filter MUST be applied before ranking
 
 #### Scenario: Empty query returns all predicates
 
 - **WHEN** `memory_predicate_search(query="")` is called
-- **THEN** all registered predicates MUST be returned (equivalent to `memory_predicate_list()`)
+- **THEN** all registered predicates MUST be returned ordered by name
+
+#### Scenario: Each result includes full metadata
+
+- **WHEN** any search returns results
+- **THEN** each result MUST include: `name`, `is_edge`, `is_temporal`, `description`, `expected_subject_type`, `expected_object_type`, and the fused `score`
 
 ---
 
