@@ -16,7 +16,12 @@ These are not theoretical concerns — live data already contains orphaned relat
 - **Fuzzy matching for novel predicates**: When a predicate is NOT in the registry, perform a prefix/Levenshtein check against registered predicates. If close matches exist, return them as suggestions in the response alongside the stored fact ID. Do not block the write.
 - **Auto-registration of novel predicates**: After a successful write with a non-registered predicate, auto-insert it into `predicate_registry` with `is_edge` and `is_temporal` inferred from the call parameters (`object_entity_id` present → `is_edge=true`, `valid_at` present → `is_temporal=true`).
 - **Consistent structured error responses**: All validation failures from the MCP `memory_store_fact` tool return structured `{"error": ..., "message": ..., "recovery": ...}` dicts instead of raw exceptions. The `recovery` field provides specific next steps the LLM should take.
-- **Predicate search tool**: New `memory_predicate_search(query)` MCP tool for LLMs to discover canonical predicates before inventing new ones, with prefix and description-text matching.
+- **Predicate search tool**: New `memory_predicate_search(query)` MCP tool using three-signal hybrid retrieval (trigram fuzzy, full-text tsvector, semantic embedding) fused via Reciprocal Rank Fusion (RRF). Registry gains `search_vector`, `description_embedding`, and GIN indexes.
+- **Predicate aliases**: `aliases TEXT[]` column for deterministic synonym resolution at write time. "father_of" resolves to `parent_of` without fuzzy matching.
+- **Inverse and symmetric predicates**: `inverse_of` and `is_symmetric` columns for bidirectional entity graph traversal. `parent_of(Alice, Bob)` is discoverable as `child_of(Bob, Alice)` at query time without duplicate storage.
+- **Predicate lifecycle**: `status` (active/deprecated/proposed), `superseded_by`, and `deprecated_at` columns. Deprecated predicates still accept writes but return warnings with replacement suggestions.
+- **Predicate scoping**: `scope` column matching fact-level scopes (global, health, relationship, finance, home). Serves as namespace, UI grouping, and search filter.
+- **Usage tracking**: `usage_count` and `last_used_at` columns, incremented on every `store_fact()`. Enables search ranking by popularity and cleanup of unused auto-registered predicates.
 
 ## Capabilities
 

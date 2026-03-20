@@ -258,3 +258,107 @@ All validation failures from the `memory_store_fact` MCP tool MUST return struct
 
 - **WHEN** `memory_store_fact` is called with an invalid permanence value
 - **THEN** the tool MUST return a structured dict listing the valid permanence values in `"recovery"`
+
+---
+
+### Requirement: Predicate aliases for deterministic synonym resolution
+
+The registry MUST support an `aliases` array per predicate. At write time, alias resolution MUST occur before normalization and registry lookup, deterministically rewriting synonyms to their canonical predicate.
+
+#### Scenario: Alias resolves to canonical predicate
+
+- **WHEN** `store_fact()` is called with predicate `"father_of"` and `parent_of` has `aliases = ['father_of', 'mother_of', 'dad_of']`
+- **THEN** the predicate MUST be silently rewritten to `"parent_of"` before storage
+- **AND** the response MUST include `"resolved_from": "father_of"` so the LLM learns the canonical form
+
+#### Scenario: Alias resolution takes priority over fuzzy matching
+
+- **WHEN** a predicate exactly matches an alias
+- **THEN** alias resolution MUST be used (deterministic, exact) rather than fuzzy matching (probabilistic)
+
+#### Scenario: Aliases are included in search
+
+- **WHEN** `memory_predicate_search(query="dad")` is called and `parent_of` has alias `"dad_of"`
+- **THEN** `parent_of` MUST appear in search results via alias matching in addition to trigram/semantic signals
+
+#### Scenario: Alias uniqueness
+
+- **WHEN** an alias is added to predicate_registry
+- **THEN** the alias MUST be unique across all predicates — no two predicates can share an alias
+- **AND** an alias MUST NOT collide with any canonical predicate name
+
+---
+
+### Requirement: Inverse and symmetric predicates for bidirectional traversal
+
+The registry MUST support `inverse_of` and `is_symmetric` metadata to enable bidirectional entity graph traversal without duplicate fact storage.
+
+#### Scenario: Inverse predicate declaration
+
+- **WHEN** `parent_of` is registered with `inverse_of = 'child_of'`
+- **THEN** querying facts about entity Bob where Bob is `object_entity_id` on a `parent_of` fact MUST be presentable as `child_of(Bob, Alice)` at the query layer
+
+#### Scenario: Symmetric predicate
+
+- **WHEN** `knows` is registered with `is_symmetric = true`
+- **THEN** a fact `knows(Alice, Bob)` MUST be discoverable when querying facts about Bob without needing a separate `knows(Bob, Alice)` fact
+
+#### Scenario: Virtual inverse at query time
+
+- **WHEN** the entity detail API returns facts for an entity
+- **THEN** facts where the entity is `object_entity_id` MUST also be returned
+- **AND** those facts MUST use the `inverse_of` predicate label (or the same label for symmetric predicates)
+- **AND** no duplicate facts MUST be stored — inverse resolution is read-path only
+
+---
+
+### Requirement: Predicate lifecycle with status and deprecation
+
+The registry MUST track predicate lifecycle status. Deprecated predicates MUST point to their replacement. Writes to deprecated predicates MUST succeed with a warning.
+
+#### Scenario: Deprecated predicate write succeeds with warning
+
+- **WHEN** `store_fact()` is called with a predicate that has `status = 'deprecated'` and `superseded_by = 'new_predicate'`
+- **THEN** the fact MUST still be stored successfully
+- **AND** the response MUST include `"warning": "Predicate 'old_name' is deprecated. Use 'new_predicate' instead."`
+
+#### Scenario: Auto-registered predicates start as proposed
+
+- **WHEN** a novel predicate is auto-registered after a successful `store_fact()` write
+- **THEN** the new registry entry MUST have `status = 'proposed'`
+
+#### Scenario: Status values
+
+- **WHEN** the `status` column is queried
+- **THEN** valid values MUST be `'active'`, `'deprecated'`, or `'proposed'`
+
+---
+
+### Requirement: Predicate scoping by domain
+
+The registry MUST support a `scope` column matching the fact-level scope values, serving as namespace, UI grouping, and search filter.
+
+#### Scenario: Scope values match fact-level scopes
+
+- **WHEN** a predicate is registered with a scope
+- **THEN** the scope MUST be one of: `global`, `health`, `relationship`, `finance`, `home`
+
+#### Scenario: Domain predicates scoped to their butler
+
+- **WHEN** health-domain predicates are seeded (e.g., `measurement_weight`)
+- **THEN** they MUST have `scope = 'health'`
+- **AND** relationship predicates MUST have `scope = 'relationship'`
+- **AND** finance predicates MUST have `scope = 'finance'`
+- **AND** home predicates MUST have `scope = 'home'`
+- **AND** cross-domain predicates (e.g., `knows`, `parent_of`, `preference`) MUST have `scope = 'global'`
+
+#### Scenario: Scope filters search results
+
+- **WHEN** `memory_predicate_search(query="measurement", scope="health")` is called
+- **THEN** only predicates with `scope = 'health'` (or `scope = 'global'`) MUST be returned
+
+#### Scenario: Usage tracking per predicate
+
+- **WHEN** `store_fact()` successfully stores a fact
+- **THEN** the predicate's `usage_count` MUST be incremented by 1
+- **AND** `last_used_at` MUST be set to the current timestamp

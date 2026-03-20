@@ -48,8 +48,40 @@
 - [ ] 7.7 Update MCP tool response to include `score` field, order by fused score DESC
 - [ ] 7.8 Write/update tests: trigram typo recovery, full-text description match, semantic conceptual match ('dad' → parent_of), RRF ordering, empty query, scope filter
 
-## 8. Integration Tests and Audit
+## 8. Predicate Aliases (bu-dfkd)
 
-- [ ] 8.1 Audit all direct callers of `store_fact()` in `roster/*/tools/` — verify they pass correct `object_entity_id` for edge predicates and `valid_at` for temporal predicates
-- [ ] 8.2 Run full memory module test suite — verify no regressions from registry enforcement (existing tests that use registered predicates must still pass)
-- [ ] 8.3 Run full API test suite — verify dashboard endpoints still work
+- [ ] 8.1 Add `aliases TEXT[] DEFAULT '{}'` column to predicate_registry via migration
+- [ ] 8.2 Create unique index on aliases (GIN for containment, plus constraint ensuring no alias collides with a canonical name)
+- [ ] 8.3 Add alias resolution in write path: `SELECT name FROM predicate_registry WHERE $1 = ANY(aliases)` before registry lookup
+- [ ] 8.4 Include `resolved_from` in store_fact response when alias resolution occurs
+- [ ] 8.5 Update search_vector trigger to include aliases in weight B
+- [ ] 8.6 Seed aliases for existing edge predicates (parent_of, knows, works_at, sibling_of, lives_in, etc.)
+- [ ] 8.7 Write tests: alias resolution, alias uniqueness constraint, aliases in search results, resolved_from in response
+
+## 9. Inverse and Symmetric Predicates (bu-h2la)
+
+- [ ] 9.1 Add `inverse_of TEXT` and `is_symmetric BOOLEAN DEFAULT false` columns to predicate_registry via migration
+- [ ] 9.2 Seed inverse pairs: parent_of↔child_of, manages↔reports_to, works_at↔employs; mark knows, sibling_of, lives_with as symmetric
+- [ ] 9.3 Update entity detail API to include inverse-resolved facts (facts where entity is object_entity_id, presented with inverse predicate label)
+- [ ] 9.4 Write tests: inverse traversal at query time, symmetric predicate bidirectional discovery, no duplicate fact storage
+
+## 10. Predicate Lifecycle (bu-ittf)
+
+- [ ] 10.1 Add `status TEXT DEFAULT 'active'`, `superseded_by TEXT`, `deprecated_at TIMESTAMPTZ` columns via migration
+- [ ] 10.2 Add write-time warning: if predicate status='deprecated', include warning with superseded_by in store_fact response
+- [ ] 10.3 Auto-registered predicates get `status='proposed'` instead of `'active'`
+- [ ] 10.4 Deprecate ~36 unused baseline predicates from migration 005, set superseded_by to their domain-specific replacements
+- [ ] 10.5 Write tests: deprecated predicate writes succeed with warning, proposed status on auto-registration, status filtering in predicate_list
+
+## 11. Predicate Scoping (bu-hzvr)
+
+- [ ] 11.1 Add `scope TEXT DEFAULT 'global'` column to predicate_registry via migration
+- [ ] 11.2 Backfill scope for all seeded predicates: health→'health', relationship→'relationship', finance→'finance', home→'home', edge/general→'global'
+- [ ] 11.3 Update memory_predicate_search scope parameter to filter on registry scope column (replace expected_subject_type workaround)
+- [ ] 11.4 Write tests: scope filtering in search, backfill correctness
+
+## 12. Integration Tests and Audit
+
+- [ ] 12.1 Audit all direct callers of `store_fact()` in `roster/*/tools/` — verify they pass correct `object_entity_id` for edge predicates and `valid_at` for temporal predicates
+- [ ] 12.2 Run full memory module test suite — verify no regressions from all predicate registry changes
+- [ ] 12.3 Run full API test suite — verify dashboard endpoints still work
