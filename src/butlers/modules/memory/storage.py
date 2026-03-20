@@ -579,6 +579,10 @@ async def store_fact(
                 source_episode_id,
             )
 
+    # Lifecycle warning populated inside the transaction block when the predicate
+    # is deprecated; included in the return dict after the block exits.
+    _deprecation_warning: str | None = None
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Validate entity_id when provided.
@@ -614,8 +618,16 @@ async def store_fact(
             # Registry enforcement: look up predicate flags and enforce constraints.
             # D1: single cached query inside the existing transaction, PK lookup on
             # a small table (~100 rows), overhead negligible vs. embedding computation.
+            # Also fetch lifecycle columns (status, superseded_by) added in mem_023.
+            # COALESCE(status, 'active') guards against NULL in case a row predates
+            # the migration (status column exists but row was inserted before DEFAULT
+            # took effect, which is not possible given NOT NULL DEFAULT, but kept as
+            # a defensive measure). Test mocks without status use .get() below.
             _registry_row = await conn.fetchrow(
-                "SELECT is_edge, is_temporal FROM predicate_registry WHERE name = $1",
+                "SELECT is_edge, is_temporal,"
+                " COALESCE(status, 'active') AS status,"
+                " superseded_by"
+                " FROM predicate_registry WHERE name = $1",
                 predicate,
             )
             _predicate_is_novel = _registry_row is None
@@ -635,6 +647,24 @@ async def store_fact(
                         f"records for this predicate. Provide an ISO-8601 valid_at "
                         f"timestamp for when this fact was true."
                     )
+                # Lifecycle: build deprecation warning for deprecated predicates.
+                # The write still succeeds — warning is attached to the response.
+                # Use .get() for backward-compatibility with mocked test fixtures that
+                # only include is_edge/is_temporal; the COALESCE in SQL handles real DBs.
+                _predicate_status = _registry_row.get("status", "active") or "active"
+                if _predicate_status == "deprecated":
+                    _superseded_by = _registry_row.get("superseded_by")
+                    if _superseded_by:
+                        _deprecation_warning = (
+                            f"Predicate {predicate!r} is deprecated. "
+                            f"Use {_superseded_by!r} instead."
+                        )
+                    else:
+                        _deprecation_warning = (
+                            f"Predicate {predicate!r} is deprecated and has no "
+                            f"direct replacement. Consider using a domain-specific "
+                            f"predicate from the registry."
+                        )
 
             # D3: Fuzzy matching — for novel predicates (not found in registry),
             # compute suggestions inside the same transaction to reuse the connection.
@@ -803,6 +833,7 @@ async def store_fact(
             # inferred from the call parameters.  ON CONFLICT DO NOTHING makes
             # this concurrent-safe: the first writer wins; subsequent writers
             # for the same predicate silently succeed.
+            # Novel predicates start with status='proposed' — not yet curated.
             if _registry_row is None:
                 _inferred_is_edge = object_entity_id is not None
                 _inferred_is_temporal = valid_at is not None
@@ -819,8 +850,9 @@ async def store_fact(
                 await conn.execute(
                     """
                     INSERT INTO predicate_registry
-                        (name, is_edge, is_temporal, expected_subject_type, description)
-                    VALUES ($1, $2, $3, $4, NULL)
+                        (name, is_edge, is_temporal, expected_subject_type,
+                         description, status)
+                    VALUES ($1, $2, $3, $4, NULL, 'proposed')
                     ON CONFLICT (name) DO NOTHING
                     """,
                     predicate,
@@ -868,9 +900,12 @@ async def store_fact(
     # Build the return dict.  Include "suggestions" only when there are close
     # matches — omit the key entirely when there are none (per spec: "the
     # response MUST NOT include a 'suggestions' key" for no-match cases).
+    # Include "warning" when the predicate is deprecated.
     result: dict = {"id": fact_id, "supersedes_id": supersedes_id}
     if _fuzzy_suggestions:
         result["suggestions"] = _fuzzy_suggestions
+    if _deprecation_warning:
+        result["warning"] = _deprecation_warning
     return result
 
 
