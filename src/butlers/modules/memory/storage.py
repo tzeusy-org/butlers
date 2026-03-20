@@ -908,7 +908,9 @@ async def store_fact(
                     predicate,
                 )
             except Exception:
-                pass  # usage_count column may not exist yet (pre-mem_023 env)
+                # usage_count column may not exist yet (pre-mem_023 env).
+                # Log at debug so unexpected failures (e.g. SQL bugs) are discoverable.
+                logger.debug("Failed to update predicate usage tracking; expected in pre-migration environments.", exc_info=True)
 
     # -------------------------------------------------------------------------
     # Write-behind to shared.memory_catalog (best-effort, non-blocking).
