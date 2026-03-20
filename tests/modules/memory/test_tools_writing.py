@@ -21,6 +21,7 @@ from butlers.modules.memory.tools import (
     memory_store_fact,
     memory_store_rule,
 )
+from butlers.modules.memory.tools.writing import normalize_predicate
 
 pytestmark = pytest.mark.unit
 
@@ -415,3 +416,210 @@ class TestGetEmbeddingEngine:
         assert first is first_sentinel
         assert second is second_sentinel
         assert first is not second
+
+
+# ---------------------------------------------------------------------------
+# Tests — normalize_predicate
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizePredicate:
+    """Unit tests for the normalize_predicate() helper.
+
+    Covers all six normalization scenarios from the spec:
+    1. Lowercase normalization
+    2. Hyphen replacement
+    3. Space replacement
+    4. Strip leading is_ prefix
+    5. Combined normalization
+    6. Already-canonical predicates are unchanged
+    """
+
+    # --- Scenario: Lowercase normalization ---
+
+    def test_lowercase_title_case(self) -> None:
+        """'Birthday' must normalize to 'birthday'."""
+        assert normalize_predicate("Birthday") == "birthday"
+
+    def test_lowercase_all_caps(self) -> None:
+        """'BIRTHDAY' must normalize to 'birthday'."""
+        assert normalize_predicate("BIRTHDAY") == "birthday"
+
+    def test_lowercase_mixed_case(self) -> None:
+        """Mixed-case predicate must be fully lowercased."""
+        assert normalize_predicate("FirstName") == "firstname"
+
+    # --- Scenario: Hyphen replacement ---
+
+    def test_hyphen_replaced_with_underscore(self) -> None:
+        """'job-title' must normalize to 'job_title'."""
+        assert normalize_predicate("job-title") == "job_title"
+
+    def test_multiple_hyphens_replaced(self) -> None:
+        """Multiple hyphens are all replaced with underscores."""
+        assert normalize_predicate("date-of-birth") == "date_of_birth"
+
+    # --- Scenario: Space replacement ---
+
+    def test_space_replaced_with_underscore(self) -> None:
+        """'job title' must normalize to 'job_title'."""
+        assert normalize_predicate("job title") == "job_title"
+
+    def test_multiple_spaces_replaced(self) -> None:
+        """Multiple spaces are all replaced with underscores."""
+        assert normalize_predicate("date of birth") == "date_of_birth"
+
+    # --- Scenario: Strip leading is_ prefix ---
+
+    def test_strip_is_prefix(self) -> None:
+        """'is_parent_of' must normalize to 'parent_of'."""
+        assert normalize_predicate("is_parent_of") == "parent_of"
+
+    def test_is_prefix_only_stripped_at_start(self) -> None:
+        """The is_ prefix is only stripped when at the beginning of the predicate."""
+        assert normalize_predicate("sibling_is_alive") == "sibling_is_alive"
+
+    def test_is_prefix_not_stripped_mid_word(self) -> None:
+        """An embedded 'is' substring that does not start with 'is_' is not stripped."""
+        assert normalize_predicate("distance") == "distance"
+
+    # --- Scenario: Combined normalization ---
+
+    def test_combined_case_hyphens_spaces_and_is_prefix(self) -> None:
+        """'Is-Parent Of' must normalize to 'parent_of' (spec example)."""
+        assert normalize_predicate("Is-Parent Of") == "parent_of"
+
+    def test_combined_uppercase_and_spaces(self) -> None:
+        """'JOB TITLE' must normalize to 'job_title'."""
+        assert normalize_predicate("JOB TITLE") == "job_title"
+
+    def test_combined_is_prefix_with_hyphens(self) -> None:
+        """'Is-Friend-Of' must normalize to 'friend_of'."""
+        assert normalize_predicate("Is-Friend-Of") == "friend_of"
+
+    def test_combined_is_prefix_uppercase_spaces(self) -> None:
+        """'IS PARENT OF' must normalize to 'parent_of'."""
+        assert normalize_predicate("IS PARENT OF") == "parent_of"
+
+    # --- Scenario: Already-canonical predicates are unchanged ---
+
+    def test_canonical_predicate_unchanged(self) -> None:
+        """'parent_of' must remain 'parent_of' (spec example)."""
+        assert normalize_predicate("parent_of") == "parent_of"
+
+    def test_canonical_simple_predicate_unchanged(self) -> None:
+        """'birthday' must remain 'birthday'."""
+        assert normalize_predicate("birthday") == "birthday"
+
+    def test_canonical_long_predicate_unchanged(self) -> None:
+        """'date_of_birth' must remain 'date_of_birth'."""
+        assert normalize_predicate("date_of_birth") == "date_of_birth"
+
+    # --- Edge cases ---
+
+    def test_empty_string_returns_empty(self) -> None:
+        """An empty string is returned as-is."""
+        assert normalize_predicate("") == ""
+
+    def test_only_is_prefix_becomes_empty(self) -> None:
+        """'is_' with nothing after it normalizes to an empty string."""
+        assert normalize_predicate("is_") == ""
+
+    def test_single_word_lowercase(self) -> None:
+        """A single lowercase word passes through unchanged."""
+        assert normalize_predicate("name") == "name"
+
+
+# ---------------------------------------------------------------------------
+# Tests — memory_store_fact normalization integration
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryStoreFactNormalization:
+    """Tests that verify normalize_predicate() is applied inside memory_store_fact()."""
+
+    async def test_uppercase_predicate_normalized_before_storage(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """'Birthday' predicate must be normalized to 'birthday' before reaching storage."""
+        storage_result = {"id": uuid.uuid4()}
+
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_fact(
+                mock_pool, mock_embedding_engine, "user", "Birthday", "1990-01-01"
+            )
+            call_args = mock_store.call_args
+            # Positional arg[2] is the predicate passed to store_fact
+            assert call_args.args[2] == "birthday"
+
+    async def test_hyphenated_predicate_normalized_before_storage(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """'job-title' predicate must be normalized to 'job_title' before storage."""
+        storage_result = {"id": uuid.uuid4()}
+
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_fact(
+                mock_pool, mock_embedding_engine, "user", "job-title", "Engineer"
+            )
+            call_args = mock_store.call_args
+            assert call_args.args[2] == "job_title"
+
+    async def test_is_prefix_stripped_before_storage(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """'is_parent_of' predicate must be normalized to 'parent_of' before storage."""
+        storage_result = {"id": uuid.uuid4()}
+
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_fact(
+                mock_pool,
+                mock_embedding_engine,
+                "user",
+                "is_parent_of",
+                "Alice",
+                object_entity_id=str(uuid.uuid4()),
+            )
+            call_args = mock_store.call_args
+            assert call_args.args[2] == "parent_of"
+
+    async def test_combined_normalization_applied_before_storage(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """'Is-Parent Of' must normalize to 'parent_of' before reaching storage."""
+        storage_result = {"id": uuid.uuid4()}
+
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_fact(
+                mock_pool,
+                mock_embedding_engine,
+                "user",
+                "Is-Parent Of",
+                "Alice",
+                object_entity_id=str(uuid.uuid4()),
+            )
+            call_args = mock_store.call_args
+            assert call_args.args[2] == "parent_of"
+
+    async def test_canonical_predicate_passes_through_unchanged(
+        self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
+    ) -> None:
+        """An already-canonical predicate like 'parent_of' must not be altered."""
+        storage_result = {"id": uuid.uuid4()}
+
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_fact(
+                mock_pool,
+                mock_embedding_engine,
+                "user",
+                "parent_of",
+                "Alice",
+                object_entity_id=str(uuid.uuid4()),
+            )
+            call_args = mock_store.call_args
+            assert call_args.args[2] == "parent_of"
