@@ -165,7 +165,7 @@ class TestRegisterTools:
         for tool_name, tool_fn in registered.items():
             assert asyncio.iscoroutinefunction(tool_fn), f"{tool_name} should be async"
 
-    async def test_mcp_tool_called_nineteen_times(self):
+    async def test_mcp_tool_call_count(self):
         mod = MemoryModule()
         mcp = MagicMock()
         mcp.tool.return_value = lambda fn: fn
