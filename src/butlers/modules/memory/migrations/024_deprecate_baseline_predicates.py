@@ -105,21 +105,30 @@ _DEPRECATED_AT = "2026-03-20 00:00:00+00"
 
 
 def upgrade() -> None:
+    # Group predicates by their superseded_by value and issue one UPDATE per group.
+    # This mirrors the bulk approach used in downgrade() and avoids N round-trips.
+    from collections import defaultdict
+
+    groups: dict[str | None, list[str]] = defaultdict(list)
     for name, superseded_by in _ALL_DEPRECATED:
+        groups[superseded_by].append(name)
+
+    for superseded_by, names in groups.items():
+        names_quoted = ", ".join(f"'{n}'" for n in names)
         if superseded_by is not None:
             op.execute(
                 f"UPDATE predicate_registry"
                 f" SET status = 'deprecated',"
                 f"     superseded_by = '{superseded_by}',"
                 f"     deprecated_at = '{_DEPRECATED_AT}'"
-                f" WHERE name = '{name}' AND status = 'active'"
+                f" WHERE name IN ({names_quoted}) AND status = 'active'"
             )
         else:
             op.execute(
                 f"UPDATE predicate_registry"
                 f" SET status = 'deprecated',"
                 f"     deprecated_at = '{_DEPRECATED_AT}'"
-                f" WHERE name = '{name}' AND status = 'active'"
+                f" WHERE name IN ({names_quoted}) AND status = 'active'"
             )
 
 

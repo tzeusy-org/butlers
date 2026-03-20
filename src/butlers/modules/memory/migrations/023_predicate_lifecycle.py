@@ -38,16 +38,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Add all three lifecycle columns atomically in a single ALTER TABLE.
     op.execute("""
         ALTER TABLE predicate_registry
-        ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
-    """)
-    op.execute("""
-        ALTER TABLE predicate_registry
-        ADD COLUMN IF NOT EXISTS superseded_by TEXT
-    """)
-    op.execute("""
-        ALTER TABLE predicate_registry
+        ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active',
+        ADD COLUMN IF NOT EXISTS superseded_by TEXT,
         ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ
     """)
     op.execute("""
@@ -71,15 +66,10 @@ def downgrade() -> None:
         ALTER TABLE predicate_registry
         DROP CONSTRAINT IF EXISTS predicate_registry_status_check
     """)
+    # Drop all three lifecycle columns atomically in a single ALTER TABLE.
     op.execute("""
         ALTER TABLE predicate_registry
-        DROP COLUMN IF EXISTS deprecated_at
-    """)
-    op.execute("""
-        ALTER TABLE predicate_registry
-        DROP COLUMN IF EXISTS superseded_by
-    """)
-    op.execute("""
-        ALTER TABLE predicate_registry
+        DROP COLUMN IF EXISTS deprecated_at,
+        DROP COLUMN IF EXISTS superseded_by,
         DROP COLUMN IF EXISTS status
     """)

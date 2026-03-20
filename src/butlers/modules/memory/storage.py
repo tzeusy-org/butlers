@@ -619,7 +619,10 @@ async def store_fact(
             # D1: single cached query inside the existing transaction, PK lookup on
             # a small table (~100 rows), overhead negligible vs. embedding computation.
             # Also fetch lifecycle columns (status, superseded_by) added in mem_023.
-            # Fallback via COALESCE so older schemas without the columns still work.
+            # COALESCE(status, 'active') guards against NULL in case a row predates
+            # the migration (status column exists but row was inserted before DEFAULT
+            # took effect, which is not possible given NOT NULL DEFAULT, but kept as
+            # a defensive measure). Test mocks without status use .get() below.
             _registry_row = await conn.fetchrow(
                 "SELECT is_edge, is_temporal,"
                 " COALESCE(status, 'active') AS status,"
