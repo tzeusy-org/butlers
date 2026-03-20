@@ -528,40 +528,14 @@ class TestPredicateList:
 
 
 class TestPredicateSearch:
-    """Tests for predicate_search tool wrapper (tasks 6.1–6.3)."""
+    """Tests for predicate_search — hybrid retrieval with RRF fusion (tasks 6.1–6.3, 7.5–7.8)."""
 
-    async def test_prefix_search_matches_name(self, mock_pool: AsyncMock) -> None:
-        """Prefix search on 'parent' returns predicates whose name starts with 'parent'."""
-        parent_row = _make_predicate_row("parent_of", is_edge=True, description="Parent relation")
-        mock_pool.fetch = AsyncMock(return_value=[parent_row])
-
-        result = await predicate_search(mock_pool, "parent")
-
-        assert len(result) == 1
-        assert result[0]["name"] == "parent_of"
-
-        # Verify the SQL query includes the prefix condition
-        call_args = mock_pool.fetch.call_args
-        sql = call_args.args[0]
-        assert "lower(name) LIKE" in sql
-
-    async def test_description_text_search(self, mock_pool: AsyncMock) -> None:
-        """Description text search returns rows whose description contains the query term."""
-        row = _make_predicate_row("parent_of", description="Indicates a father or mother relation")
-        mock_pool.fetch = AsyncMock(return_value=[row])
-
-        result = await predicate_search(mock_pool, "father")
-
-        assert len(result) == 1
-        assert result[0]["name"] == "parent_of"
-
-        # Verify the SQL includes description substring search
-        call_args = mock_pool.fetch.call_args
-        sql = call_args.args[0]
-        assert "COALESCE(description" in sql or "description" in sql
+    # -------------------------------------------------------------------------
+    # Empty-query path
+    # -------------------------------------------------------------------------
 
     async def test_empty_query_returns_all(self, mock_pool: AsyncMock) -> None:
-        """An empty query returns all registered predicates (no WHERE clause)."""
+        """An empty query returns all registered predicates ordered by name."""
         rows = [
             _make_predicate_row("birthday"),
             _make_predicate_row("occupation"),
@@ -573,17 +547,18 @@ class TestPredicateSearch:
 
         assert len(result) == 3
 
-        # Empty query must not inject a WHERE filter on name/description
+        # Empty query must use ORDER BY name ASC on the single fetch call.
         call_args = mock_pool.fetch.call_args
         sql = call_args.args[0]
+        assert "ORDER BY name ASC" in sql
         assert "lower(name)" not in sql
 
     async def test_scope_filter_applied(self, mock_pool: AsyncMock) -> None:
-        """scope parameter adds a scope column filter to the query."""
+        """scope parameter adds a scope column filter to the empty-query path."""
         row = _make_predicate_row("measurement", scope="health")
         mock_pool.fetch = AsyncMock(return_value=[row])
 
-        result = await predicate_search(mock_pool, "measurement", scope="health")
+        result = await predicate_search(mock_pool, "", scope="health")
 
         assert len(result) == 1
         assert result[0]["scope"] == "health"
@@ -592,8 +567,18 @@ class TestPredicateSearch:
         sql = call_args.args[0]
         assert "scope =" in sql
 
+    async def test_empty_query_results_have_zero_score(self, mock_pool: AsyncMock) -> None:
+        """Empty-query results include score=0.0."""
+        rows = [_make_predicate_row("birthday")]
+        mock_pool.fetch = AsyncMock(return_value=rows)
+
+        result = await predicate_search(mock_pool, "")
+
+        assert len(result) == 1
+        assert result[0]["score"] == 0.0
+
     async def test_scope_filter_without_query(self, mock_pool: AsyncMock) -> None:
-        """scope filter works even when query is empty."""
+        """scope filter works even when query is empty — adds scope column WHERE clause."""
         rows = [_make_predicate_row("bmi", scope="health")]
         mock_pool.fetch = AsyncMock(return_value=rows)
 
@@ -604,8 +589,78 @@ class TestPredicateSearch:
         sql = call_args.args[0]
         assert "scope =" in sql
 
+    # -------------------------------------------------------------------------
+    # Non-empty query: hybrid retrieval signals
+    # -------------------------------------------------------------------------
+
+    async def test_trigram_signal_uses_similarity(self, mock_pool: AsyncMock) -> None:
+        """Non-empty query issues a similarity() call for the trigram signal."""
+        parent_row = _make_predicate_row("parent_of", is_edge=True, description="Parent relation")
+        mock_pool.fetch = AsyncMock(return_value=[parent_row])
+
+        await predicate_search(mock_pool, "parent")
+
+        # All pool.fetch calls should be inspectable; check at least one uses similarity.
+        all_calls = mock_pool.fetch.call_args_list
+        all_sqls = [c.args[0] for c in all_calls]
+        assert any("similarity" in sql for sql in all_sqls)
+
+    async def test_fts_signal_uses_tsquery(self, mock_pool: AsyncMock) -> None:
+        """Non-empty query issues a plainto_tsquery() full-text search."""
+        row = _make_predicate_row("parent_of", description="father or mother relation")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        await predicate_search(mock_pool, "father")
+
+        all_calls = mock_pool.fetch.call_args_list
+        all_sqls = [c.args[0] for c in all_calls]
+        assert any("plainto_tsquery" in sql for sql in all_sqls)
+
+    async def test_semantic_signal_issued_when_engine_provided(
+        self,
+        mock_pool: AsyncMock,
+        mock_embedding_engine: MagicMock,
+    ) -> None:
+        """When embedding_engine is provided the semantic signal uses cosine distance (<=>)."""
+        row = _make_predicate_row("parent_of", description="parent child relationship")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        await predicate_search(mock_pool, "dad", embedding_engine=mock_embedding_engine)
+
+        all_calls = mock_pool.fetch.call_args_list
+        all_sqls = [c.args[0] for c in all_calls]
+        assert any("<=>" in sql for sql in all_sqls)
+        mock_embedding_engine.embed.assert_called_once_with("dad")
+
+    async def test_semantic_signal_skipped_when_no_engine(self, mock_pool: AsyncMock) -> None:
+        """When embedding_engine is None no cosine distance query is issued."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        await predicate_search(mock_pool, "dad")  # no embedding_engine
+
+        all_calls = mock_pool.fetch.call_args_list
+        all_sqls = [c.args[0] for c in all_calls]
+        assert not any("<=>" in sql for sql in all_sqls)
+
+    # -------------------------------------------------------------------------
+    # RRF fusion and result shape
+    # -------------------------------------------------------------------------
+
+    async def test_result_includes_score(self, mock_pool: AsyncMock) -> None:
+        """Every non-empty-query result includes a numeric score field."""
+        row = _make_predicate_row("parent_of", is_edge=True)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        result = await predicate_search(mock_pool, "parent")
+
+        assert len(result) >= 1
+        for r in result:
+            assert "score" in r
+            assert isinstance(r["score"], float)
+            assert r["score"] > 0.0
+
     async def test_result_shape_includes_required_keys(self, mock_pool: AsyncMock) -> None:
-        """Every returned row includes all required keys including scope."""
+        """Every returned row includes all required metadata keys including scope and score."""
         expected_keys = {
             "name",
             "scope",
@@ -614,14 +669,115 @@ class TestPredicateSearch:
             "is_edge",
             "is_temporal",
             "description",
+            "score",
         }
         row = _make_predicate_row("knows", is_edge=True)
         mock_pool.fetch = AsyncMock(return_value=[row])
 
         result = await predicate_search(mock_pool, "knows")
 
+        assert len(result) >= 1
+        assert expected_keys.issubset(set(result[0].keys()))
+
+    async def test_rrf_deduplicates_names_across_signals(
+        self,
+        mock_pool: AsyncMock,
+    ) -> None:
+        """A name appearing in multiple signals is fused to one result with additive score."""
+        parent_row = _make_predicate_row("parent_of", is_edge=True)
+        # Trigram and FTS both return parent_of; metadata fetch returns it too.
+        mock_pool.fetch = AsyncMock(return_value=[parent_row])
+
+        result = await predicate_search(mock_pool, "parent")
+
+        names = [r["name"] for r in result]
+        assert names.count("parent_of") == 1
+
+    async def test_rrf_score_higher_when_appearing_in_multiple_signals(
+        self,
+        mock_pool: AsyncMock,
+    ) -> None:
+        """RRF score is proportional to how many signals rank a name highly.
+
+        We test this by verifying that a name returned from all three calls
+        gets a higher RRF score than 1/(60+1) (= ~0.016), the max for one signal.
+        """
+        row = _make_predicate_row("parent_of", is_edge=True)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        result = await predicate_search(mock_pool, "parent")
+
+        assert len(result) >= 1
+        # Parent appeared in trigram + FTS results (at least 2 signals) → score > 1/61.
+        assert result[0]["score"] > 1.0 / 61.0
+
+    # -------------------------------------------------------------------------
+    # Fallback path (when all hybrid signals fail)
+    # -------------------------------------------------------------------------
+
+    async def test_fallback_to_ilike_when_all_signals_fail(
+        self,
+        mock_pool: AsyncMock,
+    ) -> None:
+        """When trigram / FTS / semantic all raise, falls back to ILIKE prefix search."""
+        # Make every pool.fetch call raise an exception to force fallback.
+        call_count = 0
+        parent_row = _make_predicate_row("parent_of", is_edge=True)
+
+        async def side_effect(sql, *args):
+            nonlocal call_count
+            call_count += 1
+            # First two calls (trigram + FTS) raise to simulate missing extensions.
+            if call_count <= 2:
+                raise Exception("pg_trgm not installed")
+            return [parent_row]
+
+        mock_pool.fetch = AsyncMock(side_effect=side_effect)
+
+        result = await predicate_search(mock_pool, "parent")
+
+        # Result should come from the fallback query.
         assert len(result) == 1
-        assert set(result[0].keys()) == expected_keys
+        assert result[0]["name"] == "parent_of"
+        # Fallback uses ILIKE prefix matching.
+        last_sql = mock_pool.fetch.call_args.args[0]
+        assert "lower(name) LIKE" in last_sql
+
+    # -------------------------------------------------------------------------
+    # Scope filtering for non-empty queries
+    # -------------------------------------------------------------------------
+
+    async def test_scope_filter_applied_to_all_signals(self, mock_pool: AsyncMock) -> None:
+        """scope parameter injects scope column filter in each signal query."""
+        row = _make_predicate_row("measurement", scope="health")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        result = await predicate_search(mock_pool, "measurement", scope="health")
+
+        assert len(result) >= 1
+        # All signal queries should include the scope filter.
+        all_calls = mock_pool.fetch.call_args_list
+        for call in all_calls:
+            sql = call.args[0]
+            assert "scope =" in sql
+
+    async def test_no_scope_no_scope_filter_in_signals(self, mock_pool: AsyncMock) -> None:
+        """When scope is None, no scope column filter appears in signal queries."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        await predicate_search(mock_pool, "some_query", scope=None)
+
+        # Signal queries (not metadata query) should not filter on scope column.
+        all_calls = mock_pool.fetch.call_args_list
+        signal_sqls = [
+            c.args[0] for c in all_calls if "similarity" in c.args[0] or "tsquery" in c.args[0]
+        ]
+        for sql in signal_sqls:
+            assert "scope =" not in sql
+
+    # -------------------------------------------------------------------------
+    # No-match cases
+    # -------------------------------------------------------------------------
 
     async def test_no_match_returns_empty_list(self, mock_pool: AsyncMock) -> None:
         """When no predicates match the query, an empty list is returned."""
@@ -629,32 +785,44 @@ class TestPredicateSearch:
         result = await predicate_search(mock_pool, "xyzzy_nonexistent")
         assert result == []
 
-    async def test_ordered_by_name_asc(self, mock_pool: AsyncMock) -> None:
-        """Results are ordered by name ASC."""
-        mock_pool.fetch = AsyncMock(return_value=[])
-        await predicate_search(mock_pool, "p")
-        call_args = mock_pool.fetch.call_args
-        sql = call_args.args[0]
-        assert "ORDER BY name ASC" in sql
+    async def test_scope_param_bound_to_correct_position_in_signals(
+        self,
+        mock_pool: AsyncMock,
+    ) -> None:
+        """scope value must be bound at the position that matches its $N placeholder.
 
-    async def test_query_params_passed_to_pool(self, mock_pool: AsyncMock) -> None:
-        """Non-empty query passes correct bind parameters to pool.fetch."""
-        mock_pool.fetch = AsyncMock(return_value=[])
-        await predicate_search(mock_pool, "Parent")
+        Each signal query has the main signal param at $1 (similarity query string /
+        tsquery string / embedding vector).  The scope filter is appended after,
+        so the scope value must appear at $2 in the args.  If the SQL reads
+        ``scope = $1`` but the scope value is at args[1] ($2),
+        the DB would compare scope against the query string instead of the scope value.
+        """
+        import re
 
-        call_args = mock_pool.fetch.call_args
-        # First arg is SQL, remaining args are bind params
-        bind_params = call_args.args[1:]
-        # Prefix param should be lowercased query
-        assert "parent" in bind_params
-        # Substring param should be %parent%
-        assert "%parent%" in bind_params
+        scope_value = "health"
+        query_str = "parent"
+        row = _make_predicate_row("parent_of", scope=scope_value)
+        mock_pool.fetch = AsyncMock(return_value=[row])
 
-    async def test_no_scope_no_scope_filter(self, mock_pool: AsyncMock) -> None:
-        """When scope is None, the SQL WHERE clause does not filter on scope."""
-        mock_pool.fetch = AsyncMock(return_value=[])
-        await predicate_search(mock_pool, "some_query", scope=None)
-        call_args = mock_pool.fetch.call_args
-        sql = call_args.args[0]
-        # scope appears in SELECT; the WHERE must not filter on it
-        assert "WHERE" not in sql or "scope =" not in sql
+        await predicate_search(mock_pool, query_str, scope=scope_value)
+
+        all_calls = mock_pool.fetch.call_args_list
+        for call in all_calls:
+            sql = call.args[0]
+            args = call.args[1:]  # positional args; args[i] corresponds to $(i+1)
+            if "scope =" not in sql:
+                continue
+
+            # Extract the placeholder number from the SQL:
+            # e.g. "scope = $2" → 2
+            m = re.search(r"scope\s*=\s*\$(\d+)", sql)
+            assert m is not None, f"scope condition not found in SQL: {sql!r}"
+            placeholder_idx = int(m.group(1)) - 1  # convert $N to 0-based index
+            assert placeholder_idx < len(args), (
+                f"Placeholder ${placeholder_idx + 1} out of bounds in args {args!r}"
+            )
+            # The value at the placeholder position must be the scope value
+            assert args[placeholder_idx] == scope_value, (
+                f"args[{placeholder_idx}]={args[placeholder_idx]!r} but expected scope={scope_value!r}; "
+                f"query was {sql!r} with args {args!r}"
+            )

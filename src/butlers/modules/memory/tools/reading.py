@@ -128,59 +128,222 @@ async def memory_catalog_search(
     return [_serialize_row(r) for r in results]
 
 
+_PREDICATE_RESULT_COLUMNS = (
+    "name, scope, expected_subject_type, expected_object_type, is_edge, is_temporal, description"
+)
+
+# RRF constant K — standard value that balances precision/recall.
+_RRF_K = 60
+
+
+def _rrf_fuse(ranked_lists: list[list[str]]) -> list[tuple[str, float]]:
+    """Fuse multiple ranked result lists using Reciprocal Rank Fusion.
+
+    Args:
+        ranked_lists: Each inner list is a sequence of predicate names ordered
+            by relevance (most relevant first) for one retrieval signal.
+
+    Returns:
+        List of ``(name, score)`` tuples sorted by fused score descending.
+        Score = SUM(1 / (K + rank_i)) across all signals where the name
+        appears (rank is 1-based).
+    """
+    scores: dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, name in enumerate(ranked, start=1):
+            scores[name] = scores.get(name, 0.0) + 1.0 / (_RRF_K + rank)
+    return sorted(scores.items(), key=lambda t: t[1], reverse=True)
+
+
 async def predicate_search(
     pool: Pool,
     query: str,
     *,
     scope: str | None = None,
+    embedding_engine: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """Search predicate_registry by name prefix and description text.
+    """Search predicate_registry using hybrid retrieval with RRF fusion.
 
-    When query is empty, all registered predicates are returned (equivalent to
-    predicate_list).  When query is non-empty, rows matching by name prefix OR
-    description text (case-insensitive substring) are returned.
+    When ``query`` is empty all registered predicates are returned ordered by
+    name (equivalent to predicate_list).
 
-    The optional ``scope`` parameter filters by the ``scope`` column (domain
-    namespace added in mem_023: health, relationship, finance, home, global).
+    When ``query`` is non-empty, three complementary signals are combined via
+    Reciprocal Rank Fusion (RRF):
+
+    1. **Trigram** — fuzzy name matching via ``pg_trgm`` similarity.
+       Catches typos and partial matches (e.g. ``"parnet"`` → ``parent_of``).
+    2. **Full-text** — weighted tsvector search on name (weight A) and
+       description (weight B). Handles stemming and multi-word queries.
+    3. **Semantic** — cosine similarity between the query embedding and each
+       predicate's ``description_embedding``.  Catches conceptual matches
+       (e.g. ``"dad"`` → ``parent_of``).  Requires *embedding_engine* and
+       the ``description_embedding`` column to be populated.
+
+    If ``pg_trgm`` or semantic embeddings are not available (e.g. in test
+    environments), the function falls back gracefully to the signals that
+    are available.
+
+    The optional ``scope`` parameter pre-filters by the ``scope`` column
+    (domain namespace added in mem_023: health, relationship, finance, home,
+    global).
 
     Args:
         pool: asyncpg connection pool.
-        query: Search string — matched as a case-insensitive prefix on ``name``
-            and as a case-insensitive substring on ``description``.
+        query: Search string. Empty string returns all predicates ordered by name.
         scope: Optional filter on the ``scope`` column (exact match).
+        embedding_engine: Optional EmbeddingEngine instance for semantic search.
+            When None the semantic signal is skipped.
 
     Returns:
         List of dicts with keys: name, scope, expected_subject_type,
-        expected_object_type, is_edge, is_temporal, description.
-        Results are ordered by name ASC.
+        expected_object_type, is_edge, is_temporal, description, score.
+        When query is empty, score is always 0.0 and results are ordered by
+        name ASC.
     """
-    select = (
-        "SELECT name, scope, expected_subject_type, expected_object_type,"
-        " is_edge, is_temporal, description"
-        " FROM predicate_registry"
-    )
+    # -------------------------------------------------------------------------
+    # Empty query → return all predicates ordered by name (no scoring needed).
+    # -------------------------------------------------------------------------
+    if not query:
+        base_select = f"SELECT {_PREDICATE_RESULT_COLUMNS} FROM predicate_registry"
+        conditions: list[str] = []
+        params: list[Any] = []
+        if scope is not None:
+            params.append(scope)
+            conditions.append(f"scope = ${len(params)}")
+        if conditions:
+            base_select += " WHERE " + " AND ".join(conditions)
+        base_select += " ORDER BY name ASC"
+        rows = await pool.fetch(base_select, *params)
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["score"] = 0.0
+            result.append(d)
+        return result
 
-    conditions: list[str] = []
-    params: list[Any] = []
-
-    if query:
-        # Param index 1: prefix match on name
-        # Param index 2: substring match on description (COALESCE so NULL desc is safe)
-        params.append(query.lower())
-        params.append(f"%{query.lower()}%")
-        conditions.append(
-            "(lower(name) LIKE $1 || '%' OR lower(COALESCE(description, '')) LIKE $2)"
-        )
-
+    # -------------------------------------------------------------------------
+    # Build scope filter fragment (shared across all three signal queries).
+    # Each signal query places its primary param at $1, so the scope value
+    # is always at $2.  We build the fragment with the correct offset.
+    # -------------------------------------------------------------------------
+    scope_params: list[Any] = []
     if scope is not None:
-        param_idx = len(params) + 1
-        params.append(scope)
-        conditions.append(f"scope = ${param_idx}")
+        scope_params.append(scope)
+    # Helper: build " AND scope = $<offset>" when scope is set.
+    # offset = 1-based position of scope_params[0] in the full params list.
+    def _scope_extra(offset: int) -> str:
+        if not scope_params:
+            return ""
+        return f" AND scope = ${offset}"
 
-    if conditions:
-        select += " WHERE " + " AND ".join(conditions)
+    # -------------------------------------------------------------------------
+    # Signal 1: Trigram fuzzy matching on predicate name.
+    # similarity(name, query) > 0.3 — candidates ordered by score DESC.
+    # Falls back to empty list if pg_trgm is not installed.
+    # -------------------------------------------------------------------------
+    trigram_ranked: list[str] = []
+    try:
+        trgm_params: list[Any] = [query] + scope_params
+        trgm_sql = (
+            f"SELECT name FROM predicate_registry"
+            f" WHERE similarity(name, $1) > 0.3"
+            f"{_scope_extra(2)}"
+            f" ORDER BY similarity(name, $1) DESC"
+        )
+        trgm_rows = await pool.fetch(trgm_sql, *trgm_params)
+        trigram_ranked = [r["name"] for r in trgm_rows]
+    except Exception:
+        # pg_trgm not available or query error — skip this signal.
+        logger.debug("Predicate search: trigram signal failed, skipping.", exc_info=True)
 
-    select += " ORDER BY name ASC"
+    # -------------------------------------------------------------------------
+    # Signal 2: Full-text search on search_vector (name A + description B).
+    # Falls back to empty list if search_vector column does not exist yet.
+    # -------------------------------------------------------------------------
+    fts_ranked: list[str] = []
+    try:
+        fts_params: list[Any] = [query] + scope_params
+        fts_sql = (
+            f"SELECT name FROM predicate_registry"
+            f" WHERE search_vector @@ plainto_tsquery('english', $1)"
+            f"{_scope_extra(2)}"
+            f" ORDER BY ts_rank(search_vector, plainto_tsquery('english', $1)) DESC"
+        )
+        fts_rows = await pool.fetch(fts_sql, *fts_params)
+        fts_ranked = [r["name"] for r in fts_rows]
+    except Exception:
+        # search_vector column not populated or extension unavailable — skip.
+        logger.debug("Predicate search: full-text signal failed, skipping.", exc_info=True)
 
-    rows = await pool.fetch(select, *params)
-    return [dict(row) for row in rows]
+    # -------------------------------------------------------------------------
+    # Signal 3: Semantic similarity on description_embedding.
+    # Requires both an embedding_engine and populated description_embedding column.
+    # Falls back to empty list when unavailable.
+    # -------------------------------------------------------------------------
+    semantic_ranked: list[str] = []
+    if embedding_engine is not None:
+        try:
+            query_embedding = embedding_engine.embed(query)
+            embedding_str = str(query_embedding)
+            sem_params: list[Any] = [embedding_str] + scope_params
+            sem_sql = (
+                f"SELECT name FROM predicate_registry"
+                f" WHERE description_embedding IS NOT NULL"
+                f"{_scope_extra(2)}"
+                f" ORDER BY description_embedding <=> $1::vector ASC"
+            )
+            sem_rows = await pool.fetch(sem_sql, *sem_params)
+            semantic_ranked = [r["name"] for r in sem_rows]
+        except Exception:
+            # vector extension not available or embeddings not populated — skip.
+            logger.debug("Predicate search: semantic signal failed, skipping.", exc_info=True)
+
+    # -------------------------------------------------------------------------
+    # RRF fusion of all available signals.
+    # If no signal returned any results, fall back to simple prefix search.
+    # -------------------------------------------------------------------------
+    all_signals = [s for s in [trigram_ranked, fts_ranked, semantic_ranked] if s]
+
+    if not all_signals:
+        # Fallback: ILIKE prefix + description substring (original behaviour).
+        # $1 = name prefix, $2 = description substring, $3 = scope (if set).
+        fb_params: list[Any] = [query.lower(), f"%{query.lower()}%"] + scope_params
+        fb_sql = (
+            f"SELECT {_PREDICATE_RESULT_COLUMNS}"
+            f" FROM predicate_registry"
+            f" WHERE (lower(name) LIKE $1 || '%' OR lower(COALESCE(description, '')) LIKE $2)"
+            f"{_scope_extra(3)}"
+            f" ORDER BY name ASC"
+        )
+        fb_rows = await pool.fetch(fb_sql, *fb_params)
+        return [dict(row) | {"score": 0.0} for row in fb_rows]
+
+    fused = _rrf_fuse(all_signals)  # [(name, score), …]
+    fused_names = [name for name, _ in fused]
+
+    # -------------------------------------------------------------------------
+    # Fetch full metadata for all fused candidates in a single query.
+    # $1 = fused_names array, $2 = scope (if set).
+    # -------------------------------------------------------------------------
+    if not fused_names:
+        return []
+
+    meta_params: list[Any] = [fused_names] + scope_params
+    meta_sql = (
+        f"SELECT {_PREDICATE_RESULT_COLUMNS}"
+        f" FROM predicate_registry"
+        f" WHERE name = ANY($1)"
+        f"{_scope_extra(2)}"
+    )
+    meta_rows = await pool.fetch(meta_sql, *meta_params)
+    meta_map: dict[str, dict[str, Any]] = {r["name"]: dict(r) for r in meta_rows}
+
+    # Reconstruct results in RRF order, attaching score.
+    results: list[dict[str, Any]] = []
+    for name, score in fused:
+        if name in meta_map:
+            row = meta_map[name]
+            row["score"] = score
+            results.append(row)
+
+    return results

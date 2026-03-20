@@ -741,8 +741,10 @@ class MemoryModule(Module):
                 str,
                 Field(
                     description=(
-                        "Search string matched as a name prefix and description substring. "
-                        "Pass an empty string to return all registered predicates."
+                        "Search string. Pass an empty string to return all registered predicates. "
+                        "Non-empty queries use three-signal hybrid retrieval "
+                        "(trigram fuzzy name matching, full-text description search, "
+                        "and semantic embedding similarity) fused via RRF."
                     )
                 ),
             ],
@@ -756,19 +758,22 @@ class MemoryModule(Module):
                 ),
             ] = None,
         ) -> list[dict[str, Any]]:
-            """Search the predicate registry by name prefix and description text.
+            """Search the predicate registry using hybrid retrieval with RRF fusion.
 
             Use this tool BEFORE inventing a new predicate to check whether a
-            canonical predicate already exists.  Pass the concept you want to
-            express (e.g. ``"parent"``, ``"father"``, ``"measurement"``) and the
-            tool returns all registered predicates whose name starts with that
-            string or whose description contains it.
+            canonical predicate already exists.
+
+            Three complementary signals are combined via Reciprocal Rank Fusion:
+            - **Trigram**: fuzzy name matching — catches typos (``"parnet"`` → ``parent_of``)
+            - **Full-text**: stemmed search on name + description — catches description matches
+            - **Semantic**: embedding similarity — catches conceptual matches
+              (``"dad"`` → ``parent_of``)
 
             When ``query`` is empty, all registered predicates are returned
-            (equivalent to ``memory_predicate_list``).
+            ordered by name (equivalent to ``memory_predicate_list``).
 
-            The optional ``scope`` parameter further restricts results to
-            predicates with a matching ``expected_subject_type``.
+            The optional ``scope`` parameter restricts results to predicates
+            with a matching ``expected_subject_type``.
 
             Each result includes:
             - ``name`` — the canonical predicate string to use in ``memory_store_fact``
@@ -776,11 +781,13 @@ class MemoryModule(Module):
             - ``is_temporal`` — True if the predicate requires ``valid_at``
             - ``description`` — human-readable explanation
             - ``expected_subject_type`` / ``expected_object_type`` — guidance on entity types
+            - ``score`` — fused RRF score (0.0 for empty-query results)
             """
             return await _reading.predicate_search(
                 module._get_pool(),
                 query,
                 scope=scope,
+                embedding_engine=module._get_embedding_engine(),
             )
 
         # --- Context tool ---

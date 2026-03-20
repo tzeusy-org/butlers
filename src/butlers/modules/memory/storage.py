@@ -895,6 +895,21 @@ async def store_fact(
                     _inferred_subject_type,
                 )
 
+            # Usage tracking: increment usage_count and update last_used_at.
+            # Best-effort — if the column doesn't exist yet (pre-migration
+            # environment) the error is silently swallowed.
+            try:
+                await conn.execute(
+                    """
+                    UPDATE predicate_registry
+                    SET usage_count = usage_count + 1, last_used_at = now()
+                    WHERE name = $1
+                    """,
+                    predicate,
+                )
+            except Exception:
+                pass  # usage_count column may not exist yet (pre-mem_023 env)
+
     # -------------------------------------------------------------------------
     # Write-behind to shared.memory_catalog (best-effort, non-blocking).
     # The canonical fact is already committed above.  Any failure here is
