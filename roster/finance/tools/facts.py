@@ -548,7 +548,7 @@ async def track_account_fact(
         predicate=_PREDICATE_ACCOUNT,
         content=content,
         scope="finance",
-        entity_id=None,  # entity_id=None → subject-keyed supersession
+        entity_id=await _get_owner_entity_id(pool),
         valid_at=None,  # property fact — triggers supersession
         metadata=fact_metadata,
         permanence="stable",
@@ -644,7 +644,7 @@ async def track_subscription_fact(
         predicate=_PREDICATE_SUBSCRIPTION,
         content=content,
         scope="finance",
-        entity_id=None,  # entity_id=None → subject-keyed supersession
+        entity_id=await _get_owner_entity_id(pool),
         valid_at=None,  # property fact — supersession
         metadata=fact_metadata,
         permanence="stable",
@@ -749,7 +749,7 @@ async def track_bill_fact(
         predicate=_PREDICATE_BILL,
         content=content,
         scope="finance",
-        entity_id=None,  # entity_id=None → subject-keyed supersession
+        entity_id=await _get_owner_entity_id(pool),
         valid_at=None,  # property fact — supersession
         metadata=fact_metadata,
         permanence="stable",

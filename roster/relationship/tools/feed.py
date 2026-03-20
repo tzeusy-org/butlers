@@ -72,11 +72,20 @@ async def _log_activity(
     entity_type: str | None = None,
     entity_id: uuid.UUID | None = None,
 ) -> None:
-    """Log an activity entry as a temporal fact."""
+    """Log an activity entry as a temporal fact.
+
+    Activity logging is auxiliary — if entity resolution fails (e.g. contact
+    has no linked entity), we skip the fact write rather than crashing the
+    caller's primary operation.
+    """
     from butlers.modules.memory.storage import store_fact
 
     now = datetime.now(UTC)
-    contact_entity_id = await resolve_contact_entity_id(pool, contact_id)
+    try:
+        contact_entity_id = await resolve_contact_entity_id(pool, contact_id)
+    except ValueError:
+        logger.warning("_log_activity: skipping — contact %s has no linked entity", contact_id)
+        return
     embedding_engine = _get_embedding_engine()
 
     fact_metadata: dict[str, Any] = {"type": type}

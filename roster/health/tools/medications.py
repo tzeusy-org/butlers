@@ -114,7 +114,7 @@ async def medication_add(
         embedding_engine=embedding_engine,
         permanence="stable",
         scope="health",
-        entity_id=None,  # per-name keying via subject
+        entity_id=await _get_owner_entity_id(pool),
         valid_at=None,  # property fact — supersedes previous for same name
         metadata=metadata,
     )

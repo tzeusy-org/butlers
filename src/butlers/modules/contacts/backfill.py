@@ -253,7 +253,11 @@ class ContactBackfillWriter:
         return self._table_flags is not None and self._table_flags.get(name, False)
 
     async def create_contact(self, contact: CanonicalContact) -> uuid.UUID:
-        """Create a new CRM contact from a canonical contact."""
+        """Create a new CRM contact linked to an entity.
+
+        Resolves or creates an entity before the contact INSERT so that
+        ``entity_id`` is always set when the schema supports it.
+        """
         display = _build_display_name(contact)
         first = contact.first_name
         last = contact.last_name
@@ -271,31 +275,106 @@ class ContactBackfillWriter:
         metadata: dict[str, Any] = {}
         self._stamp_provenance(metadata, contact)
 
-        row = await self._pool.fetchrow(
-            """
-            INSERT INTO contacts (
-                name, first_name, last_name, nickname,
-                company, job_title, avatar_url, metadata
+        entity_id = await self._ensure_entity(first, last, nickname, company)
+
+        if entity_id is not None:
+            try:
+                row = await self._pool.fetchrow(
+                    """
+                    INSERT INTO contacts (
+                        name, first_name, last_name, nickname,
+                        company, job_title, avatar_url, metadata, entity_id
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+                    RETURNING id
+                    """,
+                    display,
+                    first,
+                    last,
+                    nickname,
+                    company,
+                    job_title,
+                    avatar_url,
+                    json.dumps(metadata),
+                    entity_id,
+                )
+            except asyncpg.UndefinedColumnError:
+                entity_id = None
+
+        if entity_id is None:
+            row = await self._pool.fetchrow(
+                """
+                INSERT INTO contacts (
+                    name, first_name, last_name, nickname,
+                    company, job_title, avatar_url, metadata
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                RETURNING id
+                """,
+                display,
+                first,
+                last,
+                nickname,
+                company,
+                job_title,
+                avatar_url,
+                json.dumps(metadata),
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-            RETURNING id
-            """,
-            display,
-            first,
-            last,
-            nickname,
-            company,
-            job_title,
-            avatar_url,
-            json.dumps(metadata),
-        )
+
         contact_id = uuid.UUID(str(row["id"]))
         logger.debug(
-            "ContactBackfill: created contact %s for external_id=%s",
+            "ContactBackfill: created contact %s (entity=%s) for external_id=%s",
             contact_id,
+            entity_id,
             contact.external_id,
         )
         return contact_id
+
+    async def _ensure_entity(
+        self,
+        first_name: str | None,
+        last_name: str | None,
+        nickname: str | None,
+        company: str | None,
+    ) -> uuid.UUID | None:
+        """Resolve or create an entity for a backfilled contact."""
+        canonical = " ".join(p.strip() for p in (first_name, last_name) if p and p.strip())
+        if not canonical:
+            canonical = nickname or company or "Unknown"
+        entity_type = (
+            "organization"
+            if (not (first_name or "").strip() and not (last_name or "").strip() and company)
+            else "person"
+        )
+        aliases = [
+            c.strip()
+            for c in (nickname, first_name)
+            if c and c.strip() and c.strip().lower() != canonical.lower()
+        ]
+        try:
+            row = await self._pool.fetchrow(
+                "INSERT INTO shared.entities (tenant_id, canonical_name, entity_type, "
+                "aliases, metadata, roles) VALUES ('relationship', $1, $2, $3, "
+                "'{}'::jsonb, '{}') RETURNING id",
+                canonical,
+                entity_type,
+                aliases,
+            )
+            return row["id"] if row else None
+        except asyncpg.UniqueViolationError:
+            row = await self._pool.fetchrow(
+                "SELECT id FROM shared.entities WHERE tenant_id = 'relationship' "
+                "AND LOWER(canonical_name) = LOWER($1) AND entity_type = $2 "
+                "AND (metadata->>'merged_into') IS NULL LIMIT 1",
+                canonical,
+                entity_type,
+            )
+            return row["id"] if row else None
+        except asyncpg.PostgresError:
+            logger.warning(
+                "ContactBackfill: entity creation failed for %r", canonical, exc_info=True
+            )
+            return None
 
     async def update_contact(
         self,

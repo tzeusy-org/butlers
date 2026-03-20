@@ -25,6 +25,18 @@ def _get_embedding_engine() -> Any:
     return _embedding_engine
 
 
+async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
+    """Resolve the owner entity's id from shared.entities."""
+    try:
+        row = await pool.fetchrow(
+            "SELECT id FROM shared.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+        )
+        return row["id"] if row else None
+    except asyncpg.PostgresError:
+        logger.debug("_get_owner_entity_id: shared.entities query failed", exc_info=True)
+        return None
+
+
 async def _validate_condition_fact(pool: asyncpg.Pool, condition_id: str) -> None:
     """Raise ValueError if no condition fact with this id exists."""
     cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
@@ -92,7 +104,7 @@ async def research_save(
         embedding_engine=embedding_engine,
         permanence="stable",
         scope="health",
-        entity_id=None,  # per-title keying via subject
+        entity_id=await _get_owner_entity_id(pool),
         valid_at=None,  # property fact — supersedes previous for same title
         metadata=metadata,
     )

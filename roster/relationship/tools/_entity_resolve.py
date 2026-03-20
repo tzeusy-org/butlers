@@ -37,9 +37,8 @@ async def resolve_contact_entity_id(
         return None
     entity_id = row["entity_id"]
     if entity_id is None:
-        logger.warning(
-            "Contact %s has no linked entity_id — this is a data integrity issue. "
-            "All contacts must resolve to an entity.",
-            contact_id,
+        raise ValueError(
+            f"Contact {contact_id} has no linked entity_id. "
+            "All contacts must resolve to an entity — this is a data integrity issue."
         )
     return entity_id
