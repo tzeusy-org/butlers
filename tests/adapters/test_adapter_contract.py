@@ -543,7 +543,12 @@ def test_opencode_usage_contract_int_tokens():
     )
     _, _, usage = _parse_opencode_output(lines, "", 0)
     assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
-    assert usage == {"input_tokens": 200, "output_tokens": 80}
+    assert usage == {
+        "input_tokens": 200,
+        "output_tokens": 80,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
 
 
 def test_opencode_usage_contract_none_when_no_usage_event():

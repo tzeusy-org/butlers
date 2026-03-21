@@ -158,15 +158,48 @@ def _parse_opencode_output(
             elif obj_type in ("step_finish", "step-finish"):
                 tokens = part.get("tokens")
                 if isinstance(tokens, dict):
-                    step_in = tokens.get("input")
+                    # OpenCode v1.2+ reports granular token breakdown:
+                    #   input    — new (non-cached) prompt tokens
+                    #   output   — completion tokens
+                    #   reasoning — thinking/reasoning tokens
+                    #   cache.read  — tokens served from cache
+                    #   cache.write — tokens written to cache (first-time context)
+                    #   total    — sum of all above
+                    #
+                    # For authoritative input_tokens we must include cached
+                    # context — tokens.input alone drastically under-counts
+                    # (e.g. 63 vs 48,159 total for a single step).
                     step_out = tokens.get("output")
+                    cache = tokens.get("cache")
+                    cache_read = cache.get("read", 0) if isinstance(cache, dict) else 0
+                    cache_write = cache.get("write", 0) if isinstance(cache, dict) else 0
+                    step_in_raw = tokens.get("input")
+
+                    # Full input = new tokens + cached context
+                    step_in: int | None = None
+                    if isinstance(step_in_raw, int):
+                        step_in = step_in_raw
+                        if isinstance(cache_read, int):
+                            step_in += cache_read
+                        if isinstance(cache_write, int):
+                            step_in += cache_write
+
                     if isinstance(step_in, int) or isinstance(step_out, int):
                         if usage is None:
-                            usage = {"input_tokens": 0, "output_tokens": 0}
+                            usage = {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "cache_read_input_tokens": 0,
+                                "cache_creation_input_tokens": 0,
+                            }
                         if isinstance(step_in, int):
                             usage["input_tokens"] += step_in
                         if isinstance(step_out, int):
                             usage["output_tokens"] += step_out
+                        if isinstance(cache_read, int):
+                            usage["cache_read_input_tokens"] += cache_read
+                        if isinstance(cache_write, int):
+                            usage["cache_creation_input_tokens"] += cache_write
 
             elif obj_type in ("step_start", "step-start"):
                 pass  # No useful data

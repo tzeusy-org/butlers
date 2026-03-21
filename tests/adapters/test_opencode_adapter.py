@@ -1790,9 +1790,92 @@ def test_parse_envelope_step_finish_extracts_tokens():
         },
     )
     result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
-    assert usage == {"input_tokens": 15485, "output_tokens": 226}
+    assert usage == {
+        "input_tokens": 15485,
+        "output_tokens": 226,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
     assert result_text is None
     assert tool_calls == []
+
+
+def test_parse_envelope_step_finish_includes_cache_tokens():
+    """Cache read/write tokens are included in input_tokens for accurate counting.
+
+    OpenCode's tokens.input only reports new (non-cached) prompt tokens.
+    The full context cost includes cache.read + cache.write which can be
+    orders of magnitude larger (e.g. 63 new vs 48,050 cached).
+    """
+    line = _envelope(
+        "step_finish",
+        {
+            "type": "step-finish",
+            "reason": "stop",
+            "cost": 0.0001047,
+            "tokens": {
+                "total": 48159,
+                "input": 63,
+                "output": 46,
+                "reasoning": 0,
+                "cache": {"read": 510, "write": 47540},
+            },
+        },
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    # input_tokens = 63 (new) + 510 (cache read) + 47540 (cache write) = 48113
+    assert usage == {
+        "input_tokens": 48113,
+        "output_tokens": 46,
+        "cache_read_input_tokens": 510,
+        "cache_creation_input_tokens": 47540,
+    }
+
+
+def test_parse_envelope_multi_step_cache_tokens_accumulated():
+    """Cache tokens are accumulated across multiple step_finish events."""
+    lines = "\n".join(
+        [
+            _envelope(
+                "step_finish",
+                {
+                    "type": "step-finish",
+                    "reason": "tool-calls",
+                    "tokens": {
+                        "total": 50000,
+                        "input": 100,
+                        "output": 200,
+                        "reasoning": 0,
+                        "cache": {"read": 45000, "write": 4700},
+                    },
+                },
+            ),
+            _envelope(
+                "step_finish",
+                {
+                    "type": "step-finish",
+                    "reason": "stop",
+                    "tokens": {
+                        "total": 51000,
+                        "input": 300,
+                        "output": 400,
+                        "reasoning": 0,
+                        "cache": {"read": 49800, "write": 500},
+                    },
+                },
+            ),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    # Step 1: input = 100 + 45000 + 4700 = 49800
+    # Step 2: input = 300 + 49800 + 500 = 50600
+    # Total input: 100400
+    assert usage == {
+        "input_tokens": (100 + 45000 + 4700) + (300 + 49800 + 500),
+        "output_tokens": 200 + 400,
+        "cache_read_input_tokens": 45000 + 49800,
+        "cache_creation_input_tokens": 4700 + 500,
+    }
 
 
 def test_parse_envelope_multi_step_tokens_accumulated():
@@ -1836,6 +1919,8 @@ def test_parse_envelope_multi_step_tokens_accumulated():
     assert usage == {
         "input_tokens": 15472 + 346,
         "output_tokens": 214 + 460,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     }
 
 
@@ -1920,6 +2005,8 @@ def test_parse_envelope_full_conversation_flow():
     assert usage == {
         "input_tokens": 9087 + 748,
         "output_tokens": 152 + 309,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
     }
 
 
@@ -2110,4 +2197,9 @@ async def test_invoke_with_envelope_output():
     assert tool_calls[0]["name"] == "bash"
     assert tool_calls[0]["id"] == "call_123"
     assert tool_calls[0]["input"] == {"command": "echo hi"}
-    assert usage == {"input_tokens": 550, "output_tokens": 150}
+    assert usage == {
+        "input_tokens": 550,
+        "output_tokens": 150,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
