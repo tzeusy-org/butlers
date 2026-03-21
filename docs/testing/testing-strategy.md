@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Test Pyramid](./test-pyramid.svg)
+
 Butlers follows a layered testing strategy organized as a test pyramid: many fast unit tests at the base, fewer integration tests in the middle, and selective end-to-end tests at the top. The framework uses pytest with pytest-asyncio (`asyncio_mode = "auto"`), pytest-xdist for parallel execution, and testcontainers for Docker-based integration tests. Benchmarks run separately and are excluded from default CI.
 
 ## Test Pyramid

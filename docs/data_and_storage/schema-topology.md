@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Schema Topology](./schema-topology.svg)
+
 Butlers uses a **single PostgreSQL database** with **per-butler schemas** plus a shared `shared` schema for cross-butler identity data. This topology replaced an earlier design where each butler had its own database. The migration target is one database named `butlers` with schema-based isolation.
 
 ## Database Layout

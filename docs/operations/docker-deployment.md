@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Docker Deployment Topology](./docker-deployment.svg)
+
 Butlers provides a `docker-compose.yml` at the repository root that defines all services needed for a complete deployment. The setup supports two modes: development (local butler processes with containerized DB and observability) and production (all services containerized). The `Dockerfile` builds a Python 3.12 image with Node.js 22, the `claude-code` CLI, and `uv` for dependency management.
 
 ## Quick Start

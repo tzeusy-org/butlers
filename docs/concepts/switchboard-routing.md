@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Switchboard Routing Flow](./switchboard-routing.svg)
+
 The Switchboard butler is the single ingress and orchestration control plane for the entire butler system. All external interactions start here. It receives incoming messages, assigns canonical request context, uses an LLM runtime to classify and route them, fans out work to downstream domain butlers, and records the full request lifecycle.
 
 ## Message Flow
