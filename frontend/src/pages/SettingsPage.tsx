@@ -652,24 +652,31 @@ function OllamaProviderFormDialog({
   isSubmitting: boolean;
 }) {
   const isEdit = !!provider;
-  const [baseUrl, setBaseUrl] = useState(
-    typeof provider?.config?.base_url === "string" ? provider.config.base_url : "http://localhost:11434",
-  );
-  const [displayName, setDisplayName] = useState(provider?.display_name ?? "Ollama");
-  const [enabled, setEnabled] = useState(provider?.enabled ?? true);
+
+  function deriveFormState() {
+    return {
+      baseUrl: typeof provider?.config?.base_url === "string"
+        ? provider.config.base_url
+        : "http://localhost:11434",
+      displayName: provider?.display_name ?? "Ollama",
+      enabled: provider?.enabled ?? true,
+    };
+  }
+
+  const [formState, setFormState] = useState(deriveFormState);
 
   // Reset form when dialog opens with new provider state
   useEffect(() => {
     if (open) {
-      setBaseUrl(
-        typeof provider?.config?.base_url === "string"
-          ? provider.config.base_url
-          : "http://localhost:11434",
-      );
-      setDisplayName(provider?.display_name ?? "Ollama");
-      setEnabled(provider?.enabled ?? true);
+      setFormState(deriveFormState());
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, provider]);
+
+  const { baseUrl, displayName, enabled } = formState;
+  const setBaseUrl = (v: string) => setFormState((s) => ({ ...s, baseUrl: v }));
+  const setDisplayName = (v: string) => setFormState((s) => ({ ...s, displayName: v }));
+  const setEnabled = (v: boolean) => setFormState((s) => ({ ...s, enabled: v }));
 
   const isValid = baseUrl.trim() !== "" && displayName.trim() !== "";
 

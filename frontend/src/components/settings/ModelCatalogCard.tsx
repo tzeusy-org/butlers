@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ChevronDown, ChevronUp, Info, Loader2, FlaskConical, Check, X, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -109,30 +109,36 @@ function UsageBar({ entryId, window: usageWindow, used, limit, onLimitClick }: U
   const isBlocked = limit != null && used >= limit;
   const windowLabel = usageWindow === "24h" ? "Rolling 24h window" : "Rolling 30d window";
 
-  // Tooltip lines — derived via useMemo so Date.now() is not called on every render.
-  const tooltipLines = useMemo(() => {
-    const lines: string[] = [];
-    if (limit != null) {
-      lines.push(`${formatTokensExact(used)} / ${formatTokensExact(limit)} tokens`);
-      lines.push(`${Math.round((used / limit) * 100)}% used · ${windowLabel}`);
-    } else {
-      lines.push(`${formatTokensExact(used)} tokens used`);
-      lines.push(`No limit · ${windowLabel}`);
-    }
-    if (resetAt) {
-      const resetDate = new Date(resetAt);
-      const now = Date.now();
-      const diffMs = now - resetDate.getTime();
+  // Relative time for the reset timestamp, computed in event handler (not render).
+  const [resetTimeLabel, setResetTimeLabel] = useState<string | null>(null);
+
+  function handleTooltipOpenChange(open: boolean) {
+    setTooltipOpen(open);
+    if (open && resetAt) {
+      const diffMs = Date.now() - new Date(resetAt).getTime();
       const diffH = diffMs / (1000 * 60 * 60);
-      const relativeStr = diffH < 1
-        ? `${Math.round(diffH * 60)}m ago`
-        : diffH < 24
-          ? `${Math.round(diffH)}h ago`
-          : `${Math.round(diffH / 24)}d ago`;
-      lines.push(`Last reset: ${relativeStr}`);
+      setResetTimeLabel(
+        diffH < 1
+          ? `${Math.round(diffH * 60)}m ago`
+          : diffH < 24
+            ? `${Math.round(diffH)}h ago`
+            : `${Math.round(diffH / 24)}d ago`,
+      );
     }
-    return lines;
-  }, [used, limit, windowLabel, resetAt]);
+  }
+
+  // Pure tooltip lines — only the relative time part needs the event-handler snapshot.
+  const tooltipLines: string[] = [];
+  if (limit != null) {
+    tooltipLines.push(`${formatTokensExact(used)} / ${formatTokensExact(limit)} tokens`);
+    tooltipLines.push(`${Math.round((used / limit) * 100)}% used · ${windowLabel}`);
+  } else {
+    tooltipLines.push(`${formatTokensExact(used)} tokens used`);
+    tooltipLines.push(`No limit · ${windowLabel}`);
+  }
+  if (resetAt && resetTimeLabel) {
+    tooltipLines.push(`Last reset: ${resetTimeLabel}`);
+  }
 
   function handleReset(e: React.MouseEvent) {
     e.stopPropagation();
@@ -147,7 +153,7 @@ function UsageBar({ entryId, window: usageWindow, used, limit, onLimitClick }: U
 
   return (
     <TooltipProvider>
-      <Tooltip open={tooltipOpen} onOpenChange={setTooltipOpen}>
+      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
         <TooltipTrigger asChild>
           <div className="flex flex-col gap-0.5 min-w-[110px]">
             {/* Text label row */}

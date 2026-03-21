@@ -25,7 +25,7 @@ import { useButlers } from "@/hooks/use-butlers";
 import type { SearchResult } from "@/api/index.ts";
 import { RECENT_SEARCHES_KEY } from "@/lib/local-settings";
 import { OPEN_COMMAND_PALETTE_EVENT } from "@/lib/command-palette";
-import { navSections, type NavItem } from "@/components/layout/Sidebar";
+import { navSections, type NavItem } from "@/components/layout/nav-config";
 
 const MAX_RECENT = 5;
 

@@ -86,9 +86,15 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS shared.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL,
-                type TEXT NOT NULL DEFAULT 'person',
-                roles TEXT[] NOT NULL DEFAULT '{}'
+                tenant_id TEXT NOT NULL DEFAULT '',
+                canonical_name VARCHAR NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                entity_type VARCHAR NOT NULL DEFAULT 'other',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                metadata JSONB DEFAULT '{}'::jsonb,
+                roles TEXT[] NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
         await p.execute("""
