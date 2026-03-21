@@ -5,6 +5,8 @@
 
 A personal AI agent framework where each **butler** is a long-running MCP server daemon that you interact with day-to-day. Butlers handle recurring tasks, manage integrations, and act on your behalf — powered by an agentic framework under the hood. Fully modular and extensible.
 
+> **[Full Documentation](docs/index.md)** — start here for the complete guide, from overview through architecture to operations.
+
 ## WARNING
 
 This application is entirely vibe coded, borne out of my desire to experiment with the capabilities of Claude Code/Codex, combined with Steve Yegge's [beads](https://github.com/steveyegge/beads). This project is pretty far from being considered 'ready for usage' - play with it at your own risk!
@@ -17,13 +19,15 @@ I've always wanted to build a 'Jarvis' for myself - a system where I could offlo
 
 Each butler runs as a persistent daemon with built-in infrastructure:
 
-- **State store** — remembers things between sessions (see docs/modules/memory.md)
+- **State store** — remembers things between sessions (see [Memory module](docs/modules/memory.md))
 - **Task scheduler** — runs prompts on cron schedules (e.g., morning briefings, inbox triage)
 - **LLM CLI spawner** — spins up ephemeral LLM CLI instances to reason and act
 - **Session log** — tracks what happened and when
 - **Custom tools** — Tools specific to a butler's functionality
 
 On top of that, butlers gain capabilities through **modules** — pluggable integrations like Emails, Telegram, Calendars, Slack, and GitHub. Mix and match modules to build the butler you need.
+
+See [Concepts](docs/concepts/index.md) for the full mental model.
 
 ## Example
 
@@ -51,316 +55,27 @@ calendar_id = "butler@group.calendar.google.com"
 default_conflict_policy = "suggest"
 ```
 
-Calendar setup requires Google OAuth credentials stored via the dashboard
-OAuth bootstrap flow (DB-first). A dedicated 'butler' subcalendar is also required.
-
-### Owner Identity Setup
-
-When butlers start for the first time, a seed "Owner" contact is created with no channel identifiers. You need to configure your identity so butlers can recognise you across channels (Telegram, email) and contact syncs don't create duplicates.
-
-**To set up your identity**, navigate to your owner contact's detail page in the dashboard (linked from the setup banner on the contacts page). Use the "Add contact info" button to add:
-
-- **Email** — your primary email address
-- **Telegram handle** — your `@username`
-- **Telegram chat ID** — numeric ID (send `/start` to `@userinfobot` to find yours)
-
-For butlers that need to act on your behalf (e.g., sending emails, connecting to Telegram as your user account), also add these secured credentials from the same form:
-
-- **Email password** — app password for SMTP/IMAP access
-- **Telegram API ID** — from [my.telegram.org](https://my.telegram.org), for user-client (MTProto) connections
-- **Telegram API hash** — from [my.telegram.org](https://my.telegram.org)
-
-Secured entries are stored in PostgreSQL and masked in the dashboard (API-level masking — raw values are excluded from list responses). Use the "Reveal" button to view them. Since Butlers runs as a user-federated platform (each user owns their instance), encryption at rest adds minimal value; you control the database directly.
-
-A one-time setup banner appears on the contacts page when identity fields are missing, but the contact detail page is the primary place for managing all identity fields and credentials going forward.
-
 ## Architecture
-
-### System Overview
 
 ```
 External Clients (MCP-compatible)
-        │
-        ▼
-  Switchboard Butler ──── routes requests to the right butler
-        │
-   ┌────┼────┐
-   ▼    ▼    ▼
-Butler Butler Butler ──── each a persistent MCP server daemon
-   │    │    │
-   ▼    ▼    ▼
-LLM CLI instances ── ephemeral, locked-down, reason + act
+        |
+        v
+  Switchboard Butler ---- routes requests to the right butler
+        |
+   +----+----+
+   v    v    v
+Butler Butler Butler ---- each a persistent MCP server daemon
+   |    |    |
+   v    v    v
+LLM CLI instances -- ephemeral, locked-down, reason + act
 ```
 
-- Runtime topology target is **one PostgreSQL database with per-butler schemas + `shared`**
-- Butlers communicate only via MCP tools through the Switchboard
-- Butler configs are **git-based directories** with personality (`CLAUDE.md`), manifestoes (`MANIFESTO.md`), skills, and config (`butler.toml`)
-
-### Detailed Architecture
-
-```mermaid
-graph TB
-    subgraph External
-        Client[MCP Client]
-    end
-
-    subgraph Switchboard["Switchboard Butler :41100"]
-        SRouter[Route Tool]
-        SRegistry[Butler Registry]
-    end
-
-    Client --> SRouter
-    SRouter --> SRegistry
-    subgraph Butlers["Domain Butlers"]
-        subgraph General["General :41101"]
-            G_MCP[FastMCP Server]
-        end
-        subgraph Relationship["Relationship :41102"]
-            R_MCP[FastMCP Server]
-        end
-        subgraph Health["Health :41103"]
-            H_MCP[FastMCP Server]
-        end
-    end
-
-    SRouter --> |route via MCP| G_MCP
-    SRouter --> |route via MCP| R_MCP
-    SRouter --> |route via MCP| H_MCP
-
-    subgraph Daemon["Butler Daemon Internals"]
-        direction TB
-        Config[butler.toml] --> Startup
-
-        subgraph Startup["12-Step Startup"]
-            S1[1. Load config]
-            S2[2. Init telemetry]
-            S3[3. Validate credentials]
-            S4[4. Provision database]
-            S5[5. Run core migrations]
-            S6[6. Init modules<br/>topological sort]
-            S7[7. Run module migrations]
-            S8[8. Module on_startup]
-            S9[9. Create LLM CLI Spawner]
-            S10[10. Sync schedules]
-            S11[11. Create FastMCP +<br/>register core tools]
-            S12[12. Register module tools]
-            S1 --> S2 --> S3 --> S4 --> S5 --> S6
-            S6 --> S7 --> S8 --> S9 --> S10 --> S11 --> S12
-        end
-
-        subgraph Core["Core Components"]
-            State[State Store<br/>KV JSONB]
-            Scheduler[Scheduler<br/>croniter]
-            Sessions[Session Log<br/>append-only]
-            Spawner[LLM CLI Spawner<br/>asyncio.Lock]
-        end
-
-        subgraph Modules["Opt-in Modules"]
-            Email[Email<br/>IMAP + SMTP]
-            Telegram[Telegram<br/>polling / webhook]
-            More[...]
-        end
-
-        Startup --> Core
-        Startup --> Modules
-    end
-
-    subgraph Trigger["CC Spawn Flow"]
-        T1[Trigger arrives] --> T2[Acquire lock]
-        T2 --> T3[Create session record]
-        T3 --> T4[Generate MCP config]
-        T4 --> T5[Invoke Claude Agent SDK]
-        T5 --> T6[Parse result + tool calls]
-        T6 --> T7[Complete session log]
-    end
-
-    Spawner --> T1
-
-    subgraph DB["PostgreSQL (one DB, multi-schema)"]
-        StateTable[state]
-        TasksTable[scheduled_tasks]
-        SessionsTable[sessions]
-        ModTables[module tables...]
-    end
-
-    Core --> DB
-    Modules --> DB
-
-    subgraph Observability
-        Grafana[Grafana<br/>Tempo/Loki]
-    end
-
-    Core --> |OTLP HTTP :4318| Grafana
-    Spawner --> |traceparent env| T5
-```
-
-### Trigger Sources
-
-| Source            | How it fires                                     | `trigger_source` value |
-| ----------------- | ------------------------------------------------ | ---------------------- |
-| External MCP call | Client calls `trigger(prompt)` tool              | `trigger`              |
-| Scheduler         | Cron expression fires, dispatched by `tick()`    | `schedule`             |
-
-### Module System
-
-Modules implement the `Module` ABC and plug into the daemon lifecycle:
-
-```
-Module ABC
-├── name              → unique identifier
-├── config_schema     → Pydantic model for [modules.<name>] config
-├── dependencies      → list of required module names (topological sort)
-├── credentials_env   → env vars this module needs
-├── register_tools()  → add MCP tools to the FastMCP server
-├── migration_revisions() → Alembic branch label for DB tables
-├── on_startup()      → post-migration initialization
-└── on_shutdown()     → cleanup (reverse topological order)
-```
-
-## Prerequisites
-
-Before running `./scripts/dev.sh` or `butlers up`, make sure the following are installed and configured.
-
-### System Dependencies
-
-| Dependency | Version | Purpose |
-| ---------- | ------- | ------- |
-| **Python** | 3.12+ | Runtime |
-| **uv** | latest | Python package manager (replaces pip) |
-| **Node.js** | 22+ | Frontend dev server (Vite) |
-| **npm** | (bundled with Node) | Frontend dependency management |
-| **Docker** + **Docker Compose** | latest | PostgreSQL and optional production containers |
-| **tmux** | any | `dev.sh` runs all services in tmux panes |
-| **psql** | any | OAuth gate polls the DB at startup (part of `postgresql-client`) |
-| **Tailscale** | latest | HTTPS for Google OAuth callbacks (skippable with `--skip-tailscale-check`) |
-
-### LLM Runtime CLIs
-
-Butlers spawn ephemeral LLM CLI instances to reason and act. Each butler declares a runtime in its `butler.toml` (`[butler.runtime].type`). You need to install **and authenticate** the CLI for whichever runtimes your butlers use.
-
-| Runtime type | CLI binary | Install | Authenticate |
-| ------------ | ---------- | ------- | ------------ |
-| `claude` (default) | `claude` | `npm install -g @anthropic-ai/claude-code` | Dashboard Settings > CLI Runtime Authentication |
-| `codex` | `codex` | `npm install -g @openai/codex` | Dashboard Settings > CLI Runtime Authentication |
-| `gemini` | `gemini` | `npm install -g @anthropic-ai/gemini-cli` | Dashboard Settings > CLI Runtime Authentication |
-
-The daemon verifies the configured binary is on `PATH` at startup and will fail fast if it's missing.
-
-Most butlers default to `claude`. If you only plan to use the default runtime, you only need `claude` installed.
-
-### CLI Runtime Authentication
-
-Runtime CLIs authenticate via **OAuth device-code flow**, managed from the dashboard Settings page. Click "Login" next to the provider, follow the device-code URL, and authorize. Tokens are persisted to the shared credential store and restored automatically on restart (no PVs needed for Kubernetes).
-
-Health probes run periodically to verify tokens are still valid — the Settings page shows live auth status for each provider.
-
-### Credentials
-
-```bash
-# Optional — Google OAuth (Calendar, Contacts, Gmail modules)
-# Can also be bootstrapped via the dashboard UI after first start
-export GOOGLE_OAUTH_CLIENT_ID="..."
-export GOOGLE_OAUTH_CLIENT_SECRET="..."
-```
-
-Module-specific credentials (Telegram tokens, email passwords, etc.) are managed through the dashboard secrets page after first boot — see the Environment Variables section below for details.
-
-### Secrets Directory (dev.sh)
-
-`dev.sh` sources environment files from `/secrets/.dev.env` and per-connector files under `secrets/connectors/`. Create these before first run:
-
-```
-/secrets/.dev.env                       # Global dev secrets (API keys, DB passwords)
-secrets/connectors/telegram_bot         # BUTLER_TELEGRAM_TOKEN, etc.
-secrets/connectors/telegram_user_client # Telegram user-client credentials
-secrets/connectors/gmail                # Gmail connector credentials
-```
-
-If you don't use certain connectors, the corresponding files can be empty or absent — those panes will just fail to start.
-
-## Getting Started
-
-### Development
-
-Start the full dev environment (PostgreSQL, all butlers, connectors, dashboard) in tmux:
-
-```bash
-# Install Python dependencies
-uv sync --dev
-
-# Start everything via tmux
-./scripts/dev.sh
-```
-
-Or start services manually:
-
-```bash
-# Install dependencies
-uv sync --dev
-
-# Start PostgreSQL
-docker compose up -d postgres
-
-# Start all butlers (authenticate runtimes via dashboard Settings page)
-butlers up
-
-# Or start a specific butler
-butlers up --only switchboard --only general
-
-# Start messenger butler (requires Telegram/email credentials)
-butlers up --only switchboard --only messenger
-
-# List discovered butlers
-butlers list
-```
-
-Access points:
-- Butler MCP servers on their configured ports (41100-41199)
-- Dashboard API on port 41200
-- Grafana Tempo for distributed tracing (external Alloy endpoint)
-
-### Dashboard (Frontend)
-
-The web dashboard provides real-time monitoring and management of all butlers. It requires the Dashboard API backend.
-
-```bash
-# 1. Start the Dashboard API (requires PostgreSQL)
-uv run butlers dashboard --port 41200
-
-# 2. Start the frontend dev server (in another terminal)
-cd frontend && npm install && npm run dev
-```
-
-The dashboard will be available at `http://localhost:41173`.
-
-Alternatively, use Docker Compose with the `dev` profile to run everything together:
-
-```bash
-docker compose --profile dev up
-```
-
-This starts PostgreSQL, the Dashboard API (port 41200), and the Vite dev server (port 41173).
-
-### Production
-
-All services run in Docker:
-
-```bash
-# Configure environment
-cp .env.example .env
-# Edit .env — set database credentials; runtime auth is via dashboard Settings
-
-# Start everything
-docker compose up -d
-```
-
-The Dockerfile builds an image with Python 3.12, Node.js 22, the `claude` CLI, and `uv`. The entrypoint is:
-
-```
-uv run butlers run --config /app/butler-config/butler.toml
-```
-
-Each butler service mounts its config directory read-only from `butlers/<name>/`.
+- Runtime topology: **one PostgreSQL database with per-butler schemas + `shared`**
+- Inter-butler communication: **MCP tools through the Switchboard only**
+- Butler configs: **git-based directories** with personality (`CLAUDE.md`), manifestoes (`MANIFESTO.md`), skills, and config (`butler.toml`)
+
+For the full architecture including daemon internals, startup sequence, database design, and observability, see [Architecture docs](docs/architecture/index.md).
 
 ### Service Ports
 
@@ -375,7 +90,21 @@ Each butler service mounts its config directory read-only from `butlers/<name>/`
 | Frontend      | 41173 | Vite dev server (development only)                     |
 | PostgreSQL    | 5432 | Shared database server (one DB, per-butler schemas)    |
 
-**Note:** OTLP HTTP traces (port 4318) are sent to an external Alloy instance (not exposed locally).
+## Quick Start
+
+For full prerequisites and setup details, see [Getting Started](docs/getting_started/index.md).
+
+```bash
+# Install Python dependencies
+uv sync --dev
+
+# Start everything via tmux (PostgreSQL, butlers, connectors, dashboard)
+./scripts/dev.sh
+
+# Or start manually
+docker compose up -d postgres
+butlers up
+```
 
 ### CLI Reference
 
@@ -386,69 +115,19 @@ butlers list [--dir PATH]                    List discovered butler configuratio
 butlers init NAME --port PORT [--dir PATH]   Scaffold a new butler config directory
 ```
 
-### Scaffolding a New Butler
-
-```bash
-butlers init mybutler --port 41104
-```
-
-Creates:
-```
-butlers/mybutler/
-├── butler.toml    # Identity, port, schedules, modules
-├── CLAUDE.md      # System prompt / personality
-├── AGENTS.md      # Runtime agent notes
-├── .agents/skills/ # Skill definitions (Codex discovery)
-└── .claude -> .agents  # Claude Code compatibility
-```
-
-For one-db/multi-schema deployments, update the scaffolded DB target:
-
-```toml
-[butler.db]
-name = "butlers"
-```
-
-Legacy per-butler DB names (for example `butler_<name>`) are migration-only and should not be used for post-cutover runtime traffic.
-
 ## Environment Variables
 
-### Global Variables
+Key variables — see [full environment reference](docs/identity_and_secrets/environment-variables.md) and [operations config](docs/operations/environment-config.md) for details.
 
-These apply to all butler instances:
+| Variable | Default | Description |
+| --- | --- | --- |
+| `POSTGRES_HOST` | `localhost` | PostgreSQL server hostname |
+| `POSTGRES_PORT` | `5432` | PostgreSQL server port |
+| `POSTGRES_USER` | `postgres` | PostgreSQL username |
+| `POSTGRES_PASSWORD` | `postgres` | PostgreSQL password |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP HTTP endpoint for traces |
 
-| Variable                      | Required | Default     | Description                                                                                              |
-| ----------------------------- | -------- | ----------- | -------------------------------------------------------------------------------------------------------- |
-| `POSTGRES_HOST`               | No       | `localhost` | PostgreSQL server hostname                                                                               |
-| `POSTGRES_PORT`               | No       | `5432`      | PostgreSQL server port                                                                                   |
-| `POSTGRES_USER`               | No       | `postgres`  | PostgreSQL username                                                                                      |
-| `POSTGRES_PASSWORD`           | No       | `postgres`  | PostgreSQL password                                                                                      |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | No       | —           | OTLP HTTP endpoint for trace export (e.g., `http://alloy:4318/v1/traces`). When unset, tracing is no-op. |
-
-### Butler-Specific Variables
-
-Each butler can declare custom env vars in `butler.toml`:
-
-```toml
-[butler.env]
-required = ["MY_CUSTOM_SECRET"]     # Startup fails if missing
-optional = ["MY_OPTIONAL_CONFIG"]   # Warns if missing, continues
-```
-
-These are validated at startup by the credential checker and passed through to spawned LLM CLI instances.
-
-### Module Variables
-
-Telegram and Email credentials are identity-scoped via `[modules.<channel>.user]` and `[modules.<channel>.bot]` sections. Each enabled scope declares env-var names via `*_env` fields.
-
-| Scope              | Config keys                      | Typical env var names                                  | Description                                    |
-| ------------------ | -------------------------------- | ------------------------------------------------------ | ---------------------------------------------- |
-| `modules.telegram.bot`  | `token_env`                      | `BUTLER_TELEGRAM_TOKEN`                                | Butler-owned Telegram bot token                |
-| `modules.telegram.user` | —                                | Owner contact_info                                     | User Telegram credential (via dashboard)       |
-| `modules.email.bot`     | `address_env`, `password_env`    | `BUTLER_EMAIL_ADDRESS`, `BUTLER_EMAIL_PASSWORD`        | Butler-owned mailbox credentials               |
-| `modules.email.user`    | —                                | Owner contact_info                                     | User mailbox credentials (via dashboard)       |
-
-Enabled bot scopes with missing env vars are startup-blocking. User-scope credentials are resolved from owner contact_info (not env vars). Disabled scopes are not required. Bot-scope credentials are forwarded to ephemeral LLM CLI instances.
+Module-specific credentials (Telegram tokens, email passwords, etc.) are managed through the dashboard secrets page. See [Identity and Secrets](docs/identity_and_secrets/index.md).
 
 ## Development
 
@@ -456,172 +135,12 @@ Enabled bot scopes with missing env vars are startup-blocking. User-scope creden
 uv sync --dev       # Install dependencies
 make check           # Lint + test
 make test            # Run tests
-make test-qg         # Quality-gate pytest scope (default parallel, -n auto)
-make test-qg-serial  # Quality-gate pytest scope (serial fallback/debug)
-make test-qg-parallel # Alias for explicit parallel quality-gate runs
+make test-qg         # Quality-gate pytest scope (default parallel)
 make lint            # Lint
 make format          # Format
 ```
 
-### Marker-Based Test Runs
-
-Tests are split by cost profile using pytest markers:
-
-- `unit`: fast tests with no Docker/testcontainers dependency
-- `integration`: Docker-backed tests (testcontainers/PostgreSQL)
-
-```bash
-uv run pytest -m unit -q          # unit-only
-uv run pytest -m integration -q   # integration-only
-
-# Or use Makefile shortcuts:
-make test-unit
-make test-integration
-```
-
-Recommended quality gates:
-
-- Local dev loop: run `-m unit` for fast feedback.
-- Default full quality-gate run: `make test-qg` (parallel, fastest full-scope path).
-- Serial fallback/debug path: `make test-qg-serial` (use for order-dependent triage).
-- CI or pre-merge (Docker available): run both `-m unit` and `-m integration`.
-
-Quality-gate default rationale and scope contract:
-
-- Benchmark outcome: `make test-qg` (`-n auto`) measured `126.42s` wall time vs `216.58s` serial baseline (~41.6% faster). See `docs/PYTEST_QG_ALTERNATIVES_QKX5.md`.
-- Coverage expectation is unchanged: `make test-qg`, `make test-qg-serial`, and `make test-qg-parallel` all run the same `QG_PYTEST_ARGS` test selection (`tests/` excluding `tests/test_db.py` and `tests/test_migrations.py`). Only execution mode changes.
-
-Docker flake triage under parallel quality gates:
-
-- Startup-timeout class: `Error while fetching server API version ... Read timed out` occurs during `docker.from_env(version=\"auto\")` before container launch. Mitigation is bounded startup retry and/or reducing host contention.
-- Teardown-race class: `did not receive an exit event` occurs during container removal and is handled by bounded teardown retry.
-- Use `make test-qg-serial` as a diagnostic fallback when host contention is high and startup-timeout failures persist.
-
-## E2E Testing
-
-The E2E test suite validates complete message lifecycle: envelope ingestion → classification → butler dispatch → tool execution. It runs against a real ephemeral ecosystem (PostgreSQL testcontainer + all butler daemons).
-
-### Prerequisites
-
-```bash
-docker info                 # Docker daemon running
-echo $ANTHROPIC_API_KEY     # API key set
-which claude                # claude CLI on PATH
-uv sync --dev               # Python dependencies installed
-```
-
-> **WARNING — Token Burn**: E2E tests spawn real LLM calls via the Claude API. Each full suite run typically consumes several thousand tokens per scenario. Use `--scenarios=smoke` to restrict to smoke-tagged scenarios for minimal cost during development.
-
-### Run Commands
-
-```bash
-# Validate mode (default) — hard fail on first routing or tool-call mismatch
-make test-e2e-validate
-
-# Benchmark mode — iterate over models, accumulate results, generate scorecards
-make test-e2e-benchmark BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o
-
-# Full E2E suite (validate mode, verbose)
-make test-e2e
-
-# Smoke scenarios only (faster, lower token cost)
-uv run pytest tests/e2e/ -v -s --scenarios=smoke
-
-# Single butler domain
-uv run pytest tests/e2e/ -v -s -k "health"
-
-# Specific marker
-uv run pytest tests/e2e/ -v -s -m "e2e and routing_accuracy"
-```
-
-### Modes
-
-#### Validate Mode (default)
-
-The default mode runs scenarios using the current model configuration. Each test asserts hard failures on the first routing or tool-call mismatch:
-
-- Routing mismatch → `pytest.fail()` — stops the test immediately
-- Tool-call mismatch → `pytest.fail()` — stops the test immediately
-- Timeout → `pytest.skip()` — skips gracefully
-
-Use validate mode for:
-- CI checks to guard against regressions
-- Pre-merge validation of routing and tool-call accuracy
-
-#### Benchmark Mode
-
-Activated with `--benchmark`. Runs the full scenario corpus for each model in the model list:
-
-```bash
-# Via Makefile
-make test-e2e-benchmark BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o
-
-# Via pytest directly
-uv run pytest tests/e2e/ --benchmark --benchmark-models=claude-sonnet-4-5,gpt-4o -v -s
-
-# Via environment variable
-E2E_BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o pytest tests/e2e/ --benchmark -v -s
-```
-
-In benchmark mode:
-- Results are accumulated per `(model, scenario_id)` — no hard assertion failures
-- The model is pinned via catalog overrides at priority=999 (crash-safe cleanup via `try/finally`)
-- Scorecards are generated at session end via the `pytest_sessionfinish` hook
-
-### Configuration
-
-| CLI option / Env var | Default | Description |
-|---|---|---|
-| `--scenarios=TAG` | all | Run only scenarios tagged with TAG (e.g. `--scenarios=smoke`) |
-| `--benchmark` | off | Activate benchmark mode |
-| `--benchmark-models=LIST` | — | Comma-separated model IDs for benchmark mode |
-| `E2E_BENCHMARK_MODELS` | — | Environment variable fallback for `--benchmark-models` |
-
-### Scorecard Output
-
-Scorecards are written to `.tmp/e2e-scorecards/<timestamp>/` after a benchmark run:
-
-```
-.tmp/e2e-scorecards/20260312-143000/
-├── summary.md                         # Cross-model comparison table
-├── claude-sonnet-4-5/
-│   ├── routing-scorecard.md           # Routing accuracy + per-tag breakdown + confusion matrix
-│   ├── tool-call-scorecard.md         # Tool-call accuracy + per-butler breakdown
-│   ├── cost-summary.md                # Per-scenario token usage + estimated cost
-│   └── raw-results.json               # Machine-readable per-scenario results (schema v1.0)
-└── gpt-4o/
-    └── ...
-```
-
-The output directory path is printed to stdout after generation.
-
-### Pytest Markers
-
-| Marker | Description |
-|---|---|
-| `e2e` | All E2E tests — require `ANTHROPIC_API_KEY`, `claude` binary, and Docker |
-| `benchmark` | Benchmark mode tests |
-| `routing_accuracy` | Routing accuracy tests — verify `triage_target` matches `expected_routing` |
-| `tool_accuracy` | Tool-call accuracy tests — verify expected tool names are called |
-
-### File Layout
-
-```
-tests/e2e/
-├── __init__.py                    # Package marker
-├── conftest.py                    # Session fixtures: phased bootstrap, benchmark accumulator
-├── benchmark.py                   # Model pinning, benchmark runner, result accumulator
-├── scoring.py                     # Scoring engine: routing/tool-call scorecards
-├── reporting.py                   # Scorecard file writer
-├── scenarios.py                   # Declarative scenario registry (Scenario dataclass)
-├── envelopes.py                   # email_envelope() / telegram_envelope() factories
-├── baselines.json                 # Baseline accuracy targets per scenario
-├── test_scenario_runner.py        # Parametrized routing + tool-call runner
-├── test_ecosystem_health.py       # Smoke tests (no LLM calls)
-└── test_*.py                      # Domain-specific tests (contracts, security, etc.)
-```
-
-See `docs/tests/e2e/README.md` for architecture details and the full document index.
+Tests use pytest markers (`unit`, `integration`, `e2e`, `nightly`, `benchmark`). See [Testing docs](docs/testing/index.md) for the full strategy, marker reference, and E2E benchmarking system.
 
 ## Tech Stack
 

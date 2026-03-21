@@ -1,5 +1,9 @@
 # Frontend Purpose and Single-Pane Role
 
+> **Purpose:** Define why the dashboard exists, its role as the operational single-pane-of-glass, and its scope boundaries.
+> **Audience:** All developers and operators working with the Butlers dashboard.
+> **Prerequisites:** None.
+
 ## Product Purpose
 
 The frontend is the operations console for the Butlers system: a web UI for understanding system health, inspecting runtime behavior, and performing targeted admin actions.
@@ -47,3 +51,9 @@ This single-pane role reduces operational latency for three critical loops:
 - Operational writes exist for butler trigger, schedules, and state store.
 - Approval workflows are currently MCP-tool driven and not yet represented as a dedicated frontend surface.
 - Some planned surfaces remain partial or placeholder (documented in `docs/frontend/feature-inventory.md`).
+
+## Related Pages
+
+- [Information Architecture](information-architecture.md) -- Navigation, routes, and tab structures
+- [Feature Inventory](feature-inventory.md) -- What is implemented today
+- [Frontend Index](index.md) -- Spec set overview

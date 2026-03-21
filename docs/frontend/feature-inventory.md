@@ -1,5 +1,9 @@
 # Frontend Feature Inventory (Implemented)
 
+> **Purpose:** Catalog all implemented dashboard features per route, including cross-cutting capabilities and current gaps.
+> **Audience:** Frontend developers, product managers, and operators assessing dashboard coverage.
+> **Prerequisites:** [Information Architecture](information-architecture.md).
+
 This inventory describes what is implemented today in `frontend/src/**`.
 
 ## Cross-Cutting Features
@@ -320,3 +324,10 @@ This inventory describes what is implemented today in `frontend/src/**`.
 
 - Many domain pages are read-focused with no create/edit/delete flows.
 - Approvals workflows are implemented with dedicated frontend surfaces at `/approvals` (action queue + decision UI + metrics) and `/approvals/rules` (standing rule management).
+
+## Related Pages
+
+- [Information Architecture](information-architecture.md) -- Route map and tab structures
+- [Data Access and Refresh](data-access-and-refresh.md) -- API domains and refresh intervals
+- [Backend API Contract](backend-api-contract.md) -- Required backend endpoints
+- [Purpose and Single-Pane Role](purpose-and-single-pane.md) -- Dashboard scope boundaries

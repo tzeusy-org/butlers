@@ -1,5 +1,9 @@
 # Backend API Contract (Target State)
 
+> **Purpose:** Define the mandatory backend endpoints and payload shapes required to support the dashboard frontend.
+> **Audience:** Backend developers implementing API endpoints and frontend developers consuming them.
+> **Prerequisites:** [Data Access and Refresh](data-access-and-refresh.md), [Feature Inventory](feature-inventory.md).
+
 This document is the canonical backend contract required to support the frontend.
 
 All endpoints and payload shapes below are mandatory. Absence or shape drift is non-compliant with frontend support.
@@ -499,3 +503,10 @@ if (params.has('oauth_success')) {
   showErrorBanner(`OAuth failed: ${errorCode}`);
 }
 ```
+
+## Related Pages
+
+- [Data Access and Refresh](data-access-and-refresh.md) -- Polling intervals and refresh contracts
+- [Feature Inventory](feature-inventory.md) -- What the frontend implements per route
+- [Information Architecture](information-architecture.md) -- Route map and navigation
+- [Connector Metrics and Dashboard Visibility](../connectors/metrics.md) -- Connector API contract details

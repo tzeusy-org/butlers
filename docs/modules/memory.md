@@ -1,260 +1,162 @@
-# Memory Module: Permanent Definition
+# Memory Module
 
-Status: Normative (Target State)
-Last updated: 2026-02-13
-Primary owner: Platform/Core
+> **Purpose:** Persistent memory subsystem providing episodes, facts, rules, and entity-anchored knowledge with retrieval, consolidation, and decay lifecycle.
+> **Audience:** Contributors and module developers.
+> **Prerequisites:** [Module System](module-system.md).
 
-## 1. Module
-The Memory module is a reusable module that relevant butlers load locally.
+## Overview
 
-It is responsible for:
-- Persisting memory artifacts (`episodes`, `facts`, `rules`) with provenance in the hosting butler's database.
-- Serving low-latency retrieval for runtime context injection.
-- Running lifecycle maintenance (consolidation, decay, cleanup, supersession).
-- Enforcing memory quality and safety contracts (confidence decay, anti-pattern learning, retract flows).
+The Memory module gives butlers the ability to remember. It is a reusable module that any butler loads locally -- each butler owns its own memory data in its own database schema, with no cross-butler SQL access.
 
-This document is the authoritative target-state contract for memory behavior when the module is enabled.
+The module is responsible for:
 
-## 2. Design Goals
-- Keep memory architecture aligned with platform isolation: each butler owns its own DB and memory data.
-- Make memory available as a common module, not a special infrastructure service.
-- Preserve accuracy and provenance while allowing memory to evolve and decay.
-- Keep retrieval low-latency and fail-open for user-facing workflows.
-- Make memory transparent and governable through auditable lifecycle transitions.
+- **Persisting memory artifacts** (episodes, facts, rules) with provenance in the hosting butler's database.
+- **Low-latency retrieval** for runtime context injection via semantic, keyword, and hybrid search.
+- **Lifecycle maintenance** including consolidation (episodes into facts/rules), confidence decay, fading, expiry, and cleanup.
+- **Entity resolution** -- mapping ambiguous name strings to stable identity anchors in the `shared.entities` table.
 
-## 3. Applicability and Boundaries
-### In scope
-- Module configuration and tool registration contract.
-- Memory schema and lifecycle policy for hosting butler DBs.
-- Retrieval behavior, context assembly, and scoring.
-- Consolidation and hygiene workers executed inside hosting butler runtime.
-- Read model support for dashboard memory views.
+Source: `src/butlers/modules/memory/__init__.py` and `src/butlers/modules/memory/tools/`.
 
-### Out of scope
-- Dedicated shared memory-role process.
-- Direct cross-butler memory SQL access.
-- Channel-specific delivery behavior (Telegram/Email UX).
+## Configuration
 
-## 4. Runtime Architecture Contract
-### 4.1 Local components (per hosting butler)
-- `Memory tools`: module-registered MCP tools on the hosting butler MCP server.
-- `Consolidation worker`: transforms episodes into facts/rules and confirmations.
-- `Decay and hygiene worker`: confidence decay, fading/expiry transitions, cleanup.
-- `Embedding engine`: local embedding generation, model/version managed by module config.
-- `Memory tables`: module-owned tables in the hosting butler DB.
+Enable in `butler.toml`:
 
-### 4.2 Mandatory runtime flows
-1. `Session start (read path)`
-- Hosting daemon retrieves memory context with `memory_context(trigger_prompt, butler, token_budget, request_context?)`.
-- Module resolves tenant/request lineage from authenticated context and returns ordered facts/rules (+ optional recent episodes) within budget.
-2. `Session completion (write path)`
-- Hosting daemon stores an episode via `memory_store_episode(...)`.
-- Episode becomes eligible for asynchronous consolidation.
-3. `Consolidation`
-- Worker consumes unconsolidated episodes in deterministic batches.
-- Worker emits new facts/rules, supersessions, confirmations, and provenance links.
-4. `Lifecycle maintenance`
-- Scheduled sweeps update fading/expired states and perform episode retention cleanup.
+```toml
+[modules.memory]
+# Retrieval defaults
+[modules.memory.retrieval]
+context_token_budget = 3000
+default_limit = 20
+default_mode = "hybrid"  # "semantic", "keyword", or "hybrid"
 
-### 4.3 Determinism and isolation
-- All retrieval and lifecycle operations MUST be tenant-bounded by default.
-- Worker execution MUST preserve deterministic ordering within `(tenant_id, butler)` shard keys.
-- Data lives in the hosting butler DB; memory rows do not cross butler DB boundaries.
+[modules.memory.retrieval.score_weights]
+relevance = 0.4
+importance = 0.3
+recency = 0.2
+confidence = 0.1
 
-### 4.4 Reliability
-- Memory retrieval/storage failures must be fail-open for runtime execution (log and continue).
-- Module internals must fail-closed on integrity-invariant violations (invalid transitions, broken schema constraints, provenance corruption).
-- Lifecycle workers must be idempotent.
-
-## 5. Data Model Contract
-The module defines three primary memory classes, an entity identity registry, and provenance/audit tables.
-
-### 5.1 Episodes (observations)
-- Purpose: high-volume, short-lived session observations.
-- Required fields: `id`, `tenant_id`, `butler`, `session_id`, `content`, `importance`, `consolidated`, `consolidation_status`, `consolidation_attempts`, `last_consolidation_error`, `next_consolidation_retry_at`, `created_at`, `expires_at`, `metadata`.
-- Lifecycle: TTL-managed; unconsolidated rows are protected from capacity cleanup until expiry.
-- Consolidation states: `pending -> consolidated|failed|dead_letter`.
-
-### 5.2 Facts (semantic memory)
-- Purpose: durable subject-predicate-content knowledge.
-- Required fields: `id`, `tenant_id`, `entity_id` (nullable FK to entities), `subject`, `predicate`, `content`, `scope`, `validity`, `confidence`, `decay_rate`, `permanence`, `source_butler`, `source_episode_id`, `supersedes_id`, `created_at`, `last_confirmed_at`, `last_referenced_at`, `metadata`, `tags`.
-- Lifecycle states: `active`, `fading`, `superseded`, `expired`, `retracted`.
-- Backward compatibility: legacy `forgotten` MUST normalize to canonical `retracted`.
-- Entity linking: When `entity_id` is set, the fact is anchored to a stable identity rather than a raw subject string. The `subject` field remains populated as a human-readable label but is not the primary key for deduplication. When `entity_id` is null, the `subject` string is used as-is (backward compatible with unresolved facts).
-- Constraint: for active facts where `entity_id IS NOT NULL`, `(tenant_id, scope, entity_id, predicate)` uniqueness MUST be DB-enforced (partial unique index). For active facts where `entity_id IS NULL`, `(tenant_id, scope, subject, predicate)` uniqueness MUST be DB-enforced (separate partial unique index). Both constraints coexist.
-
-### 5.3 Rules (procedural memory)
-- Purpose: behavior guidance learned from repeated outcomes.
-- Required fields: `id`, `tenant_id`, `content`, `scope`, `maturity`, `confidence`, `decay_rate`, `effectiveness_score`, `applied_count`, `success_count`, `harmful_count`, `source_butler`, `source_episode_id`, `created_at`, `last_applied_at`, `last_evaluated_at`, `last_confirmed_at`, `metadata`, `tags`.
-- Maturity states: `candidate`, `established`, `proven`, `anti_pattern`.
-- Feedback policy: harmful evidence is weighted more heavily than helpful evidence.
-
-### 5.4 Provenance and audit surfaces
-- `memory_links`: relation edges (`derived_from`, `supports`, `contradicts`, `supersedes`, `related_to`).
-- `memory_events`: append-only audit stream for all memory mutations/lifecycle transitions.
-- `rule_applications`: per-application outcome records.
-- `embedding_versions`: model/version tracking and re-embed migrations.
-
-### 5.5 Entities (identity registry)
-- Purpose: Stable identity anchors for recurring subjects referenced in facts and episodes. Solves the disambiguation problem where a raw string like "Chloe" may refer to multiple distinct people, places, or organizations.
-- Required fields: `id`, `tenant_id`, `canonical_name`, `entity_type`, `aliases` (text[]), `metadata` (JSONB), `created_at`, `updated_at`.
-- Supported entity types: `person`, `organization`, `place`, `other`. Extensible via `metadata` for domain-specific typing.
-- Aliases: Alternative names, nicknames, diminutives, and abbreviations (e.g. `["Chloe Wong", "Chlo", "CW"]`). Used by `entity_resolve` for candidate discovery.
-- Lifecycle: Entities are durable. They can be merged (`entity_merge`) but not soft-deleted once referenced by facts. Unreferenced entities may be pruned by hygiene workers.
-- Constraint: `(tenant_id, canonical_name, entity_type)` uniqueness MUST be DB-enforced.
-- Ownership: The memory module owns the entity registry schema and resolution algorithm. Hosting butlers own the disambiguation policy (when to auto-resolve vs. ask the user) and provide domain-specific scoring signals via `context_hints`.
-
-## 6. Retrieval and Context Contract
-### 6.1 Retrieval modes
-- `semantic`: vector similarity.
-- `keyword`: PostgreSQL full-text.
-- `hybrid`: reciprocal-rank fusion over semantic and keyword.
-
-### 6.2 Scoring contract
-Composite score combines relevance, importance, recency, and effective confidence.
-
-Baseline formula:
-`score = 0.4*relevance + 0.3*importance + 0.2*recency + 0.1*effective_confidence`
-
-Confidence decay:
-`effective_confidence = confidence * exp(-decay_rate * days_since_last_confirmed)`
-
-### 6.3 Scope contract
-- Reads/writes are tenant-bounded by default.
-- Within a butler, scope supports `global` plus role-local scopes.
-- Cross-butler memory access is not a direct data-plane feature; it requires explicit routed/tool-level integration.
-
-### 6.4 Entity resolution contract
-
-`entity_resolve` enables hosting butlers to map an ambiguous name string to a stable entity identity. The memory module provides candidate discovery and generic scoring; the hosting butler provides domain-specific signals and decides the confidence threshold for auto-resolution vs. user clarification.
-
-**Candidate discovery** (in priority order):
-1. Exact `canonical_name` match (case-insensitive).
-2. Exact alias match (case-insensitive).
-3. Prefix/substring match on canonical name and aliases.
-4. Optional: fuzzy match (edit distance ≤ 2) when enabled via config.
-
-**Candidate scoring:**
-Each candidate receives a composite score from two components:
-
-| Component | Weight | Description |
-|-----------|--------|-------------|
-| Name-match quality | Primary | Exact match > alias match > prefix > fuzzy. Provides the base score. |
-| Graph neighborhood similarity | Secondary | Semantic overlap between the candidate's associated facts and the caller-provided `context_hints`. |
-
-Graph neighborhood scoring: For each candidate entity, the resolver retrieves its associated facts (facts where `entity_id` matches). It then computes overlap between the candidate's fact predicates/content and the `context_hints` dict. Candidates whose fact neighborhoods are more contextually relevant to the current conversation score higher.
-
-**`context_hints` contract:**
-- `context_hints` is an optional dict of structured signals provided by the hosting butler.
-- Common keys: `topic` (string), `mentioned_with` (list of other entity names or IDs), `domain_scores` (dict of entity_id → numeric score from domain-specific ranking).
-- The memory module scores `context_hints` generically (keyword overlap). Domain-specific interpretation (e.g. relationship salience) is the hosting butler's responsibility — it passes pre-computed scores via `domain_scores`.
-
-**Response shape:**
-```python
-[
-    {
-        "entity_id": "<uuid>",
-        "canonical_name": "Chloe Wong",
-        "entity_type": "person",
-        "score": 85,            # composite score
-        "name_match": "exact",  # exact | alias | prefix | fuzzy
-        "aliases": ["Chlo", "CW"]
-    },
-    ...
-]
+# Optional: write summaries to shared.memory_catalog
+enable_shared_catalog = false
 ```
-Ordered by `score DESC`, then `canonical_name ASC`.
 
-The memory module does NOT make the auto-resolve-vs-ask decision. It returns all candidates above a minimum score threshold. The hosting butler applies its own confidence thresholds and disambiguation policy.
+## Memory Artifact Types
 
-### 6.5 Context assembly contract
-- `memory_context` output must be deterministic and sectioned.
-- Four fixed sections in order (empty sections are omitted):
-  1. `## Profile Facts` (30% of budget): owner entity facts, sorted by importance DESC, created_at DESC, id ASC.
-  2. `## Task-Relevant Facts` (35% of budget): composite-scored recall matches excluding profile facts, sorted by composite_score DESC, created_at DESC, id ASC.
-  3. `## Active Rules` (20% of budget): sorted by maturity rank (proven > established > candidate) DESC, effectiveness_score DESC, created_at DESC, id ASC.
-  4. `## Recent Episodes` (15% of budget): opt-in via `include_recent_episodes=True`, sorted by created_at DESC.
-- Hard token budget enforcement is mandatory (total_chars = token_budget * 4).
-- Each section respects its percentage quota of the total budget.
-- Stable ordering tie-breakers: `score/importance DESC`, then `created_at DESC`, then `id ASC`.
-- `request_context.tenant_id` scopes all retrieval queries (default: `'owner'`).
-- `request_context.request_id` is available for trace correlation.
+### Episodes (Observations)
 
-## 7. Write, Consolidation, and Lifecycle Contract
-### 7.1 Write semantics
-- `memory_store_episode` is append-only.
-- `memory_store_fact` supports supersession and provenance linking. Accepts optional `entity_id` to anchor the fact to a resolved entity. When `entity_id` is provided, the fact is keyed by entity identity; when omitted, the `subject` string is used as-is (backward compatible).
-- `memory_store_rule` initializes `candidate` maturity and baseline confidence.
-- `memory_confirm` updates confirmation anchors.
-- `memory_mark_helpful` and `memory_mark_harmful` drive effectiveness/maturity transitions.
-- `memory_forget` emits an audit event and applies canonical lifecycle transitions.
+High-volume, short-lived session observations. Append-only. Each episode records what happened during a butler session, tagged with importance and a session ID. Episodes have a TTL and are eligible for consolidation into durable artifacts.
 
-### 7.2 Consolidation contract
-- Consolidation runs in bounded batches with deterministic ordering.
-- Every episode entering consolidation must reach exactly one terminal state: `consolidated`, `failed`, or `dead_letter`.
-- Consolidation output must be schema-validated before persistence.
-- Duplicate extraction must be controlled through idempotency keys and DB uniqueness constraints.
+Consolidation states: `pending` -> `consolidated | failed | dead_letter`.
 
-### 7.3 Decay and hygiene contract
-- Daily decay sweep computes effective confidence for facts/rules.
-- Threshold transitions:
-- `>= retrieval_threshold`: normal.
-- `< retrieval_threshold and >= expiry_threshold`: fading.
-- `< expiry_threshold`: expired/retracted per type policy.
-- Repeated harmful, low-effectiveness rules become `anti_pattern` warnings.
-- Episode cleanup removes expired rows and enforces capacity starting with oldest consolidated rows.
+### Facts (Semantic Memory)
 
-## 8. Module Configuration Contract
-Module config is declared under `[modules.memory]` in each hosting butler's `butler.toml`.
+Durable subject-predicate-content knowledge. Facts are the primary retrieval unit for context injection. Key properties:
 
-Required/expected settings:
-- Embedding model and dimensions.
-- Episode retention defaults (`default_ttl_days`, `max_entries`).
-- Fact/rule confidence thresholds.
-- Rule maturity promotion and anti-pattern thresholds.
-- Retrieval defaults (mode, limits, token budget, scoring weights).
-- Schedule configuration for consolidation, decay sweep, and episode cleanup.
+- **Entity-anchored**: Facts link to entities via `entity_id` for stable identity (resolves the "which Chloe?" problem).
+- **Scoped**: Facts live in namespaces (`global`, `health`, `relationship`, `finance`, etc.).
+- **Lifecycle states**: `active` -> `fading` -> `superseded | expired | retracted`.
+- **Confidence decay**: Effective confidence decreases over time via `confidence * exp(-decay_rate * days_since_last_confirmed)`.
+- **Permanence levels**: `permanent`, `stable`, `standard`, `volatile`, `ephemeral` -- controlling decay rate and retention.
 
-## 9. MCP Tool Surface Contract
-Memory tools are registered on each hosting butler MCP server when the module is enabled.
+### Rules (Procedural Memory)
 
-Required stable tools:
-- Writing: `memory_store_episode`, `memory_store_fact`, `memory_store_rule`
-- Reading: `memory_search`, `memory_recall`, `memory_get`
-- Feedback: `memory_confirm`, `memory_mark_helpful`, `memory_mark_harmful`
-- Management: `memory_forget`, `memory_stats`
-- Context: `memory_context`
-- Entities: `entity_create`, `entity_resolve`, `entity_get`, `entity_update`, `entity_merge`
+Behavior guidance learned from repeated outcomes. Rules track maturity (`candidate` -> `established` -> `proven` or `anti_pattern`), effectiveness scores, and application counts. Harmful evidence is weighted more heavily than helpful evidence, so bad rules demote faster than good rules promote.
 
-Entity tool contracts:
-- `entity_create(canonical_name, entity_type, aliases?, metadata?)` — Create a new entity. Returns entity ID. Fails if `(tenant_id, canonical_name, entity_type)` already exists.
-- `entity_resolve(name, entity_type?, context_hints?)` — Resolve a name string to entity candidates. Returns ranked list per §6.4. When zero candidates are found, returns empty list (does not auto-create).
-- `entity_get(entity_id)` — Retrieve entity record with its aliases and metadata.
-- `entity_update(entity_id, canonical_name?, aliases?, metadata?)` — Update entity fields. Alias updates are replace-all (pass the full alias list).
-- `entity_merge(source_entity_id, target_entity_id)` — Merge source into target. All facts referencing source are re-pointed to target. Source's aliases are appended to target's alias list. Source entity is tombstoned (retained for audit, excluded from resolution). Target survives.
+## Tools Provided
 
-Read tool filter contract:
-- `memory_search` and `memory_recall` accept an optional `filters` dict of AND-conditions.
-- Supported filter keys: `scope`, `entity_id`, `predicate`, `source_butler`, `time_from` (ISO-8601), `time_to` (ISO-8601), `retention_class`, `sensitivity`.
-- Unrecognized filter keys are silently ignored (additive, backward-compatible).
-- `memory_recall` also accepts `request_context` for tenant scoping.
+The module registers 23 MCP tools:
 
-`memory_context` tool contract:
-- Accepts `trigger_prompt` (required), `butler` (required), `token_budget` (default from config).
-- Accepts `include_recent_episodes` (default False) to opt into the Recent Episodes section.
-- Accepts `request_context` for tenant scoping and trace correlation.
-- Output is deterministic: same inputs always produce identical output.
+| Tool | Category | Description |
+|------|----------|-------------|
+| `memory_store_episode` | Writing | Store a raw episode from a runtime session |
+| `memory_store_fact` | Writing | Store a durable fact with entity anchoring and predicate validation |
+| `memory_store_rule` | Writing | Store a behavioral rule |
+| `memory_search` | Reading | Search memory by query with filters |
+| `memory_recall` | Reading | Recall facts/rules relevant to a prompt |
+| `memory_get` | Reading | Get a specific memory artifact by ID |
+| `memory_context` | Context | Assemble sectioned context within a token budget |
+| `memory_confirm` | Feedback | Confirm a fact/rule (resets decay clock) |
+| `memory_mark_helpful` | Feedback | Mark a rule application as helpful |
+| `memory_mark_harmful` | Feedback | Mark a rule application as harmful |
+| `memory_forget` | Management | Retract a memory artifact |
+| `memory_stats` | Management | Get memory statistics |
+| `memory_predicate_list` | Predicates | List registered predicates |
+| `memory_predicate_search` | Predicates | Hybrid search for predicates (trigram + full-text + semantic) |
+| `memory_entity_create` | Entities | Create a new entity identity |
+| `memory_entity_get` | Entities | Retrieve an entity record |
+| `memory_entity_update` | Entities | Update entity fields |
+| `memory_entity_resolve` | Entities | Resolve a name string to entity candidates |
+| `memory_entity_merge` | Entities | Merge two entities (re-point all facts) |
+| `memory_entity_neighbors` | Entities | Get graph neighbors of an entity |
+| `memory_run_consolidation` | Maintenance | Trigger episode consolidation |
+| `memory_run_episode_cleanup` | Maintenance | Clean up expired episodes |
+| `memory_catalog_search` | Catalog | Search the shared memory catalog |
 
-Lineage propagation rules:
-- Read/write tools should accept optional `request_context` metadata.
-- If `request_context.request_id` is present, responses and durable audit/event surfaces must preserve it for trace correlation.
+## Retrieval
 
-Backward-compatibility rules:
-- Existing tool names and core parameters remain stable.
-- Additive enhancements must be optional and default-safe.
-- Tenant selection must come from authenticated request context for default workflows.
+The module supports three retrieval modes fused via composite scoring:
 
-## 10. Non-Goals
-- Reintroducing a dedicated shared memory role/service.
-- Allowing direct specialist-butler SQL access to another butler's memory tables.
-- Replacing each butler's operational key-value state with memory artifacts.
+- **Semantic**: Vector similarity search using embeddings (MiniLM).
+- **Keyword**: PostgreSQL full-text search (tsvector).
+- **Hybrid**: Reciprocal-rank fusion over semantic and keyword results.
+
+Composite score formula:
+
+```
+score = 0.4 * relevance + 0.3 * importance + 0.2 * recency + 0.1 * effective_confidence
+```
+
+### Context Assembly (`memory_context`)
+
+The `memory_context` tool assembles a deterministic, sectioned context block within a hard token budget. Four sections in fixed order (empty sections omitted):
+
+1. **Profile Facts** (30% of budget) -- owner entity facts.
+2. **Task-Relevant Facts** (35% of budget) -- composite-scored recall matches.
+3. **Active Rules** (20% of budget) -- sorted by maturity rank.
+4. **Recent Episodes** (15% of budget) -- opt-in via `include_recent_episodes=True`.
+
+## Consolidation
+
+A background worker consumes unconsolidated episodes in deterministic batches and emits new facts, rules, supersessions, confirmations, and provenance links. Every episode reaches exactly one terminal state: `consolidated`, `failed`, or `dead_letter`. Consolidation output is schema-validated before persistence.
+
+## Decay and Hygiene
+
+A scheduled sweep computes effective confidence for facts and rules:
+
+- Above retrieval threshold: normal (active).
+- Below retrieval threshold but above expiry threshold: `fading`.
+- Below expiry threshold: `expired` or `retracted`.
+
+Anti-pattern detection: rules with repeated harmful, low-effectiveness outcomes transition to `anti_pattern` status and are surfaced as warnings rather than guidance.
+
+Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows.
+
+## Entity Resolution
+
+The `memory_entity_resolve` tool maps ambiguous name strings to stable entity identities using a 5-tier waterfall: exact canonical name -> exact alias -> prefix/substring -> fuzzy (edit distance <= 2). Context boosting from graph neighborhood and caller-provided `context_hints` refines scoring.
+
+Entities are never hard-deleted. Merging sets `metadata.merged_into`; the source entity is tombstoned and excluded from future resolution.
+
+## Database Tables
+
+The module owns tables in the hosting butler's schema (Alembic branch: `memory`):
+
+- `episodes` -- session observations with TTL
+- `facts` -- durable SPO knowledge with entity anchoring
+- `rules` -- procedural memory with maturity tracking
+- `memory_links` -- provenance edges between memory artifacts
+- `memory_events` -- append-only audit stream
+- `rule_applications` -- per-application outcome records
+- `embedding_versions` -- model/version tracking
+- `predicate_registry` -- predicate vocabulary with enforcement flags
+
+Entity identity tables live in the `shared` schema: `shared.entities`.
+
+## Dependencies
+
+None. The memory module is a leaf module with no dependencies on other modules.
+
+## Related Pages
+
+- [Module System](module-system.md)
+- [Knowledge Base](knowledge-base.md) -- entity data model and predicate vocabulary
+- [Approvals Module](approvals.md) -- approval gates for memory mutations

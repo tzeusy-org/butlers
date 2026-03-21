@@ -1,5 +1,9 @@
 # Frontend Information Architecture
 
+> **Purpose:** Define the global navigation structure, route map, tab structures, and URL semantics for the dashboard.
+> **Audience:** Frontend developers and designers working on dashboard navigation and routing.
+> **Prerequisites:** [Purpose and Single-Pane Role](purpose-and-single-pane.md).
+
 ## Global Shell
 
 All routes render inside a common shell with:
@@ -140,3 +144,10 @@ The rules page provides:
 - Rule detail dialog with constraint inspection
 - Rule revocation capability
 - Use count and limit tracking
+
+## Related Pages
+
+- [Purpose and Single-Pane Role](purpose-and-single-pane.md) -- Why this architecture exists
+- [Feature Inventory](feature-inventory.md) -- What is implemented per route
+- [Data Access and Refresh](data-access-and-refresh.md) -- How routes fetch and refresh data
+- [Backend API Contract](backend-api-contract.md) -- Required backend endpoints per route

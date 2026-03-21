@@ -1,5 +1,9 @@
 # Frontend Data Access and Refresh Contracts
 
+> **Purpose:** Define how the frontend accesses backend data, polling/refresh intervals per domain, write-operation surfaces, and error/loading contracts.
+> **Audience:** Frontend and backend developers working on data flow between the dashboard and API.
+> **Prerequisites:** [Information Architecture](information-architecture.md), [Backend API Contract](backend-api-contract.md).
+
 ## Data Access Model
 
 The frontend talks to the dashboard API over REST through `frontend/src/api/client.ts`.
@@ -119,3 +123,9 @@ Across major surfaces, the UX contract is:
 - Error:
   - explicit error text
   - in select cases (for example Butlers list), stale/cached data remains visible with warning
+
+## Related Pages
+
+- [Backend API Contract](backend-api-contract.md) -- Endpoint shapes and payload contracts
+- [Feature Inventory](feature-inventory.md) -- What each route implements
+- [Information Architecture](information-architecture.md) -- Route map and navigation
