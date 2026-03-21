@@ -2214,6 +2214,15 @@ export interface IngestionRuleListParams {
 /** Valid complexity tier values for the model catalog. */
 export type ComplexityTier = "trivial" | "medium" | "high" | "extra_high" | "discretion" | "self_healing";
 
+/** Per-model pricing (USD per 1M tokens). Keyed by model_id. */
+export interface ModelPricingEntry {
+  input_per_million: number;
+  output_per_million: number;
+}
+
+/** Map of model_id → pricing. */
+export type PricingMap = Record<string, ModelPricingEntry>;
+
 /** A single entry in the shared model catalog. */
 export interface ModelCatalogEntry {
   id: string;

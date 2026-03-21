@@ -8,6 +8,7 @@ import {
   createModelCatalogEntry,
   deleteModelCatalogEntry,
   deleteButlerModelOverride,
+  fetchPricingMap,
   listModelCatalog,
   listButlerModelOverrides,
   resolveButlerModel,
@@ -133,6 +134,19 @@ export function useResolveModel(butlerName: string, complexity: string) {
     queryFn: () => resolveButlerModel(butlerName, complexity),
     enabled: !!butlerName && !!complexity,
     staleTime: 30_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pricing map
+// ---------------------------------------------------------------------------
+
+/** Fetch the pricing map (rarely changes, long stale time). */
+export function usePricingMap() {
+  return useQuery({
+    queryKey: ["pricing-map"],
+    queryFn: fetchPricingMap,
+    staleTime: 5 * 60 * 1000, // 5 minutes
   });
 }
 

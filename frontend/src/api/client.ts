@@ -135,6 +135,7 @@ import type {
   IngestionRuleTestRequest,
   IngestionRuleTestResponse,
   ModelCatalogEntry,
+  PricingMap,
   ModelCatalogCreate,
   ModelCatalogUpdate,
   ModelTestResult,
@@ -2467,6 +2468,11 @@ export async function replayIngestionEvent(
 // ---------------------------------------------------------------------------
 // Model catalog
 // ---------------------------------------------------------------------------
+
+/** GET /api/settings/pricing — fetch per-model pricing map */
+export function fetchPricingMap(): Promise<ApiResponse<PricingMap>> {
+  return apiFetch<ApiResponse<PricingMap>>("/settings/pricing");
+}
 
 /** GET /api/settings/models — list all catalog entries */
 export function listModelCatalog(): Promise<ApiResponse<ModelCatalogEntry[]>> {

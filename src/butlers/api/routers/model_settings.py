@@ -24,11 +24,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse
+from butlers.api.pricing import ModelPricing, PricingConfig, TieredModelPricing
 
 logger = logging.getLogger(__name__)
 
 catalog_router = APIRouter(prefix="/api/settings/models", tags=["model-catalog"])
+pricing_router = APIRouter(prefix="/api/settings", tags=["pricing"])
 butler_model_router = APIRouter(prefix="/api/butlers", tags=["butlers", "model-overrides"])
 
 _COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high", "discretion", "self_healing")
@@ -177,6 +180,13 @@ class ModelTestResult(BaseModel):
     reply: str | None = None
     error: str | None = None
     duration_ms: int = 0
+
+
+class ModelPricingResponse(BaseModel):
+    """Per-model pricing entry (USD per 1M tokens)."""
+
+    input_per_million: float
+    output_per_million: float
 
 
 # ---------------------------------------------------------------------------
@@ -1055,3 +1065,38 @@ async def test_catalog_entry(
                 duration_ms=duration_ms,
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/pricing — per-model pricing (USD per 1M tokens)
+# ---------------------------------------------------------------------------
+
+
+@pricing_router.get("/pricing", response_model=ApiResponse[dict[str, ModelPricingResponse]])
+async def get_model_pricing(
+    pricing: PricingConfig = Depends(get_pricing),
+) -> ApiResponse[dict[str, ModelPricingResponse]]:
+    """Return a flat dict mapping model_id to per-million-token prices.
+
+    For tiered models, returns the base tier (context_threshold=0).
+    """
+    result: dict[str, ModelPricingResponse] = {}
+    for model_id in pricing.model_ids:
+        entry = pricing.get_model_pricing(model_id)
+        if entry is None:
+            continue
+
+        if isinstance(entry, TieredModelPricing):
+            # Use the lowest tier (context_threshold=0)
+            tier = entry.tiers[0]
+            result[model_id] = ModelPricingResponse(
+                input_per_million=tier.input_price_per_token * 1_000_000,
+                output_per_million=tier.output_price_per_token * 1_000_000,
+            )
+        elif isinstance(entry, ModelPricing):
+            result[model_id] = ModelPricingResponse(
+                input_per_million=entry.input_price_per_token * 1_000_000,
+                output_per_million=entry.output_price_per_token * 1_000_000,
+            )
+
+    return ApiResponse[dict[str, ModelPricingResponse]](data=result)

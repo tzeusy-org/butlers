@@ -50,6 +50,7 @@ import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
   useModelCatalog,
+  usePricingMap,
   useTestModelCatalogEntry,
   useUpdateModelCatalogEntry,
   useSetModelTokenLimits,
@@ -83,6 +84,16 @@ function usageBarColor(percent: number): string {
   if (percent >= 85) return "bg-red-500";
   if (percent >= 60) return "bg-yellow-500";
   return "bg-emerald-500";
+}
+
+// ---------------------------------------------------------------------------
+// Pricing key resolution
+// ---------------------------------------------------------------------------
+
+/** Resolve a catalog model_id to its pricing.toml key.
+ *  OpenCode models use "opencode-go/" prefix in the catalog but bare names in pricing. */
+function pricingKey(modelId: string): string {
+  return modelId.replace(/^opencode-go\//, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -709,6 +720,7 @@ function SkeletonRows({ count = 4 }: { count?: number }) {
           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-40" /></TableCell>
           <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-12" /></TableCell>
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
@@ -727,6 +739,9 @@ function SkeletonRows({ count = 4 }: { count?: number }) {
 export function ModelCatalogCard() {
   const { data, isLoading, isError } = useModelCatalog();
   const entries = data?.data ?? [];
+
+  const { data: pricingData } = usePricingMap();
+  const pricingMap = pricingData?.data ?? {};
 
   const createMutation = useCreateModelCatalogEntry();
   const updateMutation = useUpdateModelCatalogEntry();
@@ -892,10 +907,53 @@ export function ModelCatalogCard() {
                   <TableHead>Runtime</TableHead>
                   <TableHead>Model ID</TableHead>
                   <TableHead>Extra Args</TableHead>
+                  <TableHead>
+                    <div className="flex items-center gap-1">
+                      Price
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="max-w-48">
+                            USD per 1M tokens: input / output
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
+                  </TableHead>
                   <TableHead>Priority</TableHead>
                   <TableHead>Enabled</TableHead>
-                  <TableHead>24h</TableHead>
-                  <TableHead>30d</TableHead>
+                  <TableHead>
+                    <div className="flex items-center gap-1">
+                      24h usage
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="max-w-52">
+                            Rolling 24-hour token usage. Click the limit to edit.
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
+                  </TableHead>
+                  <TableHead>
+                    <div className="flex items-center gap-1">
+                      30d usage
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="max-w-52">
+                            Rolling 30-day token usage. Click the limit to edit.
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
+                  </TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -919,19 +977,52 @@ export function ModelCatalogCard() {
                   <TableHead>Runtime</TableHead>
                   <TableHead>Model ID</TableHead>
                   <TableHead>Extra Args</TableHead>
+                  <TableHead>
+                    <div className="flex items-center gap-1">
+                      Price
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="max-w-48">
+                            USD per 1M tokens: input / output
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
+                  </TableHead>
                   <TableHead>Priority</TableHead>
                   <TableHead>Enabled</TableHead>
-                  <TableHead
-                    className="text-xs"
-                    title="Rolling 24h token usage. Click the limit to edit."
-                  >
-                    24h
+                  <TableHead>
+                    <div className="flex items-center gap-1">
+                      24h usage
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="max-w-52">
+                            Rolling 24-hour token usage. Click the limit to edit.
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
                   </TableHead>
-                  <TableHead
-                    className="text-xs"
-                    title="Rolling 30d token usage. Click the limit to edit."
-                  >
-                    30d
+                  <TableHead>
+                    <div className="flex items-center gap-1">
+                      30d usage
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="max-w-52">
+                            Rolling 30-day token usage. Click the limit to edit.
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
                   </TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -940,7 +1031,7 @@ export function ModelCatalogCard() {
                 {grouped.map(({ tier, entries: tierEntries }) => (
                   <>
                     <TableRow key={`tier-${tier}`} className="hover:bg-transparent">
-                      <TableCell colSpan={9} className="py-2 px-0">
+                      <TableCell colSpan={10} className="py-2 px-0">
                         <div className="flex items-center gap-2">
                           <ComplexityBadge tier={tier} />
                           {tier === "discretion" && (
@@ -983,6 +1074,16 @@ export function ModelCatalogCard() {
                           ) : (
                             <span className="text-xs text-muted-foreground">&mdash;</span>
                           )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          {(() => {
+                            const p = pricingMap[pricingKey(entry.model_id)];
+                            if (!p) return "\u2013";
+                            if (p.input_per_million === 0 && p.output_per_million === 0) {
+                              return <Badge variant="secondary" className="text-[10px] px-1.5 py-0">Free</Badge>;
+                            }
+                            return `$${p.input_per_million.toFixed(2)} / $${p.output_per_million.toFixed(2)}`;
+                          })()}
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1">

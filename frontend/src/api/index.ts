@@ -413,6 +413,7 @@ export type {
 } from "./types.ts";
 
 export {
+  fetchPricingMap,
   listModelCatalog,
   createModelCatalogEntry,
   updateModelCatalogEntry,
@@ -430,6 +431,8 @@ export {
 export type {
   ComplexityTier,
   ModelCatalogEntry,
+  ModelPricingEntry,
+  PricingMap,
   ModelCatalogCreate,
   ModelCatalogUpdate,
   ModelTestResult,
