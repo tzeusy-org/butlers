@@ -375,7 +375,7 @@ class TestMemoryContext:
             mock_embedding_engine,
             scope="butler-x",
             limit=30,
-            tenant_id="owner",
+            tenant_id="shared",
         )
 
     async def test_no_facts_only_rules(

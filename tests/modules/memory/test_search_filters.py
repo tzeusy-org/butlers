@@ -227,7 +227,7 @@ class TestFiltersWiredThroughReading:
             assert call_kwargs.get("filters") == {"predicate": "weight"}
             assert call_kwargs.get("tenant_id") == "custom"
 
-    async def test_memory_recall_defaults_to_owner_tenant(self):
+    async def test_memory_recall_defaults_to_shared_tenant(self):
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from butlers.modules.memory.tools import _helpers
@@ -244,4 +244,4 @@ class TestFiltersWiredThroughReading:
         ) as mock_recall:
             await memory_recall(pool, engine, "topic")
             call_kwargs = mock_recall.call_args[1]
-            assert call_kwargs.get("tenant_id") == "owner"
+            assert call_kwargs.get("tenant_id") == "shared"

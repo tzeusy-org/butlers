@@ -349,7 +349,7 @@ class TestSemanticSearchSQL:
         assert "$3" in sql
         assert "$4" in sql
         assert args[1] == str(_SAMPLE_EMBEDDING)  # $1
-        assert args[2] == "owner"  # $2 = tenant_id (default)
+        assert args[2] == "shared"  # $2 = tenant_id (default)
         assert args[3] == "global"  # $3 = scope
         assert args[4] == 20  # $4 = limit
 
@@ -364,5 +364,5 @@ class TestSemanticSearchSQL:
         # $1 = embedding, $2 = tenant_id, $3 = limit (no butler scope since scope=None)
         assert "LIMIT $3" in sql
         assert args[1] == str(_SAMPLE_EMBEDDING)
-        assert args[2] == "owner"  # tenant_id
+        assert args[2] == "shared"  # tenant_id
         assert args[3] == 3

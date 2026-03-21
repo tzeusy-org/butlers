@@ -239,9 +239,9 @@ class MemoryModule(Module):
                 dict[str, Any] | None,
                 Field(
                     description=(
-                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "Optional request context dict with 'tenant_id' (default 'shared') "
                         "and 'request_id' (optional trace ID). When omitted, defaults to "
-                        "tenant_id='owner' and no request_id."
+                        "tenant_id='shared' and no request_id."
                     )
                 ),
             ] = None,
@@ -343,9 +343,9 @@ class MemoryModule(Module):
                 dict[str, Any] | None,
                 Field(
                     description=(
-                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "Optional request context dict with 'tenant_id' (default 'shared') "
                         "and 'request_id' (optional trace ID). When omitted, defaults to "
-                        "tenant_id='owner' and no request_id."
+                        "tenant_id='shared' and no request_id."
                     )
                 ),
             ] = None,
@@ -500,9 +500,9 @@ class MemoryModule(Module):
                 dict[str, Any] | None,
                 Field(
                     description=(
-                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "Optional request context dict with 'tenant_id' (default 'shared') "
                         "and 'request_id' (optional trace ID). When omitted, defaults to "
-                        "tenant_id='owner' and no request_id."
+                        "tenant_id='shared' and no request_id."
                     )
                 ),
             ] = None,
@@ -625,9 +625,9 @@ class MemoryModule(Module):
                 dict[str, Any] | None,
                 Field(
                     description=(
-                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "Optional request context dict with 'tenant_id' (default 'shared') "
                         "and 'request_id' (optional trace ID). When omitted, defaults to "
-                        "tenant_id='owner' and no request_id."
+                        "tenant_id='shared' and no request_id."
                     )
                 ),
             ] = None,
@@ -810,7 +810,7 @@ class MemoryModule(Module):
                 dict[str, Any] | None,
                 Field(
                     description=(
-                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "Optional request context dict with 'tenant_id' (default 'shared') "
                         "and 'request_id' (optional trace ID). tenant_id scopes all retrieval. "
                         "When omitted, defaults to tenant_id='owner' and no request_id."
                     )

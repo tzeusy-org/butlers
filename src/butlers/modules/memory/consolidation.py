@@ -256,7 +256,7 @@ async def run_consolidation(
 
                 # 5. Execute consolidation actions — thread tenant_id and a
                 #    per-group request_id through so derived knowledge is stored
-                #    under the correct tenant, not defaulting to 'owner'.
+                #    under the correct tenant.
                 group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
                 group_request_id = str(uuid.uuid4())
                 exec_result = await execute_consolidation(

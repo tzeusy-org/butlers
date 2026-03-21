@@ -197,7 +197,7 @@ async def memory_context(
         Formatted memory context string. Same inputs always produce the same output.
     """
     # Resolve tenant_id from request_context
-    tenant_id = "owner"
+    tenant_id = "shared"
     if isinstance(request_context, dict):
         rc_tenant = request_context.get("tenant_id")
         if isinstance(rc_tenant, str) and rc_tenant.strip():

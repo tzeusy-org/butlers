@@ -61,7 +61,7 @@ async def semantic_search(
     *,
     limit: int = 10,
     scope: str | None = None,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
 ) -> list[dict]:
     """Search by cosine similarity using pgvector.
 
@@ -71,7 +71,7 @@ async def semantic_search(
         table: Table name (``'episodes'``, ``'facts'``, or ``'rules'``).
         limit: Max results (default 10).
         scope: Optional scope filter (only applied for facts/rules tables).
-        tenant_id: Tenant scope for isolation (default 'owner').
+        tenant_id: Tenant scope for isolation (default 'shared').
 
     Returns:
         List of dicts with all table columns plus a ``similarity`` key
@@ -140,7 +140,7 @@ async def keyword_search(
     *,
     limit: int = 10,
     scope: str | None = None,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
 ) -> list[dict]:
     """Search by keyword using PostgreSQL full-text search.
 
@@ -153,7 +153,7 @@ async def keyword_search(
         table: Table name ('episodes', 'facts', 'rules').
         limit: Max results (default 10).
         scope: Optional scope filter (only for facts/rules).
-        tenant_id: Tenant scope for isolation (default 'owner').
+        tenant_id: Tenant scope for isolation (default 'shared').
 
     Returns:
         List of dicts with keys: all table columns plus 'rank'.
@@ -223,7 +223,7 @@ async def hybrid_search(
     *,
     limit: int = 10,
     scope: str | None = None,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
 ) -> list[dict]:
     """Hybrid search combining semantic and keyword search via RRF.
 
@@ -242,7 +242,7 @@ async def hybrid_search(
         table: Table name (``'episodes'``, ``'facts'``, ``'rules'``).
         limit: Max results per search method and for final output.
         scope: Optional scope filter.
-        tenant_id: Tenant scope for isolation (default 'owner').
+        tenant_id: Tenant scope for isolation (default 'shared').
 
     Returns:
         List of dicts with ``rrf_score``, ``semantic_rank``, and
@@ -449,7 +449,7 @@ async def recall(
     limit: int = 10,
     min_confidence: float = 0.2,
     weights: CompositeWeights | None = None,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
     filters: dict[str, Any] | None = None,
 ) -> list[dict]:
     """High-level composite-scored retrieval of relevant facts and rules.
@@ -471,7 +471,7 @@ async def recall(
         limit: Max results to return (default 10).
         min_confidence: Minimum effective confidence threshold (default 0.2).
         weights: Optional custom composite weights.
-        tenant_id: Tenant scope for isolation (default 'owner').
+        tenant_id: Tenant scope for isolation (default 'shared').
         filters: Optional dict of AND-conditions (scope, entity_id, predicate,
             source_butler, time_from, time_to, retention_class, sensitivity).
             Unrecognized keys are silently ignored.
@@ -671,7 +671,7 @@ async def search(
     mode: str = "hybrid",
     limit: int = 10,
     min_confidence: float = 0.0,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
     filters: dict[str, Any] | None = None,
 ) -> list[dict]:
     """General-purpose search across memory types.
@@ -690,7 +690,7 @@ async def search(
         mode: Search mode ('semantic', 'keyword', 'hybrid').
         limit: Max results per type (default 10).
         min_confidence: Minimum confidence filter (default 0.0).
-        tenant_id: Tenant scope for isolation (default 'owner').
+        tenant_id: Tenant scope for isolation (default 'shared').
         filters: Optional dict of AND-conditions (scope, entity_id, predicate,
             source_butler, time_from, time_to, retention_class, sensitivity).
             Unrecognized keys are silently ignored.
@@ -850,7 +850,7 @@ async def search_catalog(
     query: str,
     embedding_engine,  # EmbeddingEngine instance
     *,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
     memory_type: str | None = None,
     limit: int = 10,
     mode: str = "hybrid",
@@ -866,7 +866,7 @@ async def search_catalog(
         pool: asyncpg connection pool with access to the ``shared`` schema.
         query: Natural language search query.
         embedding_engine: EmbeddingEngine for computing query embeddings.
-        tenant_id: Tenant scope for isolation (default 'owner').
+        tenant_id: Tenant scope for isolation (default 'shared').
         memory_type: Optional filter — 'fact' or 'rule'.  When None, searches
             both types.
         limit: Maximum results to return (default 10).

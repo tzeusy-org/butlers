@@ -60,14 +60,14 @@ def _extract_request_context(
         request_context: Optional dict with 'tenant_id' and/or 'request_id' keys.
 
     Returns:
-        Tuple of (tenant_id, request_id). Defaults to ('owner', None) when
+        Tuple of (tenant_id, request_id). Defaults to ('shared', None) when
         request_context is None or keys are absent.
     """
     if not request_context:
-        return "owner", None
+        return "shared", None
     tenant_id_val = request_context.get("tenant_id")
     request_id = request_context.get("request_id") or None
-    tenant_id = "owner" if tenant_id_val in (None, "") else str(tenant_id_val)
+    tenant_id = "shared" if tenant_id_val in (None, "") else str(tenant_id_val)
     return tenant_id, str(request_id) if request_id is not None else None
 
 

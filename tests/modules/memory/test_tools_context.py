@@ -410,7 +410,7 @@ class TestMemoryContext:
 
         assert captured["tenant_id"] == "custom-tenant"
 
-    async def test_request_context_none_defaults_to_owner(self):
+    async def test_request_context_none_defaults_to_shared(self):
         """When request_context is None, tenant_id defaults to 'owner'."""
         pool = _make_pool()
         captured: dict = {}
@@ -425,7 +425,7 @@ class TestMemoryContext:
         ):
             await memory_context(pool, MagicMock(), "prompt", "general")
 
-        assert captured["tenant_id"] == "owner"
+        assert captured["tenant_id"] == "shared"
 
     async def test_rules_sorted_by_maturity_rank(self):
         """Proven rules appear before candidate rules."""

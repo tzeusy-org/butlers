@@ -131,7 +131,7 @@ class TestRecall:
             "facts",
             limit=5,
             scope="butler-a",
-            tenant_id="owner",
+            tenant_id="shared",
         )
         hs_mock.assert_any_await(
             pool,
@@ -140,7 +140,7 @@ class TestRecall:
             "rules",
             limit=5,
             scope="butler-a",
-            tenant_id="owner",
+            tenant_id="shared",
         )
 
     async def test_tags_results_with_memory_type(self) -> None:

@@ -226,21 +226,20 @@ class TestEntityGet:
         result = await entity_get(mock_pool, SAMPLE_UUID_STR, tenant_id=TENANT_ID)
         assert result is None
 
-    async def test_tenant_isolation_in_query(self, mock_pool: AsyncMock) -> None:
-        """Query includes tenant_id for isolation."""
+    async def test_uuid_lookup_is_tenant_agnostic(self, mock_pool: AsyncMock) -> None:
+        """Query looks up by UUID only (no tenant filter)."""
         mock_pool.fetchrow = AsyncMock(return_value=None)
         await entity_get(mock_pool, SAMPLE_UUID_STR, tenant_id=TENANT_ID)
-        sql, eid_arg, tid_arg = mock_pool.fetchrow.call_args[0]
-        assert "tenant_id" in sql
-        assert tid_arg == TENANT_ID
+        args = mock_pool.fetchrow.call_args[0]
+        assert SAMPLE_UUID in args
 
     async def test_converts_string_id_to_uuid(self, mock_pool: AsyncMock) -> None:
         """entity_id string is converted to UUID before querying."""
         mock_pool.fetchrow = AsyncMock(return_value=None)
         await entity_get(mock_pool, SAMPLE_UUID_STR, tenant_id=TENANT_ID)
-        sql, eid_arg, tid_arg = mock_pool.fetchrow.call_args[0]
-        assert eid_arg == SAMPLE_UUID
-        assert isinstance(eid_arg, uuid.UUID)
+        args = mock_pool.fetchrow.call_args[0]
+        assert SAMPLE_UUID in args
+        assert isinstance(args[1], uuid.UUID)
 
     async def test_serializes_uuid_fields_to_strings(self, mock_pool: AsyncMock) -> None:
         """UUID fields in the result are serialized to strings."""
@@ -410,23 +409,23 @@ class TestEntityUpdate:
         assert result["created_at"] == NOW.isoformat()
         assert result["updated_at"] == NOW.isoformat()
 
-    async def test_tenant_isolation_in_existence_check(self, mock_pool: AsyncMock) -> None:
-        """The existence check query includes tenant_id for isolation."""
+    async def test_existence_check_uses_uuid_only(self, mock_pool: AsyncMock) -> None:
+        """The existence check query looks up by UUID (tenant-agnostic)."""
         mock_pool.fetchrow = AsyncMock(return_value=None)
         await entity_update(mock_pool, SAMPLE_UUID_STR, tenant_id=TENANT_ID)
-        first_call_sql = mock_pool.fetchrow.call_args_list[0][0][0]
-        assert "tenant_id" in first_call_sql
+        first_call_args = mock_pool.fetchrow.call_args_list[0][0]
+        assert SAMPLE_UUID in first_call_args
 
-    async def test_tenant_isolation_in_update_query(self, mock_pool: AsyncMock) -> None:
-        """The UPDATE query includes tenant_id for isolation."""
+    async def test_update_query_uses_uuid_only(self, mock_pool: AsyncMock) -> None:
+        """The UPDATE query looks up by UUID (tenant-agnostic)."""
         current_row = {"id": SAMPLE_UUID, "metadata": {}}
         updated_row = _make_entity_row()
         mock_pool.fetchrow = AsyncMock(side_effect=[current_row, updated_row])
 
         await entity_update(mock_pool, SAMPLE_UUID_STR, tenant_id=TENANT_ID, canonical_name="X")
 
-        second_call_sql = mock_pool.fetchrow.call_args_list[1][0][0]
-        assert "tenant_id" in second_call_sql
+        second_call_args = mock_pool.fetchrow.call_args_list[1][0]
+        assert SAMPLE_UUID in second_call_args
 
     async def test_converts_string_id_to_uuid(self, mock_pool: AsyncMock) -> None:
         """entity_id string is converted to UUID before querying."""

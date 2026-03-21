@@ -218,7 +218,7 @@ class TestMemoryRecall:
             scope=None,
             limit=10,
             filters=None,
-            tenant_id="owner",
+            tenant_id="shared",
         )
         assert len(results) == 1
         assert results[0]["id"] == str(sample_uuid)
@@ -245,7 +245,7 @@ class TestMemoryRecall:
             scope="butler-b",
             limit=5,
             filters=None,
-            tenant_id="owner",
+            tenant_id="shared",
         )
 
     async def test_serializes_results(

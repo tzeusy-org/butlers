@@ -124,7 +124,7 @@ class TestNewFacts:
             tags=["preference"],
             source_butler="test-butler",
             entity_id=None,
-            tenant_id="owner",
+            tenant_id="shared",
             request_id=None,
         )
 
@@ -214,7 +214,7 @@ class TestUpdatedFacts:
             scope="test-butler",
             source_butler="test-butler",
             entity_id=None,
-            tenant_id="owner",
+            tenant_id="shared",
             request_id=None,
         )
 
@@ -265,7 +265,7 @@ class TestNewRules:
             scope="test-butler",
             tags=["etiquette"],
             source_butler="test-butler",
-            tenant_id="owner",
+            tenant_id="shared",
             request_id=None,
         )
 
@@ -783,7 +783,7 @@ class TestTenantIsolation:
         # The tenant_id parameter is passed as second positional arg ($2)
         assert events_sql_call[0][2] == "acme"
 
-    async def test_default_tenant_id_is_owner(self) -> None:
+    async def test_default_tenant_id_is_shared(self) -> None:
         """When tenant_id is not specified, it defaults to 'owner'."""
         pool = _mock_pool()
         engine = _mock_embedding_engine()
@@ -804,5 +804,5 @@ class TestTenantIsolation:
             await execute_consolidation(pool, engine, parsed, episode_ids, "my-butler")
 
         sf_kwargs = mock_sf.call_args.kwargs
-        assert sf_kwargs.get("tenant_id") == "owner"
+        assert sf_kwargs.get("tenant_id") == "shared"
         assert sf_kwargs.get("request_id") is None

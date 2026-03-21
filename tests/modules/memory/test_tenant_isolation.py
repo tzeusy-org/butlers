@@ -99,7 +99,7 @@ def fact_pool():
 class TestStoreEpisodeTenantLineage:
     """store_episode includes tenant_id and request_id in the INSERT."""
 
-    async def test_default_tenant_id_is_owner(
+    async def test_default_tenant_id_is_shared(
         self, simple_pool: AsyncMock, embedding_engine: MagicMock
     ) -> None:
         """When tenant_id is not specified, it defaults to 'owner'."""
@@ -153,8 +153,8 @@ class TestStoreEpisodeTenantLineage:
 class TestStoreFactTenantLineage:
     """store_fact includes tenant_id and request_id in the INSERT and scopes supersession."""
 
-    async def test_default_tenant_id_is_owner(self, fact_pool, embedding_engine: MagicMock) -> None:
-        """Default tenant_id is 'owner'."""
+    async def test_default_tenant_id_is_shared(self, fact_pool, embedding_engine: MagicMock) -> None:
+        """Default tenant_id is 'shared'."""
         pool, conn = fact_pool
         await _storage.store_fact(pool, "user", "city", "Berlin", embedding_engine)
         insert_sql = conn.execute.call_args_list[0].args[0]
@@ -218,10 +218,10 @@ class TestStoreFactTenantLineage:
 class TestStoreRuleTenantLineage:
     """store_rule includes tenant_id and request_id in the INSERT."""
 
-    async def test_default_tenant_id_is_owner(
+    async def test_default_tenant_id_is_shared(
         self, simple_pool: AsyncMock, embedding_engine: MagicMock
     ) -> None:
-        """Default tenant_id is 'owner'."""
+        """Default tenant_id is 'shared'."""
         await _storage.store_rule(simple_pool, "Always greet politely", embedding_engine)
         sql, *args = simple_pool.execute.call_args[0]
         assert "tenant_id" in sql
@@ -389,7 +389,7 @@ class TestWritingToolRequestContext:
         return mod, mock_storage
 
     async def test_store_episode_no_request_context_defaults(self) -> None:
-        """Without request_context, tenant_id='owner' and request_id=None."""
+        """Without request_context, tenant_id='shared' and request_id=None."""
         mod, mock_storage = self._load_writing_tools()
 
         pool = AsyncMock()
@@ -399,7 +399,7 @@ class TestWritingToolRequestContext:
             await mod.memory_store_episode(pool, "episode text", "butler-x")
 
         kwargs = mock_storage.store_episode.call_args[1]
-        assert kwargs.get("tenant_id") == "owner"
+        assert kwargs.get("tenant_id") == "shared"
         assert kwargs.get("request_id") is None
 
     async def test_store_episode_with_request_context(self) -> None:
@@ -477,7 +477,7 @@ class TestWritingToolRequestContext:
             await mod.memory_store_fact(pool, engine, "user", "city", "Berlin")
 
         kwargs = mock_storage.store_fact.call_args[1]
-        assert kwargs.get("tenant_id") == "owner"
+        assert kwargs.get("tenant_id") == "shared"
         assert kwargs.get("request_id") is None
 
     async def test_store_rule_no_request_context_defaults(self) -> None:
@@ -492,5 +492,5 @@ class TestWritingToolRequestContext:
             await mod.memory_store_rule(pool, engine, "Always confirm before deleting")
 
         kwargs = mock_storage.store_rule.call_args[1]
-        assert kwargs.get("tenant_id") == "owner"
+        assert kwargs.get("tenant_id") == "shared"
         assert kwargs.get("request_id") is None

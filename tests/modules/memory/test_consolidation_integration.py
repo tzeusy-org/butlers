@@ -63,7 +63,7 @@ def _episode_row(
     consolidation_status: str = "pending",
     consolidation_attempts: int = 0,
     last_consolidation_error: str | None = None,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
 ) -> dict:
     """Build a dict mimicking an asyncpg Record for an episode."""
     return {

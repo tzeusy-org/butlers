@@ -75,7 +75,7 @@ class TestMemoryStoreEpisode:
                 mock_get_engine.return_value,
                 session_id=None,
                 importance=5.0,
-                tenant_id="owner",
+                tenant_id="shared",
                 request_id=None,
             )
 
@@ -187,7 +187,7 @@ class TestMemoryStoreFact:
                 object_entity_id=None,
                 valid_at=None,
                 idempotency_key=None,
-                tenant_id="owner",
+                tenant_id="shared",
                 request_id=None,
                 retention_class="operational",
                 sensitivity="normal",
@@ -300,7 +300,7 @@ class TestMemoryStoreRule:
                 mock_embedding_engine,
                 scope="global",
                 tags=None,
-                tenant_id="owner",
+                tenant_id="shared",
                 request_id=None,
                 retention_class="rule",
                 sensitivity="normal",

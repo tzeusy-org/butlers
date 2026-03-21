@@ -368,7 +368,7 @@ class TestEntityMergeBasic:
         assert payload["target_entity_id"] == TARGET_ID
 
     async def test_queries_use_correct_uuids(self, mock_pool: MagicMock) -> None:
-        """Source and target are fetched with correct UUID objects."""
+        """Source and target are fetched with correct UUID objects (tenant-agnostic)."""
         conn = _get_conn(mock_pool)
         src_row = _make_entity_row(SOURCE_UUID)
         tgt_row = _make_entity_row(TARGET_UUID)
@@ -379,15 +379,13 @@ class TestEntityMergeBasic:
 
         await entity_merge(mock_pool, SOURCE_ID, TARGET_ID, tenant_id=TENANT_ID)
 
-        # First fetchrow: source entity
+        # First fetchrow: source entity (lookup by UUID only, no tenant filter)
         src_call_args = conn.fetchrow.call_args_list[0][0]
         assert SOURCE_UUID in src_call_args
-        assert TENANT_ID in src_call_args
-
-        # Second fetchrow: target entity
+        
+        # Second fetchrow: target entity (lookup by UUID only, no tenant filter)
         tgt_call_args = conn.fetchrow.call_args_list[1][0]
         assert TARGET_UUID in tgt_call_args
-        assert TENANT_ID in tgt_call_args
 
 
 # ---------------------------------------------------------------------------

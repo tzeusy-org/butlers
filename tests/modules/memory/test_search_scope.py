@@ -138,7 +138,7 @@ class TestSemanticSearchScopeFiltering:
         assert "butler = $3" in sql
         assert "LIMIT $4" in sql
         assert args[1] == str(_SAMPLE_EMBEDDING)  # $1
-        assert args[2] == "owner"  # $2 = tenant_id
+        assert args[2] == "shared"  # $2 = tenant_id
         assert args[3] == "butler-x"  # $3
         assert args[4] == 5  # $4
 
@@ -150,7 +150,7 @@ class TestSemanticSearchScopeFiltering:
         assert "scope IN ('global', $3)" in sql
         assert "LIMIT $4" in sql
         assert args[1] == str(_SAMPLE_EMBEDDING)  # $1
-        assert args[2] == "owner"  # $2 = tenant_id
+        assert args[2] == "shared"  # $2 = tenant_id
         assert args[3] == "butler-x"  # $3
         assert args[4] == 7  # $4
 
@@ -220,7 +220,7 @@ class TestKeywordSearchScopeFiltering:
         assert "butler = $3" in sql
         assert "LIMIT $4" in sql
         assert args[1] == "test"  # $1
-        assert args[2] == "owner"  # $2 = tenant_id
+        assert args[2] == "shared"  # $2 = tenant_id
         assert args[3] == "butler-x"  # $3
         assert args[4] == 5  # $4
 

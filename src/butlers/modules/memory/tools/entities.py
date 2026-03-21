@@ -150,10 +150,9 @@ async def entity_get(
         SELECT id, tenant_id, canonical_name, entity_type, aliases, metadata,
                roles, created_at, updated_at
         FROM shared.entities
-        WHERE id = $1 AND tenant_id = $2
+        WHERE id = $1
         """,
         uuid.UUID(entity_id),
-        tenant_id,
     )
 
     if row is None:
@@ -191,9 +190,8 @@ async def entity_update(
     eid = uuid.UUID(entity_id)
 
     current = await pool.fetchrow(
-        "SELECT id, metadata FROM shared.entities WHERE id = $1 AND tenant_id = $2",
+        "SELECT id, metadata FROM shared.entities WHERE id = $1",
         eid,
-        tenant_id,
     )
     if current is None:
         return None
@@ -220,15 +218,13 @@ async def entity_update(
         param_idx += 1
 
     params.append(eid)
-    params.append(tenant_id)
     where_id_idx = param_idx
-    where_tenant_idx = param_idx + 1
 
     row = await pool.fetchrow(
         f"""
         UPDATE shared.entities
         SET {", ".join(set_clauses)}
-        WHERE id = ${where_id_idx} AND tenant_id = ${where_tenant_idx}
+        WHERE id = ${where_id_idx}
         RETURNING id, tenant_id, canonical_name, entity_type, aliases, metadata,
                   roles, created_at, updated_at
         """,
@@ -957,24 +953,22 @@ async def entity_merge(
         async with conn.transaction():
             src_row = await conn.fetchrow(
                 "SELECT id, canonical_name, aliases, metadata, roles "
-                "FROM shared.entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                "FROM shared.entities WHERE id = $1 FOR UPDATE",
                 src_uuid,
-                tenant_id,
             )
             if src_row is None:
                 raise ValueError(
-                    f"Source entity '{source_entity_id}' not found for tenant '{tenant_id}'."
+                    f"Source entity '{source_entity_id}' not found."
                 )
 
             tgt_row = await conn.fetchrow(
                 "SELECT id, canonical_name, aliases, metadata, roles "
-                "FROM shared.entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                "FROM shared.entities WHERE id = $1 FOR UPDATE",
                 tgt_uuid,
-                tenant_id,
             )
             if tgt_row is None:
                 raise ValueError(
-                    f"Target entity '{target_entity_id}' not found for tenant '{tenant_id}'."
+                    f"Target entity '{target_entity_id}' not found."
                 )
 
             src_metadata: dict[str, Any] = _parse_metadata(src_row["metadata"])

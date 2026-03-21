@@ -45,7 +45,7 @@ def _episode_row(
     content: str = "something happened",
     days_ago: float = 1.0,
     consolidation_attempts: int = 0,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
 ) -> dict:
     """Build a dict mimicking an asyncpg Record for a pending episode."""
     return {

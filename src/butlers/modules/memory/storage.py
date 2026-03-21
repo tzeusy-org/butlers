@@ -392,7 +392,7 @@ async def store_episode(
     session_id: uuid.UUID | None = None,
     importance: float = 5.0,
     metadata: dict | None = None,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
     request_id: str | None = None,
     retention_class: str = "transient",
     sensitivity: str = "normal",
@@ -412,7 +412,7 @@ async def store_episode(
         session_id: Optional UUID of the source runtime session.
         importance: Importance rating (default 5.0).
         metadata: Optional JSONB metadata dict.
-        tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
+        tenant_id: Tenant scope for multi-tenant isolation (default 'shared').
         request_id: Optional request trace ID for correlation.
         retention_class: Retention policy class (default 'transient').
         sensitivity: Data sensitivity classification (default 'normal').
@@ -584,7 +584,7 @@ async def store_fact(
     entity_id: uuid.UUID | None = None,
     object_entity_id: uuid.UUID | None = None,
     valid_at: datetime | None = None,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
     request_id: str | None = None,
     idempotency_key: str | None = None,
     retention_class: str = "operational",
@@ -630,7 +630,7 @@ async def store_fact(
             ``None`` (property fact).  Pass an explicit datetime to create a
             temporal fact; multiple temporal facts with different ``valid_at``
             values coexist as active facts without superseding each other.
-        tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
+        tenant_id: Tenant scope for multi-tenant isolation (default 'shared').
             Supersession checks are scoped to the same tenant_id.
         request_id: Optional request trace ID for correlation.
         idempotency_key: Optional dedup key for temporal facts.  When omitted
@@ -1206,7 +1206,7 @@ async def store_rule(
     source_butler: str | None = None,
     source_episode_id: uuid.UUID | None = None,
     metadata: dict | None = None,
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
     request_id: str | None = None,
     retention_class: str = "rule",
     sensitivity: str = "normal",
@@ -1228,7 +1228,7 @@ async def store_rule(
         source_butler: Name of the butler that proposed this rule.
         source_episode_id: Optional source episode UUID.
         metadata: Optional JSONB metadata dict.
-        tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
+        tenant_id: Tenant scope for multi-tenant isolation (default 'shared').
         request_id: Optional request trace ID for correlation.
         retention_class: Retention policy class for the rule (default 'rule').
             Controls lifecycle management behaviour.
@@ -1642,7 +1642,7 @@ async def mark_helpful(
             )
 
             # Write rule_applications audit row (additive; does not replace counters)
-            tenant_id = row.get("tenant_id", "owner")
+            tenant_id = row.get("tenant_id", "shared")
             await conn.execute(
                 "INSERT INTO rule_applications "
                 "    (tenant_id, rule_id, session_id, request_id, outcome) "
@@ -1762,7 +1762,7 @@ async def mark_harmful(
             )
 
             # Write rule_applications audit row (additive; does not replace counters)
-            tenant_id = row.get("tenant_id", "owner")
+            tenant_id = row.get("tenant_id", "shared")
             audit_notes: dict = {}
             if reason:
                 audit_notes["reason"] = reason

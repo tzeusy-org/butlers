@@ -56,7 +56,7 @@ async def execute_consolidation(
     *,
     scope: str | None = None,
     retention_class: str = "transient",
-    tenant_id: str = "owner",
+    tenant_id: str = "shared",
     request_id: str | None = None,
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
@@ -78,7 +78,7 @@ async def execute_consolidation(
         retention_class: Retention class to look up episode TTL from
             memory_policies (default 'transient').
         tenant_id: Tenant scope for all derived knowledge and audit events
-            (default 'owner').  Must match the tenant of the source episodes.
+            (default 'shared').  Must match the tenant of the source episodes.
         request_id: Optional request trace ID threaded through store calls
             for correlation.
 
