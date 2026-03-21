@@ -1650,7 +1650,7 @@ class TestGmailAttachmentExtraction:
     def mock_blob_store(self) -> AsyncMock:
         """Create mock blob store."""
         store = AsyncMock()
-        store.put = AsyncMock(return_value="local://2026/02/16/test.jpg")
+        store.put = AsyncMock(return_value="s3://butlers-blobs/switchboard/2026/02/16/test.jpg")
         return store
 
     @pytest.fixture
@@ -2573,7 +2573,7 @@ class TestAttachmentPolicyEnforcement:
     @pytest.fixture
     def mock_blob_store(self) -> AsyncMock:
         store = AsyncMock()
-        store.put = AsyncMock(return_value="local://2026/02/blob.bin")
+        store.put = AsyncMock(return_value="s3://butlers-blobs/switchboard/2026/02/blob.bin")
         return store
 
     @pytest.fixture
@@ -2690,7 +2690,7 @@ class TestAttachmentPolicyEnforcement:
         assert result is not None
         assert len(result) == 1
         assert result[0]["media_type"] == "text/calendar"
-        assert result[0]["storage_ref"] == "local://2026/02/blob.bin"
+        assert result[0]["storage_ref"] == "s3://butlers-blobs/switchboard/2026/02/blob.bin"
         assert "fetched" not in result[0]  # Internal field excluded from envelope dict
         # Blob store must be called for eager fetch.
         mock_blob_store.put.assert_awaited_once()
@@ -2907,7 +2907,7 @@ class TestOnDemandFetch:
     @pytest.fixture
     def mock_blob_store(self) -> AsyncMock:
         store = AsyncMock()
-        store.put = AsyncMock(return_value="local://2026/02/lazy.bin")
+        store.put = AsyncMock(return_value="s3://butlers-blobs/switchboard/2026/02/lazy.bin")
         return store
 
     @pytest.fixture
@@ -2937,7 +2937,7 @@ class TestOnDemandFetch:
         mock_conn.fetchrow = AsyncMock(
             return_value={
                 "fetched": True,
-                "blob_ref": "local://existing/blob.pdf",
+                "blob_ref": "s3://butlers-blobs/switchboard/existing/blob.pdf",
                 "filename": "doc.pdf",
                 "media_type": "application/pdf",
                 "size_bytes": 1024,
@@ -2952,7 +2952,7 @@ class TestOnDemandFetch:
 
         result = await runtime.fetch_attachment("msg1", "att_existing")
 
-        assert result == "local://existing/blob.pdf"
+        assert result == "s3://butlers-blobs/switchboard/existing/blob.pdf"
         # Blob store should NOT be called (idempotent short-circuit).
         mock_blob_store.put.assert_not_awaited()
 
@@ -3005,7 +3005,7 @@ class TestOnDemandFetch:
 
         result = await runtime.fetch_attachment("msg2", "att_lazy")
 
-        assert result == "local://2026/02/lazy.bin"
+        assert result == "s3://butlers-blobs/switchboard/2026/02/lazy.bin"
         mock_blob_store.put.assert_awaited_once()
 
     @pytest.mark.asyncio

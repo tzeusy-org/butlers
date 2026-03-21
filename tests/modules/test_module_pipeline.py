@@ -1196,7 +1196,7 @@ def test_build_routing_prompt_with_single_attachment():
     attachments = [
         {
             "media_type": "image/jpeg",
-            "storage_ref": "local://2026/02/16/test-photo.jpg",
+            "storage_ref": "s3://butlers-blobs/switchboard/2026/02/16/test-photo.jpg",
             "size_bytes": 245760,  # 240 KB
             "filename": "blood-test.jpg",
         }
@@ -1215,7 +1215,7 @@ def test_build_routing_prompt_with_single_attachment():
     assert "blood-test.jpg" in prompt
     assert "image/jpeg" in prompt
     assert "240.0KB" in prompt
-    assert "local://2026/02/16/test-photo.jpg" in prompt
+    assert "s3://butlers-blobs/switchboard/2026/02/16/test-photo.jpg" in prompt
     assert "route_to_butler" in prompt
 
 
@@ -1228,13 +1228,13 @@ def test_build_routing_prompt_with_multiple_attachments():
     attachments = [
         {
             "media_type": "image/jpeg",
-            "storage_ref": "local://2026/02/16/photo1.jpg",
+            "storage_ref": "s3://butlers-blobs/switchboard/2026/02/16/photo1.jpg",
             "size_bytes": 100000,
             "filename": "xray.jpg",
         },
         {
             "media_type": "application/pdf",
-            "storage_ref": "local://2026/02/16/report.pdf",
+            "storage_ref": "s3://butlers-blobs/switchboard/2026/02/16/report.pdf",
             "size_bytes": 500000,
             "filename": "lab-report.pdf",
         },
@@ -1262,7 +1262,7 @@ def test_build_routing_prompt_with_attachment_no_filename():
     attachments = [
         {
             "media_type": "image/png",
-            "storage_ref": "local://2026/02/16/unnamed.png",
+            "storage_ref": "s3://butlers-blobs/switchboard/2026/02/16/unnamed.png",
             "size_bytes": 50000,
         }
     ]
@@ -1277,7 +1277,7 @@ def test_build_routing_prompt_with_attachment_no_filename():
     assert "## Attachments" in prompt
     assert "image/png" in prompt
     assert "48.8KB" in prompt  # 50000 / 1024
-    assert "local://2026/02/16/unnamed.png" in prompt
+    assert "s3://butlers-blobs/switchboard/2026/02/16/unnamed.png" in prompt
 
 
 def test_build_routing_prompt_empty_attachments_list():

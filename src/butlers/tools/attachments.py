@@ -26,7 +26,7 @@ async def get_attachment(blob_store: BlobStore, storage_ref: str) -> dict[str, A
 
     Args:
         blob_store: The BlobStore instance to retrieve from
-        storage_ref: Storage reference string (e.g., 'local://2026/02/16/abc123.jpg')
+        storage_ref: Storage reference string (e.g., 's3://bucket/general/2026/02/16/abc123.jpg')
 
     Returns:
         Dictionary with:

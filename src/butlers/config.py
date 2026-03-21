@@ -198,6 +198,19 @@ class SchedulerConfig:
 
 
 @dataclass
+class StorageConfig:
+    """S3-compatible blob storage marker.
+
+    All blob storage parameters (endpoint_url, bucket, region, credentials)
+    are resolved at runtime from the CredentialStore (managed via the
+    dashboard secrets UI at /secrets).  This dataclass is kept as a
+    placeholder for potential future non-secret storage settings.
+    """
+
+    pass
+
+
+@dataclass
 class ButlerConfig:
     """Parsed and validated butler configuration."""
 
@@ -215,7 +228,7 @@ class ButlerConfig:
     shutdown_timeout_s: float = 30.0
     switchboard_url: str | None = None
     trusted_route_callers: tuple[str, ...] = DEFAULT_TRUSTED_ROUTE_CALLERS
-    blob_storage_dir: str = "data/blobs"
+    storage: StorageConfig = field(default_factory=StorageConfig)
     buffer: BufferConfig = field(default_factory=BufferConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
@@ -685,9 +698,11 @@ def load_config(config_dir: Path) -> ButlerConfig:
     else:
         trusted_route_callers = DEFAULT_TRUSTED_ROUTE_CALLERS
 
-    # --- [butler.storage] sub-section ---
-    storage_section = butler_section.get("storage", {})
-    blob_storage_dir = storage_section.get("blob_dir", "data/blobs")
+    # --- [butler.storage] ---
+    # All blob storage parameters (endpoint_url, bucket, region, credentials)
+    # are resolved at runtime from the CredentialStore (dashboard secrets UI).
+    # No TOML or env-var config needed.
+    storage_config = StorageConfig()
 
     # --- [butler.scheduler] sub-section ---
     scheduler_section = butler_section.get("scheduler", {})
@@ -773,7 +788,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         shutdown_timeout_s=shutdown_timeout_s,
         switchboard_url=switchboard_url,
         trusted_route_callers=trusted_route_callers,
-        blob_storage_dir=blob_storage_dir,
+        storage=storage_config,
         buffer=buffer_config,
         scheduler=scheduler_config,
     )

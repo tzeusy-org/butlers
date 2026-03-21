@@ -124,7 +124,7 @@ from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.base import Module
 from butlers.modules.pipeline import MessagePipeline, _routing_ctx_var
 from butlers.modules.registry import ModuleRegistry, default_registry
-from butlers.storage import BlobNotFoundError, LocalBlobStore
+from butlers.storage import BlobNotFoundError, S3BlobStore
 from butlers.tools.attachments import get_attachment as _get_attachment
 from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
 
@@ -1030,7 +1030,7 @@ class ButlerDaemon:
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
         self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
-        self.blob_store: LocalBlobStore | None = None
+        self.blob_store: S3BlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
 
@@ -1256,10 +1256,9 @@ class ButlerDaemon:
         )
         logger.info("Loaded config for butler: %s", self.config.name)
 
-        # 1c. Initialize blob storage
-        blob_storage_path = Path(self.config.blob_storage_dir)
-        self.blob_store = LocalBlobStore(blob_storage_path)
-        logger.info("Initialized blob storage at: %s", blob_storage_path)
+        # 1c. Blob storage initialization is deferred to step 8c (after
+        # CredentialStore is available) so S3 credentials can be resolved
+        # from the database rather than requiring environment variables.
 
         # 2. Initialize telemetry and metrics
         init_telemetry(f"butler.{self.config.name}")
@@ -1360,6 +1359,35 @@ class ButlerDaemon:
             if k.split(".")[0] not in self._module_statuses
             or self._module_statuses[k.split(".")[0]].status == "active"
         }
+
+        # 8c. Initialize S3-compatible blob storage.
+        # All S3 parameters are resolved from CredentialStore (DB-only, no env
+        # fallback) — managed via the dashboard secrets UI at /secrets.
+        s3_endpoint = await credential_store.resolve(
+            "BLOB_S3_ENDPOINT_URL", env_fallback=False
+        )
+        s3_bucket = await credential_store.resolve("BLOB_S3_BUCKET", env_fallback=False)
+        s3_region = await credential_store.resolve("BLOB_S3_REGION", env_fallback=False)
+        s3_access_key = await credential_store.resolve(
+            "BLOB_S3_ACCESS_KEY_ID", env_fallback=False
+        )
+        s3_secret_key = await credential_store.resolve(
+            "BLOB_S3_SECRET_ACCESS_KEY", env_fallback=False
+        )
+        if not s3_endpoint or not s3_bucket:
+            raise RuntimeError(
+                "Missing required S3 blob storage secrets: BLOB_S3_ENDPOINT_URL and "
+                "BLOB_S3_BUCKET must be configured via the dashboard secrets UI (/secrets)."
+            )
+        self.blob_store = S3BlobStore(
+            bucket=s3_bucket,
+            butler_name=self.config.name,
+            endpoint_url=s3_endpoint,
+            access_key_id=s3_access_key,
+            secret_access_key=s3_secret_key,
+            region=s3_region or "us-east-1",
+        )
+        await self.blob_store.startup_check()
 
         # 8d. Bootstrap owner entity (idempotent; non-fatal).
         #     Ensures owner entity exists in shared.entities.
@@ -4641,7 +4669,7 @@ class ButlerDaemon:
             Parameters
             ----------
             storage_ref:
-                Storage reference string (e.g., 'local://2026/02/16/abc123.jpg')
+                Storage reference string (e.g., 's3://bucket/general/2026/02/16/abc123.jpg')
 
             Returns
             -------
@@ -5065,6 +5093,11 @@ class ButlerDaemon:
                 await mod.on_shutdown()
             except Exception:
                 logger.exception("Error during shutdown of module: %s", mod.name)
+
+        # 6b. Close S3 blob store
+        if self.blob_store is not None:
+            await self.blob_store.close()
+            self.blob_store = None
 
         # 7. Close audit DB pool (if separate from main DB)
         if self._audit_db is not None:

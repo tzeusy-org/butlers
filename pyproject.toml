@@ -32,6 +32,7 @@ dependencies = [
     "pillow>=10.0.0",
     "telethon>=1.36.0",
     "wyoming>=1.8.0",
+    "aioboto3>=13.0.0",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +52,7 @@ dev = [
     "testcontainers[postgres]",
     "pytest-xdist>=3.8.0",
     "pytest-cov>=7.0.0",
+    "moto[s3,server]>=5.0.0",
 ]
 
 [project.scripts]

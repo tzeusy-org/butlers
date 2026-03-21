@@ -27,6 +27,24 @@ __all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
 
 _default_registry()
 
+
+@pytest.fixture(autouse=True)
+def _mock_s3_startup_check(monkeypatch):
+    """Globally skip S3 connectivity checks in daemon tests.
+
+    Patches the daemon's startup to skip the S3 head_bucket call.
+    Tests that specifically test S3 (test_blob_storage.py) use moto's
+    ThreadedMotoServer and call startup_check() directly on the instance.
+    """
+
+    async def _noop_startup_check(self):
+        pass
+
+    from butlers.storage.blobs import S3BlobStore
+
+    monkeypatch.setattr(S3BlobStore, "startup_check", _noop_startup_check)
+
+
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
     from testcontainers.postgres import PostgresContainer
