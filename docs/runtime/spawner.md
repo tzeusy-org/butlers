@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Spawner Execution Flow](./spawner-flow.svg)
+
 The Spawner (`src/butlers/core/spawner.py`) is the core component that invokes ephemeral AI runtime instances for a butler. Each butler has exactly one Spawner instance. When triggered, the Spawner acquires concurrency slots, resolves the model from the catalog, generates a locked-down MCP config, invokes the runtime via an adapter, captures tool calls, logs the session, and returns the result.
 
 ## Class Structure

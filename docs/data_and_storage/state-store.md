@@ -6,6 +6,8 @@
 
 ## Overview
 
+![State Store Design](./state-store-design.svg)
+
 Every butler has a `state` table in its schema that provides a key-value store backed by PostgreSQL JSONB. This is the primary mechanism for butlers to remember things between ephemeral LLM CLI sessions. The state store is intentionally simple: string keys mapping to arbitrary JSON-serializable values, with built-in versioning for safe concurrent writes.
 
 ## Table Schema

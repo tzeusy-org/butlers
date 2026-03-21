@@ -6,6 +6,8 @@
 
 ## Overview
 
+
+![Daemon Startup Sequence](./startup-sequence.svg)
 Every butler in the system is a long-running Python process managed by the `ButlerDaemon` class (`src/butlers/daemon.py`). The daemon owns the full lifecycle of a butler: loading configuration, provisioning infrastructure, wiring modules, and serving MCP tools over an SSE transport. It is the single entry point for both `butlers run --config` (single butler) and `butlers up` (multi-butler) execution modes.
 
 ## Startup Sequence

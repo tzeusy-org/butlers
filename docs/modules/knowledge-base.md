@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Entity Data Model](./entity-data-model.svg)
+
 The Butlers knowledge graph uses **entities as the universal identity anchor**. Every piece of knowledge -- facts, relationships, credentials, contact details -- attaches to an entity via `entity_id`. This page describes the entity data model, the predicate vocabulary system, and how domain-specific "overlays" layer onto the shared entity graph.
 
 The knowledge base is not a standalone module. It is the data model that the Memory module reads and writes, and that other modules (Contacts, Health, Finance, Relationship) attach to via foreign keys.

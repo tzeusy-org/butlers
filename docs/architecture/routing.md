@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Switchboard Routing](./../butlers/switchboard-design.svg)
+
 The Switchboard Butler is the single ingress and orchestration control plane for the butler system. All external interactions start here. The routing architecture implements a pipeline that assigns identity context, classifies intent via LLM, fans out work to domain butlers, and collects responses — all while maintaining durable request lineage.
 
 ## Routing Pipeline

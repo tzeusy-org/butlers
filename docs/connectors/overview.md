@@ -2,9 +2,11 @@
 
 > **Purpose:** Explain what connectors are, their responsibilities, transport model, and how they submit events to the Switchboard.
 > **Audience:** Developers building or operating connectors.
-> **Prerequisites:** Familiarity with the [Switchboard butler role](../roles/switchboard_butler.md).
+> **Prerequisites:** Familiarity with the [Switchboard butler role](../architecture/routing.md).
 
 ## Overview
+
+![Connector Architecture](./connector-design.svg)
 
 Connectors are transport adapters that bridge external messaging systems (Telegram, Gmail, audio devices, etc.) into the Butlers ecosystem. They read events from source APIs, normalize them into a canonical envelope format, and submit them to the Switchboard's ingestion API. Connectors are deliberately thin -- they own the transport layer and nothing else.
 
@@ -118,7 +120,7 @@ Provider-specific credentials must come from environment or secret manager, neve
 
 ## Authentication
 
-Connector authentication uses bearer tokens issued by the Switchboard. Token scope must match the connector's source identity (`channel`, `provider`, `endpoint_identity`). See [API Authentication](../switchboard/api_authentication.md) for token lifecycle details.
+Connector authentication uses bearer tokens issued by the Switchboard. Token scope must match the connector's source identity (`channel`, `provider`, `endpoint_identity`). See [API Authentication](../identity_and_secrets/cli-runtime-auth.md) for token lifecycle details.
 
 ## Available Connectors
 
@@ -134,5 +136,5 @@ Connector authentication uses bearer tokens issued by the Switchboard. Token sco
 ## Related Pages
 
 - [Connector Interface Contract](interface.md) -- Full normative spec including `ingest.v1` envelope schema
-- [Switchboard Butler Role](../roles/switchboard_butler.md) -- Ingestion authority
-- [API Authentication](../switchboard/api_authentication.md) -- Token lifecycle
+- [Switchboard Butler Role](../architecture/routing.md) -- Ingestion authority
+- [API Authentication](../identity_and_secrets/cli-runtime-auth.md) -- Token lifecycle

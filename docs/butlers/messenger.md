@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Messenger Butler Flows](./messenger-flows.svg)
+
 The Messenger Butler is infrastructure, not a domain specialist. It is the single butler responsible for executing outbound delivery to user-facing channels (Telegram and email). When any other butler needs to communicate with the user, it calls `notify()`, which Switchboard dispatches to Messenger for execution.
 
 Messenger exists because outbound communication should have one owner. When every specialist butler sends messages directly, behavior drifts: inconsistent formatting, mixed retry logic, duplicated failure handling, and weak auditability. Messenger centralizes those concerns so specialist butlers can focus on domain decisions while delivery stays reliable, deterministic, and policy-driven.

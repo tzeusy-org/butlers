@@ -2,7 +2,7 @@
 
 > **Purpose:** Define the `ingest.v1` envelope specification used by connectors to submit events to the Switchboard.
 > **Audience:** Developers building connectors, operators debugging ingestion issues.
-> **Prerequisites:** [Connector Interface](../connectors/interface.md), [Inter-Butler Communication](inter-butler-communication.md).
+> **Prerequisites:** [Connector Interface](../connectors/overview.md), [Inter-Butler Communication](inter-butler-communication.md).
 
 ## Overview
 
@@ -119,6 +119,6 @@ Connectors send periodic `connector.heartbeat.v1` envelopes every 2 minutes via 
 
 ## Related Pages
 
-- [Connector Interface](../connectors/interface.md) -- full connector contract
+- [Connector Interface](../connectors/overview.md) -- full connector contract
 - [Inter-Butler Communication](inter-butler-communication.md) -- MCP communication model
 - [Dashboard API](dashboard-api.md) -- connector statistics visibility

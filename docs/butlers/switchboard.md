@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Switchboard Design](./switchboard-design.svg)
+
 The Switchboard Butler is the front door of the entire butler system. Every external interaction -- whether it arrives via Telegram, email, or a direct MCP call -- enters the system through Switchboard. It assigns canonical request context, uses an LLM runtime for message classification and decomposition, fans out work to one or more downstream specialist butlers, and records the full request lifecycle for audit and debugging.
 
 Switchboard never handles domain logic itself. It classifies, routes, and tracks. If routing fails or the classifier is uncertain, the request falls through to the General butler as a safe default.

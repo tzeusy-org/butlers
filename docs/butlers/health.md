@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Health Butler Flows](./health-flows.svg)
+
 The Health Butler tracks the full picture of a user's wellbeing over time. It records measurements (weight, blood pressure, glucose, temperature), manages medication schedules and adherence, tracks active health conditions, logs symptoms with severity ratings, monitors meals and nutrition, and saves health research for future reference.
 
 The butler's philosophy is continuity: health decisions happen across seasons, and the value comes from patterns that emerge over weeks and months. When the user's doctor asks "How have you been feeling?", the Health Butler has the answer -- not a vague memory, but the data.

@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Relationship Butler Flows](./relationship-flows.svg)
+
 The Relationship Butler is the system's personal CRM -- an external memory for the people the user cares about. It tracks contacts with full context (interests, preferences, history), logs interactions with type, direction, and emotion, manages gift pipelines from idea through delivery, tracks important dates with proactive reminders, and monitors stay-in-touch cadences to flag relationships that need attention.
 
 The design philosophy centers on three principles: **thoughtfulness** (never miss what matters), **richness** (capture the full texture of relationships, not just facts), and **connection** (reduce cognitive overhead so the user can focus on being present).

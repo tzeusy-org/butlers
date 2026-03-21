@@ -6,6 +6,8 @@
 
 ## Overview
 
+![System Topology](./system-overview.svg)
+
 Butlers is a personal AI agent framework where each butler is a long-running MCP (Model Context Protocol) server daemon. The system follows a hub-and-spoke architecture: a central Switchboard routes requests to domain-specific butlers, each running as an independent service. All services share a single PostgreSQL database with per-butler schema isolation, and communicate exclusively via MCP over SSE transport.
 
 ## Service Map

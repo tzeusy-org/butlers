@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Database Schema Topology](./database-schema.svg)
+
 Butlers uses a single PostgreSQL database with per-butler schema isolation. Each butler operates within its own schema, with access to a `shared` schema for cross-butler data (contacts, model catalog, credentials) and the `public` schema as a fallback. This design provides strong data boundaries between butlers while allowing shared identity and configuration data through a controlled surface.
 
 ## Schema Isolation Model

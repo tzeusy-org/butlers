@@ -10,6 +10,8 @@ Butlers is a personal AI agent framework. Each **butler** is a long-running MCP 
 
 Think of it as a modular "Jarvis" system: you define specialized butlers for different life domains (health, relationships, general assistance), configure them with modules (email, Telegram, calendar), and let them run autonomously on schedules or respond to incoming messages.
 
+![Butlers System Overview](./system-overview.svg)
+
 ## The Butler-as-Daemon Model
 
 Every butler runs as a persistent async daemon. When nothing is happening, it sits idle, waiting. When a trigger arrives --- either an external MCP call or a cron-scheduled task --- the butler spins up an ephemeral LLM CLI instance, gives it access to the butler's tools via MCP, and lets it reason and act. Once the session completes, the butler logs what happened and returns to idle.

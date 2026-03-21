@@ -1,7 +1,7 @@
 # Attachment Handling
 > **Purpose:** Specify how the Gmail connector handles email attachments with per-type size policies, lazy fetching, and calendar file routing.
 > **Audience:** Contributors.
-> **Prerequisites:** [Connector Interface](interface.md), [Gmail Connector](gmail.md), [Blob Storage](../data_and_storage/blob-storage.md).
+> **Prerequisites:** [Connector Interface](overview.md), [Gmail Connector](gmail.md), [Blob Storage](../data_and_storage/blob-storage.md).
 
 ## Overview
 
@@ -55,6 +55,6 @@ An extension point is defined for sender-specific HTML receipt extraction (e.g.,
 ## Related Pages
 
 - [Gmail Connector](gmail.md) -- Gmail-specific ingestion details
-- [Connector Interface](interface.md) -- Shared connector contract
+- [Connector Interface](overview.md) -- Shared connector contract
 - [Blob Storage](../data_and_storage/blob-storage.md) -- Where attachment bytes are stored
 - [Connector Metrics](metrics.md) -- Standard Prometheus instrumentation

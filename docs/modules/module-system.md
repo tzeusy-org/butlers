@@ -2,7 +2,7 @@
 
 > **Purpose:** Describes the abstract module contract, registry, dependency resolution, and lifecycle hooks that all butler modules implement.
 > **Audience:** Contributors and module developers.
-> **Prerequisites:** Familiarity with the [Butlers architecture overview](../architecture.md).
+> **Prerequisites:** Familiarity with the [Butlers architecture overview](../architecture/index.md).
 
 ## Overview
 

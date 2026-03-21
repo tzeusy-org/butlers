@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Calendar Sync Mechanism](./calendar-sync.svg)
+
 The Calendar module gives butlers the ability to read and write calendar events through a provider-agnostic interface. Google Calendar is the v1 provider, with the architecture designed for future iCloud/CalDAV support.
 
 Key capabilities:

@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Scheduler Flow](./scheduler-flow.svg)
+
 The scheduler (`src/butlers/core/scheduler.py`) is a cron-driven task dispatch system. At daemon startup, it syncs schedule definitions from `butler.toml` into the `scheduled_tasks` database table. During operation, the daemon periodically calls `tick()`, which evaluates cron expressions and dispatches due tasks to the spawner. The scheduler supports two dispatch modes, deterministic staggering, complexity-aware model selection, and automatic task expiry.
 
 ## TOML-to-DB Sync

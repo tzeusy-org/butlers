@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Dashboard Gateway](./dashboard-gateway.svg)
+
 The Butlers dashboard is a React single-page application that serves as the operational single-pane-of-glass for the entire butler infrastructure. It provides monitoring, management, and configuration capabilities across all butlers, connectors, modules, and system health. The frontend specs in this directory are the canonical source of truth for current dashboard behavior.
 
 ## Specification Pages
