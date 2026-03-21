@@ -382,7 +382,7 @@ class TestEntityMergeBasic:
         # First fetchrow: source entity (lookup by UUID only, no tenant filter)
         src_call_args = conn.fetchrow.call_args_list[0][0]
         assert SOURCE_UUID in src_call_args
-        
+
         # Second fetchrow: target entity (lookup by UUID only, no tenant filter)
         tgt_call_args = conn.fetchrow.call_args_list[1][0]
         assert TARGET_UUID in tgt_call_args

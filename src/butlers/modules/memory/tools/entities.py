@@ -957,9 +957,7 @@ async def entity_merge(
                 src_uuid,
             )
             if src_row is None:
-                raise ValueError(
-                    f"Source entity '{source_entity_id}' not found."
-                )
+                raise ValueError(f"Source entity '{source_entity_id}' not found.")
 
             tgt_row = await conn.fetchrow(
                 "SELECT id, canonical_name, aliases, metadata, roles "
@@ -967,9 +965,7 @@ async def entity_merge(
                 tgt_uuid,
             )
             if tgt_row is None:
-                raise ValueError(
-                    f"Target entity '{target_entity_id}' not found."
-                )
+                raise ValueError(f"Target entity '{target_entity_id}' not found.")
 
             src_metadata: dict[str, Any] = _parse_metadata(src_row["metadata"])
             if "merged_into" in src_metadata:

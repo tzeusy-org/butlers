@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import unittest.mock as mock
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -298,10 +299,10 @@ class TestResolveGoogleCredentialsIsDbOnly:
             mock.patch(
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=uuid.uuid4(),
             ),
             mock.patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
+                "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
             ),
@@ -324,7 +325,7 @@ class TestStoreAndLoadRoundTrip:
     async def test_store_then_load_returns_same_credentials(self) -> None:
         """Round-trip: store + load returns identical credential values.
 
-        Refresh token is stored in and read from contact_info (not butler_secrets).
+        Refresh token is stored in and read from entity_info (not butler_secrets).
         """
         stored: dict[str, str] = {}
 
@@ -344,15 +345,14 @@ class TestStoreAndLoadRoundTrip:
             patch(
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=uuid.uuid4(),
             ),
             patch(
-                "butlers.google_credentials.upsert_owner_entity_info",
+                "butlers.google_credentials._upsert_entity_refresh_token",
                 new_callable=AsyncMock,
-                return_value=True,
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
+                "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
             ),
@@ -375,7 +375,7 @@ class TestStoreAndLoadRoundTrip:
         assert result.scope == _SHARED_CREDS["scope"]
 
     async def test_store_then_load_with_pool_round_trips_via_contact_info(self) -> None:
-        """Round-trip with pool: refresh token goes through contact_info."""
+        """Round-trip with pool: refresh token goes through entity_info."""
         stored: dict[str, str] = {}
 
         store = MagicMock(spec=CredentialStore)
@@ -394,15 +394,14 @@ class TestStoreAndLoadRoundTrip:
             patch(
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=uuid.uuid4(),
             ),
             patch(
-                "butlers.google_credentials.upsert_owner_entity_info",
+                "butlers.google_credentials._upsert_entity_refresh_token",
                 new_callable=AsyncMock,
-                return_value=True,
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
+                "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
             ),
@@ -441,15 +440,14 @@ class TestStoreAndLoadRoundTrip:
             patch(
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=uuid.uuid4(),
             ),
             patch(
-                "butlers.google_credentials.upsert_owner_entity_info",
+                "butlers.google_credentials._upsert_entity_refresh_token",
                 new_callable=AsyncMock,
-                return_value=True,
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
+                "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
             ),

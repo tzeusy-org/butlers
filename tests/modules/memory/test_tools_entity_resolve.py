@@ -618,12 +618,8 @@ class TestEntityResolveIdentifier:
 
     async def test_identifier_role_match_returns_role_score(self, mock_pool: AsyncMock) -> None:
         """identifier='Owner' matches entity with roles=['owner'] at highest score."""
-        mock_pool.fetch = AsyncMock(
-            return_value=_rows_role(ENTITY_ID_1, "Tze", aliases=["Owner"])
-        )
-        results = await entity_resolve(
-            mock_pool, identifier="Owner", tenant_id=TENANT
-        )
+        mock_pool.fetch = AsyncMock(return_value=_rows_role(ENTITY_ID_1, "Tze", aliases=["Owner"]))
+        results = await entity_resolve(mock_pool, identifier="Owner", tenant_id=TENANT)
         assert len(results) == 1
         assert results[0]["entity_id"] == ENTITY_ID_1
         assert results[0]["canonical_name"] == "Tze"
@@ -634,9 +630,7 @@ class TestEntityResolveIdentifier:
         self, mock_pool: AsyncMock
     ) -> None:
         """When no role matches, identifier falls through to name-based tiers."""
-        mock_pool.fetch = AsyncMock(
-            return_value=_rows_exact(ENTITY_ID_1, "Mount Sinai Hospital")
-        )
+        mock_pool.fetch = AsyncMock(return_value=_rows_exact(ENTITY_ID_1, "Mount Sinai Hospital"))
         results = await entity_resolve(
             mock_pool, identifier="Mount Sinai Hospital", tenant_id=TENANT
         )
@@ -652,9 +646,7 @@ class TestEntityResolveIdentifier:
         role_row = _make_entity_row(ENTITY_ID_1, "Owner", match_type="role")
         exact_row = _make_entity_row(ENTITY_ID_1, "Owner", match_type="exact")
         mock_pool.fetch = AsyncMock(return_value=[role_row, exact_row])
-        results = await entity_resolve(
-            mock_pool, identifier="Owner", tenant_id=TENANT
-        )
+        results = await entity_resolve(mock_pool, identifier="Owner", tenant_id=TENANT)
         assert len(results) == 1
         assert results[0]["name_match"] == "role"
         assert results[0]["score"] == _SCORE_ROLE
@@ -663,9 +655,7 @@ class TestEntityResolveIdentifier:
         """_SCORE_ROLE must be strictly higher than _SCORE_EXACT_NAME."""
         assert _SCORE_ROLE > _SCORE_EXACT_NAME
 
-    async def test_identifier_case_insensitive_role_match(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_identifier_case_insensitive_role_match(self, mock_pool: AsyncMock) -> None:
         """Role match is case-insensitive (LOWER on both sides)."""
         mock_pool.fetch = AsyncMock(return_value=[])
         await entity_resolve(mock_pool, identifier="OWNER", tenant_id=TENANT)
@@ -687,9 +677,7 @@ class TestEntityResolveIdentifier:
     async def test_name_and_identifier_raises(self, mock_pool: AsyncMock) -> None:
         """Providing both name and identifier raises ValueError."""
         with pytest.raises(ValueError, match="not both"):
-            await entity_resolve(
-                mock_pool, "Alice", identifier="Owner", tenant_id=TENANT
-            )
+            await entity_resolve(mock_pool, "Alice", identifier="Owner", tenant_id=TENANT)
 
     async def test_name_only_has_no_role_tier(self, mock_pool: AsyncMock) -> None:
         """Legacy name-only call does NOT include the role tier in SQL."""

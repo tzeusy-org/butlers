@@ -71,6 +71,7 @@ async def _log_activity(
     description: str,
     entity_type: str | None = None,
     entity_id: uuid.UUID | None = None,
+    object_entity_id: uuid.UUID | None = None,
 ) -> None:
     """Log an activity entry as a temporal fact.
 
@@ -103,6 +104,7 @@ async def _log_activity(
         permanence="stable",
         scope="relationship",
         entity_id=contact_entity_id,
+        object_entity_id=object_entity_id,
         valid_at=now,
         metadata=fact_metadata,
     )

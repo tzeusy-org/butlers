@@ -193,9 +193,7 @@ async def test_item_create_with_tags(pool):
     from butlers.tools.general import collection_create, item_create, item_get
 
     await collection_create(pool, "tagged_entities")
-    eid = await item_create(
-        pool, "tagged_entities", {"type": "recipe"}, tags=["italian", "dinner"]
-    )
+    eid = await item_create(pool, "tagged_entities", {"type": "recipe"}, tags=["italian", "dinner"])
     assert isinstance(eid, uuid.UUID)
 
     entity = await item_get(pool, eid)
@@ -396,9 +394,7 @@ async def test_item_search_combined(pool):
     await item_create(pool, "search_combo_y", {"status": "active"})
     await item_create(pool, "search_combo_x", {"status": "inactive"})
 
-    results = await item_search(
-        pool, collection_name="search_combo_x", query={"status": "active"}
-    )
+    results = await item_search(pool, collection_name="search_combo_x", query={"status": "active"})
     assert len(results) == 1
     assert results[0]["data"]["status"] == "active"
     assert results[0]["collection_name"] == "search_combo_x"
@@ -420,9 +416,7 @@ async def test_item_search_by_single_tag(pool):
     await collection_create(pool, "search_tag_single")
     await item_create(pool, "search_tag_single", {"name": "pasta"}, tags=["italian", "dinner"])
     await item_create(pool, "search_tag_single", {"name": "sushi"}, tags=["japanese", "dinner"])
-    await item_create(
-        pool, "search_tag_single", {"name": "tiramisu"}, tags=["italian", "dessert"]
-    )
+    await item_create(pool, "search_tag_single", {"name": "tiramisu"}, tags=["italian", "dessert"])
 
     results = await item_search(pool, tags=["italian"])
     assert len(results) == 2

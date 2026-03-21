@@ -138,8 +138,8 @@ class TestRunConsolidation:
 
         result = await run_consolidation(pool, engine)
 
-        assert result["groups"]["owner/alpha"] == 2
-        assert result["groups"]["owner/beta"] == 1
+        assert result["groups"]["shared/alpha"] == 2
+        assert result["groups"]["shared/beta"] == 1
 
     async def test_groups_episodes_by_tenant_and_butler(self) -> None:
         """Episodes from different tenants with the same butler name are NOT mixed."""
@@ -173,7 +173,7 @@ class TestRunConsolidation:
 
         assert result["episodes_processed"] == 4
         assert result["butlers_processed"] == 3
-        assert result["groups"] == {"owner/alpha": 2, "owner/beta": 1, "owner/gamma": 1}
+        assert result["groups"] == {"shared/alpha": 2, "shared/beta": 1, "shared/gamma": 1}
 
     async def test_handles_no_pending_episodes(self) -> None:
         """When there are no pending episodes, return zeros."""

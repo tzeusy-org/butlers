@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -151,10 +152,10 @@ class TestLoadAppCredentials:
             patch(
                 "butlers.google_credentials._resolve_account_entity_id",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=uuid.uuid4(),
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_entity_info",
+                "butlers.google_credentials._resolve_entity_refresh_token",
                 new_callable=AsyncMock,
                 return_value="test-refresh",
             ),
@@ -212,27 +213,15 @@ class TestDeleteGoogleCredentials:
         ) as mock_acquire:
             # Simulate no google_accounts rows (missing table scenario)
             mock_acquire.side_effect = Exception("does not exist")
-            with patch(
-                "butlers.google_credentials.delete_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value=False,
-            ):
-                result = await delete_google_credentials(store, delete_all=True)
+            result = await delete_google_credentials(store, delete_all=True)
         assert result is True
 
     async def test_returns_false_when_no_row(self) -> None:
         store = _make_credential_store(delete_returns=False)
-        with (
-            patch(
-                "butlers.google_credentials._resolve_account_entity_id",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.google_credentials.delete_owner_entity_info",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
+        with patch(
+            "butlers.google_credentials._resolve_account_entity_id",
+            new_callable=AsyncMock,
+            return_value=None,
         ):
             result = await delete_google_credentials(store, pool=MagicMock())
         assert result is False

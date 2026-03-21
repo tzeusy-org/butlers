@@ -11,6 +11,7 @@ Google OAuth network requests are made.
 from __future__ import annotations
 
 import time
+import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -95,22 +96,31 @@ def _make_app(
 
     conn = AsyncMock()
 
-    async def _fetchrow(_query: str, key: str | None = None):
-        if key is None:
-            # Query from upsert_owner_entity_info (owner lookup)
-            if "shared.entities" in _query:
-                owner_row = MagicMock()
-                owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
-                return owner_row
-            return None
-        # resolve_owner_entity_info queries shared.entity_info
+    _fake_entity_id = uuid.uuid4()
+
+    async def _fetchrow(_query: str, *args):
+        # _resolve_account_entity_id queries shared.google_accounts
+        if "shared.google_accounts" in _query:
+            row = MagicMock()
+            row.__getitem__ = lambda self, k: _fake_entity_id if k == "entity_id" else None
+            return row
+        if "shared.entities" in _query:
+            owner_row = MagicMock()
+            owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
+            return owner_row
+        # _resolve_entity_refresh_token queries shared.entity_info (entity_id, type)
         if "shared.entity_info" in _query or "entity_info" in _query:
-            value = contact_info.get(key)
+            type_key = args[1] if len(args) > 1 else (args[0] if args else None)
+            value = contact_info.get(type_key) if type_key else None
             if not value:
                 return None
             row = MagicMock()
             row.__getitem__ = lambda self, k: value if k == "value" else None
             return row
+        # CredentialStore.load queries butler_secrets (key)
+        key = args[0] if args else None
+        if key is None:
+            return None
         value = secrets.get(key)
         if not value:
             return None

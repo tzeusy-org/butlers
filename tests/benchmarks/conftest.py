@@ -155,9 +155,7 @@ def _warmup_ollama_model(ollama_url: str, model_name: str) -> None:
                 sys.stderr.write(f"failed after {elapsed:.1f}s: {exc2}\n")
                 pytest.skip(f"Model {model} pulled but warmup failed: {exc2}")
         else:
-            sys.stderr.write(
-                f"HTTP {exc.response.status_code} after {elapsed:.1f}s — continuing\n"
-            )
+            sys.stderr.write(f"HTTP {exc.response.status_code} after {elapsed:.1f}s — continuing\n")
     except Exception as exc:
         elapsed = time.monotonic() - t0
         sys.stderr.write(f"failed after {elapsed:.1f}s: {exc} — continuing\n")

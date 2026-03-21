@@ -412,9 +412,7 @@ class TestNotifyRecipientValidation:
         )
         daemon.switchboard_client.call_tool.assert_awaited_once()
 
-    async def test_known_non_owner_email_is_blocked_without_rule(
-        self, butler_dir: Path
-    ) -> None:
+    async def test_known_non_owner_email_is_blocked_without_rule(self, butler_dir: Path) -> None:
         """A known non-owner contact WITHOUT a standing rule MUST be blocked."""
         daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
         assert notify_fn is not None
@@ -442,9 +440,7 @@ class TestNotifyRecipientValidation:
             f"without a standing rule, got status={result.get('status')}"
         )
 
-    async def test_standing_rule_permits_known_non_owner_email(
-        self, butler_dir: Path
-    ) -> None:
+    async def test_standing_rule_permits_known_non_owner_email(self, butler_dir: Path) -> None:
         """A known non-owner contact WITH a matching standing rule MUST be allowed."""
         from butlers.modules.approvals.models import ApprovalRule
 

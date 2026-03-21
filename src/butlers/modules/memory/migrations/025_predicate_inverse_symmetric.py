@@ -86,26 +86,18 @@ def upgrade() -> None:
         )
         # Set inverse_of on the forward predicate.
         op.execute(
-            f"UPDATE predicate_registry"
-            f" SET inverse_of = '{inverse}'"
-            f" WHERE name = '{forward}'"
+            f"UPDATE predicate_registry SET inverse_of = '{inverse}' WHERE name = '{forward}'"
         )
         # Set inverse_of on the inverse predicate (pointing back).
         op.execute(
-            f"UPDATE predicate_registry"
-            f" SET inverse_of = '{forward}'"
-            f" WHERE name = '{inverse}'"
+            f"UPDATE predicate_registry SET inverse_of = '{forward}' WHERE name = '{inverse}'"
         )
 
     # -------------------------------------------------------------------------
     # 4. Mark symmetric predicates
     # -------------------------------------------------------------------------
     for name in _SYMMETRIC_PREDICATES:
-        op.execute(
-            f"UPDATE predicate_registry"
-            f" SET is_symmetric = true"
-            f" WHERE name = '{name}'"
-        )
+        op.execute(f"UPDATE predicate_registry SET is_symmetric = true WHERE name = '{name}'")
 
     # -------------------------------------------------------------------------
     # 5. Index on is_symmetric for fast filtering during write-time lookup
@@ -136,10 +128,6 @@ def downgrade() -> None:
         )
     # Reset is_symmetric
     for name in _SYMMETRIC_PREDICATES:
-        op.execute(
-            f"UPDATE predicate_registry"
-            f" SET is_symmetric = false"
-            f" WHERE name = '{name}'"
-        )
+        op.execute(f"UPDATE predicate_registry SET is_symmetric = false WHERE name = '{name}'")
     op.execute("ALTER TABLE predicate_registry DROP COLUMN IF EXISTS is_symmetric")
     op.execute("ALTER TABLE predicate_registry DROP COLUMN IF EXISTS inverse_of")

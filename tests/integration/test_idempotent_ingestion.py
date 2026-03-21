@@ -135,15 +135,38 @@ async def pool(postgres_container):
     await p.execute("""
         CREATE TABLE IF NOT EXISTS shared.entities (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL DEFAULT '',
+            canonical_name VARCHAR NOT NULL DEFAULT '',
             name TEXT NOT NULL DEFAULT '',
-            roles TEXT[] NOT NULL DEFAULT '{}'
+            entity_type VARCHAR NOT NULL DEFAULT 'other',
+            aliases TEXT[] NOT NULL DEFAULT '{}',
+            metadata JSONB DEFAULT '{}'::jsonb,
+            roles TEXT[] NOT NULL DEFAULT '{}',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
     await p.execute("""
         CREATE TABLE IF NOT EXISTS predicate_registry (
             name TEXT PRIMARY KEY,
+            expected_subject_type TEXT,
+            expected_object_type TEXT,
+            is_edge BOOLEAN NOT NULL DEFAULT false,
             is_temporal BOOLEAN NOT NULL DEFAULT false,
-            description TEXT
+            description TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            status TEXT NOT NULL DEFAULT 'active',
+            superseded_by TEXT,
+            deprecated_at TIMESTAMPTZ,
+            search_vector TSVECTOR,
+            description_embedding TEXT,
+            usage_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at TIMESTAMPTZ,
+            scope TEXT NOT NULL DEFAULT 'global',
+            aliases TEXT[] NOT NULL DEFAULT '{}',
+            inverse_of TEXT,
+            is_symmetric BOOLEAN NOT NULL DEFAULT false,
+            example_json JSONB
         )
     """)
     await p.execute("""
@@ -205,6 +228,21 @@ async def pool(postgres_container):
     await p.close()
 
 
+def _extract_fact_id(result: dict) -> uuid.UUID:
+    """Extract the UUID from a tool result whose 'id' may be a store_fact dict.
+
+    store_fact() now returns ``{"id": UUID, "supersedes_id": ...}`` but the
+    relationship tools (interaction_log, note_create, life_event_log) put that
+    return value directly into ``result["id"]``.  This helper normalises the
+    nested dict back to a plain UUID so test assertions work regardless of the
+    store_fact return type.
+    """
+    fact_id = result["id"]
+    if isinstance(fact_id, dict):
+        return fact_id["id"]
+    return fact_id
+
+
 @pytest.fixture(autouse=True, scope="session")
 def patch_embedding_engine():
     """Patch get_embedding_engine so store_fact does not require a real ML model."""
@@ -252,7 +290,7 @@ async def test_interaction_log_duplicate_skips(pool):
     # Same contact, same type, same date => skip
     second = await interaction_log(pool, c["id"], "call", summary="Second", occurred_at=ts)
     assert second["skipped"] == "duplicate"
-    assert second["existing_id"] == str(first["id"])
+    assert second["existing_id"] == str(_extract_fact_id(first))
 
 
 async def test_interaction_log_different_type_not_skipped(pool):
@@ -355,7 +393,7 @@ async def test_note_create_duplicate_within_hour_skips(pool):
 
     second = await note_create(pool, c["id"], "Repeated note content")
     assert second["skipped"] == "duplicate"
-    assert second["existing_id"] == str(first["id"])
+    assert second["existing_id"] == str(_extract_fact_id(first))
 
 
 async def test_note_create_different_content_not_skipped(pool):
@@ -382,7 +420,7 @@ async def test_note_create_same_content_after_hour_not_skipped(pool):
     await pool.execute(
         "UPDATE facts SET created_at = $1 WHERE id = $2",
         two_hours_ago,
-        first["id"],
+        _extract_fact_id(first),
     )
 
     # Same content, but the old note is now outside the 1-hour window
@@ -423,7 +461,7 @@ async def test_life_event_log_duplicate_skips(pool):
         pool, c["id"], "promotion", description="Different desc", occurred_at=ts
     )
     assert second["skipped"] == "duplicate"
-    assert second["existing_id"] == str(first["id"])
+    assert second["existing_id"] == str(_extract_fact_id(first))
 
 
 async def test_life_event_log_different_type_not_skipped(pool):

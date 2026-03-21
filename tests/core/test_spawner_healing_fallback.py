@@ -171,10 +171,7 @@ class TestSpawnerFallbackDispatch:
 
         # The guard condition in the spawner:
         # trigger_source != "healing" AND healing_module is not None AND ...
-        should_fire = (
-            trigger_source != "healing"
-            and healing_module is not None
-        )
+        should_fire = trigger_source != "healing" and healing_module is not None
         assert should_fire is False
 
     async def test_fallback_skipped_when_module_not_wired(self):
@@ -188,10 +185,7 @@ class TestSpawnerFallbackDispatch:
         assert spawner._healing_module is None
 
         trigger_source = "external"
-        should_fire = (
-            trigger_source != "healing"
-            and spawner._healing_module is not None
-        )
+        should_fire = trigger_source != "healing" and spawner._healing_module is not None
         assert should_fire is False
 
 

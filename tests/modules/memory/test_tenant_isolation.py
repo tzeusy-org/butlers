@@ -102,11 +102,11 @@ class TestStoreEpisodeTenantLineage:
     async def test_default_tenant_id_is_shared(
         self, simple_pool: AsyncMock, embedding_engine: MagicMock
     ) -> None:
-        """When tenant_id is not specified, it defaults to 'owner'."""
+        """When tenant_id is not specified, it defaults to 'shared'."""
         await _storage.store_episode(simple_pool, "test content", "test-butler", embedding_engine)
         sql, *args = simple_pool.execute.call_args[0]
         assert "tenant_id" in sql
-        assert "owner" in args
+        assert "shared" in args
 
     async def test_custom_tenant_id_is_stored(
         self, simple_pool: AsyncMock, embedding_engine: MagicMock
@@ -153,7 +153,9 @@ class TestStoreEpisodeTenantLineage:
 class TestStoreFactTenantLineage:
     """store_fact includes tenant_id and request_id in the INSERT and scopes supersession."""
 
-    async def test_default_tenant_id_is_shared(self, fact_pool, embedding_engine: MagicMock) -> None:
+    async def test_default_tenant_id_is_shared(
+        self, fact_pool, embedding_engine: MagicMock
+    ) -> None:
         """Default tenant_id is 'shared'."""
         pool, conn = fact_pool
         await _storage.store_fact(pool, "user", "city", "Berlin", embedding_engine)
@@ -161,7 +163,7 @@ class TestStoreFactTenantLineage:
         assert "tenant_id" in insert_sql
         # tenant_id is $21 — find the value in the positional args
         all_args = conn.execute.call_args_list[0].args
-        assert "owner" in all_args
+        assert "shared" in all_args
 
     async def test_custom_tenant_id_in_insert(self, fact_pool, embedding_engine: MagicMock) -> None:
         """Custom tenant_id flows into INSERT args."""
@@ -225,7 +227,7 @@ class TestStoreRuleTenantLineage:
         await _storage.store_rule(simple_pool, "Always greet politely", embedding_engine)
         sql, *args = simple_pool.execute.call_args[0]
         assert "tenant_id" in sql
-        assert "owner" in args
+        assert "shared" in args
 
     async def test_custom_tenant_id_in_insert(
         self, simple_pool: AsyncMock, embedding_engine: MagicMock

@@ -827,7 +827,8 @@ class TestPredicateSearch:
             )
             # The value at the placeholder position must be the scope value
             assert args[placeholder_idx] == scope_value, (
-                f"args[{placeholder_idx}]={args[placeholder_idx]!r} but expected scope={scope_value!r}; "
+                f"args[{placeholder_idx}]={args[placeholder_idx]!r} "
+                f"but expected scope={scope_value!r}; "
                 f"query was {sql!r} with args {args!r}"
             )
 

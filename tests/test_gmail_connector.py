@@ -444,9 +444,7 @@ class TestGmailConnectorRuntime:
 
         assert set(message_ids) == {"msg1", "msg2", "msg3"}
 
-    def test_extract_message_ids_skips_drafts(
-        self, gmail_runtime: GmailConnectorRuntime
-    ) -> None:
+    def test_extract_message_ids_skips_drafts(self, gmail_runtime: GmailConnectorRuntime) -> None:
         """Draft messages in history are filtered out to avoid 404s on send."""
         history = [
             {

@@ -191,9 +191,7 @@ class TestMealLogOwnerEntityFallback:
                 return_value=MagicMock(),
             ),
         ):
-            result = await meal_log(
-                pool, type="lunch", description="Salad", eaten_at=_EATEN_AT
-            )
+            result = await meal_log(pool, type="lunch", description="Salad", eaten_at=_EATEN_AT)
 
         assert result["id"] == str(fact_id)
         # store_fact must be called with entity_id=None
@@ -219,9 +217,7 @@ class TestMealLogOwnerEntityFallback:
                 return_value=MagicMock(),
             ),
         ):
-            result = await meal_log(
-                pool, type="dinner", description="Pasta", eaten_at=_EATEN_AT
-            )
+            result = await meal_log(pool, type="dinner", description="Pasta", eaten_at=_EATEN_AT)
 
         assert result["id"] == str(fact_id)
         # entity_id must be None when table is absent
@@ -232,6 +228,4 @@ class TestMealLogOwnerEntityFallback:
         """meal_log raises ValueError for invalid meal types (unrelated to entity lookup)."""
         pool = _make_full_pool()
         with pytest.raises(ValueError, match="Invalid meal type"):
-            await meal_log(
-                pool, type="brunch", description="French toast", eaten_at=_EATEN_AT
-            )
+            await meal_log(pool, type="brunch", description="French toast", eaten_at=_EATEN_AT)

@@ -86,6 +86,13 @@ class TestMemoryChainRegistration:
             "020_fix_memory_policies.py",
             "021_fix_partial_unique_deleted_at.py",
             "022_events_enrichment.py",
+            "023_predicate_hybrid_search.py",
+            "023_predicate_lifecycle.py",
+            "023_predicate_scope.py",
+            "024_deprecate_baseline_predicates.py",
+            "025_predicate_aliases.py",
+            "025_predicate_example_json.py",
+            "025_predicate_inverse_symmetric.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:

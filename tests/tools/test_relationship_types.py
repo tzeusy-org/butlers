@@ -114,15 +114,38 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS shared.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id TEXT NOT NULL DEFAULT '',
+                canonical_name VARCHAR NOT NULL DEFAULT '',
                 name TEXT NOT NULL DEFAULT '',
-                roles TEXT[] NOT NULL DEFAULT '{}'
+                entity_type VARCHAR NOT NULL DEFAULT 'other',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                metadata JSONB DEFAULT '{}'::jsonb,
+                roles TEXT[] NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS predicate_registry (
                 name TEXT PRIMARY KEY,
+                expected_subject_type TEXT,
+                expected_object_type TEXT,
+                is_edge BOOLEAN NOT NULL DEFAULT false,
                 is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                status TEXT NOT NULL DEFAULT 'active',
+                superseded_by TEXT,
+                deprecated_at TIMESTAMPTZ,
+                search_vector TSVECTOR,
+                description_embedding TEXT,
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at TIMESTAMPTZ,
+                scope TEXT NOT NULL DEFAULT 'global',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                inverse_of TEXT,
+                is_symmetric BOOLEAN NOT NULL DEFAULT false,
+                example_json JSONB
             )
         """)
         await p.execute("""

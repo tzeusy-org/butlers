@@ -71,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_healing_status
     ON shared.healing_attempts(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_healing_active_fingerprint
     ON shared.healing_attempts(fingerprint)
-    WHERE status IN ('investigating', 'pr_open');
+    WHERE status IN ('dispatch_pending', 'investigating', 'pr_open');
 """
 
 
@@ -1179,13 +1179,9 @@ class TestRecoverStaleAttemptsIntegration:
         assert str(attempt_id) in pending_ids
 
         # Cleanup
-        await healing_pool.execute(
-            "DELETE FROM shared.healing_attempts WHERE id = $1", attempt_id
-        )
+        await healing_pool.execute("DELETE FROM shared.healing_attempts WHERE id = $1", attempt_id)
 
-    async def test_dispatch_pending_past_timeout_failed(
-        self, healing_pool: asyncpg.Pool
-    ) -> None:
+    async def test_dispatch_pending_past_timeout_failed(self, healing_pool: asyncpg.Pool) -> None:
         """dispatch_pending rows older than the timeout are transitioned to failed."""
         from butlers.core.healing.tracking import (
             get_attempt,
@@ -1220,7 +1216,7 @@ class TestRecoverStaleAttemptsIntegration:
         assert row is not None
         assert row["status"] == "failed"
         assert row["closed_at"] is not None
-        assert "extended timeout" in (row["error_detail"] or "").lower()
+        assert "dispatch never completed" in (row["error_detail"] or "").lower()
         assert recovered_count >= 1
 
         # It should NOT appear in pending_rows

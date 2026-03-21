@@ -947,7 +947,9 @@ async def update_entity(
         if body.entity_type not in _VALID_ENTITY_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid entity_type. Must be one of: {', '.join(sorted(_VALID_ENTITY_TYPES))}",
+                detail=(
+                    f"Invalid entity_type. Must be one of: {', '.join(sorted(_VALID_ENTITY_TYPES))}"
+                ),
             )
         sets.append(f"entity_type = ${idx}")
         args.append(body.entity_type)

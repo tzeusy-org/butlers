@@ -7,6 +7,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.feed import _log_activity
 
@@ -228,11 +229,30 @@ async def relationship_add(
 
     result = dict(row_a)
     label = result.get("type", type or "unknown")
+
+    # Resolve entity_ids for object_entity_id in activity logging
+    try:
+        entity_b = await resolve_contact_entity_id(pool, contact_b)
+    except ValueError:
+        entity_b = None
+    try:
+        entity_a = await resolve_contact_entity_id(pool, contact_a)
+    except ValueError:
+        entity_a = None
+
     await _log_activity(
-        pool, contact_a, "relationship_added", f"Added '{label}' relationship with {contact_b}"
+        pool,
+        contact_a,
+        "relationship_added",
+        f"Added '{label}' relationship",
+        object_entity_id=entity_b,
     )
     await _log_activity(
-        pool, contact_b, "relationship_added", f"Added '{label}' relationship with {contact_a}"
+        pool,
+        contact_b,
+        "relationship_added",
+        f"Added '{label}' relationship",
+        object_entity_id=entity_a,
     )
     return result
 
@@ -267,9 +287,27 @@ async def relationship_remove(
         contact_a,
         contact_b,
     )
+    # Resolve entity_ids for object_entity_id in activity logging
+    try:
+        entity_b = await resolve_contact_entity_id(pool, contact_b)
+    except ValueError:
+        entity_b = None
+    try:
+        entity_a = await resolve_contact_entity_id(pool, contact_a)
+    except ValueError:
+        entity_a = None
+
     await _log_activity(
-        pool, contact_a, "relationship_removed", f"Removed relationship with {contact_b}"
+        pool,
+        contact_a,
+        "relationship_removed",
+        "Removed relationship",
+        object_entity_id=entity_b,
     )
     await _log_activity(
-        pool, contact_b, "relationship_removed", f"Removed relationship with {contact_a}"
+        pool,
+        contact_b,
+        "relationship_removed",
+        "Removed relationship",
+        object_entity_id=entity_a,
     )

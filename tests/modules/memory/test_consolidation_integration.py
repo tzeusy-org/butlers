@@ -309,9 +309,9 @@ class TestEndToEndConsolidation:
         assert result["episodes_processed"] == 4
         assert result["butlers_processed"] == 3
         assert result["groups_consolidated"] == 3
-        assert result["groups"]["owner/alpha"] == 2
-        assert result["groups"]["owner/beta"] == 1
-        assert result["groups"]["owner/gamma"] == 1
+        assert result["groups"]["shared/alpha"] == 2
+        assert result["groups"]["shared/beta"] == 1
+        assert result["groups"]["shared/gamma"] == 1
 
 
 # ---------------------------------------------------------------------------

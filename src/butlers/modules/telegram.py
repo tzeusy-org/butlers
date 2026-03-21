@@ -379,9 +379,7 @@ class TelegramModule(Module):
         data: dict[str, Any] = resp.json()
         return data
 
-    async def _react_to_message(
-        self, chat_id: str, message_id: int, emoji: str
-    ) -> dict[str, Any]:
+    async def _react_to_message(self, chat_id: str, message_id: int, emoji: str) -> dict[str, Any]:
         """Call Telegram setMessageReaction API with an arbitrary emoji."""
         url = f"{self._base_url()}/setMessageReaction"
         client = self._get_client()
