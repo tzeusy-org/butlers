@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Owner Identity Bootstrap](./owner-identity-bootstrap.svg)
+
 When Butlers starts for the first time, it seeds an **Owner contact** in the `shared.contacts` table with the `owner` role on its linked entity. This contact has no channel identifiers initially -- the user must configure their identity through the dashboard so butlers can recognize them across channels (Telegram, email) and prevent duplicate contacts during sync.
 
 ## Bootstrap Flow

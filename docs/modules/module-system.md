@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Module System](./module-system-design.svg)
+
 Every butler is a long-running MCP server with a fixed core (state store, scheduler, LLM spawner, session log) and a set of opt-in **modules**. Modules are the only mechanism for adding domain-specific MCP tools to a butler. They never touch core infrastructure directly.
 
 The module system provides three things:

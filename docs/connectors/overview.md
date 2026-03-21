@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Ingestion Pipeline](./ingestion-pipeline.svg)
+
 ![Connector Architecture](./connector-design.svg)
 
 Connectors are transport adapters that bridge external messaging systems (Telegram, Gmail, audio devices, etc.) into the Butlers ecosystem. They read events from source APIs, normalize them into a canonical envelope format, and submit them to the Switchboard's ingestion API. Connectors are deliberately thin -- they own the transport layer and nothing else.

@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Butler Lifecycle](./butler-lifecycle.svg)
+
 A butler daemon goes through distinct phases during its lifetime: a multi-step startup sequence that provisions infrastructure and initializes capabilities, an idle running state waiting for triggers, an active session state when an LLM is reasoning and acting, and a graceful shutdown sequence that drains work and releases resources. Understanding these phases is essential for debugging startup failures, writing modules, and reasoning about concurrency.
 
 ## Startup Sequence

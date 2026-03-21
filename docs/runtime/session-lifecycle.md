@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Session Lifecycle](./session-lifecycle-flow.svg)
+
 A session represents one ephemeral LLM CLI invocation. The session log (`src/butlers/core/sessions.py`) is an append-only record: sessions are created when a trigger fires and completed when the runtime instance returns. After creation, the only permitted mutation is `session_complete()`, which fills in result fields and sets `completed_at`. This strict contract ensures that the session table is a reliable audit trail of all LLM activity.
 
 ## Session Creation

@@ -6,6 +6,8 @@
 
 ## Overview
 
+![Modules vs Connectors](./modules-and-connectors.svg)
+
 Butlers has two extension mechanisms that serve fundamentally different purposes. **Modules** live inside butler daemons and extend what a butler can do --- they register MCP tools, manage database tables, and hook into the daemon lifecycle. **Connectors** live outside butler daemons and extend how messages reach the system --- they poll external services, normalize events, and submit them to the Switchboard's ingestion API. Modules extend butlers. Connectors feed butlers.
 
 ## Modules

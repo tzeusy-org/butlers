@@ -6,6 +6,8 @@
 
 ## Overview
 
+![OAuth Device-Code Flow](./oauth-flow.svg)
+
 Butlers integrates with Google services (Calendar, Contacts, Gmail) via OAuth 2.0. The OAuth flow is bootstrapped through the dashboard UI and credentials are stored in a split model: app credentials in `butler_secrets`, refresh tokens in `shared.entity_info` on companion entities. Multi-account Google support is fully implemented.
 
 ## Credential Storage Split
