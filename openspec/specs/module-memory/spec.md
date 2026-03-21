@@ -13,18 +13,18 @@ The module SHALL support three primary memory types: episodes (high-volume, shor
 #### Scenario: Episode schema and defaults
 
 - **WHEN** an episode is stored
-- **THEN** the `episodes` table row MUST contain: `id` (UUID PK), `tenant_id` (TEXT NOT NULL, DEFAULT 'owner'), `butler` (TEXT NOT NULL), `session_id` (UUID nullable), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `reference_count` (INTEGER, default 0), `consolidated` (BOOLEAN, default false), `consolidation_status` (VARCHAR(20), default 'pending'), `consolidation_attempts` (INTEGER, default 0), `last_consolidation_error` (TEXT nullable), `next_consolidation_retry_at` (TIMESTAMPTZ nullable), `leased_until` (TIMESTAMPTZ nullable), `leased_by` (TEXT nullable), `dead_letter_reason` (TEXT nullable), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'transient'), `sensitivity` (TEXT NOT NULL, DEFAULT 'normal'), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ nullable), `expires_at` (TIMESTAMPTZ), `metadata` (JSONB, default '{}')
+- **THEN** the `episodes` table row MUST contain: `id` (UUID PK), `tenant_id` (TEXT NOT NULL, DEFAULT 'shared'), `butler` (TEXT NOT NULL), `session_id` (UUID nullable), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `reference_count` (INTEGER, default 0), `consolidated` (BOOLEAN, default false), `consolidation_status` (VARCHAR(20), default 'pending'), `consolidation_attempts` (INTEGER, default 0), `last_consolidation_error` (TEXT nullable), `next_consolidation_retry_at` (TIMESTAMPTZ nullable), `leased_until` (TIMESTAMPTZ nullable), `leased_by` (TEXT nullable), `dead_letter_reason` (TEXT nullable), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'transient'), `sensitivity` (TEXT NOT NULL, DEFAULT 'normal'), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ nullable), `expires_at` (TIMESTAMPTZ), `metadata` (JSONB, default '{}')
 - **AND** a CHECK constraint MUST enforce `consolidation_status IN ('pending', 'consolidated', 'failed', 'dead_letter')`
 
 #### Scenario: Fact schema and defaults
 
 - **WHEN** a fact is stored
-- **THEN** the `facts` table row MUST contain: `id` (UUID PK), `tenant_id` (TEXT NOT NULL, DEFAULT 'owner'), `subject` (TEXT NOT NULL), `predicate` (TEXT NOT NULL), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `confidence` (FLOAT, default 1.0), `decay_rate` (FLOAT, default 0.008), `permanence` (TEXT, default 'standard'), `source_butler` (TEXT nullable), `source_episode_id` (UUID FK to episodes, ON DELETE SET NULL), `supersedes_id` (UUID self-FK, ON DELETE SET NULL), `entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `object_entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `validity` (TEXT, default 'active'), `scope` (TEXT, default 'global'), `valid_at` (TIMESTAMPTZ nullable, default NULL), `invalid_at` (TIMESTAMPTZ nullable), `idempotency_key` (TEXT nullable), `observed_at` (TIMESTAMPTZ DEFAULT now()), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'operational'), `sensitivity` (TEXT NOT NULL, DEFAULT 'normal'), `reference_count` (INTEGER, default 0), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ nullable), `last_confirmed_at` (TIMESTAMPTZ nullable), `tags` (JSONB, default '[]'), `metadata` (JSONB, default '{}')
+- **THEN** the `facts` table row MUST contain: `id` (UUID PK), `tenant_id` (TEXT NOT NULL, DEFAULT 'shared'), `subject` (TEXT NOT NULL), `predicate` (TEXT NOT NULL), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `confidence` (FLOAT, default 1.0), `decay_rate` (FLOAT, default 0.008), `permanence` (TEXT, default 'standard'), `source_butler` (TEXT nullable), `source_episode_id` (UUID FK to episodes, ON DELETE SET NULL), `supersedes_id` (UUID self-FK, ON DELETE SET NULL), `entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `object_entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `validity` (TEXT, default 'active'), `scope` (TEXT, default 'global'), `valid_at` (TIMESTAMPTZ nullable, default NULL), `invalid_at` (TIMESTAMPTZ nullable), `idempotency_key` (TEXT nullable), `observed_at` (TIMESTAMPTZ DEFAULT now()), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'operational'), `sensitivity` (TEXT NOT NULL, DEFAULT 'normal'), `reference_count` (INTEGER, default 0), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ nullable), `last_confirmed_at` (TIMESTAMPTZ nullable), `tags` (JSONB, default '[]'), `metadata` (JSONB, default '{}')
 
 #### Scenario: Rule schema and defaults
 
 - **WHEN** a rule is stored
-- **THEN** the `rules` table row MUST contain: `id` (UUID PK), `tenant_id` (TEXT NOT NULL, DEFAULT 'owner'), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `scope` (TEXT, default 'global'), `maturity` (TEXT, default 'candidate'), `confidence` (FLOAT, default 0.5), `decay_rate` (FLOAT, default 0.008), `permanence` (TEXT, default 'standard'), `effectiveness_score` (FLOAT, default 0.0), `applied_count` (INTEGER, default 0), `success_count` (INTEGER, default 0), `harmful_count` (INTEGER, default 0), `source_episode_id` (UUID FK to episodes), `source_butler` (TEXT nullable), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'rule'), `sensitivity` (TEXT NOT NULL, DEFAULT 'normal'), `created_at` (TIMESTAMPTZ), `last_applied_at` (TIMESTAMPTZ nullable), `last_evaluated_at` (TIMESTAMPTZ nullable), `last_confirmed_at` (TIMESTAMPTZ nullable), `reference_count` (INTEGER, default 0), `last_referenced_at` (TIMESTAMPTZ nullable), `tags` (JSONB, default '[]'), `metadata` (JSONB, default '{}')
+- **THEN** the `rules` table row MUST contain: `id` (UUID PK), `tenant_id` (TEXT NOT NULL, DEFAULT 'shared'), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `scope` (TEXT, default 'global'), `maturity` (TEXT, default 'candidate'), `confidence` (FLOAT, default 0.5), `decay_rate` (FLOAT, default 0.008), `permanence` (TEXT, default 'standard'), `effectiveness_score` (FLOAT, default 0.0), `applied_count` (INTEGER, default 0), `success_count` (INTEGER, default 0), `harmful_count` (INTEGER, default 0), `source_episode_id` (UUID FK to episodes), `source_butler` (TEXT nullable), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'rule'), `sensitivity` (TEXT NOT NULL, DEFAULT 'normal'), `created_at` (TIMESTAMPTZ), `last_applied_at` (TIMESTAMPTZ nullable), `last_evaluated_at` (TIMESTAMPTZ nullable), `last_confirmed_at` (TIMESTAMPTZ nullable), `reference_count` (INTEGER, default 0), `last_referenced_at` (TIMESTAMPTZ nullable), `tags` (JSONB, default '[]'), `metadata` (JSONB, default '{}')
 
 ---
 
@@ -143,12 +143,12 @@ Facts SHALL support five permanence levels, each mapping to a specific exponenti
 
 ### Requirement: Storage layer CRUD operations
 
-The storage layer SHALL provide async functions for creating episodes, facts, rules, and memory links, as well as retrieving, confirming, soft-deleting (forgetting), and applying feedback to memory items. All functions accept an asyncpg connection pool. Write functions SHALL accept optional `tenant_id` (default `'owner'`) and `request_id` parameters.
+The storage layer SHALL provide async functions for creating episodes, facts, rules, and memory links, as well as retrieving, confirming, soft-deleting (forgetting), and applying feedback to memory items. All functions accept an asyncpg connection pool. Write functions SHALL accept optional `tenant_id` (default `'shared'`) and `request_id` parameters.
 
 #### Scenario: Store episode with embedding and search vector
 
 - **WHEN** `store_episode` is called with content, butler name, and optional `tenant_id` and `request_id`
-- **THEN** a new episode row MUST be inserted with a generated UUID, computed embedding, computed tsvector, `tenant_id` (default `'owner'`), `request_id`, and `expires_at` determined by the retention policy for the episode's `retention_class` (falling back to 7 days if no policy exists)
+- **THEN** a new episode row MUST be inserted with a generated UUID, computed embedding, computed tsvector, `tenant_id` (default `'shared'`), `request_id`, and `expires_at` determined by the retention policy for the episode's `retention_class` (falling back to 7 days if no policy exists)
 - **AND** the INSERT MUST include `retention_class` and `sensitivity` columns with the caller's values (not only the migration defaults)
 - **AND** the function MUST return the new episode's UUID
 
@@ -183,7 +183,7 @@ The storage layer SHALL provide async functions for creating episodes, facts, ru
 #### Scenario: Store rule as candidate
 
 - **WHEN** `store_rule` is called with optional `tenant_id` and `request_id`
-- **THEN** a new rule row MUST be inserted with `maturity='candidate'`, `confidence=0.5`, `decay_rate=0.01`, `effectiveness_score=0.0`, all counts set to 0, and the provided `tenant_id` (default `'owner'`)
+- **THEN** a new rule row MUST be inserted with `maturity='candidate'`, `confidence=0.5`, `decay_rate=0.01`, `effectiveness_score=0.0`, all counts set to 0, and the provided `tenant_id` (default `'shared'`)
 
 #### Scenario: Memory link creation with validation
 
@@ -1333,32 +1333,32 @@ Domain butlers (health, relationship, finance, home) migrate dedicated CRUD tabl
 
 ### Requirement: Tenant and request lineage on all memory tables
 
-All three memory tables (episodes, facts, rules) SHALL include `tenant_id` (TEXT NOT NULL, DEFAULT 'owner'), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL with type-specific defaults), and `sensitivity` (TEXT NOT NULL, DEFAULT 'normal') columns. These columns provide multi-tenant isolation, request trace correlation, policy-driven lifecycle, and data classification.
+All three memory tables (episodes, facts, rules) SHALL include `tenant_id` (TEXT NOT NULL, DEFAULT 'shared'), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL with type-specific defaults), and `sensitivity` (TEXT NOT NULL, DEFAULT 'normal') columns. These columns provide multi-tenant isolation, request trace correlation, policy-driven lifecycle, and data classification.
 
 Indexes SHALL be rebuilt as tenant-scoped to make `(tenant_id, ...)` the primary access pattern for all queries.
 
 #### Scenario: Episode lineage columns
 
 - **WHEN** an episode is stored
-- **THEN** the `episodes` table row MUST contain `tenant_id` (TEXT NOT NULL, DEFAULT 'owner'), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'transient'), and `sensitivity` (TEXT NOT NULL, DEFAULT 'normal')
+- **THEN** the `episodes` table row MUST contain `tenant_id` (TEXT NOT NULL, DEFAULT 'shared'), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'transient'), and `sensitivity` (TEXT NOT NULL, DEFAULT 'normal')
 - **AND** the index `idx_episodes_tenant_butler_status_created` MUST exist on `(tenant_id, butler, consolidation_status, created_at)`
 
 #### Scenario: Fact lineage columns
 
 - **WHEN** a fact is stored
-- **THEN** the `facts` table row MUST contain `tenant_id` (TEXT NOT NULL, DEFAULT 'owner'), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'operational'), and `sensitivity` (TEXT NOT NULL, DEFAULT 'normal')
+- **THEN** the `facts` table row MUST contain `tenant_id` (TEXT NOT NULL, DEFAULT 'shared'), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'operational'), and `sensitivity` (TEXT NOT NULL, DEFAULT 'normal')
 - **AND** the index `idx_facts_tenant_scope_validity` MUST exist on `(tenant_id, scope, validity) WHERE validity = 'active'`
 
 #### Scenario: Rule lineage columns
 
 - **WHEN** a rule is stored
-- **THEN** the `rules` table row MUST contain `tenant_id` (TEXT NOT NULL, DEFAULT 'owner'), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'rule'), and `sensitivity` (TEXT NOT NULL, DEFAULT 'normal')
+- **THEN** the `rules` table row MUST contain `tenant_id` (TEXT NOT NULL, DEFAULT 'shared'), `request_id` (TEXT nullable), `retention_class` (TEXT NOT NULL, DEFAULT 'rule'), and `sensitivity` (TEXT NOT NULL, DEFAULT 'normal')
 - **AND** the index `idx_rules_tenant_scope_maturity` MUST exist on `(tenant_id, scope, maturity)`
 
 #### Scenario: Existing data backfill
 
 - **WHEN** the migration runs against a database with existing rows
-- **THEN** all existing rows in episodes, facts, and rules MUST receive `tenant_id = 'owner'` via the column DEFAULT
+- **THEN** all existing rows in episodes, facts, and rules MUST receive `tenant_id = 'shared'` via the column DEFAULT
 - **AND** no separate backfill step SHALL be required
 
 #### Scenario: Tenant-bounded queries
@@ -1460,28 +1460,28 @@ Temporal facts (facts with `valid_at IS NOT NULL`) SHALL be protected from dupli
 
 ### Requirement: Storage layer accepts tenant and request context
 
-All storage write functions (`store_episode`, `store_fact`, `store_rule`) SHALL accept optional `tenant_id` (default `'owner'`) and `request_id` parameters. These values SHALL be persisted on the stored row and propagated to downstream operations (links, events).
+All storage write functions (`store_episode`, `store_fact`, `store_rule`) SHALL accept optional `tenant_id` (default `'shared'`) and `request_id` parameters. These values SHALL be persisted on the stored row and propagated to downstream operations (links, events).
 
 #### Scenario: store_episode with tenant context
 
-- **WHEN** `store_episode` is called with `tenant_id='owner'` and `request_id='req-abc-123'`
-- **THEN** the inserted episode row MUST have `tenant_id = 'owner'` and `request_id = 'req-abc-123'`
+- **WHEN** `store_episode` is called with `tenant_id='shared'` and `request_id='req-abc-123'`
+- **THEN** the inserted episode row MUST have `tenant_id = 'shared'` and `request_id = 'req-abc-123'`
 
 #### Scenario: store_fact with tenant context
 
-- **WHEN** `store_fact` is called with `tenant_id='owner'`
-- **THEN** the inserted fact row MUST have `tenant_id = 'owner'`
+- **WHEN** `store_fact` is called with `tenant_id='shared'`
+- **THEN** the inserted fact row MUST have `tenant_id = 'shared'`
 - **AND** the supersession check MUST be scoped to the same `tenant_id`
 
 #### Scenario: store_rule with tenant context
 
-- **WHEN** `store_rule` is called with `tenant_id='owner'`
-- **THEN** the inserted rule row MUST have `tenant_id = 'owner'`
+- **WHEN** `store_rule` is called with `tenant_id='shared'`
+- **THEN** the inserted rule row MUST have `tenant_id = 'shared'`
 
 #### Scenario: Default tenant is owner
 
 - **WHEN** any store function is called without an explicit `tenant_id`
-- **THEN** the row MUST be stored with `tenant_id = 'owner'`
+- **THEN** the row MUST be stored with `tenant_id = 'shared'`
 
 ---
 
@@ -1521,9 +1521,9 @@ Write tools SHALL accept an optional `request_context` dict containing `request_
 
 #### Scenario: Write tools accept request_context
 
-- **WHEN** `memory_store_episode`, `memory_store_fact`, or `memory_store_rule` is called with `request_context={"request_id": "req-123", "tenant_id": "owner"}`
+- **WHEN** `memory_store_episode`, `memory_store_fact`, or `memory_store_rule` is called with `request_context={"request_id": "req-123", "tenant_id": "shared"}`
 - **THEN** the `request_id` and `tenant_id` MUST be extracted from request_context and passed to the storage layer
-- **AND** if `request_context` is None, `tenant_id` MUST default to `'owner'` and `request_id` MUST default to None
+- **AND** if `request_context` is None, `tenant_id` MUST default to `'shared'` and `request_id` MUST default to None
 
 #### Scenario: Write tools accept retention_class and sensitivity
 
