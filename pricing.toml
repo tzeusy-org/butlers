@@ -58,3 +58,40 @@ output_price_per_token = 0.000002   # $2.00 / 1M tokens
 [models."gpt-5-nano"]
 input_price_per_token = 0.00000005  # $0.05 / 1M tokens
 output_price_per_token = 0.0000004  # $0.40 / 1M tokens
+
+# OpenCode — sourced from https://opencode.ai/docs/zen/ (2026-03-21)
+
+[models."minimax-m2.5"]
+input_price_per_token = 0.0000003   # $0.30 / 1M tokens
+output_price_per_token = 0.0000012  # $1.20 / 1M tokens
+
+[models."glm-5"]
+input_price_per_token = 0.000001    # $1.00 / 1M tokens
+output_price_per_token = 0.0000032  # $3.20 / 1M tokens
+
+[models."kimi-k2.5"]
+input_price_per_token = 0.0000006   # $0.60 / 1M tokens
+output_price_per_token = 0.000003   # $3.00 / 1M tokens
+
+[models."qwen3-coder-480b"]
+input_price_per_token = 0.00000045  # $0.45 / 1M tokens
+output_price_per_token = 0.0000015  # $1.50 / 1M tokens
+
+# Ollama (local/self-hosted) — zero cost
+# Model IDs match the ollama/ prefix used in model_catalog_defaults.toml
+
+[models."ollama/qwen2.5-coder:7b"]
+input_price_per_token = 0.0
+output_price_per_token = 0.0
+
+[models."ollama/llama3.3:latest"]
+input_price_per_token = 0.0
+output_price_per_token = 0.0
+
+[models."ollama/deepseek-r1:32b"]
+input_price_per_token = 0.0
+output_price_per_token = 0.0
+
+[models."ollama/qwen3.5:9b"]
+input_price_per_token = 0.0
+output_price_per_token = 0.0
