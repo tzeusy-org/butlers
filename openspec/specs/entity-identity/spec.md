@@ -76,6 +76,31 @@ Affected tools: `entity_create`, `entity_resolve`, `entity_get`, `entity_update`
 
 ---
 
+### Requirement: UUID-based entity lookups are tenant-agnostic
+
+Entity operations that look up by UUID (`entity_get`, `entity_update`, `entity_merge`) MUST NOT include a `tenant_id` filter in the WHERE clause. Entity UUIDs are globally unique primary keys — the `tenant_id` constraint is unnecessary for UUID lookups and causes failures when entities exist in a different tenant than expected (e.g., entities created with `tenant_id='owner'` before the default was unified to `'shared'`).
+
+The `tenant_id` parameter is retained in function signatures for backward compatibility and for use in audit events, but MUST NOT be used to filter UUID-based SELECT or UPDATE queries on `shared.entities`.
+
+**Rationale:** Migration `mem_013` moved legacy `owner`-tenant entities to `shared`, but new entities could still be created in the wrong tenant if an LLM runtime passed `tenant_id='owner'` (reading the value from `request_context` descriptions). Removing the tenant filter from UUID lookups ensures that `entity_merge` and `entity_get` work regardless of which tenant the entity resides in.
+
+**Note:** `entity_resolve` (name-based lookup) and `entity_create` still use `tenant_id` for scoping, as name uniqueness is per-tenant.
+
+#### Scenario: entity_get finds entity regardless of tenant
+
+- **WHEN** `entity_get(entity_id=<uuid>, tenant_id='shared')` is called
+- **AND** the entity exists with `tenant_id='home'`
+- **THEN** the entity MUST be returned (UUID lookup is tenant-agnostic)
+
+#### Scenario: entity_merge works across tenants
+
+- **WHEN** `entity_merge(source=<uuid_a>, target=<uuid_b>, tenant_id='shared')` is called
+- **AND** the source entity has `tenant_id='owner'` and target has `tenant_id='shared'`
+- **THEN** the merge MUST succeed (both entities found by UUID)
+- **AND** facts MUST be re-pointed from source to target
+
+---
+
 ### Requirement: Entity-first data model
 
 The canonical data model hierarchy is **Entity → Contact → Contact Details**.
