@@ -98,6 +98,18 @@ The `_infer_recovery_steps()` function pattern-matches the error message to prov
 
 **Embedding generation for auto-registered predicates:** Auto-registered predicates have `description=NULL` and therefore `description_embedding=NULL`. They are discoverable via trigram name matching only. When a description is later added (via migration or dashboard), the embedding is generated and semantic search becomes available.
 
+### D9 (revised): Inverse predicates use materialized writes, not virtual reads
+
+**Decision:** When `store_fact()` creates an edge-fact whose predicate has `inverse_of` or `is_symmetric = true`, auto-create the inverse fact in the same transaction with swapped `entity_id`/`object_entity_id`. This is Option A (materialized) from the original design discussion.
+
+**Why materialized over virtual?** The original design recommended Option B (virtual inverse at query time). The implementation chose materialized because:
+- Queries work naturally without special read-path logic in the API layer
+- Indexes cover both directions without custom inverse-aware query rewriting
+- No risk of inconsistency between the read-path logic and the underlying data
+- The storage cost is acceptable (~2x for edge-facts only, which are a small fraction of total facts)
+
+**Trade-off:** Doubles storage for edge-facts with inverses. For the current scale (~100 edge predicates, low volume of edge-fact writes), this is negligible. If edge-fact volume grows significantly, revisit.
+
 ## Risks / Trade-offs
 
 **[Risk: Breaking existing butler tools that omit valid_at on temporal predicates]**

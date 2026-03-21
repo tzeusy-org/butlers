@@ -303,12 +303,13 @@ The registry MUST support `inverse_of` and `is_symmetric` metadata to enable bid
 - **WHEN** `knows` is registered with `is_symmetric = true`
 - **THEN** a fact `knows(Alice, Bob)` MUST be discoverable when querying facts about Bob without needing a separate `knows(Bob, Alice)` fact
 
-#### Scenario: Virtual inverse at query time
+#### Scenario: Materialized inverse at write time
 
-- **WHEN** the entity detail API returns facts for an entity
-- **THEN** facts where the entity is `object_entity_id` MUST also be returned
-- **AND** those facts MUST use the `inverse_of` predicate label (or the same label for symmetric predicates)
-- **AND** no duplicate facts MUST be stored — inverse resolution is read-path only
+- **WHEN** `store_fact()` creates an edge-fact and the predicate has `inverse_of` set or `is_symmetric = true`
+- **THEN** an inverse fact MUST be auto-created in the same transaction with `entity_id` and `object_entity_id` swapped
+- **AND** the inverse fact MUST use the `inverse_of` predicate (or the same predicate for symmetric predicates)
+- **AND** the inverse fact MUST have its own idempotency key (for temporal facts) or participate in supersession independently
+- **AND** queries for either entity naturally discover the relationship without special read-path logic
 
 ---
 

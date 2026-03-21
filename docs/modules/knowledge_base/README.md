@@ -132,7 +132,7 @@ Edge predicates can declare bidirectional pairs:
 | `sibling_of` | — | Yes |
 | `lives_with` | — | Yes |
 
-Inverse resolution is virtual (read-path only) — no duplicate facts stored. When querying entity Bob, a fact `parent_of(Alice, Bob)` is presented as `child_of(Bob, Alice)`.
+Inverse facts are **materialized at write time** — when `parent_of(Alice, Bob)` is stored and `parent_of` has `inverse_of = 'child_of'`, a mirrored fact `child_of(Bob, Alice)` is auto-created in the same transaction. This doubles edge-fact storage but means queries work naturally without special read-path logic.
 
 ### Domain/range type validation
 
