@@ -581,8 +581,8 @@ class TestMigration025Structure:
 
     def test_revision_identifiers(self) -> None:
         mod = _load_migration_025()
-        assert mod.revision == "mem_025"
-        assert mod.down_revision == "mem_024"
+        assert mod.revision == "mem_025c"
+        assert mod.down_revision == "mem_025b"
 
     def test_upgrade_adds_inverse_of_column(self) -> None:
         mod = _load_migration_025()

@@ -1371,19 +1371,22 @@ class ButlerDaemon:
             "BLOB_S3_SECRET_ACCESS_KEY", env_fallback=False
         )
         if not s3_endpoint or not s3_bucket:
-            raise RuntimeError(
-                "Missing required S3 blob storage secrets: BLOB_S3_ENDPOINT_URL and "
-                "BLOB_S3_BUCKET must be configured via the dashboard secrets UI (/secrets)."
+            logger.warning(
+                "S3 blob storage not configured (missing BLOB_S3_ENDPOINT_URL / "
+                "BLOB_S3_BUCKET). Blob operations will fail at runtime. Configure "
+                "via the dashboard secrets UI (/secrets)."
             )
-        self.blob_store = S3BlobStore(
-            bucket=s3_bucket,
-            butler_name=self.config.name,
-            endpoint_url=s3_endpoint,
-            access_key_id=s3_access_key,
-            secret_access_key=s3_secret_key,
-            region=s3_region or "us-east-1",
-        )
-        await self.blob_store.startup_check()
+            self.blob_store = None
+        else:
+            self.blob_store = S3BlobStore(
+                bucket=s3_bucket,
+                butler_name=self.config.name,
+                endpoint_url=s3_endpoint,
+                access_key_id=s3_access_key,
+                secret_access_key=s3_secret_key,
+                region=s3_region or "us-east-1",
+            )
+            await self.blob_store.startup_check()
 
         # 8d. Bootstrap owner entity (idempotent; non-fatal).
         #     Ensures owner entity exists in shared.entities.

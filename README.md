@@ -115,6 +115,20 @@ butlers list [--dir PATH]                    List discovered butler configuratio
 butlers init NAME --port PORT [--dir PATH]   Scaffold a new butler config directory
 ```
 
+### Running Messenger with Switchboard
+
+To run just the messenger and switchboard together (useful for testing delivery flows):
+
+```bash
+butlers up --only switchboard --only messenger
+```
+
+The messenger requires these credentials configured via the dashboard secrets page:
+
+- `BUTLER_TELEGRAM_TOKEN` — Telegram bot token for outbound messages
+- `BUTLER_EMAIL_ADDRESS` — Email address for outbound email delivery
+- `BUTLER_EMAIL_PASSWORD` — App password for the email account
+
 ## Environment Variables
 
 Key variables — see [full environment reference](docs/identity_and_secrets/environment-variables.md) and [operations config](docs/operations/environment-config.md) for details.
@@ -141,6 +155,46 @@ make format          # Format
 ```
 
 Tests use pytest markers (`unit`, `integration`, `e2e`, `nightly`, `benchmark`). See [Testing docs](docs/testing/index.md) for the full strategy, marker reference, and E2E benchmarking system.
+
+## E2E Testing
+
+> **Token burn warning:** E2E tests spawn real LLM sessions against live APIs. Each run consumes tokens and incurs cost. Use validate mode for development; reserve benchmark mode for scheduled evaluations.
+
+### Prerequisites
+
+- `ANTHROPIC_API_KEY` set in your environment
+- Docker running (PostgreSQL testcontainer)
+- `claude` CLI binary on PATH
+
+### Running
+
+```bash
+# Validate mode — fail-fast against current model config
+make test-e2e-validate
+
+# Benchmark mode — sweep across models, produce scorecards
+make test-e2e-benchmark BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o
+```
+
+### Configuration
+
+| Option | Description |
+|--------|-------------|
+| `--benchmark` | Enable benchmark mode (multi-model sweep) |
+| `E2E_BENCHMARK_MODELS` | Comma-separated model IDs (env var fallback for `--benchmark-models`) |
+
+### Scorecard Output
+
+Benchmark runs write results to `.tmp/e2e-scorecards/<timestamp>/`.
+
+### Pytest Markers
+
+| Marker | Description |
+|--------|-------------|
+| `routing_accuracy` | Routing accuracy tests — verify triage target matches expected |
+| `tool_accuracy` | Tool-call accuracy tests — verify expected tool names are called |
+
+See [E2E Testing docs](docs/testing/e2e/README.md) for full details.
 
 ## Tech Stack
 

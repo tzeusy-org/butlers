@@ -115,6 +115,31 @@ The shared identity tables live in the `shared` schema (owned by core migrations
 - `shared.contacts` -- canonical contact registry
 - `shared.contact_info` -- per-channel identifiers (UNIQUE on `(type, value)`)
 
+## Rollout Configuration
+
+The contacts module is enabled on domain butlers that need identity resolution and sync:
+
+- `roster/general/butler.toml` — `provider = "google"`, sync every 15 min
+- `roster/health/butler.toml` — `provider = "google"`, sync every 15 min
+- `roster/relationship/butler.toml` — `provider = "google"`, sync every 15 min
+
+Infrastructure butlers intentionally exclude contacts:
+
+- `roster/switchboard/butler.toml` — no contacts (routing plane only)
+- `roster/messenger/butler.toml` — no contacts (delivery plane only)
+
+### Required Secrets
+
+Google provider credentials must be configured in the shared credential store:
+
+| Secret | Description |
+|--------|-------------|
+| `GOOGLE_OAUTH_CLIENT_ID` | OAuth 2.0 client ID for Google People API |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | OAuth 2.0 client secret |
+| `GOOGLE_OAUTH_REFRESH_TOKEN` | Long-lived refresh token for offline access |
+
+Configure via the dashboard secrets UI (`/secrets`).
+
 ## Dependencies
 
 None. The contacts module is a leaf module.
