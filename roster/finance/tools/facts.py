@@ -151,7 +151,7 @@ async def _store_fact(
     metadata: dict[str, Any] | None = None,
     permanence: str = "stable",
     idempotency_key: str | None = None,
-) -> uuid.UUID:
+) -> dict[str, Any]:
     from butlers.modules.memory.storage import store_fact
 
     embedding_engine = _get_embedding_engine()
@@ -290,18 +290,20 @@ async def record_transaction_fact(
     )
     txn_idempotency_key = hashlib.sha256(idem_parts.encode()).hexdigest()[:32]
 
-    fact_id = await _store_fact(
-        pool,
-        subject="owner",
-        predicate=predicate,
-        content=content,
-        scope="finance",
-        entity_id=owner_entity_id,
-        valid_at=posted_at,
-        metadata=fact_metadata,
-        permanence="stable",
-        idempotency_key=txn_idempotency_key,
-    )
+    fact_id = (
+        await _store_fact(
+            pool,
+            subject="owner",
+            predicate=predicate,
+            content=content,
+            scope="finance",
+            entity_id=owner_entity_id,
+            valid_at=posted_at,
+            metadata=fact_metadata,
+            permanence="stable",
+            idempotency_key=txn_idempotency_key,
+        )
+    )["id"]
 
     return _transaction_fact_to_dict(
         fact_id=str(fact_id),
@@ -542,17 +544,19 @@ async def track_account_fact(
     if metadata:
         fact_metadata.update(metadata)
 
-    fact_id = await _store_fact(
-        pool,
-        subject=subject,
-        predicate=_PREDICATE_ACCOUNT,
-        content=content,
-        scope="finance",
-        entity_id=await _get_owner_entity_id(pool),
-        valid_at=None,  # property fact — triggers supersession
-        metadata=fact_metadata,
-        permanence="stable",
-    )
+    fact_id = (
+        await _store_fact(
+            pool,
+            subject=subject,
+            predicate=_PREDICATE_ACCOUNT,
+            content=content,
+            scope="finance",
+            entity_id=None,
+            valid_at=None,  # property fact — triggers supersession
+            metadata=fact_metadata,
+            permanence="stable",
+        )
+    )["id"]
 
     return {
         "id": str(fact_id),
@@ -638,17 +642,19 @@ async def track_subscription_fact(
     if metadata:
         fact_metadata.update(metadata)
 
-    fact_id = await _store_fact(
-        pool,
-        subject=subject,
-        predicate=_PREDICATE_SUBSCRIPTION,
-        content=content,
-        scope="finance",
-        entity_id=await _get_owner_entity_id(pool),
-        valid_at=None,  # property fact — supersession
-        metadata=fact_metadata,
-        permanence="stable",
-    )
+    fact_id = (
+        await _store_fact(
+            pool,
+            subject=subject,
+            predicate=_PREDICATE_SUBSCRIPTION,
+            content=content,
+            scope="finance",
+            entity_id=None,
+            valid_at=None,  # property fact — supersession
+            metadata=fact_metadata,
+            permanence="stable",
+        )
+    )["id"]
 
     return {
         "id": str(fact_id),
@@ -743,17 +749,19 @@ async def track_bill_fact(
     if metadata:
         fact_metadata.update(metadata)
 
-    fact_id = await _store_fact(
-        pool,
-        subject=subject,
-        predicate=_PREDICATE_BILL,
-        content=content,
-        scope="finance",
-        entity_id=await _get_owner_entity_id(pool),
-        valid_at=None,  # property fact — supersession
-        metadata=fact_metadata,
-        permanence="stable",
-    )
+    fact_id = (
+        await _store_fact(
+            pool,
+            subject=subject,
+            predicate=_PREDICATE_BILL,
+            content=content,
+            scope="finance",
+            entity_id=None,
+            valid_at=None,  # property fact — supersession
+            metadata=fact_metadata,
+            permanence="stable",
+        )
+    )["id"]
 
     return {
         "id": str(fact_id),

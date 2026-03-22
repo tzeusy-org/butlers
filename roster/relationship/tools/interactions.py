@@ -113,18 +113,20 @@ async def interaction_log(
     if metadata is not None:
         fact_metadata["extra_metadata"] = metadata
 
-    fact_id = await store_fact(
-        pool,
-        subject=f"contact:{contact_id}",
-        predicate="interaction",
-        content=summary or "",
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=effective_occurred_at,
-        metadata=fact_metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=f"contact:{contact_id}",
+            predicate="interaction",
+            content=summary or "",
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=entity_id,
+            valid_at=effective_occurred_at,
+            metadata=fact_metadata,
+        )
+    )["id"]
 
     result = {
         "id": fact_id,

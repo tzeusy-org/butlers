@@ -196,18 +196,20 @@ async def life_event_log(
     if description is not None:
         fact_metadata["description"] = description
 
-    fact_id = await store_fact(
-        pool,
-        subject=f"contact:{contact_id}",
-        predicate="life_event",
-        content=effective_summary,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=valid_at,
-        metadata=fact_metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=f"contact:{contact_id}",
+            predicate="life_event",
+            content=effective_summary,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=entity_id,
+            valid_at=valid_at,
+            metadata=fact_metadata,
+        )
+    )["id"]
 
     activity_summary = f"Life event: {type_name} - {effective_summary}"
     await _log_activity(pool, contact_id, "life_event_logged", activity_summary)

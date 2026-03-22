@@ -24,7 +24,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
@@ -111,7 +110,6 @@ async def loan_create(
     # Choose the "actor" contact for entity resolution and activity feed
     actor_contact = contact_id or lender_contact_id or borrower_contact_id
 
-    entity_id = await resolve_contact_entity_id(pool, actor_contact) if actor_contact else None
     embedding_engine = _get_embedding_engine()
 
     # Unique loan subject per creation — loans don't supersede each other
@@ -133,18 +131,20 @@ async def loan_create(
     if contact_id is not None:
         fact_metadata["contact_id"] = str(contact_id)
 
-    fact_id = await store_fact(
-        pool,
-        subject=subject,
-        predicate="loan",
-        content=effective_description,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=None,  # property fact — settle updates will supersede
-        metadata=fact_metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="loan",
+            content=effective_description,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=None,  # None so supersession uses subject key (per-loan)
+            valid_at=None,  # property fact — settle updates will supersede
+            metadata=fact_metadata,
+        )
+    )["id"]
 
     now = datetime.now(UTC)
     result: dict[str, Any] = {
@@ -198,21 +198,22 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
     new_metadata["settled"] = True
     new_metadata["settled_at"] = now.isoformat()
 
-    entity_id = row["entity_id"]
     embedding_engine = _get_embedding_engine()
 
-    new_fact_id = await store_fact(
-        pool,
-        subject=row["subject"],
-        predicate="loan",
-        content=row["content"],
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=None,  # property fact — supersedes previous
-        metadata=new_metadata,
-    )
+    new_fact_id = (
+        await store_fact(
+            pool,
+            subject=row["subject"],
+            predicate="loan",
+            content=row["content"],
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=None,  # None so supersession uses subject key (per-loan)
+            valid_at=None,  # property fact — supersedes previous
+            metadata=new_metadata,
+        )
+    )["id"]
 
     result: dict[str, Any] = {
         "id": new_fact_id,

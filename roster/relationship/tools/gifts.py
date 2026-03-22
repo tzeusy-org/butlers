@@ -23,7 +23,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
@@ -75,7 +74,6 @@ async def gift_add(
     from butlers.modules.memory.storage import store_fact
 
     now = datetime.now(UTC)
-    entity_id = await resolve_contact_entity_id(pool, contact_id)
     embedding_engine = _get_embedding_engine()
 
     # Subject encodes contact + gift slug for independent per-gift supersession
@@ -85,18 +83,20 @@ async def gift_add(
     if occasion is not None:
         fact_metadata["occasion"] = occasion
 
-    fact_id = await store_fact(
-        pool,
-        subject=subject,
-        predicate="gift",
-        content=description,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=None,  # property fact — supersedes previous for same subject
-        metadata=fact_metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="gift",
+            content=description,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=None,  # None so supersession uses subject key (per-gift)
+            valid_at=None,  # property fact — supersedes previous for same subject
+            metadata=fact_metadata,
+        )
+    )["id"]
 
     result: dict[str, Any] = {
         "id": fact_id,
@@ -143,25 +143,26 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     contact_id_str = parts[1] if len(parts) >= 2 else None
     contact_id = uuid.UUID(contact_id_str) if contact_id_str else None
 
-    entity_id = row["entity_id"]
     embedding_engine = _get_embedding_engine()
     description = row["content"]
 
     new_metadata = dict(meta)
     new_metadata["status"] = status
 
-    new_fact_id = await store_fact(
-        pool,
-        subject=row["subject"],
-        predicate="gift",
-        content=description,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=None,  # property fact — supersedes previous
-        metadata=new_metadata,
-    )
+    new_fact_id = (
+        await store_fact(
+            pool,
+            subject=row["subject"],
+            predicate="gift",
+            content=description,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=None,  # None so supersession uses subject key (per-gift)
+            valid_at=None,  # property fact — supersedes previous
+            metadata=new_metadata,
+        )
+    )["id"]
 
     now = datetime.now(UTC)
     result: dict[str, Any] = {

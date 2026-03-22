@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import CommandPalette from "@/components/layout/CommandPalette";
 import { dispatchOpenCommandPalette } from "@/lib/command-palette";
@@ -48,11 +49,14 @@ describe("CommandPalette", () => {
   });
 
   it("opens from shared event and focuses search input", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
-        <MemoryRouter>
-          <CommandPalette />
-        </MemoryRouter>,
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <CommandPalette />
+          </MemoryRouter>
+        </QueryClientProvider>,
       );
       await flush();
     });
@@ -63,7 +67,7 @@ describe("CommandPalette", () => {
     });
 
     const input = document.body.querySelector(
-      'input[placeholder="Search sessions, state, contacts..."]',
+      'input[placeholder="Search pages, butlers, entities, contacts..."]',
     );
 
     expect(input).toBeInstanceOf(HTMLInputElement);

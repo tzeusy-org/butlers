@@ -106,18 +106,20 @@ async def medication_add(
     # property facts. Supersession applies per (subject, predicate) key.
     subject = f"medication:{name}"
 
-    fact_id = await store_fact(
-        pool,
-        subject=subject,
-        predicate="medication",
-        content=content,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="health",
-        entity_id=await _get_owner_entity_id(pool),
-        valid_at=None,  # property fact — supersedes previous for same name
-        metadata=metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="medication",
+            content=content,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="health",
+            entity_id=await _get_owner_entity_id(pool),
+            valid_at=None,  # property fact — supersedes previous for same name
+            metadata=metadata,
+        )
+    )["id"]
 
     return {
         "id": fact_id,
@@ -193,18 +195,20 @@ async def medication_log_dose(
     if notes is not None:
         metadata["notes"] = notes
 
-    fact_id = await store_fact(
-        pool,
-        subject="owner",
-        predicate="took_dose",
-        content=med_name,
-        embedding_engine=embedding_engine,
-        permanence="standard",
-        scope="health",
-        entity_id=owner_entity_id,
-        valid_at=valid_at,
-        metadata=metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject="owner",
+            predicate="took_dose",
+            content=med_name,
+            embedding_engine=embedding_engine,
+            permanence="standard",
+            scope="health",
+            entity_id=owner_entity_id,
+            valid_at=valid_at,
+            metadata=metadata,
+        )
+    )["id"]
 
     return {
         "id": fact_id,

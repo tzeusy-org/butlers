@@ -51,8 +51,19 @@ _DDL_PREDICATE_REGISTRY = """
 CREATE TABLE IF NOT EXISTS predicate_registry (
     name                 TEXT PRIMARY KEY,
     expected_subject_type TEXT,
+    expected_object_type TEXT,
+    is_edge              BOOLEAN NOT NULL DEFAULT false,
     is_temporal          BOOLEAN NOT NULL DEFAULT false,
-    description          TEXT
+    description          TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    status               TEXT NOT NULL DEFAULT 'active',
+    superseded_by        TEXT,
+    deprecated_at        TIMESTAMPTZ,
+    inverse_of           TEXT,
+    is_symmetric         BOOLEAN NOT NULL DEFAULT false,
+    aliases              TEXT[] NOT NULL DEFAULT '{}',
+    usage_count          INTEGER NOT NULL DEFAULT 0,
+    last_used_at         TIMESTAMPTZ
 )
 """
 _DDL_FACTS = """
@@ -1136,16 +1147,16 @@ class TestListDistinctMerchants:
 
             now = _utcnow()
             entries = [
-                ("TRADER JOES #123", -55.00, "groceries"),
-                ("TRADER JOES #456", -40.00, "groceries"),
-                ("NETFLIX.COM", -15.49, "subscriptions"),
-                ("NETFLIX.COM", -15.49, "subscriptions"),
-                ("STARBUCKS STORE 001", -6.75, "dining"),
+                ("TRADER JOES #123", -55.00, "groceries", now),
+                ("TRADER JOES #456", -40.00, "groceries", now),
+                ("NETFLIX.COM", -15.49, "subscriptions", now),
+                ("NETFLIX.COM", -15.49, "subscriptions", now + timedelta(seconds=1)),
+                ("STARBUCKS STORE 001", -6.75, "dining", now),
             ]
-            for merchant, amount, category in entries:
+            for merchant, amount, category, posted_at in entries:
                 await record_transaction_fact(
                     pool=pool_with_owner,
-                    posted_at=now,
+                    posted_at=posted_at,
                     merchant=merchant,
                     amount=amount,
                     currency="USD",

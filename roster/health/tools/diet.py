@@ -142,18 +142,20 @@ async def meal_log(
     }
     metadata.update({key: value for key, value in optional_metadata.items() if value is not None})
 
-    fact_id = await store_fact(
-        pool,
-        subject="owner",
-        predicate=predicate,
-        content=description,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="health",
-        entity_id=owner_entity_id,
-        valid_at=valid_at,
-        metadata=metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject="owner",
+            predicate=predicate,
+            content=description,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="health",
+            entity_id=owner_entity_id,
+            valid_at=valid_at,
+            metadata=metadata,
+        )
+    )["id"]
 
     if create_calendar_event_fn is not None and valid_at >= now:
         event_description = type.capitalize()

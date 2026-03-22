@@ -24,7 +24,6 @@ from typing import Any
 import asyncpg
 from dateutil.relativedelta import relativedelta
 
-from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
@@ -135,7 +134,6 @@ async def reminder_create(
     effective_timezone = (timezone or "UTC").strip() or "UTC"
     now = datetime.now(UTC)
 
-    entity_id = await resolve_contact_entity_id(pool, contact_id) if contact_id else None
     embedding_engine = _get_embedding_engine()
 
     # Unique reminder subject per creation — reminders don't supersede each other
@@ -161,18 +159,20 @@ async def reminder_create(
     if calendar_event_id is not None:
         fact_metadata["calendar_event_id"] = str(calendar_event_id)
 
-    fact_id = await store_fact(
-        pool,
-        subject=subject,
-        predicate="reminder",
-        content=effective_label,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=None,  # property fact — dismiss updates will supersede
-        metadata=fact_metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="reminder",
+            content=effective_label,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=None,  # None so supersession uses subject key (per-reminder)
+            valid_at=None,  # property fact — dismiss updates will supersede
+            metadata=fact_metadata,
+        )
+    )["id"]
 
     result: dict[str, Any] = {
         "id": fact_id,
@@ -283,7 +283,6 @@ async def reminder_dismiss(pool: asyncpg.Pool, reminder_id: uuid.UUID) -> dict[s
     else:
         new_next = None
 
-    entity_id = row["entity_id"]
     embedding_engine = _get_embedding_engine()
 
     new_metadata = dict(meta)
@@ -292,18 +291,20 @@ async def reminder_dismiss(pool: asyncpg.Pool, reminder_id: uuid.UUID) -> dict[s
     new_metadata["due_at"] = new_next.isoformat() if new_next else None
     new_metadata["dismissed"] = new_next is None
 
-    new_fact_id = await store_fact(
-        pool,
-        subject=row["subject"],
-        predicate="reminder",
-        content=row["content"],
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=None,  # property fact — supersedes previous
-        metadata=new_metadata,
-    )
+    new_fact_id = (
+        await store_fact(
+            pool,
+            subject=row["subject"],
+            predicate="reminder",
+            content=row["content"],
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=None,  # None so supersession uses subject key (per-reminder)
+            valid_at=None,  # property fact — supersedes previous
+            metadata=new_metadata,
+        )
+    )["id"]
 
     # Extract contact_id from subject
     subject = row["subject"]

@@ -117,12 +117,24 @@ async def pool(provisioned_postgres_pool):
                 ON shared.contact_info (contact_id)
         """)
 
-        # Predicate registry (used by store_fact for is_temporal checks)
+        # Predicate registry — columns must match what store_fact() queries
         await p.execute("""
             CREATE TABLE IF NOT EXISTS predicate_registry (
                 name TEXT PRIMARY KEY,
+                expected_subject_type TEXT,
+                expected_object_type TEXT,
+                is_edge BOOLEAN NOT NULL DEFAULT false,
                 is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                status TEXT NOT NULL DEFAULT 'active',
+                superseded_by TEXT,
+                deprecated_at TIMESTAMPTZ,
+                inverse_of TEXT,
+                is_symmetric BOOLEAN NOT NULL DEFAULT false,
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at TIMESTAMPTZ
             )
         """)
         await p.execute("""

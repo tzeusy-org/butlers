@@ -22,7 +22,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
@@ -85,7 +84,6 @@ async def task_create(
     from butlers.modules.memory.storage import store_fact
 
     now = datetime.now(UTC)
-    entity_id = await resolve_contact_entity_id(pool, contact_id)
     embedding_engine = _get_embedding_engine()
 
     # Unique task subject per creation — tasks don't supersede each other
@@ -96,18 +94,20 @@ async def task_create(
     if description is not None:
         fact_metadata["description"] = description
 
-    fact_id = await store_fact(
-        pool,
-        subject=subject,
-        predicate="contact_task",
-        content=title,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=None,  # property fact — complete/delete updates will supersede
-        metadata=fact_metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="contact_task",
+            content=title,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=None,  # None so supersession uses subject key (per-task)
+            valid_at=None,  # property fact — complete/delete updates will supersede
+            metadata=fact_metadata,
+        )
+    )["id"]
 
     result: dict[str, Any] = {
         "id": fact_id,
@@ -221,21 +221,22 @@ async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any
     new_metadata["completed"] = True
     new_metadata["completed_at"] = now.isoformat()
 
-    entity_id = row["entity_id"]
     embedding_engine = _get_embedding_engine()
 
-    new_fact_id = await store_fact(
-        pool,
-        subject=row["subject"],
-        predicate="contact_task",
-        content=row["content"],
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=None,  # property fact — supersedes previous
-        metadata=new_metadata,
-    )
+    new_fact_id = (
+        await store_fact(
+            pool,
+            subject=row["subject"],
+            predicate="contact_task",
+            content=row["content"],
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=None,  # None so supersession uses subject key (per-task)
+            valid_at=None,  # property fact — supersedes previous
+            metadata=new_metadata,
+        )
+    )["id"]
 
     contact_id = _extract_contact_id(row["subject"])
     result: dict[str, Any] = {

@@ -159,7 +159,7 @@ class TestMealLogOwnerEntityFallback:
         with (
             patch(
                 "butlers.modules.memory.storage.store_fact",
-                new=AsyncMock(return_value=fact_id),
+                new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
             ) as mock_store,
             patch(
                 "butlers.tools.health.diet._get_embedding_engine",
@@ -184,7 +184,7 @@ class TestMealLogOwnerEntityFallback:
         with (
             patch(
                 "butlers.modules.memory.storage.store_fact",
-                new=AsyncMock(return_value=fact_id),
+                new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
             ) as mock_store,
             patch(
                 "butlers.tools.health.diet._get_embedding_engine",
@@ -210,7 +210,7 @@ class TestMealLogOwnerEntityFallback:
         with (
             patch(
                 "butlers.modules.memory.storage.store_fact",
-                new=AsyncMock(return_value=fact_id),
+                new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
             ) as mock_store,
             patch(
                 "butlers.tools.health.diet._get_embedding_engine",

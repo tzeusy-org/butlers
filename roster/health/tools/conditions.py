@@ -109,18 +109,20 @@ async def condition_add(
     # name is an independent record.
     subject = f"condition:{name}"
 
-    fact_id = await store_fact(
-        pool,
-        subject=subject,
-        predicate="condition",
-        content=content,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="health",
-        entity_id=await _get_owner_entity_id(pool),
-        valid_at=None,  # property fact — supersedes previous for same name
-        metadata=metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="condition",
+            content=content,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="health",
+            entity_id=await _get_owner_entity_id(pool),
+            valid_at=None,  # property fact — supersedes previous for same name
+            metadata=metadata,
+        )
+    )["id"]
 
     return {
         "id": fact_id,
@@ -216,18 +218,20 @@ async def condition_update(
     now = datetime.now(UTC)
 
     # Re-store with the same subject key to supersede the previous condition fact
-    new_fact_id = await store_fact(
-        pool,
-        subject=existing_subject,
-        predicate="condition",
-        content=content,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="health",
-        entity_id=await _get_owner_entity_id(pool),
-        valid_at=None,  # property fact — supersedes the previous
-        metadata=new_meta,
-    )
+    new_fact_id = (
+        await store_fact(
+            pool,
+            subject=existing_subject,
+            predicate="condition",
+            content=content,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="health",
+            entity_id=await _get_owner_entity_id(pool),
+            valid_at=None,  # property fact — supersedes the previous
+            metadata=new_meta,
+        )
+    )["id"]
 
     return {
         "id": new_fact_id,
@@ -279,18 +283,20 @@ async def symptom_log(
     if notes is not None:
         metadata["notes"] = notes
 
-    fact_id = await store_fact(
-        pool,
-        subject="owner",
-        predicate="symptom",
-        content=name,
-        embedding_engine=embedding_engine,
-        permanence="standard",
-        scope="health",
-        entity_id=owner_entity_id,
-        valid_at=valid_at,
-        metadata=metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject="owner",
+            predicate="symptom",
+            content=name,
+            embedding_engine=embedding_engine,
+            permanence="standard",
+            scope="health",
+            entity_id=owner_entity_id,
+            valid_at=valid_at,
+            metadata=metadata,
+        )
+    )["id"]
 
     cond_uuid = uuid.UUID(condition_id) if condition_id else None
     return {

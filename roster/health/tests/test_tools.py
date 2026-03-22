@@ -51,12 +51,24 @@ async def pool(provisioned_postgres_pool):
             )
         """)
 
-        # Predicate registry (simplified — no expected_subject_type/is_edge columns needed)
+        # Predicate registry — columns must match what store_fact() queries
         await p.execute("""
             CREATE TABLE IF NOT EXISTS predicate_registry (
                 name TEXT PRIMARY KEY,
+                expected_subject_type TEXT,
+                expected_object_type TEXT,
+                is_edge BOOLEAN NOT NULL DEFAULT false,
                 is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                status TEXT NOT NULL DEFAULT 'active',
+                superseded_by TEXT,
+                deprecated_at TIMESTAMPTZ,
+                inverse_of TEXT,
+                is_symmetric BOOLEAN NOT NULL DEFAULT false,
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at TIMESTAMPTZ
             )
         """)
         await p.execute("""
@@ -754,7 +766,8 @@ async def test_meal_log(pool, mock_embedding_engine):
     from butlers.tools.health import meal_log
 
     fixed_id = uuid.uuid4()
-    with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=fixed_id)):
+    sf_rv = {"id": fixed_id, "supersedes_id": None}
+    with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=sf_rv)):
         meal = await meal_log(
             pool,
             "lunch",
@@ -773,7 +786,7 @@ async def test_meal_log_without_nutrition(pool, mock_embedding_engine):
     """meal_log works without nutrition data (returns null nutrition fields)."""
     from butlers.tools.health import meal_log
 
-    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(pool, "snack", "Apple", eaten_at=_utcnow())
     assert meal["description"] == "Apple"
@@ -785,7 +798,7 @@ async def test_meal_log_with_notes(pool, mock_embedding_engine):
     """meal_log accepts optional notes."""
     from butlers.tools.health import meal_log
 
-    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(pool, "dinner", "Pasta", eaten_at=_utcnow(), notes="Homemade")
     assert meal["notes"] == "Homemade"
@@ -812,9 +825,8 @@ async def test_meal_log_valid_types(pool, mock_embedding_engine):
     from butlers.tools.health import meal_log
 
     for mtype in ("breakfast", "lunch", "dinner", "snack"):
-        with patch(
-            "butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=uuid.uuid4())
-        ):
+        sf_rv = {"id": uuid.uuid4(), "supersedes_id": None}
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=sf_rv)):
             meal = await meal_log(pool, mtype, f"Test {mtype}", eaten_at=_utcnow())
         assert meal["type"] == mtype
 
@@ -824,7 +836,7 @@ async def test_meal_log_store_fact_called_with_correct_predicate(pool, mock_embe
     from butlers.tools.health import meal_log
 
     fixed_id = uuid.uuid4()
-    mock_sf = AsyncMock(return_value=fixed_id)
+    mock_sf = AsyncMock(return_value={"id": fixed_id, "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         eaten = datetime(2026, 3, 7, 12, 0, 0, tzinfo=UTC)
         await meal_log(
@@ -854,7 +866,7 @@ async def test_meal_log_creates_calendar_event_for_future_meal(pool, mock_embedd
     """meal_log calls create_calendar_event_fn for meals at or after now."""
     from butlers.tools.health import meal_log
 
-    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     mock_cal = AsyncMock()
     future = datetime.now(UTC) + timedelta(hours=1)
 
@@ -881,7 +893,7 @@ async def test_meal_log_skips_calendar_event_for_past_meal(pool, mock_embedding_
     """meal_log does NOT call create_calendar_event_fn for historical meals."""
     from butlers.tools.health import meal_log
 
-    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     mock_cal = AsyncMock()
     past = datetime.now(UTC) - timedelta(days=1)
 
@@ -901,7 +913,7 @@ async def test_meal_log_calendar_error_does_not_fail_log(pool, mock_embedding_en
     """A calendar event creation failure does not prevent the meal from being logged."""
     from butlers.tools.health import meal_log
 
-    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     mock_cal = AsyncMock(side_effect=RuntimeError("calendar unavailable"))
     future = datetime.now(UTC) + timedelta(hours=1)
 
@@ -1019,7 +1031,7 @@ async def test_meal_log_with_contextual_metadata(pool, mock_embedding_engine):
     from butlers.tools.health import meal_log
 
     fixed_id = uuid.uuid4()
-    mock_sf = AsyncMock(return_value=fixed_id)
+    mock_sf = AsyncMock(return_value={"id": fixed_id, "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(
             pool,
@@ -1042,7 +1054,7 @@ async def test_meal_log_contextual_metadata_stored_in_fact(pool, mock_embedding_
     """meal_log passes contextual metadata to store_fact in the metadata dict."""
     from butlers.tools.health import meal_log
 
-    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         await meal_log(
             pool,
@@ -1068,7 +1080,7 @@ async def test_meal_log_omitted_contextual_fields_absent_from_metadata(pool, moc
     """meal_log does NOT inject contextual keys into metadata when not provided."""
     from butlers.tools.health import meal_log
 
-    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(pool, "breakfast", "Oatmeal", eaten_at=_utcnow())
 
@@ -1091,7 +1103,7 @@ async def test_meal_log_partial_contextual_fields(pool, mock_embedding_engine):
     """meal_log accepts any subset of the optional contextual fields."""
     from butlers.tools.health import meal_log
 
-    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(
             pool,

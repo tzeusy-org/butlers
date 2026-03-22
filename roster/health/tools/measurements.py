@@ -110,18 +110,20 @@ async def measurement_log(
     if notes is not None:
         metadata["notes"] = notes
 
-    fact_id = await store_fact(
-        pool,
-        subject="owner",
-        predicate=predicate,
-        content=content,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="health",
-        entity_id=owner_entity_id,
-        valid_at=valid_at,
-        metadata=metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject="owner",
+            predicate=predicate,
+            content=content,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="health",
+            entity_id=owner_entity_id,
+            valid_at=valid_at,
+            metadata=metadata,
+        )
+    )["id"]
 
     return {
         "id": fact_id,

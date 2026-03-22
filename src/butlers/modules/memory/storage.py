@@ -742,13 +742,17 @@ async def store_fact(
             # environment) the query will raise; we catch and skip resolution.
             _resolved_from: str | None = None
             try:
-                _alias_row = await conn.fetchrow(
-                    "SELECT name FROM predicate_registry WHERE $1 = ANY(aliases)",
-                    predicate,
-                )
-                if _alias_row is not None:
-                    _resolved_from = predicate
-                    predicate = _alias_row["name"]
+                # Savepoint protects the outer transaction: if the aliases column
+                # does not exist yet (pre-mem_025), the query fails but the
+                # savepoint rolls back cleanly, keeping the transaction usable.
+                async with conn.transaction():
+                    _alias_row = await conn.fetchrow(
+                        "SELECT name FROM predicate_registry WHERE $1 = ANY(aliases)",
+                        predicate,
+                    )
+                    if _alias_row is not None:
+                        _resolved_from = predicate
+                        predicate = _alias_row["name"]
             except Exception:
                 # Pre-migration environment — aliases column absent. Skip.
                 logger.debug(
@@ -1122,16 +1126,18 @@ async def store_fact(
 
             # Usage tracking: increment usage_count and update last_used_at.
             # Best-effort — if the column doesn't exist yet (pre-migration
-            # environment) the error is silently swallowed.
+            # environment) the error is silently swallowed.  Savepoint
+            # protects the outer transaction from column-missing errors.
             try:
-                await conn.execute(
-                    """
-                    UPDATE predicate_registry
-                    SET usage_count = usage_count + 1, last_used_at = now()
-                    WHERE name = $1
-                    """,
-                    predicate,
-                )
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        UPDATE predicate_registry
+                        SET usage_count = usage_count + 1, last_used_at = now()
+                        WHERE name = $1
+                        """,
+                        predicate,
+                    )
             except Exception:
                 # usage_count column may not exist yet (pre-mem_023 env).
                 # Log at debug so unexpected failures (e.g. SQL bugs) are discoverable.

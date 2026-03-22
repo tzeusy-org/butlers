@@ -100,18 +100,20 @@ async def note_create(
     if emotion is not None:
         fact_metadata["emotion"] = emotion
 
-    fact_id = await store_fact(
-        pool,
-        subject=f"contact:{contact_id}",
-        predicate="contact_note",
-        content=note_text,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=entity_id,
-        valid_at=now,  # temporal — append-only, each note coexists independently
-        metadata=fact_metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=f"contact:{contact_id}",
+            predicate="contact_note",
+            content=note_text,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=entity_id,
+            valid_at=now,  # temporal — append-only, each note coexists independently
+            metadata=fact_metadata,
+        )
+    )["id"]
 
     result: dict[str, Any] = {
         "id": fact_id,

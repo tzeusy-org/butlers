@@ -95,19 +95,27 @@ async def _log_activity(
     if entity_id is not None:
         fact_metadata["entity_id"] = str(entity_id)
 
-    await store_fact(
-        pool,
-        subject=f"contact:{contact_id}",
-        predicate="activity",
-        content=description,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="relationship",
-        entity_id=contact_entity_id,
-        object_entity_id=object_entity_id,
-        valid_at=now,
-        metadata=fact_metadata,
-    )
+    try:
+        await store_fact(
+            pool,
+            subject=f"contact:{contact_id}",
+            predicate="activity",
+            content=description,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="relationship",
+            entity_id=contact_entity_id,
+            object_entity_id=object_entity_id,
+            valid_at=now,
+            metadata=fact_metadata,
+        )
+    except Exception:
+        logger.warning(
+            "_log_activity: store_fact failed for contact %s — %s",
+            contact_id,
+            description[:80],
+            exc_info=True,
+        )
 
 
 async def feed_get(

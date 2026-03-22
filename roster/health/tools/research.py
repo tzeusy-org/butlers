@@ -96,18 +96,20 @@ async def research_save(
     # Use title-keyed subject so multiple research notes coexist independently.
     subject = f"research:{title}"
 
-    fact_id = await store_fact(
-        pool,
-        subject=subject,
-        predicate="research",
-        content=content,
-        embedding_engine=embedding_engine,
-        permanence="stable",
-        scope="health",
-        entity_id=await _get_owner_entity_id(pool),
-        valid_at=None,  # property fact — supersedes previous for same title
-        metadata=metadata,
-    )
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="research",
+            content=content,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="health",
+            entity_id=await _get_owner_entity_id(pool),
+            valid_at=None,  # property fact — supersedes previous for same title
+            metadata=metadata,
+        )
+    )["id"]
 
     return {
         "id": fact_id,

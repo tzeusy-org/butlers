@@ -167,6 +167,42 @@ async def pool(provisioned_postgres_pool):
             CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
             ON facts (subject, predicate)
         """)
+        # Shared schema + entities (needed by store_fact for entity_id validation)
+        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS shared.entities (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id TEXT NOT NULL DEFAULT '',
+                canonical_name VARCHAR NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                entity_type VARCHAR NOT NULL DEFAULT 'other',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                metadata JSONB DEFAULT '{}'::jsonb,
+                roles TEXT[] NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        # Predicate registry — columns must match what store_fact() queries
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS predicate_registry (
+                name TEXT PRIMARY KEY,
+                expected_subject_type TEXT,
+                expected_object_type TEXT,
+                is_edge BOOLEAN NOT NULL DEFAULT false,
+                is_temporal BOOLEAN NOT NULL DEFAULT false,
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                status TEXT NOT NULL DEFAULT 'active',
+                superseded_by TEXT,
+                deprecated_at TIMESTAMPTZ,
+                inverse_of TEXT,
+                is_symmetric BOOLEAN NOT NULL DEFAULT false,
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at TIMESTAMPTZ
+            )
+        """)
         # memory_links table — needed by store_fact() supersession
         await p.execute("""
             CREATE TABLE IF NOT EXISTS memory_links (
@@ -195,9 +231,15 @@ async def pool(provisioned_postgres_pool):
 
 
 async def _make_contact(pool, first_name: str) -> dict:
-    row = await pool.fetchrow(
-        "INSERT INTO contacts (first_name) VALUES ($1) RETURNING id, first_name",
+    # Create a linked entity first (required by fact_set → resolve_contact_entity_id)
+    entity_row = await pool.fetchrow(
+        "INSERT INTO shared.entities (name) VALUES ($1) RETURNING id",
         first_name,
+    )
+    row = await pool.fetchrow(
+        "INSERT INTO contacts (first_name, entity_id) VALUES ($1, $2) RETURNING id, first_name",
+        first_name,
+        entity_row["id"],
     )
     return dict(row)
 
@@ -244,7 +286,7 @@ async def test_fact_set_supersedes_previous(pool):
     superseded = await pool.fetchval(
         "SELECT COUNT(*) FROM facts"
         " WHERE subject = $1 AND predicate = 'city' AND validity = 'superseded'",
-        str(cid),
+        f"contact:{cid}",
     )
     assert superseded == 1
 
