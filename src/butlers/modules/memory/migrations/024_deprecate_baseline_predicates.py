@@ -29,7 +29,7 @@ Active predicates retained from 005 (not deprecated here):
     recommendation, birthday, lives_in
 
 Revision ID: mem_024
-Revises: mem_023
+Revises: mem_023c
 Create Date: 2026-03-20 00:00:00.000000
 
 """
@@ -40,7 +40,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "mem_024"
-down_revision = "mem_023"
+down_revision = "mem_023c"
 branch_labels = None
 depends_on = None
 

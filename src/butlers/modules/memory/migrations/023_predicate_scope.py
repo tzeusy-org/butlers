@@ -1,4 +1,4 @@
-"""predicate_scope — mem_023
+"""predicate_scope — mem_023c
 
 Add a ``scope`` column to ``predicate_registry`` for domain namespacing.
 
@@ -17,8 +17,8 @@ Predicates added by 009 (health measurements) → health.
 Predicates added by 010 (finance transactions/accounts) → finance.
 Predicates added by 011 (contact interactions, gifts, loans) → relationship.
 
-Revision ID: mem_023
-Revises: mem_022
+Revision ID: mem_023c
+Revises: mem_023b
 Create Date: 2026-03-20 00:00:00.000000
 """
 
@@ -27,8 +27,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_023"
-down_revision = "mem_022"
+revision = "mem_023c"
+down_revision = "mem_023b"
 branch_labels = None
 depends_on = None
 

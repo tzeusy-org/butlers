@@ -35,7 +35,22 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 1. pg_trgm extension for trigram-based fuzzy name matching
     # -------------------------------------------------------------------------
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    # pg_trgm must live in public so all schemas can use gin_trgm_ops.
+    # If a prior migration installed it in a butler schema, relocate it first.
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_extension e
+                JOIN pg_namespace n ON e.extnamespace = n.oid
+                WHERE e.extname = 'pg_trgm' AND n.nspname != 'public'
+            ) THEN
+                ALTER EXTENSION pg_trgm SET SCHEMA public;
+            END IF;
+        END;
+        $$
+    """)
+    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public")
 
     # -------------------------------------------------------------------------
     # 2. Add search_vector tsvector column

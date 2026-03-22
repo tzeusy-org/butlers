@@ -273,8 +273,7 @@ class S3BlobStore:
                 error_code = e.response["Error"]["Code"]
                 if error_code in ("404", "NoSuchBucket"):
                     msg = (
-                        f"S3 bucket '{self.bucket}' does not exist "
-                        f"at endpoint {self.endpoint_url}"
+                        f"S3 bucket '{self.bucket}' does not exist at endpoint {self.endpoint_url}"
                     )
                     raise RuntimeError(msg) from e
                 msg = (
@@ -283,9 +282,7 @@ class S3BlobStore:
                 )
                 raise RuntimeError(msg) from e
             except Exception as e:
-                msg = (
-                    f"Cannot reach S3 endpoint {self.endpoint_url}: {e}"
-                )
+                msg = f"Cannot reach S3 endpoint {self.endpoint_url}: {e}"
                 raise RuntimeError(msg) from e
         logger.info(
             "S3 blob storage ready: endpoint=%s bucket=%s prefix=%s",

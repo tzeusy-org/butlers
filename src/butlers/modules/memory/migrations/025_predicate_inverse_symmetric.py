@@ -21,8 +21,8 @@ Seeding:
 
 child_of and managed_by are inserted by this migration if not already present.
 
-Revision ID: mem_025
-Revises: mem_024
+Revision ID: mem_025c
+Revises: mem_025b
 Create Date: 2026-03-20 00:00:00.000000
 
 """
@@ -32,8 +32,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_025"
-down_revision = "mem_024"
+revision = "mem_025c"
+down_revision = "mem_025b"
 branch_labels = None
 depends_on = None
 

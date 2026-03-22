@@ -20,8 +20,8 @@ Example format:
 
 For predicates without structured metadata, ``metadata`` may be omitted.
 
-Revision ID: mem_025
-Revises: mem_024
+Revision ID: mem_025b
+Revises: mem_025
 Create Date: 2026-03-20 00:00:00.000000
 
 """
@@ -33,8 +33,8 @@ import json
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_025"
-down_revision = "mem_024"
+revision = "mem_025b"
+down_revision = "mem_025"
 branch_labels = None
 depends_on = None
 

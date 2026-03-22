@@ -20,8 +20,8 @@ Existing rows get status='active' via the column DEFAULT.
 
 A CHECK constraint restricts status to the three valid values.
 
-Revision ID: mem_023
-Revises: mem_022
+Revision ID: mem_023b
+Revises: mem_023
 Create Date: 2026-03-20 00:00:00.000000
 
 """
@@ -31,8 +31,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_023"
-down_revision = "mem_022"
+revision = "mem_023b"
+down_revision = "mem_023"
 branch_labels = None
 depends_on = None
 
@@ -46,9 +46,17 @@ def upgrade() -> None:
         ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMPTZ
     """)
     op.execute("""
-        ALTER TABLE predicate_registry
-        ADD CONSTRAINT IF NOT EXISTS predicate_registry_status_check
-        CHECK (status IN ('active', 'deprecated', 'proposed'))
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'predicate_registry_status_check'
+            ) THEN
+                ALTER TABLE predicate_registry
+                ADD CONSTRAINT predicate_registry_status_check
+                CHECK (status IN ('active', 'deprecated', 'proposed'));
+            END IF;
+        END;
+        $$
     """)
     # FK-like constraint: superseded_by must name an existing predicate.
     # Soft FK via CHECK is not possible cross-row; leave as free text for

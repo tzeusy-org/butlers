@@ -1363,14 +1363,10 @@ class ButlerDaemon:
         # 8c. Initialize S3-compatible blob storage.
         # All S3 parameters are resolved from CredentialStore (DB-only, no env
         # fallback) — managed via the dashboard secrets UI at /secrets.
-        s3_endpoint = await credential_store.resolve(
-            "BLOB_S3_ENDPOINT_URL", env_fallback=False
-        )
+        s3_endpoint = await credential_store.resolve("BLOB_S3_ENDPOINT_URL", env_fallback=False)
         s3_bucket = await credential_store.resolve("BLOB_S3_BUCKET", env_fallback=False)
         s3_region = await credential_store.resolve("BLOB_S3_REGION", env_fallback=False)
-        s3_access_key = await credential_store.resolve(
-            "BLOB_S3_ACCESS_KEY_ID", env_fallback=False
-        )
+        s3_access_key = await credential_store.resolve("BLOB_S3_ACCESS_KEY_ID", env_fallback=False)
         s3_secret_key = await credential_store.resolve(
             "BLOB_S3_SECRET_ACCESS_KEY", env_fallback=False
         )
