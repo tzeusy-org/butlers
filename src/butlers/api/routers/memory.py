@@ -843,7 +843,9 @@ async def get_entity(
     async def _query_entity_facts(_: str, fpool: object) -> tuple[int, list[object]]:
         count = (
             await fpool.fetchval(
-                "SELECT count(*) FROM facts WHERE entity_id = $1 AND validity = 'active'",
+                "SELECT count(*) FROM facts"
+                " WHERE (entity_id = $1 OR object_entity_id = $1)"
+                " AND validity = 'active'",
                 eid,
             )
             or 0
@@ -851,10 +853,12 @@ async def get_entity(
         rows = await fpool.fetch(
             "SELECT id, subject, predicate, content, importance, confidence,"
             " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            " object_entity_id, validity, scope, reference_count,"
+            " entity_id, object_entity_id, validity, scope, reference_count,"
             " created_at, last_referenced_at,"
             " last_confirmed_at, tags, metadata"
-            " FROM facts WHERE entity_id = $1 AND validity = 'active'"
+            " FROM facts"
+            " WHERE (entity_id = $1 OR object_entity_id = $1)"
+            " AND validity = 'active'"
             " ORDER BY created_at DESC LIMIT 20",
             eid,
         )

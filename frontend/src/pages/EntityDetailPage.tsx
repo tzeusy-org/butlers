@@ -1077,7 +1077,12 @@ export default function EntityDetailPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {entity.recent_facts.map((fact) => (
+                      {entity.recent_facts.map((fact) => {
+                        // Incoming fact: this entity is the object, not the subject.
+                        const isIncoming =
+                          fact.object_entity_id === entity.id &&
+                          fact.entity_id !== entity.id;
+                        return (
                         <tr
                           key={fact.id}
                           className="border-b last:border-0 hover:bg-muted/50"
@@ -1086,10 +1091,25 @@ export default function EntityDetailPage() {
                             {fact.scope}
                           </td>
                           <td className="py-2 pr-4 text-muted-foreground">
-                            {fact.predicate}
+                            {isIncoming ? (
+                              <span title="Incoming relationship">
+                                <Link
+                                  to={`/entities/${fact.entity_id}`}
+                                  className="text-primary hover:underline"
+                                >
+                                  {fact.entity_name ?? fact.subject}
+                                </Link>
+                                {" "}
+                                {fact.predicate}
+                              </span>
+                            ) : (
+                              fact.predicate
+                            )}
                           </td>
                           <td className="py-2 pr-4 max-w-md truncate">
-                            {fact.object_entity_id ? (
+                            {isIncoming ? (
+                              <span className="text-muted-foreground italic">this entity</span>
+                            ) : fact.object_entity_id ? (
                               <Link
                                 to={`/entities/${fact.object_entity_id}`}
                                 className="text-primary hover:underline"
@@ -1107,7 +1127,8 @@ export default function EntityDetailPage() {
                             {new Date(fact.created_at).toLocaleDateString()}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
