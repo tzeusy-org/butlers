@@ -10,6 +10,10 @@
 input_price_per_token = 0.000003    # $3 / 1M tokens
 output_price_per_token = 0.000015   # $15 / 1M tokens
 
+[models."claude-sonnet-4-6"]
+input_price_per_token = 0.000003    # $3 / 1M tokens
+output_price_per_token = 0.000015   # $15 / 1M tokens
+
 [models."claude-haiku-4-5-20251001"]
 input_price_per_token = 0.0000008   # $0.80 / 1M tokens
 output_price_per_token = 0.000004   # $4 / 1M tokens
@@ -17,6 +21,16 @@ output_price_per_token = 0.000004   # $4 / 1M tokens
 [models."claude-opus-4-6"]
 input_price_per_token = 0.000015    # $15 / 1M tokens
 output_price_per_token = 0.000075   # $75 / 1M tokens
+
+# Google — sourced from https://cloud.google.com/vertex-ai/generative-ai/pricing (2026-03-23)
+
+[models."gemini-2.5-pro"]
+input_price_per_token = 0.00000125  # $1.25 / 1M tokens (≤200K context)
+output_price_per_token = 0.00001    # $10.00 / 1M tokens
+
+[models."gemini-2.5-flash"]
+input_price_per_token = 0.0000003   # $0.30 / 1M tokens (≤200K context)
+output_price_per_token = 0.0000025  # $2.50 / 1M tokens
 
 # OpenAI — sourced from https://developers.openai.com/api/docs/pricing/ (2026-03-08)
 # gpt-5.4 has two pricing tiers based on context length; entries below use the <272K tier.
