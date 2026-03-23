@@ -228,6 +228,7 @@ export function useArchiveContact() {
     mutationFn: (contactId: string) => archiveContact(contactId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
     },
   });
 }

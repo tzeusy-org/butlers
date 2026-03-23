@@ -40,6 +40,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  useArchiveContact,
   useCreateAndLinkEntity,
   useEntitySuggestions,
   useLinkEntity,
@@ -190,6 +191,7 @@ export function UnlinkedEntitiesSection() {
     q: debouncedSearch || undefined,
   });
   const createMutation = useCreateAndLinkEntity();
+  const archiveMutation = useArchiveContact();
   const [linkTarget, setLinkTarget] = useState<UnlinkedContactSummary | null>(null);
 
   const contacts = data?.contacts ?? [];
@@ -297,6 +299,15 @@ export function UnlinkedEntitiesSection() {
                           onClick={() => handleCreateNew(contact)}
                         >
                           Create New
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-muted-foreground"
+                          disabled={archiveMutation.isPending}
+                          onClick={() => archiveMutation.mutate(contact.id)}
+                        >
+                          Archive
                         </Button>
                       </div>
                     </TableCell>
