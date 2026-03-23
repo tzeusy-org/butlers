@@ -90,10 +90,9 @@ function usageBarColor(percent: number): string {
 // Pricing key resolution
 // ---------------------------------------------------------------------------
 
-/** Resolve a catalog model_id to its pricing.toml key.
- *  OpenCode models use "opencode-go/" prefix in the catalog but bare names in pricing. */
+/** Resolve a catalog model_id to its pricing.toml key. */
 function pricingKey(modelId: string): string {
-  return modelId.replace(/^opencode-go\//, "");
+  return modelId;
 }
 
 // ---------------------------------------------------------------------------
