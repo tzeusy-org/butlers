@@ -102,9 +102,36 @@ priority = 20
 enabled = true
 
 [[models]]
+alias = "minimax-m2.7"
+runtime_type = "opencode"
+model_id = "opencode-go/minimax-m2.7"
+extra_args = []
+complexity_tier = "medium"
+priority = 20
+enabled = true
+
+[[models]]
+alias = "minimax-m2.7-highspeed"
+runtime_type = "opencode"
+model_id = "opencode-go/minimax-m2.7-highspeed"
+extra_args = []
+complexity_tier = "medium"
+priority = 15
+enabled = true
+
+[[models]]
 alias = "kimi-k2.5"
 runtime_type = "opencode"
 model_id = "opencode-go/kimi-k2.5"
+extra_args = []
+complexity_tier = "high"
+priority = 20
+enabled = true
+
+[[models]]
+alias = "qwen3-coder-480b"
+runtime_type = "opencode"
+model_id = "opencode-go/qwen3-coder-480b"
 extra_args = []
 complexity_tier = "high"
 priority = 20
