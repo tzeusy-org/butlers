@@ -254,19 +254,22 @@ def _build_route_runtime_context(
             storage_ref = att.get("storage_ref")
             if storage_ref:
                 att_lines.append(
-                    f"  - {filename} ({media_type}, {size_kb:.1f}KB, storage_ref: {storage_ref})"
+                    f"  - filename={filename}, media_type={media_type}, "
+                    f"size={size_kb:.1f}KB, storage_ref={storage_ref}"
                 )
             else:
                 att_lines.append(
-                    f"  - {filename} ({media_type}, {size_kb:.1f}KB, pending lazy fetch)"
+                    f"  - filename={filename}, media_type={media_type}, "
+                    f"size={size_kb:.1f}KB, status=pending_lazy_fetch"
                 )
 
         context_parts.append(
             f"\nATTACHMENTS ({len(attachments)} file(s)):\n"
             + "\n".join(att_lines)
-            + "\n\nUse `get_attachment(storage_ref)` for eager-fetched attachments. "
-            "Lazy-fetch attachments are available for processing but require "
-            "on-demand retrieval."
+            + "\n\nTo retrieve an attachment, call `get_attachment(storage_ref=<storage_ref>)` "
+            "using the EXACT storage_ref value shown above (starts with 's3://'). "
+            "Do NOT pass the filename. "
+            "Lazy-fetch attachments (no storage_ref) require on-demand retrieval."
         )
 
     non_interactive_guidance = _build_non_interactive_route_safety_guidance(source_channel)
@@ -4687,9 +4690,18 @@ class ButlerDaemon:
                     "status": "not_found",
                 }
             except ValueError as exc:
-                # Invalid storage_ref or size limit exceeded
+                # Invalid storage_ref or size limit exceeded — give the LLM
+                # actionable guidance so it retries with the correct value.
+                hint = ""
+                if "://" not in storage_ref:
+                    hint = (
+                        " The storage_ref must be a full reference like "
+                        "'s3://bucket/path/file.ext'. Check the ATTACHMENTS "
+                        "section in your system prompt for the correct "
+                        "storage_ref value — do not use the filename."
+                    )
                 return {
-                    "error": str(exc),
+                    "error": f"{exc}{hint}",
                     "status": "invalid",
                 }
             except Exception as exc:
