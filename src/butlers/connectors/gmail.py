@@ -3927,6 +3927,24 @@ async def run_gmail_connector() -> None:
         await shared_pool.close()
         raise
 
+    # Step 2b: DB-first resolution for pubsub webhook token.
+    if not process_config.gmail_pubsub_webhook_token and shared_pool is not None:
+        try:
+            from butlers.credential_store import CredentialStore
+
+            store = CredentialStore(shared_pool)
+            db_webhook_token = await store.resolve("GMAIL_PUBSUB_WEBHOOK_TOKEN", env_fallback=False)
+            if db_webhook_token:
+                process_config = process_config.model_copy(
+                    update={"gmail_pubsub_webhook_token": db_webhook_token}
+                )
+                logger.info("Gmail connector: resolved GMAIL_PUBSUB_WEBHOOK_TOKEN from DB")
+        except Exception as exc:
+            logger.debug(
+                "Gmail connector: DB lookup for pubsub webhook token failed (non-fatal): %s",
+                exc,
+            )
+
     # Step 3: Start the multi-account manager.
     manager = GmailConnectorManager(
         process_config=process_config,

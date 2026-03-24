@@ -239,11 +239,11 @@ class TestDiscordUserConnectorConfig:
             DiscordUserConnectorConfig.from_env()
 
     def test_from_env_missing_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Missing DISCORD_BOT_TOKEN raises ValueError."""
+        """Missing DISCORD_BOT_TOKEN returns config with None token (DB resolution deferred)."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
-        with pytest.raises(ValueError, match="DISCORD_BOT_TOKEN"):
-            DiscordUserConnectorConfig.from_env()
+        config = DiscordUserConnectorConfig.from_env()
+        assert config.discord_bot_token is None
 
     def test_from_env_empty_allowlists(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Empty allowlists mean no filtering (all guilds/channels allowed)."""

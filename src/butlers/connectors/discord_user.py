@@ -83,6 +83,11 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
+from butlers.credential_store import (
+    CredentialStore,
+    shared_db_name_from_env,
+)
+from butlers.db import db_params_from_env
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 logger = logging.getLogger(__name__)
@@ -183,7 +188,7 @@ class DiscordUserConnectorConfig:
     endpoint_identity: str = field(default="")
 
     # Discord credentials
-    discord_bot_token: str = field(default="")
+    discord_bot_token: str | None = None
 
     # Scope controls
     guild_allowlist: frozenset[str] = field(default_factory=frozenset)
@@ -206,8 +211,6 @@ class DiscordUserConnectorConfig:
         channel = os.environ.get("CONNECTOR_CHANNEL", "discord")
 
         discord_bot_token = os.environ.get("DISCORD_BOT_TOKEN")
-        if not discord_bot_token:
-            raise ValueError("DISCORD_BOT_TOKEN environment variable is required")
 
         # Parse optional allowlists (comma-separated IDs)
         guild_allowlist_str = os.environ.get("DISCORD_GUILD_ALLOWLIST", "")
@@ -1265,16 +1268,99 @@ async def _resolve_discord_endpoint_identity(token: str) -> str:
         ) from exc
 
 
+async def _resolve_discord_bot_token_from_db() -> str | None:
+    """Attempt DB-first credential resolution for the Discord user connector.
+
+    Creates a short-lived asyncpg pool, resolves ``DISCORD_BOT_TOKEN``
+    from the ``butler_secrets`` table via :class:`~butlers.credential_store.CredentialStore`,
+    and closes the pool before returning.
+
+    Returns ``None`` if:
+    - No DB connection parameters are configured (env vars absent).
+    - The DB is reachable but the secret has not been stored yet.
+
+    In both cases the caller should fall back to env-var resolution.
+    """
+    import asyncpg
+
+    db_params = db_params_from_env()
+    local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "").strip()
+    shared_db_name = shared_db_name_from_env()
+    candidate_db_names: list[str] = []
+    for name in [local_db_name, shared_db_name]:
+        if name and name not in candidate_db_names:
+            candidate_db_names.append(name)
+
+    connected_pools: list[tuple[str, asyncpg.Pool]] = []
+    for db_name in candidate_db_names:
+        try:
+            pool = await asyncpg.create_pool(
+                host=db_params["host"],
+                port=db_params["port"],
+                user=db_params["user"],
+                password=db_params["password"],
+                database=db_name,
+                ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+                min_size=1,
+                max_size=2,
+                command_timeout=5,
+            )
+            connected_pools.append((db_name, pool))
+        except Exception as exc:
+            logger.debug(
+                "DB connection failed during Discord bot credential resolution "
+                "(db=%s, non-fatal): %s",
+                db_name,
+                exc,
+            )
+
+    if not connected_pools:
+        return None
+
+    primary_db_name, primary_pool = connected_pools[0]
+    fallback_pools = [pool for _, pool in connected_pools[1:]]
+    store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
+
+    try:
+        token = await store.resolve("DISCORD_BOT_TOKEN", env_fallback=False)
+        if token:
+            logger.info(
+                "Discord connector: resolved DISCORD_BOT_TOKEN from layered DB lookup "
+                "(primary_db=%s, fallbacks=%d)",
+                primary_db_name,
+                len(fallback_pools),
+            )
+        return token
+    except Exception as exc:
+        logger.debug("Discord connector: DB credential lookup failed (non-fatal): %s", exc)
+        return None
+    finally:
+        for _, pool in connected_pools:
+            await pool.close()
+
+
 async def run_discord_user_connector() -> None:
     """CLI entry point for running Discord user connector.
 
-    Reads configuration from environment variables and runs the connector
-    in gateway mode until interrupted. Endpoint identity is auto-resolved
-    from the Discord API.
+    Credential resolution order:
+    1. Database (butler_secrets table via CredentialStore).
+    2. Environment variable DISCORD_BOT_TOKEN (backward-compatible fallback).
     """
     configure_logging(level="INFO", butler_name="discord-user")
 
     config = DiscordUserConnectorConfig.from_env()
+
+    # DB-first credential resolution.
+    if os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"):
+        db_token = await _resolve_discord_bot_token_from_db()
+        if db_token:
+            config = replace(config, discord_bot_token=db_token)
+
+    if not config.discord_bot_token:
+        raise ValueError(
+            "Discord bot token not found. Store it via the dashboard Secrets page "
+            "(key: DISCORD_BOT_TOKEN) or set the DISCORD_BOT_TOKEN env var."
+        )
 
     # Auto-resolve endpoint identity from Discord API.
     resolved_identity = await _resolve_discord_endpoint_identity(config.discord_bot_token)

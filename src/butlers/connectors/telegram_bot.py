@@ -146,7 +146,7 @@ class TelegramBotConnectorConfig:
     endpoint_identity: str = field(default="")
 
     # Telegram credentials
-    telegram_token: str = field(default="")
+    telegram_token: str | None = None
 
     # Polling mode config
     poll_interval_s: float = 1.0
@@ -170,9 +170,7 @@ class TelegramBotConnectorConfig:
         provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
         channel = os.environ.get("CONNECTOR_CHANNEL", "telegram_bot")
 
-        telegram_token = os.environ.get("BUTLER_TELEGRAM_TOKEN")
-        if not telegram_token:
-            raise ValueError("BUTLER_TELEGRAM_TOKEN environment variable is required")
+        telegram_token = os.environ.get("BUTLER_TELEGRAM_TOKEN") or None
 
         poll_interval_s = float(os.environ.get("CONNECTOR_POLL_INTERVAL_S", "1.0"))
 
@@ -1237,54 +1235,26 @@ async def run_telegram_bot_connector() -> None:
     """CLI entry point for running Telegram bot connector.
 
     Credential resolution order:
-    1. Database (if DATABASE_URL or POSTGRES_* env vars are configured).
+    1. Database (butler_secrets table via CredentialStore).
     2. Environment variable BUTLER_TELEGRAM_TOKEN (backward-compatible fallback).
     """
     configure_logging(level="INFO", butler_name="telegram-bot")
 
-    # Step 1: Try DB-first credential resolution.
-    db_token: str | None = None
+    # Step 1: Load config from env (token may be None).
+    config = TelegramBotConnectorConfig.from_env()
+
+    # Step 2: DB-first credential resolution.
     if os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"):
         db_token = await _resolve_telegram_bot_token_from_db()
+        if db_token:
+            config = replace(config, telegram_token=db_token)
 
-    # Step 2: Load config from env vars.
-    # If env token is missing but DB token exists, build config directly.
-    env_config_ok = True
-    config: TelegramBotConnectorConfig | None = None
-    try:
-        config = TelegramBotConnectorConfig.from_env()
-    except Exception as exc:
-        if db_token is None:
-            logger.error("Failed to load Telegram bot connector config: %s", exc)
-            raise
-        env_config_ok = False
-        logger.info(
-            "Telegram bot connector: env-var config load failed (%s); "
-            "will build from DB-resolved credentials.",
-            exc,
+    # Step 3: Validate we have a token from either source.
+    if not config.telegram_token:
+        raise ValueError(
+            "Telegram bot token not found. Store it via the dashboard Secrets page "
+            "(key: BUTLER_TELEGRAM_TOKEN) or set the BUTLER_TELEGRAM_TOKEN env var."
         )
-
-    if not env_config_ok:
-        assert db_token is not None
-        switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL")
-        if not switchboard_mcp_url:
-            raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
-        config = TelegramBotConnectorConfig(
-            switchboard_mcp_url=switchboard_mcp_url,
-            provider=os.environ.get("CONNECTOR_PROVIDER", "telegram"),
-            channel=os.environ.get("CONNECTOR_CHANNEL", "telegram_bot"),
-            telegram_token=db_token,
-            poll_interval_s=float(os.environ.get("CONNECTOR_POLL_INTERVAL_S", "1.0")),
-            webhook_url=os.environ.get("CONNECTOR_WEBHOOK_URL"),
-            max_inflight=int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8")),
-            health_port=int(os.environ.get("CONNECTOR_HEALTH_PORT", "40081")),
-        )
-    elif db_token is not None and config is not None:
-        # Step 3: Override with DB-resolved token if available.
-        config = replace(config, telegram_token=db_token)
-        logger.debug("Telegram bot connector: config updated with DB-resolved token")
-
-    assert config is not None
 
     # Step 4: Auto-resolve endpoint_identity from the authenticated bot account.
     resolved_identity = await resolve_telegram_endpoint_identity(token=config.telegram_token)
@@ -1301,11 +1271,9 @@ async def run_telegram_bot_connector() -> None:
     # Determine mode based on config
     try:
         if config.webhook_url:
-            # Webhook mode
             logger.info("Running in webhook mode")
             await connector.start_webhook()
         else:
-            # Polling mode
             logger.info("Running in polling mode")
             try:
                 await connector.start_polling()

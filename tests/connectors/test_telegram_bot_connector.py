@@ -98,10 +98,13 @@ def test_config_from_env_missing_required_fields(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
         TelegramBotConnectorConfig.from_env()
 
-    # Missing BUTLER_TELEGRAM_TOKEN (endpoint_identity is auto-resolved via getMe)
+
+def test_config_from_env_token_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that missing BUTLER_TELEGRAM_TOKEN yields None (DB-first resolution)."""
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
-    with pytest.raises(ValueError, match="BUTLER_TELEGRAM_TOKEN"):
-        TelegramBotConnectorConfig.from_env()
+    monkeypatch.delenv("BUTLER_TELEGRAM_TOKEN", raising=False)
+    config = TelegramBotConnectorConfig.from_env()
+    assert config.telegram_token is None
 
 
 # -----------------------------------------------------------------------------
