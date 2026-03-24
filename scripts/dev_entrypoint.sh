@@ -10,9 +10,13 @@ set -euo pipefail
 LOG_SUBDIR="${1:?log subdirectory required}"
 shift
 
-# BUTLERS_LOG_RUN_DIR is set by the log-init service and shared via env/volume.
-# Fall back to a timestamped dir if not set.
-RUN_DIR="${BUTLERS_LOG_RUN_DIR:-/app/logs/$(date +%Y%m%d_%H%M%S)}"
+# Read the shared run directory created by log-init (via bind-mounted volume).
+# Fall back to a timestamped dir if the marker file doesn't exist yet.
+if [ -f /app/logs/.current_run_dir ]; then
+  RUN_DIR="$(cat /app/logs/.current_run_dir)"
+else
+  RUN_DIR="${BUTLERS_LOG_RUN_DIR:-/app/logs/$(date +%Y%m%d_%H%M%S)}"
+fi
 LOG_DIR="${RUN_DIR}/${LOG_SUBDIR}"
 mkdir -p "$LOG_DIR"
 

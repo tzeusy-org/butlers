@@ -56,9 +56,18 @@ for e in "${COMPOSE_ENV[@]}"; do
   export "${e?}"
 done
 
+# ── Handle hotreload: scale down base services that hotreload replaces ─
+SCALE_ARGS=()
+for p in "${PROFILES[@]}"; do
+  if [ "$p" = "hotreload" ]; then
+    SCALE_ARGS+=(--scale butlers-up=0 --scale dashboard-api=0)
+    echo "Hotreload: scaling down butlers-up and dashboard-api (replaced by *-hotreload variants)"
+  fi
+done
+
 echo "Starting Butlers dev stack..."
 echo "  Profiles: ${PROFILES[*]:-default}"
 echo "  Compose:  ${CMD[*]} up"
 echo ""
 
-"${CMD[@]}" up --build
+"${CMD[@]}" up --build "${SCALE_ARGS[@]}"

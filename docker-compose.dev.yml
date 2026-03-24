@@ -9,8 +9,16 @@
 #   - .env with bootstrap vars (see .env.example)
 #
 # Profiles:
-#   (default)   — baked images, uv sync at container start
-#   hotreload   — volume-mount src/ and frontend/ for live code changes
+#   (default)   — baked images, production deps only
+#   hotreload   — volume-mount src/ for live code changes + uv sync --dev at start
+
+x-connector-env: &connector-env
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: butlers
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-butlers}
+  SWITCHBOARD_MCP_URL: http://switchboard:41100/sse
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
 services:
   # ── Layer 0.5 override: mount roster for migrations ───────────────────
@@ -43,11 +51,15 @@ services:
     volumes:
       - ./logs:/app/logs
 
-  # ── Layer 1a: frontend (promote from profile to always-on in dev) ─────
+  # ── Layer 1a: frontend override — always-on + correct port/base ───────
   frontend-dev:
     profiles: []
     environment:
       - VITE_API_URL=${VITE_API_URL:-/butlers-api/api}
+    command: >-
+      sh -c "npm install &&
+      npm run dev -- --host 0.0.0.0 --port 41173 --strictPort
+      --base ${FRONTEND_BASE_PATH:-/butlers/}"
 
   # ── Layer 1b: Telegram bot connector ──────────────────────────────────
   connector-telegram-bot:
@@ -57,13 +69,9 @@ services:
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "uv", "run", "python", "-m", "butlers.connectors.telegram_bot"]
     command: []
     environment:
-      - CONNECTOR_PROVIDER=telegram
-      - CONNECTOR_CHANNEL=telegram_bot
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      <<: *connector-env
+      CONNECTOR_PROVIDER: telegram
+      CONNECTOR_CHANNEL: telegram_bot
     volumes:
       - ./logs:/app/logs
     networks: [db, backend]
@@ -72,6 +80,8 @@ services:
         condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Layer 1b: Telegram user-client connector ──────────────────────────
@@ -82,13 +92,9 @@ services:
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "uv", "run", "python", "-m", "butlers.connectors.telegram_user_client"]
     command: []
     environment:
-      - CONNECTOR_PROVIDER=telegram
-      - CONNECTOR_CHANNEL=telegram_user_client
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      <<: *connector-env
+      CONNECTOR_PROVIDER: telegram
+      CONNECTOR_CHANNEL: telegram_user_client
     volumes:
       - ./logs:/app/logs
     networks: [db, backend]
@@ -97,6 +103,8 @@ services:
         condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Layer 1b: Live listener connector (host audio devices) ────────────
@@ -109,14 +117,11 @@ services:
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "python", "-m", "butlers.connectors.live_listener"]
     command: []
     environment:
-      - CONNECTOR_PROVIDER=live-listener
-      - CONNECTOR_CHANNEL=voice
-      - CONNECTOR_HEALTH_PORT=40091
-      - LIVE_LISTENER_DEVICES=${LIVE_LISTENER_DEVICES:-[{"name":"webcam","device":"hw:2,0"}]}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+      <<: *connector-env
+      CONNECTOR_PROVIDER: live-listener
+      CONNECTOR_CHANNEL: voice
+      CONNECTOR_HEALTH_PORT: "40091"
+      LIVE_LISTENER_DEVICES: ${LIVE_LISTENER_DEVICES:-[{"name":"webcam","device":"hw:2,0"}]}
     volumes:
       - ./logs:/app/logs
     networks: [db, backend]
@@ -125,6 +130,8 @@ services:
         condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
     devices:
       - /dev/snd:/dev/snd
     restart: unless-stopped
@@ -163,7 +170,7 @@ services:
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
-      - BUTLERS_SWITCHBOARD_URL=http://dashboard-api:41200
+      - BUTLERS_SWITCHBOARD_URL=http://switchboard:41100
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - ./roster:/app/roster:ro
@@ -174,6 +181,8 @@ services:
         condition: service_completed_successfully
       oauth-gate:
         condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Layer 3: Gmail connector (post-OAuth) ─────────────────────────────
@@ -184,17 +193,13 @@ services:
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "uv", "run", "python", "-m", "butlers.connectors.gmail"]
     command: []
     environment:
-      - CONNECTOR_PROVIDER=gmail
-      - CONNECTOR_CHANNEL=email
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
-      - CONNECTOR_BUTLER_DB_NAME=${POSTGRES_DB:-butlers}
-      - CONNECTOR_BUTLER_DB_SCHEMA=shared
-      - BUTLER_SHARED_DB_NAME=${POSTGRES_DB:-butlers}
-      - BUTLER_SHARED_DB_SCHEMA=shared
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      <<: *connector-env
+      CONNECTOR_PROVIDER: gmail
+      CONNECTOR_CHANNEL: email
+      CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
+      CONNECTOR_BUTLER_DB_SCHEMA: shared
+      BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
+      BUTLER_SHARED_DB_SCHEMA: shared
     volumes:
       - ./logs:/app/logs
     networks: [db, backend]
@@ -203,37 +208,79 @@ services:
         condition: service_completed_successfully
       oauth-gate:
         condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Hotreload overrides (profile: hotreload) ──────────────────────────
-  # When --profile hotreload is active, volume-mount source code into
-  # services and run uv sync at container start for live changes.
+  # When --profile hotreload is active, these replace the baked-image
+  # versions of butlers-up and dashboard-api with volume-mounted source.
+  # The base services scale to 0 when hotreload variants are active.
 
   butlers-up-hotreload:
-    extends:
-      service: butlers-up
-    profiles: [hotreload]
-    entrypoint: ["sh", "-c", "uv sync --dev && uv run butlers up"]
-    command: []
-    volumes:
-      - ./src:/app/src
-      - ./pyproject.toml:/app/pyproject.toml:ro
-      - uv_cache:/root/.cache/uv
-
-  dashboard-api-hotreload:
-    extends:
-      service: dashboard-api
     build:
       context: .
       dockerfile: Dockerfile
     profiles: [hotreload]
-    entrypoint: ["sh", "-c", "uv sync --dev && uv run butlers dashboard --host 0.0.0.0 --port 41200"]
+    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers up"]
     command: []
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+      - BUTLERS_SWITCHBOARD_URL=http://switchboard:41100
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./logs:/app/logs
       - uv_cache:/root/.cache/uv
+    networks: [db, backend]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard-api-hotreload:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: [hotreload]
+    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers dashboard --host 0.0.0.0 --port 41200"]
+    command: []
+    ports:
+      - "41200:41200"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      - BUTLERS_DISABLE_FILE_LOGGING=1
+    volumes:
+      - ./src:/app/src
+      - ./roster:/app/roster:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./logs:/app/logs
+      - uv_cache:/root/.cache/uv
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:41200/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    networks: [db, backend, frontend]
 
 volumes:
   uv_cache:
