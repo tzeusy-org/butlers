@@ -86,6 +86,22 @@ services:
       "
     networks: [db]
 
+  # Run Alembic migrations before any butler service starts (init container)
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["db", "migrate"]
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=butlers
+    networks: [db]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Switchboard butler - message router
   switchboard:
     build:
@@ -106,6 +122,8 @@ services:
       postgres:
         condition: service_healthy
       minio-setup:
+        condition: service_completed_successfully
+      migrations:
         condition: service_completed_successfully
     networks: [db, backend]
 
@@ -130,6 +148,8 @@ services:
         condition: service_healthy
       minio-setup:
         condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
     networks: [db, backend]
 
   # Relationship butler - contacts and interactions
@@ -152,6 +172,8 @@ services:
       postgres:
         condition: service_healthy
       minio-setup:
+        condition: service_completed_successfully
+      migrations:
         condition: service_completed_successfully
     networks: [db, backend]
 
@@ -176,6 +198,8 @@ services:
         condition: service_healthy
       minio-setup:
         condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
     networks: [db, backend]
 
   # Dashboard API - web UI backend for monitoring and managing butlers
@@ -194,8 +218,8 @@ services:
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=butlers
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41200/health || exit 1"]
       interval: 5s
