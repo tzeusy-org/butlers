@@ -2,7 +2,12 @@
 #
 # USAGE:
 #
-# Development mode (local butlers with containerized DB and observability):
+# Development mode (full stack with connectors):
+#   ./scripts/dev-compose.sh
+#   ./scripts/dev-compose.sh --hotreload      # live code changes
+#   ./scripts/dev-compose.sh --skip-oauth-check
+#
+# Development mode (just postgres for local butlers):
 #   docker compose up -d postgres
 #   butlers up
 #
