@@ -75,12 +75,8 @@ else
   tmux new-session -d -s "$SESSION" -c "$PROJECT_DIR" 2>/dev/null || true
 fi
 
-# Shared env loader (secrets + local .env)
-ENV_LOADER="export \$(grep -v '^#' /secrets/.dev.env | xargs -d '\n') && export \$(grep -v '^#' .env | xargs -d '\n')"
-TELEGRAM_BOT_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/telegram_bot"
-TELEGRAM_USER_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/telegram_user_client"
-GMAIL_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/gmail"
-LIVE_LISTENER_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/live_listener"
+# Shared env loader (infrastructure bootstrap only — all secrets are DB-first now)
+ENV_LOADER="if [ -f .env ]; then export \$(grep -v '^#' .env | xargs -d '\n'); fi"
 LOGS_ROOT="${PROJECT_DIR}/logs"
 LOGS_RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOGS_RUN_DIR="${LOGS_ROOT}/${LOGS_RUN_ID}"
@@ -104,16 +100,8 @@ _pipe_pane_to_log() {
     "perl -pe 'BEGIN{\$|=1}; s/\\e\\[[0-9;?]*[ -\\/]*[@-~]//g; s/\\e\\][^\\a]*(?:\\a|\\e\\\\)//g; s/\\r//g; s/[\\x00-\\x08\\x0B-\\x1F\\x7F]//g' >> '$log_file'"
 }
 
-# ── Source shared env files (same as ENV_LOADER, before preflight check) ──
-# Pre-flight check must see the same credentials as the connector panes.
-# Source /secrets/.dev.env and .env now so that credentials stored there
-# are visible when _has_google_creds() runs below.
-if [ -f "/secrets/.dev.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . /secrets/.dev.env 2>/dev/null || true
-  set +a
-fi
+# ── Source .env for infrastructure bootstrap vars (DB connection, OTEL) ──
+# All runtime secrets (API keys, tokens) are resolved DB-first by connectors.
 if [ -f "${PROJECT_DIR}/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -765,7 +753,7 @@ _build_gmail_pane_cmd() {
   local gmail_cmd_base
   local gmail_creds_db
   local gmail_creds_schema
-  gmail_cmd_base="${ENV_LOADER} && if [ -f \"$GMAIL_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$GMAIL_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors"
+  gmail_cmd_base="${ENV_LOADER} && mkdir -p .tmp/connectors"
   gmail_creds_db="$(_select_google_credentials_db)"
   gmail_creds_schema="$(_shared_credentials_schema)"
 
@@ -817,13 +805,13 @@ _pipe_pane_to_log "$PANE_LIVE_LISTENER" "${LOGS_RUN_DIR}/connectors/live_listene
 sleep 0.3
 
 tmux send-keys -t "$PANE_TELEGRAM_BOT" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_bot uv run python -m butlers.connectors.telegram_bot" Enter
+  "${ENV_LOADER} && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_bot uv run python -m butlers.connectors.telegram_bot" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_user_client uv run python -m butlers.connectors.telegram_user_client" Enter
+  "${ENV_LOADER} && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram_user_client uv run python -m butlers.connectors.telegram_user_client" Enter
 
 tmux send-keys -t "$PANE_LIVE_LISTENER" \
-  "${ENV_LOADER} && if [ -f \"$LIVE_LISTENER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$LIVE_LISTENER_CONNECTOR_ENV_FILE\" && set +a; fi && uv sync --extra live-listener -q && CONNECTOR_PROVIDER=live-listener CONNECTOR_CHANNEL=voice LIVE_LISTENER_DEVICES='[{\"name\":\"webcam\",\"device\":\"hw:2,0\"}]' CONNECTOR_HEALTH_PORT=40091 uv run python -m butlers.connectors.live_listener" Enter
+  "${ENV_LOADER} && uv sync --extra live-listener -q && CONNECTOR_PROVIDER=live-listener CONNECTOR_CHANNEL=voice LIVE_LISTENER_DEVICES='[{\"name\":\"webcam\",\"device\":\"hw:2,0\"}]' CONNECTOR_HEALTH_PORT=40091 uv run python -m butlers.connectors.live_listener" Enter
 
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)
