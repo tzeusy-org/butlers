@@ -18,6 +18,21 @@ services:
     volumes:
       - ./roster:/app/roster:ro
 
+  # One-shot: create timestamped log directory and "latest" symlink
+  log-init:
+    image: alpine:3.19
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        RUN_DIR="/logs/$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "$RUN_DIR"
+        rm -f /logs/latest
+        ln -s "$RUN_DIR" /logs/latest
+        echo "$RUN_DIR" > /logs/.current_run_dir
+        echo "Log directory: $RUN_DIR"
+    volumes:
+      - ./logs:/logs
+
   # ── Layer 1a override: dashboard-api with OAuth redirect URI ──────────
   dashboard-api:
     environment:
@@ -25,6 +40,8 @@ services:
       - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
       - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}
       - BUTLERS_DISABLE_FILE_LOGGING=1
+    volumes:
+      - ./logs:/app/logs
 
   # ── Layer 1a: frontend (promote from profile to always-on in dev) ─────
   frontend-dev:
@@ -37,7 +54,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["uv", "run", "python", "-m", "butlers.connectors.telegram_bot"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "uv", "run", "python", "-m", "butlers.connectors.telegram_bot"]
     command: []
     environment:
       - CONNECTOR_PROVIDER=telegram
@@ -47,8 +64,12 @@ services:
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes:
+      - ./logs:/app/logs
     networks: [db, backend]
     depends_on:
+      log-init:
+        condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
     restart: unless-stopped
@@ -58,7 +79,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["uv", "run", "python", "-m", "butlers.connectors.telegram_user_client"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "uv", "run", "python", "-m", "butlers.connectors.telegram_user_client"]
     command: []
     environment:
       - CONNECTOR_PROVIDER=telegram
@@ -68,8 +89,12 @@ services:
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes:
+      - ./logs:/app/logs
     networks: [db, backend]
     depends_on:
+      log-init:
+        condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
     restart: unless-stopped
@@ -81,7 +106,7 @@ services:
       dockerfile: Dockerfile
       args:
         EXTRAS: live-listener
-    entrypoint: ["uv", "run", "python", "-m", "butlers.connectors.live_listener"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "python", "-m", "butlers.connectors.live_listener"]
     command: []
     environment:
       - CONNECTOR_PROVIDER=live-listener
@@ -92,8 +117,12 @@ services:
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+    volumes:
+      - ./logs:/app/logs
     networks: [db, backend]
     depends_on:
+      log-init:
+        condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
     devices:
@@ -127,7 +156,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["up"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "uv", "run", "butlers", "up"]
+    command: []
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -137,8 +167,11 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - ./roster:/app/roster:ro
+      - ./logs:/app/logs
     networks: [db, backend]
     depends_on:
+      log-init:
+        condition: service_completed_successfully
       oauth-gate:
         condition: service_completed_successfully
     restart: unless-stopped
@@ -148,7 +181,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["uv", "run", "python", "-m", "butlers.connectors.gmail"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "uv", "run", "python", "-m", "butlers.connectors.gmail"]
     command: []
     environment:
       - CONNECTOR_PROVIDER=gmail
@@ -162,8 +195,12 @@ services:
       - BUTLER_SHARED_DB_NAME=${POSTGRES_DB:-butlers}
       - BUTLER_SHARED_DB_SCHEMA=shared
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes:
+      - ./logs:/app/logs
     networks: [db, backend]
     depends_on:
+      log-init:
+        condition: service_completed_successfully
       oauth-gate:
         condition: service_completed_successfully
     restart: unless-stopped
