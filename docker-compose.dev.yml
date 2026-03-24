@@ -1,0 +1,202 @@
+# Dev overlay — extends docker-compose.yml with connectors, oauth gate, and backend.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile hotreload up
+#
+# Prerequisites:
+#   - tailscale serve configured on host (see scripts/dev.sh header for setup)
+#   - .env with bootstrap vars (see .env.example)
+#
+# Profiles:
+#   (default)   — baked images, uv sync at container start
+#   hotreload   — volume-mount src/ and frontend/ for live code changes
+
+services:
+  # ── Layer 0.5 override: mount roster for migrations ───────────────────
+  migrations:
+    volumes:
+      - ./roster:/app/roster:ro
+
+  # ── Layer 1a override: dashboard-api with OAuth redirect URI ──────────
+  dashboard-api:
+    environment:
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      - BUTLERS_DISABLE_FILE_LOGGING=1
+
+  # ── Layer 1a: frontend (promote from profile to always-on in dev) ─────
+  frontend-dev:
+    profiles: []
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-/butlers-api/api}
+
+  # ── Layer 1b: Telegram bot connector ──────────────────────────────────
+  connector-telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["uv", "run", "python", "-m", "butlers.connectors.telegram_bot"]
+    command: []
+    environment:
+      - CONNECTOR_PROVIDER=telegram
+      - CONNECTOR_CHANNEL=telegram_bot
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    networks: [db, backend]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Layer 1b: Telegram user-client connector ──────────────────────────
+  connector-telegram-user:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["uv", "run", "python", "-m", "butlers.connectors.telegram_user_client"]
+    command: []
+    environment:
+      - CONNECTOR_PROVIDER=telegram
+      - CONNECTOR_CHANNEL=telegram_user_client
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    networks: [db, backend]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Layer 1b: Live listener connector (host audio devices) ────────────
+  connector-live-listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EXTRAS: live-listener
+    entrypoint: ["uv", "run", "python", "-m", "butlers.connectors.live_listener"]
+    command: []
+    environment:
+      - CONNECTOR_PROVIDER=live-listener
+      - CONNECTOR_CHANNEL=voice
+      - CONNECTOR_HEALTH_PORT=40091
+      - LIVE_LISTENER_DEVICES=${LIVE_LISTENER_DEVICES:-[{"name":"webcam","device":"hw:2,0"}]}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+    networks: [db, backend]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    devices:
+      - /dev/snd:/dev/snd
+    restart: unless-stopped
+    profiles: [audio]
+
+  # ── Layer 2: OAuth gate (one-shot) ────────────────────────────────────
+  oauth-gate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["uv", "run", "python", "scripts/oauth_gate.py"]
+    command: []
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+      - POSTGRES_DB=${POSTGRES_DB:-butlers}
+      - OAUTH_GATE_TIMEOUT=${OAUTH_GATE_TIMEOUT:-0}
+      - OAUTH_POLL_INTERVAL=${OAUTH_POLL_INTERVAL:-5}
+      - SKIP_OAUTH_CHECK=${SKIP_OAUTH_CHECK:-false}
+    networks: [db]
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
+
+  # ── Layer 3: butlers up (main backend) ────────────────────────────────
+  butlers-up:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["up"]
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+      - BUTLERS_SWITCHBOARD_URL=http://dashboard-api:41200
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes:
+      - ./roster:/app/roster:ro
+    networks: [db, backend]
+    depends_on:
+      oauth-gate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Layer 3: Gmail connector (post-OAuth) ─────────────────────────────
+  connector-gmail:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["uv", "run", "python", "-m", "butlers.connectors.gmail"]
+    command: []
+    environment:
+      - CONNECTOR_PROVIDER=gmail
+      - CONNECTOR_CHANNEL=email
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=butlers
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
+      - CONNECTOR_BUTLER_DB_NAME=${POSTGRES_DB:-butlers}
+      - CONNECTOR_BUTLER_DB_SCHEMA=shared
+      - BUTLER_SHARED_DB_NAME=${POSTGRES_DB:-butlers}
+      - BUTLER_SHARED_DB_SCHEMA=shared
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    networks: [db, backend]
+    depends_on:
+      oauth-gate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Hotreload overrides (profile: hotreload) ──────────────────────────
+  # When --profile hotreload is active, volume-mount source code into
+  # services and run uv sync at container start for live changes.
+
+  butlers-up-hotreload:
+    extends:
+      service: butlers-up
+    profiles: [hotreload]
+    entrypoint: ["sh", "-c", "uv sync --dev && uv run butlers up"]
+    command: []
+    volumes:
+      - ./src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - uv_cache:/root/.cache/uv
+
+  dashboard-api-hotreload:
+    extends:
+      service: dashboard-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: [hotreload]
+    entrypoint: ["sh", "-c", "uv sync --dev && uv run butlers dashboard --host 0.0.0.0 --port 41200"]
+    command: []
+    volumes:
+      - ./src:/app/src
+      - ./roster:/app/roster:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - uv_cache:/root/.cache/uv
+
+volumes:
+  uv_cache:
