@@ -342,7 +342,10 @@ class TestListNotificationsQueryConstruction:
         assert "WHERE" not in count_sql
 
         data_sql = mock_pool.fetch.call_args[0][0]
-        assert "WHERE" not in data_sql
+        # The CASE/EXISTS subquery for effective_status contains WHERE internally,
+        # but the outer query should go directly FROM notifications → ORDER BY
+        # with no filter WHERE clause inserted.
+        assert "FROM notifications ORDER BY" in data_sql.replace("\n", " ")
 
     async def test_data_query_selects_expected_columns(self):
         rows = [make_notification_row()]

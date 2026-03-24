@@ -22,6 +22,7 @@ class NotificationSummary(BaseModel):
     message: str
     metadata: dict | None = None
     status: str
+    effective_status: str | None = None
     error: str | None = None
     session_id: UUID | None = None
     trace_id: str | None = None

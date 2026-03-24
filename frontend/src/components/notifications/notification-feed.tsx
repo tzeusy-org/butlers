@@ -41,6 +41,12 @@ function statusBadge(status: string) {
       );
     case "failed":
       return <Badge variant="destructive">Failed</Badge>;
+    case "retried":
+      return (
+        <Badge variant="outline" className="border-amber-500 text-amber-600">
+          Retried
+        </Badge>
+      );
     case "pending":
       return (
         <Badge variant="outline" className="border-amber-500 text-amber-600">
@@ -123,12 +129,14 @@ export function NotificationFeed({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {notifications.map((n) => (
+        {notifications.map((n) => {
+          const displayStatus = n.effective_status ?? n.status;
+          return (
           <TableRow
             key={n.id}
-            className={cn(n.status === "failed" && "bg-destructive/5")}
+            className={cn(displayStatus === "failed" && "bg-destructive/5")}
           >
-            <TableCell>{statusBadge(n.status)}</TableCell>
+            <TableCell>{statusBadge(displayStatus)}</TableCell>
             <TableCell className="font-medium">{n.source_butler}</TableCell>
             <TableCell className="text-muted-foreground">
               {n.recipient ? n.recipient : "—"}
@@ -139,7 +147,7 @@ export function NotificationFeed({
               title={n.message}
             >
               <p className="truncate text-muted-foreground">{truncate(n.message)}</p>
-              {n.status === "failed" && n.error && (
+              {displayStatus === "failed" && n.error && (
                 <p className="mt-1 text-xs text-destructive" title={n.error}>
                   {truncate(n.error, 80)}
                 </p>
@@ -169,7 +177,8 @@ export function NotificationFeed({
               {relativeTime(n.created_at)}
             </TableCell>
           </TableRow>
-        ))}
+          );
+        })}
       </TableBody>
     </Table>
   );

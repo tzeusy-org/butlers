@@ -163,10 +163,22 @@ async def _query_notifications(
     count_row = await pool.fetchval(count_sql, *args)
     total = count_row or 0
 
-    # Data query
+    # Data query — compute effective_status: a failed notification is "retried"
+    # when a later sent notification exists in the same session/channel/message.
     data_sql = (
         f"SELECT id, source_butler, channel, recipient, message, metadata, "
-        f"status, error, session_id, trace_id, created_at "
+        f"status, error, session_id, trace_id, created_at, "
+        f"CASE "
+        f"  WHEN status = 'failed' AND session_id IS NOT NULL AND EXISTS ("
+        f"    SELECT 1 FROM notifications n2 "
+        f"    WHERE n2.session_id = notifications.session_id "
+        f"    AND n2.channel = notifications.channel "
+        f"    AND n2.message = notifications.message "
+        f"    AND n2.status = 'sent' "
+        f"    AND n2.created_at > notifications.created_at"
+        f"  ) THEN 'retried' "
+        f"  ELSE status "
+        f"END AS effective_status "
         f"FROM notifications{where_clause} "
         f"ORDER BY created_at DESC "
         f"OFFSET ${idx} LIMIT ${idx + 1}"
@@ -184,6 +196,7 @@ async def _query_notifications(
             message=row["message"],
             metadata=_normalize_notification_metadata(row["metadata"]),
             status=row["status"],
+            effective_status=row["effective_status"],
             error=row["error"],
             session_id=row["session_id"],
             trace_id=row["trace_id"],
@@ -301,8 +314,27 @@ async def notification_stats(
     try:
         total = await pool.fetchval("SELECT count(*) FROM notifications") or 0
         sent = await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'sent'") or 0
+        # Only count terminal failures — exclude failed attempts that were
+        # successfully retried in the same session with the same message.
         failed = (
-            await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'failed'") or 0
+            await pool.fetchval(
+                """
+                SELECT count(*) FROM notifications n
+                WHERE n.status = 'failed'
+                AND NOT (
+                    n.session_id IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM notifications n2
+                        WHERE n2.session_id = n.session_id
+                        AND n2.channel = n.channel
+                        AND n2.message = n.message
+                        AND n2.status = 'sent'
+                        AND n2.created_at > n.created_at
+                    )
+                )
+                """
+            )
+            or 0
         )
 
         channel_rows = await pool.fetch(

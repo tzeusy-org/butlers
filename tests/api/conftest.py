@@ -41,6 +41,7 @@ def make_notification_row(
     message: str = "Hello!",
     metadata: dict | None = None,
     status: str = "sent",
+    effective_status: str | None = None,
     error: str | None = None,
     session_id=None,
     trace_id: str | None = None,
@@ -55,6 +56,7 @@ def make_notification_row(
         "message": message,
         "metadata": metadata or {},
         "status": status,
+        "effective_status": effective_status if effective_status is not None else status,
         "error": error,
         "session_id": session_id,
         "trace_id": trace_id,
@@ -132,10 +134,12 @@ def build_stats_app(
     mock_pool = AsyncMock()
 
     async def _fetchval(sql, *args):
-        if "status = 'sent'" in sql:
-            return sent
-        elif "status = 'failed'" in sql:
+        # The failed query contains both 'failed' and 'sent' (in the EXISTS
+        # subquery), so check for 'failed' first to avoid false matches.
+        if "'failed'" in sql:
             return failed
+        elif "status = 'sent'" in sql:
+            return sent
         else:
             return total
 

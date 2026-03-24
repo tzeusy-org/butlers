@@ -287,6 +287,7 @@ class TestButlerNotificationsResponseShape:
                 "message": "Test notification",
                 "metadata": {"key": "value"},
                 "status": "sent",
+                "effective_status": "sent",
                 "error": None,
                 "session_id": sid,
                 "trace_id": "abc123",

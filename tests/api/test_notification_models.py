@@ -128,6 +128,7 @@ class TestNotificationSummary:
             "message",
             "metadata",
             "status",
+            "effective_status",
             "error",
             "session_id",
             "trace_id",

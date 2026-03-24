@@ -139,6 +139,7 @@ export interface NotificationSummary {
   message: string;
   metadata: Record<string, unknown> | null;
   status: string;
+  effective_status: string | null;
   error: string | null;
   session_id: string | null;
   trace_id: string | null;
