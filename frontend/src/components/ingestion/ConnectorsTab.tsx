@@ -79,6 +79,19 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
 
   const connectors = connectorsResp?.data ?? [];
 
+  // Derive online/stale/offline counts from client-side liveness (same logic
+  // as the LivenessBadge on each card) so the summary bar matches the cards.
+  // The backend summary counts by DB `state` (healthy/degraded/error) which
+  // uses different semantics from liveness.
+  const correctedSummary = summaryResp?.data
+    ? {
+        ...summaryResp.data,
+        connectors_online: connectors.filter((c) => c.liveness === "online").length,
+        connectors_stale: connectors.filter((c) => c.liveness === "stale").length,
+        connectors_offline: connectors.filter((c) => c.liveness === "offline").length,
+      }
+    : undefined;
+
   // Aggregate volume timeseries across all connectors (DB-backed)
   const { data: volumeResp, isLoading: volumeLoading } = useIngestionVolume(
     period,
@@ -92,8 +105,8 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
       {/* Period selector + summary bar */}
       <div className="flex items-center justify-between">
         <ConnectorSummaryBar
-          summary={summaryResp?.data}
-          isLoading={summaryLoading}
+          summary={correctedSummary}
+          isLoading={summaryLoading || connectorsLoading}
         />
         <PeriodSelector value={period} onChange={handlePeriodChange} />
       </div>

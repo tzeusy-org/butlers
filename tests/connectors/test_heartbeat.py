@@ -440,7 +440,7 @@ class TestConnectorHeartbeat:
         ):
             # Mock Prometheus metrics
             mock_metric_ingest = MagicMock()
-            mock_metric_ingest.name = "connector_ingest_submissions_total"
+            mock_metric_ingest.name = "connector_ingest_submissions"
             mock_metric_ingest.samples = [
                 MagicMock(
                     labels={
@@ -469,7 +469,7 @@ class TestConnectorHeartbeat:
             ]
 
             mock_metric_api = MagicMock()
-            mock_metric_api.name = "connector_source_api_calls_total"
+            mock_metric_api.name = "connector_source_api_calls"
             mock_metric_api.samples = [
                 MagicMock(
                     labels={
@@ -483,7 +483,7 @@ class TestConnectorHeartbeat:
             ]
 
             mock_metric_checkpoint = MagicMock()
-            mock_metric_checkpoint.name = "connector_checkpoint_saves_total"
+            mock_metric_checkpoint.name = "connector_checkpoint_saves"
             mock_metric_checkpoint.samples = [
                 MagicMock(
                     labels={

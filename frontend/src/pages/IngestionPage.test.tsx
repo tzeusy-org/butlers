@@ -13,13 +13,6 @@ import IngestionPage from "@/pages/IngestionPage";
 vi.mock("@/components/switchboard/BackfillHistoryTab", () => ({
   BackfillHistoryTab: () => <div data-testid="backfill-history-tab-stub">History stub</div>,
 }));
-vi.mock("@/components/ingestion/OverviewTab", () => ({
-  OverviewTab: ({ isActive }: { isActive: boolean }) => (
-    <div data-testid="overview-tab-stub" data-active={String(isActive)}>
-      Overview stub
-    </div>
-  ),
-}));
 vi.mock("@/components/ingestion/ConnectorsTab", () => ({
   ConnectorsTab: ({ isActive }: { isActive: boolean }) => (
     <div data-testid="connectors-tab-stub" data-active={String(isActive)}>
@@ -77,21 +70,21 @@ describe("IngestionPage", () => {
     expect(container.querySelector("h1")?.textContent).toBe("Ingestion");
   });
 
-  it("renders five tab triggers: Overview, Connectors, Filters, History, Timeline", () => {
+  it("renders four tab triggers: Timeline, Connectors, Filters, History", () => {
     render();
     const triggers = container.querySelectorAll('[role="tab"]');
     const labels = Array.from(triggers).map((t) => t.textContent?.trim());
-    expect(labels).toContain("Overview");
+    expect(labels).toContain("Timeline");
     expect(labels).toContain("Connectors");
     expect(labels).toContain("Filters");
     expect(labels).toContain("History");
-    expect(labels).toContain("Timeline");
+    expect(labels).not.toContain("Overview");
   });
 
-  it("defaults to Overview tab when no ?tab param is present", () => {
+  it("defaults to Timeline tab when no ?tab param is present", () => {
     render("/ingestion");
     const activeTab = container.querySelector('[role="tab"][data-state="active"]');
-    expect(activeTab?.textContent?.trim()).toBe("Overview");
+    expect(activeTab?.textContent?.trim()).toBe("Timeline");
   });
 
   it("activates Connectors tab when ?tab=connectors is in the URL", () => {
@@ -112,15 +105,15 @@ describe("IngestionPage", () => {
     expect(activeTab?.textContent?.trim()).toBe("History");
   });
 
-  it("falls back to Overview tab for unknown ?tab values", () => {
+  it("falls back to Timeline tab for unknown ?tab values", () => {
     render("/ingestion?tab=unknown-garbage");
     const activeTab = container.querySelector('[role="tab"][data-state="active"]');
-    expect(activeTab?.textContent?.trim()).toBe("Overview");
+    expect(activeTab?.textContent?.trim()).toBe("Timeline");
   });
 
-  it("renders overview tab stub content by default", () => {
+  it("renders timeline tab stub content by default", () => {
     render("/ingestion");
-    const stub = container.querySelector('[data-testid="overview-tab-stub"]');
+    const stub = container.querySelector('[data-testid="timeline-tab-stub"]');
     expect(stub).not.toBeNull();
   });
 
@@ -130,20 +123,8 @@ describe("IngestionPage", () => {
     expect(stub).not.toBeNull();
   });
 
-  it("activates Timeline tab when ?tab=timeline is in the URL", () => {
-    render("/ingestion?tab=timeline");
-    const activeTab = container.querySelector('[role="tab"][data-state="active"]');
-    expect(activeTab?.textContent?.trim()).toBe("Timeline");
-  });
-
-  it("renders timeline tab stub when ?tab=timeline", () => {
-    render("/ingestion?tab=timeline");
-    const stub = container.querySelector('[data-testid="timeline-tab-stub"]');
-    expect(stub).not.toBeNull();
-  });
-
   it("passes isActive=true to TimelineTab when timeline tab is active", () => {
-    render("/ingestion?tab=timeline");
+    render("/ingestion");
     const stub = container.querySelector('[data-testid="timeline-tab-stub"]');
     expect(stub?.getAttribute("data-active")).toBe("true");
   });

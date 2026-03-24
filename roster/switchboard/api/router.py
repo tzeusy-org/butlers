@@ -119,9 +119,9 @@ async def _connector_stats_from_db(
         rows = await pool.fetch(
             f"SELECT date_trunc('{trunc}', received_at) AS bucket,"
             f" GREATEST(0, MAX(counter_messages_ingested)"
-            f"   - MIN(counter_messages_ingested)) AS messages_ingested,"
+            f"   - MIN(NULLIF(counter_messages_ingested, 0))) AS messages_ingested,"
             f" GREATEST(0, MAX(counter_messages_failed)"
-            f"   - MIN(counter_messages_failed)) AS messages_failed,"
+            f"   - MIN(NULLIF(counter_messages_failed, 0))) AS messages_failed,"
             f" GREATEST(0, MAX(counter_source_api_calls)"
             f"   - MIN(counter_source_api_calls)) AS source_api_calls,"
             f" GREATEST(0, MAX(counter_dedupe_accepted)"
@@ -809,9 +809,9 @@ async def list_connectors(
             "   FROM ("
             "     SELECT connector_type, endpoint_identity, instance_id,"
             "       GREATEST(0, MAX(counter_messages_ingested)"
-            "         - MIN(counter_messages_ingested)) AS delta_ingested,"
+            "         - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,"
             "       GREATEST(0, MAX(counter_messages_failed)"
-            "         - MIN(counter_messages_failed)) AS delta_failed"
+            "         - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed"
             "     FROM connector_heartbeat_log"
             "     WHERE received_at >= CURRENT_DATE"
             "     GROUP BY connector_type, endpoint_identity, instance_id"
@@ -930,9 +930,9 @@ async def get_connector_detail(
             "   FROM ("
             "     SELECT connector_type, endpoint_identity, instance_id,"
             "       GREATEST(0, MAX(counter_messages_ingested)"
-            "         - MIN(counter_messages_ingested)) AS delta_ingested,"
+            "         - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,"
             "       GREATEST(0, MAX(counter_messages_failed)"
-            "         - MIN(counter_messages_failed)) AS delta_failed"
+            "         - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed"
             "     FROM connector_heartbeat_log"
             "     WHERE received_at >= CURRENT_DATE"
             "     GROUP BY connector_type, endpoint_identity, instance_id"
@@ -1477,9 +1477,9 @@ async def get_ingestion_volume(
                     connector_type,
                     endpoint_identity,
                     GREATEST(0, MAX(counter_messages_ingested)
-                        - MIN(counter_messages_ingested)) AS delta_ingested,
+                        - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,
                     GREATEST(0, MAX(counter_messages_failed)
-                        - MIN(counter_messages_failed)) AS delta_failed
+                        - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed
                 FROM connector_heartbeat_log
                 WHERE received_at >= NOW() - INTERVAL '{interval}'
                 GROUP BY bucket, connector_type, endpoint_identity

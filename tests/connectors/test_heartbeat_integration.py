@@ -288,7 +288,7 @@ async def test_heartbeat_metrics_collection_across_multiple_cycles():
 
             # Simulate increasing counter values
             mock_metric = MagicMock()
-            mock_metric.name = "connector_ingest_submissions_total"
+            mock_metric.name = "connector_ingest_submissions"
             mock_metric.samples = [
                 MagicMock(
                     labels={

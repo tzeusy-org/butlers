@@ -3,7 +3,6 @@ import { useSearchParams } from 'react-router'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { BackfillHistoryTab } from '@/components/switchboard/BackfillHistoryTab'
 import { FiltersTab } from '@/components/switchboard/FiltersTab'
-import { OverviewTab } from '@/components/ingestion/OverviewTab'
 import { ConnectorsTab } from '@/components/ingestion/ConnectorsTab'
 import { TimelineTab } from '@/components/ingestion/TimelineTab'
 
@@ -11,7 +10,7 @@ import { TimelineTab } from '@/components/ingestion/TimelineTab'
 // Tab value constants
 // ---------------------------------------------------------------------------
 
-const INGESTION_TABS = ['overview', 'connectors', 'filters', 'history', 'timeline'] as const
+const INGESTION_TABS = ['timeline', 'connectors', 'filters', 'history'] as const
 type IngestionTab = (typeof INGESTION_TABS)[number]
 
 function isValidTab(value: string | null): value is IngestionTab {
@@ -26,10 +25,10 @@ export default function IngestionPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const tabParam = searchParams.get('tab')
-  const activeTab: IngestionTab = isValidTab(tabParam) ? tabParam : 'overview'
+  const activeTab: IngestionTab = isValidTab(tabParam) ? tabParam : 'timeline'
 
   function handleTabChange(value: string) {
-    if (value === 'overview') {
+    if (value === 'timeline') {
       // Omit `tab` param for the default tab to keep URLs clean
       setSearchParams({}, { replace: true })
     } else {
@@ -54,15 +53,14 @@ export default function IngestionPage() {
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="timeline">Timeline</TabsTrigger>
           <TabsTrigger value="connectors">Connectors</TabsTrigger>
           <TabsTrigger value="filters">Filters</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
-          <TabsTrigger value="timeline">Timeline</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="overview">
-          <OverviewTab isActive={activeTab === 'overview'} />
+        <TabsContent value="timeline">
+          <TimelineTab isActive={activeTab === 'timeline'} />
         </TabsContent>
 
         <TabsContent value="connectors">
@@ -75,10 +73,6 @@ export default function IngestionPage() {
 
         <TabsContent value="history">
           <BackfillHistoryTab />
-        </TabsContent>
-
-        <TabsContent value="timeline">
-          <TimelineTab isActive={activeTab === 'timeline'} />
         </TabsContent>
       </Tabs>
     </div>

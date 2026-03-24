@@ -336,10 +336,13 @@ class ConnectorHeartbeat:
             "dedupe_accepted": 0,
         }
 
-        # Read counter values from Prometheus registry
+        # Read counter values from Prometheus registry.
+        # NOTE: prometheus_client strips the ``_total`` suffix from Counter
+        # names when returning MetricFamily objects via ``collect()``, so we
+        # must compare against the *base* name (without ``_total``).
         for metric in REGISTRY.collect():
             # Ingest submissions
-            if metric.name == "connector_ingest_submissions_total":
+            if metric.name == "connector_ingest_submissions":
                 for sample in metric.samples:
                     labels = sample.labels
                     if (
@@ -357,7 +360,7 @@ class ConnectorHeartbeat:
                             counters["dedupe_accepted"] += value
 
             # Source API calls
-            elif metric.name == "connector_source_api_calls_total":
+            elif metric.name == "connector_source_api_calls":
                 for sample in metric.samples:
                     labels = sample.labels
                     if (
@@ -367,7 +370,7 @@ class ConnectorHeartbeat:
                         counters["source_api_calls"] += int(sample.value)
 
             # Checkpoint saves
-            elif metric.name == "connector_checkpoint_saves_total":
+            elif metric.name == "connector_checkpoint_saves":
                 for sample in metric.samples:
                     labels = sample.labels
                     if (
