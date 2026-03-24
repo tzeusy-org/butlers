@@ -141,9 +141,15 @@ async def mind_map_edge_create(
     )
     found = {str(r["id"]): str(r["mind_map_id"]) for r in rows}
     if parent_node_id not in found:
-        raise ValueError(f"Parent node not found: {parent_node_id}")
+        raise ValueError(
+            f"Parent node not found: {parent_node_id}. "
+            "Use mind_map_node_list(mind_map_id=...) to list valid node IDs."
+        )
     if child_node_id not in found:
-        raise ValueError(f"Child node not found: {child_node_id}")
+        raise ValueError(
+            f"Child node not found: {child_node_id}. "
+            "Use mind_map_node_list(mind_map_id=...) to list valid node IDs."
+        )
     if found[parent_node_id] != found[child_node_id]:
         raise ValueError(
             f"Nodes belong to different mind maps: "

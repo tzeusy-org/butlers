@@ -318,12 +318,17 @@ async def curriculum_generate(
         mind_map_id,
     )
     if map_row is None:
-        raise ValueError(f"Mind map not found: {mind_map_id}")
+        raise ValueError(
+            f"Mind map not found: {mind_map_id}. "
+            "Use mind_map_list() to find existing mind maps and their IDs."
+        )
 
     map_status = map_row["status"]
     if map_status in ("completed", "abandoned"):
         raise ValueError(
-            f"Cannot generate curriculum for mind map {mind_map_id} with status={map_status!r}."
+            f"Cannot generate curriculum for mind map {mind_map_id} with status={map_status!r}. "
+            f"Only 'draft' or 'active' maps can be planned. "
+            f"Create a new mind map with teaching_flow_start(topic=...) instead."
         )
 
     # Load graph from DB
@@ -333,7 +338,11 @@ async def curriculum_generate(
     edge_count = len(edges)
 
     if node_count == 0:
-        raise ValueError(f"Mind map {mind_map_id} has no nodes — cannot generate curriculum.")
+        raise ValueError(
+            f"Mind map {mind_map_id} has no nodes — cannot generate curriculum. "
+            "Add nodes first with mind_map_node_create(mind_map_id=..., "
+            "label=..., depth=...)."
+        )
 
     # Structural constraint validation
     _validate_constraints(nodes, edges, mind_map_id=mind_map_id)
@@ -477,13 +486,22 @@ async def curriculum_replan(
         mind_map_id,
     )
     if map_row is None:
-        raise ValueError(f"Mind map not found: {mind_map_id}")
+        raise ValueError(
+            f"Mind map not found: {mind_map_id}. "
+            "Use mind_map_list() to find existing mind maps and their IDs."
+        )
 
     map_status = map_row["status"]
     if map_status == "abandoned":
-        raise ValueError(f"Cannot replan mind map {mind_map_id}: status is 'abandoned'.")
+        raise ValueError(
+            f"Cannot replan mind map {mind_map_id}: status is 'abandoned'. "
+            "Create a new mind map with teaching_flow_start(topic=...) instead."
+        )
     if map_status == "completed":
-        raise ValueError(f"Cannot replan mind map {mind_map_id}: status is 'completed'.")
+        raise ValueError(
+            f"Cannot replan mind map {mind_map_id}: status is 'completed'. "
+            "Create a new mind map with teaching_flow_start(topic=...) to study further."
+        )
 
     logger.info(
         "curriculum_replan: mind_map_id=%s reason=%r",

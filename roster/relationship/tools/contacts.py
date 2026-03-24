@@ -334,7 +334,10 @@ async def contact_update(
 
     existing = await pool.fetchrow("SELECT * FROM contacts WHERE id = $1", contact_id)
     if existing is None:
-        raise ValueError(f"Contact {contact_id} not found")
+        raise ValueError(
+            f"Contact {contact_id} not found. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        )
 
     cols = await table_columns(pool, "contacts")
     to_update: dict[str, Any] = {}
@@ -370,7 +373,11 @@ async def contact_update(
             to_update[col] = fields[col]
 
     if not to_update:
-        raise ValueError("At least one field must be provided for update")
+        raise ValueError(
+            "At least one field must be provided for update. "
+            "Valid fields: first_name, last_name, nickname, company, job_title, "
+            "gender, pronouns, avatar_url, metadata, listed."
+        )
 
     json_cols = {"details", "metadata"} & set(to_update)
     set_clauses = []
@@ -431,7 +438,10 @@ async def contact_get(
     if row is None:
         if allow_missing:
             return None
-        raise ValueError(f"Contact {contact_id} not found")
+        raise ValueError(
+            f"Contact {contact_id} not found. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        )
     return _parse_contact(row)
 
 
@@ -504,7 +514,10 @@ async def contact_archive(pool: asyncpg.Pool, contact_id: uuid.UUID) -> dict[str
         contact_id,
     )
     if row is None:
-        raise ValueError(f"Contact {contact_id} not found")
+        raise ValueError(
+            f"Contact {contact_id} not found. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        )
     result = _parse_contact(row)
     await _log_activity(
         pool,
@@ -546,10 +559,16 @@ async def contact_merge(
 
     source = await pool.fetchrow("SELECT * FROM contacts WHERE id = $1", source_id)
     if source is None:
-        raise ValueError(f"Source contact {source_id} not found")
+        raise ValueError(
+            f"Source contact {source_id} not found. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        )
     target = await pool.fetchrow("SELECT * FROM contacts WHERE id = $1", target_id)
     if target is None:
-        raise ValueError(f"Target contact {target_id} not found")
+        raise ValueError(
+            f"Target contact {target_id} not found. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        )
 
     cols = await table_columns(pool, "contacts")
 

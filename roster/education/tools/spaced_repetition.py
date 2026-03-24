@@ -192,7 +192,10 @@ async def spaced_repetition_record_response(
                 mind_map_id,
             )
             if node_row is None:
-                raise ValueError(f"Node {node_id!r} not found in mind map {mind_map_id!r}")
+                raise ValueError(
+                    f"Node {node_id!r} not found in mind map {mind_map_id!r}. "
+                    "Use mind_map_node_list(mind_map_id=...) to list valid node IDs."
+                )
 
             label = str(node_row["label"])
             ease_factor = float(node_row["ease_factor"])

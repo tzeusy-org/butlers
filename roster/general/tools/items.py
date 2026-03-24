@@ -28,7 +28,10 @@ async def item_create(
         "SELECT id FROM collections WHERE name = $1", collection_name
     )
     if collection_id is None:
-        raise ValueError(f"Collection '{collection_name}' not found")
+        raise ValueError(
+            f"Collection '{collection_name}' not found. "
+            "Use collection_list() to see available collections."
+        )
 
     tags_json = json.dumps(tags if tags is not None else [])
     item_id = await pool.fetchval(
@@ -69,7 +72,10 @@ async def item_update(
     """
     row = await pool.fetchrow("SELECT data FROM collection_items WHERE id = $1", item_id)
     if row is None:
-        raise ValueError(f"Item {item_id} not found")
+        raise ValueError(
+            f"Item {item_id} not found. "
+            "Use item_search(collection=<name>, query=...) to find existing items."
+        )
 
     existing = row["data"]
     if isinstance(existing, str):
@@ -156,4 +162,7 @@ async def item_delete(pool: asyncpg.Pool, item_id: uuid.UUID) -> None:
     """Delete an item."""
     result = await pool.execute("DELETE FROM collection_items WHERE id = $1", item_id)
     if result == "DELETE 0":
-        raise ValueError(f"Item {item_id} not found")
+        raise ValueError(
+            f"Item {item_id} not found. "
+            "Use item_search(collection=<name>, query=...) to find existing items."
+        )

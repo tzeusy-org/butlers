@@ -34,7 +34,10 @@ async def collection_delete(pool: asyncpg.Pool, collection_id: uuid.UUID) -> Non
     """Delete a collection and all its items (CASCADE)."""
     result = await pool.execute("DELETE FROM collections WHERE id = $1", collection_id)
     if result == "DELETE 0":
-        raise ValueError(f"Collection {collection_id} not found")
+        raise ValueError(
+            f"Collection {collection_id} not found. "
+            "Use collection_list() to see available collections."
+        )
 
 
 async def collection_export(pool: asyncpg.Pool, collection_name: str) -> list[dict[str, Any]]:

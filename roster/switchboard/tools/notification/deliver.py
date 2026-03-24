@@ -249,7 +249,17 @@ async def _deliver_via_notify_request(
     )
 
     if "error" in route_result:
-        error_msg = str(route_result["error"])
+        route_error = route_result["error"]
+        # Preserve structured error class and retryability if the route layer
+        # returned a dict with {class, message, retryable}.
+        if isinstance(route_error, dict):
+            error_msg = str(route_error.get("message", route_error))
+            error_class = route_error.get("class", "route_error")
+            retryable = route_error.get("retryable", False)
+        else:
+            error_msg = str(route_error)
+            error_class = "route_error"
+            retryable = False
         notification_id = await log_notification(
             pool,
             source_butler=source_butler,
@@ -261,15 +271,26 @@ async def _deliver_via_notify_request(
             error=error_msg,
             session_id=session_id,
         )
-        return {"notification_id": notification_id, "status": "failed", "error": error_msg}
+        result: dict[str, Any] = {
+            "notification_id": notification_id,
+            "status": "failed",
+            "error": error_msg,
+            "error_class": error_class,
+            "retryable": retryable,
+        }
+        return result
 
     notify_response = _extract_notify_response(route_result.get("result"))
     if isinstance(notify_response, dict) and notify_response.get("status") == "error":
         error_payload = notify_response.get("error")
         if isinstance(error_payload, dict):
             error_msg = str(error_payload.get("message") or "Messenger delivery failed.")
+            error_class = error_payload.get("class", "delivery_error")
+            retryable = error_payload.get("retryable", False)
         else:
-            error_msg = "Messenger delivery failed."
+            error_msg = str(error_payload) if error_payload else "Messenger delivery failed."
+            error_class = "delivery_error"
+            retryable = False
         notification_id = await log_notification(
             pool,
             source_butler=source_butler,
@@ -281,7 +302,13 @@ async def _deliver_via_notify_request(
             error=error_msg,
             session_id=session_id,
         )
-        return {"notification_id": notification_id, "status": "failed", "error": error_msg}
+        return {
+            "notification_id": notification_id,
+            "status": "failed",
+            "error": error_msg,
+            "error_class": error_class,
+            "retryable": retryable,
+        }
 
     current_trace_id = None
     current_span = trace.get_current_span()

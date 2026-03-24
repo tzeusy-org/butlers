@@ -244,7 +244,10 @@ async def mind_map_node_update(
             node_id,
         )
         if row is None:
-            raise ValueError(f"Node not found: {node_id}")
+            raise ValueError(
+                f"Node not found: {node_id}. "
+                "Use mind_map_node_list(mind_map_id=...) to list nodes in a mind map."
+            )
         return
 
     # Validate mastery_status transition if provided
@@ -255,7 +258,10 @@ async def mind_map_node_update(
             node_id,
         )
         if current_row is None:
-            raise ValueError(f"Node not found: {node_id}")
+            raise ValueError(
+                f"Node not found: {node_id}. "
+                "Use mind_map_node_list(mind_map_id=...) to list nodes in a mind map."
+            )
         current_status = current_row["mastery_status"]
         allowed = _VALID_TRANSITIONS.get(current_status, set())
         if new_status != current_status and new_status not in allowed:
@@ -293,7 +299,10 @@ async def mind_map_node_update(
     result = await pool.execute(sql, *values)
     affected = int(result.split()[-1])
     if affected == 0:
-        raise ValueError(f"Node not found: {node_id}")
+        raise ValueError(
+            f"Node not found: {node_id}. "
+            "Use mind_map_node_list(mind_map_id=...) to list nodes in a mind map."
+        )
 
     # Auto-completion: if mastery_status changed to mastered, check if all nodes mastered
     if "mastery_status" in updates and updates["mastery_status"] == "mastered" and mind_map_id:

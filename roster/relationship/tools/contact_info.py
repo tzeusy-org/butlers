@@ -30,7 +30,10 @@ async def contact_info_add(
     # Verify contact exists
     existing = await pool.fetchrow("SELECT id FROM contacts WHERE id = $1", contact_id)
     if existing is None:
-        raise ValueError(f"Contact {contact_id} not found")
+        raise ValueError(
+            f"Contact {contact_id} not found. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        )
 
     # If marking as primary, unset any existing primary for this type
     if is_primary:
@@ -101,7 +104,10 @@ async def contact_info_remove(
         contact_info_id,
     )
     if row is None:
-        raise ValueError(f"Contact info {contact_info_id} not found")
+        raise ValueError(
+            f"Contact info {contact_info_id} not found. "
+            "Use contact_info_list(contact_id=...) to list contact info entries."
+        )
 
     await pool.execute("DELETE FROM shared.contact_info WHERE id = $1", contact_info_id)
     await _log_activity(

@@ -69,7 +69,10 @@ async def diagnostic_start(
         mind_map_id,
     )
     if map_row is None:
-        raise ValueError(f"Mind map not found: {mind_map_id!r}")
+        raise ValueError(
+            f"Mind map not found: {mind_map_id!r}. "
+            "Use mind_map_list() to find existing mind maps and their IDs."
+        )
 
     # Check existing flow state — allow restart from 'diagnosing' (stuck diagnostic
     # where the LLM session ended before issuing any probes).
@@ -191,7 +194,10 @@ async def diagnostic_record_probe(
                 mind_map_id,
             )
             if node_row is None:
-                raise ValueError(f"Node {node_id!r} not found in mind map {mind_map_id!r}")
+                raise ValueError(
+                    f"Node {node_id!r} not found in mind map {mind_map_id!r}. "
+                    "Use mind_map_node_list(mind_map_id=...) to list valid node IDs."
+                )
 
             # Insert quiz response with response_type='diagnostic'
             await conn.execute(

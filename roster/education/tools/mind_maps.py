@@ -152,4 +152,7 @@ async def mind_map_update_status(
     # asyncpg returns "UPDATE N" — check N > 0
     affected = int(result.split()[-1])
     if affected == 0:
-        raise ValueError(f"Mind map not found: {mind_map_id}")
+        raise ValueError(
+            f"Mind map not found: {mind_map_id}. "
+            "Use mind_map_list() to find existing mind maps and their IDs."
+        )

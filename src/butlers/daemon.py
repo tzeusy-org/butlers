@@ -4307,7 +4307,13 @@ class ButlerDaemon:
             if client is None and butler_name != "switchboard":
                 return {
                     "status": "error",
-                    "error": ("Switchboard is not connected. Cannot deliver notification."),
+                    "error": (
+                        "Switchboard is not connected. Cannot deliver notification. "
+                        "The Switchboard butler may not be running — this is a transient "
+                        "infrastructure issue, not a parameter error. Retry after a delay "
+                        "or check butler status."
+                    ),
+                    "retryable": True,
                 }
 
             # Resolution priority:
@@ -4564,8 +4570,10 @@ class ButlerDaemon:
                     "status": "error",
                     "error": (
                         f"Switchboard call timed out after {_NOTIFY_TIMEOUT_S}s. "
-                        "The Switchboard may be overloaded or unresponsive."
+                        "The Switchboard may be overloaded or unresponsive. "
+                        "This is a transient error — retry after a brief delay."
                     ),
+                    "retryable": True,
                 }
             except (ConnectionError, OSError) as exc:
                 logger.warning(
@@ -4576,7 +4584,12 @@ class ButlerDaemon:
                 )
                 return {
                     "status": "error",
-                    "error": f"Switchboard unreachable: {exc}",
+                    "error": (
+                        f"Switchboard unreachable: {exc}. "
+                        "The Switchboard process may have stopped or restarted. "
+                        "This is a transient error — retry after a brief delay."
+                    ),
+                    "retryable": True,
                 }
             except Exception as exc:
                 logger.warning(
@@ -4587,7 +4600,12 @@ class ButlerDaemon:
                 )
                 return {
                     "status": "error",
-                    "error": f"Switchboard call failed: {exc}",
+                    "error": (
+                        f"Switchboard call failed: {exc}. "
+                        "If this persists, check that all required parameters "
+                        "(channel, message, intent) are correct."
+                    ),
+                    "retryable": False,
                 }
 
         # Messenger-specific operational domain tools
