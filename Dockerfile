@@ -23,14 +23,22 @@ ENV PATH="/root/.local/bin:${PATH}"
 # Set working directory
 WORKDIR /app
 
+# Optional: extra dependency groups (e.g. "live-listener" for audio connector)
+ARG EXTRAS=""
+
 # Copy project files
 COPY pyproject.toml .
 COPY src/ src/
 COPY alembic/alembic.ini alembic.ini
 COPY alembic/ alembic/
+COPY scripts/ scripts/
 
 # Install production dependencies
-RUN uv sync --no-dev
+RUN if [ -n "$EXTRAS" ]; then \
+      uv sync --no-dev --extra "$EXTRAS"; \
+    else \
+      uv sync --no-dev; \
+    fi
 
 # Set entrypoint and default command
 ENTRYPOINT ["uv", "run", "butlers"]
