@@ -70,8 +70,14 @@ Daily spaced-repetition nudge (do not spam).
 
 Delivery:
 - notify(channel="telegram", intent="send", message=<summary>)
-- Keep it short and actionable; end with: "Reply 'review' and I’ll start the next one."
+- Keep it short and actionable; end with: "Reply ‘review’ and I’ll start the next one."
 """
+
+[[butler.schedule]]
+name = "daily_briefing_contribution"
+cron = "55 6 * * *"
+dispatch_mode = "job"
+job_name = "daily_briefing_contribution"
 
 [modules.education]
 

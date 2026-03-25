@@ -91,6 +91,12 @@ Steps:
 6. Send the summary via notify(channel="telegram", intent="send").
 """
 
+[[butler.schedule]]
+name = "collect_briefing_contributions"
+cron = "58 6 * * *"
+dispatch_mode = "job"
+job_name = "collect_briefing_contributions"
+
 [modules.general]
 
 [modules.memory]

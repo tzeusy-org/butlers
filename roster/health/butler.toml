@@ -51,6 +51,12 @@ cron = "10 4 * * *"
 dispatch_mode = "job"
 job_name = "memory_purge_superseded"
 
+[[butler.schedule]]
+name = "daily_briefing_contribution"
+cron = "55 6 * * *"
+dispatch_mode = "job"
+job_name = "daily_briefing_contribution"
+
 [modules.calendar]
 provider = "google"
 

@@ -73,3 +73,9 @@ Include:
 Notify the owner via Telegram with the formatted monthly overview.
 """
 
+[[butler.schedule]]
+name = "daily_briefing_contribution"
+cron = "55 6 * * *"
+dispatch_mode = "job"
+job_name = "daily_briefing_contribution"
+

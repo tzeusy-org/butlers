@@ -65,3 +65,9 @@ for any documents approaching expiry, ranked by urgency.
 If all documents are current, do not send a message.
 """
 
+[[butler.schedule]]
+name = "daily_briefing_contribution"
+cron = "55 6 * * *"
+dispatch_mode = "job"
+job_name = "daily_briefing_contribution"
+
