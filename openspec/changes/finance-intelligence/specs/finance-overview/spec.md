@@ -71,8 +71,8 @@ The system SHALL flag transactions that may be tax-deductible based on category 
 - **AND** each flagged transaction SHALL include: `transaction_id`, `merchant`, `amount`, `category`, `tax_category` (mapped from spending category), `confidence`
 
 #### Scenario: Configurable tax categories
-- **WHEN** the user stores custom tax-relevant categories via `budget_set` or memory facts
-- **THEN** the tax flagging system SHALL use those custom categories in addition to the default set
+- **WHEN** the user configures custom tax-relevant categories via the `finance.categories` table (setting `is_tax_relevant = true` and `tax_category`) or via memory facts
+- **THEN** the tax flagging system SHALL use those custom categories in addition to the default set from `finance.categories` seeded by the migration
 - **AND** custom categories SHALL take precedence over defaults
 
 #### Scenario: Tax summary

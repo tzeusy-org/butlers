@@ -21,8 +21,8 @@ RUN go mod download
 # Copy Go source.
 COPY whatsapp-bridge/ ./
 
-# Compile statically linked binary (no CGO, stripped for smaller size ~15-20 MB).
-RUN CGO_ENABLED=0 GOOS=linux go build \
+# Tidy modules (go.mod may lag behind toolchain) then compile.
+RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w" \
     -o /out/whatsapp-bridge \
     ./cmd/bridge
@@ -82,7 +82,7 @@ COPY alembic/ alembic/
 COPY scripts/ scripts/
 
 # Set entrypoint and default command.
-# --frozen prevents uv from re-syncing deps at runtime (they're already installed).
+# --frozen prevents uv from re-syncing deps at runtime (already installed at build).
 # --no-dev ensures dev dependencies aren't pulled in.
 ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "butlers"]
 CMD ["run", "--config", "/etc/butler"]

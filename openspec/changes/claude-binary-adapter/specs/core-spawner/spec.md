@@ -54,6 +54,20 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **THEN** only the explicitly provided `env` dict SHALL be passed as the subprocess environment
 - **AND** no host environment variables SHALL leak through
 
+#### Scenario: Claude Code credential injection via CLI Runtime Authentication
+- **WHEN** the butler's runtime type is `claude`
+- **AND** the user has configured an Anthropic API key via the dashboard Settings → CLI Runtime Authentication card
+- **THEN** the credential store SHALL contain the key under `cli-auth/claude` with `env_var=ANTHROPIC_API_KEY`
+- **AND** the spawner's credential isolation logic SHALL resolve `ANTHROPIC_API_KEY` from the credential store
+- **AND** inject it into the subprocess environment dict
+- **AND** the `claude` CLI binary SHALL use the injected key for API authentication
+
+#### Scenario: Claude CLI auth provider registered in registry
+- **WHEN** the CLI auth registry is loaded
+- **THEN** a provider with `name="claude"`, `auth_mode="api_key"`, `env_var="ANTHROPIC_API_KEY"`, and `runtime="claude"` SHALL be registered
+- **AND** the dashboard Settings page SHALL render a Claude row in the CLI Runtime Authentication card
+- **AND** the row SHALL support API key entry, storage, and health probing
+
 #### Scenario: Claude Code max_turns parameter
 - **WHEN** `invoke()` is called with a `max_turns` parameter
 - **THEN** the parameter SHALL be accepted without error

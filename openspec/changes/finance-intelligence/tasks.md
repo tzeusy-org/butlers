@@ -66,7 +66,7 @@
 - [ ] 8.2 Implement `net_worth_history(months)` -- query `finance.balance_snapshots` joined with `finance.accounts`, return per-month account balances with carried-forward logic for missing months, compute total_assets, total_liabilities, net_worth
 - [ ] 8.3 Implement `cash_flow(period, months, breakdown)` -- aggregate from `finance.transactions WHERE deleted_at IS NULL` by direction (credits vs debits) by period, compute net and savings_rate, optional category breakdown
 - [ ] 8.4 Implement `subscription_audit()` -- combine tracked subscriptions and detected recurring charges, compute annual cost projections, detect changes since last audit
-- [ ] 8.5 Implement `flag_tax_deductible(year)` -- flag transactions in tax-relevant categories, return summary with disclaimer
+- [ ] 8.5 Implement `flag_tax_deductible(year)` -- query `finance.transactions WHERE deleted_at IS NULL` for the specified year, cross-reference against `finance.categories WHERE is_tax_relevant = true`, return flagged transactions with tax_category and summary with disclaimer
 - [ ] 8.6 Write tests for net worth tracking (including carry-forward), cash flow, subscription audit, and tax flagging
 
 ## 9. Alert System

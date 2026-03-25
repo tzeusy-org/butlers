@@ -197,7 +197,7 @@ Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, an
 - **AND** the spawner's except block checks `trigger_source` BEFORE creating the dispatch task
 
 ### Requirement: Credential Isolation
-The spawner builds an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, and module credential vars. Runtime authentication uses CLI-level OAuth tokens (device-code flow via the dashboard Settings page), not API keys. Credentials are resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars do not leak through.
+The spawner builds an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials are resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars do not leak through.
 
 #### Scenario: Only declared credentials are passed
 - **WHEN** the spawner builds the runtime environment

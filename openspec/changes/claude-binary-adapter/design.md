@@ -141,6 +141,16 @@ The parser follows the same pattern as `_parse_codex_output()`: iterate lines, p
 
 **Rollback**: Revert the commit. The `claude_agent_sdk` dependency can be re-added to `pyproject.toml` and the old `invoke()` restored from git history.
 
+### D11: Authenticate via `ANTHROPIC_API_KEY` from CLI Runtime Authentication settings
+
+**Choice**: Register a Claude provider in the CLI auth registry using `api_key` mode. The dashboard Settings → CLI Runtime Authentication card collects an Anthropic API key from the user, stores it in the credential store (`butler_secrets` with key `cli-auth/claude`), and the spawner injects it as `ANTHROPIC_API_KEY` in the subprocess environment.
+
+**Rationale**: The `claude` CLI binary respects the `ANTHROPIC_API_KEY` environment variable, which takes precedence over its own credential file (`~/.claude/.credentials.json`). This follows the same pattern as the `opencode-go` provider (API key mode), keeping the authentication UX consistent across all runtimes in the dashboard. No special "external-auth" or probe-only mode is needed.
+
+**Implementation**: A new `CLIAuthProviderDef` is registered in `cli_auth/registry.py` with `auth_mode="api_key"`, `env_var="ANTHROPIC_API_KEY"`, and `runtime="claude"`. The spawner's credential isolation logic already resolves declared env vars via `CredentialStore.resolve()`, so `ANTHROPIC_API_KEY` is picked up from the credential store and injected into the subprocess environment alongside other declared vars.
+
+**Health probe**: The provider can define a `test_command` that runs `claude -p --output-format json "respond with ok"` to validate the key, or rely on format-based validation (Anthropic keys start with `sk-ant-`).
+
 ## Open Questions
 
 1. **Should `--append-system-prompt` be used instead of `--system-prompt`?** The `--system-prompt` flag replaces the default system prompt entirely, while `--append-system-prompt` appends to it. Since `--bare` mode has no default system prompt, `--system-prompt` is correct. But if we ever remove `--bare`, we'd want `--append-system-prompt` to preserve Claude Code's built-in system prompt.

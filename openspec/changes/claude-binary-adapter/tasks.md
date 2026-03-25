@@ -28,6 +28,13 @@
 - [ ] 4.4 Verify adapter contract tests pass (`test_adapter_contract.py`) — registration, instantiation, interface compliance
 - [ ] 4.5 Run full test suite to catch regressions
 
-## 5. Spec Update
+## 5. CLI Runtime Authentication Provider
 
-- [ ] 5.1 Sync the modified `core-spawner` delta spec to the main spec via `openspec sync`
+- [ ] 5.1 Register Claude provider in `src/butlers/cli_auth/registry.py` with `auth_mode="api_key"`, `env_var="ANTHROPIC_API_KEY"`, `runtime="claude"`, `binary_name="claude"`
+- [ ] 5.2 Define `test_command` for API key health probe (e.g. `claude -p --output-format json "respond with ok"`) and `test_ok_pattern`
+- [ ] 5.3 Verify dashboard Settings → CLI Runtime Authentication card renders the Claude row with API key input, save, test, and delete controls
+- [ ] 5.4 Verify the spawner's credential isolation injects `ANTHROPIC_API_KEY` from the credential store into the subprocess env
+
+## 6. Spec Update
+
+- [ ] 6.1 Sync the modified `core-spawner` delta spec to the main spec via `openspec sync`
