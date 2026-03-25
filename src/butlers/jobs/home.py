@@ -43,10 +43,15 @@ logger = logging.getLogger(__name__)
 
 
 class _NullEmbeddingEngine:
-    """Sentinel embedding engine that returns empty vectors for deterministic jobs."""
+    """Sentinel embedding engine that returns zero vectors for deterministic jobs.
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [[] for _ in texts]
+    Matches the synchronous ``EmbeddingEngine.embed(text: str) -> list[float]``
+    interface expected by ``store_fact``.  Returns an empty vector so that
+    vector-similarity searches simply skip these facts.
+    """
+
+    def embed(self, text: str) -> list[float]:  # noqa: ARG002
+        return []
 
 
 class _NoOpEmbeddingEngine:

@@ -802,15 +802,23 @@ class TestRunEnvironmentReportStateStoreFallback:
 
 
 class TestNullEmbeddingEngine:
-    async def test_returns_empty_vectors(self):
+    def test_returns_empty_vector_for_text(self):
         eng = _NullEmbeddingEngine()
-        result = await eng.embed(["hello", "world"])
-        assert result == [[], []]
-
-    async def test_empty_input(self):
-        eng = _NullEmbeddingEngine()
-        result = await eng.embed([])
+        result = eng.embed("hello")
         assert result == []
+
+    def test_returns_empty_vector_for_empty_string(self):
+        eng = _NullEmbeddingEngine()
+        result = eng.embed("")
+        assert result == []
+
+    def test_embed_is_synchronous(self):
+        """embed() must be synchronous to match EmbeddingEngine interface."""
+        import inspect
+
+        eng = _NullEmbeddingEngine()
+        # Should NOT be a coroutine function
+        assert not inspect.iscoroutinefunction(eng.embed)
 
 
 # ---------------------------------------------------------------------------
