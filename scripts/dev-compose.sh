@@ -82,6 +82,7 @@ if [ -z "${ALLOWED_TAILNET_HOSTS:-}" ] && command -v tailscale &>/dev/null; then
     butlers-db-dev     # PostgreSQL (future external DB)
     ollama             # Local LLM inference
     tzehouse-synology  # Garage S3 storage
+    homeassistant      # Home Assistant (home + health butler modules)
   )
   resolved=()
   ts_domain=$(tailscale status --json 2>/dev/null \

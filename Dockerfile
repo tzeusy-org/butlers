@@ -8,7 +8,7 @@
 # Changing Python source (src/, pyproject.toml) does NOT trigger a Go rebuild.
 
 # --- Stage 1: Go builder ---------------------------------------------------
-FROM golang:1.22-bookworm AS go-builder
+FROM golang:1.24-bookworm AS go-builder
 
 WORKDIR /build
 
@@ -42,9 +42,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install LLM runtime CLIs globally via npm.
+# Install LLM runtime CLIs globally.
 # Butlers can use any of these as runtime adapters (configured per-butler in butler.toml).
-RUN npm install -g @openai/codex opencode-ai claude-code @google/gemini-cli
+RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code @google/gemini-cli
 
 # Install uv package manager
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
