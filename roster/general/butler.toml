@@ -52,18 +52,42 @@ job_name = "memory_episode_cleanup"
 name = "eod-tomorrow-prep"
 cron = "0 15 * * *"
 prompt = """
-End-of-day briefing: review tomorrow's calendar and send a preparation summary.
+End-of-day briefing: review tomorrow's calendar and incorporate today's specialist highlights into a
+multi-domain preparation summary. Target under 500 words total.
 
 Steps:
-1. Determine tomorrow's date (SGT, UTC+8).
-2. Use calendar_list_events to fetch all events for tomorrow (00:00 to 23:59 SGT).
-3. For each event, note: title, time, duration, location, description/notes.
-4. Compose a structured message with:
-   - A timeline of tomorrow's events in chronological order (times in SGT)
-   - For each event: any preparation needed (documents to review, travel time, items to bring)
-   - Gaps between events (highlight free blocks)
-   - A short "heads-up" section for anything unusual (early starts, back-to-back meetings, travel)
-5. If there are no events, send a simple "No events scheduled for tomorrow" note.
+1. Determine today's and tomorrow's dates in SGT (UTC+8). Today's date string format: YYYY-MM-DD.
+
+2. Fetch specialist highlights by calling state_get('briefing/combined/<today-SGT>') where
+   <today-SGT> is today's date in YYYY-MM-DD format (SGT). This returns a JSON payload with a
+   `contributions` list, each entry having fields: `butler`, `has_updates`, `highlights`, `summary`.
+   If state_get returns null or empty, skip to step 3 and proceed with calendar-only mode.
+
+3. Use calendar_list_events to fetch all events for tomorrow (00:00 to 23:59 SGT).
+
+4. Compose the briefing message as follows:
+
+   **Calendar — [Day, Date]**
+   List tomorrow's events in chronological order (times in SGT). For each event: title, time,
+   duration, location. Include prep notes (documents to review, travel time, items to bring).
+   Note any free blocks between events. If no events: "No events scheduled for tomorrow."
+
+   **Today's Highlights** (only include this section if any specialist contribution has
+   has_updates=true — omit the section entirely if no contributions are present or all
+   has_updates=false)
+   For each specialist domain with has_updates=true, include one concise line using the
+   pre-rendered `summary` field. Group under these domain labels as applicable:
+   Health · Finance · Travel · Relationships · Learning · Home
+
+   **Heads-up** (optional — include only when two or more high-priority highlights across different
+   domains suggest a cross-domain conflict or compounded risk, e.g., a travel departure that
+   overlaps a medical appointment)
+   One or two sentences maximum.
+
+5. Length check: ensure the full message is under 500 words. Trim event prep notes or specialist
+   summaries if needed to stay within limit. The calendar timeline takes priority over the
+   Highlights section when trimming.
+
 6. Send the summary via notify(channel="telegram", intent="send").
 """
 
