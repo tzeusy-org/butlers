@@ -66,7 +66,7 @@ function ChatContent({ butlerName }: ChatContentProps) {
   // Load pricing map once
   useEffect(() => {
     fetchPricingMap()
-      .then((pm) => setPricingMap(pm))
+      .then((pm) => setPricingMap(pm.data))
       .catch(() => {/* pricing is optional */});
   }, []);
 

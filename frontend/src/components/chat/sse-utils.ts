@@ -12,17 +12,18 @@ import type { ConversationSseEvent, ConversationSseEventType } from "@/api/types
 export function parseSseChunk(chunk: string): ConversationSseEvent | null {
   const lines = chunk.split("\n");
   let eventType: ConversationSseEventType | null = null;
-  let dataLine: string | null = null;
+  const dataLines: string[] = [];
 
   for (const line of lines) {
     if (line.startsWith("event:")) {
       eventType = line.slice(6).trim() as ConversationSseEventType;
     } else if (line.startsWith("data:")) {
-      dataLine = line.slice(5).trim();
+      dataLines.push(line.slice(5).trim());
     }
   }
 
-  if (dataLine == null) return null;
+  if (dataLines.length === 0) return null;
+  const dataLine = dataLines.join("\n");
 
   let data: unknown = dataLine;
   try {

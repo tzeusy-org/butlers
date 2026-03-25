@@ -4,7 +4,7 @@ import { Link, useParams, useSearchParams } from "react-router";
 import type { SessionParams, SessionSummary } from "@/api/types";
 import ButlerConfigTab from "@/components/butler-detail/ButlerConfigTab";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
-import { ChatPanel } from "@/components/chat/ChatPanel.tsx";
+import { ChatPanel } from "@/components/chat/ChatPanel";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { SessionTable } from "@/components/sessions/SessionTable";
 import { Badge } from "@/components/ui/badge";

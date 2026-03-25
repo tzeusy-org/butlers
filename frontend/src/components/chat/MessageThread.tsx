@@ -21,7 +21,7 @@ function estimateCost(
   model: string | null,
   pricingMap: PricingMap | null,
 ): string | null {
-  if (!inputTokens || !outputTokens || !model || !pricingMap) return null;
+  if (inputTokens == null || outputTokens == null || !model || !pricingMap) return null;
   const pricing = pricingMap[model];
   if (!pricing) return null;
   const cost =
