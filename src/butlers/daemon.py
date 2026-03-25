@@ -158,6 +158,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "get_attachment",
         "module.states",
         "module.set_enabled",
+        "correct",
     }
 )
 
