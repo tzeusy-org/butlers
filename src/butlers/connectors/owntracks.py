@@ -54,10 +54,10 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from threading import Thread
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter, generate_latest
 
@@ -107,6 +107,10 @@ _TIER_FULL = "full"
 
 # Credential key in CredentialStore
 _CRED_WEBHOOK_TOKEN = "owntracks_webhook_token"
+
+# Public aliases used by standalone auth helpers and their tests
+_DB_KEY = _CRED_WEBHOOK_TOKEN
+_ENV_VAR = "OWNTRACKS_WEBHOOK_TOKEN"
 
 # ---------------------------------------------------------------------------
 # OwnTracks-specific Prometheus metrics (task 6.2)
@@ -1269,6 +1273,148 @@ async def resolve_webhook_token(
         "No OwnTracks webhook token configured. "
         "Set OWNTRACKS_WEBHOOK_TOKEN or configure owntracks_webhook_token in CredentialStore."
     )
+
+
+# ---------------------------------------------------------------------------
+# Standalone public auth helpers (task group §2 public API)
+# ---------------------------------------------------------------------------
+# These provide a stable public interface for tests and callers that do not
+# have access to the full OwnTracksConnector class.
+
+
+async def resolve_owntracks_webhook_token(
+    store: CredentialStore | None = None,
+) -> str | None:
+    """Resolve the OwnTracks webhook bearer token, returning None if absent.
+
+    Resolution order:
+    1. ``CredentialStore`` lookup for ``owntracks_webhook_token`` (if *store*
+       is provided).
+    2. ``OWNTRACKS_WEBHOOK_TOKEN`` environment variable (fallback).
+
+    Parameters
+    ----------
+    store:
+        A ``CredentialStore`` instance backed by the butler DB.  When
+        ``None`` (e.g. no DB is available), only the env var is checked.
+
+    Returns
+    -------
+    str | None
+        The resolved token, or ``None`` if neither source has a value.
+    """
+    # 1. DB lookup via CredentialStore
+    if store is not None:
+        try:
+            db_token = await store.resolve(_DB_KEY, env_fallback=False)
+            if db_token:
+                logger.info(
+                    "OwnTracks connector: resolved %r from CredentialStore",
+                    _DB_KEY,
+                )
+                return db_token
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "OwnTracks connector: CredentialStore lookup for %r failed (non-fatal): %s",
+                _DB_KEY,
+                exc,
+            )
+
+    # 2. Env var fallback
+    env_token = os.environ.get(_ENV_VAR, "").strip()
+    if env_token:
+        logger.info(
+            "OwnTracks connector: resolved webhook token from env var %s",
+            _ENV_VAR,
+        )
+        return env_token
+
+    return None
+
+
+def make_bearer_auth_dependency(*, token: str):
+    """Return a FastAPI dependency that validates ``Authorization: Bearer`` headers.
+
+    The provided *token* is compared against the ``Authorization`` header value
+    using ``hmac.compare_digest`` to prevent timing-based side-channel attacks.
+
+    Requests with a missing, malformed, or non-matching token receive HTTP 401.
+    Payload content is never logged for unauthenticated requests to prevent
+    information leakage.
+
+    Parameters
+    ----------
+    token:
+        The expected bearer token (resolved at startup via
+        :func:`resolve_owntracks_webhook_token`).
+
+    Returns
+    -------
+    Callable
+        A FastAPI dependency function suitable for use with ``Depends()``.
+
+    Raises
+    ------
+    ValueError
+        If *token* is empty (fail-closed: refuse to create dependency with
+        an empty token that would match any empty-string bearer value).
+    """
+    if not token:
+        raise ValueError("make_bearer_auth_dependency: token must be a non-empty string")
+
+    async def _require_bearer_token(
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> None:
+        """Validate the Authorization: Bearer <token> header.
+
+        Raises HTTP 401 if the header is missing, malformed, or token mismatch.
+        Uses constant-time comparison to prevent timing attacks.
+        """
+        if authorization is None:
+            logger.debug("OwnTracks webhook: rejected request — missing Authorization header")
+            raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
+
+        parts = authorization.split(" ", 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer":  # noqa: PLR2004
+            logger.debug("OwnTracks webhook: rejected request — malformed Authorization header")
+            raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
+
+        provided_token = parts[1]
+        if not hmac.compare_digest(provided_token.encode(), token.encode()):
+            logger.debug("OwnTracks webhook: rejected request — token mismatch")
+            raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
+
+    return _require_bearer_token
+
+
+def build_webhook_app(*, token: str) -> FastAPI:
+    """Build a minimal FastAPI app with the webhook auth dependency wired.
+
+    This is a thin factory used in tests and for future endpoint assembly.
+    Full connector implementation (payload parsing, normalisation, etc.) is
+    handled by the main connector entrypoint (task group §3+).
+
+    Parameters
+    ----------
+    token:
+        The resolved bearer token.  Must be non-empty.
+
+    Returns
+    -------
+    fastapi.FastAPI
+        App with ``/owntracks/webhook`` returning 200 on valid auth.
+    """
+    app = FastAPI()
+    require_auth = make_bearer_auth_dependency(token=token)
+
+    @app.post("/owntracks/webhook")
+    async def webhook(
+        _: None = Depends(require_auth),
+    ) -> list:
+        # OwnTracks protocol requires an empty JSON array response on success.
+        return []
+
+    return app
 
 
 # ---------------------------------------------------------------------------
