@@ -148,6 +148,7 @@ services:
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       BUTLERS_DISABLE_FILE_LOGGING: "1"
+      BUTLERS_HOST: butlers-up
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -468,6 +469,7 @@ services:
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       BUTLERS_DISABLE_FILE_LOGGING: "1"
+      BUTLERS_HOST: butlers-up
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro

@@ -1161,6 +1161,7 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
                 min_size=1,
                 max_size=2,
                 command_timeout=5,
+                server_settings={"search_path": "shared,public"},
             )
             connected_pools.append((db_name, pool))
         except Exception as exc:
