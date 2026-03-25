@@ -169,3 +169,17 @@ _register(
         test_ok_pattern=re.compile(r"(?:ok|OK|Ok)", re.IGNORECASE),
     )
 )
+
+_register(
+    CLIAuthProviderDef(
+        name="claude",
+        display_name="Claude (Anthropic)",
+        runtime="claude",
+        auth_mode="api_key",
+        env_var="ANTHROPIC_API_KEY",
+        binary_name="claude",
+        # Anthropic API keys follow the pattern sk-ant-...
+        # No token_path — the key is stored exclusively in the credential store.
+        # Health probing is done via key-format validation in health.py.
+    )
+)
