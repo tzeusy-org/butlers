@@ -569,15 +569,16 @@ async def _run_home_maintenance_schedule_check_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run maintenance schedule check for the home butler (delegates to stub).
+    """Run the home maintenance schedule check deterministic job.
 
-    Delegates to ``butlers.jobs.home.run_maintenance_schedule_check``, which is
-    currently a no-op stub pending full implementation.
+    Queries home.maintenance_items for due/overdue/upcoming items, classifies
+    by severity, and returns a structured summary.  Notification delivery
+    requires a notify_fn to be wired in; the daemon passes None until the
+    switchboard notify path is integrated.
     """
-    del job_args
     from butlers.jobs.home import run_maintenance_schedule_check
 
-    return await run_maintenance_schedule_check(pool=pool)
+    return await run_maintenance_schedule_check(pool, job_args)
 
 
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
@@ -586,6 +587,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "energy_digest": _run_home_energy_digest_job,
     "maintenance_schedule_check": _run_home_maintenance_schedule_check_job,
 }
+
 
 _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
     "general": {
