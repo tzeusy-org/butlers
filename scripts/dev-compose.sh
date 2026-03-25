@@ -126,8 +126,13 @@ for p in peers.values():
   fi
 fi
 
+# ── Idempotent restart: tear down stale containers, rebuild, bring up ──
+# down --remove-orphans clears containers from previous runs (renamed
+# services, removed profiles, etc.) so ports and networks are clean.
+"${CMD[@]}" down --remove-orphans 2>/dev/null || true
+
 # ── Apply egress firewall (blocks private subnet access from containers) ─
-# Needs the egress network to exist, so start infra services first.
+# Needs the egress network to exist, so start postgres first.
 "${CMD[@]}" up -d postgres
 if sudo -n true 2>/dev/null; then
   sudo ALLOWED_TAILNET_HOSTS="${ALLOWED_TAILNET_HOSTS:-}" \
