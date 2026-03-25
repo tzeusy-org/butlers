@@ -83,6 +83,21 @@ class TestOwnTracksRetentionConfig:
         with pytest.raises(ValueError, match="OWNTRACKS_RETENTION_DAYS"):
             OwnTracksRetentionConfig.from_env()
 
+    def test_direct_construction_rejects_zero(self) -> None:
+        """Direct construction raises ValueError when retention_days=0."""
+        with pytest.raises(ValueError, match="retention_days"):
+            OwnTracksRetentionConfig(retention_days=0)
+
+    def test_direct_construction_rejects_negative(self) -> None:
+        """Direct construction raises ValueError when retention_days is negative."""
+        with pytest.raises(ValueError, match="retention_days"):
+            OwnTracksRetentionConfig(retention_days=-10)
+
+    def test_direct_construction_rejects_non_int(self) -> None:
+        """Direct construction raises TypeError when retention_days is not an int."""
+        with pytest.raises(TypeError, match="retention_days"):
+            OwnTracksRetentionConfig(retention_days="30")  # type: ignore[arg-type]
+
 
 # ---------------------------------------------------------------------------
 # _parse_delete_count tests
@@ -120,7 +135,7 @@ class TestParseDeleteCount:
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(execute_result: str = "DELETE 0") -> MagicMock:
+def _make_pool(execute_result: str = "DELETE 0") -> tuple[MagicMock, AsyncMock]:
     """Build a fake asyncpg pool whose connections return a preset execute result."""
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=execute_result)
@@ -166,16 +181,16 @@ class TestOwnTracksRetentionPurgeOnce:
         assert deleted == 0
 
     async def test_purge_once_uses_correct_retention_days(self) -> None:
-        """purge_once() passes the configured retention_days into the SQL."""
+        """purge_once() passes the configured retention_days as a bind parameter."""
         pool, conn = _make_pool("DELETE 5")
         config = OwnTracksRetentionConfig(retention_days=90)
         retention = OwnTracksRetention(config, pool)
 
         await retention.purge_once()
 
-        # Verify the SQL contains the correct interval
-        executed_sql: str = conn.execute.call_args[0][0]
-        assert "90 days" in executed_sql
+        # Verify retention_days is passed as a bind parameter (not interpolated in SQL)
+        call_args = conn.execute.call_args
+        assert call_args[0][1] == 90  # second positional arg is the bind value
 
     async def test_purge_once_filters_owntracks_channel(self) -> None:
         """purge_once() SQL restricts to source_channel = 'owntracks'."""
@@ -341,16 +356,30 @@ class TestOwnTracksRetentionLifecycle:
         """The purge loop calls purge_once() after the configured interval elapses."""
         pool, conn = _make_pool("DELETE 3")
         config = OwnTracksRetentionConfig(retention_days=30)
-        # Use a very short interval for the test
-        retention = OwnTracksRetention(config, pool, purge_interval_s=0)
+        # Use the minimum valid interval (1 second) so the test completes quickly
+        retention = OwnTracksRetention(config, pool, purge_interval_s=1)
 
         retention.start()
-        # Give the event loop a brief moment to execute the sleep(0) and the purge
-        await asyncio.sleep(0.05)
+        # Wait long enough for at least one sleep(1) to complete and a purge to run
+        await asyncio.sleep(1.1)
         await retention.stop()
 
         # The purge SQL should have been executed at least once
         assert conn.execute.call_count >= 1
+
+    async def test_purge_interval_zero_raises(self) -> None:
+        """OwnTracksRetention raises ValueError if purge_interval_s < 1."""
+        pool, _conn = _make_pool("DELETE 0")
+        config = OwnTracksRetentionConfig(retention_days=30)
+        with pytest.raises(ValueError, match="purge_interval_s"):
+            OwnTracksRetention(config, pool, purge_interval_s=0)
+
+    async def test_purge_interval_negative_raises(self) -> None:
+        """OwnTracksRetention raises ValueError if purge_interval_s is negative."""
+        pool, _conn = _make_pool("DELETE 0")
+        config = OwnTracksRetentionConfig(retention_days=30)
+        with pytest.raises(ValueError, match="purge_interval_s"):
+            OwnTracksRetention(config, pool, purge_interval_s=-5)
 
     async def test_purge_interval_is_6_hours(self) -> None:
         """Default purge interval constant is 6 hours (21600 seconds)."""
