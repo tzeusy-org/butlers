@@ -599,12 +599,11 @@ class TestSessionAggregationLifecycle:
         first_summary_idx = next(
             (i for i, t in enumerate(event_types) if t == "spotify.session_summary"), None
         )
-        second_track_idx = next(
-            (i for i, t in enumerate(reversed(event_types)) if t == "spotify.track_change"),
-            None,
-        )
+        track_change_indices = [i for i, t in enumerate(event_types) if t == "spotify.track_change"]
+        second_track_idx = track_change_indices[1] if len(track_change_indices) > 1 else None
         assert first_summary_idx is not None
         assert second_track_idx is not None
+        assert first_summary_idx < second_track_idx
 
 
 # ---------------------------------------------------------------------------
@@ -914,8 +913,8 @@ class TestDashboardOAuthFlow:
     the HTTP redirect dance, which is handled by the dashboard UI.
     """
 
-    async def test_token_exchange_stores_all_four_credential_keys(self) -> None:
-        """After successful token refresh, all four credential keys are stored."""
+    async def test_token_exchange_stores_credential_keys(self) -> None:
+        """After token refresh, three keys are stored: access token, refresh token, expiry."""
         http = AsyncMock(spec=httpx.AsyncClient)
         refresh_resp = _make_httpx_response(
             200,
