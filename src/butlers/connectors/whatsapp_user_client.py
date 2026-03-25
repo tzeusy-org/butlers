@@ -297,9 +297,7 @@ async def _sse_event_stream(socket_path: str) -> asyncio.AsyncGenerator[dict[str
                     status_code = 0
                 if status_code != 200:
                     status_text = status_line.decode(errors="replace").strip()
-                    raise ConnectionError(
-                        f"Bridge /events returned non-200 status: {status_text}"
-                    )
+                    raise ConnectionError(f"Bridge /events returned non-200 status: {status_text}")
 
         # Read and discard remaining HTTP headers
         while True:

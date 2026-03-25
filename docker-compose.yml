@@ -329,7 +329,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 30s
+      start_period: 120s
     networks: [db, backend, egress]
     depends_on:
       log-init:
@@ -428,7 +428,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 30s
+      start_period: 120s
     depends_on:
       migrations:
         condition: service_completed_successfully
