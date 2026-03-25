@@ -19,6 +19,27 @@ The ``run_environment_report`` function discovers environmental sensors from
 deviations (ok/minor/moderate/critical), stores comfort_deviation facts, and sends
 a room-by-room Telegram notification.
 
+Shared helpers
+--------------
+``HomeJobContext``
+    Async context manager providing a short-lived ``httpx.AsyncClient`` with HA
+    credentials pre-loaded.  Used by job handlers that need REST-only historical
+    data (e.g. ``recorder/get_statistics_during_period``).
+
+``_load_thresholds(pool, key, defaults)``
+    Generic state-store threshold reader.  Reads ``home:thresholds:<key>`` from
+    the state store, validates that the value is a dict, and merges individual
+    key overrides on top of *defaults*, logging a WARNING on fallback.
+
+``_read_entity_snapshot(pool, domain_filter)``
+    Generic ``ha_entity_snapshot`` reader.  Returns all rows (optionally filtered
+    by domain prefix).  Raises ``EmptyEntitySnapshotError`` when the table has no
+    matching rows.
+
+``_send_notify(pool, message)``
+    Convenience wrapper around ``_notify_owner_telegram`` with an explicit
+    ``channel="telegram"`` / ``intent="send"`` semantic.
+
 Design reference: openspec/changes/archive/home-butler-enhancements/
 """
 
@@ -40,6 +61,225 @@ from butlers.credential_store import resolve_owner_entity_info
 from butlers.modules.memory.storage import store_fact
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Shared errors
+# ---------------------------------------------------------------------------
+
+
+class EmptyEntitySnapshotError(Exception):
+    """Raised by ``_read_entity_snapshot`` when ``ha_entity_snapshot`` has no rows.
+
+    Job handlers catch this to send an owner alert and return early with
+    ``{"error": "no_entity_snapshot"}``.
+    """
+
+
+# ---------------------------------------------------------------------------
+# HomeJobContext — short-lived HA REST client for job handlers
+# ---------------------------------------------------------------------------
+
+
+class HomeJobContext:
+    """Lightweight context object for Home butler job handlers.
+
+    Holds the HA base URL and token resolved from owner contact info and
+    provides a short-lived ``httpx.AsyncClient`` pre-configured with the
+    ``Authorization: Bearer`` header.  Must be used as an async context
+    manager so the underlying HTTP client is properly closed after the job:
+
+    .. code-block:: python
+
+        async with HomeJobContext.create(pool) as ctx:
+            resp = await ctx.client.get(f"{ctx.ha_url}/api/states")
+
+    If HA credentials are missing from contact info, ``ha_url`` and
+    ``ha_token`` will be ``None``.  Callers should check before making
+    requests.
+
+    Attributes:
+        ha_url: HA base URL (e.g. ``"http://homeassistant.local:8123"``), or
+            ``None`` if not configured.
+        ha_token: Long-lived access token, or ``None`` if not configured.
+        client: An open ``httpx.AsyncClient`` with the Authorization header
+            set (available only inside the ``async with`` block).
+    """
+
+    def __init__(self, ha_url: str | None, ha_token: str | None) -> None:
+        self.ha_url = ha_url
+        self.ha_token = ha_token
+        self.client: httpx.AsyncClient | None = None
+        self._stack: httpx.AsyncClient | None = None
+
+    @classmethod
+    async def create(cls, pool: asyncpg.Pool) -> HomeJobContext:
+        """Resolve HA credentials from the owner's contact info and return a new context.
+
+        Args:
+            pool: asyncpg connection pool for the home butler's database.
+
+        Returns:
+            A ``HomeJobContext`` instance with ``ha_url`` and ``ha_token``
+            populated from contact info (either may be ``None`` if not found).
+        """
+        ha_url = await resolve_owner_entity_info(pool, "home_assistant_url")
+        ha_token = await resolve_owner_entity_info(pool, "home_assistant_token")
+        return cls(ha_url=ha_url, ha_token=ha_token)
+
+    async def __aenter__(self) -> HomeJobContext:
+        headers: dict[str, str] = {}
+        if self.ha_token:
+            headers["Authorization"] = f"Bearer {self.ha_token}"
+        self.client = httpx.AsyncClient(
+            headers=headers,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            verify=False,  # noqa: S501 — local HA instances often use self-signed certs
+        )
+        await self.client.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self.client is not None:
+            await self.client.__aexit__(exc_type, exc_val, exc_tb)
+            self.client = None
+
+
+# ---------------------------------------------------------------------------
+# Generic threshold loader
+# ---------------------------------------------------------------------------
+
+_T = dict[str, Any]
+
+
+async def _load_thresholds(
+    pool: asyncpg.Pool,
+    key: str,
+    defaults: _T,
+) -> _T:
+    """Load monitoring thresholds from the state store with fallback to *defaults*.
+
+    Reads ``home:thresholds:<key>`` from the state store.  The stored value
+    MUST be a JSON dict.  Individual keys are cast to the same type as the
+    corresponding *defaults* value (``int`` or ``float``).  If the key is
+    absent, the stored value is not a dict, or a sub-key has an invalid
+    value, *defaults* (or the default for that sub-key) are used and a
+    WARNING is logged.
+
+    Args:
+        pool: asyncpg connection pool for the home butler's database.
+        key: State-store key suffix (e.g. ``"battery"`` → looks up
+            ``home:thresholds:battery``).
+        defaults: Dict mapping threshold names to their default values.
+            Values must be ``int`` or ``float`` — used both as fallback and
+            to determine cast type.
+
+    Returns:
+        A dict with the same keys as *defaults*, populated from the state
+        store where valid entries exist and falling back to *defaults*
+        elsewhere.
+    """
+    full_key = f"home:thresholds:{key}"
+    raw = await state_get(pool, full_key)
+
+    if raw is None:
+        logger.warning("%s not found in state store; using default thresholds", full_key)
+        return dict(defaults)
+
+    if not isinstance(raw, dict):
+        logger.warning(
+            "%s has unexpected type %r; using default thresholds",
+            full_key,
+            type(raw).__name__,
+        )
+        return dict(defaults)
+
+    result: _T = {}
+    for threshold_key, default_val in defaults.items():
+        raw_val = raw.get(threshold_key, default_val)
+        cast: type = type(default_val)  # int or float
+        try:
+            result[threshold_key] = cast(raw_val)
+        except (TypeError, ValueError):
+            logger.warning(
+                "%s[%r] has invalid value %r; using default %r",
+                full_key,
+                threshold_key,
+                raw_val,
+                default_val,
+            )
+            result[threshold_key] = default_val
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Generic entity snapshot reader
+# ---------------------------------------------------------------------------
+
+
+async def _read_entity_snapshot(
+    pool: asyncpg.Pool,
+    domain_filter: str | None = None,
+) -> list[Any]:
+    """Query ``ha_entity_snapshot`` and return all matching rows.
+
+    Args:
+        pool: asyncpg connection pool.
+        domain_filter: Optional HA domain prefix (e.g. ``"sensor"``,
+            ``"binary_sensor"``).  When provided, only entities whose
+            ``entity_id`` starts with ``"<domain_filter>."`` are returned.
+
+    Returns:
+        List of asyncpg ``Record`` objects with at least the columns
+        ``entity_id``, ``state``, ``attributes``.
+
+    Raises:
+        EmptyEntitySnapshotError: If the filtered (or full) result set is
+            empty — the connector has not yet populated the table or was
+            recently reset.
+    """
+    if domain_filter is not None:
+        rows = await pool.fetch(
+            "SELECT entity_id, state, attributes, last_updated "
+            "FROM ha_entity_snapshot "
+            "WHERE entity_id LIKE $1 "
+            "ORDER BY entity_id",
+            f"{domain_filter}.%",
+        )
+    else:
+        rows = await pool.fetch(
+            "SELECT entity_id, state, attributes, last_updated "
+            "FROM ha_entity_snapshot "
+            "ORDER BY entity_id"
+        )
+
+    if not rows:
+        raise EmptyEntitySnapshotError(
+            "ha_entity_snapshot is empty"
+            + (f" for domain '{domain_filter}'" if domain_filter else "")
+        )
+
+    return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Shared notify helper
+# ---------------------------------------------------------------------------
+
+
+async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
+    """Send a Telegram notification to the owner (channel=telegram, intent=send).
+
+    This is the canonical notify helper for Home butler job handlers.
+    It delegates to ``_notify_owner_telegram``, which resolves the bot token
+    and chat ID from the owner's contact info.
+
+    Args:
+        pool: asyncpg connection pool for the home butler's database.
+        message: Message text to deliver.  HTML parse mode is used, so
+            ``<b>``, ``<i>``, and ``<code>`` tags are supported.
+    """
+    await _notify_owner_telegram(pool, message)
 
 
 class _NullEmbeddingEngine:
@@ -133,60 +373,12 @@ _TOP_N_CONSUMERS = 5
 
 async def _load_battery_thresholds(pool: asyncpg.Pool) -> dict[str, int]:
     """Load battery thresholds from state store; fall back to defaults."""
-    raw = await state_get(pool, "home:thresholds:battery")
-    if raw is None:
-        logger.warning("home:thresholds:battery not found in state store; using default thresholds")
-        return dict(_DEFAULT_BATTERY_THRESHOLDS)
-    if not isinstance(raw, dict):
-        logger.warning(
-            "home:thresholds:battery has unexpected type %r; using default thresholds",
-            type(raw).__name__,
-        )
-        return dict(_DEFAULT_BATTERY_THRESHOLDS)
-    result: dict[str, int] = {}
-    for key in ("critical", "warning", "info"):
-        raw_val = raw.get(key, _DEFAULT_BATTERY_THRESHOLDS[key])
-        try:
-            result[key] = int(raw_val)
-        except (TypeError, ValueError):
-            logger.warning(
-                "home:thresholds:battery[%r] has invalid value %r; using default %d",
-                key,
-                raw_val,
-                _DEFAULT_BATTERY_THRESHOLDS[key],
-            )
-            result[key] = _DEFAULT_BATTERY_THRESHOLDS[key]
-    return result
+    return await _load_thresholds(pool, "battery", _DEFAULT_BATTERY_THRESHOLDS)  # type: ignore[return-value]
 
 
 async def _load_offline_hours_thresholds(pool: asyncpg.Pool) -> dict[str, int]:
     """Load offline-hours thresholds from state store; fall back to defaults."""
-    raw = await state_get(pool, "home:thresholds:offline_hours")
-    if raw is None:
-        logger.warning(
-            "home:thresholds:offline_hours not found in state store; using default thresholds"
-        )
-        return dict(_DEFAULT_OFFLINE_HOURS_THRESHOLDS)
-    if not isinstance(raw, dict):
-        logger.warning(
-            "home:thresholds:offline_hours has unexpected type %r; using default thresholds",
-            type(raw).__name__,
-        )
-        return dict(_DEFAULT_OFFLINE_HOURS_THRESHOLDS)
-    result: dict[str, int] = {}
-    for key in ("critical", "warning"):
-        raw_val = raw.get(key, _DEFAULT_OFFLINE_HOURS_THRESHOLDS[key])
-        try:
-            result[key] = int(raw_val)
-        except (TypeError, ValueError):
-            logger.warning(
-                "home:thresholds:offline_hours[%r] has invalid value %r; using default %d",
-                key,
-                raw_val,
-                _DEFAULT_OFFLINE_HOURS_THRESHOLDS[key],
-            )
-            result[key] = _DEFAULT_OFFLINE_HOURS_THRESHOLDS[key]
-    return result
+    return await _load_thresholds(pool, "offline_hours", _DEFAULT_OFFLINE_HOURS_THRESHOLDS)  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +502,7 @@ def _build_health_check_notification(
     Returns:
         Formatted text message for Telegram.
     """
+
     def _esc(text: str) -> str:
         """HTML-escape a user-supplied string for Telegram HTML parse mode."""
         return html.escape(text)
@@ -395,39 +588,7 @@ async def _load_comfort_defaults(pool: asyncpg.Pool) -> dict[str, float]:
     Returns a dict with keys: ``temp_min_f``, ``temp_max_f``,
     ``humidity_min``, ``humidity_max``, ``co2_max_ppm``.
     """
-    raw = await state_get(pool, "home:thresholds:comfort_defaults")
-    if raw is None:
-        logger.warning(
-            "home:thresholds:comfort_defaults not found in state store — using default thresholds "
-            "(temp=%.0f-%.0f°F, humidity=%.0f-%.0f%%, co2_max=%.0f ppm)",
-            _DEFAULT_COMFORT_DEFAULTS["temp_min_f"],
-            _DEFAULT_COMFORT_DEFAULTS["temp_max_f"],
-            _DEFAULT_COMFORT_DEFAULTS["humidity_min"],
-            _DEFAULT_COMFORT_DEFAULTS["humidity_max"],
-            _DEFAULT_COMFORT_DEFAULTS["co2_max_ppm"],
-        )
-        return dict(_DEFAULT_COMFORT_DEFAULTS)
-
-    if not isinstance(raw, dict):
-        logger.warning(
-            "home:thresholds:comfort_defaults is not a dict (got %r) — using defaults",
-            type(raw).__name__,
-        )
-        return dict(_DEFAULT_COMFORT_DEFAULTS)
-
-    result = dict(_DEFAULT_COMFORT_DEFAULTS)
-    for key in _DEFAULT_COMFORT_DEFAULTS:
-        if key in raw:
-            try:
-                result[key] = float(raw[key])
-            except (TypeError, ValueError):
-                logger.warning(
-                    "home:thresholds:comfort_defaults.%s is not numeric (%r) — using default %.1f",
-                    key,
-                    raw[key],
-                    _DEFAULT_COMFORT_DEFAULTS[key],
-                )
-    return result
+    return await _load_thresholds(pool, "comfort_defaults", _DEFAULT_COMFORT_DEFAULTS)  # type: ignore[return-value]
 
 
 async def _load_comfort_deviation(pool: asyncpg.Pool) -> dict[str, float]:
@@ -438,33 +599,7 @@ async def _load_comfort_deviation(pool: asyncpg.Pool) -> dict[str, float]:
     ``critical_temp_high_f``, ``critical_co2_ppm``, ``critical_humidity_low``,
     ``critical_humidity_high``.
     """
-    raw = await state_get(pool, "home:thresholds:comfort_deviation")
-    if raw is None:
-        logger.warning(
-            "home:thresholds:comfort_deviation not found in state store — using default thresholds"
-        )
-        return dict(_DEFAULT_COMFORT_DEVIATION)
-
-    if not isinstance(raw, dict):
-        logger.warning(
-            "home:thresholds:comfort_deviation is not a dict (got %r) — using defaults",
-            type(raw).__name__,
-        )
-        return dict(_DEFAULT_COMFORT_DEVIATION)
-
-    result = dict(_DEFAULT_COMFORT_DEVIATION)
-    for key in _DEFAULT_COMFORT_DEVIATION:
-        if key in raw:
-            try:
-                result[key] = float(raw[key])
-            except (TypeError, ValueError):
-                logger.warning(
-                    "home:thresholds:comfort_deviation.%s is not numeric (%r) — using default %.1f",
-                    key,
-                    raw[key],
-                    _DEFAULT_COMFORT_DEVIATION[key],
-                )
-    return result
+    return await _load_thresholds(pool, "comfort_deviation", _DEFAULT_COMFORT_DEVIATION)  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -822,36 +957,7 @@ async def _load_energy_thresholds(pool: asyncpg.Pool) -> dict[str, float]:
 
     Returns a dict with keys ``anomaly_pct`` and ``high_severity_pct``.
     """
-    raw = await state_get(pool, "home:thresholds:energy")
-    if raw is None:
-        logger.warning(
-            "home:thresholds:energy not found in state store — using default thresholds "
-            "(anomaly_pct=%.0f%%, high_severity_pct=%.0f%%)",
-            _DEFAULT_ENERGY_THRESHOLDS["anomaly_pct"],
-            _DEFAULT_ENERGY_THRESHOLDS["high_severity_pct"],
-        )
-        return dict(_DEFAULT_ENERGY_THRESHOLDS)
-
-    if not isinstance(raw, dict):
-        logger.warning(
-            "home:thresholds:energy is not a dict (got %r) — using defaults",
-            type(raw).__name__,
-        )
-        return dict(_DEFAULT_ENERGY_THRESHOLDS)
-
-    result = dict(_DEFAULT_ENERGY_THRESHOLDS)
-    for key in ("anomaly_pct", "high_severity_pct"):
-        if key in raw:
-            try:
-                result[key] = float(raw[key])
-            except (TypeError, ValueError):
-                logger.warning(
-                    "home:thresholds:energy.%s is not numeric (%r) — using default %.0f",
-                    key,
-                    raw[key],
-                    _DEFAULT_ENERGY_THRESHOLDS[key],
-                )
-    return result
+    return await _load_thresholds(pool, "energy", _DEFAULT_ENERGY_THRESHOLDS)  # type: ignore[return-value]
 
 
 async def _discover_energy_sensors(pool: asyncpg.Pool) -> list[dict[str, Any]]:
@@ -1623,8 +1729,7 @@ async def run_device_health_check(
             pool,
             subject="device-fleet",
             content=(
-                f"All {devices_checked} device(s) healthy"
-                " \u2014 no battery or connectivity issues."
+                f"All {devices_checked} device(s) healthy \u2014 no battery or connectivity issues."
             ),
             importance=3.0,
             tags=["maintenance"],
