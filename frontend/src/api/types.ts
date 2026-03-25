@@ -2478,6 +2478,38 @@ export interface SpotifyDisconnectResponse {
 }
 
 // ---------------------------------------------------------------------------
+// OwnTracks connector types
+// ---------------------------------------------------------------------------
+
+/** Connection state for the OwnTracks webhook connector. */
+export type OwnTracksState = "active" | "idle" | "not_configured";
+
+/** Response from GET /api/connectors/owntracks/status */
+export interface OwnTracksStatusResponse {
+  state: OwnTracksState;
+  /** ISO datetime of the last received webhook event, or null. */
+  last_event_at: string | null;
+  /** Number of events received today (UTC day). */
+  events_today: number;
+  /** Whether a bearer token is currently configured. */
+  token_configured: boolean;
+}
+
+/** Response from GET /api/connectors/owntracks/config */
+export interface OwnTracksConfigResponse {
+  /** The full webhook URL the OwnTracks app should POST to. */
+  webhook_url: string;
+  /** Host portion only (for display). */
+  host: string;
+}
+
+/** Response from POST /api/connectors/owntracks/token/generate */
+export interface OwnTracksTokenResponse {
+  /** The newly generated bearer token (shown once; store securely). */
+  token: string;
+}
+
+// ---------------------------------------------------------------------------
 // Dunbar tier ranking
 // ---------------------------------------------------------------------------
 

@@ -15,6 +15,7 @@ import type {
 } from "@/api/index.ts";
 import { getGoogleOAuthStartUrl } from "@/api/index.ts";
 import { ModelCatalogCard } from "@/components/settings/ModelCatalogCard.tsx";
+import { OwnTracksSetupCard } from "@/components/settings/OwnTracksSetupCard.tsx";
 import { SpotifySetupCard } from "@/components/settings/SpotifySetupCard.tsx";
 import { WhatsAppSetupCard } from "@/components/settings/WhatsAppSetupCard.tsx";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
@@ -1216,6 +1217,8 @@ export default function SettingsPage() {
       <WhatsAppSetupCard />
 
       <SpotifySetupCard />
+
+      <OwnTracksSetupCard />
 
       <Card>
         <CardHeader>
