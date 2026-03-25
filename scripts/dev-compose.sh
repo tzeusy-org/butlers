@@ -47,7 +47,7 @@ if [ "$SKIP_TAILSCALE" = "false" ]; then
 fi
 
 # ── Build compose command ─────────────────────────────────────────────
-CMD=(docker compose -f docker-compose.yml -f docker-compose.dev.yml)
+CMD=(docker compose)
 for p in "${PROFILES[@]}"; do
   CMD+=(--profile "$p")
 done

@@ -64,7 +64,7 @@ resolve_bridge() {
   if [ -z "$bridge" ] || ! ip link show "$bridge" &>/dev/null; then
     echo "ERROR: Could not resolve bridge interface for network '$EGRESS_NETWORK'" >&2
     echo "  Make sure Docker is running and the network exists:" >&2
-    echo "    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d" >&2
+    echo "    docker compose up -d" >&2
     exit 1
   fi
 

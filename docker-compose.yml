@@ -2,43 +2,51 @@
 #
 # USAGE:
 #
-# Development mode (full stack with connectors):
-#   ./scripts/dev-compose.sh
-#   ./scripts/dev-compose.sh --hotreload      # live code changes
-#   ./scripts/dev-compose.sh --skip-oauth-check
+#   docker compose up                              # full stack
+#   docker compose --profile dev up                # + frontend dev server
+#   docker compose --profile hotreload up          # + live source code reload
+#   docker compose --profile audio up              # + live-listener connector
+#   ./scripts/dev-compose.sh                       # recommended dev launcher
+#   ./scripts/dev-compose.sh --hotreload           # with live code reload
 #
-# Development mode (just postgres for local butlers):
-#   docker compose up -d postgres
-#   butlers up
+# PROFILES:
+#   (default)  — all core services: postgres, migrations, butlers-up, connectors,
+#                dashboard-api, oauth-gate, log infrastructure
+#   dev        — + Vite frontend dev server
+#   hotreload  — + volume-mount src/ for live code changes (scales down butlers-up
+#                and dashboard-api, replaces with *-hotreload variants)
+#   audio      — + live-listener connector (requires /dev/snd)
+#   minio      — + local S3-compatible storage (production uses Garage on tailnet)
 #
-# Production mode (all services containerized):
-#   cp .env.example .env
-#   # Edit .env and add your ANTHROPIC_API_KEY
-#   docker compose up -d
-#
-# All butler services will be available on their configured ports:
-#   - switchboard: 41100
-#   - general: 41101
-#   - relationship: 41102
-#   - health: 41103
-#   - dashboard-api: 41200
-#
-# Service status:
-#   FUNCTIONAL (roster/ directories exist, configs are complete):
-#     - postgres        — database server (always functional)
-#     - switchboard     — routes incoming requests to butlers
-#     - general         — catch-all assistant butler
-#     - relationship    — contacts and interactions butler
-#     - health          — medications and health tracking butler
-#     - dashboard-api   — web UI backend
-#     - frontend-dev    — Vite dev server (profile: dev)
-#   ASPIRATIONAL (roster/ directories exist but butler may lack full config):
-#     - education, finance, home, messenger, travel — in roster, not yet in compose
-#
-# Observability: Grafana/Tempo tracing via LGTM stack (Alloy OTLP endpoint)
+# NETWORK MODEL (see RFC 0008):
+#   db        (internal) — postgres, minio, migrations
+#   backend   (internal) — inter-service communication
+#   frontend  (internal) — Vite dev server <-> dashboard-api
+#   egress    (bridge)   — outbound internet for LLM APIs, Google OAuth, etc.
+#   Private subnets blocked by scripts/egress-firewall.sh (auto-applied by launcher)
+
+# ── Shared environment anchors ──────────────────────────────────────────
+
+x-postgres-env: &postgres-env
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: butlers
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-butlers}
+
+x-connector-env: &connector-env
+  <<: *postgres-env
+  SWITCHBOARD_MCP_URL: http://switchboard:41100/sse
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+
+# Note: runtime volume mounts (runtime_claude, etc.) are repeated per service
+# because YAML anchors cannot merge into lists. This is a YAML limitation.
+
+# ── Services ────────────────────────────────────────────────────────────
 
 services:
-  # PostgreSQL database server
+
+  # ── Layer 0: Infrastructure ───────────────────────────────────────────
+
   postgres:
     image: pgvector/pgvector:pg17
     environment:
@@ -58,10 +66,7 @@ services:
       retries: 5
     networks: [db]
 
-  # MinIO — local S3-compatible blob storage (optional, for dev/CI only).
-  # Production uses Garage on the tailnet. S3 endpoint is configured via
-  # dashboard secrets (BLOB_S3_ENDPOINT_URL), not compose.
-  # Start with: docker compose --profile minio up
+  # MinIO — local S3 (optional). Production uses Garage on tailnet.
   minio:
     image: minio/minio:latest
     profiles: [minio]
@@ -81,7 +86,6 @@ services:
       retries: 5
     networks: [db]
 
-  # Create default bucket on MinIO startup
   minio-setup:
     image: minio/mc:latest
     profiles: [minio]
@@ -96,27 +100,185 @@ services:
       "
     networks: [db]
 
-  # Run Alembic migrations before any butler service starts (init container)
+  # ── Layer 0.5: Migrations + Log Init ──────────────────────────────────
+
   migrations:
     build:
       context: .
       dockerfile: Dockerfile
     command: ["db", "migrate"]
     environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=butlers
+      <<: *postgres-env
+    volumes:
+      - ./roster:/app/roster:ro
     networks: [db]
     depends_on:
       postgres:
         condition: service_healthy
 
-  # Butler daemons: each spawns LLM CLI subprocesses (codex, opencode, etc.)
-  # and runs modules (telegram, email) that need outbound internet via egress.
-  # Runtime config dirs (runtime_*) persist OAuth tokens across restarts.
+  log-init:
+    image: alpine:3.19
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        STAMP="$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "/logs/$STAMP"
+        rm -f /logs/latest
+        ln -s "$STAMP" /logs/latest
+        echo "/app/logs/$STAMP" > /logs/.current_run_dir
+        echo "Log directory: /app/logs/$STAMP"
+    volumes:
+      - ./logs:/logs
 
-  # Switchboard butler - message router
+  # ── Layer 1a: Dashboard + Frontend ────────────────────────────────────
+
+  dashboard-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:41200:41200"
+    volumes:
+      - ./roster:/app/roster:ro
+      - ./logs:/app/logs
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
+    environment:
+      <<: *postgres-env
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      BUTLERS_DISABLE_FILE_LOGGING: "1"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:41200/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks: [db, backend, frontend, egress]
+
+  frontend-dev:
+    image: node:22-slim
+    profiles: [dev]
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "127.0.0.1:41173:41173"
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-/butlers-api/api}
+      - VITE_PROXY_TARGET=http://dashboard-api:41200
+    command: >-
+      sh -c "npm install &&
+      npm run dev -- --host 0.0.0.0 --port 41173 --strictPort
+      --base ${FRONTEND_BASE_PATH:-/butlers/}"
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
+    networks: [frontend]
+
+  # ── Layer 1b: Connectors ──────────────────────────────────────────────
+
+  connector-telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "uv", "run", "python", "-m", "butlers.connectors.telegram_bot"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: telegram
+      CONNECTOR_CHANNEL: telegram_bot
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
+    restart: unless-stopped
+
+  connector-telegram-user:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "uv", "run", "python", "-m", "butlers.connectors.telegram_user_client"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: telegram
+      CONNECTOR_CHANNEL: telegram_user_client
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
+    restart: unless-stopped
+
+  connector-live-listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EXTRAS: live-listener
+    profiles: [audio]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "python", "-m", "butlers.connectors.live_listener"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: live-listener
+      CONNECTOR_CHANNEL: voice
+      CONNECTOR_HEALTH_PORT: "40091"
+      LIVE_LISTENER_DEVICES: ${LIVE_LISTENER_DEVICES:-[{"name":"webcam","device":"hw:2,0"}]}
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
+    devices:
+      - /dev/snd:/dev/snd
+    restart: unless-stopped
+
+  # ── Layer 2: OAuth Gate ───────────────────────────────────────────────
+
+  oauth-gate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["uv", "run", "python", "scripts/oauth_gate.py"]
+    command: []
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: ${POSTGRES_DB:-butlers}
+      OAUTH_GATE_TIMEOUT: ${OAUTH_GATE_TIMEOUT:-0}
+      OAUTH_POLL_INTERVAL: ${OAUTH_POLL_INTERVAL:-5}
+      SKIP_OAUTH_CHECK: ${SKIP_OAUTH_CHECK:-false}
+    networks: [db]
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
+
+  # ── Layer 3: Butler Backend + Gmail ───────────────────────────────────
+  # butlers-up starts all butler daemons (switchboard, general, relationship,
+  # health, etc.) in a single process. Each butler's MCP server listens on
+  # its configured port. LLM runtime CLIs are spawned as subprocesses.
+
   switchboard:
     build:
       context: .
@@ -131,12 +293,9 @@ services:
       - runtime_gemini:/root/.gemini
     command: ["run", "--config", "/etc/butler"]
     environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      - HOME=/root
+      <<: *postgres-env
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      HOME: /root
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41100/health || exit 1"]
       interval: 5s
@@ -144,138 +303,133 @@ services:
       retries: 10
       start_period: 15s
     depends_on:
-      postgres:
-        condition: service_healthy
       migrations:
         condition: service_completed_successfully
     networks: [db, backend, egress]
 
-  # General butler - catch-all assistant
-  general:
+  butlers-up:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:41101:41101"
-    volumes:
-      - ./roster/general:/etc/butler:ro
-      - runtime_claude:/root/.claude
-      - runtime_codex:/root/.codex
-      - runtime_opencode:/root/.opencode
-      - runtime_gemini:/root/.gemini
-    command: ["run", "--config", "/etc/butler"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "uv", "run", "butlers", "up"]
+    command: []
     environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      - HOME=/root
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrations:
-        condition: service_completed_successfully
-    networks: [db, backend, egress]
-
-  # Relationship butler - contacts and interactions
-  relationship:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:41102:41102"
-    volumes:
-      - ./roster/relationship:/etc/butler:ro
-      - runtime_claude:/root/.claude
-      - runtime_codex:/root/.codex
-      - runtime_opencode:/root/.opencode
-      - runtime_gemini:/root/.gemini
-    command: ["run", "--config", "/etc/butler"]
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      - HOME=/root
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrations:
-        condition: service_completed_successfully
-    networks: [db, backend, egress]
-
-  # Health butler - medications and health tracking
-  health:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:41103:41103"
-    volumes:
-      - ./roster/health:/etc/butler:ro
-      - runtime_claude:/root/.claude
-      - runtime_codex:/root/.codex
-      - runtime_opencode:/root/.opencode
-      - runtime_gemini:/root/.gemini
-    command: ["run", "--config", "/etc/butler"]
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      - HOME=/root
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrations:
-        condition: service_completed_successfully
-    networks: [db, backend, egress]
-
-  # Dashboard API - web UI backend for monitoring and managing butlers
-  dashboard-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:41200:41200"
+      <<: *postgres-env
+      BUTLERS_SWITCHBOARD_URL: http://switchboard:41100
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      HOME: /root
     volumes:
       - ./roster:/app/roster:ro
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=butlers
-      - POSTGRES_PASSWORD=butlers
+      - ./logs:/app/logs
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
+    networks: [db, backend, egress]
     depends_on:
-      migrations:
+      log-init:
         condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
+    restart: unless-stopped
+
+  connector-gmail:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "uv", "run", "python", "-m", "butlers.connectors.gmail"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: gmail
+      CONNECTOR_CHANNEL: email
+      CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
+      CONNECTOR_BUTLER_DB_SCHEMA: shared
+      BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
+      BUTLER_SHARED_DB_SCHEMA: shared
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Hotreload profile ─────────────────────────────────────────────────
+  # Volume-mount source for live code changes. Use --scale butlers-up=0
+  # --scale dashboard-api=0 to prevent conflicts (handled by dev-compose.sh).
+
+  butlers-up-hotreload:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: [hotreload]
+    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers up"]
+    command: []
+    environment:
+      <<: *postgres-env
+      BUTLERS_SWITCHBOARD_URL: http://switchboard:41100
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      HOME: /root
+    volumes:
+      - ./src:/app/src
+      - ./roster:/app/roster:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./logs:/app/logs
+      - uv_cache:/root/.cache/uv
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard-api-hotreload:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: [hotreload]
+    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers dashboard --host 0.0.0.0 --port 41200"]
+    command: []
+    ports:
+      - "127.0.0.1:41200:41200"
+    environment:
+      <<: *postgres-env
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      BUTLERS_DISABLE_FILE_LOGGING: "1"
+    volumes:
+      - ./src:/app/src
+      - ./roster:/app/roster:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./logs:/app/logs
+      - uv_cache:/root/.cache/uv
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41200/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 15s
+      start_period: 30s
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
     networks: [db, backend, frontend, egress]
 
-  # Frontend dev server (Vite) — only starts with: docker compose --profile dev up
-  frontend-dev:
-    image: node:22-slim
-    profiles: ["dev"]
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-      - frontend_node_modules:/app/node_modules
-    ports:
-      - "127.0.0.1:41173:41173"
-    environment:
-      - VITE_API_URL=http://dashboard-api:41200
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
-    depends_on:
-      - dashboard-api
-    networks: [frontend]
+# ── Volumes ─────────────────────────────────────────────────────────────
 
 volumes:
   postgres_data:
@@ -283,28 +437,25 @@ volumes:
     name: butlers_postgres_data
   minio_data:
   frontend_node_modules:
-  # Persistent config/auth dirs for LLM runtime CLIs.
+  uv_cache:
   runtime_claude:
   runtime_codex:
   runtime_opencode:
   runtime_gemini:
 
+# ── Networks ────────────────────────────────────────────────────────────
+
 networks:
   db:
-    # Internal-only: postgres, minio, migrations. No outbound internet.
     driver: bridge
     internal: true
   backend:
-    # Inter-service communication. Services that also need internet should
-    # additionally join the 'egress' network.
     driver: bridge
     internal: true
   frontend:
-    # Vite dev server <-> dashboard-api only. No outbound internet.
     driver: bridge
     internal: true
   egress:
-    # Outbound internet access for services that need external APIs
-    # (LLM providers, Google OAuth, Telegram, Gmail).
-    # Use scripts/egress-firewall.sh to block private subnet access.
+    # Outbound internet for LLM APIs, Google OAuth, Telegram, Gmail.
+    # Private subnets blocked by scripts/egress-firewall.sh.
     driver: bridge
