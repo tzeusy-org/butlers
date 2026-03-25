@@ -132,18 +132,18 @@ This project's knowledge is organized into four pillars, each answering a differ
 
 | Pillar | Location | What You'll Find |
 |--------|----------|-----------------|
-| **Heart and Soul** | [`docs/heart-and-soul/`](heart-and-soul/) | Vision, principles, scope boundaries — the WHY |
-| **Law and Lore** | [`docs/law-and-lore/`](law-and-lore/) | Numbered RFCs defining technical contracts — the HOW |
+| **Heart and Soul** | [`about/heart-and-soul/`](../about/heart-and-soul/) | Vision, principles, scope boundaries — the WHY |
+| **Law and Lore** | [`about/law-and-lore/`](../about/law-and-lore/) | Numbered RFCs defining technical contracts — the HOW |
 | **Spec and Spine** | [`openspec/`](../openspec/) | Detailed feature requirements with testable scenarios — the WHAT |
-| **Lay and Land** | [`docs/lay-and-land/`](lay-and-land/) | Component maps, data flow diagrams, deployment topology — the WHERE |
+| **Lay and Land** | [`about/lay-and-land/`](../about/lay-and-land/) | Component maps, data flow diagrams, deployment topology — the WHERE |
 
-**Start with** [`heart-and-soul/vision.md`](heart-and-soul/vision.md) for the full thesis and non-negotiable rules.
+**Start with** [`about/heart-and-soul/vision.md`](../about/heart-and-soul/vision.md) for the full thesis and non-negotiable rules.
 
-**Read** [`law-and-lore/`](law-and-lore/) when you need to understand a technical design decision — each RFC covers a subsystem (daemon lifecycle, MCP tools, routing, identity, observability, database schema, dashboard).
+**Read** [`about/law-and-lore/`](../about/law-and-lore/) when you need to understand a technical design decision — each RFC covers a subsystem (daemon lifecycle, MCP tools, routing, identity, observability, database schema, dashboard).
 
 **Check** [`openspec/`](../openspec/) for the exact requirements before implementing a feature.
 
-**Consult** [`lay-and-land/`](lay-and-land/) when you need to find where something lives, how data flows, or what depends on what.
+**Consult** [`about/lay-and-land/`](../about/lay-and-land/) when you need to find where something lives, how data flows, or what depends on what.
 
 For the technical documentation index with getting-started guides, module references, and operational runbooks, see [`docs/index.md`](index.md).
 
@@ -153,4 +153,4 @@ Python 3.12+, FastMCP, Claude Agent SDK, PostgreSQL with pgvector, Docker, async
 
 ## Current Status
 
-Early development. The system runs, handles real data, and is used daily — but it is not production-hardened. See [`heart-and-soul/v1.md`](heart-and-soul/v1.md) for the explicit scope boundary and success criteria.
+Early development. The system runs, handles real data, and is used daily — but it is not production-hardened. See [`about/heart-and-soul/v1.md`](../about/heart-and-soul/v1.md) for the explicit scope boundary and success criteria.

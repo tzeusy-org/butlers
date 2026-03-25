@@ -16,10 +16,10 @@ The `openspec/` directory is the WHAT pillar of the Butlers knowledge architectu
 
 | Pillar | Directory | Answers |
 |--------|-----------|---------|
-| Doctrine | `docs/heart-and-soul/` | WHY -- vision, principles, scope |
-| Design Contracts | `docs/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
+| Doctrine | `about/heart-and-soul/` | WHY -- vision, principles, scope |
+| Design Contracts | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | **Capability Specs** | `openspec/` | WHAT -- normative requirements |
-| Topology | `docs/lay-and-land/` | WHERE -- component maps, data flow, deployment |
+| Topology | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |
 
 ## OpenSpec Structure
 

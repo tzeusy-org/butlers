@@ -2,7 +2,7 @@
 name: heart-and-soul
 description: >
   CRITICAL -- Load the project's foundational doctrine before making architectural decisions,
-  writing code, designing APIs, creating tests, or proposing features. The docs/heart-and-soul/
+  writing code, designing APIs, creating tests, or proposing features. The about/heart-and-soul/
   directory contains prime directives: what Butlers is, what it is not, non-negotiable rules,
   and v1 scope. Selectively load ONLY the documents relevant to your current task. Use
   proactively at the start of substantive work, when making design decisions, or when unsure
@@ -11,28 +11,28 @@ description: >
 
 # Heart and Soul -- Project Doctrine
 
-The `docs/heart-and-soul/` directory is the WHY pillar of the Butlers knowledge architecture. It governs design decisions, scope arguments, and feature debates. When in doubt, start here.
+The `about/heart-and-soul/` directory is the WHY pillar of the Butlers knowledge architecture. It governs design decisions, scope arguments, and feature debates. When in doubt, start here.
 
 ## Four-Pillar Model
 
 | Pillar | Directory | Answers |
 |--------|-----------|---------|
-| **Doctrine** | `docs/heart-and-soul/` | WHY -- vision, principles, scope |
-| Design Contracts | `docs/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
+| **Doctrine** | `about/heart-and-soul/` | WHY -- vision, principles, scope |
+| Design Contracts | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | Capability Specs | `openspec/` | WHAT -- normative requirements |
-| Topology | `docs/lay-and-land/` | WHERE -- component maps, data flow, deployment |
+| Topology | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |
 
 ## Document Index
 
 | # | File | Status | What it answers |
 |---|------|--------|-----------------|
-| 1 | `docs/heart-and-soul/vision.md` | EXISTS | Core thesis, what Butlers IS and IS NOT, non-negotiable rules, success criteria, anti-patterns |
-| 2 | `docs/heart-and-soul/architecture.md` | EXISTS | Structural philosophy: butler-as-daemon, MCP universal interface, domain specialization, modules, connectors, schema isolation, core loop |
-| 3 | `docs/heart-and-soul/v1.md` | EXISTS | What v1 ships vs defers, platform targets, success criteria |
-| 4 | `docs/heart-and-soul/security.md` | EXISTS | Trust model, LLM sandboxing, approval gates, credential store |
-| 5 | `docs/heart-and-soul/development.md` | EXISTS | TDD, OpenSpec-driven, beads issue tracking, manifesto-driven design |
+| 1 | `about/heart-and-soul/vision.md` | EXISTS | Core thesis, what Butlers IS and IS NOT, non-negotiable rules, success criteria, anti-patterns |
+| 2 | `about/heart-and-soul/architecture.md` | EXISTS | Structural philosophy: butler-as-daemon, MCP universal interface, domain specialization, modules, connectors, schema isolation, core loop |
+| 3 | `about/heart-and-soul/v1.md` | EXISTS | What v1 ships vs defers, platform targets, success criteria |
+| 4 | `about/heart-and-soul/security.md` | EXISTS | Trust model, LLM sandboxing, approval gates, credential store |
+| 5 | `about/heart-and-soul/development.md` | EXISTS | TDD, OpenSpec-driven, beads issue tracking, manifesto-driven design |
 
-Consult `docs/heart-and-soul/README.md` for the canonical reading order and usage guide.
+Consult `about/heart-and-soul/README.md` for the canonical reading order and usage guide.
 
 ## Non-Negotiable Rules (from vision.md)
 

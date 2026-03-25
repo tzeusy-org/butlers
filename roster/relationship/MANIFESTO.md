@@ -40,3 +40,26 @@ The Relationship Butler is built on the belief that good relationships require a
 It's about being the friend who shows up. The person people feel genuinely cared for by. The one who remembers. The one who follows through. The one who notices when someone has been quiet for a while.
 
 And it all starts with never forgetting what matters.
+
+### The Dunbar Model
+
+Human social capacity is not flat. Research by Robin Dunbar shows that relationships exist in concentric layers of intensity, each roughly three times the size of the one inside it:
+
+| Layer | Size | Who they are |
+|-------|------|--------------|
+| **Support clique** | ~5 | Intimate friends. The people you'd call at 3am. |
+| **Sympathy group** | ~15 | Close friends. You'd be genuinely distressed by their loss. |
+| **Good friends** | ~50 | People you'd invite to a group dinner without hesitation. |
+| **Meaningful contacts** | ~150 | Your active social network. People you maintain real relationships with. |
+| **Acquaintances** | ~500 | People you know and could have a conversation with. |
+| **Recognizable** | ~1500 | People you can put a name to a face. |
+
+The Relationship Butler uses this structure as its foundational model for how it prioritizes your attention. Not all contacts are equal — the butler knows this, and it acts accordingly.
+
+**Attention flows inward.** Inner-circle relationships get more frequent check-ins, more context in suggestions, and higher priority in weekly reviews. A fading friendship at the 5-layer matters more than a stale acquaintance at the 500-layer, and the butler reflects that in every recommendation it makes.
+
+**Relationships decay without interaction.** Every person has an implicit health score that erodes over time. When you interact with someone — log a call, send a message, meet for coffee — their score refreshes. When you don't, it fades. The butler doesn't nag about this decay; it simply lets it influence who surfaces in your weekly suggestions and in what order. Reach-out reminders are the natural mechanism that arrests the drift.
+
+**Tier placement is implicit, not administered.** The butler infers which layer someone belongs to based on interaction frequency and recency — not by asking you to sort 150 people into buckets. If you talk to someone every week, they're in your inner circle. If you haven't spoken in a year, they've drifted outward. Manual overrides exist for the cases where the math doesn't match reality — a sibling you rarely call but who is unquestionably in your support clique.
+
+**Layer sizes are fixed constraints, not preferences.** The 5-15-50-150-500-1500 numbers come from cognitive science, not user configuration. If the system shows 20 people at the support-clique level, that's honest feedback about social overextension, not a setting to adjust.

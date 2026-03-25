@@ -2,7 +2,7 @@
 name: lay-and-land
 description: >
   Load the project's topology maps to understand where components live, how they connect,
-  and what boundaries exist. The docs/lay-and-land/ directory contains component inventories,
+  and what boundaries exist. The about/lay-and-land/ directory contains component inventories,
   data flow diagrams, dependency maps, and deployment topology. Consult before: adding new
   components, modifying integration points, changing deployment, or when unsure where something
   lives in the system. Use proactively when onboarding or when work crosses component boundaries.
@@ -10,26 +10,26 @@ description: >
 
 # Lay and Land -- Project Topology
 
-The `docs/lay-and-land/` directory is the WHERE pillar of the Butlers knowledge architecture. It contains maps of the system: what components exist, how they connect, where data flows, and what the deployment looks like.
+The `about/lay-and-land/` directory is the WHERE pillar of the Butlers knowledge architecture. It contains maps of the system: what components exist, how they connect, where data flows, and what the deployment looks like.
 
 ## Four-Pillar Model
 
 | Pillar | Directory | Answers |
 |--------|-----------|---------|
-| Doctrine | `docs/heart-and-soul/` | WHY -- vision, principles, scope |
-| Design Contracts | `docs/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
+| Doctrine | `about/heart-and-soul/` | WHY -- vision, principles, scope |
+| Design Contracts | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | Capability Specs | `openspec/` | WHAT -- normative requirements |
-| **Topology** | `docs/lay-and-land/` | WHERE -- component maps, data flow, deployment |
+| **Topology** | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |
 
 ## Map Index
 
 | # | File | Status | What it maps |
 |---|------|--------|--------------|
-| 1 | `docs/lay-and-land/components.md` | EXISTS | Component inventory: every butler, connector, and infrastructure process with boundaries and ownership |
-| 2 | `docs/lay-and-land/data-flow.md` | EXISTS | Data paths: ingestion flow, scheduling flow, response flow, identity resolution flow, memory flow |
-| 3 | `docs/lay-and-land/deployment.md` | EXISTS | Deployment topology: Docker, PostgreSQL, ports, environment variables, process supervision |
-| 4 | `docs/lay-and-land/dependencies.md` | EXISTS | Dependency maps: internal module dependencies (topological sort order) and external service dependencies |
-| 5 | `docs/lay-and-land/integration.md` | EXISTS | Protocol contracts between subsystems: ingest.v1 envelope, route.v1 dispatch, MCP tool surface, dashboard API |
+| 1 | `about/lay-and-land/components.md` | EXISTS | Component inventory: every butler, connector, and infrastructure process with boundaries and ownership |
+| 2 | `about/lay-and-land/data-flow.md` | EXISTS | Data paths: ingestion flow, scheduling flow, response flow, identity resolution flow, memory flow |
+| 3 | `about/lay-and-land/deployment.md` | EXISTS | Deployment topology: Docker, PostgreSQL, ports, environment variables, process supervision |
+| 4 | `about/lay-and-land/dependencies.md` | EXISTS | Dependency maps: internal module dependencies (topological sort order) and external service dependencies |
+| 5 | `about/lay-and-land/integration.md` | EXISTS | Protocol contracts between subsystems: ingest.v1 envelope, route.v1 dispatch, MCP tool surface, dashboard API |
 
 ## Key Boundaries (from existing architecture)
 
@@ -78,4 +78,4 @@ Until the topology documents are written, these are the major architectural boun
 
 1. Read the specific map relevant to your task -- do not load all five unless necessary.
 2. For component questions: `components.md`. For data paths: `data-flow.md`. For infra: `deployment.md`.
-3. Cross-reference with the relevant RFC in `docs/law-and-lore/` or the component's spec in `openspec/`.
+3. Cross-reference with the relevant RFC in `about/law-and-lore/` or the component's spec in `openspec/`.

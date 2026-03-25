@@ -1,7 +1,7 @@
 ---
 name: law-and-lore
 description: >
-  Load design contracts (RFCs) to contextualize implementation work. The docs/law-and-lore/
+  Load design contracts (RFCs) to contextualize implementation work. The about/law-and-lore/
   directory contains numbered RFCs defining wire-level contracts, data models, state machines,
   and integration points. Consult relevant RFCs before implementing features, modifying
   protocols, designing state machines, or resolving cross-subsystem integration questions.
@@ -10,30 +10,30 @@ description: >
 
 # Law and Lore -- Design Contracts
 
-The `docs/law-and-lore/` directory is the HOW pillar of the Butlers knowledge architecture. Each RFC defines a technical contract at the wire, protocol, or API level. Together they describe how the system works.
+The `about/law-and-lore/` directory is the HOW pillar of the Butlers knowledge architecture. Each RFC defines a technical contract at the wire, protocol, or API level. Together they describe how the system works.
 
 ## Four-Pillar Model
 
 | Pillar | Directory | Answers |
 |--------|-----------|---------|
-| Doctrine | `docs/heart-and-soul/` | WHY -- vision, principles, scope |
-| **Design Contracts** | `docs/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
+| Doctrine | `about/heart-and-soul/` | WHY -- vision, principles, scope |
+| **Design Contracts** | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | Capability Specs | `openspec/` | WHAT -- normative requirements |
-| Topology | `docs/lay-and-land/` | WHERE -- component maps, data flow, deployment |
+| Topology | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |
 
 ## RFC Index
 
 | RFC | File | Status | Summary |
 |-----|------|--------|---------|
-| 0001 | `docs/law-and-lore/rfcs/0001-daemon-lifecycle-and-triggers.md` | EXISTS | Multi-phase startup, dual trigger sources (external MCP + internal cron), spawner concurrency model, session lifecycle, request context propagation |
-| 0002 | `docs/law-and-lore/rfcs/0002-mcp-tool-surface-and-modules.md` | EXISTS | FastMCP SSE server, core tool catalog, module ABC and topological resolution, tool call logging proxy, skills infrastructure, ephemeral MCP config generation |
-| 0003 | `docs/law-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md` | EXISTS | ingest.v1 envelope format, pre-classification triage, thread affinity, LLM classification fallback, route.execute dispatch, route inbox crash recovery, email priority queuing |
-| 0004 | `docs/law-and-lore/rfcs/0004-identity-and-contact-resolution.md` | EXISTS | Three-table shared schema (contacts, contact_info, entities), resolve_contact_by_channel() contract, unknown sender handling, identity preamble format, tenant model |
-| 0005 | `docs/law-and-lore/rfcs/0005-observability-and-telemetry.md` | EXISTS | OTel setup, OTLP export pipeline, trace propagation across process boundaries, tool_span instrumentation, metrics catalog, cardinality discipline |
-| 0006 | `docs/law-and-lore/rfcs/0006-database-schema-and-isolation.md` | EXISTS | Single-PG multi-schema model, shared identity tables, per-butler schema contents, multi-chain Alembic migrations, credential store design |
-| 0007 | `docs/law-and-lore/rfcs/0007-dashboard-and-api-surface.md` | EXISTS | FastAPI + Vite architecture, auto-discovered butler routes, route map, backend API contract, tab structures, data access patterns, command palette |
+| 0001 | `about/law-and-lore/rfcs/0001-daemon-lifecycle-and-triggers.md` | EXISTS | Multi-phase startup, dual trigger sources (external MCP + internal cron), spawner concurrency model, session lifecycle, request context propagation |
+| 0002 | `about/law-and-lore/rfcs/0002-mcp-tool-surface-and-modules.md` | EXISTS | FastMCP SSE server, core tool catalog, module ABC and topological resolution, tool call logging proxy, skills infrastructure, ephemeral MCP config generation |
+| 0003 | `about/law-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md` | EXISTS | ingest.v1 envelope format, pre-classification triage, thread affinity, LLM classification fallback, route.execute dispatch, route inbox crash recovery, email priority queuing |
+| 0004 | `about/law-and-lore/rfcs/0004-identity-and-contact-resolution.md` | EXISTS | Three-table shared schema (contacts, contact_info, entities), resolve_contact_by_channel() contract, unknown sender handling, identity preamble format, tenant model |
+| 0005 | `about/law-and-lore/rfcs/0005-observability-and-telemetry.md` | EXISTS | OTel setup, OTLP export pipeline, trace propagation across process boundaries, tool_span instrumentation, metrics catalog, cardinality discipline |
+| 0006 | `about/law-and-lore/rfcs/0006-database-schema-and-isolation.md` | EXISTS | Single-PG multi-schema model, shared identity tables, per-butler schema contents, multi-chain Alembic migrations, credential store design |
+| 0007 | `about/law-and-lore/rfcs/0007-dashboard-and-api-surface.md` | EXISTS | FastAPI + Vite architecture, auto-discovered butler routes, route map, backend API contract, tab structures, data access patterns, command palette |
 
-Consult `docs/law-and-lore/README.md` for the canonical reading order (follows data flow from startup through request handling).
+Consult `about/law-and-lore/README.md` for the canonical reading order (follows data flow from startup through request handling).
 
 ## Key Contracts
 
