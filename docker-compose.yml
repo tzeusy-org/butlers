@@ -35,7 +35,7 @@ x-postgres-env: &postgres-env
 
 x-connector-env: &connector-env
   <<: *postgres-env
-  SWITCHBOARD_MCP_URL: http://switchboard:41100/sse
+  SWITCHBOARD_MCP_URL: http://butlers-up:41100/sse
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
 # Note: runtime volume mounts (runtime_claude, etc.) are repeated per service
@@ -186,7 +186,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "uv", "run", "python", "-m", "butlers.connectors.telegram_bot"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.telegram_bot"]
     command: []
     environment:
       <<: *connector-env
@@ -200,7 +200,7 @@ services:
         condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
-      switchboard:
+      butlers-up:
         condition: service_healthy
     restart: unless-stopped
 
@@ -208,7 +208,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "uv", "run", "python", "-m", "butlers.connectors.telegram_user_client"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.telegram_user_client"]
     command: []
     environment:
       <<: *connector-env
@@ -222,7 +222,7 @@ services:
         condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
-      switchboard:
+      butlers-up:
         condition: service_healthy
     restart: unless-stopped
 
@@ -233,7 +233,7 @@ services:
       args:
         EXTRAS: live-listener
     profiles: [audio]
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "python", "-m", "butlers.connectors.live_listener"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.live_listener"]
     command: []
     environment:
       <<: *connector-env
@@ -249,7 +249,7 @@ services:
         condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
-      switchboard:
+      butlers-up:
         condition: service_healthy
     devices:
       - /dev/snd:/dev/snd
@@ -261,7 +261,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["uv", "run", "python", "scripts/oauth_gate.py"]
+    entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/oauth_gate.py"]
     command: []
     environment:
       <<: *postgres-env
@@ -275,47 +275,21 @@ services:
         condition: service_healthy
 
   # ── Layer 3: Butler Backend + Gmail ───────────────────────────────────
-  # butlers-up starts all butler daemons (switchboard, general, relationship,
-  # health, etc.) in a single process. Each butler's MCP server listens on
-  # its configured port. LLM runtime CLIs are spawned as subprocesses.
-
-  switchboard:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:41100:41100"
-    volumes:
-      - ./roster/switchboard:/etc/butler:ro
-      - runtime_claude:/root/.claude
-      - runtime_codex:/root/.codex
-      - runtime_opencode:/root/.opencode
-      - runtime_gemini:/root/.gemini
-    command: ["run", "--config", "/etc/butler"]
-    environment:
-      <<: *postgres-env
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      HOME: /root
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:41100/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
-    depends_on:
-      migrations:
-        condition: service_completed_successfully
-    networks: [db, backend, egress]
-
+  # butlers-up starts ALL butler daemons (switchboard, general, relationship,
+  # health, etc.) in a single process via `butlers up`. Each butler's MCP
+  # server listens on its configured port (switchboard on 41100, etc.).
+  # LLM runtime CLIs are spawned as subprocesses.
   butlers-up:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "uv", "run", "butlers", "up"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "uv", "run", "--frozen", "--no-dev", "butlers", "up"]
     command: []
+    ports:
+      - "127.0.0.1:41100:41100"
     environment:
       <<: *postgres-env
-      BUTLERS_SWITCHBOARD_URL: http://switchboard:41100
+      BUTLERS_SWITCHBOARD_URL: http://localhost:41100
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
     volumes:
@@ -325,21 +299,27 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:41100/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks: [db, backend, egress]
     depends_on:
       log-init:
         condition: service_completed_successfully
       oauth-gate:
         condition: service_completed_successfully
-      switchboard:
-        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   connector-gmail:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "uv", "run", "python", "-m", "butlers.connectors.gmail"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.gmail"]
     command: []
     environment:
       <<: *connector-env
@@ -357,7 +337,7 @@ services:
         condition: service_completed_successfully
       oauth-gate:
         condition: service_completed_successfully
-      switchboard:
+      butlers-up:
         condition: service_healthy
     restart: unless-stopped
 
@@ -374,7 +354,7 @@ services:
     command: []
     environment:
       <<: *postgres-env
-      BUTLERS_SWITCHBOARD_URL: http://switchboard:41100
+      BUTLERS_SWITCHBOARD_URL: http://localhost:41100
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
     volumes:
@@ -393,7 +373,7 @@ services:
         condition: service_completed_successfully
       oauth-gate:
         condition: service_completed_successfully
-      switchboard:
+      butlers-up:
         condition: service_healthy
     restart: unless-stopped
 
@@ -446,16 +426,18 @@ volumes:
 # ── Networks ────────────────────────────────────────────────────────────
 
 networks:
+  # NOTE: We intentionally do NOT use `internal: true` on any network.
+  # Docker's DOCKER-ISOLATION-STAGE-1 rules for multiple internal networks
+  # interfere with each other, breaking inter-container communication.
+  # Network isolation is enforced by the egress firewall instead
+  # (scripts/egress-firewall.sh), which uses per-bridge iptables rules.
   db:
     driver: bridge
-    internal: true
   backend:
     driver: bridge
-    internal: true
   frontend:
     driver: bridge
-    internal: true
   egress:
-    # Outbound internet for LLM APIs, Google OAuth, Telegram, Gmail.
+    # Services on this network can reach the internet (for LLM APIs, OAuth, etc.).
     # Private subnets blocked by scripts/egress-firewall.sh.
     driver: bridge

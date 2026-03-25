@@ -64,23 +64,25 @@ RUN if echo "$EXTRAS" | grep -q "live-listener"; then \
       apt-get update && apt-get install -y libportaudio2 && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Copy dependency manifests first for better layer caching —
-# source changes won't invalidate the dependency install layer.
+# Copy project files (source must be present before uv sync because
+# pyproject.toml declares butlers as a local editable package)
 COPY pyproject.toml uv.lock ./
+COPY src/ src/
 
-# Install production dependencies (cached unless pyproject.toml or uv.lock change)
+# Install production dependencies
 RUN if [ -n "$EXTRAS" ]; then \
       uv sync --no-dev --extra "$EXTRAS"; \
     else \
       uv sync --no-dev; \
     fi
 
-# Copy application code and supporting files
-COPY src/ src/
+# Copy remaining files (alembic, scripts)
 COPY alembic/alembic.ini alembic.ini
 COPY alembic/ alembic/
 COPY scripts/ scripts/
 
-# Set entrypoint and default command
-ENTRYPOINT ["uv", "run", "butlers"]
+# Set entrypoint and default command.
+# --frozen prevents uv from re-syncing deps at runtime (they're already installed).
+# --no-dev ensures dev dependencies aren't pulled in.
+ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "butlers"]
 CMD ["run", "--config", "/etc/butler"]

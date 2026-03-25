@@ -304,8 +304,8 @@ async def _build_env(
     Runtime authentication is handled by CLI-level OAuth tokens (device-code
     flow via the dashboard), not API keys.
 
-    When *credential_store* is provided, credentials are resolved DB-first
-    with automatic env-var fallback via ``CredentialStore.resolve()``.
+    When *credential_store* is provided, credentials are resolved from the
+    DB only via ``CredentialStore.resolve()`` (no env fallback).
     When no store is provided (e.g. in unit tests without a DB pool),
     resolution falls back directly to ``os.environ``.
     """

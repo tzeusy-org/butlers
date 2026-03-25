@@ -13,14 +13,17 @@ The `CredentialStore` class provides async CRUD operations on the `butler_secret
 - **THEN** the secret is persisted via INSERT...ON CONFLICT DO UPDATE (idempotent upsert)
 - **AND** the raw value is never logged
 
-#### Scenario: Resolve secret (DB-first, env fallback)
+#### Scenario: Resolve secret (DB-only by default)
 - **WHEN** `store.resolve(key)` is called
-- **THEN** the store checks the local DB first, then fallback DBs, then `os.environ[key]`
-- **AND** returns the first non-None value found
+- **THEN** the store checks the local DB first, then fallback DBs
+- **AND** environment variables are NOT consulted (env_fallback defaults to False)
+- **AND** returns the first non-None value found from DB sources
 
-#### Scenario: Resolve with env fallback disabled
-- **WHEN** `store.resolve(key, env_fallback=False)` is called
-- **THEN** only DB sources are checked; environment variables are not consulted
+#### Scenario: Resolve with env fallback (infrastructure bootstrap only)
+- **WHEN** `store.resolve(key, env_fallback=True)` is called
+- **THEN** the store checks DB sources first, then falls back to `os.environ[key]`
+- **AND** this mode is reserved for infrastructure bootstrap credentials (database connection, OTEL endpoint) that must be available before the DB itself is reachable
+- **AND** MUST NOT be used for API keys, OAuth tokens, or integration credentials
 
 #### Scenario: Load from DB only
 - **WHEN** `store.load(key)` is called
