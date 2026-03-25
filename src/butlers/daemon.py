@@ -444,13 +444,63 @@ async def _run_education_compute_analytics_snapshots_job(
     return {"snapshots_computed": count}
 
 
+async def _run_daily_briefing_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run daily briefing contribution job for a specialist butler.
+
+    Queries domain-specific state and writes a contribution envelope to the
+    state store under ``briefing/daily/<YYYY-MM-DD>`` (SGT timezone).
+    """
+    del job_args
+    from butlers.jobs.briefing import run_daily_briefing_contribution
+
+    return await run_daily_briefing_contribution(pool=pool)
+
+
+async def _run_collect_briefing_contributions_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run collect-briefing-contributions aggregation job for the general butler.
+
+    Reads contributions from ``general.v_briefing_contributions`` for today's
+    date, validates each envelope, and writes the combined payload to
+    ``briefing/combined/<YYYY-MM-DD>``.
+    """
+    del job_args
+    from butlers.jobs.briefing import run_collect_briefing_contributions
+
+    return await run_collect_briefing_contributions(pool=pool)
+
+
 _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
-    "general": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
-    "health": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
-    "home": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
-    "relationship": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
+    "general": {
+        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+        "collect_briefing_contributions": _run_collect_briefing_contributions_job,
+    },
+    "health": {
+        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+    },
+    "finance": {
+        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+    },
+    "relationship": {
+        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+    },
+    "travel": {
+        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+    },
     "education": {
         "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
+        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+    },
+    "home": {
+        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
     },
     "switchboard": {
         "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
