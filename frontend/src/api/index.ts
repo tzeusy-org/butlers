@@ -495,6 +495,19 @@ export type {
 } from "./types.ts";
 
 export {
+  generateOwnTracksToken,
+  getOwnTracksConfig,
+  getOwnTracksStatus,
+} from "./client.ts";
+
+export type {
+  OwnTracksConfigResponse,
+  OwnTracksState,
+  OwnTracksStatusResponse,
+  OwnTracksTokenResponse,
+} from "./types.ts";
+
+export {
   getEducationCrossTopicAnalytics,
   getEducationFlows,
   getEducationMasterySummary,

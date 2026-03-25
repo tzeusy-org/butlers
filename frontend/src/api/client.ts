@@ -160,6 +160,9 @@ import type {
   SpotifyDisconnectResponse,
   SpotifyOAuthStartResponse,
   SpotifyStatusResponse,
+  OwnTracksConfigResponse,
+  OwnTracksStatusResponse,
+  OwnTracksTokenResponse,
   DunbarRankingResponse,
   ConversationSummary,
   ConversationListParams,
@@ -2743,6 +2746,27 @@ export function saveSpotifyConfig(data: SpotifyConfigRequest): Promise<SpotifyCo
 /** POST /api/spotify/disconnect — remove all Spotify credentials */
 export function disconnectSpotify(): Promise<SpotifyDisconnectResponse> {
   return apiFetch<SpotifyDisconnectResponse>("/spotify/disconnect", {
+    method: "POST",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// OwnTracks connector API
+// ---------------------------------------------------------------------------
+
+/** GET /api/connectors/owntracks/status — connection state, last event, event count */
+export function getOwnTracksStatus(): Promise<OwnTracksStatusResponse> {
+  return apiFetch<OwnTracksStatusResponse>("/connectors/owntracks/status");
+}
+
+/** GET /api/connectors/owntracks/config — webhook URL and setup metadata */
+export function getOwnTracksConfig(): Promise<OwnTracksConfigResponse> {
+  return apiFetch<OwnTracksConfigResponse>("/connectors/owntracks/config");
+}
+
+/** POST /api/connectors/owntracks/token/generate — generate/regenerate bearer token */
+export function generateOwnTracksToken(): Promise<OwnTracksTokenResponse> {
+  return apiFetch<OwnTracksTokenResponse>("/connectors/owntracks/token/generate", {
     method: "POST",
   });
 }
