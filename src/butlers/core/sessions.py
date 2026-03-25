@@ -20,7 +20,7 @@ from croniter import croniter
 logger = logging.getLogger(__name__)
 
 # Valid trigger_source base values (schedule uses pattern "schedule:<task-name>")
-TRIGGER_SOURCES = frozenset({"tick", "external", "trigger", "route", "healing"})
+TRIGGER_SOURCES = frozenset({"tick", "external", "trigger", "route", "healing", "dashboard"})
 
 
 def _strip_null_bytes(value: str | None) -> str | None:
@@ -110,7 +110,7 @@ async def session_create(
     if not _is_valid_trigger_source(trigger_source):
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', 'external', "
-            f"'trigger', 'route', 'healing', or 'schedule:<task-name>'"
+            f"'trigger', 'route', 'healing', 'dashboard', or 'schedule:<task-name>'"
         )
 
     session_id: uuid.UUID = await pool.fetchval(
