@@ -251,9 +251,9 @@ Configurable retention windows control automatic cleanup of approvals data: `pen
 - **WHEN** `cleanup_old_events` is called with `privileged=True`
 - **THEN** events older than the retention window are deleted (bypasses immutability trigger)
 
-### Requirement: MCP Tool Surface (13 Tools)
+### Requirement: MCP Tool Surface (16 Tools)
 
-The module registers exactly 13 stable MCP tools when enabled.
+The module registers exactly 16 stable MCP tools when enabled (13 existing + 3 new autonomy suggestion tools).
 
 #### Scenario: Queue management tools (7)
 
@@ -264,6 +264,11 @@ The module registers exactly 13 stable MCP tools when enabled.
 
 - **WHEN** the approvals module is registered
 - **THEN** the following 6 rule tools are available: `create_approval_rule`, `create_rule_from_action`, `list_approval_rules`, `show_approval_rule`, `revoke_approval_rule`, `suggest_rule_constraints`
+
+#### Scenario: Autonomy suggestion tools (3)
+
+- **WHEN** the approvals module is registered
+- **THEN** the following 3 suggestion tools are available: `list_promotion_suggestions`, `confirm_promotion_suggestion`, `dismiss_promotion_suggestion`
 
 #### Scenario: List executed actions with filters
 
@@ -289,6 +294,12 @@ Module config is declared under `[modules.approvals]` in `butler.toml`.
 - **WHEN** a butler registers outbound communication tools (send, reply, or delivery tools for any channel)
 - **THEN** ALL such tools MUST be listed in the butler's `gated_tools` config
 - **AND** omitting any registered outbound tool from `gated_tools` is a spec violation
+
+#### Scenario: Autonomy tracker config keys
+
+- **WHEN** `[modules.approvals]` includes `promotion_threshold`, `velocity_window`, or `suggestion_cooldown_days`
+- **THEN** the module MUST pass these values to the autonomy tracker
+- **AND** default values MUST apply for any absent keys (threshold=5, velocity_window=10, cooldown_days=30)
 
 ### Requirement: Defense-in-Depth at the Delivery Layer
 
@@ -368,3 +379,46 @@ REST API write endpoints for approval decisions, blocked on auth subsystem.
 
 - **WHEN** the auth subsystem is implemented
 - **THEN** `POST /api/approvals/actions/{actionId}/approve`, `POST /api/approvals/actions/{actionId}/reject`, `POST /api/approvals/rules`, `POST /api/approvals/rules/from-action`, `POST /api/approvals/rules/{ruleId}/revoke` become functional (currently return 501)
+
+### Requirement: Post-Approval Tracker Hook
+
+After a pending action is manually approved by a human actor (status transitions from `pending` to `approved`), the approvals module MUST invoke the autonomy tracker to record the approval and check for promotion threshold crossings.
+
+#### Scenario: Tracker invoked after manual approval
+
+- **WHEN** `approve_action` successfully transitions an action to `approved`
+- **THEN** the autonomy tracker's `record_approval` function MUST be called with the action's `tool_name`, `tool_args`, `action_id`, `requested_at`, and `decided_at`
+- **AND** tracker invocation MUST NOT block or delay the approval response to the caller
+
+#### Scenario: Tracker failure does not block approval
+
+- **WHEN** the autonomy tracker raises an exception during `record_approval`
+- **THEN** the approval MUST still succeed
+- **AND** the tracker error MUST be logged at WARNING level
+- **AND** no approval data SHALL be lost
+
+### Requirement: Post-Execution Demotion Hook
+
+After an auto-approved action fails execution (execution_result has `success: false`), the approvals module MUST invoke the autonomy suggestion engine to create a demotion suggestion for the standing rule that auto-approved the action.
+
+#### Scenario: Execution failure triggers demotion check
+
+- **WHEN** `execute_approved_action` completes with `success: false`
+- **AND** the action has `approval_rule_id` set (was auto-approved)
+- **THEN** the suggestion engine's `create_demotion_suggestion` function MUST be called with the action's details and rule ID
+
+#### Scenario: Manual approval execution failure does not trigger demotion
+
+- **WHEN** `execute_approved_action` completes with `success: false`
+- **AND** the action has `approval_rule_id` as `null` (was manually approved)
+- **THEN** no demotion suggestion SHALL be created
+
+### Requirement: Rule Creation Supersedes Pending Suggestions
+
+When a new standing rule is created (via `create_approval_rule` or `create_rule_from_action`), the module MUST check for and supersede any pending promotion suggestions that the new rule would cover.
+
+#### Scenario: New rule supersedes matching suggestion
+
+- **WHEN** `create_approval_rule` is called and succeeds
+- **THEN** the module MUST query for pending suggestions where `tool_name` matches and `representative_args` would be matched by the new rule's constraints
+- **AND** any matching pending suggestions MUST be transitioned to `superseded` status
