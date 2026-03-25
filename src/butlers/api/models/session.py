@@ -49,3 +49,4 @@ class SessionDetail(BaseModel):
     process_log: ProcessLog | None = None
     complexity: str | None = None
     resolution_source: str | None = None
+    correction_count: int = 0
