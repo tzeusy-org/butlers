@@ -1,26 +1,29 @@
-"""Google Calendar connector runtime — incremental sync and ingestion loop.
+"""Google Calendar connector runtime for incremental calendar event ingestion.
 
-Implements tasks 3.1–3.6 from openspec/changes/connector-google-calendar/tasks.md:
-- Initial full sync (no syncToken) to establish baseline
-- Incremental sync poll using events.list(syncToken=...) with pagination
-- Expired syncToken handling (410 Gone → full resync fallback)
+This connector implements the Google Calendar ingestion target state defined in
+`openspec/changes/connector-google-calendar/`. It uses Google Calendar API's
+incremental sync (events.list with syncToken) to ingest calendar event changes
+in near real-time.
+
+Key behaviors:
+- OAuth-based authentication (DB-only; no env-var credential fallback)
+- Multi-account operation via shared.google_accounts (calendar scope)
+- Incremental sync via syncToken with 410 Gone fallback to full sync
 - Event change classification (created/updated/deleted)
-- ingest.v1 envelope normalization with idempotency key
-- Checkpoint-after-acceptance cursor advancement
-
-Multi-account architecture mirrors the Gmail connector:
-- Discover accounts from shared.google_accounts (status='active', 'calendar' in granted_scopes)
-- Resolve OAuth credentials per-account from butler_secrets + entity_info
-- Spawn independent asyncio poll loops per account
-- Dynamic account discovery via periodic re-scan (GCAL_ACCOUNT_RESCAN_INTERVAL_S, default 300s)
+- "Starting soon" notifications with in-memory dedup
+- Durable syncToken cursor with checkpoint-after-acceptance
+- Bounded in-flight requests with exponential backoff on 429/503
+- Per-account error isolation (one account failure does not affect others)
+- Dynamic account discovery (periodic re-scan at GCAL_ACCOUNT_RESCAN_INTERVAL_S)
+- Aggregated health endpoint for Kubernetes readiness/liveness probes
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=google_calendar (required)
 - CONNECTOR_CHANNEL=google_calendar (required)
-- DATABASE_URL or POSTGRES_* (DB connectivity; defaults apply if unset)
+- DATABASE_URL or POSTGRES_* (DB connectivity for account discovery/credentials)
 - GCAL_POLL_INTERVAL_S (optional, default 60)
-- GCAL_STARTING_SOON_LEAD_MINUTES (optional, default 15)
+- GCAL_STARTING_SOON_LEAD_MINUTES (optional, default 15; 0 = disabled)
 - GCAL_ACCOUNT_RESCAN_INTERVAL_S (optional, default 300)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40084)
@@ -49,11 +52,12 @@ from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
-from butlers.credential_store import shared_db_name_from_env
-from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+from butlers.credential_store import CredentialStore, shared_db_name_from_env
+from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
     load_google_credentials,
@@ -66,29 +70,40 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
+_GCAL_CALENDAR_SCOPE = "calendar"
+_GCAL_CALENDAR_SCOPE_FULL = "https://www.googleapis.com/auth/calendar"
+_GCAL_CALENDAR_SCOPE_READONLY = "https://www.googleapis.com/auth/calendar.readonly"
+_GCAL_CALENDAR_SCOPE_EVENTS = "https://www.googleapis.com/auth/calendar.events"
+_GCAL_CALENDAR_SCOPE_EVENTS_READONLY = "https://www.googleapis.com/auth/calendar.events.readonly"
+
+# All scope strings that qualify an account for calendar access
+_CALENDAR_SCOPES: frozenset[str] = frozenset(
+    [
+        _GCAL_CALENDAR_SCOPE,
+        _GCAL_CALENDAR_SCOPE_FULL,
+        _GCAL_CALENDAR_SCOPE_READONLY,
+        _GCAL_CALENDAR_SCOPE_EVENTS,
+        _GCAL_CALENDAR_SCOPE_EVENTS_READONLY,
+    ]
+)
+
 _CONNECTOR_TYPE = "google_calendar"
+_GOOGLE_CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-_GCAL_API_BASE = "https://www.googleapis.com/calendar/v3"
-_DEFAULT_POLL_INTERVAL_S = 60
-_DEFAULT_STARTING_SOON_LEAD_MINUTES = 15
+
+# Default re-scan interval for dynamic account discovery (seconds).
 _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S = 300
-_DEFAULT_MAX_INFLIGHT = 8
-_DEFAULT_HEALTH_PORT = 40084
-_DEFAULT_HEARTBEAT_INTERVAL_S = 120
 
-# HTTP status indicating syncToken has expired
-_HTTP_GONE = 410
-
-# Exponential backoff configuration
-_BACKOFF_INITIAL_S = 5.0
-_BACKOFF_MAX_S = 300.0
+# Rate-limit retry constants (429/503 exponential backoff)
+_RATE_LIMIT_STATUS_CODES = frozenset([429, 503])
+_MAX_RETRY_ATTEMPTS = 5
+_INITIAL_BACKOFF_S = 1.0
+_MAX_BACKOFF_S = 64.0
 _BACKOFF_MULTIPLIER = 2.0
 
-# Calendar scope name to check in granted_scopes
-_CALENDAR_SCOPE = "calendar"
 
 # ---------------------------------------------------------------------------
-# Health status models
+# Health models
 # ---------------------------------------------------------------------------
 
 
@@ -115,855 +130,1020 @@ class MultiAccountHealthStatus(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Config models
+# ---------------------------------------------------------------------------
+
+
+class GoogleCalendarProcessConfig(BaseModel):
+    """Process-level configuration for the multi-account Google Calendar connector manager.
+
+    Holds environment-variable-based defaults. Per-account overrides come from
+    ``google_accounts.metadata.calendar``. Credentials are resolved per-account from DB.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    # Switchboard MCP
+    switchboard_mcp_url: str
+
+    # Connector identity (process-level defaults; per-account values are derived)
+    connector_provider: str = "google_calendar"
+    connector_channel: str = "google_calendar"
+    connector_max_inflight: int = 8
+
+    # Health check
+    connector_health_port: int = 40084
+
+    # Heartbeat
+    connector_heartbeat_interval_s: int = 120
+
+    # Runtime controls (process-level defaults, overridable per-account)
+    gcal_poll_interval_s: int = 60
+    gcal_starting_soon_lead_minutes: int = 15
+    gcal_account_rescan_interval_s: int = _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
+
+    @classmethod
+    def from_env(cls) -> GoogleCalendarProcessConfig:
+        """Load process-level config from environment variables."""
+
+        def _int_env(key: str, default: int) -> int:
+            raw = os.environ.get(key, str(default))
+            try:
+                return int(raw)
+            except ValueError as exc:
+                raise ValueError(f"{key} must be an integer, got: {raw}") from exc
+
+        return cls(
+            switchboard_mcp_url=os.environ["SWITCHBOARD_MCP_URL"],
+            connector_provider=os.environ.get("CONNECTOR_PROVIDER", "google_calendar"),
+            connector_channel=os.environ.get("CONNECTOR_CHANNEL", "google_calendar"),
+            connector_max_inflight=_int_env("CONNECTOR_MAX_INFLIGHT", 8),
+            connector_health_port=_int_env("CONNECTOR_HEALTH_PORT", 40084),
+            connector_heartbeat_interval_s=_int_env("CONNECTOR_HEARTBEAT_INTERVAL_S", 120),
+            gcal_poll_interval_s=_int_env("GCAL_POLL_INTERVAL_S", 60),
+            gcal_starting_soon_lead_minutes=_int_env("GCAL_STARTING_SOON_LEAD_MINUTES", 15),
+            gcal_account_rescan_interval_s=_int_env(
+                "GCAL_ACCOUNT_RESCAN_INTERVAL_S", _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
+            ),
+        )
+
+    def make_account_config(
+        self,
+        email: str,
+        client_id: str,
+        client_secret: str,
+        refresh_token: str,
+        metadata_calendar: dict[str, Any] | None = None,
+    ) -> GoogleCalendarAccountConfig:
+        """Build a per-account config by merging process defaults with per-account overrides.
+
+        Per-account overrides come from ``google_accounts.metadata.calendar``.
+        Supported override fields: poll_interval_s, starting_soon_lead_minutes, calendar_ids.
+        """
+        md = metadata_calendar or {}
+        endpoint_identity = f"google_calendar:user:{email}"
+
+        poll_interval_s = int(md.get("poll_interval_s", self.gcal_poll_interval_s))
+        starting_soon_lead_minutes = int(
+            md.get("starting_soon_lead_minutes", self.gcal_starting_soon_lead_minutes)
+        )
+        calendar_ids_raw = md.get("calendar_ids")
+        calendar_ids: list[str] | None = (
+            list(calendar_ids_raw) if isinstance(calendar_ids_raw, list) else None
+        )
+
+        return GoogleCalendarAccountConfig(
+            switchboard_mcp_url=self.switchboard_mcp_url,
+            connector_provider=self.connector_provider,
+            connector_channel=self.connector_channel,
+            connector_endpoint_identity=endpoint_identity,
+            connector_max_inflight=self.connector_max_inflight,
+            connector_heartbeat_interval_s=self.connector_heartbeat_interval_s,
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            user_email=email,
+            gcal_poll_interval_s=poll_interval_s,
+            gcal_starting_soon_lead_minutes=starting_soon_lead_minutes,
+            calendar_ids=calendar_ids,
+        )
+
+
+class GoogleCalendarAccountConfig(BaseModel):
+    """Per-account configuration for a single Google Calendar poll loop."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    # Switchboard MCP
+    switchboard_mcp_url: str
+
+    # Connector identity
+    connector_provider: str = "google_calendar"
+    connector_channel: str = "google_calendar"
+    connector_endpoint_identity: str
+    connector_max_inflight: int = 8
+
+    # Heartbeat
+    connector_heartbeat_interval_s: int = 120
+
+    # Google OAuth credentials (DB-resolved)
+    client_id: str
+    client_secret: str
+    refresh_token: str
+
+    # Account email
+    user_email: str
+
+    # Runtime controls
+    gcal_poll_interval_s: int = 60
+    gcal_starting_soon_lead_minutes: int = 15
+
+    # Calendar IDs to watch (None = primary calendar only)
+    calendar_ids: list[str] | None = None
+
+
+# ---------------------------------------------------------------------------
 # Cursor model
 # ---------------------------------------------------------------------------
 
 
-class GCalCursor(BaseModel):
-    """Persistent cursor for Google Calendar sync."""
+class GoogleCalendarCursor(BaseModel):
+    """Durable checkpoint state for Google Calendar sync token tracking."""
 
     model_config = ConfigDict(extra="forbid")
 
     sync_token: str
     last_updated_at: str  # ISO 8601 timestamp
 
-    def to_json(self) -> str:
-        return self.model_dump_json()
-
-    @classmethod
-    def from_json(cls, raw: str) -> GCalCursor:
-        return cls.model_validate_json(raw)
-
 
 # ---------------------------------------------------------------------------
-# Token management
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-async def _refresh_access_token(
-    client: httpx.AsyncClient,
-    client_id: str,
-    client_secret: str,
-    refresh_token: str,
+def _format_google_error(response: httpx.Response) -> str | None:
+    """Extract a compact Google API/OAuth error summary from response JSON."""
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    # Google API error shape: {"error": {"code": 404, "message": "...", ...}}
+    nested_error = payload.get("error")
+    if isinstance(nested_error, dict):
+        parts: list[str] = []
+
+        code = nested_error.get("code")
+        if code is not None:
+            parts.append(f"code={code}")
+
+        status = nested_error.get("status")
+        if isinstance(status, str) and status:
+            parts.append(f"status={status}")
+
+        reason = None
+        nested_errors = nested_error.get("errors")
+        if isinstance(nested_errors, list):
+            for item in nested_errors:
+                if isinstance(item, dict) and item.get("reason"):
+                    reason = item["reason"]
+                    break
+        if isinstance(reason, str) and reason:
+            parts.append(f"reason={reason}")
+
+        message = nested_error.get("message")
+        if isinstance(message, str) and message:
+            parts.append(f"message={message}")
+
+        return ", ".join(parts) if parts else None
+
+    # OAuth token endpoint error shape: {"error": "invalid_grant", ...}
+    if isinstance(nested_error, str) and nested_error:
+        error_description = payload.get("error_description")
+        if isinstance(error_description, str) and error_description:
+            return f"error={nested_error}, description={error_description}"
+        return f"error={nested_error}"
+
+    return None
+
+
+def _has_calendar_scope(scopes: list[str]) -> bool:
+    """Return True if any of the given scopes qualify for Google Calendar access."""
+    for s in scopes:
+        # Accept both short-form ("calendar") and full URL scopes
+        if s in _CALENDAR_SCOPES or "calendar" in s.lower():
+            return True
+    return False
+
+
+def _build_normalized_text(
+    event_type: str,
+    event: dict[str, Any],
 ) -> str:
-    """Exchange a refresh token for a fresh access token.
+    """Build the normalized_text payload field for a calendar event.
 
-    Returns the access token string.
-
-    Raises
-    ------
-    RuntimeError
-        If the token endpoint returns a non-2xx response.
+    Format:
+        [Calendar: <event_type>] <title> | <start> - <end> | <location> | <attendee_count>
+        attendees | Organizer: <organizer>
     """
-    resp = await client.post(
-        _GOOGLE_TOKEN_URL,
-        data={
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        },
-        timeout=15.0,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Token refresh failed: HTTP {resp.status_code} — {resp.text[:200]}")
-    body = resp.json()
-    access_token = body.get("access_token")
-    if not access_token:
-        raise RuntimeError(f"Token refresh returned no access_token: {body}")
-    return access_token
-
-
-# ---------------------------------------------------------------------------
-# Event normalization
-# ---------------------------------------------------------------------------
-
-
-def _classify_event(event: dict[str, Any], *, is_initial_sync: bool) -> str:
-    """Classify a Google Calendar event change.
-
-    Returns one of: 'event_created', 'event_updated', 'event_deleted'.
-
-    Per spec §Event Change Classification:
-    - status='cancelled' → event_deleted
-    - non-cancelled on initial sync → event_created (but these are not ingested for baseline)
-    - non-cancelled on incremental sync → event_updated
-      (we cannot determine new vs. known without a local cache; default to updated)
-    """
-    if event.get("status") == "cancelled":
-        return "event_deleted"
-    if is_initial_sync:
-        return "event_created"
-    return "event_updated"
-
-
-def _extract_organizer_email(event: dict[str, Any], account_email: str) -> str:
-    """Extract the organizer email, defaulting to the account email."""
-    organizer = event.get("organizer", {})
-    email = organizer.get("email", "").strip()
-    return email.lower() if email else account_email.lower()
-
-
-def _format_event_time(time_obj: dict[str, Any] | None) -> str:
-    """Format a Google Calendar event time object to a human-readable string."""
-    if not time_obj:
-        return "unknown"
-    # dateTime for timed events, date for all-day events
-    dt = time_obj.get("dateTime") or time_obj.get("date") or ""
-    return dt
-
-
-def _build_normalized_text(event: dict[str, Any], event_type: str) -> str:
-    """Construct the normalized_text payload field.
-
-    Format::
-
-        [Calendar: <type>] <title> | <start> - <end> | <location> | <n> attendees | Organizer: <org>
-    """
-    # Map internal event_type to display label
-    display_type_map = {
-        "event_created": "created",
-        "event_updated": "updated",
-        "event_deleted": "deleted",
-        "event_starting_soon": "starting_soon",
-    }
-    display_type = display_type_map.get(event_type, event_type)
-
-    title = event.get("summary", "(no title)")
-    start = _format_event_time(event.get("start"))
-    end = _format_event_time(event.get("end"))
+    title = event.get("summary", "(No title)")
+    start_raw = event.get("start", {})
+    end_raw = event.get("end", {})
+    start = start_raw.get("dateTime") or start_raw.get("date") or "?"
+    end = end_raw.get("dateTime") or end_raw.get("date") or "?"
     location = event.get("location", "")
     attendees = event.get("attendees", [])
-    attendee_count = len(attendees) if attendees else 0
-    organizer = event.get("organizer", {})
-    organizer_email = organizer.get("email", "unknown")
+    attendee_count = len(attendees) if isinstance(attendees, list) else 0
+    organizer_info = event.get("organizer", {})
+    organizer = organizer_info.get("email", "") if isinstance(organizer_info, dict) else ""
 
-    parts = [
-        f"[Calendar: {display_type}] {title}",
-        f"{start} - {end}",
-    ]
+    parts = [f"[Calendar: {event_type}] {title}", f"{start} - {end}"]
     if location:
         parts.append(location)
     parts.append(f"{attendee_count} attendees")
-    parts.append(f"Organizer: {organizer_email}")
-
+    parts.append(f"Organizer: {organizer}")
     return " | ".join(parts)
 
 
-def _build_ingest_envelope(
-    event: dict[str, Any],
-    event_type: str,
-    endpoint_identity: str,
-    account_email: str,
-    observed_at: str,
-) -> dict[str, Any]:
-    """Build an ingest.v1 envelope dict for a Google Calendar event change.
-
-    Per spec §ingest.v1 Field Mapping.
-    """
-    event_id = event.get("id", "")
-    updated_timestamp = event.get("updated", observed_at)
-    organizer_email = _extract_organizer_email(event, account_email)
-    normalized_text = _build_normalized_text(event, event_type)
-
-    idempotency_key = f"gcal:{endpoint_identity}:{event_id}:{updated_timestamp}"
-
-    return {
-        "source": {
-            "channel": "google_calendar",
-            "provider": "google_calendar",
-            "endpoint_identity": endpoint_identity,
-        },
-        "event": {
-            "event_type": event_type,
-            "external_event_id": event_id,
-            "external_thread_id": event_id,
-            "observed_at": observed_at,
-        },
-        "sender": {
-            "identity": organizer_email,
-        },
-        "payload": {
-            "raw": event,
-            "normalized_text": normalized_text,
-        },
-        "control": {
-            "idempotency_key": idempotency_key,
-            "ingestion_tier": "full",
-            "policy_tier": "default",
-        },
-    }
-
-
-def _build_starting_soon_envelope(
-    event: dict[str, Any],
-    endpoint_identity: str,
-    account_email: str,
-    observed_at: str,
-    lead_minutes: int,
-) -> dict[str, Any]:
-    """Build an ingest.v1 envelope for an 'event starting soon' notification.
-
-    Per spec §Starting soon event field mapping.
-    """
-    event_id = event.get("id", "")
-    organizer_email = _extract_organizer_email(event, account_email)
-    normalized_text = _build_normalized_text(event, "event_starting_soon")
-
-    idempotency_key = f"gcal:{endpoint_identity}:starting_soon:{event_id}:{lead_minutes}"
-
-    return {
-        "source": {
-            "channel": "google_calendar",
-            "provider": "google_calendar",
-            "endpoint_identity": endpoint_identity,
-        },
-        "event": {
-            "event_type": "event_starting_soon",
-            "external_event_id": f"starting_soon:{event_id}",
-            "external_thread_id": event_id,
-            "observed_at": observed_at,
-        },
-        "sender": {
-            "identity": organizer_email,
-        },
-        "payload": {
-            "raw": event,
-            "normalized_text": normalized_text,
-        },
-        "control": {
-            "idempotency_key": idempotency_key,
-            "ingestion_tier": "full",
-            "policy_tier": "interactive",
-        },
-    }
+def _get_organizer_email(event: dict[str, Any], fallback_email: str) -> str:
+    """Extract the event organizer email, falling back to the account email."""
+    organizer = event.get("organizer", {})
+    if isinstance(organizer, dict):
+        email = organizer.get("email", "")
+        if email:
+            return email.lower()
+    return fallback_email.lower()
 
 
 # ---------------------------------------------------------------------------
-# Sync loop core
+# Google Calendar API client
 # ---------------------------------------------------------------------------
 
 
-class GCalSyncLoop:
-    """Per-account Google Calendar sync and ingestion loop.
+class GoogleCalendarClient:
+    """Google Calendar API client with token refresh and rate-limit retry.
 
     Handles:
-    - Initial full sync (no syncToken) — persists nextSyncToken, skips ingestion
-    - Incremental sync with pagination — ingests changed events
-    - Expired syncToken fallback (HTTP 410) — full resync with ingestion
-    - Checkpoint-after-acceptance cursor advancement
-    - "Event starting soon" notification synthesis
+    - OAuth token refresh when access token expires
+    - Exponential backoff retry on 429 (rate limit) and 503 (service unavailable)
+    - Incremental sync via events.list with syncToken
+    - Full sync fallback on 410 Gone
     """
 
     def __init__(
         self,
-        email: str,
-        endpoint_identity: str,
-        client_id: str,
-        client_secret: str,
-        refresh_token: str,
-        cursor_pool: asyncpg.Pool | None,
-        mcp_client: CachedMCPClient,
-        *,
-        poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S,
-        starting_soon_lead_minutes: int = _DEFAULT_STARTING_SOON_LEAD_MINUTES,
-        calendar_ids: list[str] | None = None,
-        policy_evaluator: IngestionPolicyEvaluator | None = None,
+        config: GoogleCalendarAccountConfig,
+        metrics: ConnectorMetrics,
     ) -> None:
-        self.email = email
-        self.endpoint_identity = endpoint_identity
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._refresh_token = refresh_token
-        self._cursor_pool = cursor_pool
-        self._mcp_client = mcp_client
-        self._poll_interval_s = poll_interval_s
-        self._starting_soon_lead_minutes = starting_soon_lead_minutes
-        self._calendar_ids = calendar_ids or ["primary"]
-        self._policy_evaluator = policy_evaluator
-
-        # Cached access token and its expiry time
+        self._config = config
+        self._metrics = metrics
+        self._http_client: httpx.AsyncClient | None = None
         self._access_token: str | None = None
-        self._token_expires_at: float = 0.0
-
-        # Runtime state
-        self._running = False
-        self._last_sync_at: float | None = None
-        self._last_checkpoint_save: float | None = None
+        self._token_expires_at: datetime | None = None
         self._source_api_ok: bool | None = None
-        self._error: str | None = None
 
-        # "Starting soon" seen-set: keyed by (event_id, lead_minutes)
-        self._starting_soon_seen: set[tuple[str, int]] = set()
-        # Upcoming event cache: event_id → event dict
-        self._upcoming_events: dict[str, dict[str, Any]] = {}
+    async def start(self) -> None:
+        """Initialize the HTTP client."""
+        self._http_client = httpx.AsyncClient(timeout=30.0)
 
-        # Metrics
-        self._metrics = ConnectorMetrics(
-            connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=endpoint_identity,
-        )
+    async def stop(self) -> None:
+        """Close the HTTP client."""
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
 
-    async def _ensure_access_token(self, client: httpx.AsyncClient) -> str:
-        """Return a valid access token, refreshing if expired."""
-        now = time.time()
-        # Refresh 60 seconds before expiry
-        if self._access_token and now < self._token_expires_at - 60:
+    async def get_access_token(self) -> str:
+        """Get a valid OAuth access token, refreshing if expired."""
+        if self._access_token and self._token_expires_at:
+            if datetime.now(UTC) < self._token_expires_at:
+                return self._access_token
+
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized — call start() first")
+
+        try:
+            response = await self._http_client.post(
+                _GOOGLE_TOKEN_URL,
+                data={
+                    "client_id": self._config.client_id,
+                    "client_secret": self._config.client_secret,
+                    "refresh_token": self._config.refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+            if response.is_error:
+                google_error = _format_google_error(response)
+                if google_error:
+                    logger.error(
+                        "OAuth token refresh failed status=%s details=%s",
+                        response.status_code,
+                        google_error,
+                    )
+                else:
+                    logger.error("OAuth token refresh failed status=%s", response.status_code)
+            response.raise_for_status()
+            token_data = response.json()
+
+            self._access_token = token_data["access_token"]
+            expires_in = token_data.get("expires_in", 3600)
+            self._token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+            self._source_api_ok = True
+            self._metrics.record_source_api_call(api_method="token_refresh", status="success")
+
+            logger.debug("Refreshed OAuth access token (expires in %ds)", expires_in)
             return self._access_token
+        except Exception as exc:
+            self._source_api_ok = False
+            self._metrics.record_source_api_call(api_method="token_refresh", status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="token_refresh")
+            raise
 
-        logger.debug("Refreshing access token for %s", self.email)
-        token = await _refresh_access_token(
-            client, self._client_id, self._client_secret, self._refresh_token
-        )
-        self._access_token = token
-        # Tokens typically valid for 1 hour; use conservative 3590s
-        self._token_expires_at = now + 3590
-        return token
-
-    async def _list_events(
+    async def _request_with_retry(
         self,
-        client: httpx.AsyncClient,
-        calendar_id: str,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Make an authenticated API request with exponential backoff on 429/503."""
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized — call start() first")
+
+        backoff = _INITIAL_BACKOFF_S
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRY_ATTEMPTS):
+            try:
+                token = await self.get_access_token()
+                response = await self._http_client.request(
+                    method,
+                    url,
+                    params=params,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+                if response.status_code in _RATE_LIMIT_STATUS_CODES:
+                    retry_after = response.headers.get("Retry-After")
+                    wait_s = float(retry_after) if retry_after else backoff
+                    wait_s = min(wait_s, _MAX_BACKOFF_S)
+                    logger.warning(
+                        "Google Calendar API rate limit/unavailable (status=%d, attempt=%d/%d),"
+                        " retrying in %.1fs",
+                        response.status_code,
+                        attempt + 1,
+                        _MAX_RETRY_ATTEMPTS,
+                        wait_s,
+                    )
+                    await asyncio.sleep(wait_s)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF_S)
+                    continue
+
+                return response
+            except httpx.TransportError as exc:
+                last_exc = exc
+                if attempt < _MAX_RETRY_ATTEMPTS - 1:
+                    wait_s = min(backoff, _MAX_BACKOFF_S)
+                    logger.warning(
+                        "Google Calendar API transport error (attempt=%d/%d), retrying in %.1fs:"
+                        " %s",
+                        attempt + 1,
+                        _MAX_RETRY_ATTEMPTS,
+                        wait_s,
+                        exc,
+                    )
+                    await asyncio.sleep(wait_s)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF_S)
+
+        if last_exc is not None:
+            raise last_exc
+        # Should not reach here; all retries failed via status code path
+        raise RuntimeError(
+            f"Google Calendar API request failed after {_MAX_RETRY_ATTEMPTS} attempts"
+        )
+
+    async def list_events(
+        self,
+        calendar_id: str = "primary",
         *,
         sync_token: str | None = None,
         page_token: str | None = None,
-        max_retries: int = 3,
     ) -> dict[str, Any]:
-        """Call Google Calendar events.list.
+        """Call events.list, supporting both full sync and incremental sync.
 
-        Returns the raw JSON response dict.
-
-        Raises
-        ------
-        httpx.HTTPStatusError
-            For non-retryable HTTP errors (including 410 Gone for expired tokens).
-        RuntimeError
-            For unexpected response format.
+        Pass ``sync_token`` for incremental sync. Omit for full sync.
+        May raise httpx.HTTPStatusError with status_code=410 for expired syncToken.
         """
-        access_token = await self._ensure_access_token(client)
+        url = f"{_GOOGLE_CALENDAR_API_BASE}/calendars/{calendar_id}/events"
         params: dict[str, Any] = {}
         if sync_token:
             params["syncToken"] = sync_token
+        else:
+            # Full sync: only future events needed for baseline
+            params["singleEvents"] = "true"
+            params["orderBy"] = "startTime"
         if page_token:
             params["pageToken"] = page_token
 
-        url = f"{_GCAL_API_BASE}/calendars/{calendar_id}/events"
-        headers = {"Authorization": f"Bearer {access_token}"}
-
-        backoff = _BACKOFF_INITIAL_S
-        last_exc: Exception | None = None
-
-        for attempt in range(max_retries + 1):
-            try:
-                resp = await client.get(url, headers=headers, params=params, timeout=30.0)
-                status_str = "success" if resp.status_code < 400 else "error"
-                self._metrics.record_source_api_call("events.list", status_str)
-
-                if resp.status_code == _HTTP_GONE:
-                    # Let caller handle expired syncToken
-                    resp.raise_for_status()
-
-                if resp.status_code in (429, 503):
-                    # Rate limit or service unavailable — retry with backoff
-                    if attempt < max_retries:
-                        logger.warning(
-                            "Calendar API rate limited (HTTP %d) for %s, retry %d/%d in %.1fs",
-                            resp.status_code,
-                            self.email,
-                            attempt + 1,
-                            max_retries,
-                            backoff,
-                        )
-                        await asyncio.sleep(backoff)
-                        backoff = min(backoff * _BACKOFF_MULTIPLIER, _BACKOFF_MAX_S)
-                        continue
-
-                resp.raise_for_status()
-                return resp.json()
-
-            except httpx.HTTPStatusError:
-                raise
-            except Exception as exc:
-                last_exc = exc
-                if attempt < max_retries:
-                    logger.warning(
-                        "Calendar API call failed for %s (attempt %d/%d): %s",
-                        self.email,
-                        attempt + 1,
-                        max_retries,
-                        exc,
-                    )
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _BACKOFF_MAX_S)
-                else:
-                    raise RuntimeError(
-                        f"Calendar API call failed after {max_retries} retries: {exc}"
-                    ) from last_exc
-
-        raise RuntimeError(f"Calendar API call exhausted retries for {self.email}")
-
-    async def _load_cursor(self) -> GCalCursor | None:
-        """Load the persisted sync cursor from DB."""
-        if self._cursor_pool is None:
-            return None
-        raw = await load_cursor(self._cursor_pool, _CONNECTOR_TYPE, self.endpoint_identity)
-        if raw is None:
-            return None
+        api_method = "events.list"
         try:
-            return GCalCursor.from_json(raw)
-        except Exception:
+            response = await self._request_with_retry("GET", url, params=params)
+            if response.is_error:
+                google_error = _format_google_error(response)
+                if google_error:
+                    logger.error(
+                        "events.list failed status=%d details=%s",
+                        response.status_code,
+                        google_error,
+                    )
+                response.raise_for_status()
+
+            self._source_api_ok = True
+            self._metrics.record_source_api_call(api_method=api_method, status="success")
+            return response.json()
+        except Exception as exc:
+            self._source_api_ok = False
+            self._metrics.record_source_api_call(api_method=api_method, status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation=api_method)
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Per-account poll loop runtime
+# ---------------------------------------------------------------------------
+
+
+class GoogleCalendarAccountRuntime:
+    """Per-account Google Calendar ingestion loop runtime.
+
+    Manages the full poll cycle for a single Google account:
+    - syncToken cursor management (load / save)
+    - Initial full sync → incremental sync with 410 Gone fallback
+    - Event change classification (created/updated/deleted)
+    - ingest.v1 envelope normalization and submission to Switchboard
+    - Starting-soon notification synthesis with in-memory dedup
+    - Ingestion policy evaluation (IngestionPolicyEvaluator)
+    """
+
+    def __init__(
+        self,
+        config: GoogleCalendarAccountConfig,
+        cursor_pool: asyncpg.Pool | None,
+        shared_pool: asyncpg.Pool | None,
+    ) -> None:
+        self._config = config
+        self._cursor_pool = cursor_pool
+        self._shared_pool = shared_pool
+
+        self._metrics = ConnectorMetrics(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=config.connector_endpoint_identity,
+        )
+
+        self._client = GoogleCalendarClient(config, self._metrics)
+        self._mcp_client: CachedMCPClient | None = None
+        self._heartbeat: ConnectorHeartbeat | None = None
+        self._policy_evaluator: IngestionPolicyEvaluator | None = None
+
+        # State
+        self._running = False
+        self._last_checkpoint_save: float | None = None
+        self._last_sync_at: float | None = None
+        self._source_api_ok: bool | None = None
+
+        # Starting-soon dedup: keyed by (event_id, lead_minutes)
+        self._starting_soon_seen: set[tuple[str, int]] = set()
+
+    @property
+    def endpoint_identity(self) -> str:
+        return self._config.connector_endpoint_identity
+
+    @property
+    def source_api_ok(self) -> bool | None:
+        return self._client._source_api_ok
+
+    async def start(self) -> None:
+        """Start the poll loop for this account."""
+        self._running = True
+        await self._client.start()
+
+        # Initialize MCP client for Switchboard submission
+        self._mcp_client = CachedMCPClient(
+            mcp_url=self._config.switchboard_mcp_url,
+            max_inflight=self._config.connector_max_inflight,
+        )
+
+        # Initialize heartbeat
+        self._heartbeat = ConnectorHeartbeat(
+            mcp_client=self._mcp_client,
+            config=HeartbeatConfig(
+                endpoint_identity=self._config.connector_endpoint_identity,
+                connector_type=_CONNECTOR_TYPE,
+                interval_s=self._config.connector_heartbeat_interval_s,
+            ),
+        )
+
+        # Initialize ingestion policy evaluator if shared pool available
+        if self._shared_pool is not None:
+            scope = f"connector:{_CONNECTOR_TYPE}:{self._config.connector_endpoint_identity}"
+            self._policy_evaluator = IngestionPolicyEvaluator(
+                pool=self._shared_pool,
+                scope=scope,
+            )
+
+        try:
+            await wait_for_switchboard_ready(self._config.switchboard_mcp_url)
+        except Exception as exc:
             logger.warning(
-                "Failed to parse cursor for %s; treating as missing cursor",
-                self.endpoint_identity,
-            )
-            return None
-
-    async def _save_cursor(self, cursor: GCalCursor) -> None:
-        """Persist the sync cursor to DB."""
-        if self._cursor_pool is None:
-            return
-        try:
-            await save_cursor(
-                self._cursor_pool,
-                _CONNECTOR_TYPE,
-                self.endpoint_identity,
-                cursor.to_json(),
-            )
-            self._last_checkpoint_save = time.time()
-            self._metrics.record_checkpoint_save("success")
-            logger.debug("Saved cursor for %s", self.endpoint_identity)
-        except Exception as exc:
-            self._metrics.record_checkpoint_save("error")
-            logger.error("Failed to save cursor for %s: %s", self.endpoint_identity, exc)
-
-    async def _submit_envelope(self, envelope: dict[str, Any]) -> bool:
-        """Submit an ingest.v1 envelope to the Switchboard via MCP.
-
-        Returns True on acceptance, False otherwise.
-        """
-        idempotency_key = envelope.get("control", {}).get("idempotency_key", "")
-        try:
-            # Apply ingestion policy gate if configured
-            if self._policy_evaluator is not None:
-                organizer_email = envelope.get("sender", {}).get("identity", "")
-                policy_envelope = IngestionEnvelope(
-                    sender_address=organizer_email,
-                    source_channel="google_calendar",
-                    raw_key=organizer_email,
-                )
-                result = self._policy_evaluator.evaluate(policy_envelope)
-                if result.action == "block":
-                    logger.debug(
-                        "Event blocked by ingestion policy: %s",
-                        idempotency_key,
-                    )
-                    # Policy block is an intentional skip, not an ingestion failure.
-                    # Return True so that _incremental_sync treats this as accepted
-                    # for checkpointing purposes (cursor must still advance).
-                    return True
-
-            start = time.monotonic()
-            await self._mcp_client.call_tool("ingest", {"envelope": envelope})
-            latency = time.monotonic() - start
-            self._metrics.record_ingest_submission("success", latency)
-            self._last_sync_at = time.time()
-            return True
-        except Exception as exc:
-            error_type = get_error_type(exc)
-            self._metrics.record_ingest_submission("error")
-            self._metrics.record_error(error_type, "ingest_submit")
-            logger.error(
-                "Failed to submit envelope %s for %s: %s",
-                idempotency_key,
-                self.endpoint_identity,
+                "Google Calendar [%s]: Switchboard not ready at startup: %s",
+                self._config.user_email,
                 exc,
             )
-            return False
 
-    async def _full_sync(
-        self,
-        client: httpx.AsyncClient,
-        calendar_id: str,
-        *,
-        ingest_events: bool = False,
-    ) -> str | None:
-        """Perform a full events.list (no syncToken) to establish baseline.
+        # Start heartbeat
+        if self._heartbeat:
+            await self._heartbeat.start()
 
-        Args:
-            ingest_events: If True, ingest events (used during 410 recovery).
-                           If False, skip ingestion (baseline establishment only).
+        try:
+            await self._run_poll_loop()
+        finally:
+            if self._heartbeat:
+                await self._heartbeat.stop()
+            await self._client.stop()
+            self._running = False
 
-        Returns:
-            The final nextSyncToken, or None on failure.
-        """
+    async def stop(self) -> None:
+        """Signal the poll loop to stop gracefully."""
+        self._running = False
+        if self._heartbeat:
+            try:
+                await self._heartbeat.stop()
+            except Exception:
+                pass
+        await self._client.stop()
+
+    async def _run_poll_loop(self) -> None:
+        """Main poll loop: repeatedly sync, submit events, sleep, repeat."""
+        email = self._config.user_email
+        calendar_ids = self._config.calendar_ids or ["primary"]
+        poll_interval = self._config.gcal_poll_interval_s
+
         logger.info(
-            "Starting full sync for %s (calendar_id=%s, ingest=%s)",
-            self.email,
+            "Google Calendar poll loop started: email=%s calendars=%s interval=%ds",
+            email,
+            calendar_ids,
+            poll_interval,
+        )
+
+        while self._running:
+            cycle_start = time.time()
+            try:
+                for calendar_id in calendar_ids:
+                    await self._poll_calendar(calendar_id)
+                self._last_sync_at = time.time()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._metrics.record_error(error_type=get_error_type(exc), operation="poll_cycle")
+                logger.error(
+                    "Google Calendar [%s] poll cycle error (will retry): %s",
+                    email,
+                    exc,
+                    exc_info=True,
+                )
+
+            # Sleep until next poll, accounting for cycle duration
+            elapsed = time.time() - cycle_start
+            sleep_s = max(0.0, poll_interval - elapsed)
+            if sleep_s > 0 and self._running:
+                await asyncio.sleep(sleep_s)
+
+    async def _poll_calendar(self, calendar_id: str) -> None:
+        """Execute one poll cycle for a single calendar.
+
+        Performs incremental sync if cursor exists, falls back to full sync on 410 Gone.
+        """
+        endpoint_identity = self._config.connector_endpoint_identity
+        # Key per (account, calendar) — each calendar has an independent syncToken namespace
+        cursor_key = f"{endpoint_identity}:{calendar_id}"
+
+        # Load persisted cursor
+        sync_token: str | None = None
+        if self._cursor_pool is not None:
+            try:
+                cursor_json = await load_cursor(self._cursor_pool, _CONNECTOR_TYPE, cursor_key)
+                if cursor_json:
+                    cursor = GoogleCalendarCursor.model_validate_json(cursor_json)
+                    sync_token = cursor.sync_token
+                    logger.debug(
+                        "Google Calendar [%s]: loaded syncToken cursor", self._config.user_email
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Google Calendar [%s]: failed to load cursor (starting fresh): %s",
+                    self._config.user_email,
+                    exc,
+                )
+
+        if sync_token is None:
+            # Initial full sync — establish baseline, persist token, no ingestion
+            await self._full_sync(calendar_id, cursor_key=cursor_key, ingest_events=False)
+        else:
+            # Incremental sync
+            try:
+                await self._incremental_sync(calendar_id, sync_token, cursor_key=cursor_key)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 410:
+                    # syncToken expired — recover via full sync with ingestion
+                    logger.warning(
+                        "Google Calendar [%s]: syncToken expired (410 Gone),"
+                        " recovering via full sync",
+                        self._config.user_email,
+                    )
+                    await self._full_sync(calendar_id, cursor_key=cursor_key, ingest_events=True)
+                else:
+                    raise
+
+    async def _full_sync(self, calendar_id: str, *, cursor_key: str, ingest_events: bool) -> None:
+        """Execute a full events.list sync to establish (or re-establish) the cursor.
+
+        When ``ingest_events=False`` (initial baseline), events are NOT submitted.
+        When ``ingest_events=True`` (recovery from 410), events ARE submitted.
+        """
+        email = self._config.user_email
+        logger.info(
+            "Google Calendar [%s]: starting full sync (calendar=%s, ingest=%s)",
+            email,
             calendar_id,
             ingest_events,
         )
+
         page_token: str | None = None
         next_sync_token: str | None = None
-        event_count = 0
-        all_accepted = True
+        total_events = 0
 
         while True:
             try:
-                response = await self._list_events(
-                    client,
-                    calendar_id,
-                    page_token=page_token,
+                response_data = await self._client.list_events(
+                    calendar_id, sync_token=None, page_token=page_token
                 )
             except Exception as exc:
                 logger.error(
-                    "Full sync failed for %s (calendar_id=%s): %s",
-                    self.email,
+                    "Google Calendar [%s]: full sync API error (calendar=%s): %s",
+                    email,
                     calendar_id,
                     exc,
                 )
-                self._source_api_ok = False
-                self._metrics.record_error("full_sync_failed", "full_sync")
-                return None
+                raise
 
-            self._source_api_ok = True
-            items = response.get("items", [])
-            observed_at = datetime.now(UTC).isoformat()
+            items = response_data.get("items", [])
+            next_sync_token = response_data.get("nextSyncToken")
+            page_token = response_data.get("nextPageToken")
 
-            for event in items:
-                # Update upcoming events cache
-                event_id = event.get("id", "")
-                if event_id:
-                    if event.get("status") == "cancelled":
-                        self._upcoming_events.pop(event_id, None)
-                    else:
-                        self._upcoming_events[event_id] = event
+            if ingest_events:
+                for event in items:
+                    try:
+                        await self._process_event(event, calendar_id)
+                        total_events += 1
+                    except Exception as exc:
+                        logger.error(
+                            "Google Calendar [%s]: failed to process event %s: %s",
+                            email,
+                            event.get("id", "?"),
+                            exc,
+                        )
 
-                if ingest_events:
-                    event_type = _classify_event(event, is_initial_sync=False)
-                    envelope = _build_ingest_envelope(
-                        event,
-                        event_type,
-                        self.endpoint_identity,
-                        self.email,
-                        observed_at,
-                    )
-                    accepted = await self._submit_envelope(envelope)
-                    if not accepted:
-                        all_accepted = False
-                    event_count += 1
-
-            next_sync_token = response.get("nextSyncToken")
-            page_token = response.get("nextPageToken")
-
-            if page_token is None:
-                # No more pages
+            if not page_token:
                 break
 
-        if not ingest_events:
+        if next_sync_token:
+            await self._save_cursor(next_sync_token, cursor_key=cursor_key)
             logger.info(
-                "Full sync baseline established for %s (calendar_id=%s)",
-                self.email,
+                "Google Calendar [%s]: full sync complete"
+                " (calendar=%s, events_processed=%d, ingest=%s)",
+                email,
                 calendar_id,
+                total_events,
+                ingest_events,
             )
         else:
-            logger.info(
-                "Full sync recovery complete for %s (calendar_id=%s, events=%d)",
-                self.email,
+            logger.warning(
+                "Google Calendar [%s]: full sync returned no nextSyncToken (calendar=%s)",
+                email,
                 calendar_id,
-                event_count,
             )
-            if not all_accepted:
-                # Some events failed to ingest — do not advance the cursor so
-                # that the next poll cycle retries from a full resync again.
-                logger.warning(
-                    "Some events failed to ingest during full sync recovery for %s; "
-                    "cursor will not advance",
-                    self.email,
-                )
-                return None
-
-        return next_sync_token
 
     async def _incremental_sync(
-        self,
-        client: httpx.AsyncClient,
-        calendar_id: str,
-        sync_token: str,
-    ) -> tuple[bool, str | None]:
-        """Perform an incremental events.list(syncToken=...) poll.
+        self, calendar_id: str, sync_token: str, *, cursor_key: str
+    ) -> None:
+        """Execute an incremental events.list sync using the persisted syncToken.
 
-        Returns:
-            (expired, next_sync_token):
-            - expired=True if the syncToken was expired (HTTP 410)
-            - next_sync_token is the new token to persist (None on error)
+        Paginates through all changed events before advancing the cursor.
+        The cursor is only advanced after all events are successfully processed.
         """
+        email = self._config.user_email
         page_token: str | None = None
         next_sync_token: str | None = None
-        events_batch: list[dict[str, Any]] = []
+        total_events: int = 0
 
-        # Collect all pages first before any ingestion
         while True:
-            try:
-                response = await self._list_events(
-                    client,
-                    calendar_id,
-                    sync_token=sync_token if page_token is None else None,
-                    page_token=page_token,
-                )
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == _HTTP_GONE:
-                    logger.warning(
-                        "syncToken expired (HTTP 410) for %s, falling back to full sync",
-                        self.email,
+            response_data = await self._client.list_events(
+                calendar_id, sync_token=sync_token, page_token=page_token
+            )
+
+            items = response_data.get("items", [])
+            next_sync_token = response_data.get("nextSyncToken")
+            page_token = response_data.get("nextPageToken")
+
+            for event in items:
+                try:
+                    await self._process_event(event, calendar_id)
+                    total_events += 1
+                except Exception as exc:
+                    logger.error(
+                        "Google Calendar [%s]: failed to process event %s (skipping): %s",
+                        email,
+                        event.get("id", "?"),
+                        exc,
                     )
-                    return True, None
-                logger.error(
-                    "Calendar API error during incremental sync for %s: %s",
-                    self.email,
-                    exc,
-                )
-                self._source_api_ok = False
-                self._metrics.record_error("http_error", "incremental_sync")
-                return False, None
-            except Exception as exc:
-                logger.error(
-                    "Incremental sync failed for %s: %s",
-                    self.email,
-                    exc,
-                )
-                self._source_api_ok = False
-                self._metrics.record_error("incremental_sync_failed", "incremental_sync")
-                return False, None
 
-            self._source_api_ok = True
-            events_batch.extend(response.get("items", []))
-            next_sync_token = response.get("nextSyncToken")
-            page_token = response.get("nextPageToken")
-
-            if page_token is None:
+            if not page_token:
                 break
 
-        if not events_batch:
-            logger.debug("No changes for %s (calendar_id=%s)", self.email, calendar_id)
-            return False, next_sync_token
+        if next_sync_token:
+            # Checkpoint only after all events on all pages are processed
+            await self._save_cursor(next_sync_token, cursor_key=cursor_key)
+            if total_events:
+                logger.debug(
+                    "Google Calendar [%s]: incremental sync: %d events, cursor advanced",
+                    email,
+                    total_events,
+                )
+        elif total_events == 0:
+            # No changes
+            logger.debug("Google Calendar [%s]: incremental sync: no changes", email)
 
-        # Ingest all collected events
-        observed_at = datetime.now(UTC).isoformat()
-        all_accepted = True
+        # After sync: check for starting-soon events
+        if self._config.gcal_starting_soon_lead_minutes > 0:
+            await self._check_starting_soon(calendar_id)
 
-        for event in events_batch:
-            event_id = event.get("id", "")
-            # Update upcoming events cache
-            if event_id:
-                if event.get("status") == "cancelled":
-                    self._upcoming_events.pop(event_id, None)
-                else:
-                    self._upcoming_events[event_id] = event
+    async def _process_event(self, event: dict[str, Any], calendar_id: str) -> None:
+        """Normalize and submit a single calendar event change to Switchboard."""
+        event_id = event.get("id")
+        if not event_id:
+            logger.debug("Google Calendar: skipping event without ID")
+            return
 
-            event_type = _classify_event(event, is_initial_sync=False)
-            envelope = _build_ingest_envelope(
-                event,
-                event_type,
-                self.endpoint_identity,
-                self.email,
-                observed_at,
-            )
-            accepted = await self._submit_envelope(envelope)
-            if not accepted:
-                all_accepted = False
-
-        if all_accepted:
-            return False, next_sync_token
+        # Classify event type
+        status = event.get("status", "")
+        if status == "cancelled":
+            event_type = "event_deleted"
         else:
-            # On partial failure, do not advance cursor (safe replay on restart)
-            logger.warning(
-                "Some events failed to ingest for %s; cursor will not advance",
-                self.email,
+            # Without a local event cache, default to event_updated for non-cancelled
+            # (Switchboard dedup layer handles any resulting duplicates)
+            event_type = "event_updated"
+
+        await self._submit_event_envelope(event, event_type)
+
+    async def _submit_event_envelope(
+        self,
+        event: dict[str, Any],
+        event_type: str,
+    ) -> None:
+        """Build an ingest.v1 envelope and submit it to Switchboard."""
+        email = self._config.user_email
+        endpoint_identity = self._config.connector_endpoint_identity
+        event_id = event.get("id", "")
+        updated = event.get("updated", "")
+
+        # Ingestion policy gate
+        organizer_email = _get_organizer_email(event, email)
+        if self._policy_evaluator is not None:
+            envelope = IngestionEnvelope(
+                sender_address=organizer_email,
+                source_channel=self._config.connector_channel,
+                raw_key=organizer_email,
             )
-            return False, None
+            try:
+                decision = await self._policy_evaluator.evaluate(envelope)
+                if not decision.allowed:
+                    logger.debug(
+                        "Google Calendar [%s]: event %s blocked by policy (%s)",
+                        email,
+                        event_id,
+                        decision.reason,
+                    )
+                    return
+            except Exception as exc:
+                logger.warning(
+                    "Google Calendar [%s]: policy evaluation failed for event %s (allowing): %s",
+                    email,
+                    event_id,
+                    exc,
+                )
 
-    async def _check_starting_soon(self) -> None:
-        """Scan upcoming events and emit 'event starting soon' notifications.
+        observed_at = datetime.now(UTC).isoformat()
+        normalized_text = _build_normalized_text(event_type, event)
+        idempotency_key = f"gcal:{endpoint_identity}:{event_id}:{updated}"
 
-        Deduplication via seen-set keyed by (event_id, lead_minutes).
+        ingest_payload = {
+            "source": {
+                "channel": self._config.connector_channel,
+                "provider": self._config.connector_provider,
+                "endpoint_identity": endpoint_identity,
+            },
+            "event": {
+                "external_event_id": event_id,
+                "external_thread_id": event_id,
+                "observed_at": observed_at,
+                "event_type": event_type,
+            },
+            "sender": {
+                "identity": organizer_email,
+            },
+            "payload": {
+                "raw": json.dumps(event),
+                "normalized_text": normalized_text,
+            },
+            "control": {
+                "idempotency_key": idempotency_key,
+                "ingestion_tier": "full",
+                "policy_tier": "default",
+            },
+        }
+
+        if self._mcp_client is None:
+            raise RuntimeError("MCP client not initialized")
+
+        try:
+            await self._mcp_client.call_tool("ingest", ingest_payload)
+            self._metrics.record_ingest_submission(status="accepted", latency=0.0)
+            logger.debug(
+                "Google Calendar [%s]: submitted event %s (%s)",
+                email,
+                event_id,
+                event_type,
+            )
+        except Exception as exc:
+            self._metrics.record_ingest_submission(status="error", latency=0.0)
+            self._metrics.record_error(error_type=get_error_type(exc), operation="ingest_submit")
+            raise
+
+    async def _check_starting_soon(self, calendar_id: str) -> None:
+        """Scan upcoming events and emit starting-soon notifications.
+
+        Uses in-memory seen-set keyed by (event_id, lead_minutes) to deduplicate.
+        Prunes seen-set of past events to prevent unbounded growth.
         """
-        if self._starting_soon_lead_minutes <= 0:
+        email = self._config.user_email
+        lead_minutes = self._config.gcal_starting_soon_lead_minutes
+        if lead_minutes <= 0:
             return
 
         now = datetime.now(UTC)
-        lead_cutoff = now + timedelta(minutes=self._starting_soon_lead_minutes)
-        observed_at = now.isoformat()
-        events_to_prune: list[str] = []
+        window_end = now + timedelta(minutes=lead_minutes)
 
-        for event_id, event in list(self._upcoming_events.items()):
-            start_obj = event.get("start", {})
-            start_str = start_obj.get("dateTime") or start_obj.get("date")
+        # Fetch upcoming events within the lead-time window
+        try:
+            response_data = await self._client.list_events(
+                calendar_id,
+                sync_token=None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Google Calendar [%s]: failed to fetch events for starting-soon check: %s",
+                email,
+                exc,
+            )
+            return
+
+        items = response_data.get("items", [])
+        seen_key_to_start: dict[tuple[str, int], datetime] = {}
+
+        for event in items:
+            event_id = event.get("id")
+            if not event_id:
+                continue
+
+            # Parse event start time
+            start_raw = event.get("start", {})
+            start_str = start_raw.get("dateTime") or start_raw.get("date")
             if not start_str:
                 continue
 
             try:
-                # Parse start time
                 if "T" in start_str:
-                    # dateTime with timezone
-                    if start_str.endswith("Z"):
-                        start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-                    elif "+" in start_str[10:] or start_str.count("-") > 2:
-                        start_dt = datetime.fromisoformat(start_str)
-                    else:
-                        # No timezone info — assume UTC
-                        start_dt = datetime.fromisoformat(start_str).replace(tzinfo=UTC)
+                    start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=UTC)
                 else:
-                    # All-day event (date only) — skip for starting soon
+                    # All-day event — skip starting-soon
                     continue
             except ValueError:
-                logger.debug("Cannot parse event start time: %s", start_str)
                 continue
 
-            # Prune past events
-            if start_dt < now:
-                events_to_prune.append(event_id)
-                self._starting_soon_seen.discard((event_id, self._starting_soon_lead_minutes))
-                continue
-
-            # Check if event is within the lead-time window
-            if now <= start_dt <= lead_cutoff:
-                key = (event_id, self._starting_soon_lead_minutes)
+            # Check if event is within the lead-time window and has not yet started
+            if now <= start_dt <= window_end:
+                key = (event_id, lead_minutes)
                 if key not in self._starting_soon_seen:
                     self._starting_soon_seen.add(key)
-                    envelope = _build_starting_soon_envelope(
-                        event,
-                        self.endpoint_identity,
-                        self.email,
-                        observed_at,
-                        self._starting_soon_lead_minutes,
-                    )
-                    await self._submit_envelope(envelope)
-                    logger.info(
-                        "Emitted starting_soon notification for event %s (lead=%dm)",
-                        event_id,
-                        self._starting_soon_lead_minutes,
-                    )
-
-        # Prune past events from cache
-        for event_id in events_to_prune:
-            self._upcoming_events.pop(event_id, None)
-
-    async def run_once(
-        self,
-        client: httpx.AsyncClient,
-        calendar_id: str,
-    ) -> None:
-        """Execute a single poll cycle for the given calendar.
-
-        Loads cursor, performs full or incremental sync, saves cursor
-        after acceptance, then checks for starting-soon events.
-        """
-        cursor = await self._load_cursor()
-
-        if cursor is None:
-            # Initial full sync — establish baseline, do NOT ingest
-            next_sync_token = await self._full_sync(client, calendar_id, ingest_events=False)
-            if next_sync_token:
-                new_cursor = GCalCursor(
-                    sync_token=next_sync_token,
-                    last_updated_at=datetime.now(UTC).isoformat(),
-                )
-                await self._save_cursor(new_cursor)
-        else:
-            # Incremental sync
-            expired, next_sync_token = await self._incremental_sync(
-                client, calendar_id, cursor.sync_token
-            )
-
-            if expired:
-                # 410 Gone — discard stale token, full resync with ingestion
-                next_sync_token = await self._full_sync(client, calendar_id, ingest_events=True)
-
-            if next_sync_token:
-                new_cursor = GCalCursor(
-                    sync_token=next_sync_token,
-                    last_updated_at=datetime.now(UTC).isoformat(),
-                )
-                await self._save_cursor(new_cursor)
-
-        # After each sync cycle, check for starting-soon notifications
-        await self._check_starting_soon()
-
-    async def run_loop(self) -> None:
-        """Main poll loop. Runs until cancelled."""
-        self._running = True
-        logger.info(
-            "GCalSyncLoop starting: email=%s endpoint_identity=%s",
-            self.email,
-            self.endpoint_identity,
-        )
-
-        async with httpx.AsyncClient() as client:
-            while self._running:
-                for calendar_id in self._calendar_ids:
+                    seen_key_to_start[key] = start_dt
                     try:
-                        await self.run_once(client, calendar_id)
-                    except asyncio.CancelledError:
-                        raise
+                        await self._submit_starting_soon_envelope(event, lead_minutes)
                     except Exception as exc:
-                        self._error = str(exc)
-                        self._source_api_ok = False
-                        self._metrics.record_error(get_error_type(exc), "poll_cycle")
                         logger.error(
-                            "Poll cycle error for %s (calendar_id=%s): %s",
-                            self.email,
-                            calendar_id,
+                            "Google Calendar [%s]: failed to submit starting-soon for event %s: %s",
+                            email,
+                            event_id,
                             exc,
-                            exc_info=True,
                         )
 
-                try:
-                    await asyncio.sleep(self._poll_interval_s)
-                except asyncio.CancelledError:
-                    break
+        # Prune seen-set of past events: any key not seen in the current window scan
+        # has either already started or moved out of the window — safe to remove.
+        # Pruning unconditionally keeps memory bounded by the current window size.
+        past_keys = self._starting_soon_seen - set(seen_key_to_start)
+        self._starting_soon_seen -= past_keys
 
-        self._running = False
-        logger.info("GCalSyncLoop stopped: email=%s", self.email)
+    async def _submit_starting_soon_envelope(
+        self,
+        event: dict[str, Any],
+        lead_minutes: int,
+    ) -> None:
+        """Submit an event_starting_soon ingest.v1 envelope to Switchboard."""
+        email = self._config.user_email
+        endpoint_identity = self._config.connector_endpoint_identity
+        event_id = event.get("id", "")
+        organizer_email = _get_organizer_email(event, email)
 
-    def stop(self) -> None:
-        """Signal the loop to stop."""
-        self._running = False
+        observed_at = datetime.now(UTC).isoformat()
+        normalized_text = _build_normalized_text("starting_soon", event)
+        idempotency_key = f"gcal:{endpoint_identity}:starting_soon:{event_id}:{lead_minutes}"
 
-    def get_health(self) -> AccountHealthStatus:
-        """Return a per-account health snapshot."""
-        last_checkpoint_save_at = None
-        if self._last_checkpoint_save is not None:
-            last_checkpoint_save_at = datetime.fromtimestamp(
-                self._last_checkpoint_save, UTC
-            ).isoformat()
+        ingest_payload = {
+            "source": {
+                "channel": self._config.connector_channel,
+                "provider": self._config.connector_provider,
+                "endpoint_identity": endpoint_identity,
+            },
+            "event": {
+                "external_event_id": f"starting_soon:{event_id}",
+                "external_thread_id": event_id,
+                "observed_at": observed_at,
+                "event_type": "event_starting_soon",
+            },
+            "sender": {
+                "identity": organizer_email,
+            },
+            "payload": {
+                "raw": json.dumps(event),
+                "normalized_text": normalized_text,
+            },
+            "control": {
+                "idempotency_key": idempotency_key,
+                "ingestion_tier": "full",
+                "policy_tier": "interactive",
+            },
+        }
 
-        last_sync_at = None
-        if self._last_sync_at is not None:
-            last_sync_at = datetime.fromtimestamp(self._last_sync_at, UTC).isoformat()
+        if self._mcp_client is None:
+            raise RuntimeError("MCP client not initialized")
 
-        if self._source_api_ok is None:
-            connectivity: Literal["connected", "disconnected", "unknown"] = "unknown"
-        elif self._source_api_ok:
-            connectivity = "connected"
-        else:
-            connectivity = "disconnected"
-
-        if self._error and self._source_api_ok is False:
-            status: Literal["healthy", "degraded", "error"] = "error"
-        elif self._source_api_ok is False:
-            status = "degraded"
-        else:
-            status = "healthy"
-
-        return AccountHealthStatus(
-            email=self.email,
-            endpoint_identity=self.endpoint_identity,
-            status=status,
-            last_checkpoint_save_at=last_checkpoint_save_at,
-            last_sync_at=last_sync_at,
-            source_api_connectivity=connectivity,
-            error=self._error,
+        await self._mcp_client.call_tool("ingest", ingest_payload)
+        self._metrics.record_ingest_submission(status="accepted", latency=0.0)
+        logger.info(
+            "Google Calendar [%s]: emitted starting-soon notification for event %s (lead=%dmin)",
+            email,
+            event_id,
+            lead_minutes,
         )
+
+    async def _save_cursor(self, sync_token: str, *, cursor_key: str) -> None:
+        """Persist the syncToken cursor to the DB.
+
+        ``cursor_key`` must be ``f"{endpoint_identity}:{calendar_id}"`` so that
+        each calendar for an account has an independent cursor record.
+        """
+        if self._cursor_pool is None:
+            return
+
+        cursor = GoogleCalendarCursor(
+            sync_token=sync_token,
+            last_updated_at=datetime.now(UTC).isoformat(),
+        )
+        try:
+            await save_cursor(
+                self._cursor_pool,
+                _CONNECTOR_TYPE,
+                cursor_key,
+                cursor.model_dump_json(),
+            )
+            self._last_checkpoint_save = time.time()
+            self._metrics.record_checkpoint_save(status="success")
+        except Exception as exc:
+            self._metrics.record_checkpoint_save(status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="checkpoint_save")
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -971,34 +1151,46 @@ class GCalSyncLoop:
 # ---------------------------------------------------------------------------
 
 
-class GCalAccountLoop:
-    """Per-account asyncio task wrapper around GCalSyncLoop."""
+class GoogleCalendarAccountLoop:
+    """Per-account Google Calendar ingestion loop.
+
+    Wraps a GoogleCalendarAccountRuntime instance for a single Google account.
+    Runs as an independent asyncio task; errors are isolated from other accounts.
+    """
 
     def __init__(
         self,
         email: str,
-        sync_loop: GCalSyncLoop,
+        config: GoogleCalendarAccountConfig,
+        cursor_pool: asyncpg.Pool | None,
+        shared_pool: asyncpg.Pool | None,
     ) -> None:
         self.email = email
-        self.endpoint_identity = sync_loop.endpoint_identity
-        self._sync_loop = sync_loop
+        self.endpoint_identity = config.connector_endpoint_identity
+        self._config = config
+        self._runtime = GoogleCalendarAccountRuntime(config, cursor_pool, shared_pool)
         self._task: asyncio.Task[None] | None = None
         self._error: str | None = None
 
     def start(self) -> None:
-        """Launch the per-account sync loop as an asyncio task."""
+        """Launch the per-account ingestion loop as an asyncio task."""
         self._task = asyncio.create_task(self._run(), name=f"gcal-account-{self.email}")
         self._task.add_done_callback(self._on_done)
 
     async def _run(self) -> None:
         try:
-            await self._sync_loop.run_loop()
+            logger.info(
+                "Google Calendar account loop starting: email=%s endpoint_identity=%s",
+                self.email,
+                self.endpoint_identity,
+            )
+            await self._runtime.start()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._error = str(exc)
             logger.error(
-                "GCalAccountLoop failed: email=%s error=%s",
+                "Google Calendar account loop failed: email=%s error=%s",
                 self.email,
                 exc,
                 exc_info=True,
@@ -1013,14 +1205,14 @@ class GCalAccountLoop:
 
     async def stop(self) -> None:
         """Gracefully stop the account loop."""
-        self._sync_loop.stop()
         if self._task is not None and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
-        logger.info("GCalAccountLoop stopped: email=%s", self.email)
+        await self._runtime.stop()
+        logger.info("Google Calendar account loop stopped: email=%s", self.email)
 
     @property
     def is_running(self) -> bool:
@@ -1028,143 +1220,56 @@ class GCalAccountLoop:
 
     def get_health(self) -> AccountHealthStatus:
         """Return per-account health snapshot."""
-        health = self._sync_loop.get_health()
-        # Override error from task if available
-        if self._error and health.error is None:
-            health = AccountHealthStatus(
-                **{**health.model_dump(), "error": self._error, "status": "error"}
-            )
-        return health
+        runtime = self._runtime
 
+        last_checkpoint_save_at = None
+        if runtime._last_checkpoint_save is not None:
+            last_checkpoint_save_at = datetime.fromtimestamp(
+                runtime._last_checkpoint_save, UTC
+            ).isoformat()
 
-# ---------------------------------------------------------------------------
-# Process-level config
-# ---------------------------------------------------------------------------
+        last_sync_at = None
+        if runtime._last_sync_at is not None:
+            last_sync_at = datetime.fromtimestamp(runtime._last_sync_at, UTC).isoformat()
 
+        source_api_ok = runtime.source_api_ok
+        if source_api_ok is None:
+            connectivity: Literal["connected", "disconnected", "unknown"] = "unknown"
+        elif source_api_ok:
+            connectivity = "connected"
+        else:
+            connectivity = "disconnected"
 
-class GCalProcessConfig(BaseModel):
-    """Process-level configuration for the multi-account Google Calendar connector manager."""
+        error_msg = self._error
+        if not self.is_running and error_msg:
+            account_status: Literal["healthy", "degraded", "error"] = "error"
+        elif source_api_ok is False:
+            account_status = "error"
+        else:
+            account_status = "healthy"
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    # Switchboard MCP
-    switchboard_mcp_url: str
-
-    # Connector identity
-    connector_provider: str = "google_calendar"
-    connector_channel: str = "google_calendar"
-    connector_max_inflight: int = _DEFAULT_MAX_INFLIGHT
-
-    # Health check
-    connector_health_port: int = _DEFAULT_HEALTH_PORT
-
-    # Heartbeat
-    connector_heartbeat_interval_s: int = _DEFAULT_HEARTBEAT_INTERVAL_S
-
-    # Google Calendar sync defaults (overridable per-account via metadata.calendar)
-    gcal_poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S
-    gcal_starting_soon_lead_minutes: int = _DEFAULT_STARTING_SOON_LEAD_MINUTES
-    gcal_account_rescan_interval_s: int = _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
-
-    @classmethod
-    def from_env(cls) -> GCalProcessConfig:
-        """Load process-level config from environment variables."""
-
-        def _int_env(key: str, default: int) -> int:
-            raw = os.environ.get(key, str(default))
-            try:
-                return int(raw)
-            except ValueError as exc:
-                raise ValueError(f"{key} must be an integer, got: {raw}") from exc
-
-        return cls(
-            switchboard_mcp_url=os.environ["SWITCHBOARD_MCP_URL"],
-            connector_provider=os.environ.get("CONNECTOR_PROVIDER", "google_calendar"),
-            connector_channel=os.environ.get("CONNECTOR_CHANNEL", "google_calendar"),
-            connector_max_inflight=_int_env("CONNECTOR_MAX_INFLIGHT", _DEFAULT_MAX_INFLIGHT),
-            connector_health_port=_int_env("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT),
-            connector_heartbeat_interval_s=_int_env(
-                "CONNECTOR_HEARTBEAT_INTERVAL_S", _DEFAULT_HEARTBEAT_INTERVAL_S
-            ),
-            gcal_poll_interval_s=_int_env("GCAL_POLL_INTERVAL_S", _DEFAULT_POLL_INTERVAL_S),
-            gcal_starting_soon_lead_minutes=_int_env(
-                "GCAL_STARTING_SOON_LEAD_MINUTES", _DEFAULT_STARTING_SOON_LEAD_MINUTES
-            ),
-            gcal_account_rescan_interval_s=_int_env(
-                "GCAL_ACCOUNT_RESCAN_INTERVAL_S", _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
-            ),
+        return AccountHealthStatus(
+            email=self.email,
+            endpoint_identity=self.endpoint_identity,
+            status=account_status,
+            last_checkpoint_save_at=last_checkpoint_save_at,
+            last_sync_at=last_sync_at,
+            source_api_connectivity=connectivity,
+            error=error_msg,
         )
 
 
 # ---------------------------------------------------------------------------
-# Multi-account connector manager
+# Multi-account manager
 # ---------------------------------------------------------------------------
 
 
-async def _create_shared_db_pool(params: dict[str, Any], db_name: str) -> asyncpg.Pool:
-    """Create an asyncpg pool for the shared database."""
-    import asyncpg as _asyncpg
-
-    pool_kwargs: dict[str, Any] = {
-        "host": params.get("host") or "localhost",
-        "port": params.get("port") or 5432,
-        "user": params.get("user") or "butlers",
-        "password": params.get("password") or "butlers",
-        "database": db_name,
-        "min_size": 1,
-        "max_size": 4,
-        "command_timeout": 5,
-    }
-    ssl = params.get("ssl")
-    if ssl is not None:
-        pool_kwargs["ssl"] = ssl
-
-    try:
-        return await _asyncpg.create_pool(**pool_kwargs)
-    except Exception as exc:
-        if should_retry_with_ssl_disable(exc, ssl):
-            pool_kwargs["ssl"] = "disable"
-            return await _asyncpg.create_pool(**pool_kwargs)
-        raise
-
-
-async def _resolve_calendar_credentials_from_db(
-    db_pool: asyncpg.Pool,
-    shared_pool: asyncpg.Pool,
-    email: str,
-) -> tuple[str, str, str] | None:
-    """Resolve (client_id, client_secret, refresh_token) for a Google account.
-
-    Returns None if credentials cannot be resolved (logged, not raised).
-    """
-    from butlers.credential_store import CredentialStore
-
-    store = CredentialStore(db_pool)
-    try:
-        creds = await load_google_credentials(store, pool=shared_pool, account=email)
-        if creds is None:
-            logger.warning("No credentials found for Google Calendar account: %s", email)
-            return None
-        return creds.client_id, creds.client_secret, creds.refresh_token
-    except InvalidGoogleCredentialsError as exc:
-        logger.warning("Invalid credentials for Google Calendar account %s: %s", email, exc)
-        return None
-    except Exception as exc:
-        logger.error(
-            "Error resolving credentials for Google Calendar account %s: %s",
-            email,
-            exc,
-            exc_info=True,
-        )
-        return None
-
-
-class GCalConnectorManager:
+class GoogleCalendarConnectorManager:
     """Top-level orchestrator for multi-account Google Calendar connector.
 
-    Discovers all active Google accounts with calendar scope from
-    shared.google_accounts, spawns independent GCalAccountLoop instances,
-    and manages their lifecycle.
+    Discovers all active Google accounts with calendar scopes from shared.google_accounts,
+    spawns independent GoogleCalendarAccountLoop instances per account, and manages their
+    lifecycle.
 
     Supports:
     - Periodic account re-scan at GCAL_ACCOUNT_RESCAN_INTERVAL_S (default 300)
@@ -1174,29 +1279,20 @@ class GCalConnectorManager:
 
     def __init__(
         self,
-        process_config: GCalProcessConfig,
+        process_config: GoogleCalendarProcessConfig,
         db_pool: asyncpg.Pool,
         cursor_pool: asyncpg.Pool | None,
-        shared_pool: asyncpg.Pool,
     ) -> None:
         self._process_config = process_config
         self._db_pool = db_pool
         self._cursor_pool = cursor_pool
-        self._shared_pool = shared_pool
 
         # Active account loops keyed by email
-        self._loops: dict[str, GCalAccountLoop] = {}
+        self._loops: dict[str, GoogleCalendarAccountLoop] = {}
 
-        # Shared MCP client (one connection, all accounts share)
-        self._mcp_client = CachedMCPClient(
-            process_config.switchboard_mcp_url,
-            client_name="google_calendar_connector",
-        )
-
-        # Runtime state
+        # State
         self._start_time = time.time()
         self._running = False
-        self._main_loop: asyncio.AbstractEventLoop | None = None
 
         # Health server
         self._health_server: uvicorn.Server | None = None
@@ -1205,17 +1301,25 @@ class GCalConnectorManager:
         # Rescan task
         self._rescan_task: asyncio.Task[None] | None = None
 
+        # Credential store (shared across accounts for app credentials)
+        self._credential_store: CredentialStore | None = None
+
+    def _get_credential_store(self) -> CredentialStore:
+        """Return or initialize the CredentialStore for app credentials."""
+        if self._credential_store is None:
+            self._credential_store = CredentialStore(self._db_pool)
+        return self._credential_store
+
     async def _discover_qualifying_accounts(
         self,
-    ) -> list[tuple[str, dict[str, Any] | None]]:
-        """Query shared.google_accounts for active accounts with calendar scope.
+    ) -> list[tuple[str | None, dict[str, Any] | None]]:
+        """Query shared.google_accounts for active accounts with calendar scopes.
 
-        Returns list of (email, metadata_calendar) tuples where metadata_calendar
-        is the parsed ``calendar`` subsection of the account's metadata JSONB column.
-        Only accounts with status='active' and 'calendar' in granted_scopes are returned.
+        Returns list of (email, metadata_calendar) tuples. Only accounts with
+        status='active' and calendar scope in granted_scopes are returned.
         """
         try:
-            async with self._shared_pool.acquire() as conn:
+            async with self._db_pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
                     SELECT email, granted_scopes, metadata
@@ -1225,314 +1329,380 @@ class GCalConnectorManager:
                     """
                 )
         except Exception as exc:
-            logger.error("Failed to query google_accounts: %s", exc)
+            logger.warning(
+                "Google Calendar manager: failed to query google_accounts (non-fatal): %s", exc
+            )
             return []
 
-        result: list[tuple[str, dict[str, Any] | None]] = []
+        qualifying = []
         for row in rows:
-            email: str | None = row["email"]
-            if not email:
-                continue
-            granted_scopes = row["granted_scopes"] or []
-            if _CALENDAR_SCOPE not in granted_scopes:
-                logger.debug(
-                    "Skipping account %s: 'calendar' not in granted_scopes=%s",
+            email = row["email"]
+            scopes = list(row["granted_scopes"] or [])
+            metadata = row["metadata"] or {}
+
+            if not _has_calendar_scope(scopes):
+                logger.warning(
+                    "Google Calendar manager: skipping account %r"
+                    " — no calendar scopes in granted_scopes=%s",
                     email,
-                    granted_scopes,
+                    scopes,
                 )
                 continue
 
-            metadata_raw = row["metadata"]
             metadata_calendar: dict[str, Any] | None = None
-            if metadata_raw:
-                try:
-                    meta = (
-                        metadata_raw if isinstance(metadata_raw, dict) else json.loads(metadata_raw)
-                    )
-                    metadata_calendar = meta.get("calendar")
-                except Exception:
-                    pass
+            if isinstance(metadata, dict):
+                cal_section = metadata.get("calendar")
+                if isinstance(cal_section, dict):
+                    metadata_calendar = cal_section
 
-            result.append((email, metadata_calendar))
+            qualifying.append((email, metadata_calendar))
 
-        return result
+        return qualifying
 
-    def _make_sync_loop(
+    async def _resolve_credentials_for_account(
         self,
         email: str,
-        client_id: str,
-        client_secret: str,
-        refresh_token: str,
-        metadata_calendar: dict[str, Any] | None,
-    ) -> GCalSyncLoop:
-        """Create a GCalSyncLoop for the given account, applying metadata overrides."""
-        cfg = self._process_config
-        meta = metadata_calendar or {}
+    ) -> dict[str, str] | None:
+        """Resolve OAuth credentials for a single Google account.
 
-        poll_interval_s = int(meta.get("poll_interval_s", cfg.gcal_poll_interval_s))
-        starting_soon_lead_minutes = int(
-            meta.get("starting_soon_lead_minutes", cfg.gcal_starting_soon_lead_minutes)
-        )
-        calendar_ids_raw = meta.get("calendar_ids")
-        calendar_ids = list(calendar_ids_raw) if calendar_ids_raw else ["primary"]
-
-        endpoint_identity = f"google_calendar:user:{email}"
-
-        return GCalSyncLoop(
-            email=email,
-            endpoint_identity=endpoint_identity,
-            client_id=client_id,
-            client_secret=client_secret,
-            refresh_token=refresh_token,
-            cursor_pool=self._cursor_pool,
-            mcp_client=self._mcp_client,
-            poll_interval_s=poll_interval_s,
-            starting_soon_lead_minutes=starting_soon_lead_minutes,
-            calendar_ids=calendar_ids,
-        )
-
-    async def _spawn_loop(
-        self,
-        email: str,
-        metadata_calendar: dict[str, Any] | None,
-    ) -> None:
-        """Resolve credentials and spawn a GCalAccountLoop for the given email."""
-        creds = await _resolve_calendar_credentials_from_db(self._db_pool, self._shared_pool, email)
-        if creds is None:
-            logger.warning("Skipping account %s: credentials unavailable", email)
-            return
-
-        client_id, client_secret, refresh_token = creds
-        sync_loop = self._make_sync_loop(
-            email, client_id, client_secret, refresh_token, metadata_calendar
-        )
-        account_loop = GCalAccountLoop(email=email, sync_loop=sync_loop)
-        account_loop.start()
-        self._loops[email] = account_loop
-        logger.info("Spawned GCalAccountLoop for %s", email)
-
-    async def _stop_loop(self, email: str) -> None:
-        """Gracefully stop and remove the loop for the given email."""
-        loop = self._loops.pop(email, None)
-        if loop is not None:
-            await loop.stop()
-            logger.info("Stopped GCalAccountLoop for %s", email)
-
-    async def _rescan_accounts(self) -> None:
-        """Reconcile running loops with currently active accounts."""
+        Returns dict with client_id, client_secret, refresh_token on success.
+        Returns None if credentials cannot be resolved (non-fatal — account is skipped).
+        """
         try:
-            active_accounts = await self._discover_qualifying_accounts()
+            store = self._get_credential_store()
+            creds = await load_google_credentials(store, pool=self._db_pool, account=email)
+            if creds is None:
+                logger.warning(
+                    "Google Calendar manager: no credentials found for account %r — skipping",
+                    email,
+                )
+                return None
+            return {
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "refresh_token": creds.refresh_token,
+            }
+        except InvalidGoogleCredentialsError as exc:
+            logger.warning(
+                "Google Calendar manager: invalid credentials for account %r (skipping): %s",
+                email,
+                exc,
+            )
+            return None
         except Exception as exc:
-            logger.error("Account rescan failed: %s", exc, exc_info=True)
-            return
+            logger.warning(
+                "Google Calendar manager: credential resolution failed for account %r"
+                " (skipping): %s",
+                email,
+                exc,
+            )
+            return None
 
-        active_emails = {email for email, _ in active_accounts}
-        running_emails = set(self._loops.keys())
+    async def _sync_account_loops(
+        self,
+        qualifying: list[tuple[str | None, dict[str, Any] | None]],
+    ) -> None:
+        """Sync active account loops against the qualifying list.
 
-        # Stop loops for removed accounts
-        for email in running_emails - active_emails:
-            logger.info("Account %s no longer active; stopping loop", email)
-            await self._stop_loop(email)
+        - Start loops for newly qualifying accounts
+        - Stop loops for accounts that are no longer qualifying
+        """
+        qualifying_emails: set[str] = {email for (email, _) in qualifying if email is not None}
 
-        # Spawn loops for new accounts
-        for email, metadata_calendar in active_accounts:
-            if email not in self._loops or not self._loops[email].is_running:
-                await self._spawn_loop(email, metadata_calendar)
+        # Stop removed accounts
+        removed_emails = set(self._loops.keys()) - qualifying_emails
+        for email in removed_emails:
+            logger.info("Google Calendar manager: stopping loop for removed account %r", email)
+            loop = self._loops.pop(email)
+            try:
+                await loop.stop()
+            except Exception as exc:
+                logger.warning(
+                    "Google Calendar manager: error stopping loop for %r: %s", email, exc
+                )
+
+        # Start new accounts
+        for email, metadata_calendar in qualifying:
+            if email is None or email in self._loops:
+                continue
+
+            creds = await self._resolve_credentials_for_account(email)
+            if creds is None:
+                logger.warning(
+                    "Google Calendar manager: skipping account %r — credential resolution failed",
+                    email,
+                )
+                continue
+
+            try:
+                account_config = self._process_config.make_account_config(
+                    email=email,
+                    client_id=creds["client_id"],
+                    client_secret=creds["client_secret"],
+                    refresh_token=creds["refresh_token"],
+                    metadata_calendar=metadata_calendar,
+                )
+                loop = GoogleCalendarAccountLoop(
+                    email=email,
+                    config=account_config,
+                    cursor_pool=self._cursor_pool,
+                    shared_pool=self._db_pool,
+                )
+                loop.start()
+                self._loops[email] = loop
+                logger.info(
+                    "Google Calendar manager: started loop for account %r (endpoint_identity=%s)",
+                    email,
+                    account_config.connector_endpoint_identity,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Google Calendar manager: failed to start loop for account %r: %s",
+                    email,
+                    exc,
+                )
 
     async def _rescan_loop(self) -> None:
-        """Periodic account rescan task."""
+        """Periodically re-scan google_accounts and sync active loops."""
         interval = self._process_config.gcal_account_rescan_interval_s
         while self._running:
-            try:
-                await asyncio.sleep(interval)
-                await self._rescan_accounts()
-            except asyncio.CancelledError:
+            await asyncio.sleep(interval)
+            if not self._running:
                 break
+            logger.debug("Google Calendar manager: periodic account re-scan")
+            try:
+                qualifying = await self._discover_qualifying_accounts()
+                await self._sync_account_loops(qualifying)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                logger.error("Rescan loop error: %s", exc, exc_info=True)
+                logger.warning(
+                    "Google Calendar manager: account re-scan error (non-fatal): %s", exc
+                )
 
-    def _build_health_app(self) -> FastAPI:
-        """Build the health/metrics FastAPI app."""
+    def _get_multi_account_health(self) -> MultiAccountHealthStatus:
+        """Build aggregated health status across all account loops."""
+        uptime = time.time() - self._start_time
+        account_statuses = [loop.get_health() for loop in self._loops.values()]
+
+        # Aggregate worst-case status
+        if not account_statuses:
+            agg_status: Literal["healthy", "degraded", "error"] = "degraded"
+        elif any(s.status == "error" for s in account_statuses):
+            agg_status = "error"
+        elif any(s.status == "degraded" for s in account_statuses):
+            agg_status = "degraded"
+        else:
+            agg_status = "healthy"
+
+        return MultiAccountHealthStatus(
+            status=agg_status,
+            uptime_seconds=uptime,
+            active_accounts=len(self._loops),
+            account_health=account_statuses,
+            timestamp=datetime.now(UTC).isoformat(),
+        )
+
+    def _start_health_server(self, port: int) -> None:
+        """Start the FastAPI health/metrics HTTP server in a background thread."""
         app = FastAPI(title="Google Calendar Connector Health")
 
         @app.get("/health")
         async def health() -> MultiAccountHealthStatus:
-            return self._get_health()
+            return self._get_multi_account_health()
 
         @app.get("/metrics")
         async def metrics() -> bytes:
             return generate_latest(REGISTRY)
 
-        return app
-
-    def _get_health(self) -> MultiAccountHealthStatus:
-        """Return aggregated health across all account loops."""
-        account_health = [loop.get_health() for loop in self._loops.values()]
-
-        # Worst-case status
-        if any(h.status == "error" for h in account_health):
-            overall: Literal["healthy", "degraded", "error"] = "error"
-        elif any(h.status == "degraded" for h in account_health):
-            overall = "degraded"
-        elif not account_health:
-            overall = "degraded"  # No active accounts
-        else:
-            overall = "healthy"
-
-        return MultiAccountHealthStatus(
-            status=overall,
-            uptime_seconds=time.time() - self._start_time,
-            active_accounts=sum(1 for loop in self._loops.values() if loop.is_running),
-            account_health=account_health,
-            timestamp=datetime.now(UTC).isoformat(),
-        )
-
-    def _start_health_server(self) -> None:
-        """Start the health server in a background thread."""
-        app = self._build_health_app()
-        config = uvicorn.Config(
-            app,
-            host="127.0.0.1",
-            port=self._process_config.connector_health_port,
-            log_level="warning",
-        )
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
         self._health_server = uvicorn.Server(config)
 
         def _run() -> None:
-            import asyncio as _asyncio
+            asyncio.run(self._health_server.serve())  # type: ignore[union-attr]
 
-            loop = _asyncio.new_event_loop()
-            _asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._health_server.serve())
-
-        self._health_thread = Thread(target=_run, daemon=True, name="gcal-health-server")
+        self._health_thread = Thread(target=_run, daemon=True)
         self._health_thread.start()
-        logger.info(
-            "Health server started on port %d",
-            self._process_config.connector_health_port,
-        )
-
-    def _stop_health_server(self) -> None:
-        """Signal the health server to stop."""
-        if self._health_server is not None:
-            self._health_server.should_exit = True
+        logger.info("Google Calendar connector: health server started on port %d", port)
 
     async def start(self) -> None:
-        """Start the connector manager.
-
-        1. Wait for Switchboard readiness.
-        2. Discover qualifying accounts.
-        3. Spawn per-account loops.
-        4. Start health server and periodic rescan.
-        5. Wait for SIGTERM/SIGINT.
-        """
+        """Start the manager: discover accounts, start loops, run until cancelled."""
         self._running = True
-        self._main_loop = asyncio.get_running_loop()
 
-        logger.info("Google Calendar connector manager starting")
-
-        # Wait for Switchboard to be ready
-        try:
-            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
-        except TimeoutError as exc:
-            logger.error("Switchboard not ready: %s", exc)
+        # Start health server
+        port = self._process_config.connector_health_port
+        if port > 0:
+            self._start_health_server(port)
 
         # Initial account discovery
-        await self._rescan_accounts()
+        qualifying = await self._discover_qualifying_accounts()
+        await self._sync_account_loops(qualifying)
 
         if not self._loops:
             logger.warning(
-                "No qualifying Google Calendar accounts found; starting in idle/degraded mode"
+                "Google Calendar manager: no qualifying accounts found at startup."
+                " Running in idle/degraded mode."
+                " Will retry at rescan interval=%ds.",
+                self._process_config.gcal_account_rescan_interval_s,
             )
 
-        # Start health server
-        self._start_health_server()
-
-        # Start periodic rescan
+        # Start periodic re-scan
         self._rescan_task = asyncio.create_task(self._rescan_loop(), name="gcal-rescan")
 
-        # Set up signal handlers
-        stop_event = asyncio.Event()
+        # Install SIGTERM/SIGINT handlers
+        loop = asyncio.get_running_loop()
+        shutdown_event = asyncio.Event()
 
-        def _handle_signal(sig: int) -> None:
-            logger.info("Received signal %d; initiating shutdown", sig)
-            if self._main_loop is not None:
-                self._main_loop.call_soon_threadsafe(stop_event.set)
+        def _handle_signal() -> None:
+            logger.info("Google Calendar manager: shutdown signal received")
+            shutdown_event.set()
 
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                self._main_loop.add_signal_handler(sig, _handle_signal, sig)
-            except (NotImplementedError, RuntimeError):
-                pass
+        try:
+            loop.add_signal_handler(signal.SIGTERM, _handle_signal)
+            loop.add_signal_handler(signal.SIGINT, _handle_signal)
+        except (NotImplementedError, OSError):
+            # Signal handlers not available in all environments (e.g. tests)
+            pass
 
-        logger.info("Google Calendar connector running (%d account(s))", len(self._loops))
-        await stop_event.wait()
+        # Wait for shutdown
+        try:
+            await shutdown_event.wait()
+        except asyncio.CancelledError:
+            pass
 
-        await self._shutdown()
-
-    async def _shutdown(self) -> None:
-        """Gracefully shut down all account loops and cleanup."""
-        logger.info("Google Calendar connector shutting down")
+        # Graceful shutdown
+        logger.info("Google Calendar manager: shutting down")
         self._running = False
 
-        # Cancel rescan
-        if self._rescan_task is not None and not self._rescan_task.done():
+        if self._rescan_task and not self._rescan_task.done():
             self._rescan_task.cancel()
             try:
                 await self._rescan_task
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, Exception):
                 pass
 
         # Stop all account loops
-        for email in list(self._loops.keys()):
-            await self._stop_loop(email)
+        stop_tasks = [loop_obj.stop() for loop_obj in self._loops.values()]
+        if stop_tasks:
+            await asyncio.gather(*stop_tasks, return_exceptions=True)
 
-        # Stop health server
-        self._stop_health_server()
-
-        # Close MCP client
-        await self._mcp_client.aclose()
-
-        logger.info("Google Calendar connector shutdown complete")
+        logger.info("Google Calendar manager: shutdown complete")
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# DB pool helpers
+# ---------------------------------------------------------------------------
+
+
+async def _create_shared_db_pool() -> asyncpg.Pool:
+    """Create an asyncpg pool connected to the shared database for account discovery."""
+    import asyncpg as _asyncpg
+
+    db_params = db_params_from_env()
+    shared_db_name = shared_db_name_from_env()
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared").strip() or "shared"
+
+    pool_kwargs: dict[str, Any] = {
+        "host": db_params["host"],
+        "port": db_params["port"],
+        "user": db_params["user"],
+        "password": db_params["password"],
+        "database": shared_db_name,
+        "min_size": 1,
+        "max_size": 4,
+        "command_timeout": 10,
+    }
+
+    if shared_schema:
+        try:
+            search_path = schema_search_path(shared_schema)
+            pool_kwargs["server_settings"] = {"search_path": search_path}
+        except ValueError as exc:
+            logger.debug(
+                "Google Calendar manager: invalid shared schema %r (non-fatal): %s",
+                shared_schema,
+                exc,
+            )
+
+    configured_ssl = db_params.get("ssl")
+    if configured_ssl is not None:
+        pool_kwargs["ssl"] = configured_ssl
+
+    try:
+        return await _asyncpg.create_pool(**pool_kwargs)
+    except Exception as exc:
+        ssl_str = configured_ssl if isinstance(configured_ssl, str) else None
+        if should_retry_with_ssl_disable(exc, ssl_str):
+            pool_kwargs["ssl"] = "disable"
+            return await _asyncpg.create_pool(**pool_kwargs)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Async entrypoint
 # ---------------------------------------------------------------------------
 
 
 async def run_google_calendar_connector() -> None:
-    """Top-level entry point for the Google Calendar connector process."""
-    configure_logging()
-    logger.info("Starting Google Calendar connector")
+    """Run the multi-account Google Calendar connector manager (async entrypoint).
 
-    process_config = GCalProcessConfig.from_env()
+    Discovers all active Google accounts with calendar scopes from shared.google_accounts
+    and manages independent ingestion loops per account. Identity is derived per-account
+    from the email address (``google_calendar:user:<email>``).
+    Runs in idle/degraded mode if no qualifying accounts are found at startup.
+    """
+    configure_logging(level="INFO", butler_name="google_calendar")
 
-    # Set up DB pools
-    db_params = db_params_from_env()
-    butler_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers").strip() or "butlers"
-    shared_db_name = shared_db_name_from_env()
+    # Step 1: Parse process-level config from environment variables.
+    try:
+        process_config = GoogleCalendarProcessConfig.from_env()
+    except Exception as exc:
+        logger.error("Google Calendar connector: failed to load process config: %s", exc)
+        raise
 
-    db_pool = await _create_shared_db_pool(db_params, butler_db_name)
-    shared_pool = await _create_shared_db_pool(db_params, shared_db_name)
-    cursor_pool = db_pool  # Reuse butler DB pool for cursor writes
+    # Step 2: Create DB pools.
+    from butlers.connectors.cursor_store import create_cursor_pool_from_env
 
     try:
-        manager = GCalConnectorManager(
-            process_config=process_config,
-            db_pool=db_pool,
-            cursor_pool=cursor_pool,
-            shared_pool=shared_pool,
-        )
+        shared_pool = await _create_shared_db_pool()
+        logger.info("Google Calendar connector: shared DB pool created for account discovery")
+    except Exception as exc:
+        logger.error("Google Calendar connector: failed to create shared DB pool: %s", exc)
+        raise
+
+    try:
+        cursor_pool = await create_cursor_pool_from_env()
+        logger.info("Google Calendar connector: cursor pool created for DB-backed checkpoints")
+    except Exception as exc:
+        logger.error("Google Calendar connector: failed to create cursor pool: %s", exc)
+        await shared_pool.close()
+        raise
+
+    # Step 3: Start the multi-account manager.
+    manager = GoogleCalendarConnectorManager(
+        process_config=process_config,
+        db_pool=shared_pool,
+        cursor_pool=cursor_pool,
+    )
+    try:
         await manager.start()
     finally:
-        await db_pool.close()
-        if shared_pool is not db_pool:
-            await shared_pool.close()
+        await shared_pool.close()
+        if cursor_pool is not None:
+            await cursor_pool.close()
+
+
+# ---------------------------------------------------------------------------
+# CLI entrypoint
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
-    """Synchronous entry point for pyproject.toml console_scripts."""
+    """CLI entrypoint for Google Calendar connector.
+
+    Discovers and manages all Calendar-scoped Google accounts from shared.google_accounts.
+    Identity is derived per-account from the email address.
+    """
     asyncio.run(run_google_calendar_connector())
 
 
