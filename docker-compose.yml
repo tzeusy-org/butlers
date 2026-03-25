@@ -277,6 +277,31 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  connector-spotify:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/spotify", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.spotify"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: spotify
+      CONNECTOR_CHANNEL: spotify
+      CONNECTOR_HEALTH_PORT: "40083"
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      butlers-up:
+        condition: service_healthy
+      oauth-gate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   connector-live-listener:
     build:
       context: .
