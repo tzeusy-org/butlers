@@ -809,3 +809,56 @@ def test_spotify_idempotency_key_format():
     )
     parsed = parse_ingest_envelope(envelope)
     assert parsed.control.idempotency_key == "spotify:user123:event_abc123"
+
+
+# ---------------------------------------------------------------------------
+# OwnTracks channel/provider contract validations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_owntracks_channel_accepted():
+    """IngestEnvelopeV1 accepts owntracks as a valid source channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="owntracks",
+        provider="owntracks",
+        endpoint_identity="owntracks:device123",
+        sender_identity="user123",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert parsed.source.channel == "owntracks"
+    assert parsed.source.provider == "owntracks"
+
+
+@pytest.mark.unit
+def test_owntracks_rejects_invalid_provider():
+    """owntracks channel rejects non-owntracks providers."""
+    envelope = _build_valid_ingest_envelope(
+        channel="owntracks",
+        provider="telegram",  # wrong provider
+        endpoint_identity="owntracks:device123",
+        sender_identity="user123",
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+    assert "owntracks" in str(exc_info.value) or "telegram" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_owntracks_provider_rejected_for_telegram_channel():
+    """owntracks provider is invalid for telegram_bot channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="telegram_bot",
+        provider="owntracks",  # wrong provider for telegram_bot
+    )
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(envelope)
+
+
+@pytest.mark.unit
+def test_owntracks_in_allowed_providers_by_channel():
+    """owntracks is registered in _ALLOWED_PROVIDERS_BY_CHANNEL."""
+    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
+
+    assert "owntracks" in _ALLOWED_PROVIDERS_BY_CHANNEL
+    assert _ALLOWED_PROVIDERS_BY_CHANNEL["owntracks"] == frozenset({"owntracks"})

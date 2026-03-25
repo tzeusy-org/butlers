@@ -72,6 +72,7 @@ class TestHistoryStrategy:
         assert HISTORY_STRATEGY["discord"] == "realtime"
         assert HISTORY_STRATEGY["google_calendar"] == "realtime"
         assert HISTORY_STRATEGY["spotify_user_client"] == "realtime"
+        assert HISTORY_STRATEGY["owntracks"] == "realtime"
 
     def test_email_channel(self):
         """Email uses email strategy."""

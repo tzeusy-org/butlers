@@ -78,6 +78,8 @@ HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
     "google_calendar": "realtime",
     # Spotify connector
     "spotify_user_client": "realtime",
+    # OwnTracks connector
+    "owntracks": "realtime",
     # No history for other channels
     "api": "none",
     "mcp": "none",
