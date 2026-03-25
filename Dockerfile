@@ -21,7 +21,7 @@ RUN go mod download
 # Copy Go source.
 COPY whatsapp-bridge/ ./
 
-# Tidy modules (go.mod may lag behind toolchain) then compile.
+# Tidy modules then compile.
 RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w" \
     -o /out/whatsapp-bridge \
