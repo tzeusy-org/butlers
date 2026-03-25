@@ -444,19 +444,64 @@ async def _run_education_compute_analytics_snapshots_job(
     return {"snapshots_computed": count}
 
 
-async def _run_daily_briefing_contribution_job(
+async def _run_health_briefing_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run daily briefing contribution job for a specialist butler.
+    """Run health butler daily briefing contribution job."""
+    from butlers.jobs.briefing import run_health_briefing_contribution
 
-    Queries domain-specific state and writes a contribution envelope to the
-    state store under ``briefing/daily/<YYYY-MM-DD>`` (SGT timezone).
-    """
-    del job_args
-    from butlers.jobs.briefing import run_daily_briefing_contribution
+    return await run_health_briefing_contribution(pool=pool, job_args=job_args)
 
-    return await run_daily_briefing_contribution(pool=pool)
+
+async def _run_finance_briefing_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run finance butler daily briefing contribution job."""
+    from butlers.jobs.briefing import run_finance_briefing_contribution
+
+    return await run_finance_briefing_contribution(pool=pool, job_args=job_args)
+
+
+async def _run_relationship_briefing_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run relationship butler daily briefing contribution job."""
+    from butlers.jobs.briefing import run_relationship_briefing_contribution
+
+    return await run_relationship_briefing_contribution(pool=pool, job_args=job_args)
+
+
+async def _run_travel_briefing_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run travel butler daily briefing contribution job."""
+    from butlers.jobs.briefing import run_travel_briefing_contribution
+
+    return await run_travel_briefing_contribution(pool=pool, job_args=job_args)
+
+
+async def _run_education_briefing_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run education butler daily briefing contribution job."""
+    from butlers.jobs.briefing import run_education_briefing_contribution
+
+    return await run_education_briefing_contribution(pool=pool, job_args=job_args)
+
+
+async def _run_home_briefing_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run home butler daily briefing contribution job."""
+    from butlers.jobs.briefing import run_home_briefing_contribution
+
+    return await run_home_briefing_contribution(pool=pool, job_args=job_args)
 
 
 async def _run_collect_briefing_contributions_job(
@@ -549,25 +594,25 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     },
     "health": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+        "daily_briefing_contribution": _run_health_briefing_contribution_job,
     },
     "finance": {
-        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+        "daily_briefing_contribution": _run_finance_briefing_contribution_job,
     },
     "relationship": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+        "daily_briefing_contribution": _run_relationship_briefing_contribution_job,
     },
     "travel": {
-        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+        "daily_briefing_contribution": _run_travel_briefing_contribution_job,
     },
     "education": {
         "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
-        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+        "daily_briefing_contribution": _run_education_briefing_contribution_job,
     },
     "home": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+        "daily_briefing_contribution": _run_home_briefing_contribution_job,
         **_HOME_DETERMINISTIC_JOB_HANDLERS,
     },
     "switchboard": {
