@@ -251,6 +251,48 @@ async def correct_route(
         logger.error(
             "correct_route: routing to %s failed: %s", correct_butler, route_result["error"]
         )
+        # Audit the dispatch failure so operators can detect misuse or misconfigurations.
+        try:
+            await pool.execute(
+                """
+                INSERT INTO operator_audit_log (
+                    action_type,
+                    target_request_id,
+                    target_table,
+                    operator_identity,
+                    reason,
+                    action_payload,
+                    outcome,
+                    outcome_details
+                )
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
+                """,
+                "correct_route",
+                request_id,
+                "message_inbox",
+                f"correction:{correction_id}",
+                description or "misroute correction",
+                json.dumps(
+                    {
+                        "correction_id": str(correction_id),
+                        "correct_butler": correct_butler,
+                        "original_triage_target": request_context.get("triage_target"),
+                    }
+                ),
+                "failure",
+                json.dumps(
+                    {
+                        "error": "dispatch_failed",
+                        "detail": route_result["error"],
+                    }
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "correct_route: failed to write dispatch_failed audit log entry for request_id=%s",
+                request_id,
+                exc_info=True,
+            )
         return {
             "success": False,
             "error": "dispatch_failed",

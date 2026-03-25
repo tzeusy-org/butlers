@@ -443,6 +443,43 @@ class TestCorrectRouteDispatchFailure:
 
         assert "list_butlers" in result["message"]
 
+    async def test_dispatch_failed_writes_audit_log(self, pool: asyncpg.Pool) -> None:
+        """dispatch_failed records a failure entry in operator_audit_log."""
+        request_id = _make_request_id()
+        correction_id = _make_correction_id()
+
+        await _seed_ingestion_event(pool, request_id=request_id)
+        await _seed_message_inbox(pool, request_id=request_id)
+
+        # "missing_butler" is not in butler_registry — triggers dispatch_failed
+        result = await correct_route(
+            pool,
+            request_id=request_id,
+            correct_butler="missing_butler",
+            correction_id=correction_id,
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "dispatch_failed"
+
+        audit_row = await pool.fetchrow(
+            """
+            SELECT action_type, target_request_id, outcome, outcome_details
+            FROM operator_audit_log
+            WHERE action_type = 'correct_route' AND target_request_id = $1
+            """,
+            request_id,
+        )
+        assert audit_row is not None, "dispatch_failed must write an audit log entry"
+        assert audit_row["outcome"] == "failure"
+        outcome_details_raw = audit_row["outcome_details"]
+        outcome_details = (
+            json.loads(outcome_details_raw)
+            if isinstance(outcome_details_raw, str)
+            else outcome_details_raw
+        )
+        assert outcome_details["error"] == "dispatch_failed"
+
 
 class TestCorrectRouteSuccess:
     """Tests for the happy path — successful re-dispatch."""
