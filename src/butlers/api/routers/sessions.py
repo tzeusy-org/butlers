@@ -324,4 +324,14 @@ async def get_butler_session(
     except Exception:
         logger.debug("Could not fetch process log for session %s", session_id, exc_info=True)
 
+    # Attach correction count (best-effort — corrections table may not exist yet)
+    try:
+        correction_count = await pool.fetchval(
+            "SELECT count(*) FROM corrections WHERE target_session_id = $1",
+            session_id,
+        )
+        detail.correction_count = int(correction_count or 0)
+    except Exception:
+        logger.debug("Could not fetch correction count for session %s", session_id, exc_info=True)
+
     return ApiResponse[SessionDetail](data=detail)
