@@ -1,6 +1,6 @@
 """Integration tests for the OwnTracks connector.
 
-Covers tasks 10.1–10.8 from openspec/changes/connector-owntracks/tasks.md:
+Covers tasks 10.1–10.8 from openspec/specs/connector-owntracks/spec.md:
 
 10.1 - Valid webhook POST with location payload is normalized and submitted to Switchboard
 10.2 - Valid webhook POST with transition payload is normalized and submitted to Switchboard
@@ -411,10 +411,12 @@ class TestAuthMissingHeader:
         assert resp.status_code == 401
 
     def test_missing_auth_response_body(self, client: TestClient) -> None:
-        """401 response includes error key."""
+        """401 response includes the expected OwnTracks unauthorized body."""
         resp = client.post("/owntracks/webhook", json=_make_location_payload())
         data = resp.json()
-        assert "error" in str(data).lower() or resp.status_code == 401
+        assert resp.status_code == 401
+        # FastAPI wraps HTTPException detail in {"detail": ...}
+        assert data.get("detail", {}).get("error") == "Unauthorized"
 
     def test_no_mcp_call_on_missing_auth(
         self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]
