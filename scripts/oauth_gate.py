@@ -25,7 +25,7 @@ INTERVAL = int(os.environ.get("OAUTH_POLL_INTERVAL", "5"))
 
 def _check_token() -> bool:
     """Return True if a Google OAuth refresh token exists in shared.entity_info."""
-    import psycopg
+    import psycopg2
 
     dsn = (
         f"host={os.environ.get('POSTGRES_HOST', 'postgres')} "
@@ -35,18 +35,21 @@ def _check_token() -> bool:
         f"dbname={os.environ.get('POSTGRES_DB', 'butlers')}"
     )
     try:
-        with psycopg.connect(dsn, autocommit=True) as conn:
-            row = conn.execute(
-                """
-                SELECT COUNT(*) FROM shared.entity_info ei
-                JOIN shared.entities e ON e.id = ei.entity_id
-                WHERE 'owner' = ANY(e.roles)
-                  AND ei.type = 'google_oauth_refresh'
-                  AND ei.value IS NOT NULL
-                  AND length(ei.value) > 0
-                """
-            ).fetchone()
-            return bool(row and row[0] > 0)
+        with psycopg2.connect(dsn) as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM shared.entity_info ei
+                    JOIN shared.entities e ON e.id = ei.entity_id
+                    WHERE 'owner' = ANY(e.roles)
+                      AND ei.type = 'google_oauth_refresh'
+                      AND ei.value IS NOT NULL
+                      AND length(ei.value) > 0
+                    """
+                )
+                row = cur.fetchone()
+                return bool(row and row[0] > 0)
     except Exception as exc:
         print(f"oauth-gate: DB check failed: {exc}", file=sys.stderr)
         return False

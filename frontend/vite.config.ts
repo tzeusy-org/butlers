@@ -15,10 +15,10 @@ export default defineConfig({
     include: ["@dagrejs/dagre"],
   },
   server: {
-    allowedHosts: ["tzeusy.parrot-hen.ts.net"],
+    allowedHosts: true,
     proxy: {
       "/api": {
-        target: "http://localhost:41200",
+        target: process.env.VITE_PROXY_TARGET || "http://localhost:41200",
         changeOrigin: true,
       },
     },

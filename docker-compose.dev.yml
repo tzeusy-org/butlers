@@ -51,15 +51,21 @@ services:
     volumes:
       - ./logs:/app/logs
 
-  # ── Layer 1a: frontend override — always-on + correct port/base ───────
+  # ── Layer 1a: frontend override — correct port/base/proxy ──────────────
+  # The base profile ["dev"] is always activated by dev-compose.sh.
+  # Vite proxy must target dashboard-api by service name (not localhost)
+  # since the frontend container runs on the [frontend] network.
   frontend-dev:
-    profiles: []
     environment:
       - VITE_API_URL=${VITE_API_URL:-/butlers-api/api}
+      - VITE_PROXY_TARGET=http://dashboard-api:41200
     command: >-
       sh -c "npm install &&
       npm run dev -- --host 0.0.0.0 --port 41173 --strictPort
       --base ${FRONTEND_BASE_PATH:-/butlers/}"
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
 
   # ── Layer 1b: Telegram bot connector ──────────────────────────────────
   connector-telegram-bot:

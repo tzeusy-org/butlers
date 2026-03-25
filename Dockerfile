@@ -33,6 +33,11 @@ COPY alembic/alembic.ini alembic.ini
 COPY alembic/ alembic/
 COPY scripts/ scripts/
 
+# Install extra system dependencies for optional extras
+RUN if echo "$EXTRAS" | grep -q "live-listener"; then \
+      apt-get update && apt-get install -y libportaudio2 && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Install production dependencies
 RUN if [ -n "$EXTRAS" ]; then \
       uv sync --no-dev --extra "$EXTRAS"; \
