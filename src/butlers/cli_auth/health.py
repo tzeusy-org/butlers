@@ -66,7 +66,11 @@ async def probe_provider(
                 try:
                     api_key = await credential_store.load("cli-auth/claude")
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Failed to load API key for provider '%s' from credential store.",
+                        provider.name,
+                        exc_info=True,
+                    )
             if api_key is None:
                 api_key = os.environ.get("ANTHROPIC_API_KEY")
 

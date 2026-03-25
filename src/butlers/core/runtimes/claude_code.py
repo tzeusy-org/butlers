@@ -337,10 +337,12 @@ class ClaudeCodeAdapter(RuntimeAdapter):
 
         # Inject ANTHROPIC_API_KEY from credential store when available.
         # The key is stored under 'cli-auth/claude' by the CLI auth dashboard flow.
-        # Only inject when not already present in the caller-provided env dict so
-        # that callers who manage the key themselves retain full control.
+        # Only inject when the caller-provided env dict does not already carry a
+        # non-empty value so callers who manage the key themselves retain full control.
+        # Empty/whitespace values from callers are treated as absent and will be
+        # overridden by the credential store or env fallback.
         _ANTHROPIC_KEY = "ANTHROPIC_API_KEY"
-        if _ANTHROPIC_KEY not in env:
+        if not env.get(_ANTHROPIC_KEY, "").strip():
             api_key: str | None = None
             if self._credential_store is not None:
                 try:

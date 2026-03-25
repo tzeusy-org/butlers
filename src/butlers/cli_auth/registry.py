@@ -179,7 +179,8 @@ _register(
         env_var="ANTHROPIC_API_KEY",
         binary_name="claude",
         # Anthropic API keys follow the pattern sk-ant-...
-        # No token_path — the key is stored exclusively in the credential store.
+        # No token_path — the key is stored in the credential store by default;
+        # an env-var fallback is supported for dev/testing (see health.py).
         # Health probing is done via key-format validation in health.py.
     )
 )
