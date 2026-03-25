@@ -91,13 +91,18 @@ explicit owner confirmation before proceeding.
 
 ## Credential Management
 
-Secrets (API keys, OAuth tokens, database passwords) are managed through:
+Secrets follow a DB-first resolution model. The `CredentialStore` checks the
+`butler_secrets` database table first, falling back to environment variables
+only when the DB has no value. This means:
 
-- **Environment variables** for deployment-level secrets (database URL, LLM API
-  keys).
-- **Credential store** in the database for butler-specific secrets (OAuth
-  refresh tokens, service-specific API keys).
-- **Dashboard OAuth flow** for configuring per-service credentials interactively.
+- **All runtime secrets** (API keys, OAuth tokens, integration credentials) are
+  stored in the database and managed via the dashboard Secrets page. No secret
+  env vars are required for normal operation.
+- **Environment variables** are reserved for infrastructure bootstrap only:
+  database connection parameters (`POSTGRES_HOST/PORT/USER/PASSWORD`) and
+  optional observability (`OTEL_EXPORTER_OTLP_ENDPOINT`).
+- **Dashboard OAuth flow** handles interactive credential setup (Google OAuth,
+  etc.). Tokens are stored in the DB after the flow completes.
 
 **Constraints:**
 
@@ -108,6 +113,8 @@ Secrets (API keys, OAuth tokens, database passwords) are managed through:
   encryption. This is consistent with the trust model: if the database is
   compromised, the attacker already has access to the data the credentials
   protect.
+- Connectors and butlers MUST use `CredentialStore.resolve()` for secret
+  access --- never direct `os.environ.get()` for API keys or tokens.
 
 ## Identity Resolution
 
@@ -144,6 +151,79 @@ If the owner wants encryption at rest, they should enable it at the filesystem
 or database level, not at the application level. Butlers does not re-implement
 what the storage layer already provides.
 
+## Deployment Security
+
+Butlers runs in Docker Compose with a layered network isolation model.
+The principle: **services get the minimum network access they need and
+nothing more.**
+
+### Network Isolation Model
+
+Four Docker networks enforce least-privilege connectivity:
+
+| Network | `internal` | Purpose |
+|---------|-----------|---------|
+| `db` | yes | Database and storage. No outbound internet. |
+| `backend` | yes | Inter-service communication (butlers, switchboard, connectors). No outbound internet. |
+| `frontend` | yes | Vite dev server to dashboard-api only. No outbound internet. |
+| `egress` | no | Outbound internet for services that call external APIs (LLM providers, Google OAuth, Telegram, Gmail). |
+
+Services that need external API access join the `egress` network in addition to
+their functional networks. Services that don't (postgres, minio, migrations,
+log-init, oauth-gate) are restricted to internal networks and cannot reach the
+internet at all.
+
+### Private Subnet Firewall
+
+The `egress` network allows internet access but blocks private subnets by
+default using iptables rules on the `DOCKER-USER` chain:
+
+- **Blocked:** RFC1918 (LAN), Tailscale CGNAT (100.64.0.0/10), link-local.
+- **Allowed:** Specific tailnet hosts listed in `ALLOWED_TAILNET_HOSTS`
+  (resolved dynamically by `dev-compose.sh` at startup).
+
+This prevents a compromised container from pivoting to LAN machines, SSH'ing
+into other hosts, or scanning the tailnet --- while still allowing the specific
+tailnet services Butlers depends on (OTEL collector, Garage S3, Ollama, external
+Postgres).
+
+### Host Port Binding
+
+All port mappings bind to `127.0.0.1` only. No service is accessible from the
+LAN or tailnet via its Docker port. External access (when needed) is handled
+by Tailscale serve, which provides HTTPS termination and tailnet-level
+authentication.
+
+### Container Environment Isolation
+
+Docker containers receive a clean environment. Host environment variables (API
+keys, SSH credentials, cloud provider tokens) do not leak into containers.
+Only variables explicitly declared in `environment:` or `env_file:` are visible.
+
+The spawner's `_build_env()` is even more restrictive: LLM runtime subprocesses
+receive only `PATH` plus explicitly declared credentials resolved from the
+credential store.
+
+### Persistent Runtime State
+
+LLM runtime CLIs (codex, opencode, claude-code, gemini) store OAuth tokens and
+settings in their config directories (`~/.codex/`, `~/.claude/`, etc.). These
+are backed by named Docker volumes so tokens survive container restarts without
+requiring re-authentication.
+
+### Principles
+
+1. **Bind to localhost unless there is a specific reason not to.** Tailscale
+   serve handles external HTTPS exposure.
+2. **Internal by default, egress by exception.** A service should not join the
+   `egress` network unless it calls external APIs.
+3. **Allowlist, not blocklist, for private network access.** The firewall blocks
+   all private subnets then punches holes for specific tailnet hosts.
+4. **No secrets in compose files.** Infrastructure bootstrap vars only. All
+   runtime secrets are DB-first via `CredentialStore`.
+5. **No `privileged: true`, no Docker socket mounts, no `cap_add`.** Containers
+   run with default Docker capabilities.
+
 ## Anti-Patterns
 
 - Adding application-level encryption that duplicates filesystem/database
@@ -155,3 +235,9 @@ what the storage layer already provides.
 - Assuming sender identity based solely on channel identifiers without
   confirmation for high-stakes actions.
 - Logging full credential values in session logs or error messages.
+- Binding Docker ports to `0.0.0.0` (exposes services to the entire LAN).
+- Adding services to the `egress` network when they don't call external APIs.
+- Hardcoding tailnet IPs in compose files (use `ALLOWED_TAILNET_HOSTS` and
+  dynamic resolution instead).
+- Using `os.environ.get()` directly for API keys or tokens in connector or
+  butler code (use `CredentialStore.resolve()` instead).

@@ -25,6 +25,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0005](rfcs/0005-observability-and-telemetry.md) | Observability and Telemetry | OTel setup, OTLP export pipeline, trace propagation across process boundaries, tool_span instrumentation, metrics catalog, cardinality discipline. |
 | [0006](rfcs/0006-database-schema-and-isolation.md) | Database Schema and Isolation | Single-PG multi-schema model, shared identity tables, per-butler schema contents, multi-chain Alembic migrations, credential store. |
 | [0007](rfcs/0007-dashboard-and-api-surface.md) | Dashboard and API Surface | FastAPI + Vite architecture, auto-discovered butler routes, route map, backend API contract, tab structures, data access patterns, command palette. |
+| [0008](rfcs/0008-deployment-network-security.md) | Deployment Network Security | Four-network isolation model, egress firewall with tailnet allowlist, localhost port binding, container environment isolation, persistent runtime state. |
 
 ## Conventions
 
