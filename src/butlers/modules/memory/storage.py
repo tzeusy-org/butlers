@@ -1472,10 +1472,28 @@ async def get_memory(
 # ---------------------------------------------------------------------------
 
 
+class CorrectionGuardError(Exception):
+    """Raised when a correction-driven retraction cannot proceed.
+
+    Attributes:
+        reason: Machine-readable reason code — one of:
+            ``'already_retracted'``, ``'already_superseded'``, ``'already_forgotten'``.
+        message: Human-readable explanation suitable for returning to an LLM caller.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.message = message
+
+
 async def forget_memory(
     pool: Pool,
     memory_type: str,
     memory_id: uuid.UUID,
+    *,
+    correction_id: str | None = None,
+    correction_reason: str | None = None,
 ) -> bool:
     """Soft-delete a memory by marking it as forgotten.
 
@@ -1487,22 +1505,133 @@ async def forget_memory(
 
     The memory remains in the database but is excluded from retrieval.
 
+    When *correction_id* is provided (correction-driven retraction):
+
+    - The memory's ``metadata`` is updated to include ``correction_id`` and
+      ``correction_reason`` for audit linkage.
+    - A ``memory_events`` row is inserted with event type
+      ``'correction_driven_retraction'`` so the correction can be traced.
+    - A pre-flight check guards against retracting memories whose validity is
+      already ``'retracted'`` or ``'superseded'`` (facts) or whose
+      ``metadata.forgotten`` flag is already ``true`` (rules).  If the guard
+      fires a :class:`CorrectionGuardError` is raised **before** any write.
+
     Args:
         pool: asyncpg connection pool for the memory database.
         memory_type: One of ``'episode'``, ``'fact'``, or ``'rule'``.
         memory_id: UUID of the memory row to forget.
+        correction_id: Optional UUID string of the correction record that
+            triggered this retraction.  When supplied, correction provenance
+            is recorded on the memory and in ``memory_events``.
+        correction_reason: Optional human-readable description of why the
+            memory is being retracted via correction.  Stored in the memory's
+            metadata alongside *correction_id*.
 
     Returns:
         ``True`` if the memory was found and updated, ``False`` if not found.
 
     Raises:
         ValueError: If *memory_type* is not one of the valid types.
+        CorrectionGuardError: If *correction_id* is provided and the memory
+            is already retracted, superseded, or forgotten.
     """
     if memory_type not in _VALID_MEMORY_TYPES:
         raise ValueError(
             f"Invalid memory_type {memory_type!r}; expected one of {sorted(_VALID_MEMORY_TYPES)}"
         )
 
+    # ------------------------------------------------------------------
+    # Pre-flight guard: only relevant when a correction is being applied.
+    # ------------------------------------------------------------------
+    if correction_id is not None:
+        await _check_correction_preconditions(pool, memory_type, memory_id)
+
+    # ------------------------------------------------------------------
+    # Core retraction (same logic as before, but now wrapped in a
+    # transaction when correction provenance needs to be recorded).
+    # ------------------------------------------------------------------
+    if correction_id is not None:
+        result = await _forget_with_correction_provenance(
+            pool,
+            memory_type,
+            memory_id,
+            correction_id=correction_id,
+            correction_reason=correction_reason,
+        )
+    else:
+        result = await _forget_plain(pool, memory_type, memory_id)
+
+    return result
+
+
+async def _check_correction_preconditions(
+    pool: Pool,
+    memory_type: str,
+    memory_id: uuid.UUID,
+) -> None:
+    """Raise CorrectionGuardError if the memory cannot be retracted via correction.
+
+    Checks:
+    - Facts: validity must not be 'retracted' or 'superseded'.
+    - Rules: metadata.forgotten must not be true.
+    - Episodes: no blocking validity check (episodes only expire; re-expiring
+      an already-expired episode is a no-op but not actively harmful).
+
+    Raises:
+        CorrectionGuardError: If the guard condition is met.
+    """
+    if memory_type == "fact":
+        row = await pool.fetchrow(
+            "SELECT validity FROM facts WHERE id = $1",
+            memory_id,
+        )
+        if row is not None:
+            validity = row["validity"]
+            if validity == "retracted":
+                raise CorrectionGuardError(
+                    reason="already_retracted",
+                    message=(
+                        f"Memory {memory_id} (fact) is already retracted and cannot be "
+                        "corrected again. To inspect it, use memory_get."
+                    ),
+                )
+            if validity == "superseded":
+                raise CorrectionGuardError(
+                    reason="already_superseded",
+                    message=(
+                        f"Memory {memory_id} (fact) has been superseded by a newer version "
+                        "and cannot be deleted via correction. Find the active superseding "
+                        "fact and correct that one instead."
+                    ),
+                )
+    elif memory_type == "rule":
+        row = await pool.fetchrow(
+            "SELECT metadata FROM rules WHERE id = $1",
+            memory_id,
+        )
+        if row is not None:
+            metadata = row["metadata"] or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
+            if metadata.get("forgotten") is True:
+                raise CorrectionGuardError(
+                    reason="already_forgotten",
+                    message=(
+                        f"Memory {memory_id} (rule) is already marked as forgotten and "
+                        "cannot be corrected again."
+                    ),
+                )
+
+
+async def _forget_plain(
+    pool: Pool,
+    memory_type: str,
+    memory_id: uuid.UUID,
+) -> bool:
+    """Execute the original forget logic without correction provenance."""
     if memory_type == "fact":
         result = await pool.execute(
             "UPDATE facts SET validity = 'retracted' WHERE id = $1",
@@ -1518,9 +1647,88 @@ async def forget_memory(
             "UPDATE rules SET metadata = metadata || '{\"forgotten\": true}'::jsonb WHERE id = $1",
             memory_id,
         )
-
-    # asyncpg execute returns a status string like "UPDATE 1" or "UPDATE 0"
     return result.endswith("1")
+
+
+async def _forget_with_correction_provenance(
+    pool: Pool,
+    memory_type: str,
+    memory_id: uuid.UUID,
+    *,
+    correction_id: str,
+    correction_reason: str | None,
+) -> bool:
+    """Retract a memory and record correction provenance atomically.
+
+    Performs the soft-delete, updates the memory's metadata with correction
+    provenance, and inserts a ``memory_events`` audit row — all in a single
+    transaction so the audit trail is always consistent.
+
+    Returns:
+        ``True`` if the memory was found and updated, ``False`` if not found.
+    """
+    provenance_patch: dict = {"correction_id": correction_id}
+    if correction_reason is not None:
+        provenance_patch["correction_reason"] = correction_reason
+
+    provenance_json = json.dumps(provenance_patch)
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if memory_type == "fact":
+                result = await conn.execute(
+                    "UPDATE facts "
+                    "SET validity = 'retracted', "
+                    "    metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
+                    "WHERE id = $1",
+                    memory_id,
+                    provenance_json,
+                )
+            elif memory_type == "episode":
+                result = await conn.execute(
+                    "UPDATE episodes "
+                    "SET expires_at = now(), "
+                    "    metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
+                    "WHERE id = $1",
+                    memory_id,
+                    provenance_json,
+                )
+            else:  # rule
+                rule_patch = json.dumps({"forgotten": True, **provenance_patch})
+                result = await conn.execute(
+                    "UPDATE rules "
+                    "SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
+                    "WHERE id = $1",
+                    memory_id,
+                    rule_patch,
+                )
+
+            found = result.endswith("1")
+
+            if found:
+                # Insert correction-driven retraction event for audit linkage.
+                event_payload = {
+                    "memory_id": str(memory_id),
+                    "memory_type": memory_type,
+                    "correction_id": correction_id,
+                }
+                if correction_reason is not None:
+                    event_payload["correction_reason"] = correction_reason
+
+                await conn.execute(
+                    """
+                    INSERT INTO memory_events
+                        (event_type, actor, memory_type, memory_id, payload)
+                    VALUES
+                        ('correction_driven_retraction', 'correction_system',
+                         $1, $2, $3::jsonb)
+                    """,
+                    memory_type,
+                    memory_id,
+                    json.dumps(event_payload),
+                )
+
+    return found
 
 
 # ---------------------------------------------------------------------------

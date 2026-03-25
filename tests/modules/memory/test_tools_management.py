@@ -22,6 +22,11 @@ from butlers.modules.memory.tools import (
     predicate_search,
 )
 
+# Get CorrectionGuardError from the same _storage module that management.py uses.
+# _helpers loads storage via importlib; we must use the same object to ensure isinstance
+# checks in the except clause resolve correctly.
+CorrectionGuardError = _helpers._storage.CorrectionGuardError
+
 pytestmark = pytest.mark.unit
 
 
@@ -65,7 +70,9 @@ class TestMemoryForget:
         """memory_forget delegates to _storage.forget_memory."""
         _helpers._storage.forget_memory = AsyncMock(return_value=True)
         result = await memory_forget(mock_pool, "fact", str(memory_id))
-        _helpers._storage.forget_memory.assert_awaited_once_with(mock_pool, "fact", memory_id)
+        _helpers._storage.forget_memory.assert_awaited_once_with(
+            mock_pool, "fact", memory_id, correction_id=None, correction_reason=None
+        )
         assert result == {"forgotten": True}
 
     async def test_returns_forgotten_false_when_not_found(
@@ -94,6 +101,103 @@ class TestMemoryForget:
         for mtype in ("episode", "fact", "rule"):
             await memory_forget(mock_pool, mtype, str(memory_id))
             assert _helpers._storage.forget_memory.call_args[0][1] == mtype
+
+
+class TestMemoryForgetCorrectionProvenance:
+    """Tests for correction_id / correction_reason passthrough in memory_forget tool."""
+
+    @pytest.fixture()
+    def memory_id(self) -> uuid.UUID:
+        return uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+    @pytest.fixture()
+    def correction_id(self) -> str:
+        return "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    async def test_passes_correction_id_to_storage(
+        self, mock_pool: AsyncMock, memory_id: uuid.UUID, correction_id: str
+    ) -> None:
+        """correction_id is forwarded to _storage.forget_memory."""
+        _helpers._storage.forget_memory = AsyncMock(return_value=True)
+        await memory_forget(mock_pool, "fact", str(memory_id), correction_id=correction_id)
+        call_kwargs = _helpers._storage.forget_memory.call_args[1]
+        assert call_kwargs["correction_id"] == correction_id
+
+    async def test_passes_correction_reason_to_storage(
+        self, mock_pool: AsyncMock, memory_id: uuid.UUID, correction_id: str
+    ) -> None:
+        """correction_reason is forwarded to _storage.forget_memory."""
+        _helpers._storage.forget_memory = AsyncMock(return_value=True)
+        await memory_forget(
+            mock_pool,
+            "fact",
+            str(memory_id),
+            correction_id=correction_id,
+            correction_reason="data was wrong",
+        )
+        call_kwargs = _helpers._storage.forget_memory.call_args[1]
+        assert call_kwargs["correction_reason"] == "data was wrong"
+
+    async def test_no_correction_params_defaults_to_none(
+        self, mock_pool: AsyncMock, memory_id: uuid.UUID
+    ) -> None:
+        """Without correction params, correction_id and correction_reason default to None."""
+        _helpers._storage.forget_memory = AsyncMock(return_value=True)
+        await memory_forget(mock_pool, "fact", str(memory_id))
+        call_kwargs = _helpers._storage.forget_memory.call_args[1]
+        assert call_kwargs["correction_id"] is None
+        assert call_kwargs["correction_reason"] is None
+
+    async def test_guard_error_returns_forgotten_false_with_error_key(
+        self, mock_pool: AsyncMock, memory_id: uuid.UUID, correction_id: str
+    ) -> None:
+        """CorrectionGuardError from storage is caught and returned as a structured error."""
+        _helpers._storage.forget_memory = AsyncMock(
+            side_effect=CorrectionGuardError(
+                reason="already_retracted",
+                message="Memory is already retracted.",
+            )
+        )
+        result = await memory_forget(mock_pool, "fact", str(memory_id), correction_id=correction_id)
+        assert result["forgotten"] is False
+        assert result["error"] == "Memory is already retracted."
+        assert result["reason"] == "already_retracted"
+
+    async def test_guard_error_superseded_reason_propagated(
+        self, mock_pool: AsyncMock, memory_id: uuid.UUID, correction_id: str
+    ) -> None:
+        """The reason code from CorrectionGuardError is included in the return dict."""
+        _helpers._storage.forget_memory = AsyncMock(
+            side_effect=CorrectionGuardError(
+                reason="already_superseded",
+                message="This fact has been superseded.",
+            )
+        )
+        result = await memory_forget(mock_pool, "fact", str(memory_id), correction_id=correction_id)
+        assert result["reason"] == "already_superseded"
+
+    async def test_guard_error_forgotten_reason_propagated(
+        self, mock_pool: AsyncMock, memory_id: uuid.UUID, correction_id: str
+    ) -> None:
+        """already_forgotten reason code is propagated correctly."""
+        _helpers._storage.forget_memory = AsyncMock(
+            side_effect=CorrectionGuardError(
+                reason="already_forgotten",
+                message="Rule already forgotten.",
+            )
+        )
+        result = await memory_forget(mock_pool, "rule", str(memory_id), correction_id=correction_id)
+        assert result["reason"] == "already_forgotten"
+        assert result["forgotten"] is False
+
+    async def test_correction_reason_none_by_default(
+        self, mock_pool: AsyncMock, memory_id: uuid.UUID, correction_id: str
+    ) -> None:
+        """When correction_reason is not provided, it defaults to None."""
+        _helpers._storage.forget_memory = AsyncMock(return_value=True)
+        await memory_forget(mock_pool, "fact", str(memory_id), correction_id=correction_id)
+        call_kwargs = _helpers._storage.forget_memory.call_args[1]
+        assert call_kwargs["correction_reason"] is None
 
 
 # ---------------------------------------------------------------------------

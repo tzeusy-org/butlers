@@ -18,6 +18,9 @@ async def memory_forget(
     pool: Pool,
     memory_type: str,
     memory_id: str,
+    *,
+    correction_id: str | None = None,
+    correction_reason: str | None = None,
 ) -> dict[str, Any]:
     """Soft-delete a memory by type and ID.
 
@@ -25,11 +28,33 @@ async def memory_forget(
         pool: asyncpg connection pool.
         memory_type: One of 'episode', 'fact', 'rule'.
         memory_id: UUID string of the memory to forget.
+        correction_id: Optional UUID string of the correction record that
+            triggered this retraction.  When provided, correction provenance
+            is written to the memory's metadata and a ``memory_events`` row
+            with event type ``'correction_driven_retraction'`` is inserted.
+        correction_reason: Optional human-readable reason why the memory is
+            being retracted.  Stored alongside *correction_id* in metadata.
 
     Returns:
         Dict with key ``forgotten`` (bool) indicating success.
+        When a *correction_id* is provided and the memory is already
+        retracted or superseded, returns a dict with ``forgotten=False``
+        and an ``error`` key containing a human-readable explanation.
     """
-    result = await _storage.forget_memory(pool, memory_type, uuid.UUID(memory_id))
+    try:
+        result = await _storage.forget_memory(
+            pool,
+            memory_type,
+            uuid.UUID(memory_id),
+            correction_id=correction_id,
+            correction_reason=correction_reason,
+        )
+    except _storage.CorrectionGuardError as exc:
+        return {
+            "forgotten": False,
+            "error": exc.message,
+            "reason": exc.reason,
+        }
     return {"forgotten": result}
 
 
