@@ -91,7 +91,7 @@ def test_adapter_importable_from_runtimes(adapter_class: type, import_name: str)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter])
+@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter, ClaudeCodeAdapter])
 def test_build_config_file_empty_servers(adapter_class: type, tmp_path: Path) -> None:
     """build_config_file() writes a config with an empty mcpServers dict (JSON adapters)."""
     adapter = adapter_class()
@@ -100,7 +100,7 @@ def test_build_config_file_empty_servers(adapter_class: type, tmp_path: Path) ->
     assert data["mcpServers"] == {}
 
 
-@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter])
+@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter, ClaudeCodeAdapter])
 def test_build_config_file_multiple_servers(adapter_class: type, tmp_path: Path) -> None:
     """build_config_file() writes all provided MCP servers (JSON adapters)."""
     adapter = adapter_class()
