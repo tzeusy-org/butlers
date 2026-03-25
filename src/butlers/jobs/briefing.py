@@ -10,13 +10,13 @@ See openspec/changes/cross-butler-daily-briefing/ for the full design.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import asyncpg
 
 
-async def run_daily_briefing_contribution(*, pool: asyncpg.Pool) -> dict:
+async def run_daily_briefing_contribution(*, pool: asyncpg.Pool) -> dict[str, Any]:
     """Write today's domain snapshot as a briefing contribution.
 
     Queries butler-specific state tables, assembles the contribution envelope
@@ -32,7 +32,7 @@ async def run_daily_briefing_contribution(*, pool: asyncpg.Pool) -> dict:
     )
 
 
-async def run_collect_briefing_contributions(*, pool: asyncpg.Pool) -> dict:
+async def run_collect_briefing_contributions(*, pool: asyncpg.Pool) -> dict[str, Any]:
     """Aggregate specialist contributions into a combined briefing payload.
 
     Reads today's rows from ``general.v_briefing_contributions``, validates
