@@ -13,8 +13,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install claude-code globally via npm
-RUN npm install -g claude-code
+# Install LLM runtime CLIs globally via npm.
+# Butlers can use any of these as runtime adapters (configured per-butler in butler.toml).
+RUN npm install -g @openai/codex opencode-ai claude-code
 
 # Install uv package manager
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
