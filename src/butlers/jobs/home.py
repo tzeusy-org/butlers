@@ -43,9 +43,46 @@ class _NullEmbeddingEngine:
         return [[] for _ in texts]
 
 
+class _NoOpEmbeddingEngine:
+    """Minimal embedding engine stub for deterministic jobs.
+
+    Returns zero vectors so that store_fact() can be called without loading
+    sentence-transformers in a deterministic scheduled job context.
+    Semantic search quality is degraded, but the fact is correctly stored.
+    """
+
+    _DIM = 384
+
+    def embed(self, text: str) -> list[float]:  # noqa: ARG002
+        return [0.0] * self._DIM
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] * self._DIM for _ in texts]
+
+
 # ---------------------------------------------------------------------------
 # Default thresholds (used when state store has no value)
 # ---------------------------------------------------------------------------
+
+_DEFAULT_BATTERY_THRESHOLDS: dict[str, int] = {
+    "critical": 10,
+    "warning": 20,
+    "info": 30,
+}
+
+_DEFAULT_OFFLINE_HOURS_THRESHOLDS: dict[str, int] = {
+    "critical": 24,
+    "warning": 1,
+}
+
+# Severity → memory importance mapping (device health check)
+_SEVERITY_IMPORTANCE: dict[str, float] = {
+    "critical": 8.0,
+    "warning": 6.5,
+    "info": 5.0,
+}
+
+_TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
 _DEFAULT_ENERGY_THRESHOLDS: dict[str, float] = {
     "anomaly_pct": 20.0,
@@ -60,7 +97,211 @@ _TOP_N_CONSUMERS = 5
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Battery / offline threshold loading helpers
+# ---------------------------------------------------------------------------
+
+
+async def _load_battery_thresholds(pool: asyncpg.Pool) -> dict[str, int]:
+    """Load battery thresholds from state store; fall back to defaults."""
+    raw = await state_get(pool, "home:thresholds:battery")
+    if raw is None:
+        logger.warning("home:thresholds:battery not found in state store; using default thresholds")
+        return dict(_DEFAULT_BATTERY_THRESHOLDS)
+    if not isinstance(raw, dict):
+        logger.warning(
+            "home:thresholds:battery has unexpected type %r; using default thresholds",
+            type(raw).__name__,
+        )
+        return dict(_DEFAULT_BATTERY_THRESHOLDS)
+    return {
+        "critical": int(raw.get("critical", _DEFAULT_BATTERY_THRESHOLDS["critical"])),
+        "warning": int(raw.get("warning", _DEFAULT_BATTERY_THRESHOLDS["warning"])),
+        "info": int(raw.get("info", _DEFAULT_BATTERY_THRESHOLDS["info"])),
+    }
+
+
+async def _load_offline_hours_thresholds(pool: asyncpg.Pool) -> dict[str, int]:
+    """Load offline-hours thresholds from state store; fall back to defaults."""
+    raw = await state_get(pool, "home:thresholds:offline_hours")
+    if raw is None:
+        logger.warning(
+            "home:thresholds:offline_hours not found in state store; using default thresholds"
+        )
+        return dict(_DEFAULT_OFFLINE_HOURS_THRESHOLDS)
+    if not isinstance(raw, dict):
+        logger.warning(
+            "home:thresholds:offline_hours has unexpected type %r; using default thresholds",
+            type(raw).__name__,
+        )
+        return dict(_DEFAULT_OFFLINE_HOURS_THRESHOLDS)
+    return {
+        "critical": int(raw.get("critical", _DEFAULT_OFFLINE_HOURS_THRESHOLDS["critical"])),
+        "warning": int(raw.get("warning", _DEFAULT_OFFLINE_HOURS_THRESHOLDS["warning"])),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Battery / offline classification helpers (pure functions — easily unit-tested)
+# ---------------------------------------------------------------------------
+
+
+def classify_battery(value: float, thresholds: dict[str, int]) -> str | None:
+    """Classify a battery level into a severity string.
+
+    Args:
+        value: Numeric battery percentage (e.g. 15.0).
+        thresholds: Dict with keys ``critical``, ``warning``, ``info``.
+
+    Returns:
+        ``"critical"``, ``"warning"``, ``"info"``, or ``None`` if value
+        exceeds the ``info`` threshold (device is healthy).
+    """
+    if value <= thresholds["critical"]:
+        return "critical"
+    if value <= thresholds["warning"]:
+        return "warning"
+    if value <= thresholds["info"]:
+        return "info"
+    return None
+
+
+def classify_offline(last_changed: datetime | None, thresholds: dict[str, int]) -> str | None:
+    """Classify an offline device by how long it has been unreachable.
+
+    Args:
+        last_changed: UTC datetime of the entity's last state change,
+            or ``None`` if unknown.
+        thresholds: Dict with keys ``critical`` (hours) and ``warning`` (hours).
+
+    Returns:
+        ``"critical"`` or ``"warning"`` if the device has been offline
+        long enough, or ``None`` if below the warning threshold.
+    """
+    if last_changed is None:
+        # Unknown last_changed — treat as critical (safe default)
+        return "critical"
+    now = datetime.now(UTC)
+    # Ensure last_changed is timezone-aware
+    if last_changed.tzinfo is None:
+        last_changed = last_changed.replace(tzinfo=UTC)
+    hours_offline = (now - last_changed).total_seconds() / 3600.0
+    if hours_offline > thresholds["critical"]:
+        return "critical"
+    if hours_offline > thresholds["warning"]:
+        return "warning"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Device health check memory storage helper
+# ---------------------------------------------------------------------------
+
+
+async def _store_device_fact(
+    pool: asyncpg.Pool,
+    *,
+    subject: str,
+    content: str,
+    importance: float,
+    tags: list[str],
+) -> None:
+    """Store a device_issue fact in the home butler's memory.
+
+    Uses a no-op embedding engine so the job runs without sentence-transformers.
+    Logs warnings on failure and does not propagate exceptions.
+    """
+    try:
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="device_issue",
+            content=content,
+            embedding_engine=_NoOpEmbeddingEngine(),
+            importance=importance,
+            permanence="volatile",
+            tags=tags,
+        )
+    except Exception:
+        logger.exception("device_health_check: failed to store memory fact for subject=%r", subject)
+
+
+# ---------------------------------------------------------------------------
+# Device health check notification helpers
+# ---------------------------------------------------------------------------
+
+
+def _entity_subject(entity_id: str) -> str:
+    """Convert an HA entity_id to a slug suitable for memory subject.
+
+    E.g. ``"sensor.basement_battery"`` → ``"basement-battery"``.
+    """
+    parts = entity_id.split(".", 1)
+    name = parts[-1] if len(parts) > 1 else entity_id
+    return name.replace("_", "-")
+
+
+def _build_health_check_notification(
+    *,
+    issues: list[dict[str, Any]],
+    devices_checked: int,
+    critical_count: int,
+    warning_count: int,
+    info_count: int,
+) -> str:
+    """Build the Telegram notification message for device health check results.
+
+    Args:
+        issues: List of issue dicts (entity_id, friendly_name, issue_type,
+            severity, value, description).
+        devices_checked: Total number of entities surveyed.
+        critical_count: Number of critical-severity issues.
+        warning_count: Number of warning-severity issues.
+        info_count: Number of info-severity issues.
+
+    Returns:
+        Formatted text message for Telegram.
+    """
+    if not issues or (critical_count == 0 and warning_count == 0):
+        # All-clear (may still have info-only issues)
+        if info_count > 0:
+            info_lines = [
+                f"  \u2022 {i['friendly_name']}: {i['description']}"
+                for i in issues
+                if i["severity"] == "info"
+            ]
+            info_block = "\n".join(info_lines)
+            return (
+                f"\u2705 Device Health Check ({devices_checked} device(s) checked)\n\n"
+                f"\u2139\ufe0f Low battery (info):\n{info_block}"
+            )
+        return (
+            f"\u2705 Device Health Check: all {devices_checked} device(s) healthy"
+            " \u2014 no issues found."
+        )
+
+    lines: list[str] = [f"\U0001f514 Device Health Check ({devices_checked} device(s) checked)\n"]
+
+    # Critical issues first
+    critical_issues = [i for i in issues if i["severity"] == "critical"]
+    if critical_issues:
+        lines.append("\U0001f534 Critical:")
+        for issue in critical_issues:
+            lines.append(f"  \u2022 {issue['friendly_name']}: {issue['description']}")
+        lines.append("")
+
+    # Warning issues
+    warning_issues = [i for i in issues if i["severity"] == "warning"]
+    if warning_issues:
+        lines.append("\U0001f7e0 Warning:")
+        for issue in warning_issues:
+            lines.append(f"  \u2022 {issue['friendly_name']}: {issue['description']}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+# ---------------------------------------------------------------------------
+# Energy digest internal helpers
 # ---------------------------------------------------------------------------
 
 
@@ -727,28 +968,197 @@ async def run_energy_digest(
 
 
 # ---------------------------------------------------------------------------
-# Device health check (stub — full implementation in a future issue)
+# Device health check — full implementation
 # ---------------------------------------------------------------------------
 
 
-async def run_device_health_check(pool: asyncpg.Pool) -> dict[str, Any]:
-    """Stub: device health check for the home butler (no-op).
+async def run_device_health_check(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Check battery levels and offline status for all HA entity snapshots.
 
-    Full implementation pending (home-deterministic-jobs feature work).
-    When implemented, this will survey all HA entities for offline status and
-    low battery levels, classify issues using configurable thresholds from the
-    state store (``home:thresholds:battery``, ``home:thresholds:offline_hours``),
-    store findings in memory, and send a Telegram notification with the results.
+    Steps:
+    1. Load battery and offline thresholds from state store.
+    2. Query ha_entity_snapshot for all entities.
+    3. Classify battery issues (entity_id/friendly_name contains "battery").
+    4. Classify offline devices (state "unavailable" or "unknown").
+    5. Store memory facts for each issue found.
+    6. Send a Telegram notification with the summary.
 
-    Returns a zeroed summary dict with keys: ``devices_checked``,
-    ``issues_found``, ``critical_count``, ``warning_count``.
+    Args:
+        pool: asyncpg connection pool for the home butler's database.
+        job_args: Optional job arguments (currently unused).
+
+    Returns:
+        Dict with keys:
+        - ``devices_checked`` (int): Total number of entity rows checked.
+        - ``issues_found`` (int): Total issues (battery + offline).
+        - ``critical_count`` (int): Issues classified as critical.
+        - ``warning_count`` (int): Issues classified as warning.
     """
-    logger.info("device_health_check: stub — full implementation pending")
+    del job_args  # reserved for future parameterisation
+
+    # ------------------------------------------------------------------
+    # 1. Load thresholds
+    # ------------------------------------------------------------------
+    battery_thresholds = await _load_battery_thresholds(pool)
+    offline_thresholds = await _load_offline_hours_thresholds(pool)
+
+    # ------------------------------------------------------------------
+    # 2. Query entity snapshot
+    # ------------------------------------------------------------------
+    rows = await pool.fetch(
+        """
+        SELECT entity_id, state, attributes, last_updated
+        FROM ha_entity_snapshot
+        ORDER BY entity_id
+        """
+    )
+
+    if not rows:
+        logger.info("device_health_check: ha_entity_snapshot is empty; sending alert")
+        await _notify_owner_telegram(
+            pool,
+            "\u26a0\ufe0f Device Health Check: Home Assistant entity data is unavailable. "
+            "The connector may not have run yet or was recently reset.",
+        )
+        return {"error": "no_entity_snapshot"}
+
+    devices_checked = len(rows)
+
+    # ------------------------------------------------------------------
+    # 3 & 4. Classify battery and offline issues
+    # ------------------------------------------------------------------
+    issues: list[dict[str, Any]] = []
+
+    for row in rows:
+        entity_id: str = row["entity_id"]
+        state: str = row["state"] or ""
+        attributes = row["attributes"]
+        last_updated = row["last_updated"]
+
+        # Decode attributes if stored as string
+        if isinstance(attributes, str):
+            try:
+                attributes = json.loads(attributes)
+            except (json.JSONDecodeError, ValueError):
+                attributes = {}
+        if not isinstance(attributes, dict):
+            attributes = {}
+
+        friendly_name: str = attributes.get("friendly_name", entity_id)
+
+        # ---- Battery classification ----------------------------------------
+        is_battery = "battery" in entity_id.lower() or "battery" in friendly_name.lower()
+        if is_battery:
+            try:
+                battery_pct = float(state)
+            except (ValueError, TypeError):
+                battery_pct = None
+
+            if battery_pct is not None and battery_pct <= battery_thresholds["info"]:
+                severity = classify_battery(battery_pct, battery_thresholds)
+                if severity is not None:
+                    issues.append(
+                        {
+                            "entity_id": entity_id,
+                            "friendly_name": friendly_name,
+                            "issue_type": "battery",
+                            "severity": severity,
+                            "value": battery_pct,
+                            "description": f"battery at {battery_pct:.0f}%",
+                        }
+                    )
+
+        # ---- Offline classification -----------------------------------------
+        if state in ("unavailable", "unknown"):
+            # Parse last_updated to datetime
+            last_changed_dt: datetime | None = None
+            if last_updated is not None:
+                if isinstance(last_updated, datetime):
+                    last_changed_dt = last_updated
+                elif isinstance(last_updated, str):
+                    try:
+                        last_changed_dt = datetime.fromisoformat(last_updated)
+                    except ValueError:
+                        last_changed_dt = None
+
+            severity = classify_offline(last_changed_dt, offline_thresholds)
+            if severity is not None:
+                issues.append(
+                    {
+                        "entity_id": entity_id,
+                        "friendly_name": friendly_name,
+                        "issue_type": "offline",
+                        "severity": severity,
+                        "value": state,
+                        "description": f"offline (state: {state})",
+                    }
+                )
+
+    # ------------------------------------------------------------------
+    # 5. Store memory facts
+    # ------------------------------------------------------------------
+    critical_count = sum(1 for i in issues if i["severity"] == "critical")
+    warning_count = sum(1 for i in issues if i["severity"] == "warning")
+    info_count = sum(1 for i in issues if i["severity"] == "info")
+    issues_found = len(issues)
+
+    if issues:
+        for issue in issues:
+            subject = _entity_subject(issue["entity_id"])
+            content = (
+                f"{issue['friendly_name']}: {issue['description']}"
+                f" \u2014 {issue['severity']} severity"
+            )
+            importance = _SEVERITY_IMPORTANCE[issue["severity"]]
+            tags = ["maintenance", issue["issue_type"]]
+            await _store_device_fact(
+                pool,
+                subject=subject,
+                content=content,
+                importance=importance,
+                tags=tags,
+            )
+    else:
+        # All-clear: store a healthy-fleet fact
+        await _store_device_fact(
+            pool,
+            subject="device-fleet",
+            content=(
+                f"All {devices_checked} device(s) healthy"
+                " \u2014 no battery or connectivity issues."
+            ),
+            importance=3.0,
+            tags=["maintenance"],
+        )
+
+    # ------------------------------------------------------------------
+    # 6. Send notification
+    # ------------------------------------------------------------------
+    notification = _build_health_check_notification(
+        issues=issues,
+        devices_checked=devices_checked,
+        critical_count=critical_count,
+        warning_count=warning_count,
+        info_count=info_count,
+    )
+    await _notify_owner_telegram(pool, notification)
+
+    logger.info(
+        "device_health_check: devices_checked=%d issues_found=%d critical=%d warning=%d",
+        devices_checked,
+        issues_found,
+        critical_count,
+        warning_count,
+    )
+
     return {
-        "devices_checked": 0,
-        "issues_found": 0,
-        "critical_count": 0,
-        "warning_count": 0,
+        "devices_checked": devices_checked,
+        "issues_found": issues_found,
+        "critical_count": critical_count,
+        "warning_count": warning_count,
     }
 
 
