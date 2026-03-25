@@ -386,26 +386,64 @@ async def check_memory_deletion_preconditions(
     raw_table = memory_table_map[memory_type]
     memory_table = f"{schema}.{raw_table}" if schema else raw_table
 
-    # Query the memory row (uses "memory" token so mock dispatchers can match)
-    memory_row = await pool.fetchrow(
-        f"SELECT id, validity, successor_id FROM {memory_table}"
-        f" /* memory validity check */ WHERE id = $1",
-        memory_id,
-    )
-    if memory_row is None:
-        return FAILURE_MESSAGES["memory_not_found"].format(
-            id=str(memory_id), memory_type=memory_type
+    # Query the memory row — each type has a different schema:
+    # - facts: has validity (active/retracted/superseded/expired) and supersedes_id
+    # - episodes: have expires_at; "forgotten" = expires_at in the past
+    # - rules: have metadata JSONB; "forgotten" = metadata->>'forgotten' == 'true'
+    # Use type-specific queries (uses "memory" token so mock dispatchers can match)
+    if memory_type == "fact":
+        memory_row = await pool.fetchrow(
+            f"SELECT id, validity, supersedes_id FROM {memory_table}"
+            f" /* memory validity check */ WHERE id = $1",
+            memory_id,
         )
+        if memory_row is None:
+            return FAILURE_MESSAGES["memory_not_found"].format(
+                id=str(memory_id), memory_type=memory_type
+            )
+        validity = memory_row.get("validity", "active")
+        if validity == "retracted":
+            date_str = "unknown"
+            return FAILURE_MESSAGES["memory_already_retracted"].format(
+                id=str(memory_id), date=date_str
+            )
+        if validity == "superseded":
+            successor_id = memory_row.get("supersedes_id", "unknown")
+            return FAILURE_MESSAGES["memory_superseded"].format(
+                id=str(memory_id), successor_id=str(successor_id)
+            )
+    elif memory_type == "episode":
+        memory_row = await pool.fetchrow(
+            f"SELECT id, expires_at FROM {memory_table} /* memory validity check */ WHERE id = $1",
+            memory_id,
+        )
+        if memory_row is None:
+            return FAILURE_MESSAGES["memory_not_found"].format(
+                id=str(memory_id), memory_type=memory_type
+            )
+        # Episodes are "forgotten" if expires_at is already in the past
+        expires_at = memory_row.get("expires_at")
+        if expires_at is not None and expires_at <= datetime.now(UTC):
+            return FAILURE_MESSAGES["memory_already_retracted"].format(
+                id=str(memory_id), date=expires_at.isoformat()
+            )
+    else:  # rule
+        memory_row = await pool.fetchrow(
+            f"SELECT id, metadata FROM {memory_table} /* memory validity check */ WHERE id = $1",
+            memory_id,
+        )
+        if memory_row is None:
+            return FAILURE_MESSAGES["memory_not_found"].format(
+                id=str(memory_id), memory_type=memory_type
+            )
+        import json as _json
 
-    validity = memory_row.get("validity", "active")
-    if validity == "retracted":
-        date_str = "unknown"
-        return FAILURE_MESSAGES["memory_already_retracted"].format(id=str(memory_id), date=date_str)
-    if validity == "superseded":
-        successor_id = memory_row.get("successor_id", "unknown")
-        return FAILURE_MESSAGES["memory_superseded"].format(
-            id=str(memory_id), successor_id=str(successor_id)
-        )
+        metadata_raw = memory_row.get("metadata") or {}
+        metadata = _json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
+        if metadata.get("forgotten"):
+            return FAILURE_MESSAGES["memory_already_retracted"].format(
+                id=str(memory_id), date="unknown"
+            )
 
     return None
 
@@ -943,7 +981,12 @@ async def handle_misroute(
             target_session_id=str(target_session_id),
             correct_butler=correct_butler,
         )
-    except Exception:
+    except Exception as exc:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "Switchboard call_tool('correct_route') failed: %s", exc, exc_info=True
+        )
         err = FAILURE_MESSAGES["switchboard_unreachable"]
         cid = await create_correction(
             pool,
