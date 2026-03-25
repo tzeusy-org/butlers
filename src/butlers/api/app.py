@@ -37,6 +37,7 @@ from butlers.api.routers.calendar_workspace import (
     router as calendar_workspace_router,
 )
 from butlers.api.routers.cli_auth import router as cli_auth_router
+from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.costs import router as costs_router
 from butlers.api.routers.healing import router as healing_router
 from butlers.api.routers.ingestion_events import router as ingestion_events_router
@@ -233,6 +234,7 @@ def create_app(
     app.include_router(provider_settings_router)
     app.include_router(spotify_router)
     app.include_router(whatsapp_router)
+    app.include_router(conversations_router)
 
     # --- Auto-discovered Butler Routers ---
     # Mount after static/core routers so dynamic routes cannot shadow
