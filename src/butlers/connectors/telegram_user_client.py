@@ -77,16 +77,20 @@ from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 # Telethon is marked as optional dependency - handle import gracefully
 try:
     from telethon import TelegramClient, events
+    from telethon import functions as tl_functions
     from telethon.sessions import StringSession
     from telethon.tl.types import Message as TelegramMessage
+    from telethon.tl.types.updates import State as TelethonUpdateState
 
     TELETHON_AVAILABLE = True
 except ImportError:
     TELETHON_AVAILABLE = False
     TelegramClient = None
     events = None
+    tl_functions = None
     StringSession = None
     TelegramMessage = None
+    TelethonUpdateState = None
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +258,7 @@ class TelegramUserClientConnector:
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
         self._last_message_id: int | None = None
+        self._persisted_update_state: dict[str, Any] | None = None
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -327,12 +332,16 @@ class TelegramUserClientConnector:
         # Load checkpoint
         await self._load_checkpoint()
 
-        # Initialize Telegram client with user session
+        # Initialize Telegram client with user session.
+        # Restore persisted Telethon update state (pts/qts/date/seq) into the
+        # session BEFORE connecting so the client knows where it left off.
         session = StringSession(self._config.telegram_user_session)
+        self._restore_telethon_update_state(session)
         self._telegram_client = TelegramClient(
             session,
             self._config.telegram_api_id,
             self._config.telegram_api_hash,
+            receive_updates=True,
         )
 
         # Load ingestion policy rules before entering the ingestion loop.
@@ -362,20 +371,78 @@ class TelegramUserClientConnector:
             await self._telegram_client.start()
             logger.info("Connected to Telegram as user-client")
 
-            # Force Telethon to sync internal update state (pts/date/seq).
-            # Without this, StringSession clients may not receive real-time
-            # NewMessage events because the update gap is unknown.
-            await self._telegram_client.get_dialogs(limit=1)
+            # Register live message handler BEFORE syncing update state so that
+            # any events delivered during catch_up() are captured.
+            @self._telegram_client.on(events.NewMessage)
+            async def handle_new_message(event: events.NewMessage.Event) -> None:
+                """Handle new message events from Telegram."""
+                logger.info(
+                    "NewMessage event received",
+                    extra={
+                        "message_id": event.message.id,
+                        "chat_id": event.message.chat_id,
+                        "sender_id": event.message.sender_id,
+                    },
+                )
+                await self._buffer_message(event.message)
+
+            # Sync Telethon update state so the client can receive real-time
+            # NewMessage events.
+            #
+            # StringSession does not persist pts/date/seq, and get_dialogs()
+            # does NOT populate the session update state in Telethon 1.42+.
+            # We must explicitly fetch state via GetStateRequest and then call
+            # catch_up() to activate Telethon's internal update machinery.
+            #
+            # CRITICAL: Telethon only activates live-update delivery when
+            # catch_up() processes a non-empty getDifference response.  If the
+            # session state equals the server state, catch_up() sees "nothing
+            # to do" and the update handler stays dormant.  We ALWAYS rewind
+            # pts slightly so catch_up() has a delta to process, which properly
+            # initialises the update loop.  The handler registered above
+            # captures any replayed events — duplicates are handled downstream
+            # by the message-ID checkpoint.
+            _PTS_REWIND = 5  # small enough to avoid large replays
+
+            server_state = await self._telegram_client(tl_functions.updates.GetStateRequest())
+            persisted = self._telegram_client.session.get_update_state(0)
+
+            # Use persisted pts if available (may be behind server = good),
+            # otherwise use server pts.  Either way, rewind by _PTS_REWIND to
+            # guarantee catch_up() gets a non-empty getDifference.
+            base_pts = (
+                persisted.pts
+                if persisted is not None and getattr(persisted, "pts", 0) > 0
+                else server_state.pts
+            )
+            rewind_pts = max(1, base_pts - _PTS_REWIND)
+
+            seed_state = TelethonUpdateState(
+                pts=rewind_pts,
+                qts=server_state.qts,
+                date=server_state.date,
+                seq=server_state.seq,
+                unread_count=0,
+            )
+            self._telegram_client.session.set_update_state(0, seed_state)
+            logger.info(
+                "Seeded Telethon update state for catch_up",
+                extra={
+                    "server_pts": server_state.pts,
+                    "persisted_pts": getattr(persisted, "pts", None) if persisted else None,
+                    "seed_pts": rewind_pts,
+                    "seq": server_state.seq,
+                },
+            )
+            await self._telegram_client.catch_up()
+
+            # Snapshot whatever state the session now holds so future restarts
+            # can resume without missing events.
+            await self._save_telethon_update_state()
 
             # Optional: bounded backfill on startup
             if self._config.backfill_window_h:
                 await self._perform_backfill()
-
-            # Register live message handler
-            @self._telegram_client.on(events.NewMessage)
-            async def handle_new_message(event: events.NewMessage.Event) -> None:
-                """Handle new message events from Telegram."""
-                await self._buffer_message(event.message)
 
             # Keep running until stopped
             logger.info("Telegram user-client connector running, waiting for messages...")
@@ -395,6 +462,11 @@ class TelegramUserClientConnector:
     async def stop(self) -> None:
         """Stop the connector gracefully."""
         self._running = False
+
+        # Snapshot Telethon update state BEFORE disconnecting so the next
+        # restart can resume from the correct pts/date/seq.
+        if self._telegram_client is not None and self._telegram_client.is_connected():
+            await self._save_telethon_update_state()
 
         # Cancel the flush scanner task first
         if self._flush_scanner_task is not None and not self._flush_scanner_task.done():
@@ -466,7 +538,12 @@ class TelegramUserClientConnector:
         if self._last_message_id is None:
             return (None, None)
 
-        cursor = json.dumps({"last_message_id": self._last_message_id})
+        payload: dict[str, Any] = {"last_message_id": self._last_message_id}
+        update_state = self._get_telethon_update_state_dict()
+        if update_state is not None:
+            payload["telethon_update_state"] = update_state
+
+        cursor = json.dumps(payload)
         updated_at = (
             datetime.fromtimestamp(self._last_checkpoint_save, UTC)
             if self._last_checkpoint_save is not None
@@ -1606,33 +1683,106 @@ class TelegramUserClientConnector:
             if raw is not None:
                 data = json.loads(raw)
                 self._last_message_id = data.get("last_message_id")
+                # Telethon update state is stored alongside the message checkpoint.
+                self._persisted_update_state = data.get("telethon_update_state")
                 logger.info(
                     "Loaded checkpoint from DB",
-                    extra={"last_message_id": self._last_message_id},
+                    extra={
+                        "last_message_id": self._last_message_id,
+                        "has_update_state": self._persisted_update_state is not None,
+                    },
                 )
             else:
+                self._persisted_update_state = None
                 logger.info("No checkpoint in DB, starting from scratch")
         except Exception:
+            self._persisted_update_state = None
             logger.exception("Failed to load checkpoint from DB, starting from scratch")
 
     async def _save_checkpoint(self) -> None:
-        """Persist checkpoint to DB."""
+        """Persist checkpoint (message ID + Telethon update state) to DB."""
         try:
             from butlers.connectors.cursor_store import save_cursor
+
+            payload: dict[str, Any] = {"last_message_id": self._last_message_id}
+
+            # Snapshot Telethon update state so restarts can resume without
+            # missing events.
+            update_state = self._get_telethon_update_state_dict()
+            if update_state is not None:
+                payload["telethon_update_state"] = update_state
 
             await save_cursor(
                 self._cursor_pool,
                 "telegram_user_client",
                 self._config.endpoint_identity,
-                json.dumps({"last_message_id": self._last_message_id}),
+                json.dumps(payload),
             )
             self._last_checkpoint_save = time.time()
             logger.debug(
                 "Saved checkpoint to DB",
-                extra={"last_message_id": self._last_message_id},
+                extra={
+                    "last_message_id": self._last_message_id,
+                    "pts": update_state.get("pts") if update_state else None,
+                },
             )
         except Exception:
             logger.exception("Failed to save checkpoint to DB")
+
+    # -------------------------------------------------------------------------
+    # Internal: Telethon update state persistence
+    # -------------------------------------------------------------------------
+
+    def _get_telethon_update_state_dict(self) -> dict[str, Any] | None:
+        """Read current Telethon update state as a JSON-serialisable dict."""
+        if self._telegram_client is None:
+            return None
+        state = self._telegram_client.session.get_update_state(0)
+        if state is None:
+            return None
+        return {
+            "pts": state.pts,
+            "qts": state.qts,
+            "date": state.date.isoformat() if state.date else None,
+            "seq": state.seq,
+        }
+
+    def _restore_telethon_update_state(self, session: Any) -> None:
+        """Inject persisted pts/qts/date/seq into a StringSession.
+
+        Must be called BEFORE ``TelegramClient.start()`` so the client knows
+        where it left off and ``catch_up()`` can request only the delta.
+        """
+        saved = getattr(self, "_persisted_update_state", None)
+        if saved is None:
+            return
+
+        try:
+            pts = saved.get("pts", 0)
+            if not pts:
+                return
+
+            date_val = saved.get("date")
+            date_obj = datetime.fromisoformat(date_val) if date_val else datetime.now(UTC)
+
+            state = TelethonUpdateState(
+                pts=pts,
+                qts=saved.get("qts", 0),
+                date=date_obj,
+                seq=saved.get("seq", 0),
+                unread_count=0,
+            )
+            session.set_update_state(0, state)
+            logger.info(
+                "Restored Telethon update state into session",
+                extra={"pts": pts, "date": date_val, "seq": saved.get("seq", 0)},
+            )
+        except Exception:
+            logger.exception("Failed to restore Telethon update state — will bootstrap")
+
+    async def _save_telethon_update_state(self) -> None:
+        """Persist current Telethon update state via the checkpoint cursor."""
+        await self._save_checkpoint()
 
 
 async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
