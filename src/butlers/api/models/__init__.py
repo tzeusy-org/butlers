@@ -327,6 +327,15 @@ from butlers.api.models.connector import (  # noqa: E402
     ConnectorSummary,
     derive_liveness,
 )
+from butlers.api.models.conversation import (  # noqa: E402
+    ConversationCreateRequest,
+    ConversationMessage,
+    ConversationSearchResult,
+    ConversationStats,
+    ConversationSummary,
+    ConversationUpdateRequest,
+    MessageCreateRequest,
+)
 from butlers.api.models.memory import (  # noqa: E402
     Episode,
     Fact,
@@ -362,6 +371,12 @@ __all__ = [
     "CostSummary",
     "ButlerDetail",
     "ButlerSummary",
+    "ConversationCreateRequest",
+    "ConversationMessage",
+    "ConversationSearchResult",
+    "ConversationStats",
+    "ConversationSummary",
+    "ConversationUpdateRequest",
     "ConnectorCheckpoint",
     "ConnectorCounters",
     "ConnectorDaySummary",
@@ -378,6 +393,7 @@ __all__ = [
     "MemoryActivity",
     "MemoryStats",
     "MemoryRule",
+    "MessageCreateRequest",
     "ErrorDetail",
     "ErrorResponse",
     "ExpireStaleActionsResponse",
