@@ -26,24 +26,27 @@ WORKDIR /app
 # Optional: extra dependency groups (e.g. "live-listener" for audio connector)
 ARG EXTRAS=""
 
-# Copy project files
-COPY pyproject.toml .
-COPY src/ src/
-COPY alembic/alembic.ini alembic.ini
-COPY alembic/ alembic/
-COPY scripts/ scripts/
-
 # Install extra system dependencies for optional extras
 RUN if echo "$EXTRAS" | grep -q "live-listener"; then \
       apt-get update && apt-get install -y libportaudio2 && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Install production dependencies
+# Copy dependency manifests first for better layer caching —
+# source changes won't invalidate the dependency install layer.
+COPY pyproject.toml uv.lock ./
+
+# Install production dependencies (cached unless pyproject.toml or uv.lock change)
 RUN if [ -n "$EXTRAS" ]; then \
       uv sync --no-dev --extra "$EXTRAS"; \
     else \
       uv sync --no-dev; \
     fi
+
+# Copy application code and supporting files
+COPY src/ src/
+COPY alembic/alembic.ini alembic.ini
+COPY alembic/ alembic/
+COPY scripts/ scripts/
 
 # Set entrypoint and default command
 ENTRYPOINT ["uv", "run", "butlers"]

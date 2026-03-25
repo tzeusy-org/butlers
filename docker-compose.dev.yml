@@ -26,18 +26,20 @@ services:
     volumes:
       - ./roster:/app/roster:ro
 
-  # One-shot: create timestamped log directory and "latest" symlink
+  # One-shot: create timestamped log directory and "latest" symlink.
+  # Writes the run dir path using /app/logs prefix so service containers
+  # (which mount ./logs at /app/logs) can use it directly.
   log-init:
     image: alpine:3.19
     entrypoint: ["sh", "-c"]
     command:
       - |
-        RUN_DIR="/logs/$(date +%Y%m%d_%H%M%S)"
-        mkdir -p "$RUN_DIR"
+        STAMP="$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "/logs/$STAMP"
         rm -f /logs/latest
-        ln -s "$RUN_DIR" /logs/latest
-        echo "$RUN_DIR" > /logs/.current_run_dir
-        echo "Log directory: $RUN_DIR"
+        ln -s "$STAMP" /logs/latest
+        echo "/app/logs/$STAMP" > /logs/.current_run_dir
+        echo "Log directory: /app/logs/$STAMP"
     volumes:
       - ./logs:/logs
 

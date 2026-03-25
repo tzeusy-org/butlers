@@ -22,5 +22,7 @@ mkdir -p "$LOG_DIR"
 
 LOG_FILE="${LOG_DIR}/output.log"
 
-# Tee to both docker stdout AND the log file.
-exec "$@" 2>&1 | tee -a "$LOG_FILE"
+# Redirect stdout+stderr to both the log file AND docker logs (fd 1).
+# Using process substitution preserves the service as PID 1 so Docker
+# signals (SIGTERM) reach it directly for graceful shutdown.
+exec "$@" > >(tee -a "$LOG_FILE") 2>&1
