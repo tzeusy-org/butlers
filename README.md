@@ -3,7 +3,7 @@
 ![CI](https://github.com/Tzeusy/butlers/actions/workflows/ci.yml/badge.svg)
 ![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/Tzeusy/33d1433ee529f878bd4b4a8bf4609f96/raw/butlers-coverage.json)
 
-A personal AI agent framework where each **butler** is a long-running MCP server daemon that you interact with day-to-day. Butlers handle recurring tasks, manage integrations, and act on your behalf — powered by an agentic framework under the hood. Fully modular and extensible.
+A personal AI agent system where each **butler** is a long-running MCP server daemon that you interact with day-to-day. Butlers handle recurring tasks, manage integrations, and act on your behalf — powered by an extensible module framework under the hood.
 
 > **[Full Documentation](docs/index.md)** — start here for the complete guide, from overview through architecture to operations.
 
@@ -25,7 +25,7 @@ Each butler runs as a persistent daemon with built-in infrastructure:
 - **Session log** — tracks what happened and when
 - **Custom tools** — Tools specific to a butler's functionality
 
-On top of that, butlers gain capabilities through **modules** — pluggable integrations like Emails, Telegram, Calendars, Slack, and GitHub. Mix and match modules to build the butler you need.
+On top of that, butlers gain capabilities through **modules** — pluggable integrations like Email, Telegram, Calendar, and WhatsApp, among others. Mix and match modules to build the butler you need.
 
 See [Concepts](docs/concepts/index.md) for the full mental model.
 

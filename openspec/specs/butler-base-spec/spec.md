@@ -1,7 +1,7 @@
-# Butler Framework and Roster Conventions
+# Butler Architecture and Roster Conventions
 
 ## Purpose
-Defines what a "butler" is as an architectural primitive, the shared conventions all butlers follow, and the extensibility model that allows new domain-specialist butlers to be added. This is the foundational spec — individual butler role specs (`butler-{name}/spec.md`) describe each role's domain-specific behavior.
+Defines what a "butler" is as an architectural primitive, the shared conventions all butlers follow, and the extensible module system that allows new domain-specialist butlers to be added. This is the foundational spec — individual butler role specs (`butler-{name}/spec.md`) describe each role's domain-specific behavior.
 
 ## ADDED Requirements
 

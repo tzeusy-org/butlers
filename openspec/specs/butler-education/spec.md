@@ -8,27 +8,26 @@ The Education butler (port 41107) is a personalized tutor with spaced repetition
 
 ### Requirement: Education Butler Identity and Runtime
 
-The education butler SHALL be configured with the correct port, description, model tier, and runtime settings matching the designed identity.
+The education butler SHALL be configured with the correct port, description, complexity requirements, and concurrency settings matching the designed identity. The model catalog (`shared.model_catalog` + `shared.butler_model_overrides`) is the authoritative source for model selection; `butler.toml` contains only seed/fallback values.
 
 #### Scenario: Identity and port
 
 - **WHEN** the education butler is running
 - **THEN** it operates on port 41107 with description "Personalized tutor with spaced repetition, mind maps, and adaptive learning"
-- **AND** it uses the `claude` runtime type with model `claude-opus-4-6`
 - **AND** it permits a maximum of 3 concurrent sessions
 
-#### Scenario: Model tier rationale is enforced by configuration
+#### Scenario: Complexity tier requirements
 
-- **WHEN** the `butler.toml` is loaded
-- **THEN** the `[butler.runtime]` section MUST specify `model = "claude-opus-4-6"`
-- **AND** no smaller or alternative model alias SHALL appear in the configuration
-- **AND** the `[runtime]` section MUST specify `type = "claude"`
+- **WHEN** the education butler spawns sessions for teaching, diagnostic, or curriculum work
+- **THEN** it MUST request complexity tier `HIGH` or `EXTRA_HIGH` from the model catalog
+- **AND** the model catalog MUST have at least one enabled entry at those tiers that can satisfy the request
+- **AND** the actual model resolved is determined by the catalog's priority ranking, not hardcoded in config
 
-#### Scenario: Runtime section exists alongside butler runtime section
+#### Scenario: Runtime section contains concurrency settings only
 
 - **WHEN** the `butler.toml` file is parsed
-- **THEN** it MUST contain both a `[butler.runtime]` section (with model and max_concurrent_sessions) and a `[runtime]` section (with type)
-- **AND** both sections MUST be present; absence of either is a configuration error
+- **THEN** `[butler.runtime]` MUST specify `max_concurrent_sessions`
+- **AND** model identity (runtime_type, model) lives in `[butler.seed_configs]` as a fallback only — the model catalog is authoritative at runtime
 
 ---
 
@@ -294,23 +293,25 @@ The education butler SHALL provide five domain-specific skills plus two shared s
 
 ---
 
-### Requirement: High-Tier Model Selection Rationale
+### Requirement: High-Tier Complexity Rationale
 
-The education butler SHALL use Claude Opus 4.6 as its model, and this selection SHALL be justified by the pedagogical demands of the domain.
+The education butler SHALL request HIGH or EXTRA_HIGH complexity tiers, justified by the pedagogical demands of the domain. The specific model fulfilling that tier is resolved by the model catalog at runtime.
 
-#### Scenario: Model tier is not configurable to a lower tier at runtime
+#### Scenario: Complexity tier selection by task type
 
 - **WHEN** the education butler spawns an ephemeral session
-- **THEN** the spawner MUST use the model specified in `butler.toml` (`claude-opus-4-6`)
-- **AND** no override mechanism at the session level MUST silently downgrade the model to a smaller tier
+- **THEN** teaching sessions, diagnostic assessments, and curriculum planning MUST request `Complexity.HIGH` or `Complexity.EXTRA_HIGH`
+- **AND** spaced repetition review sessions (shorter, more formulaic) MAY request `Complexity.MEDIUM`
+- **AND** the spawner resolves the actual model via `resolve_model(pool, "education", complexity_tier)`
 
-#### Scenario: Model justification is documented
+#### Scenario: Complexity justification is documented
 
-- **WHEN** the `butler.toml` or adjacent documentation is read
-- **THEN** the rationale for high-tier model selection MUST be traceable: expert domain knowledge, calibrated quiz generation, free-form answer evaluation, and Socratic questioning all require nuanced judgment that smaller models do not reliably provide
+- **WHEN** the education butler's complexity requirements are reviewed
+- **THEN** the rationale MUST be traceable: expert domain knowledge, calibrated quiz generation, free-form answer evaluation, and Socratic questioning all require nuanced judgment that lower complexity tiers do not reliably provide
 
-#### Scenario: Cost mitigation strategy complements model tier
+#### Scenario: Cost mitigation strategy complements complexity tier
 
 - **WHEN** the education butler operates
-- **THEN** cost is mitigated by: single-concept teaching sessions (~2K output tokens), batched spaced repetition reviews (~500 tokens per review session), and nightly analytics computed as a Python job with zero LLM tokens
+- **THEN** cost is mitigated by: single-concept teaching sessions (~2K output tokens), batched spaced repetition reviews (~500 tokens per review session at MEDIUM tier), and nightly analytics computed as a Python job with zero LLM tokens
 - **AND** the `max_concurrent_sessions = 3` cap in `butler.toml` limits parallel spend
+- **AND** review sessions use a lower complexity tier than teaching sessions to further reduce cost

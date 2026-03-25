@@ -15,7 +15,7 @@ A butler must initialize database connections, telemetry, modules, migrations, t
 
 ### Startup Phases
 
-The daemon executes these phases in strict order. A failure at any phase triggers rollback of already-initialized modules via `on_shutdown()`.
+The daemon executes these phases in strict order. A failure at a fatal phase aborts startup. Module-phase failures (phase 9) are non-fatal — the butler continues with the failed module marked unavailable and its dependents cascade-failed.
 
 | Phase | Action | Failure Mode |
 |-------|--------|--------------|
@@ -28,7 +28,7 @@ The daemon executes these phases in strict order. A failure at any phase trigger
 | 7 | Run core Alembic migrations | Fatal |
 | 8 | Run module Alembic migrations | Fatal |
 | 8b | Create CredentialStore; validate module credentials via DB-first resolution | Non-fatal -- logs warnings |
-| 9 | Module `on_startup()` in topological order | Fatal (with rollback) |
+| 9 | Module `on_startup()` in topological order | Non-fatal (degraded -- failed module + dependents marked unavailable) |
 | 10 | Create Spawner with runtime adapter; verify LLM binary on PATH | Fatal if binary missing |
 | 10b | Wire message classification pipeline (switchboard only) | Fatal for switchboard |
 | 11 | Sync TOML schedules to DB | Non-fatal -- logs errors |
