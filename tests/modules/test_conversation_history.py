@@ -67,6 +67,7 @@ class TestHistoryStrategy:
         assert HISTORY_STRATEGY["telegram_bot"] == "realtime"
         assert HISTORY_STRATEGY["telegram_user_client"] == "realtime"
         assert HISTORY_STRATEGY["whatsapp"] == "realtime"
+        assert HISTORY_STRATEGY["whatsapp_user_client"] == "realtime"
         assert HISTORY_STRATEGY["slack"] == "realtime"
         assert HISTORY_STRATEGY["discord"] == "realtime"
 

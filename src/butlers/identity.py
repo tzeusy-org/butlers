@@ -14,13 +14,38 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
+# WhatsApp individual-chat JID suffix for s.whatsapp.net domain.
+_WHATSAPP_INDIVIDUAL_JID_SUFFIX = "@s.whatsapp.net"
+# Regex to extract the E.164-prefix phone number from a WhatsApp individual JID.
+# Matches numeric prefixes like "1234567890" from "1234567890@s.whatsapp.net".
+_WHATSAPP_JID_PHONE_RE = re.compile(r"^(\d+)@s\.whatsapp\.net$")
+
 logger = logging.getLogger(__name__)
+
+
+def _extract_whatsapp_jid_phone(jid: str) -> str | None:
+    """Extract E.164-prefix phone number from a WhatsApp individual JID.
+
+    Parameters
+    ----------
+    jid:
+        WhatsApp JID string (e.g., ``"1234567890@s.whatsapp.net"``).
+
+    Returns
+    -------
+    str | None
+        The phone number string (e.g., ``"1234567890"``), or ``None`` if the
+        JID is not an individual JID (e.g., group JIDs ending in ``@g.us``).
+    """
+    m = _WHATSAPP_JID_PHONE_RE.match(jid)
+    return m.group(1) if m else None
 
 
 @dataclass(frozen=True)
@@ -110,7 +135,38 @@ async def resolve_contact_by_channel(
         return None
 
     if row is None:
-        return None
+        # WhatsApp JID fallback: if no direct match, try phone-number cross-reference.
+        # Extracts the E.164 phone prefix from "<number>@s.whatsapp.net" JIDs and
+        # queries with type="phone" to link against contacts from other providers
+        # (e.g. Google Contacts) that share the same number.
+        if channel_type == "whatsapp_jid":
+            phone = _extract_whatsapp_jid_phone(channel_value)
+            if phone is not None:
+                try:
+                    phone_row: asyncpg.Record | None = await pool.fetchrow(
+                        """
+                        SELECT c.id                          AS contact_id,
+                               c.name                        AS name,
+                               COALESCE(e.roles, '{}')       AS roles,
+                               c.entity_id                   AS entity_id
+                        FROM   shared.contact_info ci
+                        JOIN   shared.contacts c ON c.id = ci.contact_id
+                        LEFT JOIN shared.entities e ON e.id = c.entity_id
+                        WHERE  ci.type = 'phone'
+                          AND  ci.value = $1
+                        LIMIT  1
+                        """,
+                        phone,
+                    )
+                    row = phone_row
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "resolve_contact_by_channel: phone fallback query failed; returning None",
+                        exc_info=True,
+                    )
+                    return None
+        if row is None:
+            return None
 
     contact_id = row["contact_id"]
     if not isinstance(contact_id, UUID):

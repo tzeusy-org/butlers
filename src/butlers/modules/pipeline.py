@@ -69,6 +69,7 @@ HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
     "telegram_bot": "realtime",
     "telegram_user_client": "realtime",
     "whatsapp": "realtime",
+    "whatsapp_user_client": "realtime",
     "slack": "realtime",
     "discord": "realtime",
     # Email

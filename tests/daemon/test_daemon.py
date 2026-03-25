@@ -2656,7 +2656,7 @@ class TestNotifyTool:
 
         params = notify_tool["parameters"]
         channel_prop = params["properties"]["channel"]
-        assert set(channel_prop["enum"]) == {"telegram", "email"}
+        assert set(channel_prop["enum"]) == {"telegram", "email", "whatsapp"}
 
         intent_prop = params["properties"]["intent"]
         assert set(intent_prop["enum"]) == {"send", "reply", "react"}

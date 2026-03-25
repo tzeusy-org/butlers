@@ -166,13 +166,16 @@ _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "No bot <-> user telegram chat has been configured - please add a "
     "telegram_chat_id entity_info entry on the owner entity via the dashboard"
 )
-_INTERACTIVE_ROUTE_CHANNELS: frozenset[str] = frozenset({"telegram_bot", "whatsapp"})
+_INTERACTIVE_ROUTE_CHANNELS: frozenset[str] = frozenset(
+    {"telegram_bot", "whatsapp", "whatsapp_user_client"}
+)
 
 # Source channel → notify (delivery) channel mapping.
 # Source channels identify where a message came from (ingestion);
 # notify channels identify the outbound delivery mechanism.
 _SOURCE_TO_NOTIFY_CHANNEL: dict[str, str] = {
     "telegram_bot": "telegram",
+    "whatsapp_user_client": "whatsapp",
 }
 
 
@@ -3060,6 +3063,47 @@ class ButlerDaemon:
                             normalized_subject,
                         )
 
+                elif channel == "whatsapp":
+                    whatsapp_module = modules_by_name.get("whatsapp")
+                    if whatsapp_module is None:
+                        raise RuntimeError("Messenger whatsapp adapter is unavailable.")
+
+                    rendered_text = (
+                        message_text
+                        if message_text.lstrip().startswith(notify_prefix)
+                        else f"{notify_prefix} {message_text}"
+                    )
+                    if intent == "send":
+                        recipient = notify_request.delivery.recipient
+                        if not recipient:
+                            raise ValueError(
+                                "notify_request.delivery.recipient is required for "
+                                "whatsapp send intent."
+                            )
+                        send_tool = getattr(whatsapp_module, "_send_message", None)
+                        if send_tool is None or not callable(send_tool):
+                            raise RuntimeError(
+                                "WhatsApp module does not expose _send_message method."
+                            )
+                        adapter_result = await send_tool(recipient, rendered_text)
+                    elif intent == "reply":
+                        thread_identity = (
+                            notify_context.source_thread_identity if notify_context else None
+                        )
+                        if not thread_identity:
+                            raise ValueError(
+                                "notify_request.request_context.source_thread_identity is required "
+                                "for whatsapp reply intent."
+                            )
+                        send_tool = getattr(whatsapp_module, "_send_message", None)
+                        if send_tool is None or not callable(send_tool):
+                            raise RuntimeError(
+                                "WhatsApp module does not expose _send_message method."
+                            )
+                        adapter_result = await send_tool(thread_identity, rendered_text)
+                    else:
+                        raise ValueError(f"Unsupported whatsapp intent: {intent}")
+
                 else:
                     raise ValueError(f"Unsupported notify channel: {channel}")
 
@@ -4152,8 +4196,8 @@ class ButlerDaemon:
         @tool_span("notify", butler_name=butler_name)
         async def notify(
             channel: Annotated[
-                Literal["telegram", "email"],
-                Field(description="Delivery channel. Allowed values: telegram | email."),
+                Literal["telegram", "email", "whatsapp"],
+                Field(description="Delivery channel. Allowed values: telegram | email | whatsapp."),
             ],
             message: Annotated[
                 str | None,
@@ -4204,7 +4248,7 @@ class ButlerDaemon:
             """Send a `notify.v1` envelope through Switchboard `deliver()`.
 
             Required fields:
-            - `channel` (string enum): `telegram` or `email`
+            - `channel` (string enum): `telegram`, `email`, or `whatsapp`
             - `message` (string): required for `send`/`reply`, omitted for `react`
 
             Optional fields:

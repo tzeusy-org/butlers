@@ -22,10 +22,19 @@ from pydantic_core import PydanticCustomError
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 SourceChannel = Literal[
-    "telegram_bot", "telegram_user_client", "slack", "email", "api", "mcp", "voice"
+    "telegram_bot",
+    "telegram_user_client",
+    "slack",
+    "email",
+    "api",
+    "mcp",
+    "voice",
+    "whatsapp_user_client",
 ]
-SourceProvider = Literal["telegram", "slack", "gmail", "imap", "internal", "live-listener"]
-NotifyChannel = Literal["telegram", "email", "sms", "chat"]
+SourceProvider = Literal[
+    "telegram", "slack", "gmail", "imap", "internal", "live-listener", "whatsapp"
+]
+NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
 NotifyIntent = Literal["send", "reply", "react"]
 PolicyTier = Literal["default", "interactive", "high_priority"]
 IngestionTier = Literal["full", "metadata"]
@@ -38,6 +47,7 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "api": frozenset({"internal"}),
     "mcp": frozenset({"internal"}),
     "voice": frozenset({"live-listener"}),
+    "whatsapp_user_client": frozenset({"whatsapp"}),
 }
 _THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(
@@ -529,6 +539,13 @@ class NotifyRequestV1(BaseModel):
                 {},
             )
 
+        if self.delivery.channel == "whatsapp" and not self.request_context.source_thread_identity:
+            raise PydanticCustomError(
+                "reply_thread_required",
+                "notify.v1 whatsapp reply intent requires request_context.source_thread_identity.",
+                {},
+            )
+
         return self
 
     @model_validator(mode="after")
@@ -536,6 +553,14 @@ class NotifyRequestV1(BaseModel):
         """Validate react intent requirements."""
         if self.delivery.intent != "react":
             return self
+
+        # WhatsApp does not support react intent
+        if self.delivery.channel == "whatsapp":
+            raise PydanticCustomError(
+                "react_unsupported",
+                "notify.v1 react intent is not supported for whatsapp channel.",
+                {},
+            )
 
         # React intent requires emoji
         if not self.delivery.emoji:
