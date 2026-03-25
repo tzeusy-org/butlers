@@ -742,3 +742,70 @@ def test_google_calendar_idempotency_key_format():
     )
     parsed = parse_ingest_envelope(envelope)
     assert parsed.control.idempotency_key == "gcal:user@example.com:event_abc123"
+
+
+# ---------------------------------------------------------------------------
+# Spotify channel/provider contract validations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_spotify_user_client_channel_accepted():
+    """IngestEnvelopeV1 accepts spotify_user_client as a valid source channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="spotify_user_client",
+        provider="spotify",
+        endpoint_identity="spotify:user123",
+        sender_identity="user123",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert parsed.source.channel == "spotify_user_client"
+    assert parsed.source.provider == "spotify"
+
+
+@pytest.mark.unit
+def test_spotify_user_client_rejects_invalid_provider():
+    """spotify_user_client channel rejects non-spotify providers."""
+    envelope = _build_valid_ingest_envelope(
+        channel="spotify_user_client",
+        provider="telegram",  # wrong provider
+        endpoint_identity="spotify:user123",
+        sender_identity="user123",
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+    assert "spotify_user_client" in str(exc_info.value) or "telegram" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_spotify_provider_rejected_for_telegram_channel():
+    """spotify provider is invalid for telegram_bot channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="telegram_bot",
+        provider="spotify",  # wrong provider for telegram_bot
+    )
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(envelope)
+
+
+@pytest.mark.unit
+def test_spotify_user_client_in_source_channel_literal():
+    """SourceChannel literal includes spotify_user_client."""
+    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
+
+    assert "spotify_user_client" in _ALLOWED_PROVIDERS_BY_CHANNEL
+    assert _ALLOWED_PROVIDERS_BY_CHANNEL["spotify_user_client"] == frozenset({"spotify"})
+
+
+@pytest.mark.unit
+def test_spotify_idempotency_key_format():
+    """IngestEnvelopeV1 accepts spotify-prefixed idempotency key."""
+    envelope = _build_valid_ingest_envelope(
+        channel="spotify_user_client",
+        provider="spotify",
+        endpoint_identity="spotify:user123",
+        sender_identity="user123",
+        idempotency_key="spotify:user123:event_abc123",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert parsed.control.idempotency_key == "spotify:user123:event_abc123"
