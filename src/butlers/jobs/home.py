@@ -91,7 +91,7 @@ class HomeJobContext:
 
     .. code-block:: python
 
-        async with HomeJobContext.create(pool) as ctx:
+        async with (await HomeJobContext.create(pool)) as ctx:
             resp = await ctx.client.get(f"{ctx.ha_url}/api/states")
 
     If HA credentials are missing from contact info, ``ha_url`` and
@@ -110,7 +110,6 @@ class HomeJobContext:
         self.ha_url = ha_url
         self.ha_token = ha_token
         self.client: httpx.AsyncClient | None = None
-        self._stack: httpx.AsyncClient | None = None
 
     @classmethod
     async def create(cls, pool: asyncpg.Pool) -> HomeJobContext:
