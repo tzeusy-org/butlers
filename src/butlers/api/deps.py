@@ -49,8 +49,14 @@ class ButlerConnectionInfo:
 
     @property
     def sse_url(self) -> str:
-        """SSE endpoint URL for this butler's MCP server."""
-        return f"http://localhost:{self.port}/sse"
+        """SSE endpoint URL for this butler's MCP server.
+
+        In Docker, the dashboard runs in a separate container from butlers-up.
+        Set BUTLERS_HOST to the butlers-up service name (e.g. "butlers-up") so
+        the dashboard can reach butler MCP servers across the Docker network.
+        """
+        host = os.environ.get("BUTLERS_HOST", "localhost")
+        return f"http://{host}:{self.port}/sse"
 
 
 class ButlerUnreachableError(Exception):
