@@ -79,15 +79,15 @@ function stateBadgeLabel(state: SpotifyState): string {
 
 function formatDate(iso: string | null): string {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "—";
   }
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +246,26 @@ export function SpotifySetupCard() {
         </CardHeader>
         <CardContent>
           <Skeleton className="h-16 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (statusQuery.isError) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Spotify</CardTitle>
+            </div>
+            <Badge variant="destructive">Error</Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-destructive">
+            Failed to fetch Spotify status. Please refresh to try again.
+          </p>
         </CardContent>
       </Card>
     );
