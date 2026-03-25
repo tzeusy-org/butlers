@@ -78,10 +78,13 @@ def _make_db_row(
     last_completed_at: datetime | None = None,
     next_due_at: datetime | None = None,
     notes: str | None = None,
-) -> MagicMock:
-    """Simulate an asyncpg record row from home.maintenance_items."""
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: {
+) -> dict:
+    """Simulate an asyncpg record row from home.maintenance_items.
+
+    Returns a plain dict; the production code only uses ``row["key"]`` access
+    (same interface as asyncpg Record), avoiding MagicMock special-method brittleness.
+    """
+    return {
         "id": id,
         "name": name,
         "category": category,
@@ -89,8 +92,7 @@ def _make_db_row(
         "last_completed_at": last_completed_at,
         "next_due_at": next_due_at,
         "notes": notes,
-    }[key]
-    return row
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -226,7 +226,10 @@ def classify_item(item: MaintenanceItemRow, *, now: datetime) -> ClassifiedItem 
         next_due_at = next_due_at.replace(tzinfo=UTC)
 
     delta = next_due_at - now  # positive = future, negative = past
-    days_delta = int(delta.total_seconds() / 86400)  # floor toward zero
+    # Use timedelta.days for consistent floor-division behaviour on negative deltas.
+    # Python's timedelta.days floors for negative values (e.g. -7h → days=-1),
+    # giving correct threshold crossings without partial-day truncation errors.
+    days_delta = delta.days
 
     if delta > timedelta(0):
         # Item is in the future.
@@ -423,16 +426,13 @@ async def run_maintenance_schedule_check(
     upcoming_count = sum(1 for i in classified if i["severity"] == SEVERITY_UPCOMING)
     never_completed_count = sum(1 for i in classified if i["severity"] == SEVERITY_NEVER_COMPLETED)
 
-    attention_items = [i for i in classified if i["severity"] != SEVERITY_UPCOMING]
-    any_items = due_count + overdue_count + critical_count + never_completed_count + upcoming_count
-
     # -------------------------------------------------------------------------
     # Build and send notification if there are items to report.
     # -------------------------------------------------------------------------
     reminders_sent = 0
     notification_text: str | None = None
 
-    if any_items > 0:
+    if classified:
         notification_text = build_notification_text(classified)
 
         if notify_fn is not None:
@@ -453,8 +453,11 @@ async def run_maintenance_schedule_check(
         else:
             logger.info(
                 "Maintenance schedule check: %d item(s) need attention "
-                "(no notify_fn configured — notification text logged only):\n%s",
-                len(attention_items) + upcoming_count,
+                "(no notify_fn configured — notification text not sent)",
+                len(classified),
+            )
+            logger.debug(
+                "Maintenance schedule notification text (no notify_fn configured):\n%s",
                 notification_text,
             )
     else:
