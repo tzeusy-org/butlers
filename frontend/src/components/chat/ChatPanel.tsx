@@ -2,12 +2,14 @@
  * Slide-out chat panel for the butler detail page.
  *
  * Renders as a Sheet with:
- * - Left: ConversationList sidebar (collapsible)
+ * - Left: ConversationList sidebar (collapsible, localStorage-persisted)
  * - Right: MessageThread + ConversationHeader + MessageInput
  *
- * SSE streaming is handled inline; messages are appended to local state
- * during streaming and the server's committed message list is refetched
- * after `message_complete`.
+ * Features:
+ * - SSE stream consumption with AbortController cancellation
+ * - Keyboard shortcuts: Ctrl+Shift+Up/Down for conversation quick-switch
+ * - Error rendering and interrupted stream indicator
+ * - Loading skeleton while messages fetch
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
@@ -21,7 +23,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 
 import { createConversation, sendMessage } from "@/api/index.ts";
 import { fetchPricingMap } from "@/api/client.ts";
@@ -29,7 +30,7 @@ import type { Message, ConversationSummary, PricingMap } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
-import { MessageThread } from "./MessageThread.tsx";
+import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
 import {
@@ -63,11 +64,23 @@ function ChatContent({ butlerName }: ChatContentProps) {
   // AbortController for the current SSE stream
   const abortRef = useRef<AbortController | null>(null);
 
+  // Abort any in-flight SSE stream when this component unmounts
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
+  }, []);
+
   // Load pricing map once
   useEffect(() => {
     fetchPricingMap()
       .then((pm) => setPricingMap(pm.data))
-      .catch(() => {/* pricing is optional */});
+      .catch(() => {
+        /* pricing is optional */
+      });
   }, []);
 
   // Fetch conversations list
@@ -79,14 +92,18 @@ function ChatContent({ butlerName }: ChatContentProps) {
   );
 
   // Fetch messages for the active conversation
-  const { data: messagesData, isLoading: isLoadingMessages } =
-    useConversationMessages(butlerName, activeConversationId);
+  const { data: messagesData, isLoading: isLoadingMessages } = useConversationMessages(
+    butlerName,
+    activeConversationId,
+  );
 
   // Sync server messages into local state
+  // Avoid overwriting optimistic/streaming messages while an SSE stream is active.
   useEffect(() => {
+    if (streaming) return;
     const msgs = messagesData?.data ?? [];
     setLocalMessages(msgs);
-  }, [messagesData]);
+  }, [messagesData, streaming]);
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations
   useEffect(() => {
@@ -187,9 +204,7 @@ function ChatContent({ butlerName }: ChatContentProps) {
             // Update optimistic user message with real conversation_id
             setLocalMessages((prev) =>
               prev.map((m) =>
-                m.id === userMessage.id
-                  ? { ...m, conversation_id: data.id }
-                  : m,
+                m.id === userMessage.id ? { ...m, conversation_id: data.id } : m,
               ),
             );
             break;
@@ -200,9 +215,7 @@ function ChatContent({ butlerName }: ChatContentProps) {
                 ? event.data
                 : (event.data as { content?: string })?.content ?? "";
             setStreaming((prev) =>
-              prev
-                ? { ...prev, content: prev.content + token, pending: false }
-                : null,
+              prev ? { ...prev, content: prev.content + token, pending: false } : null,
             );
             break;
           }
@@ -258,7 +271,27 @@ function ChatContent({ butlerName }: ChatContentProps) {
         );
         setTimeout(() => setStreaming(null), 1500);
       } else {
+        // Non-abort error before or during streaming: clear streaming state
+        // and append a local assistant error message so the user sees a failure.
         setStreaming(null);
+
+        const errorMessage: Message = {
+          id: `local-error-${Date.now()}`,
+          conversation_id: currentConversationId ?? "",
+          role: "assistant",
+          content: "There was a problem sending your message. Please try again in a moment.",
+          tool_calls: null,
+          error: err instanceof Error ? err.message : "Unknown error",
+          model: null,
+          input_tokens: null,
+          output_tokens: null,
+          duration_ms: null,
+          session_id: null,
+          request_id: null,
+          created_at: new Date().toISOString(),
+        };
+
+        setLocalMessages((prev) => [...prev, errorMessage]);
       }
     }
   }, [inputValue, activeConversationId, butlerName, queryClient]);
@@ -296,11 +329,7 @@ function ChatContent({ butlerName }: ChatContentProps) {
         />
 
         {isLoadingMessages && activeConversationId ? (
-          <div className="flex-1 p-4 space-y-3">
-            {Array.from({ length: 4 }, (_, i) => (
-              <Skeleton key={i} className={`h-10 ${i % 2 === 0 ? "w-3/4" : "w-1/2 ml-auto"}`} />
-            ))}
-          </div>
+          <MessageThreadSkeleton />
         ) : (
           <MessageThread
             messages={localMessages}

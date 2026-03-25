@@ -2550,6 +2550,7 @@ export interface ConversationListParams {
 /** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
   message: string;
+  title?: string;
 }
 
 /** Request body for POST /api/butlers/{name}/conversations/{id}/messages. */
