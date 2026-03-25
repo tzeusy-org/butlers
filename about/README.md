@@ -9,3 +9,5 @@ The project's self-knowledge, organized into three pillars with poetic names. Ca
 | **Lay and Land** | `about/lay-and-land/` | **WHERE** does everything live? | Component maps, data flow, dependencies, deployment topology |
 
 Start with [heart-and-soul/vision.md](heart-and-soul/vision.md) for the thesis and non-negotiable rules.
+
+For a narrative introduction to the project, see the [blog post](https://tze.how/blog/butlers-introduction).
