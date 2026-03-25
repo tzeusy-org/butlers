@@ -526,13 +526,12 @@ async def _run_home_device_health_check_job(
 ) -> dict[str, Any]:
     """Run device health check job for the home butler.
 
-    Delegates to ``butlers.jobs.home.run_device_health_check``, which is
-    currently a no-op stub pending full implementation.
+    Reads ha_entity_snapshot, classifies battery and offline issues by severity,
+    stores volatile memory facts for each issue, and sends a Telegram notification.
     """
-    del job_args
     from butlers.jobs.home import run_device_health_check
 
-    return await run_device_health_check(pool=pool)
+    return await run_device_health_check(pool, job_args)
 
 
 async def _run_home_environment_report_job(

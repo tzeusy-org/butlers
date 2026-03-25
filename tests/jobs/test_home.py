@@ -1,33 +1,48 @@
-"""Unit and integration tests for butlers.jobs.home — maintenance schedule check job.
+"""Unit and integration tests for butlers.jobs.home.
 
 Covers:
 - classify_item: all severity branches (due, overdue, critical, upcoming, never_completed, ok)
 - build_notification_text: grouping, ordering, message content
 - run_maintenance_schedule_check: query logic, classification, return values,
   notification delivery, no-action path, DB error propagation
+- classify_battery / classify_offline: all severity levels, boundaries, and None cases
+- _load_battery_thresholds / _load_offline_hours_thresholds: state store vs defaults,
+  per-key invalid value fallback
+- _build_health_check_notification: message structure for all-clear and issue cases
+- run_device_health_check: happy path, empty snapshot, no-issues, and mixed issues
+- daemon registry: device_health_check registered for home butler
 
 All tests use mocked asyncpg pools — no real database required.
 
-Issue: bu-smht
+Issues: bu-smht, bu-bf9e
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.jobs.home import (
+    _DEFAULT_BATTERY_THRESHOLDS,
+    _DEFAULT_OFFLINE_HOURS_THRESHOLDS,
     SEVERITY_CRITICAL,
     SEVERITY_DUE,
     SEVERITY_NEVER_COMPLETED,
     SEVERITY_OVERDUE,
     SEVERITY_UPCOMING,
     MaintenanceItemRow,
+    _build_health_check_notification,
+    _load_battery_thresholds,
+    _load_offline_hours_thresholds,
     build_notification_text,
+    classify_battery,
     classify_item,
+    classify_offline,
+    run_device_health_check,
     run_maintenance_schedule_check,
 )
 
@@ -507,3 +522,554 @@ class TestMaintenanceCheckJobArgs:
         pool = _make_pool(fetch_rows=[])
         result = await run_maintenance_schedule_check(pool, {"unused": "arg"}, _now=_NOW)
         assert result["items_checked"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Device health check helpers and main entry point
+# ---------------------------------------------------------------------------
+
+
+def _make_entity_row(
+    entity_id: str = "sensor.living_room_temp",
+    state: str = "22.5",
+    attributes: dict | None = None,
+    last_updated: datetime | None = None,
+) -> MagicMock:
+    """Return a mock asyncpg record row simulating ha_entity_snapshot."""
+    if last_updated is None:
+        last_updated = datetime.now(UTC) - timedelta(minutes=5)
+    row = MagicMock()
+    fn = entity_id.replace(".", " ").replace("_", " ")
+    row.__getitem__ = lambda self, key: {
+        "entity_id": entity_id,
+        "state": state,
+        "attributes": attributes or {"friendly_name": fn},
+        "last_updated": last_updated,
+    }[key]
+    return row
+
+
+def _make_health_pool(
+    *,
+    state_value: Any = None,
+    entity_rows: list[Any] | None = None,
+) -> MagicMock:
+    """Return a minimal mock asyncpg pool for device health check tests."""
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=json.dumps(state_value) if state_value else None)
+    pool.fetch = AsyncMock(return_value=entity_rows or [])
+    pool.execute = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    conn_mock = AsyncMock()
+    conn_mock.fetchrow = AsyncMock(return_value=None)
+    conn_mock.__aenter__ = AsyncMock(return_value=conn_mock)
+    conn_mock.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=conn_mock)
+    return pool
+
+
+# ---------------------------------------------------------------------------
+# _load_battery_thresholds / _load_offline_hours_thresholds
+# ---------------------------------------------------------------------------
+
+
+class TestLoadBatteryThresholds:
+    """Tests for _load_battery_thresholds — state store interaction and fallback."""
+
+    async def test_returns_defaults_when_key_absent(self):
+        pool = _make_health_pool(state_value=None)
+        result = await _load_battery_thresholds(pool)
+        assert result == _DEFAULT_BATTERY_THRESHOLDS
+
+    async def test_returns_defaults_when_value_is_not_dict(self):
+        pool = _make_health_pool(state_value="bad-value")
+        result = await _load_battery_thresholds(pool)
+        assert result == _DEFAULT_BATTERY_THRESHOLDS
+
+    async def test_returns_parsed_values_from_store(self):
+        pool = _make_health_pool(state_value={"critical": 5, "warning": 15, "info": 25})
+        result = await _load_battery_thresholds(pool)
+        assert result == {"critical": 5, "warning": 15, "info": 25}
+
+    async def test_invalid_per_key_value_falls_back_to_default(self):
+        """A single invalid field falls back to the default for that field only."""
+        pool = _make_health_pool(state_value={"critical": None, "warning": 15, "info": 25})
+        result = await _load_battery_thresholds(pool)
+        assert result["critical"] == _DEFAULT_BATTERY_THRESHOLDS["critical"]
+        assert result["warning"] == 15
+        assert result["info"] == 25
+
+    async def test_string_numeric_value_is_coerced(self):
+        """int() coerces string-encoded integers (e.g. '12')."""
+        pool = _make_health_pool(state_value={"critical": "12", "warning": "22", "info": "32"})
+        result = await _load_battery_thresholds(pool)
+        assert result == {"critical": 12, "warning": 22, "info": 32}
+
+    async def test_non_numeric_string_falls_back_to_default(self):
+        """A value like '10%' cannot be coerced; must default per-key."""
+        pool = _make_health_pool(state_value={"critical": "10%", "warning": 20, "info": 30})
+        result = await _load_battery_thresholds(pool)
+        assert result["critical"] == _DEFAULT_BATTERY_THRESHOLDS["critical"]
+        assert result["warning"] == 20
+
+
+class TestLoadOfflineHoursThresholds:
+    """Tests for _load_offline_hours_thresholds — state store interaction and fallback."""
+
+    async def test_returns_defaults_when_key_absent(self):
+        pool = _make_health_pool(state_value=None)
+        result = await _load_offline_hours_thresholds(pool)
+        assert result == _DEFAULT_OFFLINE_HOURS_THRESHOLDS
+
+    async def test_returns_defaults_when_value_is_not_dict(self):
+        pool = _make_health_pool(state_value=42)
+        result = await _load_offline_hours_thresholds(pool)
+        assert result == _DEFAULT_OFFLINE_HOURS_THRESHOLDS
+
+    async def test_returns_parsed_values_from_store(self):
+        pool = _make_health_pool(state_value={"critical": 48, "warning": 2})
+        result = await _load_offline_hours_thresholds(pool)
+        assert result == {"critical": 48, "warning": 2}
+
+    async def test_invalid_per_key_value_falls_back_to_default(self):
+        pool = _make_health_pool(state_value={"critical": "bad", "warning": 2})
+        result = await _load_offline_hours_thresholds(pool)
+        assert result["critical"] == _DEFAULT_OFFLINE_HOURS_THRESHOLDS["critical"]
+        assert result["warning"] == 2
+
+    async def test_null_per_key_value_falls_back_to_default(self):
+        pool = _make_health_pool(state_value={"critical": 48, "warning": None})
+        result = await _load_offline_hours_thresholds(pool)
+        assert result["warning"] == _DEFAULT_OFFLINE_HOURS_THRESHOLDS["warning"]
+        assert result["critical"] == 48
+
+
+class TestClassifyBattery:
+    """Battery severity classification against default thresholds."""
+
+    thresholds = _DEFAULT_BATTERY_THRESHOLDS  # {"critical": 10, "warning": 20, "info": 30}
+
+    def test_exactly_at_critical_threshold(self):
+        assert classify_battery(10.0, self.thresholds) == "critical"
+
+    def test_below_critical_threshold(self):
+        assert classify_battery(5.0, self.thresholds) == "critical"
+
+    def test_zero_is_critical(self):
+        assert classify_battery(0.0, self.thresholds) == "critical"
+
+    def test_one_above_critical_is_warning(self):
+        # 11% → warning (11-20 range)
+        assert classify_battery(11.0, self.thresholds) == "warning"
+
+    def test_exactly_at_warning_threshold(self):
+        assert classify_battery(20.0, self.thresholds) == "warning"
+
+    def test_one_above_warning_is_info(self):
+        # 21% → info (21-30 range)
+        assert classify_battery(21.0, self.thresholds) == "info"
+
+    def test_exactly_at_info_threshold(self):
+        assert classify_battery(30.0, self.thresholds) == "info"
+
+    def test_above_info_threshold_is_healthy(self):
+        assert classify_battery(31.0, self.thresholds) is None
+
+    def test_high_battery_is_healthy(self):
+        assert classify_battery(100.0, self.thresholds) is None
+
+    def test_custom_thresholds_critical(self):
+        custom = {"critical": 15, "warning": 30, "info": 50}
+        assert classify_battery(15.0, custom) == "critical"
+        assert classify_battery(16.0, custom) == "warning"
+        assert classify_battery(30.0, custom) == "warning"
+        assert classify_battery(31.0, custom) == "info"
+        assert classify_battery(50.0, custom) == "info"
+        assert classify_battery(51.0, custom) is None
+
+    def test_fractional_battery_levels(self):
+        assert classify_battery(9.9, self.thresholds) == "critical"
+        assert classify_battery(10.1, self.thresholds) == "warning"
+        assert classify_battery(20.1, self.thresholds) == "info"
+        assert classify_battery(30.1, self.thresholds) is None
+
+
+class TestClassifyOffline:
+    """Offline device classification against default thresholds."""
+
+    thresholds = _DEFAULT_OFFLINE_HOURS_THRESHOLDS  # {"critical": 24, "warning": 1}
+
+    def _ts(self, hours_ago: float) -> datetime:
+        """Return a UTC datetime that is *hours_ago* hours in the past."""
+        return datetime.now(UTC) - timedelta(hours=hours_ago)
+
+    def test_none_last_changed_is_critical(self):
+        assert classify_offline(None, self.thresholds) == "critical"
+
+    def test_more_than_24h_is_critical(self):
+        assert classify_offline(self._ts(25.0), self.thresholds) == "critical"
+
+    def test_just_above_24h_is_critical(self):
+        assert classify_offline(self._ts(25.0), self.thresholds) == "critical"
+
+    def test_just_below_24h_is_warning(self):
+        # 23h offline → warning (1h < 23h <= 24h)
+        result = classify_offline(self._ts(23.0), self.thresholds)
+        assert result == "warning"
+
+    def test_between_1h_and_24h_is_warning(self):
+        assert classify_offline(self._ts(2.0), self.thresholds) == "warning"
+        assert classify_offline(self._ts(12.0), self.thresholds) == "warning"
+
+    def test_just_above_1h_is_warning(self):
+        assert classify_offline(self._ts(2.0), self.thresholds) == "warning"
+
+    def test_less_than_1h_is_healthy(self):
+        assert classify_offline(self._ts(0.5), self.thresholds) is None
+
+    def test_recent_change_is_healthy(self):
+        assert classify_offline(self._ts(0.0), self.thresholds) is None
+
+    def test_naive_datetime_treated_as_utc(self):
+        naive_ts = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=30)
+        result = classify_offline(naive_ts, self.thresholds)
+        assert result == "critical"
+
+    def test_custom_thresholds(self):
+        custom = {"critical": 6, "warning": 2}
+        assert classify_offline(self._ts(7.0), custom) == "critical"
+        assert classify_offline(self._ts(3.0), custom) == "warning"
+        assert classify_offline(self._ts(0.5), custom) is None
+
+
+class TestBuildHealthCheckNotification:
+    def _issue(self, name: str, issue_type: str, severity: str, description: str) -> dict[str, Any]:
+        return {
+            "entity_id": f"sensor.{name}",
+            "friendly_name": name.replace("_", " ").title(),
+            "issue_type": issue_type,
+            "severity": severity,
+            "value": "unavailable" if issue_type == "offline" else 5.0,
+            "description": description,
+        }
+
+    def test_all_clear_no_issues(self):
+        msg = _build_health_check_notification(
+            issues=[],
+            devices_checked=10,
+            critical_count=0,
+            warning_count=0,
+            info_count=0,
+        )
+        assert "\u2705" in msg
+        assert "10" in msg
+        assert "no issues" in msg.lower()
+
+    def test_all_clear_with_info_only(self):
+        info_issue = self._issue("hallway_sensor_battery", "battery", "info", "battery at 28%")
+        msg = _build_health_check_notification(
+            issues=[info_issue],
+            devices_checked=10,
+            critical_count=0,
+            warning_count=0,
+            info_count=1,
+        )
+        assert "\u2705" in msg
+        assert "battery at 28%" in msg
+
+    def test_critical_issues_listed_first(self):
+        critical = self._issue(
+            "basement_sensor", "offline", "critical", "offline (state: unavailable)"
+        )
+        warning = self._issue("garage_battery", "battery", "warning", "battery at 15%")
+        msg = _build_health_check_notification(
+            issues=[warning, critical],  # deliberately out of order
+            devices_checked=5,
+            critical_count=1,
+            warning_count=1,
+            info_count=0,
+        )
+        assert "\U0001f534" in msg
+        assert "\U0001f7e0" in msg
+        assert msg.index("\U0001f534") < msg.index("\U0001f7e0"), (
+            "Critical section must precede warning section"
+        )
+        assert "offline (state: unavailable)" in msg
+        assert "battery at 15%" in msg
+
+    def test_critical_only(self):
+        critical = self._issue("smoke_detector", "offline", "critical", "offline (state: unknown)")
+        msg = _build_health_check_notification(
+            issues=[critical],
+            devices_checked=3,
+            critical_count=1,
+            warning_count=0,
+            info_count=0,
+        )
+        assert "\U0001f534" in msg
+        assert "\U0001f7e0" not in msg
+        assert "offline (state: unknown)" in msg
+
+    def test_warning_only(self):
+        warning = self._issue("kitchen_sensor_battery", "battery", "warning", "battery at 18%")
+        msg = _build_health_check_notification(
+            issues=[warning],
+            devices_checked=8,
+            critical_count=0,
+            warning_count=1,
+            info_count=0,
+        )
+        assert "\U0001f7e0" in msg
+        assert "\U0001f534" not in msg
+
+    def test_device_count_in_notification(self):
+        msg = _build_health_check_notification(
+            issues=[],
+            devices_checked=42,
+            critical_count=0,
+            warning_count=0,
+            info_count=0,
+        )
+        assert "42" in msg
+
+
+class TestRunDeviceHealthCheck:
+    """Tests for run_device_health_check job handler with mocked dependencies."""
+
+    def _pool_with_rows(self, rows: list[Any], state_value: Any = None) -> MagicMock:
+        return _make_health_pool(state_value=state_value, entity_rows=rows)
+
+    async def test_empty_snapshot_returns_error(self):
+        pool = self._pool_with_rows([])
+        with patch(
+            "butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await run_device_health_check(pool, None)
+
+        assert result == {"error": "no_entity_snapshot"}
+        mock_notify.assert_called_once()
+        assert (
+            "unavailable" in mock_notify.call_args[0][1].lower()
+            or "entity data" in mock_notify.call_args[0][1].lower()
+        )
+
+    async def test_all_healthy_devices(self):
+        rows = [
+            _make_entity_row("sensor.living_room_temp", state="22.5"),
+            _make_entity_row("light.kitchen", state="off"),
+        ]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch(
+                "butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock
+            ) as mock_notify,
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+        ):
+            result = await run_device_health_check(pool, None)
+
+        assert result["devices_checked"] == 2
+        assert result["issues_found"] == 0
+        assert result["critical_count"] == 0
+        assert result["warning_count"] == 0
+        mock_notify.assert_called_once()
+        assert "\u2705" in mock_notify.call_args[0][1]
+
+    async def test_critical_battery_issue(self):
+        rows = [
+            _make_entity_row(
+                "sensor.basement_battery",
+                state="8",
+                attributes={"friendly_name": "Basement Battery"},
+            ),
+        ]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch(
+                "butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock
+            ) as mock_notify,
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock) as mock_store,
+        ):
+            result = await run_device_health_check(pool, None)
+
+        assert result["devices_checked"] == 1
+        assert result["issues_found"] == 1
+        assert result["critical_count"] == 1
+        assert result["warning_count"] == 0
+
+        msg = mock_notify.call_args[0][1]
+        assert "\U0001f534" in msg
+        assert "8" in msg
+
+        mock_store.assert_called_once()
+        call_kwargs = mock_store.call_args[1]
+        assert call_kwargs["importance"] == 8.0
+        assert "battery" in call_kwargs["tags"]
+        assert "maintenance" in call_kwargs["tags"]
+
+    async def test_offline_warning_issue(self):
+        last_updated = datetime.now(UTC) - timedelta(hours=3)
+        rows = [
+            _make_entity_row(
+                "binary_sensor.front_door",
+                state="unavailable",
+                attributes={"friendly_name": "Front Door"},
+                last_updated=last_updated,
+            ),
+        ]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch(
+                "butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock
+            ) as mock_notify,
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock) as mock_store,
+        ):
+            result = await run_device_health_check(pool, None)
+
+        assert result["issues_found"] == 1
+        assert result["warning_count"] == 1
+        assert result["critical_count"] == 0
+
+        msg = mock_notify.call_args[0][1]
+        assert "\U0001f7e0" in msg
+
+        call_kwargs = mock_store.call_args[1]
+        assert call_kwargs["importance"] == 6.5
+        assert "offline" in call_kwargs["tags"]
+
+    async def test_mixed_issues(self):
+        last_updated_critical = datetime.now(UTC) - timedelta(hours=30)
+        rows = [
+            _make_entity_row(
+                "sensor.basement_battery",
+                state="5",
+                attributes={"friendly_name": "Basement Battery"},
+            ),
+            _make_entity_row(
+                "sensor.garage_motion",
+                state="unavailable",
+                attributes={"friendly_name": "Garage Motion"},
+                last_updated=last_updated_critical,
+            ),
+        ]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock) as mock_store,
+        ):
+            result = await run_device_health_check(pool, None)
+
+        assert result["issues_found"] == 2
+        assert result["critical_count"] == 2
+        assert mock_store.call_count == 2
+
+    async def test_no_notification_when_notify_skipped(self):
+        """Notification failure (no bot token) is non-fatal."""
+        rows = [_make_entity_row("sensor.temp", state="22")]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+        ):
+            result = await run_device_health_check(pool, None)
+        assert "devices_checked" in result
+
+    async def test_battery_at_info_threshold_creates_info_issue(self):
+        rows = [
+            _make_entity_row(
+                "sensor.hallway_battery",
+                state="28",
+                attributes={"friendly_name": "Hallway Battery"},
+            ),
+        ]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock) as mock_store,
+        ):
+            result = await run_device_health_check(pool, None)
+
+        assert result["issues_found"] == 1
+        call_kwargs = mock_store.call_args[1]
+        assert call_kwargs["importance"] == 5.0
+
+    async def test_non_battery_entity_not_classified_as_battery(self):
+        """Entities without 'battery' in name/id are not battery-checked."""
+        rows = [
+            _make_entity_row("sensor.living_room_temp", state="5"),
+        ]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+        ):
+            result = await run_device_health_check(pool, None)
+
+        assert result["issues_found"] == 0
+
+    async def test_job_args_ignored(self):
+        """Passing job_args does not raise."""
+        rows = [_make_entity_row("sensor.temp", state="25")]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+        ):
+            result = await run_device_health_check(pool, {"some_arg": "value"})
+        assert "devices_checked" in result
+
+    async def test_unknown_state_classified_as_offline(self):
+        """Entities with state='unknown' are treated as offline."""
+        last_updated = datetime.now(UTC) - timedelta(hours=50)
+        rows = [
+            _make_entity_row(
+                "sensor.water_leak",
+                state="unknown",
+                attributes={"friendly_name": "Water Leak Sensor"},
+                last_updated=last_updated,
+            ),
+        ]
+        pool = self._pool_with_rows(rows)
+        with (
+            patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+        ):
+            result = await run_device_health_check(pool, None)
+
+        assert result["issues_found"] == 1
+        assert result["critical_count"] == 1
+
+    async def test_string_attributes_decoded_from_json(self):
+        """Attributes stored as JSON strings are decoded correctly."""
+        row = MagicMock()
+        row.__getitem__ = lambda self, key: {
+            "entity_id": "sensor.kitchen_battery",
+            "state": "8",
+            "attributes": '{"friendly_name": "Kitchen Battery"}',
+            "last_updated": datetime.now(UTC),
+        }[key]
+        pool = self._pool_with_rows([row])
+        with (
+            patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+            patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+        ):
+            result = await run_device_health_check(pool, None)
+
+        assert result["critical_count"] == 1
+
+
+class TestDaemonRegistration:
+    def test_device_health_check_registered_for_home(self):
+        """device_health_check must appear in the registry for the home butler."""
+        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+        home_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("home", {})
+        assert "device_health_check" in home_jobs, (
+            "device_health_check not registered in _DETERMINISTIC_SCHEDULE_JOB_REGISTRY['home']"
+        )
+
+    def test_device_health_check_handler_is_callable(self):
+        """The home device_health_check handler must be callable."""
+        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+        handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("home", {}).get("device_health_check")
+        assert callable(handler), "device_health_check handler is not callable"
