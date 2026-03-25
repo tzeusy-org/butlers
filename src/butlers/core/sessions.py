@@ -43,6 +43,8 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
     - "external"
     - "trigger"
     - "route"
+    - "healing"
+    - "dashboard"
     - "schedule:<task-name>" where task-name is any non-empty string
     """
     if trigger_source in TRIGGER_SOURCES:
@@ -80,7 +82,7 @@ async def session_create(
         prompt: The prompt text sent to the runtime instance.
         trigger_source: What caused this session. Must be one of:
             ``"tick"``, ``"external"``, ``"trigger"``, ``"route"``,
-            or ``"schedule:<task-name>"``.
+            ``"healing"``, ``"dashboard"``, or ``"schedule:<task-name>"``.
         trace_id: Optional OpenTelemetry trace ID for correlation.
         model: Optional model identifier used for this invocation.
         request_id: Required request ID for this session (UUIDv7 format).
