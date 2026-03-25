@@ -205,11 +205,20 @@ class TestResolve:
         result = await store.resolve("MY_KEY")
         assert result == "db-secret-value"
 
-    async def test_resolve_falls_back_to_env_when_db_miss(self) -> None:
+    async def test_resolve_no_env_fallback_by_default(self) -> None:
+        """Default resolve() is DB-only — env vars are not consulted."""
         pool = _make_pool(fetchrow_return=None)
         store = CredentialStore(pool)
         with patch.dict(os.environ, {"MY_KEY": "env-secret-value"}):
             result = await store.resolve("MY_KEY")
+        assert result is None
+
+    async def test_resolve_env_fallback_when_explicitly_enabled(self) -> None:
+        """env_fallback=True is opt-in for infrastructure bootstrap credentials."""
+        pool = _make_pool(fetchrow_return=None)
+        store = CredentialStore(pool)
+        with patch.dict(os.environ, {"MY_KEY": "env-secret-value"}):
+            result = await store.resolve("MY_KEY", env_fallback=True)
         assert result == "env-secret-value"
 
     async def test_resolve_returns_none_when_neither_db_nor_env(self) -> None:

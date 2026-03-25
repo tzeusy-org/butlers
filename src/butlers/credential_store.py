@@ -329,13 +329,19 @@ class CredentialStore:
             return value
         return None
 
-    async def resolve(self, key: str, *, env_fallback: bool = True) -> str | None:
-        """Resolve a secret — DB first, then environment variable.
+    async def resolve(self, key: str, *, env_fallback: bool = False) -> str | None:
+        """Resolve a secret — DB only by default.
 
         Resolution order:
         1. Local database (``butler_secrets`` table via ``load()``).
         2. Fallback database(s), in configured order.
-        2. ``os.environ[key]`` if *env_fallback* is ``True``.
+        3. ``os.environ[key]`` only if *env_fallback* is ``True``.
+
+        Environment fallback is disabled by default. It should only be
+        enabled for infrastructure bootstrap credentials (database
+        connection, OTEL endpoint) that must be available before the DB
+        is reachable. API keys, OAuth tokens, and integration credentials
+        MUST NOT use env fallback.
 
         Parameters
         ----------
@@ -345,7 +351,7 @@ class CredentialStore:
             sensitive).
         env_fallback:
             Whether to fall back to environment variables if the DB
-            has no value.  Defaults to ``True``.
+            has no value.  Defaults to ``False``.
 
         Returns
         -------
