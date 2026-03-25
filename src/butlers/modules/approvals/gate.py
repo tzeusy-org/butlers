@@ -114,6 +114,8 @@ def _extract_channel_identity(
     - ``channel`` + ``recipient``: used by the ``notify`` tool.
     - ``chat_id``: used by ``telegram_send_message`` / ``telegram_reply_to_message``.
     - ``to``: used by ``email_send_message`` / ``email_reply_to_thread``.
+    - ``recipient`` (without ``channel``): used by ``whatsapp_send_message``.
+    - ``chat_jid``: used by ``whatsapp_reply_to_message``.
 
     Returns
     -------
@@ -142,6 +144,22 @@ def _extract_channel_identity(
     to = tool_args.get("to")
     if to and isinstance(to, str) and to.strip():
         return ("email", to.strip())
+
+    # whatsapp_send_message: recipient (phone or JID).
+    # Only matched when channel is absent to avoid colliding with notify()'s channel+recipient.
+    # recipient was already read above for the notify() path; reuse it here.
+    if (
+        recipient
+        and isinstance(recipient, str)
+        and recipient.strip()
+        and not tool_args.get("channel")
+    ):
+        return ("whatsapp_jid", recipient.strip())
+
+    # whatsapp_reply_to_message: chat_jid (distinct from telegram's chat_id)
+    chat_jid = tool_args.get("chat_jid")
+    if chat_jid and isinstance(chat_jid, str) and chat_jid.strip():
+        return ("whatsapp_jid", chat_jid.strip())
 
     return None
 
