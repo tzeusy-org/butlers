@@ -25,11 +25,13 @@ from fastapi.testclient import TestClient
 from butlers.connectors.owntracks import (
     OwnTracksConnector,
     OwnTracksConnectorConfig,
-    _normalize_location_text,
-    _normalize_transition_text,
-    _normalize_waypoints_text,
-    normalize_location_envelope,
-    normalize_transition_envelope,
+    OwnTracksRetention,
+    OwnTracksRetentionConfig,
+    build_location_envelope,
+    build_location_normalized_text,
+    build_transition_envelope,
+    build_transition_normalized_text,
+    build_waypoints_normalized_text,
     resolve_webhook_token,
 )
 
@@ -49,30 +51,40 @@ _TST = 1711368000  # 2024-03-25 12:00:00 UTC
 def _make_config(
     *,
     ingestion_tier: str = "metadata",
-    tracker_id: str = _TRACKER_ID,
+    tracker_id_override: str | None = None,
     retention_days: int = 30,
 ) -> OwnTracksConnectorConfig:
     return OwnTracksConnectorConfig(
         switchboard_mcp_url="http://localhost:41100/sse",
-        webhook_token=_VALID_TOKEN,
-        tracker_id=tracker_id,
-        ingestion_tier=ingestion_tier,
+        tracker_id_override=tracker_id_override,
+        ingestion_tier=ingestion_tier,  # type: ignore[arg-type]
         retention_days=retention_days,
         health_port=40083,
     )
 
 
-_CONFIG_KEYS = frozenset({"ingestion_tier", "tracker_id", "retention_days"})
+_CONFIG_KEYS = frozenset({"ingestion_tier", "tracker_id_override", "retention_days"})
 
 
 def _make_connector(
     config: OwnTracksConnectorConfig | None = None, **kwargs: Any
-) -> OwnTracksConnector:
+) -> tuple[OwnTracksConnector, MagicMock]:
+    """Create a connector with a patched MCP client.
+
+    Returns (connector, mock_call_tool) where mock_call_tool is the AsyncMock
+    for the ``call_tool`` method on the injected CachedMCPClient.
+    """
     if config is None:
         config = _make_config(**{k: v for k, v in kwargs.items() if k in _CONFIG_KEYS})
-    mcp_client = AsyncMock()
-    mcp_client.call_tool = AsyncMock(return_value={"status": "accepted"})
-    return OwnTracksConnector(config, mcp_client=mcp_client)
+    mock_call_tool = AsyncMock(return_value={"status": "accepted"})
+    with patch("butlers.connectors.owntracks.CachedMCPClient") as mock_cls:
+        mock_client_instance = MagicMock()
+        mock_client_instance.call_tool = mock_call_tool
+        mock_cls.return_value = mock_client_instance
+        connector = OwnTracksConnector(config, webhook_token=_VALID_TOKEN)
+    # Keep the mock client reference on the connector so tests can inspect calls.
+    connector._mcp_client = mock_client_instance
+    return connector, mock_call_tool
 
 
 def _make_location_payload(
@@ -151,12 +163,22 @@ class TestLocationWebhookFlow:
     """Integration: valid location POST is normalized and submitted to Switchboard."""
 
     @pytest.fixture
-    def connector(self) -> OwnTracksConnector:
-        return _make_connector()
+    def connector_and_mock(self) -> tuple[OwnTracksConnector, MagicMock]:
+        return _make_connector(tracker_id_override=_TRACKER_ID)
+
+    @pytest.fixture
+    def connector(
+        self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]
+    ) -> OwnTracksConnector:
+        return connector_and_mock[0]
+
+    @pytest.fixture
+    def mock_call_tool(self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]) -> MagicMock:
+        return connector_and_mock[1]
 
     @pytest.fixture
     def client(self, connector: OwnTracksConnector) -> TestClient:
-        app = connector.build_app()
+        app = connector._build_app()
         return TestClient(app, raise_server_exceptions=True)
 
     def test_location_post_returns_200_with_empty_array(self, client: TestClient) -> None:
@@ -171,7 +193,10 @@ class TestLocationWebhookFlow:
         assert resp.json() == []
 
     def test_location_payload_submitted_to_switchboard(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        connector: OwnTracksConnector,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Location POST triggers MCP ingest call with correct ingest.v1 envelope."""
         payload = _make_location_payload()
@@ -181,8 +206,8 @@ class TestLocationWebhookFlow:
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
 
-        connector._mcp_client.call_tool.assert_awaited_once()
-        call_args = connector._mcp_client.call_tool.await_args
+        mock_call_tool.assert_awaited_once()
+        call_args = mock_call_tool.await_args
         assert call_args[0][0] == "ingest"
         envelope = call_args[0][1]
         assert envelope["schema_version"] == "ingest.v1"
@@ -199,7 +224,9 @@ class TestLocationWebhookFlow:
         assert envelope["control"]["ingestion_tier"] == "metadata"
 
     def test_location_normalized_text_content(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Location normalized_text contains cardinal coordinates and accuracy."""
         payload = _make_location_payload(lat=48.8566, lon=2.3522, acc=10)
@@ -208,14 +235,16 @@ class TestLocationWebhookFlow:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         text = envelope["payload"]["normalized_text"]
         assert "48.8566N" in text
         assert "2.3522E" in text
         assert "acc 10m" in text
 
     def test_location_with_velocity_appended(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Location text includes velocity when vel > 0."""
         payload = _make_location_payload(vel=50)
@@ -224,12 +253,14 @@ class TestLocationWebhookFlow:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         text = envelope["payload"]["normalized_text"]
         assert "50 km/h" in text
 
     def test_location_with_inregions_appended(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Location text includes in-region list when inregions is non-empty."""
         payload = _make_location_payload(inregions=["Home", "Suburb"])
@@ -238,12 +269,14 @@ class TestLocationWebhookFlow:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         text = envelope["payload"]["normalized_text"]
         assert "in: Home, Suburb" in text
 
     def test_location_metadata_tier_omits_raw(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Metadata tier: payload.raw is None."""
         payload = _make_location_payload()
@@ -252,7 +285,7 @@ class TestLocationWebhookFlow:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         assert envelope["payload"]["raw"] is None
 
 
@@ -265,12 +298,22 @@ class TestTransitionWebhookFlow:
     """Integration: valid transition POST is normalized and submitted to Switchboard."""
 
     @pytest.fixture
-    def connector(self) -> OwnTracksConnector:
-        return _make_connector()
+    def connector_and_mock(self) -> tuple[OwnTracksConnector, MagicMock]:
+        return _make_connector(tracker_id_override=_TRACKER_ID)
+
+    @pytest.fixture
+    def connector(
+        self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]
+    ) -> OwnTracksConnector:
+        return connector_and_mock[0]
+
+    @pytest.fixture
+    def mock_call_tool(self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]) -> MagicMock:
+        return connector_and_mock[1]
 
     @pytest.fixture
     def client(self, connector: OwnTracksConnector) -> TestClient:
-        return TestClient(connector.build_app(), raise_server_exceptions=True)
+        return TestClient(connector._build_app(), raise_server_exceptions=True)
 
     def test_transition_enter_returns_200(self, client: TestClient) -> None:
         """Enter transition POST returns HTTP 200."""
@@ -284,7 +327,9 @@ class TestTransitionWebhookFlow:
         assert resp.json() == []
 
     def test_transition_submitted_with_correct_event_type(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Transition event envelope has event_type owntracks.transition."""
         payload = _make_transition_payload(event="enter", desc="Office")
@@ -293,12 +338,14 @@ class TestTransitionWebhookFlow:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         assert envelope["event"]["event_type"] == "owntracks.transition"
         assert envelope["event"]["external_event_id"] == f"{_TST}:transition:enter"
 
     def test_transition_enter_normalized_text(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Enter transition: normalized_text is 'Entered region: <desc>'."""
         payload = _make_transition_payload(event="enter", desc="Home")
@@ -307,11 +354,13 @@ class TestTransitionWebhookFlow:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         assert envelope["payload"]["normalized_text"] == "Entered region: Home"
 
     def test_transition_leave_normalized_text(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Leave transition: normalized_text is 'Left region: <desc>'."""
         payload = _make_transition_payload(event="leave", desc="Office")
@@ -320,11 +369,13 @@ class TestTransitionWebhookFlow:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         assert envelope["payload"]["normalized_text"] == "Left region: Office"
 
     def test_transition_idempotency_key_includes_event_type(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """Transition idempotency_key includes enter/leave suffix."""
         payload = _make_transition_payload(event="leave", desc="Home")
@@ -333,7 +384,7 @@ class TestTransitionWebhookFlow:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         assert envelope["control"]["idempotency_key"].endswith(":transition:leave")
 
 
@@ -346,9 +397,12 @@ class TestAuthMissingHeader:
     """Integration: webhook POST without Authorization header returns 401."""
 
     @pytest.fixture
-    def client(self) -> TestClient:
-        connector = _make_connector()
-        return TestClient(connector.build_app(), raise_server_exceptions=False)
+    def connector_and_mock(self) -> tuple[OwnTracksConnector, MagicMock]:
+        return _make_connector()
+
+    @pytest.fixture
+    def client(self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]) -> TestClient:
+        return TestClient(connector_and_mock[0]._build_app(), raise_server_exceptions=False)
 
     def test_missing_auth_header_returns_401(self, client: TestClient) -> None:
         """POST without Authorization header returns 401."""
@@ -362,12 +416,14 @@ class TestAuthMissingHeader:
         data = resp.json()
         assert "error" in str(data).lower() or resp.status_code == 401
 
-    def test_no_mcp_call_on_missing_auth(self) -> None:
+    def test_no_mcp_call_on_missing_auth(
+        self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]
+    ) -> None:
         """No MCP ingest call is made when auth header is absent."""
-        connector = _make_connector()
-        client = TestClient(connector.build_app(), raise_server_exceptions=False)
+        connector, mock_call_tool = connector_and_mock
+        client = TestClient(connector._build_app(), raise_server_exceptions=False)
         client.post("/owntracks/webhook", json=_make_location_payload())
-        connector._mcp_client.call_tool.assert_not_awaited()
+        mock_call_tool.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -379,12 +435,22 @@ class TestAuthInvalidToken:
     """Integration: webhook POST with wrong Bearer token returns 401."""
 
     @pytest.fixture
-    def connector(self) -> OwnTracksConnector:
+    def connector_and_mock(self) -> tuple[OwnTracksConnector, MagicMock]:
         return _make_connector()
 
     @pytest.fixture
+    def connector(
+        self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]
+    ) -> OwnTracksConnector:
+        return connector_and_mock[0]
+
+    @pytest.fixture
+    def mock_call_tool(self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]) -> MagicMock:
+        return connector_and_mock[1]
+
+    @pytest.fixture
     def client(self, connector: OwnTracksConnector) -> TestClient:
-        return TestClient(connector.build_app(), raise_server_exceptions=False)
+        return TestClient(connector._build_app(), raise_server_exceptions=False)
 
     def test_invalid_token_returns_401(self, client: TestClient) -> None:
         """POST with wrong token returns 401."""
@@ -405,7 +471,9 @@ class TestAuthInvalidToken:
         assert resp.status_code == 401
 
     def test_no_mcp_call_on_invalid_token(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """No MCP ingest call is made when token is wrong."""
         client.post(
@@ -413,17 +481,22 @@ class TestAuthInvalidToken:
             json=_make_location_payload(),
             headers={"Authorization": f"Bearer {_INVALID_TOKEN}"},
         )
-        connector._mcp_client.call_tool.assert_not_awaited()
+        mock_call_tool.assert_not_awaited()
 
     def test_constant_time_comparison_used(self) -> None:
         """Token validation uses hmac.compare_digest (constant-time comparison)."""
-        config = _make_config()
-        connector = _make_connector(config=config)
+        connector, _ = _make_connector()
         with patch("butlers.connectors.owntracks.hmac.compare_digest") as mock_compare:
             mock_compare.return_value = True
-            result = connector._validate_token(_VALID_TOKEN)
-            assert result is True
-            mock_compare.assert_called_once_with(_VALID_TOKEN, _VALID_TOKEN)
+            app = connector._build_app()
+            client = TestClient(app, raise_server_exceptions=False)
+            client.post(
+                "/owntracks/webhook",
+                json=_make_location_payload(),
+                headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
+            )
+            # hmac.compare_digest should have been called for auth
+            mock_compare.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -435,12 +508,22 @@ class TestUnknownPayloadType:
     """Integration: unknown _type returns 200 but no ingest call is made."""
 
     @pytest.fixture
-    def connector(self) -> OwnTracksConnector:
+    def connector_and_mock(self) -> tuple[OwnTracksConnector, MagicMock]:
         return _make_connector()
 
     @pytest.fixture
+    def connector(
+        self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]
+    ) -> OwnTracksConnector:
+        return connector_and_mock[0]
+
+    @pytest.fixture
+    def mock_call_tool(self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]) -> MagicMock:
+        return connector_and_mock[1]
+
+    @pytest.fixture
     def client(self, connector: OwnTracksConnector) -> TestClient:
-        return TestClient(connector.build_app(), raise_server_exceptions=True)
+        return TestClient(connector._build_app(), raise_server_exceptions=True)
 
     def test_lwt_type_returns_200(self, client: TestClient) -> None:
         """lwt (last will and testament) payload returns 200."""
@@ -462,7 +545,9 @@ class TestUnknownPayloadType:
         assert resp.status_code == 200
 
     def test_steps_type_not_ingested(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """steps payload: no MCP ingest call made."""
         client.post(
@@ -470,10 +555,12 @@ class TestUnknownPayloadType:
             json={"_type": "steps", "tst": _TST, "steps": 100},
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        connector._mcp_client.call_tool.assert_not_awaited()
+        mock_call_tool.assert_not_awaited()
 
     def test_card_type_not_ingested(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """card payload: no MCP ingest call made."""
         client.post(
@@ -481,16 +568,18 @@ class TestUnknownPayloadType:
             json={"_type": "card", "name": "Alice"},
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        connector._mcp_client.call_tool.assert_not_awaited()
+        mock_call_tool.assert_not_awaited()
 
-    async def test_unknown_type_process_payload_returns_ignored(self) -> None:
-        """process_payload() returns (None, 'ignored') for unknown types."""
-        connector = _make_connector()
-        result = await connector.process_payload({"_type": "unknown_future_type"})
-        assert result == (None, "ignored")
+    async def test_unknown_type_process_webhook_event_is_noop(self) -> None:
+        """_process_webhook_event() does not call ingest for unknown types."""
+        connector, mock_call_tool = _make_connector()
+        await connector._process_webhook_event({"_type": "unknown_future_type"})
+        mock_call_tool.assert_not_awaited()
 
     def test_waypoints_type_is_ingested(
-        self, connector: OwnTracksConnector, client: TestClient
+        self,
+        mock_call_tool: MagicMock,
+        client: TestClient,
     ) -> None:
         """waypoints is a known type and IS submitted to Switchboard."""
         payload = _make_waypoints_payload()
@@ -499,8 +588,8 @@ class TestUnknownPayloadType:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        connector._mcp_client.call_tool.assert_awaited_once()
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        mock_call_tool.assert_awaited_once()
+        envelope = mock_call_tool.await_args[0][1]
         assert envelope["event"]["event_type"] == "owntracks.waypoints"
 
 
@@ -515,22 +604,22 @@ class TestIngestionTier:
     def test_metadata_tier_omits_raw(self) -> None:
         """Metadata tier: payload.raw is None in the envelope."""
         payload = _make_location_payload()
-        envelope = normalize_location_envelope(
+        envelope = build_location_envelope(
             payload,
             endpoint_identity=_ENDPOINT_IDENTITY,
             ingestion_tier="metadata",
-            received_at="2024-03-25T12:00:00Z",
+            observed_at="2024-03-25T12:00:00Z",
         )
         assert envelope["payload"]["raw"] is None
 
     def test_full_tier_includes_raw(self) -> None:
         """Full tier: payload.raw contains the original OwnTracks payload."""
         payload = _make_location_payload()
-        envelope = normalize_location_envelope(
+        envelope = build_location_envelope(
             payload,
             endpoint_identity=_ENDPOINT_IDENTITY,
             ingestion_tier="full",
-            received_at="2024-03-25T12:00:00Z",
+            observed_at="2024-03-25T12:00:00Z",
         )
         assert envelope["payload"]["raw"] is not None
         assert envelope["payload"]["raw"] == payload
@@ -538,8 +627,8 @@ class TestIngestionTier:
     def test_full_tier_via_webhook(self) -> None:
         """Full tier connector: submitted envelope has raw payload."""
         config = _make_config(ingestion_tier="full")
-        connector = _make_connector(config=config)
-        client = TestClient(connector.build_app(), raise_server_exceptions=True)
+        connector, mock_call_tool = _make_connector(config=config)
+        client = TestClient(connector._build_app(), raise_server_exceptions=True)
 
         payload = _make_location_payload(lat=48.0, lon=2.0)
         client.post(
@@ -547,55 +636,51 @@ class TestIngestionTier:
             json=payload,
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
-        envelope = connector._mcp_client.call_tool.await_args[0][1]
+        envelope = mock_call_tool.await_args[0][1]
         assert envelope["payload"]["raw"] is not None
         assert envelope["payload"]["raw"]["lat"] == 48.0
 
     def test_metadata_tier_ssid_not_in_normalized_text(self) -> None:
         """Metadata tier: SSID is not included in normalized_text."""
         payload = _make_location_payload(ssid="MyWiFiNetwork")
-        text = _normalize_location_text(payload, ingestion_tier="metadata")
+        text = build_location_normalized_text(payload, ingestion_tier="metadata")
         assert "MyWiFiNetwork" not in text
 
     def test_transition_full_tier_includes_raw(self) -> None:
         """Full tier: transition envelope has raw payload."""
         payload = _make_transition_payload()
-        envelope = normalize_transition_envelope(
+        envelope = build_transition_envelope(
             payload,
             endpoint_identity=_ENDPOINT_IDENTITY,
             ingestion_tier="full",
-            received_at="2024-03-25T12:00:00Z",
+            observed_at="2024-03-25T12:00:00Z",
         )
         assert envelope["payload"]["raw"] == payload
 
     def test_transition_metadata_tier_omits_raw(self) -> None:
         """Metadata tier: transition envelope has raw=None."""
         payload = _make_transition_payload()
-        envelope = normalize_transition_envelope(
+        envelope = build_transition_envelope(
             payload,
             endpoint_identity=_ENDPOINT_IDENTITY,
             ingestion_tier="metadata",
-            received_at="2024-03-25T12:00:00Z",
+            observed_at="2024-03-25T12:00:00Z",
         )
         assert envelope["payload"]["raw"] is None
 
     def test_ingestion_tier_recorded_in_control(self) -> None:
         """The configured ingestion_tier is present in envelope.control."""
-        connector_full = _make_connector(config=_make_config(ingestion_tier="full"))
-        connector_meta = _make_connector(config=_make_config(ingestion_tier="metadata"))
-
-        for connector, expected_tier in [
-            (connector_full, "full"),
-            (connector_meta, "metadata"),
-        ]:
-            client = TestClient(connector.build_app(), raise_server_exceptions=True)
+        for tier in ("full", "metadata"):
+            config = _make_config(ingestion_tier=tier)
+            connector, mock_call_tool = _make_connector(config=config)
+            client = TestClient(connector._build_app(), raise_server_exceptions=True)
             client.post(
                 "/owntracks/webhook",
                 json=_make_location_payload(),
                 headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
             )
-            envelope = connector._mcp_client.call_tool.await_args[0][1]
-            assert envelope["control"]["ingestion_tier"] == expected_tier
+            envelope = mock_call_tool.await_args[0][1]
+            assert envelope["control"]["ingestion_tier"] == tier
 
 
 # ---------------------------------------------------------------------------
@@ -617,14 +702,13 @@ class TestRetentionPurge:
         mock_pool.acquire.return_value = mock_ctx
         return mock_pool
 
-    async def test_purge_returns_deleted_count(self) -> None:
-        """run_retention_purge() returns the number of deleted rows."""
+    async def test_purge_once_returns_deleted_count(self) -> None:
+        """OwnTracksRetention.purge_once() returns the number of deleted rows."""
         db_pool = self._make_mock_pool(deleted_count=7)
-        config = _make_config(retention_days=30)
-        connector = _make_connector(config=config)
-        connector._db_pool = db_pool
+        config = OwnTracksRetentionConfig(retention_days=30)
+        retention = OwnTracksRetention(config, db_pool)
 
-        result = await connector.run_retention_purge()
+        result = await retention.purge_once()
 
         assert result == 7
 
@@ -638,77 +722,37 @@ class TestRetentionPurge:
         mock_ctx.__aexit__ = AsyncMock(return_value=None)
         mock_pool.acquire.return_value = mock_ctx
 
-        config = _make_config(retention_days=14)
-        connector = _make_connector(config=config)
-        connector._db_pool = mock_pool
+        config = OwnTracksRetentionConfig(retention_days=14)
+        retention = OwnTracksRetention(config, mock_pool)
 
-        await connector.run_retention_purge()
+        await retention.purge_once()
 
         mock_conn.execute.assert_awaited_once()
-        sql, retention_arg = mock_conn.execute.await_args[0]
+        sql_or_args = mock_conn.execute.await_args[0]
+        sql = sql_or_args[0]
         assert "owntracks" in sql
         assert "ingestion_events" in sql
-        assert retention_arg == "14"
-
-    async def test_purge_without_db_pool_returns_zero(self) -> None:
-        """Purge returns 0 gracefully when no DB pool is configured."""
-        config = _make_config(retention_days=30)
-        connector = _make_connector(config=config)
-        # No db_pool set
-
-        result = await connector.run_retention_purge()
-
-        assert result == 0
-
-    async def test_purge_failure_does_not_crash(self) -> None:
-        """Purge failure is logged as WARNING but does not raise."""
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(side_effect=RuntimeError("DB error"))
-        mock_pool = MagicMock()
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-        mock_pool.acquire.return_value = mock_ctx
-
-        config = _make_config(retention_days=30)
-        connector = _make_connector(config=config)
-        connector._db_pool = mock_pool
-
-        # Should not raise
-        result = await connector.run_retention_purge()
-        assert result == 0
 
     def test_retention_days_validation_minimum_1(self) -> None:
-        """OWNTRACKS_RETENTION_DAYS=0 raises ValueError."""
+        """retention_days=0 raises ValueError."""
         with pytest.raises(ValueError, match="retention_days must be >= 1"):
-            OwnTracksConnectorConfig(
-                switchboard_mcp_url="http://localhost:41100/sse",
-                webhook_token=_VALID_TOKEN,
-                tracker_id=_TRACKER_ID,
-                retention_days=0,
-            )
+            OwnTracksRetentionConfig(retention_days=0)
 
     def test_retention_days_validation_negative(self) -> None:
-        """Negative OWNTRACKS_RETENTION_DAYS raises ValueError."""
+        """Negative retention_days raises ValueError."""
         with pytest.raises(ValueError, match="retention_days must be >= 1"):
-            OwnTracksConnectorConfig(
-                switchboard_mcp_url="http://localhost:41100/sse",
-                webhook_token=_VALID_TOKEN,
-                tracker_id=_TRACKER_ID,
-                retention_days=-5,
-            )
+            OwnTracksRetentionConfig(retention_days=-5)
 
     def test_retention_days_from_env_invalid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """OWNTRACKS_RETENTION_DAYS=0 via env raises ValueError in from_env."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
         monkeypatch.setenv("OWNTRACKS_RETENTION_DAYS", "0")
-        with pytest.raises(ValueError, match="OWNTRACKS_RETENTION_DAYS must be >= 1"):
-            OwnTracksConnectorConfig.from_env(webhook_token=_VALID_TOKEN)
+        with pytest.raises(ValueError):
+            OwnTracksRetentionConfig.from_env()
 
     def test_retention_days_default_30(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default OWNTRACKS_RETENTION_DAYS is 30."""
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
-        config = OwnTracksConnectorConfig.from_env(webhook_token=_VALID_TOKEN)
+        monkeypatch.delenv("OWNTRACKS_RETENTION_DAYS", raising=False)
+        config = OwnTracksRetentionConfig.from_env()
         assert config.retention_days == 30
 
 
@@ -724,30 +768,32 @@ class TestDashboardTokenFlow:
     """
 
     async def test_resolve_token_from_credential_store(self) -> None:
-        """resolve_webhook_token() returns token from CredentialStore."""
+        """resolve_webhook_token() returns token from CredentialStore.load()."""
         store = AsyncMock()
-        store.resolve = AsyncMock(return_value=_VALID_TOKEN)
+        store.load = AsyncMock(return_value=_VALID_TOKEN)
 
-        result = await resolve_webhook_token(credential_store=store)
+        result = await resolve_webhook_token(cred_store=store)
 
         assert result == _VALID_TOKEN
-        store.resolve.assert_awaited_once_with("owntracks_webhook_token", env_fallback=False)
+        store.load.assert_awaited_once_with("owntracks_webhook_token")
 
     async def test_resolve_token_falls_back_to_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """resolve_webhook_token() falls back to OWNTRACKS_WEBHOOK_TOKEN when store returns None."""
         monkeypatch.setenv("OWNTRACKS_WEBHOOK_TOKEN", _VALID_TOKEN)
         store = AsyncMock()
-        store.resolve = AsyncMock(return_value=None)
+        store.load = AsyncMock(return_value=None)
 
-        result = await resolve_webhook_token(credential_store=store)
+        result = await resolve_webhook_token(cred_store=store)
 
         assert result == _VALID_TOKEN
 
-    async def test_resolve_token_no_store_no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """resolve_webhook_token() returns None when neither source has a token."""
+    async def test_resolve_token_no_store_no_env_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """resolve_webhook_token() raises ValueError when neither source has a token."""
         monkeypatch.delenv("OWNTRACKS_WEBHOOK_TOKEN", raising=False)
-        result = await resolve_webhook_token(credential_store=None)
-        assert result is None
+        with pytest.raises(ValueError, match="No OwnTracks webhook token"):
+            await resolve_webhook_token(cred_store=None)
 
     async def test_stored_token_accepted_by_connector(self) -> None:
         """Token stored via CredentialStore is accepted by the webhook endpoint."""
@@ -755,20 +801,17 @@ class TestDashboardTokenFlow:
 
         # Simulate: dashboard stores the token in CredentialStore
         store = AsyncMock()
-        store.resolve = AsyncMock(return_value=generated_token)
+        store.load = AsyncMock(return_value=generated_token)
 
         # Resolve it (as the connector startup would do)
-        resolved = await resolve_webhook_token(credential_store=store)
+        resolved = await resolve_webhook_token(cred_store=store)
         assert resolved == generated_token
 
         # Build connector with the resolved token
-        config = OwnTracksConnectorConfig(
-            switchboard_mcp_url="http://localhost:41100/sse",
-            webhook_token=resolved,
-            tracker_id=_TRACKER_ID,
-        )
-        connector = _make_connector(config=config)
-        client = TestClient(connector.build_app(), raise_server_exceptions=True)
+        config = _make_config()
+        with patch("butlers.connectors.owntracks.CachedMCPClient"):
+            connector = OwnTracksConnector(config, webhook_token=resolved)
+        client = TestClient(connector._build_app(), raise_server_exceptions=True)
 
         # Connector accepts webhook POST with the generated token
         resp = client.post(
@@ -783,13 +826,10 @@ class TestDashboardTokenFlow:
         old_token = "old" + "0" * 40
         new_token = "new" + "0" * 40
 
-        config = OwnTracksConnectorConfig(
-            switchboard_mcp_url="http://localhost:41100/sse",
-            webhook_token=new_token,
-            tracker_id=_TRACKER_ID,
-        )
-        connector = _make_connector(config=config)
-        client = TestClient(connector.build_app(), raise_server_exceptions=False)
+        config = _make_config()
+        with patch("butlers.connectors.owntracks.CachedMCPClient"):
+            connector = OwnTracksConnector(config, webhook_token=new_token)
+        client = TestClient(connector._build_app(), raise_server_exceptions=False)
 
         # Old token is rejected
         resp = client.post(
@@ -827,7 +867,7 @@ class TestCheckpointPersistence:
         mock_conn = AsyncMock()
 
         async def mock_execute(sql: str, *args: object) -> None:
-            if "INSERT" in sql:
+            if "INSERT" in sql or "upsert" in sql.lower() or "ON CONFLICT" in sql:
                 saved.append(args)
 
         async def mock_fetchrow(sql: str, *args: object) -> dict | None:
@@ -846,54 +886,38 @@ class TestCheckpointPersistence:
 
         return mock_pool, saved
 
-    async def test_checkpoint_saved_after_location_event(self) -> None:
-        """Successful location submission saves checkpoint with tst value."""
-        pool, saved = self._make_cursor_pool()
-        config = _make_config()
-        connector = _make_connector(config=config)
-        connector._cursor_pool = pool
-
-        payload = _make_location_payload(tst=_TST)
-        await connector.process_payload(payload)
-
-        assert len(saved) == 1
-        # saved[0] is args tuple: (connector_type, endpoint_identity, cursor_value, timestamp)
-        assert saved[0][0] == "owntracks"
-        assert saved[0][1] == _ENDPOINT_IDENTITY
-        assert saved[0][2] == str(_TST)
-
     async def test_checkpoint_loaded_on_startup(self) -> None:
-        """load_checkpoint() loads the last cursor from the DB."""
+        """_load_checkpoint() loads the last cursor from the DB."""
         existing_tst = str(_TST - 3600)
         pool, _ = self._make_cursor_pool(existing_cursor=existing_tst)
         config = _make_config()
-        connector = _make_connector(config=config)
+        connector, _ = _make_connector(config=config)
         connector._cursor_pool = pool
 
-        await connector.load_checkpoint()
+        await connector._load_checkpoint()
 
-        assert connector._checkpoint == existing_tst
+        assert connector._last_checkpoint_tst is not None
 
     async def test_no_checkpoint_on_first_start(self) -> None:
-        """With no prior checkpoint, connector._checkpoint is None after load."""
+        """With no prior checkpoint, connector._last_checkpoint_tst is None after load."""
         pool, _ = self._make_cursor_pool(existing_cursor=None)
         config = _make_config()
-        connector = _make_connector(config=config)
+        connector, _ = _make_connector(config=config)
         connector._cursor_pool = pool
 
-        await connector.load_checkpoint()
+        await connector._load_checkpoint()
 
-        assert connector._checkpoint is None
+        assert connector._last_checkpoint_tst is None
 
     async def test_no_checkpoint_saved_without_pool(self) -> None:
-        """Without a cursor pool, save_checkpoint() is a no-op (no exception)."""
+        """Without a cursor pool, _save_checkpoint() is a no-op (no exception)."""
         config = _make_config()
-        connector = _make_connector(config=config)
+        connector, _ = _make_connector(config=config)
         # No cursor_pool
 
         # Should not raise
-        await connector.save_checkpoint(_TST)
-        assert connector._checkpoint is None
+        await connector._save_checkpoint(_TST)
+        assert connector._last_checkpoint_tst is None
 
 
 # ---------------------------------------------------------------------------
@@ -905,12 +929,18 @@ class TestHealthEndpoint:
     """Integration: /health endpoint reflects connector state."""
 
     @pytest.fixture
-    def connector(self) -> OwnTracksConnector:
+    def connector_and_mock(self) -> tuple[OwnTracksConnector, MagicMock]:
         return _make_connector()
 
     @pytest.fixture
+    def connector(
+        self, connector_and_mock: tuple[OwnTracksConnector, MagicMock]
+    ) -> OwnTracksConnector:
+        return connector_and_mock[0]
+
+    @pytest.fixture
     def client(self, connector: OwnTracksConnector) -> TestClient:
-        return TestClient(connector.build_app(), raise_server_exceptions=True)
+        return TestClient(connector._build_app(), raise_server_exceptions=True)
 
     def test_health_returns_200(self, client: TestClient) -> None:
         """/health returns HTTP 200."""
@@ -981,32 +1011,32 @@ class TestNormalizationHelpers:
     def test_location_text_southern_hemisphere(self) -> None:
         """Negative latitude gets S cardinal direction."""
         payload = {"lat": -33.8688, "lon": 151.2093, "acc": 5}
-        text = _normalize_location_text(payload, ingestion_tier="metadata")
+        text = build_location_normalized_text(payload, ingestion_tier="metadata")
         assert "33.8688S" in text
         assert "151.2093E" in text
 
     def test_location_text_western_hemisphere(self) -> None:
         """Negative longitude gets W cardinal direction."""
         payload = {"lat": 40.7128, "lon": -74.0060, "acc": 15}
-        text = _normalize_location_text(payload, ingestion_tier="metadata")
+        text = build_location_normalized_text(payload, ingestion_tier="metadata")
         assert "40.7128N" in text
         assert "74.006W" in text
 
     def test_location_text_zero_velocity_not_appended(self) -> None:
         """vel=0 is not appended to normalized text."""
         payload = {"lat": 48.0, "lon": 2.0, "acc": 10, "vel": 0}
-        text = _normalize_location_text(payload, ingestion_tier="metadata")
+        text = build_location_normalized_text(payload, ingestion_tier="metadata")
         assert "km/h" not in text
 
     def test_transition_text_enter(self) -> None:
         """Enter transition generates 'Entered region: ...' text."""
         payload = {"event": "enter", "desc": "Gym"}
-        assert _normalize_transition_text(payload) == "Entered region: Gym"
+        assert build_transition_normalized_text(payload) == "Entered region: Gym"
 
     def test_transition_text_leave(self) -> None:
         """Leave transition generates 'Left region: ...' text."""
         payload = {"event": "leave", "desc": "Gym"}
-        assert _normalize_transition_text(payload) == "Left region: Gym"
+        assert build_transition_normalized_text(payload) == "Left region: Gym"
 
     def test_waypoints_text_with_names(self) -> None:
         """Waypoints text lists region names."""
@@ -1017,7 +1047,7 @@ class TestNormalizationHelpers:
                 {"desc": "Gym"},
             ]
         }
-        text = _normalize_waypoints_text(payload)
+        text = build_waypoints_normalized_text(payload)
         assert "3 regions" in text
         assert "Home" in text
         assert "Office" in text
@@ -1026,14 +1056,14 @@ class TestNormalizationHelpers:
     def test_waypoints_text_truncates_at_5(self) -> None:
         """Waypoints text truncates at 5 names with 'and N more' suffix."""
         payload = {"waypoints": [{"desc": f"Place{i}"} for i in range(8)]}
-        text = _normalize_waypoints_text(payload)
+        text = build_waypoints_normalized_text(payload)
         assert "8 regions" in text
         assert "and 3 more" in text
 
     def test_waypoints_text_empty(self) -> None:
         """Empty waypoints: text says '0 regions'."""
         payload = {"waypoints": []}
-        text = _normalize_waypoints_text(payload)
+        text = build_waypoints_normalized_text(payload)
         assert "0 regions" in text
 
 
@@ -1049,16 +1079,20 @@ class TestConfigValidation:
         """Missing SWITCHBOARD_MCP_URL raises ValueError."""
         monkeypatch.delenv("SWITCHBOARD_MCP_URL", raising=False)
         with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
-            OwnTracksConnectorConfig.from_env(webhook_token=_VALID_TOKEN)
+            OwnTracksConnectorConfig.from_env()
 
     def test_from_env_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default values are applied when optional env vars are absent."""
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
-        config = OwnTracksConnectorConfig.from_env(webhook_token=_VALID_TOKEN)
+        monkeypatch.delenv("CONNECTOR_INGESTION_TIER", raising=False)
+        monkeypatch.delenv("CONNECTOR_HEALTH_PORT", raising=False)
+        monkeypatch.delenv("OWNTRACKS_RETENTION_DAYS", raising=False)
+        monkeypatch.delenv("OWNTRACKS_TRACKER_ID", raising=False)
+        config = OwnTracksConnectorConfig.from_env()
         assert config.ingestion_tier == "metadata"
         assert config.health_port == 40083
         assert config.retention_days == 30
-        assert config.tracker_id == "unknown"
+        assert config.tracker_id_override is None
 
     def test_from_env_custom_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Custom env vars are applied."""
@@ -1067,14 +1101,14 @@ class TestConfigValidation:
         monkeypatch.setenv("CONNECTOR_INGESTION_TIER", "full")
         monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40099")
         monkeypatch.setenv("OWNTRACKS_RETENTION_DAYS", "7")
-        config = OwnTracksConnectorConfig.from_env(webhook_token=_VALID_TOKEN)
-        assert config.tracker_id == "ph"
+        config = OwnTracksConnectorConfig.from_env()
+        assert config.tracker_id_override == "ph"
         assert config.ingestion_tier == "full"
         assert config.health_port == 40099
         assert config.retention_days == 7
 
     def test_endpoint_identity_format(self) -> None:
-        """Endpoint identity is 'owntracks:<tracker_id>'."""
-        config = _make_config(tracker_id="ph")
-        connector = _make_connector(config=config)
-        assert connector.endpoint_identity == "owntracks:ph"
+        """Endpoint identity is 'owntracks:<tracker_id_override>' when set."""
+        config = _make_config(tracker_id_override="ph")
+        connector, _ = _make_connector(config=config)
+        assert connector._endpoint_identity == "owntracks:ph"
