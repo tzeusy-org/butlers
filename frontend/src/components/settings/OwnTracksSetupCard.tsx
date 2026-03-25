@@ -79,17 +79,17 @@ function stateBadgeLabel(state: OwnTracksState): string {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "—";
   }
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +116,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       className="h-7 w-7 shrink-0"
       onClick={handleCopy}
       title={`Copy ${label}`}
+      aria-label={`Copy ${label}`}
     >
       {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
     </Button>
@@ -213,9 +214,11 @@ function SetupInstructions({ webhookUrl, token }: { webhookUrl: string; token?: 
     <div className="rounded-md border bg-muted/30 p-3 text-sm">
       <div className="mb-3 flex items-center gap-2">
         <span className="text-xs font-medium text-muted-foreground">Platform</span>
-        <div className="flex rounded-md border">
+        <div className="flex rounded-md border" role="tablist" aria-label="Platform">
           <button
             type="button"
+            role="tab"
+            aria-selected={platform === "ios"}
             onClick={() => setPlatform("ios")}
             className={`px-3 py-1 text-xs rounded-l-md transition-colors ${
               platform === "ios"
@@ -227,6 +230,8 @@ function SetupInstructions({ webhookUrl, token }: { webhookUrl: string; token?: 
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={platform === "android"}
             onClick={() => setPlatform("android")}
             className={`px-3 py-1 text-xs rounded-r-md border-l transition-colors ${
               platform === "android"
@@ -378,6 +383,38 @@ export function OwnTracksSetupCard() {
         </CardHeader>
         <CardContent>
           <Skeleton className="h-16 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (statusQuery.isError) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>OwnTracks</CardTitle>
+              <CardDescription className="mt-1">
+                Could not load OwnTracks connector status. Please check your connection and try
+                again.
+              </CardDescription>
+            </div>
+            <Badge variant="destructive">Error</Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Connector actions are disabled until status can be fetched.
+          </p>
+          <Button
+            className="mt-3"
+            size="sm"
+            variant="outline"
+            onClick={() => statusQuery.refetch()}
+          >
+            Retry
+          </Button>
         </CardContent>
       </Card>
     );
