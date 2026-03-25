@@ -26,7 +26,7 @@ from butlers.modules.memory.tools.feedback import (
     memory_mark_helpful,
 )
 from butlers.modules.memory.tools.management import memory_forget, memory_stats, predicate_list
-from butlers.modules.memory.tools.preferences import get_preferences
+from butlers.modules.memory.tools.preferences import get_preferences, set_preference
 from butlers.modules.memory.tools.reading import (
     memory_catalog_search,
     memory_get,
@@ -52,6 +52,7 @@ __all__ = [
     "entity_neighbors",
     "entity_resolve",
     "entity_update",
+    "get_preferences",
     "memory_confirm",
     "memory_context",
     "memory_forget",
@@ -64,8 +65,8 @@ __all__ = [
     "predicate_list",
     "predicate_search",
     "memory_catalog_search",
-    "get_preferences",
     "memory_store_episode",
     "memory_store_fact",
     "memory_store_rule",
+    "set_preference",
 ]

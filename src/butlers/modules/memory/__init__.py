@@ -1088,67 +1088,6 @@ class MemoryModule(Module):
                 tenant_id=tenant_id,
             )
 
-        # --- Preferences tools ---
-
-        @mcp.tool()
-        async def get_preferences(
-            scope: Annotated[
-                str | None,
-                Field(
-                    description=(
-                        "Optional filter: return only preferences with this scope "
-                        "(e.g. 'travel', 'health', 'finance', 'home', 'global'). "
-                        "When omitted, all scopes are returned."
-                    )
-                ),
-            ] = None,
-            predicate_pattern: Annotated[
-                str | None,
-                Field(
-                    description=(
-                        "Optional SQL LIKE pattern for the predicate column "
-                        "(e.g. 'preferences:health_%'). Must start with 'preferences:'. "
-                        "When omitted, all preference predicates ('preferences:%') are returned."
-                    )
-                ),
-            ] = None,
-            request_context: Annotated[
-                dict[str, Any] | None,
-                Field(
-                    description=(
-                        "Optional request context dict with 'tenant_id' (default 'owner') "
-                        "and 'request_id' (optional trace ID). tenant_id scopes all retrieval. "
-                        "When omitted, defaults to tenant_id='owner' and no request_id."
-                    )
-                ),
-            ] = None,
-        ) -> list[dict[str, Any]]:
-            """Retrieve all active user preferences for the owner entity.
-
-            Returns a simplified list of preference facts ordered by predicate ASC.
-            Each entry includes:
-            - predicate (str) — preference key, e.g. 'preferences:travel_flight_seat'
-            - value (str) — preference value, e.g. 'window'
-            - scope (str) — domain scope, e.g. 'travel'
-            - importance (float) — importance score
-            - permanence (str) — decay class: 'stable', 'permanent', etc.
-            - effective_confidence (float) — current confidence after decay
-            - updated_at (str) — ISO-8601 timestamp of last update
-
-            Optional filters:
-            - scope: exact match on scope column (e.g. 'travel')
-            - predicate_pattern: SQL LIKE pattern (e.g. 'preferences:health_%')
-
-            Returns an empty list when no active preferences exist (not an error).
-            """
-            tid = (request_context or {}).get("tenant_id", "owner")
-            return await _preferences.get_preferences(
-                module._get_pool(),
-                scope=scope,
-                predicate_pattern=predicate_pattern,
-                tenant_id=tid,
-            )
-
         # --- Cross-butler catalog search tool ---
 
         @mcp.tool()
@@ -1194,4 +1133,148 @@ class MemoryModule(Module):
                 memory_type=memory_type,
                 limit=limit,
                 mode=mode,
+            )
+
+        # --- Preference tools ---
+
+        @mcp.tool()
+        async def memory_set_preference(
+            predicate: Annotated[
+                str,
+                Field(
+                    description=(
+                        "Preference predicate in 'preferences:<domain>_<name>' format. "
+                        "Valid domains: travel, health, finance, relationship, home, general. "
+                        "Examples: 'preferences:travel_flight_seat', "
+                        "'preferences:general_language'."
+                    )
+                ),
+            ],
+            value: Annotated[
+                str,
+                Field(description="Preference value string (e.g. 'window', 'English')."),
+            ],
+            permanence: Annotated[
+                Literal["permanent", "stable", "standard", "volatile", "ephemeral"],
+                Field(
+                    description=(
+                        "Permanence level override. Default is 'stable' (near-permanent, "
+                        "slow decay). Use 'permanent' for preferences that must never decay."
+                    )
+                ),
+            ] = "stable",
+            importance: Annotated[
+                float,
+                Field(
+                    description=(
+                        "Importance score override (0.0–10.0). Default is 8.0 for preferences "
+                        "so they rank above standard facts in Profile Facts."
+                    )
+                ),
+            ] = 8.0,
+            metadata: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional JSONB metadata to merge into the stored fact "
+                        "(e.g. {'source': 'user_explicit', 'confidence_note': 'stated directly'})."
+                    )
+                ),
+            ] = None,
+        ) -> dict[str, Any]:
+            """Store a user preference as a high-permanence fact.
+
+            Wraps ``memory_store_fact`` with preference-appropriate defaults:
+            - ``permanence='stable'`` (decay_rate=0.002, near-permanent)
+            - ``importance=8.0`` (ranks above standard facts in Profile Facts)
+            - ``retention_class='operational'``
+            - Owner entity auto-resolved from ``shared.contacts``
+            - Scope derived from the predicate domain segment
+              (``preferences:travel_*`` → scope ``travel``,
+               ``preferences:general_*`` → scope ``global``)
+
+            Supersedes any existing active preference for the same predicate
+            and returns ``action='updated'`` when an existing preference was replaced.
+
+            Required fields:
+            - ``predicate``: must start with ``preferences:``
+              (e.g. ``preferences:travel_flight_seat``)
+            - ``value``: preference value string (e.g. ``"window"``)
+
+            Returns:
+            - ``id``: UUID of the stored fact
+            - ``superseded_id``: UUID of the superseded fact (or null if new)
+            - ``action``: ``"created"`` or ``"updated"``
+            - ``predicate``: stored predicate
+            - ``scope``: derived scope
+            - ``owner_entity_id``: resolved owner entity UUID
+            """
+            try:
+                return await _preferences.set_preference(
+                    module._get_pool(),
+                    predicate,
+                    value,
+                    permanence=permanence,
+                    importance=importance,
+                    metadata=metadata,
+                )
+            except ValueError as exc:
+                return {
+                    "error": str(exc),
+                    "message": str(exc),
+                    "recovery": (
+                        "Ensure the predicate starts with 'preferences:' and uses the format "
+                        "'preferences:<domain>_<name>'. "
+                        "If the owner entity error occurs, run butler startup or verify the "
+                        "owner contact exists in shared.contacts."
+                    ),
+                }
+
+        @mcp.tool()
+        async def memory_get_preferences(
+            scope: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional scope filter. Use a domain name (e.g. 'travel', 'health') "
+                        "or 'global' for general preferences. When omitted, all preferences "
+                        "are returned."
+                    )
+                ),
+            ] = None,
+            predicate_pattern: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional SQL LIKE pattern for the predicate "
+                        "(e.g. 'preferences:health_%'). When omitted, all preferences "
+                        "matching 'preferences:%' are returned."
+                    )
+                ),
+            ] = None,
+        ) -> list[dict[str, Any]]:
+            """Retrieve all active user preferences for the owner.
+
+            Queries facts where ``predicate LIKE 'preferences:%'`` and
+            ``validity = 'active'`` for the owner entity.
+
+            Optional filters:
+            - ``scope``: restrict to a domain (e.g. ``"travel"``, ``"health"``, ``"global"``)
+            - ``predicate_pattern``: SQL LIKE pattern (e.g. ``"preferences:health_%"``)
+
+            Results are ordered by ``predicate ASC`` for deterministic output.
+
+            Each result includes:
+            - ``predicate``: the preference predicate
+            - ``value``: the stored preference value
+            - ``scope``: scope namespace
+            - ``importance``: importance score
+            - ``permanence``: permanence level
+            - ``updated_at``: ISO-8601 timestamp of last update
+            - ``effective_confidence``: confidence after decay formula
+            """
+            return await _preferences.get_preferences(
+                module._get_pool(),
+                scope=scope,
+                predicate_pattern=predicate_pattern,
             )
