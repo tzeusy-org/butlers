@@ -538,15 +538,15 @@ async def _run_home_environment_report_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run environment report job for the home butler.
+    """Run the daily environment report job for the Home butler.
 
-    Delegates to ``butlers.jobs.home.run_environment_report``, which is
-    currently a no-op stub pending full implementation.
+    Delegates to ``butlers.jobs.home.run_environment_report``, which reads
+    environmental sensors from ``ha_entity_snapshot``, compares against comfort
+    preferences, and sends a room-by-room Telegram notification.
     """
-    del job_args
     from butlers.jobs.home import run_environment_report
 
-    return await run_environment_report(pool=pool)
+    return await run_environment_report(pool, job_args)
 
 
 async def _run_home_energy_digest_job(
