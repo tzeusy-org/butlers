@@ -506,7 +506,7 @@ async def contact_search(
     )
     contacts = [_parse_contact(row) for row in rows]
 
-    # Enrich each contact with Dunbar tier and score (batch via compute_tier_ranking)
+    # Enrich each contact with Dunbar tier, score, and override (batch via compute_tier_ranking)
     try:
         from butlers.tools.relationship.dunbar import compute_tier_ranking
 
@@ -517,11 +517,13 @@ async def contact_search(
             info = dunbar_by_cid.get(cid, {})
             contact["dunbar_tier"] = info.get("dunbar_tier", 1500)
             contact["dunbar_score"] = info.get("dunbar_score", 0.0)
+            contact["dunbar_tier_override"] = info.get("dunbar_tier_override", False)
     except Exception:
         logger.exception("Failed to enrich contacts with Dunbar scores")
         for contact in contacts:
             contact.setdefault("dunbar_tier", 1500)
             contact.setdefault("dunbar_score", 0.0)
+            contact.setdefault("dunbar_tier_override", False)
 
     return contacts
 
