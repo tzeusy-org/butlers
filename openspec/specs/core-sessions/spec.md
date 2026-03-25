@@ -14,7 +14,7 @@ A session row is inserted before the runtime invocation begins, capturing the pr
 - **AND** the session's UUID is returned
 
 #### Scenario: Invalid trigger source rejected
-- **WHEN** `session_create()` is called with an unrecognized trigger source (not `tick`, `external`, `trigger`, `route`, or `schedule:<name>`)
+- **WHEN** `session_create()` is called with an unrecognized trigger source (not `tick`, `external`, `trigger`, `route`, `healing`, `dashboard`, or `schedule:<name>`)
 - **THEN** a `ValueError` is raised
 
 #### Scenario: Missing request_id rejected
@@ -78,7 +78,7 @@ The sessions table stores all fields required by the base butler contract: `id`,
 - **THEN** `healing_fingerprint` is NULL (healing sessions are not fingerprinted)
 
 ### Requirement: Trigger Source Tracking
-Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, and `schedule:<task-name>` (where task-name is any non-empty string). The trigger source is validated at session creation.
+Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, `dashboard`, and `schedule:<task-name>` (where task-name is any non-empty string). The trigger source is validated at session creation.
 
 #### Scenario: Schedule trigger source
 - **WHEN** `trigger_source="schedule:daily_digest"` is provided
@@ -91,6 +91,11 @@ Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, an
 #### Scenario: Healing trigger source
 - **WHEN** `trigger_source="healing"` is provided
 - **THEN** validation passes (exact match in the `TRIGGER_SOURCES` frozenset)
+
+#### Scenario: Dashboard trigger source
+- **WHEN** `trigger_source="dashboard"` is provided
+- **THEN** validation passes (exact match in the `TRIGGER_SOURCES` frozenset)
+- **AND** the session is attributed to a dashboard conversational interaction
 
 ### Requirement: Session Detail Query
 Return a full session record by UUID, with JSONB fields deserialized to native Python objects.
