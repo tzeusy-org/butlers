@@ -326,10 +326,12 @@ def init_pricing(path: Path | None = None) -> PricingConfig:
     return _pricing_config
 
 
-def get_pricing() -> PricingConfig:
-    """FastAPI dependency: provides the PricingConfig singleton."""
-    if _pricing_config is None:
-        raise RuntimeError("PricingConfig not initialized — call init_pricing() first")
+def get_pricing() -> PricingConfig | None:
+    """FastAPI dependency: provides the PricingConfig singleton.
+
+    Returns None when pricing is unavailable (file missing, parse error).
+    Callers must handle None gracefully.
+    """
     return _pricing_config
 
 
