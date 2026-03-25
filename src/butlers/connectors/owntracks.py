@@ -92,6 +92,12 @@ _DEFAULT_RETENTION_DAYS = 30
 _MIN_RETENTION_DAYS = 1
 _RETENTION_PURGE_INTERVAL_S = 6 * 60 * 60  # 6 hours
 
+# Public aliases for use by standalone OwnTracksRetentionConfig / OwnTracksRetention
+CONNECTOR_TYPE = _CONNECTOR_TYPE
+DEFAULT_RETENTION_DAYS = _DEFAULT_RETENTION_DAYS
+MIN_RETENTION_DAYS = _MIN_RETENTION_DAYS
+RETENTION_PURGE_INTERVAL_S = _RETENTION_PURGE_INTERVAL_S
+
 # Supported OwnTracks payload types (others are silently ignored)
 _SUPPORTED_PAYLOAD_TYPES = frozenset({"location", "transition", "waypoints"})
 
@@ -178,6 +184,259 @@ class OwnTracksConnectorConfig:
                 "CONNECTOR_HEARTBEAT_INTERVAL_S", _DEFAULT_HEARTBEAT_INTERVAL_S
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Retention configuration (standalone, reusable)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class OwnTracksRetentionConfig:
+    """Configuration for OwnTracks data retention.
+
+    Attributes:
+        retention_days: Number of days to retain location events. Rows older than
+            this threshold are deleted from shared.ingestion_events on each purge cycle.
+            Must be an integer >= ``MIN_RETENTION_DAYS`` (1).
+    """
+
+    retention_days: int = DEFAULT_RETENTION_DAYS
+
+    def __post_init__(self) -> None:
+        """Validate retention_days on construction regardless of how the config is built.
+
+        Raises:
+            TypeError: If ``retention_days`` is not an ``int``.
+            ValueError: If ``retention_days`` is less than ``MIN_RETENTION_DAYS``.
+        """
+        if not isinstance(self.retention_days, int):
+            raise TypeError(
+                f"retention_days must be an int, got {type(self.retention_days).__name__!r}: "
+                f"{self.retention_days!r}"
+            )
+        if self.retention_days < MIN_RETENTION_DAYS:
+            raise ValueError(
+                f"retention_days must be >= {MIN_RETENTION_DAYS}, got {self.retention_days}. "
+                "A value of 0 or negative would delete all location history immediately."
+            )
+
+    @classmethod
+    def from_env(cls) -> OwnTracksRetentionConfig:
+        """Load retention configuration from environment variables.
+
+        Reads ``OWNTRACKS_RETENTION_DAYS``.  If the value is set to a number
+        less than ``MIN_RETENTION_DAYS`` (1), a ``ValueError`` is raised to
+        prevent accidental mass-deletion of fresh data.
+
+        Returns:
+            OwnTracksRetentionConfig with resolved settings.
+
+        Raises:
+            ValueError: If ``OWNTRACKS_RETENTION_DAYS`` is set to a value < 1.
+        """
+        raw = os.environ.get("OWNTRACKS_RETENTION_DAYS")
+        if raw is None:
+            return cls(retention_days=DEFAULT_RETENTION_DAYS)
+
+        try:
+            days = int(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"OWNTRACKS_RETENTION_DAYS must be a positive integer, got: {raw!r}"
+            ) from exc
+
+        if days < MIN_RETENTION_DAYS:
+            raise ValueError(
+                f"OWNTRACKS_RETENTION_DAYS must be >= {MIN_RETENTION_DAYS}, got {days}. "
+                "Setting 0 or a negative value would delete all location history immediately."
+            )
+
+        return cls(retention_days=days)
+
+
+# ---------------------------------------------------------------------------
+# Retention purge SQL (parameterized — no interpolation footgun)
+# ---------------------------------------------------------------------------
+
+_PURGE_SQL = """\
+DELETE FROM shared.ingestion_events
+WHERE source_channel = 'owntracks'
+  AND received_at < NOW() - $1 * INTERVAL '1 day'
+"""
+
+
+# ---------------------------------------------------------------------------
+# Retention background task (standalone, reusable)
+# ---------------------------------------------------------------------------
+
+
+class OwnTracksRetention:
+    """Background data retention task for the OwnTracks connector.
+
+    Runs a purge cycle every ``RETENTION_PURGE_INTERVAL_S`` seconds (6 hours)
+    that deletes expired rows from ``shared.ingestion_events`` where
+    ``source_channel = 'owntracks'`` and ``received_at`` is older than the
+    configured retention period.
+
+    Purge failures are logged at WARNING level and never crash the connector.
+
+    Usage::
+
+        pool = await asyncpg.create_pool(...)
+        config = OwnTracksRetentionConfig.from_env()
+        retention = OwnTracksRetention(config, pool)
+        retention.start()
+        ...
+        await retention.stop()
+    """
+
+    def __init__(
+        self,
+        config: OwnTracksRetentionConfig,
+        pool: asyncpg.Pool,
+        *,
+        purge_interval_s: int = RETENTION_PURGE_INTERVAL_S,
+    ) -> None:
+        """Initialise the retention task.
+
+        Args:
+            config: Retention configuration (retention_days, etc.).
+            pool: asyncpg connection pool that can reach the ``shared`` schema.
+            purge_interval_s: Interval between purge cycles in seconds.
+                Defaults to ``RETENTION_PURGE_INTERVAL_S`` (6 hours). Exposed as
+                a parameter for unit testing so tests do not have to wait 6 hours.
+                Must be >= 1; a value of 0 would spin the purge loop without pause
+                and hammer the DB. A negative value would cause ``asyncio.sleep``
+                to raise immediately, killing the background task.
+        """
+        if purge_interval_s < 1:
+            raise ValueError(
+                f"purge_interval_s must be >= 1, got {purge_interval_s}. "
+                "A value of 0 would spin the purge loop without pause; "
+                "a negative value would raise in asyncio.sleep."
+            )
+        self._config = config
+        self._pool = pool
+        self._purge_interval_s = purge_interval_s
+        self._task: asyncio.Task | None = None
+
+    @property
+    def retention_days(self) -> int:
+        """Return the active retention period in days."""
+        return self._config.retention_days
+
+    def start(self) -> None:
+        """Schedule the background purge loop as an asyncio task.
+
+        Must be called from within a running event loop.  Calling ``start()``
+        while a task is already running is a no-op with a warning log.
+        """
+        if self._task is not None:
+            logger.warning(
+                "OwnTracks retention task already running; ignoring duplicate start call."
+            )
+            return
+
+        self._task = asyncio.create_task(self._purge_loop())
+        logger.info(
+            "OwnTracks retention task started: retention_days=%d, interval_s=%d",
+            self._config.retention_days,
+            self._purge_interval_s,
+        )
+
+    async def stop(self) -> None:
+        """Cancel the background purge loop and wait for it to exit."""
+        if self._task is None:
+            return
+
+        logger.info("Stopping OwnTracks retention task.")
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._task = None
+
+        logger.info("OwnTracks retention task stopped.")
+
+    async def purge_once(self) -> int:
+        """Execute a single purge cycle immediately.
+
+        Deletes rows from ``shared.ingestion_events`` where
+        ``source_channel = 'owntracks'`` and ``received_at`` is older than the
+        configured retention period.
+
+        Returns:
+            Number of rows deleted.
+
+        Raises:
+            Exception: Re-raises any database exceptions so that ``_purge_loop``
+                can catch and log them without crashing the connector.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(_PURGE_SQL, self._config.retention_days)
+
+        # asyncpg returns a status string like "DELETE 42"
+        deleted = _parse_delete_count(result)
+        return deleted
+
+    async def _purge_loop(self) -> None:
+        """Repeat purge cycles forever, separated by ``_purge_interval_s``.
+
+        Failures are logged at WARNING and the loop continues.
+        """
+        try:
+            while True:
+                await asyncio.sleep(self._purge_interval_s)
+                await self._run_purge()
+        except asyncio.CancelledError:
+            logger.debug("OwnTracks retention purge loop cancelled.")
+            raise
+
+    async def _run_purge(self) -> None:
+        """Execute one purge cycle with error handling and logging."""
+        try:
+            deleted = await self.purge_once()
+            logger.info(
+                "OwnTracks retention purge complete: deleted %d rows (retention_days=%d)",
+                deleted,
+                self._config.retention_days,
+            )
+        except Exception:
+            logger.warning(
+                "OwnTracks retention purge failed (retention_days=%d). Will retry on next cycle.",
+                self._config.retention_days,
+                exc_info=True,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_delete_count(status: str) -> int:
+    """Parse the row count from an asyncpg DELETE status string.
+
+    asyncpg returns a string such as ``"DELETE 42"`` after ``conn.execute()``.
+    This helper extracts the integer count.  Returns 0 if the string cannot
+    be parsed.
+
+    Args:
+        status: Status string returned by ``asyncpg.Connection.execute()``.
+
+    Returns:
+        Number of deleted rows, or 0 if parsing fails.
+    """
+    try:
+        parts = status.split()
+        if len(parts) == 2 and parts[0] == "DELETE":
+            return int(parts[1])
+    except (ValueError, AttributeError):
+        pass
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -468,8 +727,8 @@ class OwnTracksConnector:
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
 
-        # Retention purge task
-        self._retention_task: asyncio.Task[None] | None = None
+        # Retention purge (OwnTracksRetention; initialized in start() when db_pool is available)
+        self._retention: OwnTracksRetention | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -533,7 +792,12 @@ class OwnTracksConnector:
                 logger.debug("OwnTracksConnector: initial heartbeat failed (non-fatal): %s", exc)
 
             # Phase 9: Start retention purge task
-            self._retention_task = asyncio.create_task(self._retention_purge_loop())
+            if self._db_pool is not None:
+                retention_config = OwnTracksRetentionConfig(
+                    retention_days=self._config.retention_days
+                )
+                self._retention = OwnTracksRetention(retention_config, self._db_pool)
+                self._retention.start()
 
             # Phase 10: Wait for shutdown
             await self._shutdown_event.wait()
@@ -557,13 +821,9 @@ class OwnTracksConnector:
         logger.info("OwnTracksConnector: shutting down")
         self._running = False
 
-        # Cancel retention task
-        if self._retention_task is not None:
-            self._retention_task.cancel()
-            try:
-                await self._retention_task
-            except asyncio.CancelledError:
-                pass
+        # Stop retention purge task
+        if self._retention is not None:
+            await self._retention.stop()
 
         # Flush filtered event buffer
         if self._db_pool is not None:
@@ -862,55 +1122,6 @@ class OwnTracksConnector:
         if self._last_ingest_ok:
             return "healthy", None
         return "degraded", "Last ingest submission failed"
-
-    # ------------------------------------------------------------------
-    # Data retention purge (task 5.1-5.4 from spec, needed for lifecycle)
-    # ------------------------------------------------------------------
-
-    async def _retention_purge_loop(self) -> None:
-        """Background task: purge expired location events every 6 hours."""
-        try:
-            while True:
-                await asyncio.sleep(_RETENTION_PURGE_INTERVAL_S)
-                await self._run_retention_purge()
-        except asyncio.CancelledError:
-            logger.debug("OwnTracksConnector: retention purge loop cancelled")
-            raise
-
-    async def _run_retention_purge(self) -> None:
-        """Delete expired OwnTracks events from shared.ingestion_events."""
-        if self._db_pool is None:
-            logger.debug("OwnTracksConnector: no DB pool, skipping retention purge")
-            return
-
-        retention_days = self._config.retention_days
-        try:
-            result = await self._db_pool.execute(
-                """
-                DELETE FROM shared.ingestion_events
-                WHERE source_channel = 'owntracks'
-                  AND created_at < NOW() - INTERVAL '1 day' * $1
-                """,
-                retention_days,
-            )
-            # asyncpg returns "DELETE N" string
-            deleted_count = 0
-            if result and isinstance(result, str) and result.startswith("DELETE "):
-                try:
-                    deleted_count = int(result.split(" ", 1)[1])
-                except (ValueError, IndexError):
-                    pass
-            logger.info(
-                "OwnTracksConnector: retention purge deleted %d rows (retention=%d days)",
-                deleted_count,
-                retention_days,
-            )
-        except Exception:
-            logger.warning(
-                "OwnTracksConnector: retention purge failed (retention=%d days)",
-                retention_days,
-                exc_info=True,
-            )
 
     # ------------------------------------------------------------------
     # FastAPI application builder (webhook + health + metrics)
