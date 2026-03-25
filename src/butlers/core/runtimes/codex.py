@@ -552,6 +552,7 @@ class CodexAdapter(RuntimeAdapter):
             "exec",
             "--json",
             "--full-auto",
+            "--skip-git-repo-check",
         ]
 
         if isinstance(model, str) and model.strip():

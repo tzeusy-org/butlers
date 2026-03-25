@@ -8,7 +8,7 @@
 # Changing Python source (src/, pyproject.toml) does NOT trigger a Go rebuild.
 
 # --- Stage 1: Go builder ---------------------------------------------------
-FROM golang:1.24-bookworm AS go-builder
+FROM golang:1.25-bookworm AS go-builder
 
 WORKDIR /build
 

@@ -13,17 +13,14 @@ The `CredentialStore` class provides async CRUD operations on the `butler_secret
 - **THEN** the secret is persisted via INSERT...ON CONFLICT DO UPDATE (idempotent upsert)
 - **AND** the raw value is never logged
 
-#### Scenario: Resolve secret (DB-only by default)
+#### Scenario: Resolve secret (DB-first, env fallback)
 - **WHEN** `store.resolve(key)` is called
-- **THEN** the store checks the local DB first, then fallback DBs
-- **AND** environment variables are NOT consulted (env_fallback defaults to False)
-- **AND** returns the first non-None value found from DB sources
+- **THEN** the store checks the local DB first, then fallback DBs, then `os.environ[key]`
+- **AND** returns the first non-None value found
 
-#### Scenario: Resolve with env fallback (infrastructure bootstrap only)
-- **WHEN** `store.resolve(key, env_fallback=True)` is called
-- **THEN** the store checks DB sources first, then falls back to `os.environ[key]`
-- **AND** this mode is reserved for infrastructure bootstrap credentials (database connection, OTEL endpoint) that must be available before the DB itself is reachable
-- **AND** MUST NOT be used for API keys, OAuth tokens, or integration credentials
+#### Scenario: Resolve with env fallback disabled
+- **WHEN** `store.resolve(key, env_fallback=False)` is called
+- **THEN** only DB sources are checked; environment variables are not consulted
 
 #### Scenario: Load from DB only
 - **WHEN** `store.load(key)` is called
@@ -166,7 +163,7 @@ The `startup_guard` module provides `check_google_credentials()` (sync, returns 
 - **THEN** a warning is logged but no exception is raised
 
 ### Requirement: Async Core Credential Validation
-Runtime authentication uses CLI-level OAuth tokens (device-code flow via the dashboard Settings page), not API keys. The `validate_core_credentials_async()` function is a no-op; no API key validation is performed at startup.
+Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys, depending on the provider's `auth_mode` as configured in the CLI auth registry. API-key providers (e.g. Claude with `ANTHROPIC_API_KEY`) store their keys in the credential store via the dashboard Settings → CLI Runtime Authentication card. The `validate_core_credentials_async()` function is a no-op; credential availability is checked lazily at spawn time via `CredentialStore.resolve()`.
 
 ### Requirement: Async Module Credential Validation
 `validate_module_credentials_async(module_credentials, credential_store)` checks each module's declared credential keys via `CredentialStore.resolve()`. Returns a dict of per-module missing keys (non-fatal, does not raise).
