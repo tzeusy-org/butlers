@@ -1,14 +1,20 @@
-"""Unit and integration tests for butlers.jobs.home — maintenance schedule check job.
+"""Unit and integration tests for butlers.jobs.home.
 
 Covers:
 - classify_item: all severity branches (due, overdue, critical, upcoming, never_completed, ok)
 - build_notification_text: grouping, ordering, message content
 - run_maintenance_schedule_check: query logic, classification, return values,
   notification delivery, no-action path, DB error propagation
+- classify_battery / classify_offline: all severity levels, boundaries, and None cases
+- _load_battery_thresholds / _load_offline_hours_thresholds: state store vs defaults,
+  per-key invalid value fallback
+- _build_health_check_notification: message structure for all-clear and issue cases
+- run_device_health_check: happy path, empty snapshot, no-issues, and mixed issues
+- daemon registry: device_health_check registered for home butler
 
 All tests use mocked asyncpg pools — no real database required.
 
-Issue: bu-smht
+Issues: bu-smht, bu-bf9e
 """
 
 from __future__ import annotations
@@ -30,6 +36,8 @@ from butlers.jobs.home import (
     SEVERITY_UPCOMING,
     MaintenanceItemRow,
     _build_health_check_notification,
+    _load_battery_thresholds,
+    _load_offline_hours_thresholds,
     build_notification_text,
     classify_battery,
     classify_item,
@@ -558,6 +566,82 @@ def _make_health_pool(
     conn_mock.__aexit__ = AsyncMock(return_value=None)
     pool.acquire = MagicMock(return_value=conn_mock)
     return pool
+
+
+# ---------------------------------------------------------------------------
+# _load_battery_thresholds / _load_offline_hours_thresholds
+# ---------------------------------------------------------------------------
+
+
+class TestLoadBatteryThresholds:
+    """Tests for _load_battery_thresholds — state store interaction and fallback."""
+
+    async def test_returns_defaults_when_key_absent(self):
+        pool = _make_health_pool(state_value=None)
+        result = await _load_battery_thresholds(pool)
+        assert result == _DEFAULT_BATTERY_THRESHOLDS
+
+    async def test_returns_defaults_when_value_is_not_dict(self):
+        pool = _make_health_pool(state_value="bad-value")
+        result = await _load_battery_thresholds(pool)
+        assert result == _DEFAULT_BATTERY_THRESHOLDS
+
+    async def test_returns_parsed_values_from_store(self):
+        pool = _make_health_pool(state_value={"critical": 5, "warning": 15, "info": 25})
+        result = await _load_battery_thresholds(pool)
+        assert result == {"critical": 5, "warning": 15, "info": 25}
+
+    async def test_invalid_per_key_value_falls_back_to_default(self):
+        """A single invalid field falls back to the default for that field only."""
+        pool = _make_health_pool(state_value={"critical": None, "warning": 15, "info": 25})
+        result = await _load_battery_thresholds(pool)
+        assert result["critical"] == _DEFAULT_BATTERY_THRESHOLDS["critical"]
+        assert result["warning"] == 15
+        assert result["info"] == 25
+
+    async def test_string_numeric_value_is_coerced(self):
+        """int() coerces string-encoded integers (e.g. '12')."""
+        pool = _make_health_pool(state_value={"critical": "12", "warning": "22", "info": "32"})
+        result = await _load_battery_thresholds(pool)
+        assert result == {"critical": 12, "warning": 22, "info": 32}
+
+    async def test_non_numeric_string_falls_back_to_default(self):
+        """A value like '10%' cannot be coerced; must default per-key."""
+        pool = _make_health_pool(state_value={"critical": "10%", "warning": 20, "info": 30})
+        result = await _load_battery_thresholds(pool)
+        assert result["critical"] == _DEFAULT_BATTERY_THRESHOLDS["critical"]
+        assert result["warning"] == 20
+
+
+class TestLoadOfflineHoursThresholds:
+    """Tests for _load_offline_hours_thresholds — state store interaction and fallback."""
+
+    async def test_returns_defaults_when_key_absent(self):
+        pool = _make_health_pool(state_value=None)
+        result = await _load_offline_hours_thresholds(pool)
+        assert result == _DEFAULT_OFFLINE_HOURS_THRESHOLDS
+
+    async def test_returns_defaults_when_value_is_not_dict(self):
+        pool = _make_health_pool(state_value=42)
+        result = await _load_offline_hours_thresholds(pool)
+        assert result == _DEFAULT_OFFLINE_HOURS_THRESHOLDS
+
+    async def test_returns_parsed_values_from_store(self):
+        pool = _make_health_pool(state_value={"critical": 48, "warning": 2})
+        result = await _load_offline_hours_thresholds(pool)
+        assert result == {"critical": 48, "warning": 2}
+
+    async def test_invalid_per_key_value_falls_back_to_default(self):
+        pool = _make_health_pool(state_value={"critical": "bad", "warning": 2})
+        result = await _load_offline_hours_thresholds(pool)
+        assert result["critical"] == _DEFAULT_OFFLINE_HOURS_THRESHOLDS["critical"]
+        assert result["warning"] == 2
+
+    async def test_null_per_key_value_falls_back_to_default(self):
+        pool = _make_health_pool(state_value={"critical": 48, "warning": None})
+        result = await _load_offline_hours_thresholds(pool)
+        assert result["warning"] == _DEFAULT_OFFLINE_HOURS_THRESHOLDS["warning"]
+        assert result["critical"] == 48
 
 
 class TestClassifyBattery:

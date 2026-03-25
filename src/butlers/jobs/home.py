@@ -113,11 +113,20 @@ async def _load_battery_thresholds(pool: asyncpg.Pool) -> dict[str, int]:
             type(raw).__name__,
         )
         return dict(_DEFAULT_BATTERY_THRESHOLDS)
-    return {
-        "critical": int(raw.get("critical", _DEFAULT_BATTERY_THRESHOLDS["critical"])),
-        "warning": int(raw.get("warning", _DEFAULT_BATTERY_THRESHOLDS["warning"])),
-        "info": int(raw.get("info", _DEFAULT_BATTERY_THRESHOLDS["info"])),
-    }
+    result: dict[str, int] = {}
+    for key in ("critical", "warning", "info"):
+        raw_val = raw.get(key, _DEFAULT_BATTERY_THRESHOLDS[key])
+        try:
+            result[key] = int(raw_val)
+        except (TypeError, ValueError):
+            logger.warning(
+                "home:thresholds:battery[%r] has invalid value %r; using default %d",
+                key,
+                raw_val,
+                _DEFAULT_BATTERY_THRESHOLDS[key],
+            )
+            result[key] = _DEFAULT_BATTERY_THRESHOLDS[key]
+    return result
 
 
 async def _load_offline_hours_thresholds(pool: asyncpg.Pool) -> dict[str, int]:
@@ -134,10 +143,20 @@ async def _load_offline_hours_thresholds(pool: asyncpg.Pool) -> dict[str, int]:
             type(raw).__name__,
         )
         return dict(_DEFAULT_OFFLINE_HOURS_THRESHOLDS)
-    return {
-        "critical": int(raw.get("critical", _DEFAULT_OFFLINE_HOURS_THRESHOLDS["critical"])),
-        "warning": int(raw.get("warning", _DEFAULT_OFFLINE_HOURS_THRESHOLDS["warning"])),
-    }
+    result: dict[str, int] = {}
+    for key in ("critical", "warning"):
+        raw_val = raw.get(key, _DEFAULT_OFFLINE_HOURS_THRESHOLDS[key])
+        try:
+            result[key] = int(raw_val)
+        except (TypeError, ValueError):
+            logger.warning(
+                "home:thresholds:offline_hours[%r] has invalid value %r; using default %d",
+                key,
+                raw_val,
+                _DEFAULT_OFFLINE_HOURS_THRESHOLDS[key],
+            )
+            result[key] = _DEFAULT_OFFLINE_HOURS_THRESHOLDS[key]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -261,11 +280,15 @@ def _build_health_check_notification(
     Returns:
         Formatted text message for Telegram.
     """
+    def _esc(text: str) -> str:
+        """HTML-escape a user-supplied string for Telegram HTML parse mode."""
+        return html.escape(text)
+
     if not issues or (critical_count == 0 and warning_count == 0):
         # All-clear (may still have info-only issues)
         if info_count > 0:
             info_lines = [
-                f"  \u2022 {i['friendly_name']}: {i['description']}"
+                f"  \u2022 {_esc(i['friendly_name'])}: {_esc(i['description'])}"
                 for i in issues
                 if i["severity"] == "info"
             ]
@@ -286,7 +309,7 @@ def _build_health_check_notification(
     if critical_issues:
         lines.append("\U0001f534 Critical:")
         for issue in critical_issues:
-            lines.append(f"  \u2022 {issue['friendly_name']}: {issue['description']}")
+            lines.append(f"  \u2022 {_esc(issue['friendly_name'])}: {_esc(issue['description'])}")
         lines.append("")
 
     # Warning issues
@@ -294,7 +317,7 @@ def _build_health_check_notification(
     if warning_issues:
         lines.append("\U0001f7e0 Warning:")
         for issue in warning_issues:
-            lines.append(f"  \u2022 {issue['friendly_name']}: {issue['description']}")
+            lines.append(f"  \u2022 {_esc(issue['friendly_name'])}: {_esc(issue['description'])}")
         lines.append("")
 
     return "\n".join(lines).rstrip()
