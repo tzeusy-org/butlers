@@ -31,19 +31,30 @@ The home butler provides smart-home control and monitoring tools via the home_as
 - **WHEN** a runtime instance is spawned for the home butler
 - **THEN** it SHALL have access to: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, `ha_render_template`, `ha_call_service`, `ha_activate_scene`, plus memory tools and contact tools
 
+### Requirement: Home Butler Maintenance Tools
+
+The home butler provides MCP tools for managing recurring maintenance items.
+
+#### Scenario: Maintenance tool inventory
+
+- **WHEN** a runtime instance is spawned for the home butler
+- **THEN** it SHALL have access to: `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_list`, `ha_maintenance_remove` in addition to existing HA tools, memory tools, and contact tools
+
 ### Requirement: Home Butler Schedules
 
-The home butler runs periodic monitoring and reporting jobs.
+The home butler runs periodic monitoring and reporting jobs. Monitoring tasks use deterministic job-based dispatch to avoid LLM costs for formulaic work.
 
 #### Scenario: Scheduled task inventory
 
 - **WHEN** the home butler daemon is running
 - **THEN** it SHALL execute:
-  - `weekly-energy-digest` (0 9 * * 0, prompt-based): summarize weekly energy consumption trends using `ha_get_statistics`, identify anomalies, compare to previous weeks, and notify the owner via `notify(channel="telegram", intent="send")`
-  - `environment-report` (0 8 * * *, prompt-based): snapshot temperature, humidity, and air quality across all areas using `ha_list_entities` and `ha_get_entity_state`, flag any readings outside comfortable ranges, and notify the owner
-  - `device-health-check` (0 4 * * *, prompt-based): detect entities in `unavailable` or `unknown` state using `ha_list_entities`, check for low battery sensors, and notify the owner of any issues found
-  - `memory-consolidation` (0 */6 * * *, job-based)
-  - `memory-episode-cleanup` (0 4 * * *, job-based)
+  - `device-health-check` (0 4 * * *, job-based, job_name=`device_health_check`): read entity states from connector-populated `ha_entity_snapshot`, classify offline status and low battery using configurable thresholds from state store (`home:thresholds:battery`, `home:thresholds:offline_hours`), store findings in memory, and notify the owner via Telegram
+  - `environment-report` (0 8 * * *, job-based, job_name=`environment_report`): read environmental sensors per area from `ha_entity_snapshot`, compare against stored comfort preferences with configurable deviation thresholds from state store (`home:thresholds:comfort_defaults`, `home:thresholds:comfort_deviation`), and send a room-by-room report via Telegram
+  - `weekly-energy-digest` (0 9 * * 0, job-based, job_name=`energy_digest`): discover energy sensors from `ha_entity_snapshot`, fetch weekly historical statistics via HA REST API (`recorder/get_statistics_during_period`), compute top consumers and trends vs. baselines using configurable anomaly thresholds from state store (`home:thresholds:energy`), and send a structured digest via Telegram
+  - `maintenance-schedule-check` (0 10 * * 1, job-based, job_name=`maintenance_schedule_check`): check all maintenance items for due/overdue status and send reminders via Telegram
+  - `memory-consolidation` (0 */6 * * *, job-based, job_name=`memory_consolidation`)
+  - `memory-episode-cleanup` (5 4 * * *, job-based, job_name=`memory_episode_cleanup`)
+  - `memory-purge-superseded` (10 4 * * *, job-based, job_name=`memory_purge_superseded`)
 
 ### Requirement: Home Butler Skills
 
