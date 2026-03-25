@@ -1,51 +1,194 @@
-"""Memory preferences tools — retrieve user preferences from the facts store."""
+"""Memory preference tools — set and get user preferences as facts."""
 
 from __future__ import annotations
 
-import datetime as _dt
-import logging
-import math
-from datetime import UTC, datetime
+import uuid
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-logger = logging.getLogger(__name__)
+from butlers.modules.memory.tools._helpers import _storage, get_embedding_engine
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+PREFERENCE_PERMANENCE_DEFAULT = "stable"
+PREFERENCE_IMPORTANCE_DEFAULT = 8.0
+PREFERENCE_RETENTION_CLASS = "operational"
+PREFERENCE_PREDICATE_PREFIX = "preferences:"
+PREFERENCE_GENERAL_DOMAIN = "general"
+PREFERENCE_GENERAL_SCOPE = "global"
 
 
-def _compute_effective_confidence(row: dict[str, Any]) -> float:
-    """Compute effective (decayed) confidence using the standard decay formula.
+# ---------------------------------------------------------------------------
+# Owner entity resolution
+# ---------------------------------------------------------------------------
 
-    Formula: confidence * exp(-decay_rate * days_elapsed)
-    where days_elapsed = (now - last_confirmed_at or created_at) / 86400.
 
-    When decay_rate is 0.0 (permanent), returns confidence unchanged.
-    When last_confirmed_at and created_at are both None, returns 0.0.
-
-    Args:
-        row: Dict with keys: confidence, decay_rate, last_confirmed_at, created_at.
+async def _resolve_owner(pool: Pool) -> tuple[uuid.UUID, str]:
+    """Resolve the owner entity from shared.contacts / shared.entities.
 
     Returns:
-        Effective confidence float (0.0–1.0).
+        Tuple of (entity_id, canonical_name).
+
+    Raises:
+        ValueError: When no owner entity can be resolved.
     """
-    confidence = row.get("confidence")
-    if confidence is None:
-        confidence = 1.0
-    decay_rate = row.get("decay_rate")
-    if decay_rate is None:
-        decay_rate = 0.0
+    # Primary path: contacts table with entity_id FK.
+    row = await pool.fetchrow(
+        """
+        SELECT e.id, e.canonical_name
+        FROM shared.contacts c
+        JOIN shared.entities e ON c.entity_id = e.id
+        WHERE c.roles @> '["owner"]'::jsonb
+          AND c.entity_id IS NOT NULL
+        LIMIT 1
+        """
+    )
+    if row:
+        return row["id"], row["canonical_name"]
 
-    if decay_rate == 0.0:
-        return confidence
+    # Fallback: entities with owner role directly.
+    row = await pool.fetchrow(
+        """
+        SELECT id, canonical_name
+        FROM shared.entities
+        WHERE 'owner' = ANY(roles)
+        LIMIT 1
+        """
+    )
+    if row:
+        return row["id"], row["canonical_name"]
 
-    anchor = row.get("last_confirmed_at") or row.get("created_at")
-    if anchor is None:
-        return 0.0
+    raise ValueError(
+        "Owner entity could not be resolved. "
+        "Ensure the butler has started up successfully (owner entity bootstrap) "
+        "or create an owner contact via the identity setup workflow."
+    )
 
-    now = datetime.now(UTC)
-    days_elapsed = max((now - anchor).total_seconds() / 86400.0, 0.0)
-    return confidence * math.exp(-decay_rate * days_elapsed)
+
+# ---------------------------------------------------------------------------
+# Scope derivation
+# ---------------------------------------------------------------------------
+
+
+def _derive_scope(predicate: str) -> str:
+    """Derive the fact scope from the domain segment of a preferences predicate.
+
+    Rules:
+    - ``preferences:general_*``  → ``"global"``
+    - ``preferences:<domain>_*`` → ``"<domain>"``
+
+    Args:
+        predicate: A validated preferences predicate starting with ``preferences:``.
+
+    Returns:
+        Scope string derived from the domain segment.
+    """
+    # Strip the "preferences:" prefix, then extract the domain (first segment
+    # separated by underscore).
+    remainder = predicate[len(PREFERENCE_PREDICATE_PREFIX) :]
+    domain = remainder.split("_")[0]
+    if domain == PREFERENCE_GENERAL_DOMAIN:
+        return PREFERENCE_GENERAL_SCOPE
+    return domain
+
+
+# ---------------------------------------------------------------------------
+# set_preference implementation
+# ---------------------------------------------------------------------------
+
+
+async def set_preference(
+    pool: Pool,
+    predicate: str,
+    value: str,
+    *,
+    permanence: str = PREFERENCE_PERMANENCE_DEFAULT,
+    importance: float = PREFERENCE_IMPORTANCE_DEFAULT,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Store a user preference as a fact with preference-appropriate defaults.
+
+    Validates that the predicate uses the ``preferences:`` namespace, auto-resolves
+    the owner entity, derives the scope from the predicate domain segment, and
+    delegates to ``storage.store_fact`` with high-permanence defaults.
+
+    Supersession is handled transparently by the storage layer: if an active fact
+    for the same ``(entity_id, scope, predicate)`` already exists it is superseded
+    and the response includes ``superseded_id``.
+
+    Args:
+        pool: asyncpg connection pool.
+        predicate: Preference predicate in ``preferences:<domain>_<name>`` format.
+        value: Preference value string (stored as fact content).
+        permanence: Permanence level override (default ``"stable"``).
+        importance: Importance score override (default ``8.0``).
+        metadata: Optional JSONB metadata to merge into the stored fact.
+
+    Returns:
+        MCP-friendly dict with keys:
+        - ``id`` (str): UUID of the stored fact.
+        - ``superseded_id`` (str | None): UUID of the superseded fact, if any.
+        - ``action`` (str): ``"created"`` or ``"updated"``.
+        - ``predicate`` (str): Stored predicate.
+        - ``scope`` (str): Derived scope.
+        - ``owner_entity_id`` (str): Resolved owner entity UUID.
+
+    Raises:
+        ValueError: On predicate validation failure or owner resolution failure.
+    """
+    if not predicate.startswith(PREFERENCE_PREDICATE_PREFIX):
+        raise ValueError(
+            f"Invalid preference predicate {predicate!r}. "
+            "Preference predicates must start with 'preferences:' and use the format "
+            "'preferences:<domain>_<name>' (e.g. 'preferences:travel_flight_seat'). "
+            "Valid domains: travel, health, finance, relationship, home, general."
+        )
+
+    scope = _derive_scope(predicate)
+    owner_entity_id, owner_name = await _resolve_owner(pool)
+
+    embedding_engine = get_embedding_engine()
+    result = await _storage.store_fact(
+        pool,
+        owner_name,
+        predicate,
+        value,
+        embedding_engine,
+        importance=importance,
+        permanence=permanence,
+        scope=scope,
+        entity_id=owner_entity_id,
+        retention_class=PREFERENCE_RETENTION_CLASS,
+        metadata=metadata,
+    )
+
+    if isinstance(result, dict):
+        fact_id = result["id"]
+        superseded_id = result.get("supersedes_id")
+    else:
+        fact_id = result
+        superseded_id = await pool.fetchval(
+            "SELECT supersedes_id FROM facts WHERE id = $1",
+            fact_id,
+        )
+
+    return {
+        "id": str(fact_id),
+        "superseded_id": str(superseded_id) if superseded_id else None,
+        "action": "updated" if superseded_id else "created",
+        "predicate": predicate,
+        "scope": scope,
+        "owner_entity_id": str(owner_entity_id),
+    }
+
+
+# ---------------------------------------------------------------------------
+# get_preferences implementation
+# ---------------------------------------------------------------------------
 
 
 async def get_preferences(
@@ -53,126 +196,91 @@ async def get_preferences(
     *,
     scope: str | None = None,
     predicate_pattern: str | None = None,
-    tenant_id: str = "owner",
 ) -> list[dict[str, Any]]:
-    """Retrieve all active user preferences for the owner entity.
+    """Retrieve active user preferences for the owner entity.
 
-    Queries facts WHERE predicate LIKE 'preferences:%' AND validity = 'active'
-    AND entity_id matches the owner entity resolved from shared.entities
-    AND tenant_id matches the given tenant scope.
+    Queries facts where ``predicate LIKE 'preferences:%'`` and
+    ``validity = 'active'`` for the owner entity, returning a simplified
+    list optimised for LLM consumption.
 
     Args:
         pool: asyncpg connection pool.
-        scope: Optional filter on the scope column (exact match, e.g. 'travel').
-        predicate_pattern: Optional SQL LIKE pattern for the predicate column
-            (e.g. 'preferences:health_%'). Must start with 'preferences:'.
-            When omitted, defaults to 'preferences:%'. Invalid patterns that do
-            not start with 'preferences:' are coerced to the default.
-        tenant_id: Tenant scope for multi-tenant isolation (default 'owner').
-            Filters facts by tenant_id to prevent cross-tenant data exposure.
+        scope: Optional scope filter (e.g. ``"travel"``).
+        predicate_pattern: Optional LIKE pattern (e.g. ``"preferences:health_%"``).
 
     Returns:
-        List of preference dicts ordered by predicate ASC. Each dict contains:
-        - predicate (str)
-        - value (str) — from the content column
-        - scope (str)
-        - importance (float)
-        - permanence (str)
-        - effective_confidence (float) — computed via decay formula
-        - updated_at (str) — ISO-8601 timestamp from created_at
+        List of preference dicts, ordered by ``predicate ASC``.
+        Each entry has: ``predicate``, ``value``, ``scope``, ``importance``,
+        ``permanence``, ``updated_at``, ``effective_confidence``.
+        Returns empty list when no owner entity or no matching preferences exist.
     """
-    # Resolve owner entity_id from shared.entities
-    owner_entity_id = await _resolve_owner_entity_id(pool)
-    if owner_entity_id is None:
+    try:
+        owner_entity_id, _ = await _resolve_owner(pool)
+    except ValueError:
         return []
 
-    # Validate and coerce predicate_pattern to enforce 'preferences:' prefix
-    effective_pattern = predicate_pattern or "preferences:%"
-    if not effective_pattern.startswith("preferences:"):
-        logger.debug(
-            "get_preferences: invalid predicate_pattern %r; coercing to default 'preferences:%%'",
-            effective_pattern,
-        )
-        effective_pattern = "preferences:%"
+    effective_predicate_pattern = predicate_pattern or "preferences:%"
 
-    # Build query with optional filters
-    params: list[Any] = [owner_entity_id, tenant_id, effective_pattern]
     conditions = [
         "f.entity_id = $1",
-        "f.tenant_id = $2",
         "f.validity = 'active'",
-        "f.predicate LIKE $3",
+        "f.predicate LIKE $2",
     ]
+    params: list[Any] = [owner_entity_id, effective_predicate_pattern]
 
-    # Optional scope filter
     if scope is not None:
+        conditions.append(f"f.scope = ${len(params) + 1}")
         params.append(scope)
-        conditions.append(f"f.scope = ${len(params)}")
 
     where_clause = " AND ".join(conditions)
+
     sql = f"""
         SELECT
             f.predicate,
-            f.content,
+            f.content        AS value,
             f.scope,
             f.importance,
             f.permanence,
+            f.created_at     AS updated_at,
             f.confidence,
             f.decay_rate,
-            f.last_confirmed_at,
-            f.created_at
+            f.last_confirmed_at
         FROM facts f
         WHERE {where_clause}
         ORDER BY f.predicate ASC
     """
 
-    try:
-        rows = await pool.fetch(sql, *params)
-    except Exception:
-        logger.debug("get_preferences query failed", exc_info=True)
-        return []
+    rows = await pool.fetch(sql, *params)
 
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
     results = []
     for row in rows:
-        row_dict = dict(row)
-        eff_conf = _compute_effective_confidence(row_dict)
-        created_at = row_dict.get("created_at")
-        if isinstance(created_at, _dt.datetime):
-            updated_at = created_at.isoformat()
+        d = dict(row)
+        # Compute effective confidence using standard decay formula.
+        confidence = float(d.get("confidence") or 1.0)
+        decay_rate = float(d.get("decay_rate") or 0.0)
+        last_confirmed_at = d.get("last_confirmed_at") or d.get("updated_at")
+
+        if last_confirmed_at is not None and decay_rate > 0.0:
+            if last_confirmed_at.tzinfo is None:
+                last_confirmed_at = last_confirmed_at.replace(tzinfo=UTC)
+            days_elapsed = max(0.0, (now - last_confirmed_at).total_seconds() / 86400.0)
+            effective_confidence = round(confidence * (1.0 - decay_rate) ** days_elapsed, 4)
         else:
-            updated_at = str(created_at or "")
+            effective_confidence = round(confidence, 4)
+
         results.append(
             {
-                "predicate": row_dict["predicate"],
-                "value": row_dict["content"],
-                "scope": row_dict["scope"],
-                "importance": row_dict["importance"],
-                "permanence": row_dict["permanence"],
-                "effective_confidence": round(eff_conf, 6),
-                "updated_at": updated_at,
+                "predicate": d["predicate"],
+                "value": d["value"],
+                "scope": d["scope"],
+                "importance": float(d["importance"]),
+                "permanence": d["permanence"],
+                "updated_at": d["updated_at"].isoformat() if d["updated_at"] else None,
+                "effective_confidence": effective_confidence,
             }
         )
+
     return results
-
-
-async def _resolve_owner_entity_id(pool: Pool) -> Any | None:
-    """Resolve the owner entity UUID from shared.entities.
-
-    Looks up entities WHERE 'owner' = ANY(roles) and returns the id
-    of the first match.
-
-    Returns:
-        UUID of the owner entity, or None if not found.
-    """
-    sql = """
-        SELECT id AS entity_id
-        FROM shared.entities
-        WHERE 'owner' = ANY(roles)
-        LIMIT 1
-    """
-    try:
-        row = await pool.fetchrow(sql)
-        return row["entity_id"] if row else None
-    except Exception:
-        logger.debug("Owner entity resolution failed", exc_info=True)
-        return None

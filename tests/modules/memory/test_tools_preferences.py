@@ -1,21 +1,38 @@
-"""Tests for the get_preferences MCP tool implementation."""
+"""Tests for the set_preference and get_preferences MCP tools."""
 
 from __future__ import annotations
 
-import math
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.modules.memory.tools.preferences import (
-    _compute_effective_confidence,
-    _resolve_owner_entity_id,
+    PREFERENCE_IMPORTANCE_DEFAULT,
+    PREFERENCE_PERMANENCE_DEFAULT,
+    PREFERENCE_PREDICATE_PREFIX,
+    PREFERENCE_RETENTION_CLASS,
+    _derive_scope,
+    _resolve_owner,
     get_preferences,
+    set_preference,
 )
 
 pytestmark = pytest.mark.unit
+
+# ---------------------------------------------------------------------------
+# Constants for tests
+# ---------------------------------------------------------------------------
+
+OWNER_UUID = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+OWNER_UUID_STR = str(OWNER_UUID)
+OWNER_NAME = "Alice"
+FACT_UUID = uuid.UUID("11111111-2222-3333-4444-555555555555")
+FACT_UUID_STR = str(FACT_UUID)
+SUPERSEDED_UUID = uuid.UUID("66666666-7777-8888-9999-aaaaaaaaaaaa")
+SUPERSEDED_UUID_STR = str(SUPERSEDED_UUID)
+NOW = datetime(2026, 3, 25, 12, 0, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -30,392 +47,461 @@ def mock_pool() -> AsyncMock:
 
 
 @pytest.fixture()
-def owner_entity_id() -> uuid.UUID:
-    """Fixed owner entity UUID."""
-    return uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-
-
-@pytest.fixture()
-def now_utc() -> datetime:
-    """Fixed 'now' for deterministic decay tests."""
-    return datetime(2026, 3, 25, 12, 0, 0, tzinfo=UTC)
-
-
-def _make_fact_row(
-    predicate: str = "preferences:travel_flight_seat",
-    content: str = "window",
-    scope: str = "travel",
-    importance: float = 8.0,
-    permanence: str = "stable",
-    confidence: float = 1.0,
-    decay_rate: float = 0.002,
-    last_confirmed_at: datetime | None = None,
-    created_at: datetime | None = None,
-) -> dict:
-    """Build a minimal fact row dict matching what asyncpg returns."""
-    return {
-        "predicate": predicate,
-        "content": content,
-        "scope": scope,
-        "importance": importance,
-        "permanence": permanence,
-        "confidence": confidence,
-        "decay_rate": decay_rate,
-        "last_confirmed_at": last_confirmed_at,
-        "created_at": created_at or datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
-    }
+def mock_embedding_engine() -> MagicMock:
+    """Return a MagicMock EmbeddingEngine."""
+    return MagicMock()
 
 
 # ---------------------------------------------------------------------------
-# _compute_effective_confidence tests
+# Tests — _derive_scope
 # ---------------------------------------------------------------------------
 
 
-class TestComputeEffectiveConfidence:
-    """Unit tests for the standalone decay helper."""
+class TestDeriveScope:
+    """Tests for _derive_scope() helper."""
 
-    def test_permanent_returns_confidence_unchanged(self) -> None:
-        row = _make_fact_row(confidence=0.9, decay_rate=0.0)
-        assert _compute_effective_confidence(row) == 0.9
+    def test_travel_domain_returns_travel(self) -> None:
+        assert _derive_scope("preferences:travel_flight_seat") == "travel"
 
-    def test_no_anchor_returns_zero(self) -> None:
-        row = _make_fact_row(decay_rate=0.002, last_confirmed_at=None)
-        row["created_at"] = None
-        assert _compute_effective_confidence(row) == 0.0
+    def test_health_domain_returns_health(self) -> None:
+        assert _derive_scope("preferences:health_dietary_restriction") == "health"
 
-    def test_prefers_last_confirmed_at_over_created_at(self, now_utc: datetime) -> None:
-        # last_confirmed_at is recent (1 day ago), created_at is 100 days ago.
-        recent = now_utc - timedelta(days=1)
-        old = now_utc - timedelta(days=100)
-        row = _make_fact_row(
-            confidence=1.0,
-            decay_rate=0.002,
-            last_confirmed_at=recent,
-            created_at=old,
+    def test_finance_domain_returns_finance(self) -> None:
+        assert _derive_scope("preferences:finance_currency") == "finance"
+
+    def test_relationship_domain_returns_relationship(self) -> None:
+        assert _derive_scope("preferences:relationship_communication_style") == "relationship"
+
+    def test_home_domain_returns_home(self) -> None:
+        assert _derive_scope("preferences:home_temperature_unit") == "home"
+
+    def test_general_domain_returns_global(self) -> None:
+        assert _derive_scope("preferences:general_language") == "global"
+
+    def test_general_communication_style_returns_global(self) -> None:
+        assert _derive_scope("preferences:general_communication_style") == "global"
+
+
+# ---------------------------------------------------------------------------
+# Tests — _resolve_owner
+# ---------------------------------------------------------------------------
+
+
+class TestResolveOwner:
+    """Tests for _resolve_owner() helper."""
+
+    async def test_resolves_from_contacts_join(self, mock_pool: AsyncMock) -> None:
+        """_resolve_owner uses contacts JOIN when entity_id exists."""
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[{"id": OWNER_UUID, "canonical_name": OWNER_NAME}, None]
         )
-        with patch("butlers.modules.memory.tools.preferences.datetime") as mock_dt:
-            mock_dt.now.return_value = now_utc
-            result = _compute_effective_confidence(row)
+        result_id, result_name = await _resolve_owner(mock_pool)
+        assert result_id == OWNER_UUID
+        assert result_name == OWNER_NAME
 
-        expected = math.exp(-0.002 * 1.0)
-        assert abs(result - expected) < 1e-9
-
-    def test_falls_back_to_created_at(self, now_utc: datetime) -> None:
-        anchor = now_utc - timedelta(days=10)
-        row = _make_fact_row(
-            confidence=1.0,
-            decay_rate=0.01,
-            last_confirmed_at=None,
-            created_at=anchor,
+    async def test_falls_back_to_entities_roles(self, mock_pool: AsyncMock) -> None:
+        """Falls back to shared.entities when contacts query returns None."""
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[None, {"id": OWNER_UUID, "canonical_name": OWNER_NAME}]
         )
-        with patch("butlers.modules.memory.tools.preferences.datetime") as mock_dt:
-            mock_dt.now.return_value = now_utc
-            result = _compute_effective_confidence(row)
+        result_id, result_name = await _resolve_owner(mock_pool)
+        assert result_id == OWNER_UUID
+        assert result_name == OWNER_NAME
 
-        expected = math.exp(-0.01 * 10.0)
-        assert abs(result - expected) < 1e-9
-
-    def test_zero_days_elapsed_returns_full_confidence(self, now_utc: datetime) -> None:
-        row = _make_fact_row(
-            confidence=0.8,
-            decay_rate=0.5,
-            last_confirmed_at=now_utc,
-        )
-        with patch("butlers.modules.memory.tools.preferences.datetime") as mock_dt:
-            mock_dt.now.return_value = now_utc
-            result = _compute_effective_confidence(row)
-
-        assert abs(result - 0.8) < 1e-9
-
-
-# ---------------------------------------------------------------------------
-# _resolve_owner_entity_id tests
-# ---------------------------------------------------------------------------
-
-
-class TestResolveOwnerEntityId:
-    """Unit tests for owner entity resolution."""
-
-    async def test_returns_entity_id_when_found(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        result = await _resolve_owner_entity_id(mock_pool)
-        assert result == owner_entity_id
-
-    async def test_returns_none_when_no_owner(self, mock_pool: AsyncMock) -> None:
+    async def test_raises_when_no_owner_found(self, mock_pool: AsyncMock) -> None:
+        """Raises ValueError when neither query returns a row."""
         mock_pool.fetchrow = AsyncMock(return_value=None)
-        result = await _resolve_owner_entity_id(mock_pool)
-        assert result is None
+        with pytest.raises(ValueError, match="Owner entity could not be resolved"):
+            await _resolve_owner(mock_pool)
 
-    async def test_returns_none_on_exception(self, mock_pool: AsyncMock) -> None:
-        mock_pool.fetchrow = AsyncMock(side_effect=Exception("DB error"))
-        result = await _resolve_owner_entity_id(mock_pool)
-        assert result is None
-
-    async def test_queries_shared_entities_with_owner_role(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        await _resolve_owner_entity_id(mock_pool)
-        call_args = mock_pool.fetchrow.call_args
-        sql = call_args[0][0]
-        assert "shared.entities" in sql
-        assert "owner" in sql
+    async def test_error_message_includes_recovery_hint(self, mock_pool: AsyncMock) -> None:
+        """Error message mentions butler startup and owner contact creation."""
+        mock_pool.fetchrow = AsyncMock(return_value=None)
+        with pytest.raises(ValueError) as exc_info:
+            await _resolve_owner(mock_pool)
+        assert "butler" in str(exc_info.value).lower() or "startup" in str(exc_info.value).lower()
 
 
 # ---------------------------------------------------------------------------
-# get_preferences tests
+# Tests — set_preference
+# ---------------------------------------------------------------------------
+
+
+class TestSetPreference:
+    """Tests for set_preference() tool wrapper."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_embedding(self, mock_embedding_engine: MagicMock):
+        with patch(
+            "butlers.modules.memory.tools.preferences.get_embedding_engine",
+            return_value=mock_embedding_engine,
+        ):
+            yield
+
+    @pytest.fixture()
+    def mock_resolve_owner(self):
+        with patch(
+            "butlers.modules.memory.tools.preferences._resolve_owner",
+            new_callable=AsyncMock,
+            return_value=(OWNER_UUID, OWNER_NAME),
+        ) as m:
+            yield m
+
+    @pytest.fixture()
+    def mock_store_fact(self):
+        from butlers.modules.memory.tools import _helpers
+
+        with patch.object(
+            _helpers._storage,
+            "store_fact",
+            new_callable=AsyncMock,
+            return_value={"id": FACT_UUID, "supersedes_id": None},
+        ) as m:
+            yield m
+
+    async def test_basic_preference_storage(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """set_preference stores a fact and returns a well-formed response dict."""
+        result = await set_preference(mock_pool, "preferences:travel_flight_seat", "window")
+        assert result["id"] == FACT_UUID_STR
+        assert result["predicate"] == "preferences:travel_flight_seat"
+        assert result["scope"] == "travel"
+        assert result["owner_entity_id"] == OWNER_UUID_STR
+        assert result["action"] == "created"
+        assert result["superseded_id"] is None
+
+    async def test_scope_derived_from_predicate(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """Scope is derived from domain segment of predicate."""
+        result = await set_preference(
+            mock_pool, "preferences:health_dietary_restriction", "no shellfish"
+        )
+        assert result["scope"] == "health"
+
+    async def test_general_predicate_uses_global_scope(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """preferences:general_* predicates use 'global' scope."""
+        result = await set_preference(mock_pool, "preferences:general_language", "English")
+        assert result["scope"] == "global"
+
+    async def test_delegates_to_store_fact_with_defaults(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """store_fact is called with preference defaults."""
+        await set_preference(mock_pool, "preferences:travel_flight_seat", "window")
+        mock_store_fact.assert_awaited_once()
+        _call = mock_store_fact.call_args
+        assert _call.kwargs.get("importance") == PREFERENCE_IMPORTANCE_DEFAULT
+        assert _call.kwargs.get("permanence") == PREFERENCE_PERMANENCE_DEFAULT
+        assert _call.kwargs.get("retention_class") == PREFERENCE_RETENTION_CLASS
+        assert _call.kwargs.get("entity_id") == OWNER_UUID
+        assert _call.kwargs.get("scope") == "travel"
+
+    async def test_subject_is_owner_canonical_name(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """The subject field is the owner's canonical_name."""
+        await set_preference(mock_pool, "preferences:travel_flight_seat", "window")
+        _call = mock_store_fact.call_args
+        positional = _call.args
+        # store_fact(pool, subject, predicate, content, embedding_engine, ...)
+        assert positional[1] == OWNER_NAME
+
+    async def test_permanence_override(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """Passing permanence='permanent' overrides the default."""
+        await set_preference(
+            mock_pool, "preferences:travel_flight_seat", "window", permanence="permanent"
+        )
+        _call = mock_store_fact.call_args
+        assert _call.kwargs.get("permanence") == "permanent"
+
+    async def test_importance_override(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """Passing importance=9.5 overrides the default."""
+        await set_preference(mock_pool, "preferences:travel_flight_seat", "window", importance=9.5)
+        _call = mock_store_fact.call_args
+        assert _call.kwargs.get("importance") == 9.5
+
+    async def test_metadata_forwarded_to_store_fact(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """Optional metadata is forwarded to store_fact."""
+        meta = {"source": "user_explicit", "confidence_note": "stated directly"}
+        await set_preference(mock_pool, "preferences:general_language", "English", metadata=meta)
+        _call = mock_store_fact.call_args
+        assert _call.kwargs.get("metadata") == meta
+
+    async def test_supersession_indicated_in_response(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+    ) -> None:
+        """When store_fact returns supersedes_id, action='updated' and superseded_id is set."""
+        from butlers.modules.memory.tools import _helpers
+
+        with patch.object(
+            _helpers._storage,
+            "store_fact",
+            new_callable=AsyncMock,
+            return_value={"id": FACT_UUID, "supersedes_id": SUPERSEDED_UUID},
+        ):
+            result = await set_preference(mock_pool, "preferences:travel_flight_seat", "aisle")
+        assert result["action"] == "updated"
+        assert result["superseded_id"] == SUPERSEDED_UUID_STR
+
+    async def test_predicate_validation_raises_on_invalid_prefix(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """Predicates not starting with 'preferences:' raise ValueError."""
+        with pytest.raises(ValueError, match="preferences:"):
+            await set_preference(mock_pool, "travel_flight_seat", "window")
+
+    async def test_predicate_validation_raises_on_arbitrary_predicate(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """A generic predicate raises ValueError with format hint."""
+        with pytest.raises(ValueError, match="preferences:"):
+            await set_preference(mock_pool, "favorite_color", "blue")
+
+    async def test_error_message_includes_format_hint(self, mock_pool: AsyncMock) -> None:
+        """ValueError message includes the correct format hint."""
+        with pytest.raises(ValueError) as exc_info:
+            await set_preference(mock_pool, "bad_predicate", "value")
+        msg = str(exc_info.value)
+        assert PREFERENCE_PREDICATE_PREFIX in msg
+        assert "domain" in msg.lower() or "format" in msg.lower()
+
+    async def test_owner_resolution_failure_raises(self, mock_pool: AsyncMock) -> None:
+        """ValueError from _resolve_owner propagates from set_preference."""
+        mock_pool.fetchrow = AsyncMock(return_value=None)
+        with pytest.raises(ValueError, match="Owner entity could not be resolved"):
+            await set_preference(mock_pool, "preferences:general_language", "English")
+
+    async def test_returns_dict_with_expected_keys(
+        self,
+        mock_pool: AsyncMock,
+        mock_resolve_owner: AsyncMock,
+        mock_store_fact: AsyncMock,
+    ) -> None:
+        """Response dict always has all required keys."""
+        result = await set_preference(mock_pool, "preferences:home_temperature_unit", "celsius")
+        assert set(result.keys()) >= {
+            "id",
+            "superseded_id",
+            "action",
+            "predicate",
+            "scope",
+            "owner_entity_id",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Tests — get_preferences
 # ---------------------------------------------------------------------------
 
 
 class TestGetPreferences:
-    """Unit tests for the get_preferences function."""
+    """Tests for get_preferences() tool wrapper."""
 
-    async def test_returns_empty_list_when_no_owner(self, mock_pool: AsyncMock) -> None:
+    @pytest.fixture()
+    def mock_resolve_owner(self):
+        with patch(
+            "butlers.modules.memory.tools.preferences._resolve_owner",
+            new_callable=AsyncMock,
+            return_value=(OWNER_UUID, OWNER_NAME),
+        ) as m:
+            yield m
+
+    def _make_row(
+        self,
+        predicate: str = "preferences:travel_flight_seat",
+        content: str = "window",
+        scope: str = "travel",
+        importance: float = 8.0,
+        permanence: str = "stable",
+        confidence: float = 1.0,
+        decay_rate: float = 0.002,
+        last_confirmed_at: datetime | None = None,
+    ) -> dict:
+        return {
+            "predicate": predicate,
+            "value": content,
+            "scope": scope,
+            "importance": importance,
+            "permanence": permanence,
+            "updated_at": NOW,
+            "confidence": confidence,
+            "decay_rate": decay_rate,
+            "last_confirmed_at": last_confirmed_at or NOW,
+        }
+
+    async def test_returns_empty_list_when_no_rows(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """get_preferences returns empty list when no active preference facts exist."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        result = await get_preferences(mock_pool)
+        assert result == []
+
+    async def test_returns_empty_list_when_owner_not_found(self, mock_pool: AsyncMock) -> None:
+        """get_preferences returns empty list (not error) when owner not found."""
         mock_pool.fetchrow = AsyncMock(return_value=None)
         result = await get_preferences(mock_pool)
         assert result == []
 
-    async def test_returns_empty_list_on_db_error(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
+    async def test_passes_owner_entity_id_to_query(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
     ) -> None:
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(side_effect=Exception("connection reset"))
-        result = await get_preferences(mock_pool)
-        assert result == []
+        """fetch is called with owner_entity_id as first parameter."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await get_preferences(mock_pool)
+        mock_pool.fetch.assert_awaited_once()
+        _call = mock_pool.fetch.call_args
+        assert OWNER_UUID in _call.args
 
-    async def test_returns_simplified_format(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
+    async def test_uses_default_preferences_pattern(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
     ) -> None:
-        created = datetime(2026, 1, 10, tzinfo=UTC)
-        row = _make_fact_row(
-            predicate="preferences:travel_flight_seat",
-            content="window",
-            scope="travel",
-            importance=8.0,
-            permanence="stable",
-            confidence=1.0,
-            decay_rate=0.0,  # permanent-like for simplicity
-            created_at=created,
-        )
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[MagicMock(**row)])
+        """Default predicate_pattern is 'preferences:%'."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await get_preferences(mock_pool)
+        _call = mock_pool.fetch.call_args
+        assert "preferences:%" in _call.args
 
-        # Make dict() work on the mock row
-        mock_row = MagicMock()
-        mock_row.__iter__ = lambda self: iter(row.items())
-        mock_row.keys = lambda: row.keys()
-        mock_pool.fetch = AsyncMock(return_value=[mock_row])
-
-        # Simpler: patch pool.fetch to return actual dict-like objects
-        import asyncpg
-
-        record = MagicMock(spec=asyncpg.Record)
-        record.__iter__ = lambda self: iter(row.items())
-
-        # Use real dicts instead
-        mock_pool.fetch = AsyncMock(return_value=[row])
-
-        result = await get_preferences(mock_pool)
-        assert len(result) == 1
-        pref = result[0]
-        assert pref["predicate"] == "preferences:travel_flight_seat"
-        assert pref["value"] == "window"
-        assert pref["scope"] == "travel"
-        assert pref["importance"] == 8.0
-        assert pref["permanence"] == "stable"
-        assert "effective_confidence" in pref
-        assert "updated_at" in pref
-
-    async def test_result_keys_match_spec(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
+    async def test_scope_filter_added_when_provided(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
     ) -> None:
-        """Each result dict must contain exactly the spec-defined keys."""
-        row = _make_fact_row(decay_rate=0.0)
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[row])
+        """scope filter is passed to the query when provided."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await get_preferences(mock_pool, scope="travel")
+        _call = mock_pool.fetch.call_args
+        assert "travel" in _call.args
 
-        result = await get_preferences(mock_pool)
-        assert len(result) == 1
-        keys = set(result[0].keys())
-        expected_keys = {
+    async def test_custom_predicate_pattern_used(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """Custom predicate_pattern is used instead of default."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await get_preferences(mock_pool, predicate_pattern="preferences:health_%")
+        _call = mock_pool.fetch.call_args
+        assert "preferences:health_%" in _call.args
+
+    async def test_result_shape_has_expected_keys(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """Each result dict has the required keys."""
+        mock_pool.fetch = AsyncMock(return_value=[self._make_row()])
+        results = await get_preferences(mock_pool)
+        assert len(results) == 1
+        row = results[0]
+        assert set(row.keys()) == {
             "predicate",
             "value",
             "scope",
             "importance",
             "permanence",
-            "effective_confidence",
             "updated_at",
+            "effective_confidence",
         }
-        assert keys == expected_keys
 
-    async def test_ordered_by_predicate_asc(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
+    async def test_value_field_from_content(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
     ) -> None:
-        """Results returned by DB are trusted to be ordered by predicate ASC."""
+        """The 'value' field in results is the stored content."""
+        mock_pool.fetch = AsyncMock(return_value=[self._make_row(content="aisle")])
+        results = await get_preferences(mock_pool)
+        assert results[0]["value"] == "aisle"
+
+    async def test_updated_at_is_isoformat(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """updated_at is an ISO-8601 string."""
+        mock_pool.fetch = AsyncMock(return_value=[self._make_row()])
+        results = await get_preferences(mock_pool)
+        assert isinstance(results[0]["updated_at"], str)
+        # Should be parseable as ISO-8601
+        datetime.fromisoformat(results[0]["updated_at"])
+
+    async def test_effective_confidence_no_decay_when_rate_zero(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """effective_confidence equals confidence when decay_rate=0."""
+        mock_pool.fetch = AsyncMock(return_value=[self._make_row(confidence=0.9, decay_rate=0.0)])
+        results = await get_preferences(mock_pool)
+        assert results[0]["effective_confidence"] == 0.9
+
+    async def test_effective_confidence_decays_over_time(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """effective_confidence is less than initial confidence after decay."""
+        old_confirmed = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                self._make_row(confidence=1.0, decay_rate=0.002, last_confirmed_at=old_confirmed)
+            ]
+        )
+        results = await get_preferences(mock_pool)
+        assert results[0]["effective_confidence"] < 1.0
+
+    async def test_multiple_results_ordered_by_predicate(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """Results should be returned in predicate order (SQL enforces this)."""
         rows = [
-            _make_fact_row("preferences:general_language", "English", "global"),
-            _make_fact_row("preferences:health_dietary_restriction", "no shellfish", "health"),
-            _make_fact_row("preferences:travel_flight_seat", "window", "travel"),
+            self._make_row(predicate="preferences:travel_flight_seat"),
+            self._make_row(predicate="preferences:health_dietary_restriction", scope="health"),
         ]
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
         mock_pool.fetch = AsyncMock(return_value=rows)
+        results = await get_preferences(mock_pool)
+        assert len(results) == 2
+        # Order matches what the DB returns (ordered ASC in SQL)
+        assert results[0]["predicate"] == "preferences:travel_flight_seat"
 
-        result = await get_preferences(mock_pool)
-        predicates = [r["predicate"] for r in result]
-        assert predicates == sorted(predicates)
-
-    async def test_scope_filter_passed_to_query(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
+    async def test_importance_is_float(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
     ) -> None:
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[])
+        """importance field is a Python float."""
+        mock_pool.fetch = AsyncMock(return_value=[self._make_row(importance=8.0)])
+        results = await get_preferences(mock_pool)
+        assert isinstance(results[0]["importance"], float)
 
-        await get_preferences(mock_pool, scope="travel")
-
-        call_args = mock_pool.fetch.call_args
-        sql = call_args[0][0]
-        params = list(call_args[0][1:])
-        assert "scope" in sql
-        assert "travel" in params
-
-    async def test_predicate_pattern_filter_passed_to_query(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
+    async def test_sql_query_filters_by_predicate_pattern(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
     ) -> None:
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
+        """The SQL query uses LIKE on predicate."""
         mock_pool.fetch = AsyncMock(return_value=[])
-
-        await get_preferences(mock_pool, predicate_pattern="preferences:health_%")
-
-        call_args = mock_pool.fetch.call_args
-        sql = call_args[0][0]
-        params = list(call_args[0][1:])
-        assert "LIKE" in sql
-        assert "preferences:health_%" in params
-
-    async def test_default_predicate_pattern_is_preferences_wildcard(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[])
-
         await get_preferences(mock_pool)
-
-        call_args = mock_pool.fetch.call_args
-        params = list(call_args[0][1:])
-        assert "preferences:%" in params
-
-    async def test_effective_confidence_computed_for_decaying_fact(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID, now_utc: datetime
-    ) -> None:
-        anchor = now_utc - timedelta(days=100)
-        row = _make_fact_row(
-            confidence=1.0,
-            decay_rate=0.002,
-            last_confirmed_at=anchor,
-        )
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[row])
-
-        with patch("butlers.modules.memory.tools.preferences.datetime") as mock_dt:
-            mock_dt.now.return_value = now_utc
-            result = await get_preferences(mock_pool)
-
-        expected = round(math.exp(-0.002 * 100.0), 6)
-        assert result[0]["effective_confidence"] == expected
-
-    async def test_permanent_fact_has_full_effective_confidence(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        row = _make_fact_row(
-            confidence=0.95,
-            decay_rate=0.0,
-            permanence="permanent",
-        )
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[row])
-
-        result = await get_preferences(mock_pool)
-        assert result[0]["effective_confidence"] == round(0.95, 6)
-
-    async def test_updated_at_is_iso8601_string(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        created = datetime(2026, 2, 14, 9, 30, 0, tzinfo=UTC)
-        row = _make_fact_row(created_at=created, decay_rate=0.0)
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[row])
-
-        result = await get_preferences(mock_pool)
-        updated_at = result[0]["updated_at"]
-        assert isinstance(updated_at, str)
-        # Verify it's parseable as ISO-8601
-        parsed = datetime.fromisoformat(updated_at)
-        assert parsed.year == 2026
-
-    async def test_both_filters_applied_together(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-        await get_preferences(
-            mock_pool,
-            scope="health",
-            predicate_pattern="preferences:health_%",
-        )
-
-        call_args = mock_pool.fetch.call_args
-        sql = call_args[0][0]
-        params = list(call_args[0][1:])
-        assert "scope" in sql
-        assert "LIKE" in sql
-        assert "health" in params
-        assert "preferences:health_%" in params
-
-    async def test_value_comes_from_content_column(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        row = _make_fact_row(content="no shellfish", decay_rate=0.0)
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[row])
-
-        result = await get_preferences(mock_pool)
-        assert result[0]["value"] == "no shellfish"
-
-    async def test_tenant_id_passed_to_query(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        """tenant_id must be included in query params to prevent cross-tenant leakage."""
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-        await get_preferences(mock_pool, tenant_id="owner")
-
-        call_args = mock_pool.fetch.call_args
-        sql = call_args[0][0]
-        params = list(call_args[0][1:])
-        assert "tenant_id" in sql
-        assert "owner" in params
-
-    async def test_invalid_predicate_pattern_coerced_to_default(
-        self, mock_pool: AsyncMock, owner_entity_id: uuid.UUID
-    ) -> None:
-        """Patterns not starting with 'preferences:' must be coerced to 'preferences:%'."""
-        mock_pool.fetchrow = AsyncMock(return_value={"entity_id": owner_entity_id})
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-        await get_preferences(mock_pool, predicate_pattern="%")
-
-        call_args = mock_pool.fetch.call_args
-        params = list(call_args[0][1:])
-        # The invalid pattern '%' must be replaced with 'preferences:%'
-        assert "preferences:%" in params
-        assert "%" not in [p for p in params if p != "preferences:%"]
-
-    def test_zero_confidence_preserved_not_coerced_to_one(self) -> None:
-        """confidence=0.0 must not be coerced to 1.0 (falsy value treated as missing was a bug)."""
-        row = _make_fact_row(confidence=0.0, decay_rate=0.0)
-        result = _compute_effective_confidence(row)
-        assert result == 0.0
+        # Check the SQL sent to pool.fetch contains the predicate LIKE clause.
+        sql_arg = mock_pool.fetch.call_args.args[0]
+        assert "LIKE" in sql_arg
+        assert "preferences" in sql_arg or "predicate" in sql_arg
