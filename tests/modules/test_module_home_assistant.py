@@ -50,6 +50,10 @@ EXPECTED_HA_TOOLS = {
     "ha_render_template",
     "ha_call_service",
     "ha_activate_scene",
+    "ha_maintenance_create",
+    "ha_maintenance_complete",
+    "ha_maintenance_list",
+    "ha_maintenance_remove",
 }
 
 EXPECTED_HA_READ_ONLY_TOOLS = {
@@ -60,6 +64,7 @@ EXPECTED_HA_READ_ONLY_TOOLS = {
     "ha_get_history",
     "ha_get_statistics",
     "ha_render_template",
+    "ha_maintenance_list",
 }
 
 
