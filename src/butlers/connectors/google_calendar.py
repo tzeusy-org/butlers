@@ -386,6 +386,7 @@ class CalendarConnectorRuntime:
 
         # Runtime state
         self._running = False
+        self._stopped = False  # guard against double-stop
         self._semaphore = asyncio.Semaphore(config.max_inflight)
 
         # Current sync token (checkpoint)
@@ -435,7 +436,6 @@ class CalendarConnectorRuntime:
 
     async def start(self) -> None:
         """Start the connector runtime: initialize, sync, and run the poll loop."""
-        configure_logging()
         logger.info(
             "CalendarConnectorRuntime starting: email=%s endpoint_identity=%s",
             self._config.email,
@@ -473,7 +473,10 @@ class CalendarConnectorRuntime:
             await self.stop()
 
     async def stop(self) -> None:
-        """Gracefully stop the connector runtime."""
+        """Gracefully stop the connector runtime. Idempotent: safe to call multiple times."""
+        if self._stopped:
+            return
+        self._stopped = True
         self._running = False
 
         if self._heartbeat is not None:
@@ -750,7 +753,6 @@ class CalendarConnectorRuntime:
         )
 
         params: dict[str, Any] = {
-            "calendarId": "primary",
             "singleEvents": "true",
             "orderBy": "startTime",
         }
@@ -810,7 +812,6 @@ class CalendarConnectorRuntime:
         Raises _SyncTokenExpiredError on 410 Gone.
         """
         params: dict[str, Any] = {
-            "calendarId": "primary",
             "syncToken": sync_token,
             "showDeleted": "true",
         }
@@ -917,6 +918,40 @@ class CalendarConnectorRuntime:
             )
             return False
 
+        # Evaluate global ingestion policy
+        try:
+            global_decision = self._global_ingestion_policy.evaluate(policy_envelope)
+        except Exception as exc:
+            logger.warning(
+                "Calendar: global policy evaluation failed for event %s: %s", event_id, exc
+            )
+            global_decision = None
+
+        if global_decision is not None and not global_decision.allowed:
+            self._filtered_event_buffer.record(
+                external_message_id=event_id,
+                source_channel=_CONNECTOR_CHANNEL,
+                sender_identity=organizer_email,
+                subject_or_preview=summary,
+                filter_reason=FilteredEventBuffer.reason_policy_rule(
+                    global_decision.matched_rule_type or "global_rule",
+                    global_decision.action,
+                    global_decision.matched_rule_type or "unknown",
+                ),
+                full_payload=FilteredEventBuffer.full_payload(
+                    channel=_CONNECTOR_CHANNEL,
+                    provider=_CONNECTOR_PROVIDER,
+                    endpoint_identity=self._config.endpoint_identity,
+                    external_event_id=event_id,
+                    external_thread_id=None,
+                    observed_at=observed_at,
+                    sender_identity=organizer_email,
+                    raw=event,
+                    normalized_text=normalized_text,
+                ),
+            )
+            return False
+
         # Update upcoming events cache for "starting soon" detection
         if start_dt is not None:
             now = datetime.now(UTC)
@@ -996,12 +1031,19 @@ class CalendarConnectorRuntime:
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit the ingest.v1 envelope to the Switchboard via MCP."""
         result = await self._mcp_client.call_tool("ingest", envelope)
-        if isinstance(result, dict):
-            status = result.get("status", "")
-            if status not in ("accepted", "duplicate", "queued"):
-                raise RuntimeError(
-                    f"Switchboard rejected envelope: status={status!r}, result={result!r}"
-                )
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"Switchboard returned non-dict result for ingest envelope: result={result!r}"
+            )
+        status = result.get("status", "")
+        if not status:
+            raise RuntimeError(
+                f"Switchboard result missing or empty status for ingest envelope: result={result!r}"
+            )
+        if status not in ("accepted", "duplicate", "queued"):
+            raise RuntimeError(
+                f"Switchboard rejected envelope: status={status!r}, result={result!r}"
+            )
 
     # ------------------------------------------------------------------
     # "Starting soon" synthetic notifications
@@ -1038,9 +1080,12 @@ class CalendarConnectorRuntime:
 
                     # Emit "starting soon" envelope
                     observed_at = datetime.now(UTC).isoformat()
+                    start_dt_utc = (
+                        start_dt.astimezone(UTC) if start_dt.tzinfo is not None else start_dt
+                    )
                     normalized_text = (
                         f"Event starting soon ({lead_minutes}m): {summary} "
-                        f"starts at {start_dt.strftime('%Y-%m-%d %H:%M UTC')}"
+                        f"starts at {start_dt_utc.strftime('%Y-%m-%d %H:%M UTC')}"
                     )
                     envelope = {
                         "schema_version": "ingest.v1",
@@ -1675,9 +1720,11 @@ def _build_normalized_text(
     """Build a structured normalized_text string for ingest.v1."""
     parts = [f"[{change_type.upper()}] {summary}"]
     if start_dt:
-        parts.append(f"Start: {start_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+        start_utc = start_dt.astimezone(UTC) if start_dt.tzinfo is not None else start_dt
+        parts.append(f"Start: {start_utc.strftime('%Y-%m-%d %H:%M UTC')}")
     if end_dt:
-        parts.append(f"End: {end_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+        end_utc = end_dt.astimezone(UTC) if end_dt.tzinfo is not None else end_dt
+        parts.append(f"End: {end_utc.strftime('%Y-%m-%d %H:%M UTC')}")
     if organizer_email and organizer_email != "unknown":
         parts.append(f"Organizer: {organizer_email}")
     if attendees:
