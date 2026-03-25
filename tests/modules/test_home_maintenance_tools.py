@@ -233,7 +233,10 @@ class TestMaintenanceComplete:
             }
         )
 
-        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()):
+        with (
+            patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()),
+            patch("butlers.modules.memory.tools.get_embedding_engine", return_value=MagicMock()),
+        ):
             result = await module_with_pool._maintenance_complete(name="HVAC filter")
 
         assert result["name"] == "HVAC filter"
@@ -259,7 +262,10 @@ class TestMaintenanceComplete:
             }
         )
 
-        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()):
+        with (
+            patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()),
+            patch("butlers.modules.memory.tools.get_embedding_engine", return_value=MagicMock()),
+        ):
             result = await module_with_pool._maintenance_complete(
                 name="Water filter", completed_at="2026-03-20T10:00:00Z"
             )
@@ -317,7 +323,10 @@ class TestMaintenanceComplete:
             }
         )
 
-        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store:
+        with (
+            patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store,
+            patch("butlers.modules.memory.tools.get_embedding_engine", return_value=MagicMock()),
+        ):
             await module_with_pool._maintenance_complete(name="HVAC filter")
 
         assert mock_store.called

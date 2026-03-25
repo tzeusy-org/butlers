@@ -2091,17 +2091,29 @@ class HomeAssistantModule(Module):
                 "hint": "Use ha_maintenance_list to review existing items.",
             }
 
-        row = await pool.fetchrow(
-            """
-            INSERT INTO maintenance_items (name, category, interval_days, notes)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, name, category, interval_days, next_due_at
-            """,
-            name,
-            category,
-            interval_days,
-            notes,
-        )
+        try:
+            row = await pool.fetchrow(
+                """
+                INSERT INTO maintenance_items (name, category, interval_days, notes)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, name, category, interval_days, next_due_at
+                """,
+                name,
+                category,
+                interval_days,
+                notes,
+            )
+        except Exception as exc:
+            # Catch UniqueViolationError from concurrent inserts that slip past
+            # the pre-check above.  asyncpg raises asyncpg.UniqueViolationError
+            # (a subclass of asyncpg.PostgresError); catch via string match to
+            # avoid importing asyncpg at module level.
+            if "unique" in str(exc).lower() or "23505" in str(exc):
+                return {
+                    "error": f"A maintenance item named {name!r} already exists.",
+                    "hint": "Use ha_maintenance_list to review existing items.",
+                }
+            raise
         return {
             "id": str(row["id"]),
             "name": row["name"],
@@ -2183,25 +2195,16 @@ class HomeAssistantModule(Module):
 
         # Store completion fact in memory for historical tracking.
         try:
-            from butlers.modules.memory.embedding import EmbeddingEngine
             from butlers.modules.memory.storage import store_fact
-
-            pool_for_fact = pool
-            embedding_engine = EmbeddingEngine()
-            try:
-                from butlers.modules.memory.tools import get_embedding_engine
-
-                embedding_engine = get_embedding_engine()
-            except Exception:
-                pass  # fall back to no-op engine
+            from butlers.modules.memory.tools import get_embedding_engine
 
             category = row["category"]
             await store_fact(
-                pool_for_fact,
+                pool,
                 subject=name,
                 predicate="device_issue",
                 content=f"{category.capitalize()} maintenance completed: {name}",
-                embedding_engine=embedding_engine,
+                embedding_engine=get_embedding_engine(),
                 permanence="standard",
                 importance=5.0,
                 scope="home",

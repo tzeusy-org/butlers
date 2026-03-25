@@ -18,7 +18,7 @@ from alembic import op
 # revision identifiers, used by Alembic.
 revision = "home_maintenance_001"
 down_revision = "home_assistant_002"
-branch_labels = ("home_maintenance",)
+branch_labels = None
 depends_on = None
 
 
@@ -36,7 +36,7 @@ def upgrade() -> None:
                                    'filter', 'hvac', 'appliance',
                                    'plumbing', 'electrical', 'general'
                                )),
-            interval_days      INTEGER     NOT NULL,
+            interval_days      INTEGER     NOT NULL CHECK (interval_days > 0),
             last_completed_at  TIMESTAMPTZ,
             next_due_at        TIMESTAMPTZ,
             notes              TEXT,
