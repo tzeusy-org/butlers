@@ -25,12 +25,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+
+if TYPE_CHECKING:
+    from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -234,10 +238,12 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         claude_binary: str | None = None,
         butler_name: str | None = None,
         log_root: Path | None = None,
+        credential_store: CredentialStore | None = None,
     ) -> None:
         self._claude_binary = claude_binary
         self._butler_name = butler_name
         self._log_root = log_root
+        self._credential_store = credential_store
         self._last_process_info: dict[str, Any] | None = None
 
     @property
@@ -256,6 +262,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             claude_binary=self._claude_binary,
             butler_name=self._butler_name,
             log_root=self._log_root,
+            credential_store=self._credential_store,
         )
 
     @property
@@ -327,6 +334,30 @@ class ClaudeCodeAdapter(RuntimeAdapter):
 
         binary = self._get_binary()
         effective_timeout = _DEFAULT_TIMEOUT_SECONDS if timeout is None else timeout
+
+        # Inject ANTHROPIC_API_KEY from credential store when available.
+        # The key is stored under 'cli-auth/claude' by the CLI auth dashboard flow.
+        # Only inject when the caller-provided env dict does not already carry a
+        # non-empty value so callers who manage the key themselves retain full control.
+        # Empty/whitespace values from callers are treated as absent and will be
+        # overridden by the credential store or env fallback.
+        _ANTHROPIC_KEY = "ANTHROPIC_API_KEY"
+        if not env.get(_ANTHROPIC_KEY, "").strip():
+            api_key: str | None = None
+            if self._credential_store is not None:
+                try:
+                    api_key = await self._credential_store.load("cli-auth/claude")
+                except Exception:
+                    logger.debug(
+                        "ClaudeCodeAdapter: failed to resolve %s from credential store",
+                        _ANTHROPIC_KEY,
+                        exc_info=True,
+                    )
+            if api_key is None:
+                # Fall back to env (dev/testing convenience, not production path)
+                api_key = os.environ.get(_ANTHROPIC_KEY)
+            if api_key:
+                env = {**env, _ANTHROPIC_KEY: api_key}
 
         # Open per-butler stderr log file for Claude CLI diagnostics
         stderr_log_file = None

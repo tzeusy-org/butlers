@@ -615,6 +615,7 @@ class Spawner:
             self._runtime = ClaudeCodeAdapter(
                 butler_name=config.name,
                 log_root=log_root,
+                credential_store=credential_store,
             )
             self._adapter_pool = {
                 config.runtime.type: self._runtime,
@@ -690,6 +691,7 @@ class Spawner:
         kwargs: dict[str, Any] = {
             "butler_name": self._config.name,
             "log_root": log_root,
+            "credential_store": self._credential_store,
         }
         if provider_config:
             kwargs["provider_config"] = provider_config

@@ -550,5 +550,126 @@ async def test_invoke_prompt_is_final_positional_arg():
 
 
 # ---------------------------------------------------------------------------
+# credential_store / ANTHROPIC_API_KEY injection tests
+# ---------------------------------------------------------------------------
+
+
+def test_create_worker_preserves_credential_store():
+    """create_worker() preserves credential_store reference."""
+    from unittest.mock import MagicMock
+
+    mock_store = MagicMock()
+    adapter = ClaudeCodeAdapter(credential_store=mock_store)
+    worker = adapter.create_worker()
+
+    assert worker._credential_store is mock_store
+
+
+async def test_invoke_injects_api_key_from_credential_store():
+    """invoke() injects ANTHROPIC_API_KEY from credential store when env lacks it."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_store = MagicMock()
+    mock_store.load = AsyncMock(return_value="sk-ant-test-key-123")
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude", credential_store=mock_store)
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    call_kwargs = mock_sub.call_args[1]
+    assert call_kwargs["env"]["ANTHROPIC_API_KEY"] == "sk-ant-test-key-123"
+    mock_store.load.assert_awaited_once_with("cli-auth/claude")
+
+
+async def test_invoke_does_not_override_caller_provided_api_key():
+    """invoke() does not override ANTHROPIC_API_KEY when caller provides it in env."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_store = MagicMock()
+    mock_store.load = AsyncMock(return_value="sk-ant-from-store")
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude", credential_store=mock_store)
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+
+    caller_env = {"ANTHROPIC_API_KEY": "sk-ant-caller-key", "PATH": "/usr/bin"}
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env=caller_env,
+        )
+
+    call_kwargs = mock_sub.call_args[1]
+    # Caller-provided key must NOT be overwritten
+    assert call_kwargs["env"]["ANTHROPIC_API_KEY"] == "sk-ant-caller-key"
+    mock_store.load.assert_not_awaited()
+
+
+async def test_invoke_falls_back_to_env_when_no_credential_store():
+    """invoke() reads ANTHROPIC_API_KEY from os.environ when no credential store set."""
+    import os
+
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-from-env"}, clear=False):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
+
+    call_kwargs = mock_sub.call_args[1]
+    assert call_kwargs["env"]["ANTHROPIC_API_KEY"] == "sk-ant-from-env"
+
+
+async def test_invoke_credential_store_failure_does_not_raise():
+    """invoke() continues without ANTHROPIC_API_KEY if credential store load fails."""
+    import os
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_store = MagicMock()
+    mock_store.load = AsyncMock(side_effect=Exception("DB connection error"))
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude", credential_store=mock_store)
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+
+    # Remove ANTHROPIC_API_KEY from env so fallback also finds nothing
+    env_without_key = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        with patch.dict(os.environ, env_without_key, clear=True):
+            # Should not raise — just proceeds without the key
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={"PATH": "/usr/bin"},
+            )
+
+    call_kwargs = mock_sub.call_args[1]
+    assert "ANTHROPIC_API_KEY" not in call_kwargs["env"]
+
+
+# ---------------------------------------------------------------------------
 # Import path tests
 # ---------------------------------------------------------------------------

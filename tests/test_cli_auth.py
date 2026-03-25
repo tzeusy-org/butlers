@@ -3,6 +3,7 @@
 import asyncio
 import re
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -18,6 +19,7 @@ def test_providers_registered():
     assert "opencode-openai" in PROVIDERS
     assert "codex" in PROVIDERS
     assert "opencode-go" in PROVIDERS
+    assert "claude" in PROVIDERS
 
 
 def test_provider_binary_defaults_to_command0():
@@ -35,6 +37,17 @@ def test_opencode_go_is_api_key_mode():
     p = PROVIDERS["opencode-go"]
     assert p.auth_mode == "api_key"
     assert p.env_var == "OPENCODE_GO_API_KEY"
+
+
+def test_claude_provider_is_api_key_mode():
+    p = PROVIDERS["claude"]
+    assert p.auth_mode == "api_key"
+    assert p.env_var == "ANTHROPIC_API_KEY"
+    assert p.runtime == "claude"
+    assert p.display_name == "Claude (Anthropic)"
+    assert p.binary_name == "claude"
+    # No token_path — key stored in credential store only
+    assert p.token_path is None
 
 
 # ---------------------------------------------------------------------------
@@ -209,3 +222,85 @@ async def test_session_timeout(tmp_path):
     await asyncio.sleep(2)
 
     assert session.state == "expired"
+
+
+# ---------------------------------------------------------------------------
+# Claude provider health probe tests
+# ---------------------------------------------------------------------------
+
+
+async def test_claude_health_probe_authenticated_via_credential_store():
+    """probe_provider returns authenticated when key is found in credential store."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    provider = PROVIDERS["claude"]
+    mock_store = MagicMock()
+    mock_store.load = AsyncMock(return_value="sk-ant-test-key-abc123")
+
+    with patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/claude"):
+        result = await probe_provider(provider, credential_store=mock_store)
+
+    assert result.state == AuthHealthState.authenticated
+    mock_store.load.assert_awaited_once_with("cli-auth/claude")
+
+
+async def test_claude_health_probe_authenticated_via_env_fallback():
+    """probe_provider returns authenticated when key is in environment (no store)."""
+    import os
+
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    provider = PROVIDERS["claude"]
+
+    with patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/claude"):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-env-key"}, clear=False):
+            result = await probe_provider(provider, credential_store=None)
+
+    assert result.state == AuthHealthState.authenticated
+
+
+async def test_claude_health_probe_not_authenticated_when_no_key():
+    """probe_provider returns not_authenticated when no key is found."""
+    import os
+
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    provider = PROVIDERS["claude"]
+    mock_store = MagicMock()
+    mock_store.load = AsyncMock(return_value=None)
+
+    # Remove ANTHROPIC_API_KEY from env so fallback also finds nothing
+    env_without_key = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    with patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/claude"):
+        with patch.dict(os.environ, env_without_key, clear=True):
+            result = await probe_provider(provider, credential_store=mock_store)
+
+    assert result.state == AuthHealthState.not_authenticated
+
+
+async def test_claude_health_probe_authenticated_nonstandard_key_format():
+    """probe_provider returns authenticated for non-standard key format (with note)."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    provider = PROVIDERS["claude"]
+    mock_store = MagicMock()
+    # Key present but not starting with sk-ant-
+    mock_store.load = AsyncMock(return_value="some-other-key-format")
+
+    with patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/claude"):
+        result = await probe_provider(provider, credential_store=mock_store)
+
+    assert result.state == AuthHealthState.authenticated
+    assert "non-standard" in (result.detail or "")
+
+
+async def test_claude_health_probe_unavailable_when_binary_missing():
+    """probe_provider returns unavailable when claude binary is not on PATH."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    provider = PROVIDERS["claude"]
+
+    with patch("butlers.cli_auth.registry.shutil.which", return_value=None):
+        result = await probe_provider(provider, credential_store=None)
+
+    assert result.state == AuthHealthState.unavailable

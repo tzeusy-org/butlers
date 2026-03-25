@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -55,8 +56,44 @@ async def probe_provider(
             detail=f"Binary '{provider.binary()}' not found on PATH.",
         )
 
-    # api_key providers: check if the key exists in the auth file
+    # api_key providers: check if the key is available
     if provider.auth_mode == "api_key":
+        # Claude provider: key is stored exclusively in the credential store.
+        # Use the credential store when available; fall back to env for dev/testing.
+        if provider.name == "claude":
+            api_key: str | None = None
+            if credential_store is not None:
+                try:
+                    api_key = await credential_store.load("cli-auth/claude")
+                except Exception:
+                    logger.debug(
+                        "Failed to load API key for provider '%s' from credential store.",
+                        provider.name,
+                        exc_info=True,
+                    )
+            if api_key is None:
+                api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+            if api_key and api_key.startswith("sk-ant-"):
+                return AuthHealthResult(
+                    provider=provider.name,
+                    state=AuthHealthState.authenticated,
+                    detail="Anthropic API key configured.",
+                )
+            if api_key:
+                # Key exists but format is unexpected — still usable, warn only
+                return AuthHealthResult(
+                    provider=provider.name,
+                    state=AuthHealthState.authenticated,
+                    detail="API key configured (non-standard format).",
+                )
+            return AuthHealthResult(
+                provider=provider.name,
+                state=AuthHealthState.not_authenticated,
+                detail="No Anthropic API key configured. Provide one via the dashboard.",
+            )
+
+        # Other api_key providers: check if the key exists in the auth file
         if provider.token_path is not None and provider.token_path.exists():
             try:
                 import json
