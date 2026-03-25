@@ -121,12 +121,12 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - |
-        STAMP="$(date +%Y%m%d_%H%M%S)"
-        mkdir -p "/logs/$STAMP"
+        STAMP="$$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "/logs/$$STAMP"
         rm -f /logs/latest
-        ln -s "$STAMP" /logs/latest
-        echo "/app/logs/$STAMP" > /logs/.current_run_dir
-        echo "Log directory: /app/logs/$STAMP"
+        ln -s "$$STAMP" /logs/latest
+        echo "/app/logs/$$STAMP" > /logs/.current_run_dir
+        echo "Log directory: /app/logs/$$STAMP"
     volumes:
       - ./logs:/logs
 
