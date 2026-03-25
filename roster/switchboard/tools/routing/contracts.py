@@ -30,9 +30,10 @@ SourceChannel = Literal[
     "mcp",
     "voice",
     "whatsapp_user_client",
+    "google_calendar",
 ]
 SourceProvider = Literal[
-    "telegram", "slack", "gmail", "imap", "internal", "live-listener", "whatsapp"
+    "telegram", "slack", "gmail", "imap", "internal", "live-listener", "whatsapp", "google_calendar"
 ]
 NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
 NotifyIntent = Literal["send", "reply", "react"]
@@ -48,6 +49,7 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "mcp": frozenset({"internal"}),
     "voice": frozenset({"live-listener"}),
     "whatsapp_user_client": frozenset({"whatsapp"}),
+    "google_calendar": frozenset({"google_calendar"}),
 }
 _THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(

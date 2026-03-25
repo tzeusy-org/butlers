@@ -672,3 +672,73 @@ def test_whatsapp_send_without_thread_identity_accepted():
     result = parse_notify_request(payload)
     assert result.delivery.channel == "whatsapp"
     assert result.delivery.intent == "send"
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar channel/provider contract validations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_google_calendar_channel_accepted():
+    """IngestEnvelopeV1 accepts google_calendar as a valid source channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="google_calendar",
+        provider="google_calendar",
+        endpoint_identity="gcal:user@example.com",
+        sender_identity="user@example.com",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert parsed.source.channel == "google_calendar"
+    assert parsed.source.provider == "google_calendar"
+
+
+@pytest.mark.unit
+def test_google_calendar_channel_rejects_invalid_provider():
+    """google_calendar channel rejects non-google_calendar providers."""
+    envelope = _build_valid_ingest_envelope(
+        channel="google_calendar",
+        provider="gmail",  # wrong provider
+        endpoint_identity="gcal:user@example.com",
+        sender_identity="user@example.com",
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+    assert "google_calendar" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_google_calendar_provider_rejected_for_telegram_channel():
+    """google_calendar provider is invalid for telegram_bot channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="telegram_bot",
+        provider="google_calendar",  # wrong provider
+        endpoint_identity="bot_test",
+        sender_identity="user123",
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+    assert "google_calendar" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_google_calendar_in_allowed_providers_by_channel():
+    """google_calendar is registered in _ALLOWED_PROVIDERS_BY_CHANNEL."""
+    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
+
+    assert "google_calendar" in _ALLOWED_PROVIDERS_BY_CHANNEL
+    assert _ALLOWED_PROVIDERS_BY_CHANNEL["google_calendar"] == frozenset({"google_calendar"})
+
+
+@pytest.mark.unit
+def test_google_calendar_idempotency_key_format():
+    """IngestEnvelopeV1 accepts google_calendar-prefixed idempotency key."""
+    envelope = _build_valid_ingest_envelope(
+        channel="google_calendar",
+        provider="google_calendar",
+        endpoint_identity="gcal:user@example.com",
+        sender_identity="user@example.com",
+        idempotency_key="gcal:user@example.com:event_abc123",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert parsed.control.idempotency_key == "gcal:user@example.com:event_abc123"

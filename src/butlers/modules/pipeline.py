@@ -74,6 +74,8 @@ HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
     "discord": "realtime",
     # Email
     "email": "email",
+    # Google Calendar connector
+    "google_calendar": "realtime",
     # No history for other channels
     "api": "none",
     "mcp": "none",
