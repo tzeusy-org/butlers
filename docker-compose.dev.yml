@@ -82,7 +82,7 @@ services:
       CONNECTOR_CHANNEL: telegram_bot
     volumes:
       - ./logs:/app/logs
-    networks: [db, backend]
+    networks: [db, backend, egress]
     depends_on:
       log-init:
         condition: service_completed_successfully
@@ -105,7 +105,7 @@ services:
       CONNECTOR_CHANNEL: telegram_user_client
     volumes:
       - ./logs:/app/logs
-    networks: [db, backend]
+    networks: [db, backend, egress]
     depends_on:
       log-init:
         condition: service_completed_successfully
@@ -132,7 +132,7 @@ services:
       LIVE_LISTENER_DEVICES: ${LIVE_LISTENER_DEVICES:-[{"name":"webcam","device":"hw:2,0"}]}
     volumes:
       - ./logs:/app/logs
-    networks: [db, backend]
+    networks: [db, backend, egress]
     depends_on:
       log-init:
         condition: service_completed_successfully
@@ -190,7 +190,7 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
-    networks: [db, backend]
+    networks: [db, backend, egress]
     depends_on:
       log-init:
         condition: service_completed_successfully
@@ -217,7 +217,7 @@ services:
       BUTLER_SHARED_DB_SCHEMA: shared
     volumes:
       - ./logs:/app/logs
-    networks: [db, backend]
+    networks: [db, backend, egress]
     depends_on:
       log-init:
         condition: service_completed_successfully
@@ -257,7 +257,7 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
-    networks: [db, backend]
+    networks: [db, backend, egress]
     depends_on:
       log-init:
         condition: service_completed_successfully
@@ -300,7 +300,7 @@ services:
     depends_on:
       migrations:
         condition: service_completed_successfully
-    networks: [db, backend, frontend]
+    networks: [db, backend, frontend, egress]
 
 volumes:
   uv_cache:

@@ -71,4 +71,15 @@ echo "  Profiles: ${PROFILES[*]:-default}"
 echo "  Compose:  ${CMD[*]} up"
 echo ""
 
+# ── Apply egress firewall (blocks private subnet access from containers) ─
+# Needs the egress network to exist, so start infra services first.
+"${CMD[@]}" up -d postgres
+if sudo -n true 2>/dev/null; then
+  sudo "${SCRIPT_DIR}/egress-firewall.sh" && echo ""
+else
+  echo "NOTE: Run 'sudo ./scripts/egress-firewall.sh' to block container access to LAN/Tailscale."
+  echo "  (Skipped — sudo requires a password. Containers have unrestricted outbound access.)"
+  echo ""
+fi
+
 "${CMD[@]}" up --build "${SCALE_ARGS[@]}"

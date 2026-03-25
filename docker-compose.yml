@@ -237,7 +237,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
-    networks: [db, backend, frontend]
+    networks: [db, backend, frontend, egress]
 
   # Frontend dev server (Vite) — only starts with: docker compose --profile dev up
   frontend-dev:
@@ -265,8 +265,20 @@ volumes:
 
 networks:
   db:
+    # Internal-only: postgres, minio, migrations. No outbound internet.
     driver: bridge
+    internal: true
   backend:
+    # Inter-service communication. Services that also need internet should
+    # additionally join the 'egress' network.
     driver: bridge
+    internal: true
   frontend:
+    # Vite dev server <-> dashboard-api only. No outbound internet.
+    driver: bridge
+    internal: true
+  egress:
+    # Outbound internet access for services that need external APIs
+    # (LLM providers, Google OAuth, Telegram, Gmail).
+    # Use scripts/egress-firewall.sh to block private subnet access.
     driver: bridge
