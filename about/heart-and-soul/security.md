@@ -31,7 +31,11 @@ from taking actions beyond their intended scope.
 - **LLM API providers.** Prompts and tool call payloads are sent to external LLM
   APIs (Anthropic, Google, OpenAI). The owner accepts this as a condition of
   using the system. Sensitive data in prompts is exposed to the provider's
-  infrastructure. The system does not attempt to redact or encrypt prompt content.
+  infrastructure. The system does not attempt to redact or encrypt prompt
+  content. This includes data from all connectors: location coordinates
+  (OwnTracks), listening history (Spotify), smart home state (Home Assistant),
+  and file metadata (Google Drive) may appear in LLM prompts when butlers
+  process ingested events from these sources.
 - **Ephemeral LLM sessions.** Each session is sandboxed to its own butler's MCP
   tools. A health butler session cannot call finance butler tools. However, the
   LLM itself may attempt unexpected tool call patterns, which is why approval
@@ -102,7 +106,9 @@ only when the DB has no value. This means:
   database connection parameters (`POSTGRES_HOST/PORT/USER/PASSWORD`) and
   optional observability (`OTEL_EXPORTER_OTLP_ENDPOINT`).
 - **Dashboard OAuth flow** handles interactive credential setup (Google OAuth,
-  etc.). Tokens are stored in the DB after the flow completes.
+  Spotify PKCE, etc.). Tokens are stored in the DB after the flow completes.
+- **Bearer tokens** for webhook-based connectors (OwnTracks) are generated and
+  stored via the dashboard, validated on every incoming request.
 
 **Constraints:**
 
@@ -134,6 +140,25 @@ email address, Discord user ID) to canonical contacts. This enables:
   controlling that Telegram account is who they claim to be.
 - Contact merging (deduplication) is a manual or LLM-assisted process, not
   automatic.
+
+## Sensitive Data Categories
+
+Some connectors ingest data that is more privacy-sensitive than typical messages:
+
+- **Location data** (OwnTracks): GPS coordinates and geofence transitions.
+  Default ingestion tier is `metadata` (no raw coordinates in the ingest
+  payload). Configurable retention with a conservative default (30 days).
+  The connector is opt-in only.
+- **Listening history** (Spotify): Tracks, playlists, and playback sessions.
+  Low-sensitivity individually, but aggregated patterns reveal daily routines.
+- **Smart home state** (Home Assistant): Device states, automation triggers,
+  sensor readings. Reveals presence, habits, and home occupancy patterns.
+
+These data types are governed by the same trust model as all other data: the
+user owns the instance and the database. The system does not apply differential
+privacy, anonymization, or special-purpose encryption to any data category.
+Connector-level controls (ingestion tier, retention periods, opt-in activation)
+are the primary privacy mechanism.
 
 ## Why Encryption at Rest Adds Minimal Value
 

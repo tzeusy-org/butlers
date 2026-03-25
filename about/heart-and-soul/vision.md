@@ -6,8 +6,10 @@ Butlers is a personal AI agent system where specialized, long-running daemons
 handle the recurring mental labor of daily life. Each butler owns a life domain
 --- health, relationships, finance, education, travel, home --- and acts
 autonomously on schedules and in response to incoming messages. A central
-Switchboard routes everything to the right specialist. You own the instance, the
-data, the credentials, and the agents. There is no cloud service, no account, no
+Switchboard routes everything to the right specialist, brokers proactive
+insights from domain butlers, and maintains shared situational awareness so
+butlers adapt to the user's current context. You own the instance, the data,
+the credentials, and the agents. There is no cloud service, no account, no
 subscription. Just infrastructure that works for one person.
 
 ## What Butlers Is Not
@@ -53,7 +55,11 @@ does not ship.
 3. **Inter-butler communication is MCP-only through the Switchboard.** Butlers
    must not share memory, call each other's functions, or access each other's
    database schemas. The Switchboard is the only sanctioned channel. This
-   constraint is structural, not aspirational.
+   constraint is structural, not aspirational. Narrowly scoped exceptions
+   (read-only SQL views for deterministic batch aggregation) may be documented
+   via RFC when the MCP-compliant alternative incurs unjustifiable LLM session
+   cost for zero-reasoning work. Each exception requires explicit guardrails
+   and reuse criteria (see RFC 0010).
 
 4. **The daemon is deterministic infrastructure; intelligence is in ephemeral LLM
    sessions.** The daemon manages state, runs migrations, enforces schedules, and
@@ -95,6 +101,8 @@ Concrete markers:
   transient failures.
 - The owner's health data, relationship context, financial signals, and calendar
   are maintained without manual entry.
+- Butlers surface timely, relevant insights without being asked --- and
+  automatically reduce frequency when the owner disengages.
 - The system is boring. It works. The owner stops thinking about it.
 
 ## Anti-Patterns

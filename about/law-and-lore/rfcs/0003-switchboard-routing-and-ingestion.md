@@ -202,6 +202,7 @@ Connectors send `connector.heartbeat.v1` envelopes every 2 minutes via the `conn
 - **RFC 0004:** Identity resolution produces the sender preamble prepended to routed messages.
 - **RFC 0005:** Trace context propagates through the `control.trace_context` and `request_context.trace_context` fields.
 - **RFC 0006:** `routing_log`, `triage_rules`, `route_inbox`, and `ingestion_events` tables live in the switchboard schema.
+- **RFC 0011:** The insight broker module runs within the Switchboard daemon. Candidate submissions arrive as `propose_insight_candidate` MCP tool calls, and the delivery cycle runs as a Switchboard scheduled task.
 
 ## Alternatives Considered
 

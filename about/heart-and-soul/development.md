@@ -63,6 +63,15 @@ the migration path.
 - Test improvements.
 - Single-butler tool additions that stay within the module boundary.
 
+**When an RFC is required:**
+
+Architectural constraints documented in `vision.md` are non-negotiable by
+default. Any proposed exception --- such as cross-schema data access that
+bypasses MCP-only inter-butler communication --- requires a dedicated RFC with
+explicit guardrails, reuse criteria, and cost justification. The RFC must
+define both when the exception pattern MAY be reused and when it MUST NOT
+(see RFC 0010 as the template).
+
 ## Manifesto-Driven Design
 
 Every butler has a `MANIFESTO.md` that defines its identity, purpose, and
@@ -149,3 +158,5 @@ All three must pass. No exceptions, no "I'll fix the lint later."
 - Committing code that fails lint or format checks.
 - Leaving work pushed only locally with "I'll push later."
 - Using pip to install dependencies instead of uv.
+- Treating architectural rule exceptions as precedent for unconstrained reuse
+  without evaluating the specific guardrails and reuse criteria.

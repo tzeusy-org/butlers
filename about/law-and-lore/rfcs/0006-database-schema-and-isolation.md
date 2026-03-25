@@ -215,6 +215,9 @@ Butlers is a user-federated platform (each user owns their instance). This shape
 - **RFC 0003:** Switchboard-specific tables (`routing_log`, `triage_rules`, `ingestion_events`) live in the switchboard schema.
 - **RFC 0004:** All identity tables reside in the `shared` schema with the access model described there.
 - **RFC 0007:** The dashboard reads from all butler schemas (via a privileged connection) to provide cross-butler views.
+- **RFC 0010:** Documents a sanctioned exception to schema isolation: a read-only SQL view (`general.v_briefing_contributions`) with migration-based cross-schema grants for daily briefing aggregation. Defines reuse criteria for future exceptions.
+- **RFC 0011:** Adds `shared.insight_candidates`, `shared.insight_cooldowns`, `shared.insight_engagement`, and `shared.insight_settings` tables to the shared schema for the proactive insight delivery pipeline.
+- **RFC 0012:** The finance butler uses dedicated typed-column tables (`finance.transactions` and eight supporting tables) instead of SPO facts for high-volume analytical queries, following the per-butler schema isolation model.
 
 ## Alternatives Considered
 

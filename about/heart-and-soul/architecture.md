@@ -53,6 +53,14 @@ must not share database connections, import each other's modules, or communicate
 through side channels. If two butlers need to coordinate, it flows through the
 Switchboard.
 
+**The exception mechanism:** When the MCP-compliant path (Switchboard fan-out)
+would require multiple LLM sessions for work that involves zero LLM reasoning
+--- purely deterministic SQL queries or data aggregation --- a read-only
+cross-schema SQL view may be used instead, subject to RFC-documented guardrails
+(RFC 0010). Each exception must be read-only at the database level, batch-
+oriented, auditable via migration history, and cost-justified. Write operations
+and interactive queries must always go through the Switchboard.
+
 ## Why Domain Specialization Over Monolith
 
 A single agent that handles health, finance, relationships, and everything else
@@ -103,6 +111,13 @@ the `Module` abstract base class and provides:
 infrastructure --- the state store, the scheduler, the spawner, or the session
 log. If a capability requires changes to core, it belongs in core.
 
+Some modules serve coordination roles on the Switchboard rather than domain
+roles on specialist butlers. The insight broker module (RFC 0011), for example,
+runs within the Switchboard daemon and provides candidate submission, delivery
+brokering, and anti-spam enforcement as MCP tools. It follows the same Module
+ABC contract --- `register_tools()`, `migrations()`, lifecycle hooks --- but
+its scope is cross-butler coordination, not domain specialization.
+
 ## Why Connectors Are Separate from Butlers
 
 Connectors are standalone processes that bridge external transport systems
@@ -132,7 +147,9 @@ separation has been violated.
 ## Why Single PostgreSQL with Schema Isolation
 
 All butlers share a single PostgreSQL database. Each butler gets its own schema.
-A `shared` schema holds cross-butler identity tables (contacts, contact info).
+A `shared` schema holds cross-butler identity tables (contacts, contact info)
+and shared coordination tables (situational context signals, insight candidates,
+insight delivery settings).
 
 **Why a single database:**
 
@@ -150,7 +167,9 @@ A `shared` schema holds cross-butler identity tables (contacts, contact info).
 - Migrations are scoped to the butler that owns the schema. Adding a table to
   the health butler does not touch the finance butler's schema.
 - The `shared` schema is the explicit, controlled surface for cross-butler
-  data. If it is not in `shared`, it is private.
+  data. If it is not in `shared`, it is private. Shared tables include
+  identity data (contacts, contact info), situational context signals
+  (RFC 0009), and insight delivery infrastructure (RFC 0011).
 
 ## The Core Loop
 
@@ -170,7 +189,8 @@ trigger --> classify --> route --> spawn --> act --> log
 4. **Spawn:** The receiving butler generates a locked-down MCP config and spawns
    an ephemeral LLM CLI session.
 5. **Act:** The LLM session reasons, calls tools, reads and writes state, and
-   produces output.
+   produces output. Before acting, the session may check shared situational
+   context (RFC 0009) to adapt its behavior to the user's current state.
 6. **Log:** The butler records the session: trigger source, tools called, tokens
    consumed, duration, and outcome.
 
@@ -178,6 +198,17 @@ This cycle is the heartbeat of the system. Every feature, every module, every
 connector ultimately feeds into or consumes from this loop. Changes that break
 the loop's simplicity or add conditional branches to it require exceptional
 justification.
+
+Two cross-cutting pipelines augment the core loop without modifying it:
+
+- **Situational context** (RFC 0009): A pull-based shared awareness layer
+  (`shared.user_context`) where butlers write TTL-bounded signals about the
+  user's state and read them before acting. Context checking is opt-in --- it
+  does not change the core loop, but enriches step 5 for butlers that use it.
+- **Proactive insight delivery** (RFC 0011): A three-phase pipeline where
+  butlers propose insight candidates via the Switchboard, a broker module
+  deduplicates and budget-gates them, and winners are delivered as a digest.
+  This pipeline runs on its own schedule alongside the core loop.
 
 ## Anti-Patterns
 
@@ -190,3 +221,5 @@ justification.
 - Allowing butlers to import each other's code or share database connections.
 - Adding a new protocol alongside MCP for "special" communication needs.
 - Making the core loop conditional on module presence.
+- Adding cross-schema access without an RFC, explicit guardrails, and reuse
+  criteria.

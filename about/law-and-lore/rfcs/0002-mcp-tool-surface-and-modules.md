@@ -139,6 +139,7 @@ Tool sensitivity metadata from `tool_metadata()` informs which arguments are saf
 - **RFC 0003:** `route.execute` is a core tool that accepts Switchboard-routed envelopes.
 - **RFC 0005:** All tools are instrumented via the logging proxy with OTel spans.
 - **RFC 0006:** Module migrations are discovered and executed based on `migration_revisions()`.
+- **RFC 0011:** The insight broker module on the Switchboard registers `propose_insight_candidate` as a module tool. The `notify` core tool is extended with `intent='insight'` for insight delivery.
 
 ## Alternatives Considered
 
