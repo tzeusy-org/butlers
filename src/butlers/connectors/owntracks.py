@@ -1306,7 +1306,8 @@ async def resolve_owntracks_webhook_token(
     # 1. DB lookup via CredentialStore
     if store is not None:
         try:
-            db_token = await store.resolve(_DB_KEY, env_fallback=False)
+            raw_db_token = await store.resolve(_DB_KEY, env_fallback=False)
+            db_token = (raw_db_token or "").strip()
             if db_token:
                 logger.info(
                     "OwnTracks connector: resolved %r from CredentialStore",
@@ -1359,7 +1360,8 @@ def make_bearer_auth_dependency(*, token: str):
         If *token* is empty (fail-closed: refuse to create dependency with
         an empty token that would match any empty-string bearer value).
     """
-    if not token:
+    normalized_token = token.strip()
+    if not normalized_token:
         raise ValueError("make_bearer_auth_dependency: token must be a non-empty string")
 
     async def _require_bearer_token(
@@ -1367,7 +1369,7 @@ def make_bearer_auth_dependency(*, token: str):
     ) -> None:
         """Validate the Authorization: Bearer <token> header.
 
-        Raises HTTP 401 if the header is missing, malformed, or token mismatch.
+        Returns HTTP 401 if the header is missing, malformed, or token mismatch.
         Uses constant-time comparison to prevent timing attacks.
         """
         if authorization is None:
@@ -1379,8 +1381,9 @@ def make_bearer_auth_dependency(*, token: str):
             logger.debug("OwnTracks webhook: rejected request — malformed Authorization header")
             raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
 
-        provided_token = parts[1]
-        if not hmac.compare_digest(provided_token.encode(), token.encode()):
+        # Strip any whitespace padding from the provided token value.
+        provided_token = parts[1].strip()
+        if not hmac.compare_digest(provided_token.encode(), normalized_token.encode()):
             logger.debug("OwnTracks webhook: rejected request — token mismatch")
             raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
 

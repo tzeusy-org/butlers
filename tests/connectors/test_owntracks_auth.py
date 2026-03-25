@@ -148,20 +148,22 @@ class TestFailClosedStartup:
     """Connector must refuse to start when no token is available."""
 
     async def test_fail_closed_raises_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Startup should raise RuntimeError when resolve returns None."""
+        """resolve_owntracks_webhook_token returns None when no token is configured.
+
+        The connector entrypoint is responsible for raising RuntimeError when
+        None is returned (fail-closed contract). This test verifies the resolver
+        returns None as the sentinel, enabling the caller to detect the missing
+        configuration and refuse startup.
+        """
         store = _make_mock_store(None)
         monkeypatch.delenv(_ENV_VAR, raising=False)
 
         token = await resolve_owntracks_webhook_token(store=store)
 
-        # This is what the connector entrypoint should do:
-        if token is None:
-            with pytest.raises(RuntimeError, match="owntracks_webhook_token"):
-                raise RuntimeError(
-                    "OwnTracks webhook token not configured. "
-                    "Store it under owntracks_webhook_token via the dashboard "
-                    f"or set the {_ENV_VAR} env var."
-                )
+        assert token is None, (
+            "resolve_owntracks_webhook_token must return None (not raise) when no token "
+            "is configured, so the caller can implement fail-closed startup."
+        )
 
     def test_make_bearer_auth_dependency_raises_on_empty_token(self) -> None:
         """make_bearer_auth_dependency must reject an empty token at factory time."""
@@ -170,11 +172,9 @@ class TestFailClosedStartup:
 
     def test_make_bearer_auth_dependency_raises_on_whitespace_token(self) -> None:
         """make_bearer_auth_dependency treats whitespace-only token as empty."""
-        # An empty string is the degenerate case; whitespace would pass
-        # hmac.compare_digest by accident if the sender also sends whitespace.
-        # Callers should strip before passing; an empty string is refused.
+        # Whitespace-only strings are normalized to empty and rejected at factory time.
         with pytest.raises(ValueError, match="non-empty"):
-            make_bearer_auth_dependency(token="")
+            make_bearer_auth_dependency(token="   ")
 
 
 # ---------------------------------------------------------------------------
