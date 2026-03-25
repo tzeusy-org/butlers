@@ -88,6 +88,18 @@ Switchboard performs discretionary routing through a pluggable LLM CLI runtime. 
 - **THEN** recent conversation history (last 15 minutes or last 30 messages, whichever is more) is provided to the router for context
 - **AND** the router only routes the current message, using history only to improve routing accuracy
 
+#### Scenario: Calendar event routing context
+- **WHEN** the source channel is `google_calendar`
+- **THEN** no conversation history is provided (each calendar event change is self-contained)
+- **AND** the event's normalized text contains sufficient context for routing (event type, title, time, attendees, organizer)
+
+#### Scenario: Calendar event domain classification
+- **WHEN** a `google_calendar` event arrives for classification
+- **THEN** the router SHALL consider the event title, attendees, and description for domain signals
+- **AND** health-related calendar events (e.g., doctor appointments) SHALL route to the health butler
+- **AND** travel-related calendar events (e.g., flight itineraries) SHALL route to the travel butler
+- **AND** the default routing target for calendar events with no clear domain signal SHALL be the general butler
+
 #### Scenario: Email conversation history
 - **WHEN** the source channel is email
 - **THEN** the full email chain is provided, truncated to 50,000 tokens (preserving newest messages)
