@@ -161,7 +161,7 @@ class MemoryModuleConfig(BaseModel):
 
 
 class MemoryModule(Module):
-    """Memory module providing 18 MCP tools for memory CRUD and retrieval."""
+    """Memory module providing MCP tools for memory CRUD, retrieval, and preferences."""
 
     def __init__(self) -> None:
         self._db: Any = None
@@ -224,6 +224,7 @@ class MemoryModule(Module):
         from butlers.modules.memory.tools import entities as _entities
         from butlers.modules.memory.tools import feedback as _feedback
         from butlers.modules.memory.tools import management as _management
+        from butlers.modules.memory.tools import preferences as _preferences
         from butlers.modules.memory.tools import reading as _reading
         from butlers.modules.memory.tools import writing as _writing
 
@@ -1085,6 +1086,67 @@ class MemoryModule(Module):
                 source_entity_id,
                 target_entity_id,
                 tenant_id=tenant_id,
+            )
+
+        # --- Preferences tools ---
+
+        @mcp.tool()
+        async def get_preferences(
+            scope: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional filter: return only preferences with this scope "
+                        "(e.g. 'travel', 'health', 'finance', 'home', 'global'). "
+                        "When omitted, all scopes are returned."
+                    )
+                ),
+            ] = None,
+            predicate_pattern: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional SQL LIKE pattern for the predicate column "
+                        "(e.g. 'preferences:health_%'). Must start with 'preferences:'. "
+                        "When omitted, all preference predicates ('preferences:%') are returned."
+                    )
+                ),
+            ] = None,
+            request_context: Annotated[
+                dict[str, Any] | None,
+                Field(
+                    description=(
+                        "Optional request context dict with 'tenant_id' (default 'owner') "
+                        "and 'request_id' (optional trace ID). tenant_id scopes all retrieval. "
+                        "When omitted, defaults to tenant_id='owner' and no request_id."
+                    )
+                ),
+            ] = None,
+        ) -> list[dict[str, Any]]:
+            """Retrieve all active user preferences for the owner entity.
+
+            Returns a simplified list of preference facts ordered by predicate ASC.
+            Each entry includes:
+            - predicate (str) — preference key, e.g. 'preferences:travel_flight_seat'
+            - value (str) — preference value, e.g. 'window'
+            - scope (str) — domain scope, e.g. 'travel'
+            - importance (float) — importance score
+            - permanence (str) — decay class: 'stable', 'permanent', etc.
+            - effective_confidence (float) — current confidence after decay
+            - updated_at (str) — ISO-8601 timestamp of last update
+
+            Optional filters:
+            - scope: exact match on scope column (e.g. 'travel')
+            - predicate_pattern: SQL LIKE pattern (e.g. 'preferences:health_%')
+
+            Returns an empty list when no active preferences exist (not an error).
+            """
+            tid = (request_context or {}).get("tenant_id", "owner")
+            return await _preferences.get_preferences(
+                module._get_pool(),
+                scope=scope,
+                predicate_pattern=predicate_pattern,
+                tenant_id=tid,
             )
 
         # --- Cross-butler catalog search tool ---

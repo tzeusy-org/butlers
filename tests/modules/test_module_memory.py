@@ -113,6 +113,7 @@ EXPECTED_TOOL_NAMES = {
     "memory_predicate_list",
     "memory_predicate_search",
     "memory_catalog_search",
+    "get_preferences",
 }
 
 
@@ -146,6 +147,7 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.management": MagicMock(),
                 "butlers.modules.memory.tools.context": MagicMock(),
                 "butlers.modules.memory.tools.entities": MagicMock(),
+                "butlers.modules.memory.tools.preferences": MagicMock(),
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
@@ -154,7 +156,7 @@ class TestRegisterTools:
 
     async def test_registers_expected_tool_count(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 23
+        assert len(registered) == 24
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
@@ -182,11 +184,12 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.management": MagicMock(),
                 "butlers.modules.memory.tools.context": MagicMock(),
                 "butlers.modules.memory.tools.entities": MagicMock(),
+                "butlers.modules.memory.tools.preferences": MagicMock(),
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
-        assert mcp.tool.call_count == 23
+        assert mcp.tool.call_count == 24
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""
@@ -283,6 +286,7 @@ class TestToolDelegation:
         mock_management = MagicMock()
         mock_context = MagicMock()
         mock_entities = MagicMock()
+        mock_preferences = MagicMock()
 
         # Wire sub-mocks as attributes of the parent so that
         # ``from butlers.modules.memory.tools import writing`` resolves correctly.
@@ -293,6 +297,7 @@ class TestToolDelegation:
         parent_mock.management = mock_management
         parent_mock.context = mock_context
         parent_mock.entities = mock_entities
+        parent_mock.preferences = mock_preferences
 
         mcp = MagicMock()
         registered_tools: dict[str, Any] = {}
@@ -316,6 +321,7 @@ class TestToolDelegation:
                 "butlers.modules.memory.tools.management": mock_management,
                 "butlers.modules.memory.tools.context": mock_context,
                 "butlers.modules.memory.tools.entities": mock_entities,
+                "butlers.modules.memory.tools.preferences": mock_preferences,
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=fake_db)
@@ -567,6 +573,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
                 "butlers.modules.memory.tools.management": MagicMock(),
                 "butlers.modules.memory.tools.context": MagicMock(),
                 "butlers.modules.memory.tools.entities": MagicMock(),
+                "butlers.modules.memory.tools.preferences": MagicMock(),
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=fake_db)
