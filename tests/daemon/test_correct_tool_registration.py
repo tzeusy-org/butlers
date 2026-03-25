@@ -1,12 +1,13 @@
-"""Tests verifying the 'correct' MCP tool is registered as a core tool (task 3.1, 3.7).
+"""Tests verifying the 'correct' MCP tool is registered as a core tool (task 3.1).
 
 These tests validate:
 - `correct` appears in CORE_TOOL_NAMES
-- The `correct` tool is registered on the MCP server at startup
-- The tool description contains the canonical text from the spec
+
+Tests for MCP server startup registration and tool description text are covered in
+tests/core/test_corrections.py (tasks 7.9) once butlers.core.corrections is implemented.
 
 These tests will fail (correctly) until the implementation in daemon.py adds 'correct'
-to CORE_TOOL_NAMES and registers the tool handler.
+to CORE_TOOL_NAMES as part of the error-recovery-corrections implementation.
 """
 
 from __future__ import annotations

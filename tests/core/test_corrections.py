@@ -52,8 +52,11 @@ try:
     )
 
     _CORRECTIONS_AVAILABLE = True
-except ImportError:
-    _CORRECTIONS_AVAILABLE = False
+except ModuleNotFoundError as exc:
+    if getattr(exc, "name", None) == "butlers.core.corrections":
+        _CORRECTIONS_AVAILABLE = False
+    else:
+        raise
 
 corrections_required = pytest.mark.skipif(
     not _CORRECTIONS_AVAILABLE,
@@ -264,14 +267,7 @@ async def test_data_correction_preconditions_fail_missing_key():
 @corrections_required
 async def test_memory_deletion_preconditions_pass_active_memory():
     """memory_deletion preconditions pass for an active memory."""
-    pool = _make_pool(
-        session_row=_session(),
-        memory_row={"id": uuid.uuid4(), "validity": "active"},
-    )
-
-    async def _fetch_memory(*args: Any) -> dict | None:
-        return {"id": uuid.uuid4(), "validity": "active", "content": "some memory"}
-
+    pool = AsyncMock()
     pool.fetchrow = AsyncMock(
         side_effect=lambda q, *a: (
             _session() if "sessions" in q.lower() else {"id": uuid.uuid4(), "validity": "active"}
@@ -803,8 +799,10 @@ async def test_action_reversal_full_success():
         action_description="cancel the reminder",
     )
 
-    assert result["status"] in {"applied", "partially_applied", "failed"}
+    # For a fully successful reversal we expect an applied status and a non-failure summary.
+    assert result["status"] == "applied"
     assert "summary" in result
+    assert "failed" not in str(result["summary"]).lower()
     assert result.get("correction_id") is not None
 
 
@@ -843,7 +841,7 @@ async def test_action_reversal_partial_success():
             action_description="cancel reminder and message",
         )
 
-    assert result["status"] in {"partially_applied", "applied", "failed"}
+    assert result["status"] == "partially_applied"
     assert "summary" in result
 
 
@@ -904,6 +902,8 @@ async def test_corrections_by_session_returns_rows_ordered_by_created_at():
     results = await corrections_by_session(pool, target_session_id=target_id)
     assert len(results) == 2
     # Must be ordered by created_at (oldest first is standard)
+    created_ats = [row["created_at"] for row in results]
+    assert created_ats == sorted(created_ats)
 
 
 @corrections_required

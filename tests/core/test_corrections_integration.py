@@ -28,8 +28,11 @@ try:
     )
 
     _CORRECTIONS_AVAILABLE = True
-except ImportError:
-    _CORRECTIONS_AVAILABLE = False
+except ModuleNotFoundError as exc:
+    if getattr(exc, "name", None) == "butlers.core.corrections":
+        _CORRECTIONS_AVAILABLE = False
+    else:
+        raise
 
 corrections_required = pytest.mark.skipif(
     not _CORRECTIONS_AVAILABLE,
@@ -178,10 +181,11 @@ async def test_e2e_data_correction_full_audit_trail(pool):
     assert result["status"] == "applied", f"Expected applied, got: {result}"
     assert result.get("correction_id") is not None
 
-    # Step 3: Verify the state was updated
+    # Step 3: Verify the state was updated to the corrected value
     new_value_row = await pool.fetchrow("SELECT value FROM state WHERE key = $1", "user_preference")
     assert new_value_row is not None
-    # The state should now hold the corrected value (exact encoding depends on impl)
+    stored_value = new_value_row["value"]
+    assert "correct_value" in (stored_value if isinstance(stored_value, str) else str(stored_value))
 
     # Step 4: Verify the correction is in the audit table
     correction_id = result["correction_id"]
