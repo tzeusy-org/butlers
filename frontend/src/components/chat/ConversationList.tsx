@@ -1,6 +1,12 @@
 /**
  * Sidebar conversation list with search, new conversation button,
  * and collapsible mode.
+ *
+ * Features:
+ * - localStorage persistence for collapse state
+ * - Loading skeleton
+ * - Empty state with call-to-action
+ * - Search with debounce
  */
 
 import { useState } from "react";
@@ -218,7 +224,9 @@ export function ConversationList({
       )}
 
       {/* List */}
-      <div className={cn("flex-1 overflow-y-auto py-1", collapsed ? "px-1.5" : "px-2 space-y-0.5")}>
+      <div
+        className={cn("flex-1 overflow-y-auto py-1", collapsed ? "px-1.5" : "px-2 space-y-0.5")}
+      >
         {loading ? (
           collapsed ? null : (
             <div className="space-y-1 px-1">

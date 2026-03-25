@@ -21,6 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { useButlerSessions } from "@/hooks/use-sessions";
 import { useUpcomingDates } from "@/hooks/use-contacts";
+import { ChatPanel } from "@/components/chat/ChatPanel";
 
 // ---------------------------------------------------------------------------
 // Lazy-loaded tabs

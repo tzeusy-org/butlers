@@ -1,5 +1,13 @@
 /**
  * Scrollable message thread displaying the conversation history.
+ *
+ * Handles:
+ * - Empty state when no messages exist
+ * - Loading skeleton
+ * - Error rendering (destructive border + error text)
+ * - Interrupted indicator for cancelled streams
+ * - Typing indicator while awaiting first token
+ * - Auto-scroll to bottom
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -7,6 +15,7 @@ import { ExternalLinkIcon } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { TypingIndicator } from "./TypingIndicator";
 import { ToolCallDetails } from "./ToolCallDetails";
 import type { Message, PricingMap } from "@/api/types.ts";
@@ -66,6 +75,22 @@ function SimpleMarkdown({ content }: { content: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Loading skeleton for message thread
+// ---------------------------------------------------------------------------
+
+export function MessageThreadSkeleton() {
+  return (
+    <div className="flex-1 p-4 space-y-4">
+      {Array.from({ length: 4 }, (_, i) => (
+        <div key={i} className={cn("flex", i % 2 === 0 ? "justify-start" : "justify-end")}>
+          <Skeleton className={cn("h-10 rounded-2xl", i % 2 === 0 ? "w-3/4" : "w-1/2")} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Single message bubble
 // ---------------------------------------------------------------------------
 
@@ -94,7 +119,10 @@ function MessageBubble({
 
   return (
     <div
-      className={cn("flex flex-col gap-1 max-w-[85%]", isUser ? "self-end items-end" : "self-start items-start")}
+      className={cn(
+        "flex flex-col gap-1 max-w-[85%]",
+        isUser ? "self-end items-end" : "self-start items-start",
+      )}
     >
       <div
         className={cn(
@@ -270,33 +298,24 @@ export function MessageThread({
             key={msg.id}
             message={msg}
             pricingMap={pricingMap}
-            streamingContent={
-              isStreamingTarget ? streaming.content : undefined
-            }
-            interrupted={
-              isStreamingTarget ? streaming.interrupted : undefined
-            }
+            streamingContent={isStreamingTarget ? streaming.content : undefined}
+            interrupted={isStreamingTarget ? streaming.interrupted : undefined}
           />
         );
       })}
 
       {/* Typing indicator — shown while pending (before first token) */}
-      {isStreamingThisConversation && streaming.pending && (
-        <TypingIndicator />
-      )}
+      {isStreamingThisConversation && streaming.pending && <TypingIndicator />}
 
       {/* Streaming assistant message (before it's committed to messages list) */}
       {isStreamingThisConversation &&
         !streaming.pending &&
-        (messages.length === 0 ||
-          messages[messages.length - 1].role === "user") && (
+        (messages.length === 0 || messages[messages.length - 1].role === "user") && (
           <div className="flex flex-col gap-1 max-w-[85%] self-start items-start">
             <div className="rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
               <SimpleMarkdown content={streaming.content} />
               {streaming.interrupted && (
-                <p className="text-muted-foreground text-xs mt-1 italic">
-                  Interrupted
-                </p>
+                <p className="text-muted-foreground text-xs mt-1 italic">Interrupted</p>
               )}
             </div>
           </div>

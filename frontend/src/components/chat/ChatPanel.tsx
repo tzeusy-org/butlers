@@ -2,12 +2,14 @@
  * Slide-out chat panel for the butler detail page.
  *
  * Renders as a Sheet with:
- * - Left: ConversationList sidebar (collapsible)
+ * - Left: ConversationList sidebar (collapsible, localStorage-persisted)
  * - Right: MessageThread + ConversationHeader + MessageInput
  *
- * SSE streaming is handled inline; messages are appended to local state
- * during streaming and the server's committed message list is refetched
- * after `message_complete`.
+ * Features:
+ * - SSE stream consumption with AbortController cancellation
+ * - Keyboard shortcuts: Ctrl+Shift+Up/Down for conversation quick-switch
+ * - Error rendering and interrupted stream indicator
+ * - Loading skeleton while messages fetch
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
@@ -21,7 +23,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 
 import { createConversation, sendMessage } from "@/api/index.ts";
 import { fetchPricingMap } from "@/api/client.ts";
@@ -29,7 +30,7 @@ import type { Message, ConversationSummary, PricingMap } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
-import { MessageThread } from "./MessageThread.tsx";
+import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
 import {
@@ -67,7 +68,9 @@ function ChatContent({ butlerName }: ChatContentProps) {
   useEffect(() => {
     fetchPricingMap()
       .then((pm) => setPricingMap(pm.data))
-      .catch(() => {/* pricing is optional */});
+      .catch(() => {
+        /* pricing is optional */
+      });
   }, []);
 
   // Fetch conversations list
@@ -79,8 +82,10 @@ function ChatContent({ butlerName }: ChatContentProps) {
   );
 
   // Fetch messages for the active conversation
-  const { data: messagesData, isLoading: isLoadingMessages } =
-    useConversationMessages(butlerName, activeConversationId);
+  const { data: messagesData, isLoading: isLoadingMessages } = useConversationMessages(
+    butlerName,
+    activeConversationId,
+  );
 
   // Sync server messages into local state
   useEffect(() => {
@@ -187,9 +192,7 @@ function ChatContent({ butlerName }: ChatContentProps) {
             // Update optimistic user message with real conversation_id
             setLocalMessages((prev) =>
               prev.map((m) =>
-                m.id === userMessage.id
-                  ? { ...m, conversation_id: data.id }
-                  : m,
+                m.id === userMessage.id ? { ...m, conversation_id: data.id } : m,
               ),
             );
             break;
@@ -200,9 +203,7 @@ function ChatContent({ butlerName }: ChatContentProps) {
                 ? event.data
                 : (event.data as { content?: string })?.content ?? "";
             setStreaming((prev) =>
-              prev
-                ? { ...prev, content: prev.content + token, pending: false }
-                : null,
+              prev ? { ...prev, content: prev.content + token, pending: false } : null,
             );
             break;
           }
@@ -296,11 +297,7 @@ function ChatContent({ butlerName }: ChatContentProps) {
         />
 
         {isLoadingMessages && activeConversationId ? (
-          <div className="flex-1 p-4 space-y-3">
-            {Array.from({ length: 4 }, (_, i) => (
-              <Skeleton key={i} className={`h-10 ${i % 2 === 0 ? "w-3/4" : "w-1/2 ml-auto"}`} />
-            ))}
-          </div>
+          <MessageThreadSkeleton />
         ) : (
           <MessageThread
             messages={localMessages}
