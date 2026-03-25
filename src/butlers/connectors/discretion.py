@@ -32,6 +32,11 @@ _DEFAULT_WEIGHT_FAIL_OPEN: float = 0.5
 
 _INNER_CIRCLE_ROLES: frozenset[str] = frozenset({"family", "close-friends"})
 
+# Channels whose messages are always operator-intentional and therefore
+# bypass discretion evaluation entirely.  Dashboard messages are submitted
+# directly by the owner via the web interface; they must never be filtered.
+DISCRETION_BYPASS_CHANNELS: frozenset[str] = frozenset({"dashboard"})
+
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a personal-assistant discretion filter. "
     "Given a recent conversation context and a new message, decide whether "

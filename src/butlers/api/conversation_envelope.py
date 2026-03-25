@@ -1,17 +1,12 @@
-"""Dashboard ingestion envelope construction for conversation messages.
+"""Dashboard ingest.v1 envelope construction.
 
-Builds valid ``ingest.v1`` envelopes that flow through the standard
-Switchboard ingestion pipeline from dashboard conversation messages.
+Builds ``ingest.v1`` envelopes for dashboard conversation messages that flow
+through the Switchboard ingestion pipeline.  The dashboard channel is treated
+as a trusted internal operator channel (``source.channel = "dashboard"``,
+``source.provider = "internal"``).
 
-Usage::
-
-    envelope = build_dashboard_envelope(
-        conversation_id=uuid.UUID("..."),
-        message_id=uuid.UUID("..."),
-        message_text="Hello butler",
-        conversation_context="",
-    )
-    # Submit to Switchboard ingestion pipeline
+Conversation context is serialized as a text preamble in
+``payload.normalized_text`` for follow-up messages.
 """
 
 from __future__ import annotations
@@ -20,87 +15,115 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+_DEFAULT_CONTEXT_PAIRS: int = 5
+_MAX_CONTEXT_CHARS: int = 4000
+
+
+def _build_context_preamble(
+    history: list[dict[str, Any]],
+    *,
+    max_pairs: int = _DEFAULT_CONTEXT_PAIRS,
+) -> str:
+    """Serialize the last ``max_pairs`` exchange pairs as a text preamble.
+
+    Only includes messages with role ``user`` or ``assistant`` and non-empty
+    content.  The preamble is prepended to ``payload.normalized_text`` so the
+    butler has conversation history available as plain text.
+    """
+    # Filter to user/assistant messages with content
+    relevant = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
+
+    # Last N pairs = last 2*N messages (1 user + 1 assistant per pair)
+    max_msgs = max_pairs * 2
+    recent = relevant[-max_msgs:]
+
+    if not recent:
+        return ""
+
+    lines = ["## Conversation history"]
+    for msg in recent:
+        role = msg["role"].capitalize()
+        content = str(msg["content"]).strip()
+        # Truncate very long individual messages
+        if len(content) > 500:
+            content = content[:497] + "..."
+        lines.append(f"{role}: {content}")
+    lines.append("")  # blank line before new message
+
+    preamble = "\n".join(lines)
+
+    # Truncate the whole preamble if it exceeds the limit
+    if len(preamble) > _MAX_CONTEXT_CHARS:
+        preamble = preamble[-_MAX_CONTEXT_CHARS:]
+
+    return preamble
+
 
 def build_dashboard_envelope(
+    *,
     conversation_id: UUID,
     message_id: UUID,
     message_text: str,
-    conversation_context: str = "",
-    *,
-    observed_at: datetime | None = None,
+    conversation_context: list[dict[str, Any]] | None = None,
+    max_context_pairs: int = _DEFAULT_CONTEXT_PAIRS,
 ) -> dict[str, Any]:
-    """Build a valid ``ingest.v1`` envelope for a dashboard conversation message.
-
-    Constructs the envelope according to the dashboard-conversations spec.
-    The ``payload.normalized_text`` is the user's message text; for follow-up
-    messages it should be pre-processed with ``format_context_preamble`` before
-    passing here.
+    """Construct a valid ``ingest.v1`` envelope for a dashboard message.
 
     Parameters
     ----------
     conversation_id:
-        The UUID of the conversation this message belongs to.
+        The UUID of the dashboard conversation.
     message_id:
-        The UUID of the user message row (used as ``event.external_event_id``).
+        The UUID of the user message row just created.
     message_text:
-        The user's message content. For follow-up messages, this should
-        already include the conversation context preamble (via
-        ``format_context_preamble`` from ``butlers.api.conversations``).
+        The user's raw message text.
     conversation_context:
-        Raw prior-context string to embed in ``payload.raw`` for traceability.
-        Does NOT affect ``normalized_text`` — callers should use
-        ``format_context_preamble`` to combine context with the message before
-        passing ``message_text``.
-    observed_at:
-        Timestamp for ``event.observed_at``. Defaults to current UTC time.
+        Optional list of prior conversation messages (dicts with ``role``
+        and ``content`` keys) used to build a context preamble for
+        follow-up messages.  Pass ``None`` or ``[]`` for new conversations.
+    max_context_pairs:
+        Number of prior exchange pairs to include in the context preamble.
 
     Returns
     -------
     dict
-        A valid ``ingest.v1`` envelope dict suitable for submission to the
-        Switchboard ingestion pipeline.
-
-    Examples
-    --------
-    >>> import uuid
-    >>> conv_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-    >>> msg_id  = uuid.UUID("00000000-0000-0000-0000-000000000002")
-    >>> env = build_dashboard_envelope(conv_id, msg_id, "Hello butler")
-    >>> env["schema_version"]
-    'ingest.v1'
-    >>> env["source"]["channel"]
-    'dashboard'
-    >>> env["control"]["policy_tier"]
-    'interactive'
+        A validated ``ingest.v1`` envelope dict ready for submission to
+        the Switchboard ingest API.
     """
-    ts = (observed_at or datetime.now(UTC)).isoformat()
+    observed_at = datetime.now(UTC).isoformat()
 
-    conversation_id_str = str(conversation_id)
-    message_id_str = str(message_id)
+    # Build normalized_text: context preamble + current message
+    normalized_text = message_text
+    if conversation_context:
+        preamble = _build_context_preamble(conversation_context, max_pairs=max_context_pairs)
+        if preamble:
+            normalized_text = f"{preamble}\nUser: {message_text}"
 
-    envelope: dict[str, Any] = {
+    conv_id_str = str(conversation_id)
+    msg_id_str = str(message_id)
+
+    return {
         "schema_version": "ingest.v1",
         "source": {
             "channel": "dashboard",
             "provider": "internal",
-            "endpoint_identity": f"dashboard:web:{conversation_id_str}",
+            "endpoint_identity": f"dashboard:web:{conv_id_str}",
         },
         "event": {
-            "external_event_id": message_id_str,
-            "external_thread_id": conversation_id_str,
-            "observed_at": ts,
+            "external_event_id": msg_id_str,
+            "external_thread_id": conv_id_str,
+            "observed_at": observed_at,
         },
         "sender": {
             "identity": "dashboard:operator",
         },
         "payload": {
-            "normalized_text": message_text,
+            "normalized_text": normalized_text,
             "raw": {
                 "source": "dashboard",
-                "conversation_id": conversation_id_str,
-                "message_id": message_id_str,
+                "conversation_id": conv_id_str,
+                "message_id": msg_id_str,
                 "message": message_text,
-                **({"conversation_context": conversation_context} if conversation_context else {}),
             },
         },
         "control": {
@@ -108,5 +131,3 @@ def build_dashboard_envelope(
             "ingestion_tier": "full",
         },
     }
-
-    return envelope
