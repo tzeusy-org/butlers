@@ -33,10 +33,23 @@ compiled reminder via notify(channel="telegram", intent="send", message=<reminde
 name = "relationship-maintenance"
 cron = "0 9 * * 1"
 prompt = """
-Review contacts I haven't interacted with in 30+ days.
-Suggest 3 people I should reach out to this week, with context
-on our last interaction and any upcoming dates.
-Deliver the suggestions via notify(channel="telegram", intent="send", message=<suggestions>).
+Use the reconnect-planner skill to rank overdue contacts by Dunbar tier-weighted urgency
+and suggest the top 3 reconnections for this week.
+
+Steps:
+1. Call contacts_overdue() to get overdue contacts with their dunbar_tier, dunbar_score,
+   and effective_cadence fields.
+2. For each overdue contact, compute urgency = (days_since_last_interaction / effective_cadence)
+   * tier_weight + context_bonus, where tier_weight is:
+   tier 5=5.0, tier 15=3.0, tier 50=2.0, tier 150=1.0, tier 500=0.5.
+   Add context_bonus: +2.0 for upcoming date within 14 days, +1.0 for pending gift,
+   +0.5 for positive emotional context in recent notes.
+3. Sort by urgency descending, pick the top 3.
+4. For each suggestion, gather context: last interaction, upcoming dates, notes, gifts.
+5. Deliver the ranked suggestions via notify(channel="telegram", intent="send", message=<suggestions>).
+
+If fewer than 3 contacts are overdue, suggest only those that qualify.
+If no contacts are overdue, send: "All your key relationships are up to date — no overdue check-ins this week."
 """
 
 [[butler.schedule]]

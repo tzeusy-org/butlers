@@ -11,6 +11,7 @@ Design decisions and rationale: openspec/changes/dunbar-tier-scoring/design.md
 
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from datetime import UTC, datetime
@@ -18,12 +19,28 @@ from typing import Any
 
 import asyncpg
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Constants (D5, D6)
 # ---------------------------------------------------------------------------
 
 #: The fixed Dunbar layer sizes in ascending order.
 DUNBAR_TIERS: tuple[int, ...] = (5, 15, 50, 150, 500, 1500)
+
+#: Valid tier values as a set (for validation in dunbar_tier_set).
+VALID_TIERS: set[int] = set(DUNBAR_TIERS)
+
+#: Dunbar layer boundaries as list-of-tuples: (tier_value, cumulative_rank_end).
+#: Contacts ranked 1..5 → tier 5, ranks 6..15 → tier 15, etc.
+DUNBAR_LAYERS: list[tuple[int, int]] = [
+    (5, 5),
+    (15, 15),
+    (50, 50),
+    (150, 150),
+    (500, 500),
+    (1500, 10_000_000),  # sentinel — everyone else
+]
 
 #: Cumulative upper rank boundaries for each tier.
 #: Rank 1-5 → tier 5, 6-15 → tier 15, etc.
@@ -38,6 +55,9 @@ TIER_CADENCE: dict[int, int] = {
     500: 270,
 }
 
+#: Tier cadences including tier 1500 (None = never suggested).
+TIER_CADENCES: dict[int, int | None] = {**TIER_CADENCE, 1500: None}
+
 #: Tier weight for the urgency formula.
 TIER_WEIGHT: dict[int, float] = {
     5: 5.0,
@@ -46,6 +66,9 @@ TIER_WEIGHT: dict[int, float] = {
     150: 1.0,
     500: 0.5,
 }
+
+#: Tier weights including tier 1500 (0.0 = excluded from urgency).
+TIER_WEIGHTS: dict[int, float] = {**TIER_WEIGHT, 1500: 0.0}
 
 #: Exponential decay lambda: ln(2) / 30-day half-life.
 _LAMBDA: float = math.log(2) / 30.0
@@ -567,3 +590,285 @@ async def _positive_note_contact_ids(
             if emotion in _positive_emotions:
                 result.add(row["contact_id"])
     return result
+
+
+# ---------------------------------------------------------------------------
+# MCP tool: dunbar_tier_set (D4)
+# ---------------------------------------------------------------------------
+
+
+async def dunbar_tier_set(
+    pool: asyncpg.Pool,
+    contact_id: uuid.UUID,
+    tier: int | None,
+) -> dict[str, Any]:
+    """Set or clear a manual Dunbar tier override for a contact.
+
+    - tier in VALID_TIERS: stores/supersedes dunbar_tier_override SPO fact
+    - tier = None: retracts any active override (reverts to rank-based)
+
+    Returns dict with contact_id, entity_id, tier, action ('set' | 'cleared').
+
+    Raises:
+        ValueError: If tier is not in VALID_TIERS (and not None), or if
+            contact not found / has no entity_id.
+    """
+    if tier is not None and tier not in VALID_TIERS:
+        valid_str = ", ".join(str(t) for t in sorted(VALID_TIERS))
+        raise ValueError(
+            f"Invalid tier value {tier!r}. "
+            f"Valid Dunbar tier values are: {valid_str}. "
+            "Pass tier=None to clear the override."
+        )
+
+    row = await pool.fetchrow("SELECT id, entity_id FROM contacts WHERE id = $1", contact_id)
+    if row is None:
+        raise ValueError(
+            f"Contact {contact_id} not found. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        )
+    entity_id = row["entity_id"]
+    if entity_id is None:
+        raise ValueError(
+            f"Contact {contact_id} has no linked entity. "
+            "Dunbar tier overrides require a linked entity. "
+            "The contact must be created via contact_create to get an entity."
+        )
+
+    entity_id_str = str(entity_id)
+
+    # Retract any existing active override facts first
+    existing_rows = await pool.fetch(
+        """
+        SELECT id FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND scope = 'relationship'
+          AND validity = 'active'
+          AND entity_id = $1::uuid
+        """,
+        entity_id_str,
+    )
+    for existing_row in existing_rows:
+        await pool.execute(
+            "UPDATE facts SET validity = 'retracted' WHERE id = $1",
+            existing_row["id"],
+        )
+
+    if tier is None:
+        return {
+            "contact_id": str(contact_id),
+            "entity_id": entity_id_str,
+            "action": "cleared",
+            "message": "Dunbar tier override cleared. Contact will use rank-based tier assignment.",
+        }
+
+    # Store new override fact
+    await pool.execute(
+        """
+        INSERT INTO facts (
+            subject,
+            predicate,
+            content,
+            scope,
+            entity_id,
+            validity,
+            permanence
+        ) VALUES (
+            $1, 'dunbar_tier_override', $2, 'relationship',
+            $3::uuid, 'active', 'permanent'
+        )
+        """,
+        f"contact:{contact_id}",
+        str(tier),
+        entity_id_str,
+    )
+
+    return {
+        "contact_id": str(contact_id),
+        "entity_id": entity_id_str,
+        "action": "set",
+        "tier": tier,
+        "message": (
+            f"Dunbar tier override set to {tier}. "
+            f"Contact is pinned to tier {tier} regardless of computed rank."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-contact Dunbar lookup (convenience for contact_get enrichment)
+# ---------------------------------------------------------------------------
+
+
+async def get_contact_dunbar(
+    pool: asyncpg.Pool,
+    contact_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Get Dunbar tier and score for a single contact.
+
+    Returns dict with dunbar_tier, dunbar_score, dunbar_tier_override.
+    Falls back to tier 1500, score 0.0 if contact has no entity_id.
+    """
+    row = await pool.fetchrow(
+        "SELECT id, entity_id FROM contacts WHERE id = $1",
+        contact_id,
+    )
+    if row is None or row["entity_id"] is None:
+        return {"dunbar_tier": 1500, "dunbar_score": 0.0, "dunbar_tier_override": False}
+
+    # Compute decay score for this contact
+    entity_id = row["entity_id"]
+    interaction_rows = await pool.fetch(
+        """
+        SELECT valid_at FROM facts
+        WHERE predicate = 'interaction'
+          AND scope = 'relationship'
+          AND validity = 'active'
+          AND subject = $1
+          AND valid_at IS NOT NULL
+        """,
+        f"contact:{contact_id}",
+    )
+    now = datetime.now(UTC)
+    score = 0.0
+    for irow in interaction_rows:
+        valid_at = irow["valid_at"]
+        if valid_at is None:
+            continue
+        if valid_at.tzinfo is None:
+            valid_at = valid_at.replace(tzinfo=UTC)
+        days = (now - valid_at).total_seconds() / 86400.0
+        score += math.exp(-_LAMBDA * days)
+    score = round(score, 2)
+
+    # Check for active manual override
+    override_row = await pool.fetchrow(
+        """
+        SELECT content FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND scope = 'relationship'
+          AND validity = 'active'
+          AND entity_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        entity_id,
+    )
+    if override_row is not None:
+        try:
+            tier_val = int(override_row["content"])
+            if tier_val in VALID_TIERS:
+                return {
+                    "dunbar_tier": tier_val,
+                    "dunbar_score": score,
+                    "dunbar_tier_override": True,
+                }
+        except (ValueError, TypeError):
+            pass
+
+    # Rank-based: compute full ranking and look up this contact
+    all_scores = await compute_dunbar_scores(pool)
+    overrides = await _fetch_overrides(pool)
+    ranked = get_tier_ranking(all_scores, overrides)
+    for entry in ranked:
+        if entry["contact_id"] == contact_id:
+            return {
+                "dunbar_tier": entry["dunbar_tier"],
+                "dunbar_score": score,
+                "dunbar_tier_override": False,
+            }
+
+    # Not in ranked list (no entity_id or not listed)
+    return {"dunbar_tier": 1500, "dunbar_score": score, "dunbar_tier_override": False}
+
+
+# ---------------------------------------------------------------------------
+# Tier-aware overdue contacts (D5)
+# ---------------------------------------------------------------------------
+
+
+async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]]:
+    """Return overdue contacts using tier-aware cadences.
+
+    Effective cadence per contact:
+    - If stay_in_touch_days is set: use that value (explicit override)
+    - Otherwise: use the Dunbar tier's default cadence
+      (tier 5=14d, 15=21d, 50=45d, 150=120d, 500=270d, 1500=never)
+
+    Tier 1500 contacts with no stay_in_touch_days are excluded.
+    Archived contacts (listed=false) are excluded.
+    Contacts with no interactions and an effective cadence are always overdue.
+
+    Returns contacts enriched with dunbar_tier, dunbar_score,
+    effective_cadence, and days_since_last_interaction.
+    """
+    from butlers.tools.relationship.contacts import _parse_contact
+
+    contact_rows = await pool.fetch(
+        """
+        SELECT
+            c.*,
+            MAX(f.valid_at) AS last_interaction_at,
+            CASE
+                WHEN MAX(f.valid_at) IS NULL THEN NULL
+                ELSE EXTRACT(EPOCH FROM (now() - MAX(f.valid_at))) / 86400.0
+            END AS days_since_last_interaction
+        FROM contacts c
+        LEFT JOIN facts f
+            ON f.subject = 'contact:' || c.id::text
+           AND f.predicate = 'interaction'
+           AND f.scope = 'relationship'
+           AND f.validity = 'active'
+        WHERE c.listed = true
+        GROUP BY c.id
+        ORDER BY c.first_name, c.last_name, c.nickname
+        """
+    )
+
+    if not contact_rows:
+        return []
+
+    # Batch-compute Dunbar scores + tiers
+    all_scores = await compute_dunbar_scores(pool)
+    overrides = await _fetch_overrides(pool)
+    ranked = get_tier_ranking(all_scores, overrides)
+    dunbar_by_cid: dict[uuid.UUID, dict[str, Any]] = {
+        entry["contact_id"]: entry for entry in ranked
+    }
+
+    results: list[dict[str, Any]] = []
+    for row in contact_rows:
+        contact = _parse_contact(row)
+        cid = contact["id"]
+        days_since = row["days_since_last_interaction"]
+
+        dunbar_info = dunbar_by_cid.get(cid, {"dunbar_tier": 1500, "dunbar_score": 0.0})
+        dunbar_tier = dunbar_info["dunbar_tier"]
+        dunbar_score = dunbar_info.get("dunbar_score", 0.0)
+
+        stay_in_touch = contact.get("stay_in_touch_days")
+        if stay_in_touch is not None:
+            effective_cadence: int | None = stay_in_touch
+        else:
+            effective_cadence = TIER_CADENCES.get(dunbar_tier)
+
+        if effective_cadence is None:
+            continue
+
+        if days_since is None:
+            is_overdue = True
+        else:
+            is_overdue = float(days_since) > float(effective_cadence)
+
+        if not is_overdue:
+            continue
+
+        contact["dunbar_tier"] = dunbar_tier
+        contact["dunbar_score"] = dunbar_score
+        contact["effective_cadence"] = effective_cadence
+        contact["days_since_last_interaction"] = (
+            round(float(days_since), 1) if days_since is not None else None
+        )
+        results.append(contact)
+
+    return results

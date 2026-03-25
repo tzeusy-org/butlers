@@ -845,3 +845,431 @@ async def test_urgency_contact_with_no_interactions_overdue(dunbar_pool):
     row = next((r for r in results if r["contact_id"] == contact["id"]), None)
     assert row is not None
     assert row["days_overdue"] == float(row["effective_cadence"])
+
+
+# ===========================================================================
+# Unit tests for new constants (VALID_TIERS, TIER_CADENCES, DUNBAR_LAYERS)
+# ===========================================================================
+
+
+def test_valid_tiers():
+    """VALID_TIERS contains exactly the expected 6 values."""
+    from butlers.tools.relationship.dunbar import VALID_TIERS
+
+    assert VALID_TIERS == {5, 15, 50, 150, 500, 1500}
+
+
+def test_tier_cadences():
+    """TIER_CADENCES maps each tier to expected day thresholds, including 1500=None."""
+    from butlers.tools.relationship.dunbar import TIER_CADENCES
+
+    assert TIER_CADENCES[5] == 14
+    assert TIER_CADENCES[15] == 21
+    assert TIER_CADENCES[50] == 45
+    assert TIER_CADENCES[150] == 120
+    assert TIER_CADENCES[500] == 270
+    assert TIER_CADENCES[1500] is None
+
+
+def test_dunbar_layers_structure():
+    """DUNBAR_LAYERS is a list of (tier_value, cumulative_rank_end) tuples."""
+    from butlers.tools.relationship.dunbar import DUNBAR_LAYERS
+
+    assert (5, 5) in DUNBAR_LAYERS
+    assert (15, 15) in DUNBAR_LAYERS
+    tier_values = [t for t, _ in DUNBAR_LAYERS]
+    assert 1500 in tier_values
+
+
+# ===========================================================================
+# Pool fixture (simpler schema, no shared.entities) — for new-function tests
+# ===========================================================================
+
+_LAMBDA_NEW = math.log(2) / 30.0
+
+
+@pytest.fixture
+async def simple_pool(provisioned_postgres_pool):
+    """Provision a fresh database with contacts and facts tables (no shared schema)."""
+    async with provisioned_postgres_pool() as p:
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                first_name TEXT,
+                last_name TEXT,
+                nickname TEXT,
+                company TEXT,
+                job_title TEXT,
+                gender TEXT,
+                pronouns TEXT,
+                avatar_url TEXT,
+                entity_id UUID,
+                stay_in_touch_days INT,
+                listed BOOLEAN NOT NULL DEFAULT true,
+                metadata JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS activity_feed (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                action TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id UUID,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS facts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                embedding TEXT,
+                search_vector tsvector,
+                importance FLOAT NOT NULL DEFAULT 5.0,
+                confidence FLOAT NOT NULL DEFAULT 1.0,
+                decay_rate FLOAT NOT NULL DEFAULT 0.008,
+                permanence TEXT NOT NULL DEFAULT 'standard',
+                source_butler TEXT,
+                source_episode_id UUID,
+                supersedes_id UUID,
+                validity TEXT NOT NULL DEFAULT 'active',
+                scope TEXT NOT NULL DEFAULT 'global',
+                entity_id UUID,
+                object_entity_id UUID,
+                valid_at TIMESTAMPTZ,
+                reference_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_referenced_at TIMESTAMPTZ,
+                last_confirmed_at TIMESTAMPTZ,
+                tags JSONB DEFAULT '[]'::jsonb,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                tenant_id TEXT NOT NULL DEFAULT 'owner',
+                request_id TEXT,
+                idempotency_key TEXT,
+                observed_at TIMESTAMPTZ DEFAULT now(),
+                invalid_at TIMESTAMPTZ,
+                retention_class TEXT NOT NULL DEFAULT 'operational',
+                sensitivity TEXT NOT NULL DEFAULT 'normal'
+            )
+        """)
+        await p.execute(
+            "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_new ON facts (subject, predicate)"
+        )
+        yield p
+
+
+async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) -> dict:
+    """Create a contact with a random entity_id."""
+    entity_id = uuid.uuid4()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO contacts (first_name, entity_id, listed)
+        VALUES ($1, $2, $3)
+        RETURNING id, entity_id, first_name, listed
+        """,
+        first_name,
+        entity_id,
+        listed,
+    )
+    return dict(row)
+
+
+async def _log_simple_interaction(pool, contact_id: uuid.UUID, days_ago: float) -> None:
+    """Insert an active interaction fact valid_at=now()-days_ago."""
+    valid_at = datetime.now(UTC) - timedelta(days=days_ago)
+    await pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
+        VALUES ($1, 'interaction', 'chat', 'relationship', 'active', $2)
+        """,
+        f"contact:{contact_id}",
+        valid_at,
+    )
+
+
+# ===========================================================================
+# Integration tests — dunbar_tier_set (override set / update / clear)
+# ===========================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_dunbar_tier_set_stores_override(simple_pool):
+    """Setting a tier stores an active dunbar_tier_override fact."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set
+
+    contact = await _make_simple_contact(simple_pool, "Alice")
+    cid = uuid.UUID(str(contact["id"]))
+
+    result = await dunbar_tier_set(simple_pool, cid, 15)
+
+    assert result["action"] == "set"
+    assert result["tier"] == 15
+    assert result["contact_id"] == str(cid)
+
+    row = await simple_pool.fetchrow(
+        """
+        SELECT content, validity, permanence FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND entity_id = $1::uuid
+          AND validity = 'active'
+        """,
+        str(contact["entity_id"]),
+    )
+    assert row is not None
+    assert row["content"] == "15"
+    assert row["validity"] == "active"
+    assert row["permanence"] == "permanent"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_dunbar_tier_set_updates_override(simple_pool):
+    """Setting a new tier retracts the old override and stores a new one."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set
+
+    contact = await _make_simple_contact(simple_pool, "Bob")
+    cid = uuid.UUID(str(contact["id"]))
+    entity_id_str = str(contact["entity_id"])
+
+    await dunbar_tier_set(simple_pool, cid, 50)
+    result = await dunbar_tier_set(simple_pool, cid, 5)
+    assert result["action"] == "set"
+    assert result["tier"] == 5
+
+    retracted = await simple_pool.fetchrow(
+        """
+        SELECT id FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND entity_id = $1::uuid
+          AND validity = 'retracted'
+        """,
+        entity_id_str,
+    )
+    assert retracted is not None
+
+    active_rows = await simple_pool.fetch(
+        """
+        SELECT content FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND entity_id = $1::uuid
+          AND validity = 'active'
+        """,
+        entity_id_str,
+    )
+    assert len(active_rows) == 1
+    assert active_rows[0]["content"] == "5"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_dunbar_tier_set_clear(simple_pool):
+    """Passing tier=None retracts the override and returns action='cleared'."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set
+
+    contact = await _make_simple_contact(simple_pool, "Carol")
+    cid = uuid.UUID(str(contact["id"]))
+    entity_id_str = str(contact["entity_id"])
+
+    await dunbar_tier_set(simple_pool, cid, 150)
+    result = await dunbar_tier_set(simple_pool, cid, None)
+    assert result["action"] == "cleared"
+
+    active_rows = await simple_pool.fetch(
+        """
+        SELECT id FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND entity_id = $1::uuid
+          AND validity = 'active'
+        """,
+        entity_id_str,
+    )
+    assert len(active_rows) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_dunbar_tier_set_invalid_tier_rejected(simple_pool):
+    """Invalid tier value raises ValueError with actionable message."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set
+
+    contact = await _make_simple_contact(simple_pool, "Dave")
+    cid = uuid.UUID(str(contact["id"]))
+
+    with pytest.raises(ValueError, match="Invalid tier value"):
+        await dunbar_tier_set(simple_pool, cid, 42)
+
+    with pytest.raises(ValueError, match="Valid Dunbar tier values"):
+        await dunbar_tier_set(simple_pool, cid, 7)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_dunbar_tier_set_contact_not_found(simple_pool):
+    """Non-existent contact raises ValueError."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set
+
+    with pytest.raises(ValueError, match="not found"):
+        await dunbar_tier_set(simple_pool, uuid.uuid4(), 5)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_dunbar_tier_set_no_entity_id_raises(simple_pool):
+    """Contact without entity_id raises ValueError."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set
+
+    row = await simple_pool.fetchrow(
+        "INSERT INTO contacts (first_name, entity_id) VALUES ('Ghost', NULL) RETURNING id"
+    )
+    cid = uuid.UUID(str(row["id"]))
+
+    with pytest.raises(ValueError, match="no linked entity"):
+        await dunbar_tier_set(simple_pool, cid, 5)
+
+
+# ===========================================================================
+# Integration tests — get_contact_dunbar
+# ===========================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_get_contact_dunbar_no_entity(simple_pool):
+    """Contact without entity_id returns tier 1500, score 0.0."""
+    from butlers.tools.relationship.dunbar import get_contact_dunbar
+
+    row = await simple_pool.fetchrow(
+        "INSERT INTO contacts (first_name, entity_id) VALUES ('Ghost', NULL) RETURNING id"
+    )
+    cid = uuid.UUID(str(row["id"]))
+
+    result = await get_contact_dunbar(simple_pool, cid)
+
+    assert result["dunbar_tier"] == 1500
+    assert result["dunbar_score"] == 0.0
+    assert result["dunbar_tier_override"] is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_get_contact_dunbar_with_override(simple_pool):
+    """get_contact_dunbar respects manual override."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set, get_contact_dunbar
+
+    contact = await _make_simple_contact(simple_pool, "Dana")
+    cid = uuid.UUID(str(contact["id"]))
+
+    await dunbar_tier_set(simple_pool, cid, 50)
+    result = await get_contact_dunbar(simple_pool, cid)
+
+    assert result["dunbar_tier"] == 50
+    assert result["dunbar_tier_override"] is True
+
+
+# ===========================================================================
+# Integration tests — contacts_overdue_with_tiers
+# ===========================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_contacts_overdue_with_tiers_stay_in_touch_overrides(simple_pool):
+    """stay_in_touch_days overrides the tier's default cadence."""
+    from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    contact = await _make_simple_contact(simple_pool, "Iris")
+    cid = uuid.UUID(str(contact["id"]))
+
+    await simple_pool.execute("UPDATE contacts SET stay_in_touch_days = 60 WHERE id = $1", cid)
+    await _log_simple_interaction(simple_pool, cid, 30.0)
+
+    results = await contacts_overdue_with_tiers(simple_pool)
+    ids = [str(r["id"]) for r in results]
+    assert str(cid) not in ids
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_contacts_overdue_with_tiers_no_interactions_always_overdue(simple_pool):
+    """Contact with stay_in_touch_days and no interactions is always overdue."""
+    from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    contact = await _make_simple_contact(simple_pool, "Karen")
+    cid = uuid.UUID(str(contact["id"]))
+
+    await simple_pool.execute("UPDATE contacts SET stay_in_touch_days = 30 WHERE id = $1", cid)
+
+    results = await contacts_overdue_with_tiers(simple_pool)
+    ids = [str(r["id"]) for r in results]
+    assert str(cid) in ids
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_contacts_overdue_with_tiers_tier_1500_excluded(simple_pool):
+    """Tier 1500 contacts with no stay_in_touch_days are excluded from overdue."""
+    from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    contact = await _make_simple_contact(simple_pool, "Leo")
+
+    results = await contacts_overdue_with_tiers(simple_pool)
+    ids = [str(r["id"]) for r in results]
+    assert str(contact["id"]) not in ids
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_contacts_overdue_with_tiers_enriched_fields(simple_pool):
+    """Overdue contacts include dunbar_tier, dunbar_score, effective_cadence."""
+    from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    contact = await _make_simple_contact(simple_pool, "Nina")
+    cid = uuid.UUID(str(contact["id"]))
+
+    await simple_pool.execute("UPDATE contacts SET stay_in_touch_days = 7 WHERE id = $1", cid)
+    await _log_simple_interaction(simple_pool, cid, 10.0)
+
+    results = await contacts_overdue_with_tiers(simple_pool)
+    assert len(results) >= 1
+
+    overdue = next(r for r in results if str(r["id"]) == str(cid))
+    assert "dunbar_tier" in overdue
+    assert "dunbar_score" in overdue
+    assert "effective_cadence" in overdue
+    assert overdue["effective_cadence"] == 7
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_contacts_overdue_with_tiers_archived_excluded(simple_pool):
+    """Archived contacts (listed=false) are excluded from overdue results."""
+    from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    contact = await _make_simple_contact(simple_pool, "Oscar", listed=False)
+    cid = uuid.UUID(str(contact["id"]))
+
+    await simple_pool.execute("UPDATE contacts SET stay_in_touch_days = 7 WHERE id = $1", cid)
+    await _log_simple_interaction(simple_pool, cid, 30.0)
+
+    results = await contacts_overdue_with_tiers(simple_pool)
+    ids = [str(r["id"]) for r in results]
+    assert str(cid) not in ids

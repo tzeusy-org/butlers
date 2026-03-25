@@ -47,35 +47,20 @@ async def stay_in_touch_set(
 
 
 async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:
-    """Return contacts whose last interaction exceeds their stay-in-touch cadence.
+    """Return contacts overdue for reach-out using tier-aware cadences.
 
-    Contacts with a cadence but no interactions are always overdue.
-    Contacts with no cadence (NULL) are never returned.
-    Archived contacts are excluded.
+    Effective cadence per contact:
+    - If stay_in_touch_days is set: use that value (explicit override)
+    - Otherwise: use the Dunbar tier's default cadence
+      (tier 5=14d, 15=21d, 50=45d, 150=120d, 500=270d, 1500=never)
 
-    Interactions are stored as SPO facts (predicate='interaction', valid_at=occurred_at).
+    Tier 1500 contacts with no stay_in_touch_days are excluded.
+    Archived contacts (listed=false) are excluded.
+    Contacts with no interactions and an effective cadence are always overdue.
+
+    Returns contacts enriched with dunbar_tier, dunbar_score,
+    effective_cadence, and days_since_last_interaction.
     """
-    rows = await pool.fetch(
-        """
-        SELECT
-            c.*,
-            MAX(f.valid_at) AS last_interaction_at,
-            CASE
-                WHEN MAX(f.valid_at) IS NULL THEN NULL
-                ELSE EXTRACT(EPOCH FROM (now() - MAX(f.valid_at))) / 86400.0
-            END AS days_since_last_interaction
-        FROM contacts c
-        LEFT JOIN facts f
-            ON f.subject = 'contact:' || c.id::text
-           AND f.predicate = 'interaction'
-           AND f.scope = 'relationship'
-           AND f.validity = 'active'
-        WHERE c.stay_in_touch_days IS NOT NULL
-          AND c.listed = true
-        GROUP BY c.id
-        HAVING MAX(f.valid_at) IS NULL
-            OR MAX(f.valid_at) < now() - make_interval(days => c.stay_in_touch_days)
-        ORDER BY c.first_name, c.last_name, c.nickname
-        """
-    )
-    return [_parse_contact(row) for row in rows]
+    from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    return await contacts_overdue_with_tiers(pool)

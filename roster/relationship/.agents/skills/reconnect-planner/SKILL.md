@@ -1,193 +1,174 @@
 ---
 skill: reconnect-planner
-description: Proactively identify contacts who haven't been reached out to in a while and plan reconnection outreach
-version: 1.0.0
-tags: [relationship, outreach, planning]
+description: Identify overdue contacts ranked by Dunbar tier-weighted urgency and plan reconnection outreach
+version: 2.0.0
+tags: [relationship, outreach, planning, dunbar]
 ---
 
 # Reconnect Planner
 
 ## Purpose
 
-Help the Relationship butler proactively identify contacts who are becoming "stale" (haven't been contacted in a while) and plan meaningful reconnection outreach. This skill combines staleness detection, context-aware outreach suggestions, and integration with the reminder system to ensure important relationships don't fade due to neglect.
+Help the Relationship butler proactively identify contacts who are overdue for
+reach-out, ranked by Dunbar tier-weighted urgency. This skill uses the unified
+Dunbar scoring model — contacts in inner tiers (support clique, sympathy group)
+are surfaced first and with higher urgency, while outer-tier contacts appear
+only when their tier-appropriate cadence has been exceeded.
 
 ## When to Use This Skill
 
-- During scheduled check-ins (e.g., weekly review)
+- During scheduled check-ins (e.g., weekly review via `relationship-maintenance`)
 - When the user asks "who should I reach out to?"
-- As part of a periodic "relationship maintenance" routine
+- As part of a periodic relationship maintenance routine
 - When planning upcoming social activities
+
+## Dunbar Tier Model
+
+Contacts are automatically placed into concentric social layers based on
+interaction frequency and recency:
+
+| Tier | Layer Name      | Default Cadence | Tier Weight |
+|------|----------------|-----------------|-------------|
+| 5    | Support clique  | 14 days         | 5.0         |
+| 15   | Sympathy group  | 21 days         | 3.0         |
+| 50   | Good friends    | 45 days         | 2.0         |
+| 150  | Meaningful      | 120 days        | 1.0         |
+| 500  | Acquaintances   | 270 days        | 0.5         |
+| 1500 | Recognizable    | Never (default) | —           |
+
+- A contact's `stay_in_touch_days` value overrides their tier's default cadence.
+- Tier 1500 contacts are only suggested if they have `stay_in_touch_days` set.
 
 ## How It Works
 
-### Step 1: Identify Stale Contacts
+### Step 1: Get Overdue Contacts
 
-Query the database to find contacts whose last interaction exceeds the staleness threshold for their relationship tier.
+Call `contacts_overdue()` — this returns all contacts whose time since last
+interaction exceeds their effective cadence (tier default or `stay_in_touch_days`).
 
-**Staleness Thresholds (by relationship tier):**
-- **Close friends:** 2 weeks (14 days)
-- **Friends:** 1 month (30 days)
-- **Acquaintances:** 3 months (90 days)
-- **Professional:** 2 months (60 days)
-- **Family:** 2 weeks (14 days)
-- **No tier specified:** Default to 1 month (30 days)
+Each result includes `dunbar_tier`, `dunbar_score`, `effective_cadence`, and
+`days_since_last_interaction` fields.
 
-**Implementation approach:**
+### Step 2: Compute Urgency Score
 
-1. Use `contact_search` or list all contacts
-2. For each contact:
-   - Check their relationship tier via `fact_list` (look for a "tier" fact) or relationship labels
-   - Use `interaction_list` to get their most recent interaction
-   - Calculate days since last interaction
-   - Compare against the threshold for their tier
-3. Build a prioritized list of stale contacts
+For each overdue contact, compute:
 
-### Step 2: Gather Context for Each Stale Contact
-
-For each stale contact, gather relevant context to inform outreach suggestions:
-
-**Context to collect:**
-- **Last interaction:** Type, date, and summary from `interaction_list`
-- **Notes:** Recent notes from `note_list` (especially with emotion tags)
-- **Upcoming dates:** Check `upcoming_dates` for birthdays or anniversaries
-- **Shared interests:** Extract from `fact_list` or contact details
-- **Pending gifts:** Check `gift_list` for any pending gift ideas
-- **Active reminders:** Check `reminder_list` for context
-
-### Step 3: Generate Outreach Suggestions
-
-For each stale contact, create a personalized outreach suggestion based on the gathered context.
-
-**Outreach Template Patterns:**
-
-#### Pattern 1: Birthday/Anniversary Upcoming
 ```
-Reach out to [name] — their [birthday/anniversary] is coming up on [date].
-Suggested approach: Send a personal message a few days early, maybe mention [shared interest/recent note].
+urgency = (days_since_last_interaction / effective_cadence) * tier_weight + context_bonus
 ```
 
-#### Pattern 2: Shared Interest Hook
+**Tier weights:**
+- Tier 5: 5.0
+- Tier 15: 3.0
+- Tier 50: 2.0
+- Tier 150: 1.0
+- Tier 500: 0.5
+
+**Context bonuses:**
+- +2.0 if the contact has an important date within 14 days
+- +1.0 if the contact has a pending gift (active gift not yet given)
+- +0.5 if the contact's most recent note has positive emotional context
+
+### Step 3: Rank and Select
+
+Sort all overdue contacts by urgency score descending. Select the top N
+(default 3, configurable by the caller).
+
+Contacts with no interactions but an effective cadence get:
+`days_since_last_interaction = None` — treat as maximally overdue for ranking
+(use a large sentinel value such as `effective_cadence * 10` for urgency calc).
+
+### Step 4: Gather Context for Top Contacts
+
+For each selected contact, collect context to support a meaningful suggestion:
+
+```python
+# Last interaction summary
+interaction_list(contact_id="<contact_id>", limit=1)
+
+# Recall facts from memory
+fact_list(contact_id="<contact_id>")
+
+# Check for upcoming dates (birthday, anniversary)
+upcoming_dates(days_ahead=30)  # filter for this contact
+
+# Check for pending gift ideas
+gift_list(contact_id="<contact_id>")
+
+# Recent notes
+note_list(contact_id="<contact_id>", limit=3)
 ```
-Reconnect with [name] — you haven't talked since [last interaction date].
-Hook: They're interested in [interest]. Consider sharing [article/event/question] about it.
+
+### Step 5: Generate Outreach Suggestions
+
+For each contact, create a personalized suggestion referencing their tier context.
+Use the templates below based on the available context signals.
+
+**Template — upcoming date hook:**
+```
+Reach out to [Name] — their [birthday/anniversary] is in [X days].
+[Tier context: inner circle — high priority / good friend, check in]
+Last talked: [date, summary]. Consider: [personal hook from memory/notes].
 ```
 
-#### Pattern 3: Follow-up on Previous Conversation
+**Template — follow-up on previous conversation:**
 ```
-Check in with [name] — last time you talked about [summary from last interaction].
-Suggested approach: Ask how [that topic] turned out or share an update from your side.
-```
-
-#### Pattern 4: Simple Check-in
-```
-Time to reconnect with [name] — it's been [X days/weeks] since you last talked.
-Suggested approach: A simple "thinking of you" message or suggest [coffee/call/activity].
+Check in with [Name] (tier [X]) — [days] days since last contact ([tier default] day cadence).
+Hook: [relevant fact or note that gives a natural reason to reach out].
 ```
 
-#### Pattern 5: Gift Occasion
+**Template — general reconnection:**
 ```
-Reach out to [name] for [occasion] — you had a gift idea: [description].
-Suggested approach: Buy the gift and schedule delivery, or plan an in-person handoff.
+Reconnect with [Name] — [X days] since last contact (overdue by [N] days).
+[One sentence of context: shared interest, recent life event, or pending item].
 ```
 
-### Step 4: Prioritization Framework
+## Output Format
 
-Prioritize stale contacts based on:
+Present suggestions in urgency order (highest first):
 
-1. **Relationship tier:** Close friends and family come first
-2. **Staleness severity:** How far over the threshold (e.g., 2x overdue > 1.5x overdue)
-3. **Upcoming dates:** Contacts with birthdays/anniversaries in the next 2 weeks get priority
-4. **Emotional context:** Notes with positive emotion tags or unresolved items
-5. **Active reminders:** Contacts with active (non-dismissed) reminders
-
-**Priority levels:**
-- **Urgent:** Close friends/family >2x overdue OR upcoming important date within 7 days
-- **High:** Tier 1-2 contacts >1.5x overdue OR upcoming date within 14 days
-- **Medium:** Any contact exceeding their threshold
-- **Low:** Approaching threshold but not yet overdue
-
-### Step 5: Create Reminders from Recommendations
-
-For each prioritized recommendation, offer to create a reminder:
-
-**Reminder creation workflow:**
-1. Present the outreach suggestion to the user
-2. Ask if they want a reminder set
-3. If yes, use `reminder_create` with:
-   - `contact_id`: The stale contact's ID
-   - `message`: The outreach suggestion text
-   - `type`: "one_time" (unless the user wants recurring)
-   - `due_at`: User-specified time or default to "tomorrow at 10am"
-
-**Example reminder message:**
 ```
-"Reach out to Alice — her birthday is Feb 15. Consider sending a message early and mentioning her new pottery hobby."
+Reconnection suggestions (by Dunbar urgency):
+
+1. Alice Chen (tier 5 — support clique, urgency 7.2)
+   Last contact: 28 days ago (14-day cadence). Birthday in 3 days.
+   Suggestion: Send a birthday message early. Mention her new job she started last month.
+
+2. Bob Martinez (tier 15 — sympathy group, urgency 3.1)
+   Last contact: 45 days ago (21-day cadence). Pending gift idea.
+   Suggestion: Plan to give the gift and catch up. He was working on a marathon — ask how it went.
+
+3. Carol Lee (tier 50 — good friend, urgency 1.8)
+   Last contact: 60 days ago (45-day cadence). No upcoming dates.
+   Suggestion: Simple check-in. You mentioned wanting to catch up over dinner.
 ```
 
 ## Integration with Existing Tools
 
-This skill relies on:
-- **`contact_search`**: Find all contacts
+- **`contacts_overdue()`**: Primary data source — returns tier-enriched overdue list
 - **`interaction_list`**: Get last interaction per contact
-- **`fact_list`**: Get relationship tier and shared interests
+- **`fact_list`**: Get relationship tier overrides and shared interests
 - **`note_list`**: Gather recent notes with emotion context
 - **`upcoming_dates`**: Check for birthdays/anniversaries
 - **`gift_list`**: Check for pending gift ideas
 - **`reminder_list`**: Check for active reminders
 - **`reminder_create`**: Create reminders for reconnection tasks
+- **`dunbar_tier_set`**: Set or clear manual tier overrides when computed tier seems wrong
 
-## Progressive Disclosure Structure
+## Edge Cases
 
-### Quick Start (TL;DR)
-Run a staleness check and get a prioritized list of contacts to reconnect with, along with context-aware outreach suggestions.
+- **Fewer than 3 overdue contacts**: Suggest only those that qualify; don't pad.
+- **No overdue contacts**: Return empty list with message "All relationships up to date."
+- **Contact with no interactions**: Treat as maximally overdue — inner-tier no-contact is urgent.
+- **Dunbar tiers still calibrating** (few interactions in system): Note this in suggestions.
+  Tier assignments become more accurate as more interactions are logged.
+- **Manual tier override**: Note `[manually assigned]` next to the tier label.
 
-### Standard Workflow
-1. Identify stale contacts using tier-based thresholds
-2. Gather context (last interaction, notes, dates, interests)
-3. Generate personalized outreach suggestions
-4. Prioritize by tier, staleness, and upcoming events
-5. Create reminders for selected recommendations
+## Advanced Usage
 
-### Advanced Usage
-- **Custom thresholds:** Override default staleness thresholds per contact using a "staleness_days" fact
-- **Batch processing:** Process all stale contacts at once vs. reviewing one by one
-- **Recurring check-ins:** Set up a recurring reminder to run this skill weekly
-- **Integration with calendar:** Cross-reference with calendar events to suggest in-person meetups
-
-## Example Usage
-
-**User:** "Who should I reach out to this week?"
-
-**Agent workflow:**
-1. Run staleness detection across all contacts
-2. Find 3 stale contacts:
-   - Alice (close friend, 20 days since last contact, birthday Feb 15)
-   - Bob (professional, 65 days, no upcoming dates)
-   - Carol (friend, 35 days, shared interest in hiking)
-3. Generate suggestions:
-   - **Urgent:** "Alice — her birthday is in 5 days. Send a message early and mention her pottery hobby."
-   - **Medium:** "Carol — it's been over a month. Share that hiking trail article you saved."
-   - **Low:** "Bob — reconnect after 2+ months. Ask about his new role."
-4. Present to user in priority order
-5. Offer to create reminders for each
-
-**User:** "Yes, create reminders for Alice and Carol."
-
-**Agent actions:**
-- `reminder_create(alice_id, "Reach out to Alice...", "one_time", due_at="tomorrow 10am")`
-- `reminder_create(carol_id, "Reach out to Carol...", "one_time", due_at="this weekend")`
-
-## Notes
-
-- This is a **proactive** skill — meant to prevent relationships from becoming stale, not just react when they already are
-- Staleness thresholds are guidelines, not hard rules. The user can override via facts.
-- Outreach suggestions should be **specific and actionable**, not generic "check in with X"
-- Always respect the user's social energy — offer to batch or spread out reconnections
-- Update interaction log when the user follows through on an outreach suggestion
-
-## Future Enhancements
-
-- Machine learning to learn optimal staleness thresholds per contact based on historical patterns
-- Integration with email/telegram modules to draft outreach messages directly
-- Social network analysis to identify "connector" contacts who bridge friend groups
-- Seasonal patterns (e.g., holiday check-ins, summer vacation planning)
+- **Custom cadence**: Set `stay_in_touch_days` on a contact to override their tier cadence.
+  Example: A tier-150 contact you want to keep closer — set `stay_in_touch_days=30`.
+- **Manual tier override**: Use `dunbar_tier_set(contact_id, tier)` when computed tier
+  doesn't reflect the actual relationship importance.
+- **Tier 1500 contacts**: Never suggested by default. Set `stay_in_touch_days` if you want
+  reminders for someone in the recognizable tier.

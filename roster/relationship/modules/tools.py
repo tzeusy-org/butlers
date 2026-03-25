@@ -21,6 +21,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     from butlers.tools.relationship import contact_info as _ci
     from butlers.tools.relationship import contacts as _contacts
     from butlers.tools.relationship import dates as _dates
+    from butlers.tools.relationship import dunbar as _dunbar
     from butlers.tools.relationship import facts as _facts
     from butlers.tools.relationship import feed as _feed
     from butlers.tools.relationship import gifts as _gifts
@@ -765,6 +766,30 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         4. No match -> confidence: "none"
         """
         return await _resolve.contact_resolve(module._get_pool(), name, context)
+
+    # =================================================================
+    # Dunbar tier tools
+    # =================================================================
+
+    @mcp.tool()
+    async def dunbar_tier_set(
+        contact_id: uuid.UUID,
+        tier: int | None,
+    ) -> dict[str, Any]:
+        """Set or clear a manual Dunbar tier override for a contact.
+
+        Dunbar tiers represent concentric social circles based on interaction
+        patterns. Valid tier values: 5 (support clique), 15 (sympathy group),
+        50 (good friends), 150 (meaningful contacts), 500 (acquaintances),
+        1500 (recognizable).
+
+        Pass tier=None to clear the override and revert to rank-based
+        tier assignment from interaction history.
+
+        The override is stored as a permanent SPO fact and takes precedence
+        over the computed rank-based tier.
+        """
+        return await _dunbar.dunbar_tier_set(module._get_pool(), contact_id, tier)
 
     # =================================================================
     # Stay-in-Touch tools
