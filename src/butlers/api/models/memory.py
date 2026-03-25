@@ -125,6 +125,8 @@ class EntitySummary(BaseModel):
     source_scope: str | None = None
     created_at: str
     updated_at: str
+    dunbar_tier: int | None = None
+    dunbar_score: float | None = None
 
 
 class EntityInfoEntry(BaseModel):

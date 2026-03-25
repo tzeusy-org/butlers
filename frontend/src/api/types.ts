@@ -1283,6 +1283,8 @@ export interface EntitySummary {
   source_scope: string | null;
   created_at: string;
   updated_at: string;
+  dunbar_tier: number | null;
+  dunbar_score: number | null;
 }
 
 /** Response for POST /memory/entities/{id}/merge. */

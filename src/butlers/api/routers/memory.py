@@ -664,21 +664,77 @@ async def list_activity(
 # GET /api/memory/entities
 # ---------------------------------------------------------------------------
 
-# Role priority for entity list ordering. Lower rank = higher in the list.
+# Role priority for entity list ordering. Lower value = higher in the list.
 # Add new roles here to extend the ranking; unlisted roles fall through to ELSE.
 _ENTITY_ROLE_RANK: dict[str, int] = {
     "owner": 0,
     "family": 1,
 }
 
-_ENTITY_ROLE_ORDER_SQL = (
-    "CASE "
-    + " ".join(
-        f"WHEN '{role}' = ANY(e.roles) THEN {rank}"
-        for role, rank in sorted(_ENTITY_ROLE_RANK.items(), key=lambda x: x[1])
+# Sentinel rank for entities with none of the prioritised roles.
+_ENTITY_ROLE_RANK_DEFAULT: int = 99
+
+
+def _entity_role_priority(roles: list[str]) -> int:
+    """Return the lowest (most-prioritised) role rank for a list of entity roles."""
+    if not roles:
+        return _ENTITY_ROLE_RANK_DEFAULT
+    return min(_ENTITY_ROLE_RANK.get(r, _ENTITY_ROLE_RANK_DEFAULT) for r in roles)
+
+
+def _sort_entity_summaries(items: list[EntitySummary]) -> list[EntitySummary]:
+    """Sort EntitySummary items by role priority + Dunbar score, then non-person.
+
+    Sort order (stable, ascending by key tuple):
+      1. is_non_person: 0 for person entities, 1 for all others
+         — person-entities always sort before non-person entities
+      2. role_priority: lower value = higher priority (owner=0, family=1, default=99)
+         — both "no roles" and "unranked roles" map to the same default rank (99);
+           they are further ordered by Dunbar score and name (keys 3 & 4)
+      3. dunbar_score: descending (negated so lower key = higher score)
+         — None treated as 0.0 (no interactions yet)
+      4. canonical_name: ascending tiebreaker
+    """
+    return sorted(
+        items,
+        key=lambda e: (
+            0 if e.entity_type == "person" else 1,
+            _entity_role_priority(e.roles) if e.entity_type == "person" else 0,
+            -(e.dunbar_score or 0.0) if e.entity_type == "person" else 0.0,
+            e.canonical_name,
+        ),
     )
-    + " ELSE 99 END"
-)
+
+
+async def _compute_entity_dunbar_map(
+    db: DatabaseManager,
+) -> dict[str, dict[str, float | int | None]]:
+    """Return a mapping of entity_id → {dunbar_tier, dunbar_score} for all scored contacts.
+
+    Uses the relationship butler's pool to compute decay scores.  Gracefully
+    returns an empty dict if the relationship pool is unavailable or the scoring
+    query fails (e.g. relationship schema not configured in this deployment).
+    """
+    from butlers.tools.relationship.dunbar import compute_tier_ranking
+
+    try:
+        rel_pool = db.pool("relationship")
+    except KeyError:
+        logger.debug("Relationship pool not available; skipping Dunbar enrichment")
+        return {}
+    try:
+        ranked = await compute_tier_ranking(rel_pool)
+    except Exception:
+        logger.debug("Dunbar scoring failed; skipping enrichment", exc_info=True)
+        return {}
+
+    return {
+        str(entry["entity_id"]): {
+            "dunbar_tier": entry["dunbar_tier"],
+            "dunbar_score": entry["dunbar_score"],
+        }
+        for entry in ranked
+    }
 
 
 @router.get("/entities", response_model=PaginatedResponse[EntitySummary])
@@ -693,7 +749,12 @@ async def list_entities(
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[EntitySummary]:
-    """List entities from shared.entities with optional search and type filter."""
+    """List entities from shared.entities with optional search and type filter.
+
+    Sort order: person-entities first (by role priority, then Dunbar score
+    descending), followed by non-person entities (alphabetical).  Search
+    results preserve this same ordering.
+    """
     pool = _any_pool(db)
 
     conditions: list[str] = [
@@ -740,6 +801,8 @@ async def list_entities(
         or 0
     )
 
+    # Fetch all matching rows — sorting is done in Python after Dunbar enrichment
+    # so that role-priority + score ordering is consistent across pages.
     rows = await pool.fetch(
         f"SELECT e.id, e.canonical_name, e.entity_type, e.aliases,"
         f" e.created_at, e.updated_at,"
@@ -750,12 +813,8 @@ async def list_entities(
         f" COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified,"
         f" e.metadata->>'source_butler' AS source_butler,"
         f" e.metadata->>'source_scope' AS source_scope"
-        f" FROM shared.entities e{where}"
-        f" ORDER BY {_ENTITY_ROLE_ORDER_SQL} ASC, e.canonical_name ASC"
-        f" OFFSET ${idx} LIMIT ${idx + 1}",
+        f" FROM shared.entities e{where}",
         *args,
-        offset,
-        limit,
     )
 
     # Fact counts live in per-butler schemas — fan out across memory pools.
@@ -779,23 +838,36 @@ async def list_entities(
             for eid_str, cnt in pool_counts.items():
                 fact_counts[eid_str] = fact_counts.get(eid_str, 0) + cnt
 
-    data = [
-        EntitySummary(
-            id=str(r["id"]),
-            canonical_name=r["canonical_name"],
-            entity_type=r["entity_type"],
-            aliases=list(r["aliases"]) if r["aliases"] else [],
-            roles=list(r["linked_contact_roles"]) if r["linked_contact_roles"] else [],
-            fact_count=fact_counts.get(str(r["id"]), 0),
-            linked_contact_id=str(r["linked_contact_id"]) if r["linked_contact_id"] else None,
-            unidentified=r["unidentified"],
-            source_butler=r["source_butler"],
-            source_scope=r["source_scope"],
-            created_at=str(r["created_at"]),
-            updated_at=str(r["updated_at"]),
+    # Compute Dunbar scores for all person-entities via the relationship pool.
+    dunbar_map = await _compute_entity_dunbar_map(db)
+
+    all_items = []
+    for r in rows:
+        eid = str(r["id"])
+        entity_type_val = r["entity_type"]
+        dunbar_info = dunbar_map.get(eid) if entity_type_val == "person" else None
+        all_items.append(
+            EntitySummary(
+                id=eid,
+                canonical_name=r["canonical_name"],
+                entity_type=entity_type_val,
+                aliases=list(r["aliases"]) if r["aliases"] else [],
+                roles=list(r["linked_contact_roles"]) if r["linked_contact_roles"] else [],
+                fact_count=fact_counts.get(eid, 0),
+                linked_contact_id=str(r["linked_contact_id"]) if r["linked_contact_id"] else None,
+                unidentified=r["unidentified"],
+                source_butler=r["source_butler"],
+                source_scope=r["source_scope"],
+                created_at=str(r["created_at"]),
+                updated_at=str(r["updated_at"]),
+                dunbar_tier=dunbar_info["dunbar_tier"] if dunbar_info else None,
+                dunbar_score=dunbar_info["dunbar_score"] if dunbar_info else None,
+            )
         )
-        for r in rows
-    ]
+
+    # Sort by role priority + Dunbar score, then paginate in Python.
+    sorted_items = _sort_entity_summaries(all_items)
+    data = sorted_items[offset : offset + limit]
 
     return PaginatedResponse[EntitySummary](
         data=data,

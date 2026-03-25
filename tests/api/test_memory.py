@@ -1000,6 +1000,281 @@ class TestListEntities:
 
 
 # ---------------------------------------------------------------------------
+# Dunbar enrichment — pure-function and integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestEntityRolePriority:
+    """Unit tests for _entity_role_priority helper."""
+
+    def test_owner_role_has_priority_zero(self):
+        from butlers.api.routers.memory import _entity_role_priority
+
+        assert _entity_role_priority(["owner"]) == 0
+
+    def test_family_role_has_priority_one(self):
+        from butlers.api.routers.memory import _entity_role_priority
+
+        assert _entity_role_priority(["family"]) == 1
+
+    def test_unknown_role_gets_default(self):
+        from butlers.api.routers.memory import (
+            _ENTITY_ROLE_RANK_DEFAULT,
+            _entity_role_priority,
+        )
+
+        assert _entity_role_priority(["friend"]) == _ENTITY_ROLE_RANK_DEFAULT
+
+    def test_empty_roles_gets_default(self):
+        from butlers.api.routers.memory import (
+            _ENTITY_ROLE_RANK_DEFAULT,
+            _entity_role_priority,
+        )
+
+        assert _entity_role_priority([]) == _ENTITY_ROLE_RANK_DEFAULT
+
+    def test_mixed_roles_returns_min(self):
+        """When an entity has both owner and family, owner's lower priority wins."""
+        from butlers.api.routers.memory import _entity_role_priority
+
+        assert _entity_role_priority(["family", "owner"]) == 0
+
+
+class TestSortEntitySummaries:
+    """Unit tests for _sort_entity_summaries."""
+
+    def _make_summary(
+        self,
+        *,
+        id: str,
+        entity_type: str = "person",
+        canonical_name: str = "X",
+        roles: list[str] | None = None,
+        dunbar_tier: int | None = None,
+        dunbar_score: float | None = None,
+    ):
+        from butlers.api.models.memory import EntitySummary
+
+        return EntitySummary(
+            id=id,
+            canonical_name=canonical_name,
+            entity_type=entity_type,
+            roles=roles or [],
+            dunbar_tier=dunbar_tier,
+            dunbar_score=dunbar_score,
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+        )
+
+    def test_person_before_non_person(self):
+        from butlers.api.routers.memory import _sort_entity_summaries
+
+        org = self._make_summary(id="org", entity_type="organization", canonical_name="Acme")
+        person = self._make_summary(id="p1", entity_type="person", canonical_name="Alice")
+        result = _sort_entity_summaries([org, person])
+        assert result[0].id == "p1"
+        assert result[1].id == "org"
+
+    def test_owner_before_family(self):
+        from butlers.api.routers.memory import _sort_entity_summaries
+
+        family = self._make_summary(id="fam", roles=["family"], canonical_name="Bob")
+        owner = self._make_summary(id="own", roles=["owner"], canonical_name="Alice")
+        result = _sort_entity_summaries([family, owner])
+        assert result[0].id == "own"
+        assert result[1].id == "fam"
+
+    def test_higher_dunbar_score_sorts_first(self):
+        from butlers.api.routers.memory import _sort_entity_summaries
+
+        low = self._make_summary(id="low", dunbar_score=1.5, canonical_name="Alice")
+        high = self._make_summary(id="high", dunbar_score=8.3, canonical_name="Bob")
+        result = _sort_entity_summaries([low, high])
+        assert result[0].id == "high"
+        assert result[1].id == "low"
+
+    def test_none_dunbar_score_treated_as_zero(self):
+        from butlers.api.routers.memory import _sort_entity_summaries
+
+        no_score = self._make_summary(id="none", dunbar_score=None, canonical_name="Alice")
+        has_score = self._make_summary(id="has", dunbar_score=2.0, canonical_name="Bob")
+        result = _sort_entity_summaries([no_score, has_score])
+        assert result[0].id == "has"
+        assert result[1].id == "none"
+
+    def test_non_person_sorted_by_name(self):
+        from butlers.api.routers.memory import _sort_entity_summaries
+
+        org_b = self._make_summary(id="org_b", entity_type="organization", canonical_name="Zebra")
+        org_a = self._make_summary(id="org_a", entity_type="organization", canonical_name="Alpha")
+        result = _sort_entity_summaries([org_b, org_a])
+        assert result[0].id == "org_a"
+        assert result[1].id == "org_b"
+
+    def test_name_tiebreaker_for_equal_score(self):
+        from butlers.api.routers.memory import _sort_entity_summaries
+
+        b = self._make_summary(id="b", dunbar_score=5.0, canonical_name="Zoe")
+        a = self._make_summary(id="a", dunbar_score=5.0, canonical_name="Alice")
+        result = _sort_entity_summaries([b, a])
+        assert result[0].id == "a"
+        assert result[1].id == "b"
+
+
+class TestListEntitiesDunbar:
+    """Integration tests for Dunbar enrichment in GET /api/memory/entities."""
+
+    async def test_dunbar_fields_present_in_response(self, app):
+        """Entity list response should include dunbar_tier and dunbar_score fields."""
+        row = _make_entity_list_row(canonical_name="Bob", entity_type="person")
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        # Fields must exist (None when relationship pool not available)
+        assert "dunbar_tier" in data[0]
+        assert "dunbar_score" in data[0]
+        assert data[0]["dunbar_tier"] is None
+        assert data[0]["dunbar_score"] is None
+
+    async def test_dunbar_fields_populated_when_relationship_pool_present(self, app):
+        """When a relationship pool is present, dunbar scores are populated for person entities."""
+        import uuid
+
+        entity_uuid = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        row = _make_entity_list_row(
+            id=str(entity_uuid),
+            canonical_name="Alice",
+            entity_type="person",
+        )
+
+        general_pool = _make_pool(fetch_rows=[row], fetchval_result=1)
+
+        # Relationship pool: compute_tier_ranking calls pool.fetch() twice —
+        # once for compute_dunbar_scores (returns scored contacts) and once for
+        # _fetch_overrides (returns tier-override facts, empty here).
+        contact_uuid = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        dunbar_row = {
+            "contact_id": contact_uuid,
+            "entity_id": entity_uuid,
+            "score": 4.5,
+            "last_interaction_at": None,
+        }
+        rel_pool = _make_pool(fetch_side_effect=[[dunbar_row], []])
+
+        pools_by_name = {"general": general_pool, "relationship": rel_pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+
+        def _pool_lookup(name: str):
+            if name not in pools_by_name:
+                raise KeyError(f"No pool for butler: {name}")
+            return pools_by_name[name]
+
+        mock_db.pool.side_effect = _pool_lookup
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["dunbar_score"] == 4.5
+        assert data[0]["dunbar_tier"] == 5  # rank 1 → tier 5
+
+    async def test_non_person_entity_dunbar_fields_are_null(self, app):
+        """Non-person entities should always have null dunbar fields."""
+        import uuid
+
+        entity_uuid = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+        org_row = _make_entity_list_row(
+            id=str(entity_uuid),
+            canonical_name="Acme Corp",
+            entity_type="organization",
+        )
+
+        # Relationship pool is present — but org should still get null dunbar fields.
+        # compute_tier_ranking calls pool.fetch() twice: scored contacts + overrides.
+        contact_uuid = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+        dunbar_row = {
+            "contact_id": contact_uuid,
+            "entity_id": uuid.UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+            "score": 3.0,
+            "last_interaction_at": None,
+        }
+        general_pool = _make_pool(fetch_rows=[org_row], fetchval_result=1)
+        rel_pool = _make_pool(fetch_side_effect=[[dunbar_row], []])
+
+        pools_by_name = {"general": general_pool, "relationship": rel_pool}
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = ["general"]
+
+        def _pool_lookup(name: str):
+            if name not in pools_by_name:
+                raise KeyError(f"No pool for butler: {name}")
+            return pools_by_name[name]
+
+        mock_db.pool.side_effect = _pool_lookup
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["entity_type"] == "organization"
+        assert data[0]["dunbar_tier"] is None
+        assert data[0]["dunbar_score"] is None
+
+    async def test_relationship_pool_unavailable_gracefully_degrades(self, app):
+        """list_entities works when relationship pool is not configured."""
+        row = _make_entity_list_row(canonical_name="Carol", entity_type="person")
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data[0]["dunbar_tier"] is None
+        assert data[0]["dunbar_score"] is None
+
+    async def test_person_entities_sort_before_non_person(self, app):
+        """Person entities must appear before non-person entities in the list."""
+        person_row = _make_entity_list_row(
+            id="p1", canonical_name="Alice Person", entity_type="person"
+        )
+        org_row = _make_entity_list_row(
+            id="o1", canonical_name="Acme Org", entity_type="organization"
+        )
+        _app_with_mock_db(app, fetch_rows=[org_row, person_row], fetchval_result=2)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/entities")
+
+        data = resp.json()["data"]
+        types = [e["entity_type"] for e in data]
+        person_indices = [i for i, t in enumerate(types) if t == "person"]
+        org_indices = [i for i, t in enumerate(types) if t != "person"]
+        assert all(pi < oi for pi in person_indices for oi in org_indices), (
+            f"Person entities not sorted before non-person: {types}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/memory/entities/{entity_id}
 # ---------------------------------------------------------------------------
 
