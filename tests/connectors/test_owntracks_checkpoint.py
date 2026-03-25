@@ -446,3 +446,92 @@ class TestExtractEventType:
         """extract_event_type coerces non-string _type to string."""
         result = extract_event_type({"_type": 42})
         assert result == "42"
+
+    def test_returns_unknown_for_null_type(self) -> None:
+        """extract_event_type returns 'unknown' when _type is explicitly null."""
+        assert extract_event_type({"_type": None}) == "unknown"
+
+    def test_returns_unknown_for_empty_string_type(self) -> None:
+        """extract_event_type returns 'unknown' when _type is an empty string."""
+        assert extract_event_type({"_type": ""}) == "unknown"
+
+    def test_returns_unknown_for_whitespace_type(self) -> None:
+        """extract_event_type returns 'unknown' when _type is whitespace-only."""
+        assert extract_event_type({"_type": "   "}) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Additional tests for bug fixes (from review)
+# ---------------------------------------------------------------------------
+
+
+class TestFromJsonAdditional:
+    """Additional from_json() tests covering edge cases found in review."""
+
+    def test_from_json_rejects_non_object_array(self) -> None:
+        """from_json() raises ValueError when JSON is an array, not an object."""
+        with pytest.raises(ValueError, match="must be an object"):
+            OwnTracksCheckpoint.from_json('[{"last_tst": 1}]')
+
+    def test_from_json_rejects_non_object_integer(self) -> None:
+        """from_json() raises ValueError when JSON is a plain integer."""
+        with pytest.raises(ValueError, match="must be an object"):
+            OwnTracksCheckpoint.from_json("123")
+
+    def test_from_json_rejects_bool_last_tst(self) -> None:
+        """from_json() raises ValueError when last_tst is a boolean."""
+        with pytest.raises(ValueError, match="must be int or null"):
+            OwnTracksCheckpoint.from_json('{"last_tst": true}')
+
+
+class TestExtractTstAdditional:
+    """Additional extract_tst() tests for non-finite float handling."""
+
+    def test_returns_none_for_nan(self) -> None:
+        """extract_tst returns None for NaN (not a valid timestamp)."""
+        assert extract_tst({"tst": float("nan")}) is None
+
+    def test_returns_none_for_infinity(self) -> None:
+        """extract_tst returns None for +Infinity."""
+        assert extract_tst({"tst": float("inf")}) is None
+
+    def test_returns_none_for_negative_infinity(self) -> None:
+        """extract_tst returns None for -Infinity."""
+        assert extract_tst({"tst": float("-inf")}) is None
+
+    def test_returns_none_for_bool_tst(self) -> None:
+        """extract_tst returns None when tst is a boolean (bool is subclass of int)."""
+        assert extract_tst({"tst": True}) is None
+        assert extract_tst({"tst": False}) is None
+
+
+class TestBuildIdempotencyKeyTransitionSuffix:
+    """Tests for build_idempotency_key() with transition event_suffix."""
+
+    def test_transition_enter_key(self) -> None:
+        """Transition enter event includes 'enter' discriminator."""
+        key = build_idempotency_key("ep", 100, "transition", "enter")
+        assert key == "owntracks:ep:100:transition:enter"
+
+    def test_transition_leave_key(self) -> None:
+        """Transition leave event includes 'leave' discriminator."""
+        key = build_idempotency_key("ep", 100, "transition", "leave")
+        assert key == "owntracks:ep:100:transition:leave"
+
+    def test_enter_and_leave_at_same_tst_differ(self) -> None:
+        """Enter and leave transitions at the same tst produce different keys."""
+        key_enter = build_idempotency_key("ep", 100, "transition", "enter")
+        key_leave = build_idempotency_key("ep", 100, "transition", "leave")
+        assert key_enter != key_leave
+
+    def test_no_suffix_location_event(self) -> None:
+        """Location events (no suffix) produce the standard 4-component key."""
+        key = build_idempotency_key("ep", 100, "location")
+        assert key == "owntracks:ep:100:location"
+        assert key.count(":") == 3
+
+    def test_no_suffix_when_none(self) -> None:
+        """Passing event_suffix=None produces the same key as omitting it."""
+        key1 = build_idempotency_key("ep", 100, "transition")
+        key2 = build_idempotency_key("ep", 100, "transition", None)
+        assert key1 == key2

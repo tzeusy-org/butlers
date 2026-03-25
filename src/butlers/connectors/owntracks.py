@@ -49,6 +49,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 import os
 import signal
 import time
@@ -142,11 +143,18 @@ class OwnTracksCheckpoint:
         except json.JSONDecodeError as exc:
             raise ValueError(f"OwnTracks checkpoint is not valid JSON: {raw!r}") from exc
 
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"OwnTracks checkpoint JSON must be an object, got {type(data).__name__}: {raw!r}"
+            )
+
         if "last_tst" not in data:
             raise ValueError(f"OwnTracks checkpoint JSON missing 'last_tst' key: {raw!r}")
 
         last_tst = data["last_tst"]
-        if last_tst is not None and not isinstance(last_tst, int):
+        # bool is a subclass of int in Python; reject it explicitly to avoid
+        # silently accepting true/false as 1/0 checkpoint values.
+        if last_tst is not None and (isinstance(last_tst, bool) or not isinstance(last_tst, int)):
             got = type(last_tst).__name__
             raise ValueError(f"OwnTracks checkpoint 'last_tst' must be int or null, got {got}")
 
@@ -172,10 +180,14 @@ def build_idempotency_key(
     endpoint_identity: str,
     tst: int,
     event_type: str,
+    event_suffix: str | None = None,
 ) -> str:
     """Construct the canonical idempotency key for an OwnTracks event.
 
-    Format: ``owntracks:<endpoint_identity>:<tst>:<event_type>``
+    Format: ``owntracks:<endpoint_identity>:<tst>:<event_type>[:<event_suffix>]``
+
+    For transition events, pass ``event_suffix="enter"`` or ``event_suffix="leave"``
+    to disambiguate enter vs leave transitions that share the same ``tst``.
 
     Args:
         endpoint_identity: Connector endpoint identifier, typically
@@ -185,17 +197,27 @@ def build_idempotency_key(
             of the incoming payload.
         event_type: OwnTracks ``_type`` field value (e.g. ``"location"``,
             ``"transition"``, ``"waypoint"``).
+        event_suffix: Optional discriminator appended after ``event_type``.
+            Use for transition events to include the enter/leave direction
+            (e.g. ``event_suffix="enter"`` → ``...:transition:enter``).
 
     Returns:
-        Idempotency key string in ``owntracks:<endpoint_identity>:<tst>:<event_type>``
-        format.
+        Idempotency key string in
+        ``owntracks:<endpoint_identity>:<tst>:<event_type>`` format, or
+        ``owntracks:<endpoint_identity>:<tst>:<event_type>:<event_suffix>``
+        when ``event_suffix`` is provided.
 
     Example::
 
         >>> build_idempotency_key("owntracks:alice:phone", 1711360400, "location")
         'owntracks:owntracks:alice:phone:1711360400:location'
+        >>> build_idempotency_key("owntracks:alice:phone", 1711360400, "transition", "enter")
+        'owntracks:owntracks:alice:phone:1711360400:transition:enter'
     """
-    return f"owntracks:{endpoint_identity}:{tst}:{event_type}"
+    base = f"owntracks:{endpoint_identity}:{tst}:{event_type}"
+    if event_suffix:
+        return f"{base}:{event_suffix}"
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -323,13 +345,17 @@ def extract_tst(payload: dict[str, Any]) -> int | None:
         payload: Parsed OwnTracks JSON payload dictionary.
 
     Returns:
-        Integer Unix timestamp if ``tst`` is present and is an integer,
-        ``None`` otherwise.
+        Integer Unix timestamp if ``tst`` is present and is a finite number,
+        ``None`` otherwise (including for NaN, Infinity, non-numeric types).
     """
     tst = payload.get("tst")
+    if isinstance(tst, bool):
+        return None
     if isinstance(tst, int):
         return tst
     if isinstance(tst, float):
+        if not math.isfinite(tst):
+            return None
         return int(tst)
     return None
 
@@ -341,9 +367,14 @@ def extract_event_type(payload: dict[str, Any]) -> str:
         payload: Parsed OwnTracks JSON payload dictionary.
 
     Returns:
-        The ``_type`` string, or ``"unknown"`` if absent.
+        The ``_type`` string, or ``"unknown"`` if absent, null, or empty/whitespace.
     """
-    return str(payload.get("_type", "unknown"))
+    event_type = payload.get("_type")
+    if event_type is None:
+        return "unknown"
+    if isinstance(event_type, str) and not event_type.strip():
+        return "unknown"
+    return str(event_type)
 
 
 # ---------------------------------------------------------------------------
