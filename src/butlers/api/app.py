@@ -68,6 +68,7 @@ from butlers.api.routers.sessions import (
 from butlers.api.routers.sse import router as sse_router
 from butlers.api.routers.state import router as state_router
 from butlers.api.routers.timeline import router as timeline_router
+from butlers.api.routers.whatsapp import router as whatsapp_router
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,7 @@ def create_app(
     app.include_router(butler_model_router)
     app.include_router(healing_router)
     app.include_router(provider_settings_router)
+    app.include_router(whatsapp_router)
 
     # --- Auto-discovered Butler Routers ---
     # Mount after static/core routers so dynamic routes cannot shadow

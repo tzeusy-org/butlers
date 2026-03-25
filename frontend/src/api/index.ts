@@ -462,6 +462,23 @@ export type {
 } from "./types.ts";
 
 export {
+  disconnectWhatsApp,
+  getWhatsAppHealth,
+  getWhatsAppStatus,
+  pollWhatsAppPairing,
+  startWhatsAppPairing,
+} from "./client.ts";
+
+export type {
+  WhatsAppDisconnectResponse,
+  WhatsAppHealthResponse,
+  WhatsAppPairPollResponse,
+  WhatsAppPairStartResponse,
+  WhatsAppState,
+  WhatsAppStatusResponse,
+} from "./types.ts";
+
+export {
   getEducationCrossTopicAnalytics,
   getEducationFlows,
   getEducationMasterySummary,

@@ -2380,3 +2380,59 @@ export interface ProviderConnectivityResult {
   error: string | null;
   latency_ms: number;
 }
+
+// ---------------------------------------------------------------------------
+// WhatsApp connector types
+// ---------------------------------------------------------------------------
+
+/** Connection/session state for the WhatsApp account. */
+export type WhatsAppState =
+  | "connected"
+  | "disconnected"
+  | "pair_required"
+  | "not_configured";
+
+/** Status of an ongoing QR pairing attempt. */
+export type WhatsAppPairStatus = "waiting" | "paired" | "expired";
+
+/** Response from GET /api/connectors/whatsapp/status */
+export interface WhatsAppStatusResponse {
+  state: WhatsAppState;
+  /** Masked phone number, e.g. '+1 *** *** 7890', or null if not connected. */
+  phone: string | null;
+  /** ISO datetime when the account was first paired, or null. */
+  paired_at: string | null;
+  /** ISO datetime of the last successful sync, or null. */
+  last_sync_at: string | null;
+  /** Whether the Go bridge subprocess is currently running. */
+  bridge_running: boolean;
+}
+
+/** Response from POST /api/connectors/whatsapp/pair/start */
+export interface WhatsAppPairStartResponse {
+  /** Base64-encoded PNG data URI: 'data:image/png;base64,...' */
+  qr_data_uri: string;
+  /** ISO datetime when this QR code expires. */
+  expires_at: string;
+}
+
+/** Response from GET /api/connectors/whatsapp/pair/poll */
+export interface WhatsAppPairPollResponse {
+  status: WhatsAppPairStatus;
+  /** Phone number when status === 'paired', otherwise null. */
+  phone: string | null;
+}
+
+/** Response from GET /api/connectors/whatsapp/health */
+export interface WhatsAppHealthResponse {
+  state: WhatsAppState;
+  bridge_running: boolean;
+  uptime_seconds: number | null;
+  last_event_at: string | null;
+}
+
+/** Response from POST /api/connectors/whatsapp/disconnect */
+export interface WhatsAppDisconnectResponse {
+  success: boolean;
+  message: string;
+}

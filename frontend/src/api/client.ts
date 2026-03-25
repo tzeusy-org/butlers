@@ -150,6 +150,11 @@ import type {
   ProviderConfigCreate,
   ProviderConfigUpdate,
   ProviderConnectivityResult,
+  WhatsAppDisconnectResponse,
+  WhatsAppHealthResponse,
+  WhatsAppPairPollResponse,
+  WhatsAppPairStartResponse,
+  WhatsAppStatusResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2659,4 +2664,37 @@ export function testProviderConnectivity(
     `/settings/providers/${encodeURIComponent(providerType)}/test-connectivity`,
     { method: "POST" },
   );
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp connector API
+// ---------------------------------------------------------------------------
+
+/** GET /api/connectors/whatsapp/status — current connection state */
+export function getWhatsAppStatus(): Promise<WhatsAppStatusResponse> {
+  return apiFetch<WhatsAppStatusResponse>("/connectors/whatsapp/status");
+}
+
+/** POST /api/connectors/whatsapp/pair/start — initiate QR pairing */
+export function startWhatsAppPairing(): Promise<WhatsAppPairStartResponse> {
+  return apiFetch<WhatsAppPairStartResponse>("/connectors/whatsapp/pair/start", {
+    method: "POST",
+  });
+}
+
+/** GET /api/connectors/whatsapp/pair/poll — poll pairing progress */
+export function pollWhatsAppPairing(): Promise<WhatsAppPairPollResponse> {
+  return apiFetch<WhatsAppPairPollResponse>("/connectors/whatsapp/pair/poll");
+}
+
+/** POST /api/connectors/whatsapp/disconnect — gracefully disconnect */
+export function disconnectWhatsApp(): Promise<WhatsAppDisconnectResponse> {
+  return apiFetch<WhatsAppDisconnectResponse>("/connectors/whatsapp/disconnect", {
+    method: "POST",
+  });
+}
+
+/** GET /api/connectors/whatsapp/health — session health for badge */
+export function getWhatsAppHealth(): Promise<WhatsAppHealthResponse> {
+  return apiFetch<WhatsAppHealthResponse>("/connectors/whatsapp/health");
 }

@@ -15,6 +15,7 @@ import type {
 } from "@/api/index.ts";
 import { getGoogleOAuthStartUrl } from "@/api/index.ts";
 import { ModelCatalogCard } from "@/components/settings/ModelCatalogCard.tsx";
+import { WhatsAppSetupCard } from "@/components/settings/WhatsAppSetupCard.tsx";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1210,6 +1211,8 @@ export default function SettingsPage() {
       <CLIAuthCard />
 
       <GoogleAccountsSection />
+
+      <WhatsAppSetupCard />
 
       <Card>
         <CardHeader>
