@@ -65,6 +65,7 @@ from butlers.api.routers.sessions import (
 from butlers.api.routers.sessions import (
     router as sessions_router,
 )
+from butlers.api.routers.spotify import router as spotify_router
 from butlers.api.routers.sse import router as sse_router
 from butlers.api.routers.state import router as state_router
 from butlers.api.routers.timeline import router as timeline_router
@@ -230,6 +231,7 @@ def create_app(
     app.include_router(butler_model_router)
     app.include_router(healing_router)
     app.include_router(provider_settings_router)
+    app.include_router(spotify_router)
     app.include_router(whatsapp_router)
 
     # --- Auto-discovered Butler Routers ---
