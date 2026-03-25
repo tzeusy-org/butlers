@@ -462,40 +462,53 @@ class TestSpotifyConnectorConstants:
 
 
 class TestSpotifyConnectorAdaptivePolling:
-    """Test adaptive polling interval logic."""
+    """Test adaptive polling interval logic via the actual connector methods."""
 
-    def test_poll_interval_resets_to_active_on_playback(
-        self, config: SpotifyConnectorConfig
+    @pytest.mark.asyncio
+    async def test_poll_interval_resets_to_active_on_playback(
+        self, config: SpotifyConnectorConfig, now: datetime
     ) -> None:
         connector = SpotifyConnector(config=config)
-        # Simulate idle backoff
         connector._current_poll_interval_s = 240.0
         connector._endpoint_identity = "spotify:alice"
         connector._spotify_user_id = "alice"
 
-        # Simulate active playback resets interval
-        connector._current_poll_interval_s = config.poll_active_s
-        assert connector._current_poll_interval_s == 60
+        payload = {
+            "is_playing": True,
+            "item": {
+                "id": "track1",
+                "name": "Song A",
+                "type": "track",
+                "artists": [{"name": "Artist"}],
+                "album": {"name": "Album"},
+                "duration_ms": 180000,
+            },
+            "context": None,
+            "timestamp": int(now.timestamp() * 1000),
+            "device": None,
+        }
+        item = payload["item"]
 
-    def test_poll_interval_increases_toward_idle_max(self, config: SpotifyConnectorConfig) -> None:
-        from butlers.connectors.spotify import _IDLE_BACKOFF_MULTIPLIER
+        with patch.object(connector, "_submit_envelope", new_callable=AsyncMock):
+            await connector._handle_active_playback(payload, item, now, now.isoformat())
 
+        assert connector._current_poll_interval_s == config.poll_active_s
+
+    @pytest.mark.asyncio
+    async def test_poll_interval_increases_toward_idle_max(
+        self, config: SpotifyConnectorConfig, now: datetime
+    ) -> None:
         connector = SpotifyConnector(config=config)
         connector._current_poll_interval_s = float(config.poll_active_s)
+        connector._endpoint_identity = "spotify:alice"
 
-        # Simulate backoff
-        connector._current_poll_interval_s = min(
-            connector._current_poll_interval_s * _IDLE_BACKOFF_MULTIPLIER,
-            config.poll_idle_s,
-        )
-        assert connector._current_poll_interval_s == 120.0
+        # First no-playback call: active → draining; interval steps up
+        await connector._handle_no_playback(now, now.isoformat())
+        assert connector._current_poll_interval_s > config.poll_active_s
 
-        # Multiple iterations converge to idle max
-        for _ in range(10):
-            connector._current_poll_interval_s = min(
-                connector._current_poll_interval_s * _IDLE_BACKOFF_MULTIPLIER,
-                config.poll_idle_s,
-            )
+        # Repeated no-playback calls converge to idle max
+        for _ in range(20):
+            await connector._handle_no_playback(now, now.isoformat())
         assert connector._current_poll_interval_s == config.poll_idle_s
 
 
@@ -534,6 +547,26 @@ class TestSpotifyConnectorCheckpoint:
         )
         connector._endpoint_identity = "spotify:alice"
         connector._last_recently_played_cursor = None
+
+        with patch("butlers.connectors.spotify.save_cursor", new_callable=AsyncMock) as mock_save:
+            await connector._save_checkpoint()
+            mock_save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_save_checkpoint_unchanged_cursor_is_noop(
+        self, config: SpotifyConnectorConfig
+    ) -> None:
+        """Checkpoint save is skipped when the cursor hasn't changed."""
+        mock_pool = MagicMock()
+        mock_cursor_pool = MagicMock()
+        connector = SpotifyConnector(
+            config=config,
+            db_pool=mock_pool,
+            cursor_pool=mock_cursor_pool,
+        )
+        connector._endpoint_identity = "spotify:alice"
+        connector._last_recently_played_cursor = "1700000000000"
+        connector._last_checkpoint_cursor = "1700000000000"  # same as current
 
         with patch("butlers.connectors.spotify.save_cursor", new_callable=AsyncMock) as mock_save:
             await connector._save_checkpoint()

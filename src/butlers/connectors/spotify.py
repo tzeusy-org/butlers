@@ -607,44 +607,49 @@ class SpotifyConnector:
         self._http_client = httpx.AsyncClient(timeout=30.0)
         self._running = True
 
-        # Set up signal handlers
-        loop = asyncio.get_event_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, self._handle_signal)
-
-        # Phase 1: Resolve credentials
-        await self._resolve_credentials()
-
-        # Phase 2: Resolve endpoint identity via GET /me
-        await self._resolve_identity()
-
-        # Phase 3: Post-identity initialization
-        self._endpoint_identity_ready()
-
-        # Phase 4: Load checkpoint
-        await self._load_checkpoint()
-
-        # Phase 5: Wait for Switchboard readiness
         try:
-            await wait_for_switchboard_ready(self._config.switchboard_mcp_url)
-        except TimeoutError:
-            logger.warning("SpotifyConnector: Switchboard readiness probe timed out; proceeding.")
+            # Set up signal handlers
+            try:
+                loop = asyncio.get_running_loop()
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    loop.add_signal_handler(sig, self._handle_signal)
+            except (NotImplementedError, OSError):
+                logger.debug("SpotifyConnector: signal handlers not supported on this platform")
 
-        # Phase 6: Start health server
-        self._start_health_server()
+            # Phase 1: Resolve credentials
+            await self._resolve_credentials()
 
-        # Phase 7: Start heartbeat
-        assert self._heartbeat is not None
-        self._heartbeat.start()
+            # Phase 2: Resolve endpoint identity via GET /me
+            await self._resolve_identity()
 
-        # Phase 8: Send initial heartbeat
-        try:
-            await self._heartbeat._send_heartbeat()
-        except Exception as exc:
-            logger.debug("SpotifyConnector: initial heartbeat failed (non-fatal): %s", exc)
+            # Phase 3: Post-identity initialization
+            self._endpoint_identity_ready()
 
-        # Phase 9: Run main poll loop
-        try:
+            # Phase 4: Load checkpoint
+            await self._load_checkpoint()
+
+            # Phase 5: Wait for Switchboard readiness
+            try:
+                await wait_for_switchboard_ready(self._config.switchboard_mcp_url)
+            except TimeoutError:
+                logger.warning(
+                    "SpotifyConnector: Switchboard readiness probe timed out; proceeding."
+                )
+
+            # Phase 6: Start health server
+            self._start_health_server()
+
+            # Phase 7: Start heartbeat
+            assert self._heartbeat is not None
+            self._heartbeat.start()
+
+            # Phase 8: Send initial heartbeat
+            try:
+                await self._heartbeat._send_heartbeat()
+            except Exception as exc:
+                logger.debug("SpotifyConnector: initial heartbeat failed (non-fatal): %s", exc)
+
+            # Phase 9: Run main poll loop
             await self._poll_loop()
         finally:
             await self._shutdown()
@@ -955,6 +960,9 @@ class SpotifyConnector:
             return
         cursor = self._last_recently_played_cursor
         if cursor is None:
+            return
+        # Skip write if cursor hasn't changed since last save
+        if cursor == self._last_checkpoint_cursor:
             return
         try:
             await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, self._endpoint_identity, cursor)
@@ -1323,7 +1331,11 @@ class SpotifyConnector:
             # Only process tracks not already observed via currently-playing
             # (cursor is the timestamp of the last submitted currently-playing event)
             if self._last_recently_played_cursor:
-                if str(played_at_ms) <= self._last_recently_played_cursor:
+                try:
+                    last_cursor_ms = int(self._last_recently_played_cursor)
+                except ValueError:
+                    last_cursor_ms = 0
+                if played_at_ms <= last_cursor_ms:
                     continue
 
             if not track_id:
@@ -1462,7 +1474,7 @@ class SpotifyConnector:
                 self._metrics.record_ingest_submission("error", latency)
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("SpotifyConnector: ingest submission failed: %s", exc)
-                # Buffer for replay
+                # Buffer for replay with status="error" so it's distinguishable from policy-filtered
                 if self._filtered_event_buffer is not None:
                     self._filtered_event_buffer.record(
                         external_message_id=event.get("external_event_id", ""),
@@ -1471,6 +1483,8 @@ class SpotifyConnector:
                         subject_or_preview=payload.get("normalized_text", "")[:100],
                         filter_reason=FilteredEventBuffer.reason_submission_error(),
                         full_payload=envelope,
+                        status="error",
+                        error_detail=str(exc),
                     )
 
     # ------------------------------------------------------------------
@@ -1550,8 +1564,8 @@ class SpotifyConnector:
             }
 
         @app.get("/metrics")
-        async def metrics() -> str:
-            return generate_latest().decode("utf-8")
+        async def metrics() -> bytes:
+            return generate_latest()
 
         port = self._config.health_port
         try:
@@ -1579,15 +1593,6 @@ class SpotifyConnector:
         thread.start()
         self._health_thread = thread
         logger.info("SpotifyConnector: health server started on port %d", port)
-
-
-# ---------------------------------------------------------------------------
-# Internal exceptions
-# ---------------------------------------------------------------------------
-
-
-class _SpotifyCredentialError(Exception):
-    """Alias for SpotifyCredentialError (internal use)."""
 
 
 # ---------------------------------------------------------------------------
