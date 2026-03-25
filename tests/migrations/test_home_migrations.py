@@ -188,8 +188,8 @@ class TestHomeM003DowngradeSQL:
         """Downgrade drops the index before dropping the table."""
         mod = _load_migration(MIGRATION_003)
         source = inspect.getsource(mod.downgrade)
-        idx_pos = source.index("ix_maintenance_items_next_due_at")
-        tbl_pos = source.index("maintenance_items", idx_pos)
+        idx_pos = source.index("DROP INDEX")
+        tbl_pos = source.index("DROP TABLE")
         assert idx_pos < tbl_pos, "Index drop should precede table drop in downgrade"
 
 

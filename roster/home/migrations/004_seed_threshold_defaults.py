@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 
+import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -83,24 +85,39 @@ def upgrade() -> None:
     # Seed each threshold key into the state store.
     # ON CONFLICT DO NOTHING ensures operator-customised values are preserved
     # if the migration is re-run (e.g. after a schema reset).
+    conn = op.get_bind()
     for key, value in _THRESHOLD_SEEDS:
-        op.execute(
-            f"""
-            INSERT INTO state (key, value, updated_at, version)
-            VALUES (
-                '{key}',
-                '{json.dumps(value)}'::jsonb,
-                now(),
-                1
-            )
-            ON CONFLICT (key) DO NOTHING
-            """
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO state (key, value, updated_at, version)
+                VALUES (
+                    :key,
+                    CAST(:value AS jsonb),
+                    now(),
+                    1
+                )
+                ON CONFLICT (key) DO NOTHING
+                """
+            ),
+            {"key": key, "value": json.dumps(value)},
         )
 
 
 def downgrade() -> None:
-    # Remove only the exact keys seeded by this migration.
-    # Keys that were customised and re-inserted by the operator are left alone
+    # Remove only rows that still match the exact defaults seeded by this
+    # migration. Keys that were customised by the operator (i.e. whose
+    # stored value no longer equals the seeded default) are left alone
     # because downgrade can only safely remove what upgrade inserted.
-    for key, _ in _THRESHOLD_SEEDS:
-        op.execute(f"DELETE FROM state WHERE key = '{key}'")
+    conn = op.get_bind()
+    for key, value in _THRESHOLD_SEEDS:
+        conn.execute(
+            sa.text(
+                """
+                DELETE FROM state
+                WHERE key = :key
+                  AND value = CAST(:value AS jsonb)
+                """
+            ),
+            {"key": key, "value": json.dumps(value)},
+        )
