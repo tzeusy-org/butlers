@@ -263,8 +263,8 @@ class TestConversationList:
 
         query_arg = conn.fetchval.call_args[0][0]
         # Should not add status = $N clause when status is "all"
-        assert "status" not in query_arg.lower() or "status" in query_arg.lower()
-        # Softer check: count query should contain butler_name
+        assert "status =" not in query_arg.lower()
+        # Count query should still contain butler_name
         assert "butler_name" in query_arg
 
     async def test_returns_empty_when_no_results(self) -> None:

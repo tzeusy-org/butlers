@@ -9,6 +9,7 @@ or ``asyncpg.Connection``) via the ``conn`` parameter.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from uuid import UUID
@@ -240,14 +241,19 @@ async def conversation_search(
     """
     rows = await conn.fetch(
         f"""
-        SELECT DISTINCT ON (c.id, c.updated_at)
-               {", ".join(f"c.{col}" for col in _CONVERSATION_COLUMNS.split(", "))},
-               LEFT(m.content, 200) AS snippet
-        FROM shared.dashboard_conversations c
-        JOIN shared.dashboard_messages m ON m.conversation_id = c.id
-        WHERE c.butler_name = $1
-          AND m.content ILIKE $2
-        ORDER BY c.updated_at DESC, c.id
+        SELECT *
+        FROM (
+            SELECT DISTINCT ON (c.id)
+                   {", ".join(f"c.{col}" for col in _CONVERSATION_COLUMNS.split(", "))},
+                   LEFT(m.content, 200) AS snippet,
+                   m.created_at AS last_match_at
+            FROM shared.dashboard_conversations c
+            JOIN shared.dashboard_messages m ON m.conversation_id = c.id
+            WHERE c.butler_name = $1
+              AND m.content ILIKE $2
+            ORDER BY c.id, m.created_at DESC
+        ) t
+        ORDER BY t.last_match_at DESC
         LIMIT $3
         """,
         butler_name,
@@ -324,8 +330,6 @@ def _row_to_message(row: asyncpg.Record) -> dict[str, Any]:
     tool_calls = row["tool_calls"]
     # asyncpg returns JSONB as a Python object; ensure it's the right type
     if isinstance(tool_calls, str):
-        import json
-
         tool_calls = json.loads(tool_calls)
 
     return {
@@ -374,9 +378,7 @@ async def message_create(
 
     Returns the inserted message dict.
     """
-    import json as _json
-
-    tool_calls_json = _json.dumps(tool_calls) if tool_calls is not None else None
+    tool_calls_json = json.dumps(tool_calls) if tool_calls is not None else None
 
     row = await conn.fetchrow(
         f"""
