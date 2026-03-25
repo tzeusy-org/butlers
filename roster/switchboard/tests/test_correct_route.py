@@ -662,10 +662,15 @@ class TestCorrectRouteSuccess:
 
         assert len(captured_args) == 1
         args = captured_args[0]
-        # Must embed correction_id and original_request_id
-        assert args["correction_id"] == str(correction_id)
-        assert args["original_request_id"] == str(request_id)
-        assert args["correction_type"] == "misroute"
+        # trigger contract: must have prompt (str) and context (JSON string or None)
+        assert "prompt" in args, "trigger tool requires a 'prompt' key"
+        assert args["prompt"] == "Hello from wrong butler"
+        # correction metadata is in the context JSON
+        ctx_raw = args["context"]
+        context = json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
+        assert context["correction_id"] == str(correction_id)
+        assert context["original_request_id"] == str(request_id)
+        assert context["correction_type"] == "misroute"
 
     async def test_success_with_correcting_session_id(self, pool: asyncpg.Pool) -> None:
         """correcting_session_id is included in routing args and correction metadata."""
@@ -699,7 +704,10 @@ class TestCorrectRouteSuccess:
 
         assert result["success"] is True
         args = captured_args[0]
-        assert args["correcting_session_id"] == str(correcting_session_id)
+        # correcting_session_id is embedded in the trigger context JSON, not at top level
+        ctx_raw = args["context"]
+        context = json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
+        assert context["correcting_session_id"] == str(correcting_session_id)
 
         # Check metadata
         row = await pool.fetchrow(

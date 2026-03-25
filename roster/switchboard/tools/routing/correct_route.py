@@ -154,7 +154,10 @@ async def correct_route(
             ),
         }
 
-    # 3. Retrieve the original message_inbox row for the raw payload
+    # 3. Retrieve the original message_inbox row for the raw payload.
+    # Include received_at in the WHERE clause to allow partition pruning on
+    # month-partitioned message_inbox tables (PRIMARY KEY is (received_at, id)).
+    # We use a 1-day window around the ingestion timestamp to handle minor clock skew.
     inbox_row = await pool.fetchrow(
         """
         SELECT
@@ -167,8 +170,11 @@ async def correct_route(
             attachments
         FROM message_inbox
         WHERE id = $1
+          AND received_at >= $2 - interval '1 day'
+          AND received_at <= $2 + interval '1 day'
         """,
         request_id,
+        received_at,
     )
 
     if inbox_row is None:
@@ -199,36 +205,48 @@ async def correct_route(
         else request_context_str
     ) or {}
 
-    # Build route args: embed the original request context plus correction metadata.
-    # The tool to call on the target butler is the standard trigger/dispatch entrypoint.
-    route_args: dict[str, Any] = {
+    attachments_raw = inbox_row["attachments"]
+    attachments: list[Any] | None = (
+        json.loads(attachments_raw) if isinstance(attachments_raw, str) else attachments_raw
+    ) or None
+
+    # Build trigger args: the butler `trigger` MCP tool requires (prompt, context).
+    # Use normalized_text as the prompt. Pack provenance, raw payload, and correction
+    # metadata as JSON in the context field so the receiving butler can record provenance.
+    trigger_context: dict[str, Any] = {
+        "original_request_id": str(request_id),
+        "correction_id": str(correction_id),
+        "correction_type": "misroute",
         "source_channel": event_row["source_channel"],
         "source_endpoint_identity": event_row["source_endpoint_identity"],
         "source_sender_identity": event_row["source_sender_identity"],
         "external_event_id": event_row["external_event_id"],
-        "normalized_text": inbox_row["normalized_text"],
-        "original_request_id": str(request_id),
-        "correction_id": str(correction_id),
-        "correction_type": "misroute",
-    }
-    if description:
-        route_args["correction_description"] = description
-    if correcting_session_id:
-        route_args["correcting_session_id"] = str(correcting_session_id)
-    if event_row["source_thread_identity"]:
-        route_args["source_thread_identity"] = event_row["source_thread_identity"]
-    if raw_payload:
-        route_args["raw_payload"] = raw_payload
-
-    # Preserve the original request context for full provenance
-    route_args["__switchboard_route_context"] = {
-        "request_id": str(request_id),
-        "fanout_mode": "ordered",
-        "segment_id": f"correction-{correction_id}",
-        "attempt": 1,
-        "correction_id": str(correction_id),
         "original_triage_decision": request_context.get("triage_decision"),
         "original_triage_target": request_context.get("triage_target"),
+    }
+    if description:
+        trigger_context["correction_description"] = description
+    if correcting_session_id:
+        trigger_context["correcting_session_id"] = str(correcting_session_id)
+    if event_row["source_thread_identity"]:
+        trigger_context["source_thread_identity"] = event_row["source_thread_identity"]
+    if raw_payload:
+        trigger_context["raw_payload"] = raw_payload
+    if attachments:
+        trigger_context["attachments"] = attachments
+
+    route_args: dict[str, Any] = {
+        "prompt": inbox_row["normalized_text"],
+        "context": json.dumps(trigger_context),
+        "__switchboard_route_context": {
+            "request_id": str(request_id),
+            "fanout_mode": "ordered",
+            "segment_id": f"correction-{correction_id}",
+            "attempt": 1,
+            "correction_id": str(correction_id),
+            "original_triage_decision": request_context.get("triage_decision"),
+            "original_triage_target": request_context.get("triage_target"),
+        },
     }
 
     # 5. Route to the correct butler
