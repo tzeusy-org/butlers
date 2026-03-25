@@ -15,8 +15,8 @@ import pytest
 
 from butlers.credential_store import CredentialStore
 from butlers.spotify_credentials import (
-    _SPOTIFY_CATEGORY,
     SPOTIFY_ACCESS_TOKEN,
+    SPOTIFY_CATEGORY,
     SPOTIFY_CLIENT_ID,
     SPOTIFY_REFRESH_TOKEN,
     SPOTIFY_TOKEN_EXPIRES_AT,
@@ -80,7 +80,7 @@ class TestKeyConstants:
         assert SPOTIFY_TOKEN_EXPIRES_AT == "SPOTIFY_TOKEN_EXPIRES_AT"
 
     def test_spotify_category(self) -> None:
-        assert _SPOTIFY_CATEGORY == "spotify"
+        assert SPOTIFY_CATEGORY == "spotify"
 
     def test_keys_are_distinct(self) -> None:
         keys = [
@@ -115,7 +115,7 @@ class TestSpotifyStore:
         await store.store(
             SPOTIFY_CLIENT_ID,
             "abc123def456abc123def456abc12345",
-            category=_SPOTIFY_CATEGORY,
+            category=SPOTIFY_CATEGORY,
         )
         sql, *args = pool._conn.execute.call_args[0]
         assert args[0] == SPOTIFY_CLIENT_ID
@@ -128,10 +128,11 @@ class TestSpotifyStore:
         await store.store(
             SPOTIFY_ACCESS_TOKEN,
             "BQDsomething",
-            category=_SPOTIFY_CATEGORY,
+            category=SPOTIFY_CATEGORY,
         )
         _, *args = pool._conn.execute.call_args[0]
-        # is_sensitive is the 5th positional arg (index 4)
+        # SQL positional args: key, value, category, description, is_sensitive, expires_at
+        # is_sensitive is at index 4
         assert args[4] is True
 
     async def test_store_refresh_token_with_spotify_category(self) -> None:
@@ -140,12 +141,13 @@ class TestSpotifyStore:
         await store.store(
             SPOTIFY_REFRESH_TOKEN,
             "AQAxyz789",
-            category=_SPOTIFY_CATEGORY,
+            category=SPOTIFY_CATEGORY,
             is_sensitive=True,
         )
         _, *args = pool._conn.execute.call_args[0]
         assert args[0] == SPOTIFY_REFRESH_TOKEN
         assert args[2] == "spotify"
+        # SQL positional args: key, value, category, description, is_sensitive, expires_at
         assert args[4] is True
 
     async def test_store_token_expires_at_with_spotify_category(self) -> None:
@@ -154,12 +156,13 @@ class TestSpotifyStore:
         await store.store(
             SPOTIFY_TOKEN_EXPIRES_AT,
             "2026-03-25T14:30:00Z",
-            category=_SPOTIFY_CATEGORY,
+            category=SPOTIFY_CATEGORY,
             is_sensitive=False,
         )
         _, *args = pool._conn.execute.call_args[0]
         assert args[0] == SPOTIFY_TOKEN_EXPIRES_AT
         assert args[2] == "spotify"
+        # SQL positional args: key, value, category, description, is_sensitive, expires_at
         # is_sensitive passed explicitly as False
         assert args[4] is False
 
@@ -170,7 +173,7 @@ class TestSpotifyStore:
             await store.store(
                 SPOTIFY_ACCESS_TOKEN,
                 "SUPER_SECRET_SPOTIFY_ACCESS_TOKEN",
-                category=_SPOTIFY_CATEGORY,
+                category=SPOTIFY_CATEGORY,
             )
         for record in caplog.records:
             assert "SUPER_SECRET_SPOTIFY_ACCESS_TOKEN" not in record.getMessage()
@@ -182,7 +185,7 @@ class TestSpotifyStore:
             await store.store(
                 SPOTIFY_REFRESH_TOKEN,
                 "SUPER_SECRET_SPOTIFY_REFRESH_TOKEN",
-                category=_SPOTIFY_CATEGORY,
+                category=SPOTIFY_CATEGORY,
             )
         for record in caplog.records:
             assert "SUPER_SECRET_SPOTIFY_REFRESH_TOKEN" not in record.getMessage()
@@ -198,7 +201,7 @@ class TestSpotifyStore:
             SPOTIFY_TOKEN_EXPIRES_AT: "2026-03-25T14:30:00Z",
         }
         for key, value in spotify_secrets.items():
-            await store.store(key, value, category=_SPOTIFY_CATEGORY)
+            await store.store(key, value, category=SPOTIFY_CATEGORY)
         assert pool._conn.execute.call_count == 4
 
 
@@ -329,7 +332,7 @@ class TestSpotifyListSecrets:
     async def test_list_secrets_filters_by_spotify_category(self) -> None:
         pool = _make_pool(fetch_return=[])
         store = CredentialStore(pool)
-        await store.list_secrets(category=_SPOTIFY_CATEGORY)
+        await store.list_secrets(category=SPOTIFY_CATEGORY)
         sql, *args = pool._conn.fetch.call_args[0]
         assert "category" in sql
         assert args[0] == "spotify"
