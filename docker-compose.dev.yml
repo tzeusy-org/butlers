@@ -167,6 +167,8 @@ services:
         condition: service_healthy
 
   # ── Layer 3: butlers up (main backend) ────────────────────────────────
+  # butlers up spawns LLM runtime CLIs (codex, opencode, claude-code, gemini)
+  # as subprocesses. Their config/auth dirs must persist across restarts.
   butlers-up:
     build:
       context: .
@@ -180,9 +182,14 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
       - BUTLERS_SWITCHBOARD_URL=http://switchboard:41100
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - HOME=/root
     volumes:
       - ./roster:/app/roster:ro
       - ./logs:/app/logs
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
     networks: [db, backend]
     depends_on:
       log-init:
@@ -239,12 +246,17 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-butlers}
       - BUTLERS_SWITCHBOARD_URL=http://switchboard:41100
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - HOME=/root
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./logs:/app/logs
       - uv_cache:/root/.cache/uv
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
     networks: [db, backend]
     depends_on:
       log-init:
@@ -292,3 +304,9 @@ services:
 
 volumes:
   uv_cache:
+  # Persistent config/auth dirs for LLM runtime CLIs spawned by butlers-up.
+  # Survives container restarts so OAuth tokens and settings aren't lost.
+  runtime_claude:
+  runtime_codex:
+  runtime_opencode:
+  runtime_gemini:

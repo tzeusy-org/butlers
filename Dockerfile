@@ -15,7 +15,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 
 # Install LLM runtime CLIs globally via npm.
 # Butlers can use any of these as runtime adapters (configured per-butler in butler.toml).
-RUN npm install -g @openai/codex opencode-ai claude-code
+RUN npm install -g @openai/codex opencode-ai claude-code @google/gemini-cli
 
 # Install uv package manager
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
