@@ -18,16 +18,30 @@ Design reference: openspec/changes/archive/home-butler-enhancements/
 
 from __future__ import annotations
 
+import html
+import json
 import logging
+import re
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict
 
 import asyncpg
+import httpx
 
 from butlers.core.state import state_get
+from butlers.credential_store import resolve_owner_entity_info
+from butlers.modules.memory.storage import store_fact
 
 logger = logging.getLogger(__name__)
+
+
+class _NullEmbeddingEngine:
+    """Sentinel embedding engine that returns empty vectors for deterministic jobs."""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[] for _ in texts]
+
 
 # ---------------------------------------------------------------------------
 # Default thresholds (used when state store has no value)
@@ -115,11 +129,9 @@ async def _discover_energy_sensors(pool: asyncpg.Pool) -> list[dict[str, Any]]:
         entity_id: str = row["entity_id"]
         attrs = row["attributes"] or {}
         if isinstance(attrs, str):
-            import json
-
             try:
                 attrs = json.loads(attrs)
-            except Exception:
+            except (ValueError, TypeError):
                 attrs = {}
         friendly = attrs.get("friendly_name") or ""
         if _is_energy_entity(entity_id, friendly):
@@ -149,8 +161,6 @@ async def _fetch_weekly_statistics(
     Returns a dict mapping entity_id → ``{"weekly_sum": float, "daily": [...]}``
     or an empty dict if HA is unreachable.
     """
-    import httpx
-
     end_dt = datetime.now(tz=UTC)
     start_dt = end_dt - timedelta(days=7)
     start_iso = start_dt.isoformat()
@@ -334,8 +344,6 @@ def detect_anomalies(
             baseline_kwh = float(content)
         elif isinstance(content, str):
             # Try to extract a leading numeric value
-            import re
-
             m = re.search(r"(\d+(?:\.\d+)?)\s*(?:kwh|kw|watt)?", content, re.IGNORECASE)
             if m:
                 try:
@@ -396,7 +404,7 @@ def _build_digest_message(
         lines.append("\n<b>Top consumers:</b>")
         for item in top_consumers[:_TOP_N_CONSUMERS]:
             lines.append(
-                f"  • {item['friendly_name']}: {item['weekly_kwh']:.1f} kWh "
+                f"  • {html.escape(item['friendly_name'])}: {item['weekly_kwh']:.1f} kWh "
                 f"({item['share_pct']:.0f}%)"
             )
 
@@ -406,7 +414,7 @@ def _build_digest_message(
         for a in anomalies:
             sev = "🔴 HIGH" if a["severity"] == "high" else "🟡 Anomaly"
             lines.append(
-                f"  {sev}: {a['friendly_name']} — "
+                f"  {sev}: {html.escape(a['friendly_name'])} — "
                 f"{a['weekly_kwh']:.1f} kWh (+{a['pct_above']:.0f}% above baseline)"
             )
 
@@ -415,11 +423,11 @@ def _build_digest_message(
     high_severity_devices = [a for a in anomalies if a["severity"] == "high"]
     if high_severity_devices:
         recs.append(
-            f"Check {high_severity_devices[0]['friendly_name']} — "
+            f"Check {html.escape(high_severity_devices[0]['friendly_name'])} — "
             f"consumption is more than double its baseline."
         )
     if top_consumers:
-        top_name = top_consumers[0]["friendly_name"]
+        top_name = html.escape(top_consumers[0]["friendly_name"])
         recs.append(
             f"Review {top_name} usage patterns — it accounts for the most energy this week."
         )
@@ -444,10 +452,6 @@ async def _notify_owner_telegram(
     entity_info/contact_info via ``resolve_owner_entity_info``. Silently skips
     if either credential is unavailable.
     """
-    import httpx
-
-    from butlers.credential_store import resolve_owner_entity_info
-
     token = await resolve_owner_entity_info(pool, "telegram_bot_token")
     chat_id = await resolve_owner_entity_info(pool, "telegram_chat_id")
 
@@ -470,7 +474,7 @@ async def _notify_owner_telegram(
             if resp.status_code >= 400:
                 try:
                     detail = resp.json().get("description", resp.text[:200])
-                except Exception:
+                except (ValueError, KeyError):
                     detail = resp.text[:200]
                 logger.error(
                     "_notify_owner_telegram: Telegram sendMessage failed: status=%d detail=%s",
@@ -561,8 +565,6 @@ async def run_energy_digest(
     # ------------------------------------------------------------------
     # 4. Resolve HA credentials and fetch statistics
     # ------------------------------------------------------------------
-    from butlers.credential_store import resolve_owner_entity_info
-
     ha_url = await resolve_owner_entity_info(pool, "home_assistant_url")
     ha_token = await resolve_owner_entity_info(pool, "home_assistant_token")
 
@@ -610,8 +612,6 @@ async def run_energy_digest(
     for key, bval in baselines.items():
         content = bval.get("content", "")
         if "overall" in key.lower() or "total" in key.lower():
-            import re
-
             m = re.search(r"(\d+(?:\.\d+)?)\s*kwh", content, re.IGNORECASE)
             if m:
                 try:
@@ -625,16 +625,10 @@ async def run_energy_digest(
     # ------------------------------------------------------------------
     baseline_updated = False
     if total_kwh > 0:
+        eng = _NullEmbeddingEngine()
+
+        # Store overall energy baseline fact
         try:
-            from butlers.modules.memory.storage import store_fact
-
-            # Sentinel embedding engine (no embeddings for deterministic jobs)
-            class _NullEmbeddingEngine:
-                async def embed(self, texts: list[str]) -> list[list[float]]:
-                    return [[] for _ in texts]
-
-            eng = _NullEmbeddingEngine()
-
             top_summary = ", ".join(
                 f"{d['friendly_name']}={d['weekly_kwh']:.1f}kWh" for d in top_consumers
             )
@@ -657,17 +651,29 @@ async def run_energy_digest(
         except Exception:
             logger.warning("run_energy_digest: failed to store energy_baseline fact", exc_info=True)
 
+        # Store per-device energy baseline facts so anomaly detection can compare on next run
+        for device in device_totals:
+            try:
+                await store_fact(
+                    pool,
+                    subject=device["entity_id"],
+                    predicate="energy_baseline",
+                    content=f"{device['weekly_kwh']:.2f} kWh weekly baseline",
+                    embedding_engine=eng,
+                    importance=4.0,
+                    permanence="standard",
+                    tags=["energy", "baseline", "weekly", "per-device"],
+                )
+            except Exception:
+                logger.warning(
+                    "run_energy_digest: failed to store per-device energy_baseline for %s",
+                    device["entity_id"],
+                    exc_info=True,
+                )
+
         # Store spike facts for anomalous devices
         for anomaly in anomalies:
             try:
-                from butlers.modules.memory.storage import store_fact  # noqa: F811
-
-                class _NullEmbeddingEngine:  # noqa: F811
-                    async def embed(self, texts: list[str]) -> list[list[float]]:
-                        return [[] for _ in texts]
-
-                eng = _NullEmbeddingEngine()
-
                 sev_label = "high severity" if anomaly["severity"] == "high" else "anomaly"
                 await store_fact(
                     pool,

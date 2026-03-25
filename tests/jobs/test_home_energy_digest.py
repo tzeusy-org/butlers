@@ -43,7 +43,7 @@ def _make_pool(
     snapshot_rows: list[dict[str, Any]] | None = None,
     state_rows: list[dict[str, Any]] | None = None,
     facts_rows: list[dict[str, Any]] | None = None,
-) -> MagicMock:
+) -> Any:
     """Return a minimal mock asyncpg pool for energy digest tests."""
     pool = MagicMock()
 
@@ -84,12 +84,14 @@ def _make_pool(
     return pool
 
 
-def _row(data: dict[str, Any]) -> MagicMock:
-    """Create a mock row that behaves like an asyncpg Record."""
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: data[key]
-    row.get = lambda key, default=None: data.get(key, default)
-    return row
+def _row(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a row-like mapping compatible with asyncpg Record usage.
+
+    Production code uses mapping-style access (row["key"] and row.get(...)),
+    so a plain dict is sufficient and avoids unreliable MagicMock special-method
+    lookup on instances.
+    """
+    return data
 
 
 def _make_energy_snapshot_row(
@@ -641,7 +643,7 @@ class TestRunEnergyDigest:
                 return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0},
             ),
             patch(
-                "butlers.modules.memory.storage.store_fact",
+                "butlers.jobs.home.store_fact",
                 new_callable=AsyncMock,
             ),
         ):
@@ -687,7 +689,7 @@ class TestRunEnergyDigest:
                 new_callable=AsyncMock,
                 return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0},
             ),
-            patch("butlers.modules.memory.storage.store_fact", new_callable=AsyncMock),
+            patch("butlers.jobs.home.store_fact", new_callable=AsyncMock),
         ):
             result = await run_energy_digest(pool, None)
 
@@ -737,7 +739,7 @@ class TestRunEnergyDigest:
                 return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0},
             ),
             patch(
-                "butlers.modules.memory.storage.store_fact",
+                "butlers.jobs.home.store_fact",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
