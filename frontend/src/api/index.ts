@@ -507,6 +507,12 @@ export {
   requestEducationCurriculum,
   updateEducationMindMapStatus,
   getDunbarRanking,
+  listConversations,
+  getConversation,
+  getConversationMessages,
+  searchConversations,
+  createConversation,
+  sendMessage,
 } from "./client.ts";
 
 export type {
@@ -527,4 +533,12 @@ export type {
   TeachingFlow,
   DunbarEntry,
   DunbarRankingResponse,
+  ConversationSummary,
+  ConversationListParams,
+  Message,
+  MessageToolCall,
+  CreateConversationRequest,
+  SendMessageRequest,
+  ConversationSseEventType,
+  ConversationSseEvent,
 } from "./types.ts";

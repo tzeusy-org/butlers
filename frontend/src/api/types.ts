@@ -2496,3 +2496,77 @@ export interface DunbarRankingResponse {
   entries: DunbarEntry[];
   owner_entity_id: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Dashboard conversations
+// ---------------------------------------------------------------------------
+
+/** A single tool call recorded on an assistant message. */
+export interface MessageToolCall {
+  id: string | null;
+  name: string;
+  arguments: unknown;
+  result?: unknown;
+}
+
+/** A single message in a dashboard conversation. */
+export interface Message {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  tool_calls: MessageToolCall[] | null;
+  error: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  duration_ms: number | null;
+  session_id: string | null;
+  request_id: string | null;
+  created_at: string;
+}
+
+/** Summary of a dashboard conversation (list view). */
+export interface ConversationSummary {
+  id: string;
+  butler_name: string;
+  title: string | null;
+  status: "active" | "archived";
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_duration_ms: number;
+}
+
+/** Query params for GET /api/butlers/{name}/conversations. */
+export interface ConversationListParams {
+  status?: "active" | "archived";
+  limit?: number;
+  offset?: number;
+}
+
+/** Request body for POST /api/butlers/{name}/conversations. */
+export interface CreateConversationRequest {
+  message: string;
+}
+
+/** Request body for POST /api/butlers/{name}/conversations/{id}/messages. */
+export interface SendMessageRequest {
+  message: string;
+}
+
+/** SSE event types emitted by the conversation streaming endpoints. */
+export type ConversationSseEventType =
+  | "conversation_created"
+  | "token"
+  | "message_complete"
+  | "error"
+  | "done";
+
+/** A parsed SSE event from the conversation streaming endpoint. */
+export interface ConversationSseEvent {
+  event: ConversationSseEventType;
+  data: unknown;
+}

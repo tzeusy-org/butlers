@@ -161,6 +161,11 @@ import type {
   SpotifyOAuthStartResponse,
   SpotifyStatusResponse,
   DunbarRankingResponse,
+  ConversationSummary,
+  ConversationListParams,
+  Message,
+  CreateConversationRequest,
+  SendMessageRequest,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2740,4 +2745,89 @@ export function disconnectSpotify(): Promise<SpotifyDisconnectResponse> {
   return apiFetch<SpotifyDisconnectResponse>("/spotify/disconnect", {
     method: "POST",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard conversation API
+// ---------------------------------------------------------------------------
+
+/** GET /api/butlers/{name}/conversations — paginated conversation list. */
+export function listConversations(
+  butlerName: string,
+  params?: ConversationListParams,
+): Promise<ApiResponse<ConversationSummary[]>> {
+  const qs = params ? `?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)])).toString()}` : "";
+  return apiFetch<ApiResponse<ConversationSummary[]>>(
+    `/butlers/${encodeURIComponent(butlerName)}/conversations${qs}`,
+  );
+}
+
+/** GET /api/butlers/{name}/conversations/{id} — single conversation summary. */
+export function getConversation(
+  butlerName: string,
+  conversationId: string,
+): Promise<ApiResponse<ConversationSummary>> {
+  return apiFetch<ApiResponse<ConversationSummary>>(
+    `/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}`,
+  );
+}
+
+/** GET /api/butlers/{name}/conversations/{id}/messages — message list for a conversation. */
+export function getConversationMessages(
+  butlerName: string,
+  conversationId: string,
+): Promise<ApiResponse<Message[]>> {
+  return apiFetch<ApiResponse<Message[]>>(
+    `/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+  );
+}
+
+/**
+ * GET /api/butlers/{name}/conversations/search — full-text search across conversations.
+ */
+export function searchConversations(
+  butlerName: string,
+  query: string,
+): Promise<ApiResponse<ConversationSummary[]>> {
+  return apiFetch<ApiResponse<ConversationSummary[]>>(
+    `/butlers/${encodeURIComponent(butlerName)}/conversations/search?q=${encodeURIComponent(query)}`,
+  );
+}
+
+/**
+ * POST /api/butlers/{name}/conversations — create a new conversation with SSE streaming.
+ * Returns the raw Response so callers can consume the SSE body directly.
+ */
+export function createConversation(
+  butlerName: string,
+  body: CreateConversationRequest,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(`${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+/**
+ * POST /api/butlers/{name}/conversations/{id}/messages — send a follow-up with SSE streaming.
+ * Returns the raw Response so callers can consume the SSE body directly.
+ */
+export function sendMessage(
+  butlerName: string,
+  conversationId: string,
+  body: SendMessageRequest,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(
+    `${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    },
+  );
 }
