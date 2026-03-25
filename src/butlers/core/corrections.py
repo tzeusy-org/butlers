@@ -180,18 +180,40 @@ _RATE_LIMIT = 10
 _RATE_WINDOW_HOURS = 1
 
 
+def _validate_identifier(name: str | None) -> None:
+    """Raise ValueError if *name* is not a safe SQL identifier (alphanumeric + underscore).
+
+    This guards against SQL injection when schema or table names are interpolated
+    directly into query strings.  Only call this for names that originate from
+    caller-supplied (LLM-provided) input.
+    """
+    if name is None:
+        return
+    import re
+
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(
+            f"Unsafe SQL identifier: {name!r}. "
+            "Schema and butler names must contain only letters, digits, and underscores."
+        )
+
+
 async def _check_rate_limit(
     pool: Any,
     correcting_session_id: uuid.UUID,
+    schema: str | None = None,
 ) -> str | None:
     """Return an error string if the correcting session has exceeded the rate limit.
 
     Counts corrections made by *correcting_session_id* within the last hour.
     Returns None if within limit.
     """
+    _validate_identifier(schema)
+    corrections_table = f"{schema}.corrections" if schema else "corrections"
     since = datetime.now(UTC) - timedelta(hours=_RATE_WINDOW_HOURS)
     count = await pool.fetchval(
-        "SELECT COUNT(*) FROM corrections WHERE correcting_session_id = $1 AND created_at >= $2",
+        f"SELECT COUNT(*) FROM {corrections_table}"
+        " WHERE correcting_session_id = $1 AND created_at >= $2",
         correcting_session_id,
         since,
     )
@@ -204,6 +226,17 @@ async def _check_rate_limit(
             " Ask the user to confirm before continuing."
         )
     return None
+
+
+def _is_session_not_found_error(error_msg: str) -> bool:
+    """Return True if *error_msg* is a 'session not found' precondition failure.
+
+    When the target session does not exist the corrections table's FK constraint
+    (target_session_id REFERENCES sessions) will reject any INSERT.  Handlers
+    must skip the audit record in that case.
+    """
+    msg_lower = error_msg.lower()
+    return "does not exist" in msg_lower or ("not found" in msg_lower and "session" in msg_lower)
 
 
 # ---------------------------------------------------------------------------
@@ -339,13 +372,18 @@ async def check_memory_deletion_preconditions(
     if session_row is None:
         return FAILURE_MESSAGES["session_not_found"].format(id=str(target_session_id))
 
-    # Determine memory table by type
+    # Determine memory table by type — only allowlisted types are accepted to
+    # prevent SQL injection via a caller-supplied memory_type string.
     memory_table_map = {
         "fact": "facts",
         "episode": "episodes",
         "rule": "rules",
     }
-    raw_table = memory_table_map.get(memory_type, f"{memory_type}s")
+    if memory_type not in memory_table_map:
+        return FAILURE_MESSAGES["memory_not_found"].format(
+            id=str(memory_id), memory_type=memory_type
+        )
+    raw_table = memory_table_map[memory_type]
     memory_table = f"{schema}.{raw_table}" if schema else raw_table
 
     # Query the memory row (uses "memory" token so mock dispatchers can match)
@@ -541,7 +579,7 @@ async def handle_data_correction(
         correction_details.
     """
     # Rate limit check
-    rate_error = await _check_rate_limit(pool, correcting_session_id)
+    rate_error = await _check_rate_limit(pool, correcting_session_id, schema=schema)
     if rate_error:
         cid = await create_correction(
             pool,
@@ -604,21 +642,27 @@ async def handle_data_correction(
         schema=target_schema,
     )
     if precond_error:
-        cid = await create_correction(
-            pool,
-            correction_type=CorrectionType.DATA_CORRECTION,
-            target_session_id=target_session_id,
-            correcting_session_id=correcting_session_id,
-            description=description,
-            status="failed",
-            summary=precond_error,
-            original_data_snapshot=None,
-            correction_details=None,
-            schema=schema,
-        )
+        # Skip audit record when target session doesn't exist: the FK constraint
+        # (corrections.target_session_id REFERENCES sessions) would reject the INSERT.
+        if not _is_session_not_found_error(precond_error):
+            cid = await create_correction(
+                pool,
+                correction_type=CorrectionType.DATA_CORRECTION,
+                target_session_id=target_session_id,
+                correcting_session_id=correcting_session_id,
+                description=description,
+                status="failed",
+                summary=precond_error,
+                original_data_snapshot=None,
+                correction_details=None,
+                schema=schema,
+            )
+            correction_id_str = str(cid)
+        else:
+            correction_id_str = ""
         return {
             "status": "failed",
-            "correction_id": str(cid),
+            "correction_id": correction_id_str,
             "summary": precond_error,
             "original_data_snapshot": None,
             "correction_details": None,
@@ -696,7 +740,7 @@ async def handle_memory_deletion(
         correction_details.
     """
     # Rate limit check
-    rate_error = await _check_rate_limit(pool, correcting_session_id)
+    rate_error = await _check_rate_limit(pool, correcting_session_id, schema=schema)
     if rate_error:
         cid = await create_correction(
             pool,
@@ -727,29 +771,34 @@ async def handle_memory_deletion(
         schema=schema,
     )
     if precond_error:
-        cid = await create_correction(
-            pool,
-            correction_type=CorrectionType.MEMORY_DELETION,
-            target_session_id=target_session_id,
-            correcting_session_id=correcting_session_id,
-            description=description,
-            status="failed",
-            summary=precond_error,
-            original_data_snapshot=None,
-            correction_details=None,
-            schema=schema,
-        )
+        if not _is_session_not_found_error(precond_error):
+            cid = await create_correction(
+                pool,
+                correction_type=CorrectionType.MEMORY_DELETION,
+                target_session_id=target_session_id,
+                correcting_session_id=correcting_session_id,
+                description=description,
+                status="failed",
+                summary=precond_error,
+                original_data_snapshot=None,
+                correction_details=None,
+                schema=schema,
+            )
+            correction_id_str = str(cid)
+        else:
+            correction_id_str = ""
         return {
             "status": "failed",
-            "correction_id": str(cid),
+            "correction_id": correction_id_str,
             "summary": precond_error,
             "original_data_snapshot": None,
             "correction_details": None,
         }
 
-    # Snapshot original memory
+    # Snapshot original memory — memory_type is already validated by
+    # check_memory_deletion_preconditions, so only allowlisted values reach here.
     memory_table_map = {"fact": "facts", "episode": "episodes", "rule": "rules"}
-    raw_table = memory_table_map.get(memory_type, f"{memory_type}s")
+    raw_table = memory_table_map.get(memory_type, "facts")  # fallback is unreachable
     memory_table = f"{schema}.{raw_table}" if schema else raw_table
 
     # Snapshot original memory content before retraction
@@ -817,7 +866,7 @@ async def handle_misroute(
         correction_details.
     """
     # Rate limit check
-    rate_error = await _check_rate_limit(pool, correcting_session_id)
+    rate_error = await _check_rate_limit(pool, correcting_session_id, schema=schema)
     if rate_error:
         cid = await create_correction(
             pool,
@@ -848,21 +897,25 @@ async def handle_misroute(
         schema=schema,
     )
     if precond_error:
-        cid = await create_correction(
-            pool,
-            correction_type=CorrectionType.MISROUTE,
-            target_session_id=target_session_id,
-            correcting_session_id=correcting_session_id,
-            description=description,
-            status="failed",
-            summary=precond_error,
-            original_data_snapshot=None,
-            correction_details=None,
-            schema=schema,
-        )
+        if not _is_session_not_found_error(precond_error):
+            cid = await create_correction(
+                pool,
+                correction_type=CorrectionType.MISROUTE,
+                target_session_id=target_session_id,
+                correcting_session_id=correcting_session_id,
+                description=description,
+                status="failed",
+                summary=precond_error,
+                original_data_snapshot=None,
+                correction_details=None,
+                schema=schema,
+            )
+            correction_id_str = str(cid)
+        else:
+            correction_id_str = ""
         return {
             "status": "failed",
-            "correction_id": str(cid),
+            "correction_id": correction_id_str,
             "summary": precond_error,
             "original_data_snapshot": None,
             "correction_details": None,
@@ -996,7 +1049,7 @@ async def handle_action_reversal(
         correction_details.
     """
     # Rate limit check
-    rate_error = await _check_rate_limit(pool, correcting_session_id)
+    rate_error = await _check_rate_limit(pool, correcting_session_id, schema=schema)
     if rate_error:
         cid = await create_correction(
             pool,
@@ -1026,21 +1079,25 @@ async def handle_action_reversal(
         schema=schema,
     )
     if precond_error:
-        cid = await create_correction(
-            pool,
-            correction_type=CorrectionType.ACTION_REVERSAL,
-            target_session_id=target_session_id,
-            correcting_session_id=correcting_session_id,
-            description=description,
-            status="failed",
-            summary=precond_error,
-            original_data_snapshot=None,
-            correction_details=None,
-            schema=schema,
-        )
+        if not _is_session_not_found_error(precond_error):
+            cid = await create_correction(
+                pool,
+                correction_type=CorrectionType.ACTION_REVERSAL,
+                target_session_id=target_session_id,
+                correcting_session_id=correcting_session_id,
+                description=description,
+                status="failed",
+                summary=precond_error,
+                original_data_snapshot=None,
+                correction_details=None,
+                schema=schema,
+            )
+            correction_id_str = str(cid)
+        else:
+            correction_id_str = ""
         return {
             "status": "failed",
-            "correction_id": str(cid),
+            "correction_id": correction_id_str,
             "summary": precond_error,
             "original_data_snapshot": None,
             "correction_details": None,
