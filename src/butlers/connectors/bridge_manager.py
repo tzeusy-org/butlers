@@ -94,10 +94,6 @@ def _jittered_backoff(attempt: int) -> float:
     return base + random.uniform(-jitter, jitter)  # noqa: S311
 
 
-class _UnixSocketTransport(asyncio.Transport):
-    """Thin wrapper; we use aiohttp-style manual HTTP over a Unix socket."""
-
-
 async def _http_post_unix(socket_path: str, path: str) -> dict[str, Any]:
     """Issue a plain HTTP POST to *path* on the bridge Unix socket.
 
@@ -239,10 +235,15 @@ class BridgeSubprocessManager:
         # Start the supervisor loop in the background
         self._monitor_task = asyncio.create_task(self._monitor_loop(), name="bridge-monitor")
 
-        # Wait for the bridge to become connected
+        # Wait for the bridge to become connected by actively polling /status.
+        # The health poll loop only starts after startup; a dedicated startup
+        # poller sets _connected_event as soon as the bridge is ready.
         logger.info(
             "Waiting up to %.0fs for bridge to reach 'connected' state …",
             self._config.startup_timeout_s,
+        )
+        startup_poll_task = asyncio.create_task(
+            self._startup_poll_loop(), name="bridge-startup-poll"
         )
         try:
             await asyncio.wait_for(
@@ -255,6 +256,12 @@ class BridgeSubprocessManager:
                 self._config.startup_timeout_s,
             )
             raise
+        finally:
+            startup_poll_task.cancel()
+            try:
+                await startup_poll_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         # Start background health polling
         self._health_task = asyncio.create_task(self._health_poll_loop(), name="bridge-health-poll")
@@ -315,7 +322,8 @@ class BridgeSubprocessManager:
             )
 
         cmd = [binary_path, *self._config.args]
-        logger.info("Spawning bridge: %s", " ".join(cmd))
+        # Log only the binary name to avoid leaking sensitive flags (e.g. --db-dsn credentials).
+        logger.info("Spawning bridge: %s (%d extra args)", binary_path, len(self._config.args))
         self._last_start_time = time.monotonic()
 
         self._process = await asyncio.create_subprocess_exec(
@@ -385,11 +393,21 @@ class BridgeSubprocessManager:
         try:
             self._process.send_signal(signal.SIGTERM)
             await asyncio.wait_for(self._process.wait(), timeout=5.0)
-        except (TimeoutError, ProcessLookupError):
+        except TimeoutError:
             logger.error(
-                "Bridge PID %d did not respond to SIGTERM — giving up",
+                "Bridge PID %d did not respond to SIGTERM — sending SIGKILL",
                 self._process.pid,
             )
+            try:
+                self._process.send_signal(signal.SIGKILL)
+                await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            except (TimeoutError, ProcessLookupError):
+                logger.error(
+                    "Bridge PID %d did not respond to SIGKILL — process may be orphaned",
+                    self._process.pid,
+                )
+        except ProcessLookupError:
+            pass  # Process already exited
 
     # ------------------------------------------------------------------
     # Private helpers — supervisor loop
@@ -499,6 +517,48 @@ class BridgeSubprocessManager:
     # Private helpers — health polling
     # ------------------------------------------------------------------
 
+    _STARTUP_POLL_INTERVAL_S: float = 1.0
+    """How often (seconds) to poll /status during the startup wait."""
+
+    async def _startup_poll_loop(self) -> None:
+        """Poll /status repeatedly until _connected_event is set or cancelled.
+
+        This loop runs only during ``start()`` — it drives the initial
+        handshake that sets ``_connected_event``.  Once the event is set,
+        ``start()`` cancels this task and hands over to ``_health_poll_loop``.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self._STARTUP_POLL_INTERVAL_S)
+            except asyncio.CancelledError:
+                break
+
+            if self._connected_event.is_set():
+                break
+
+            # Use _poll_status but avoid marking transient 'connecting' as
+            # degraded — during startup the bridge has not yet finished
+            # establishing the WhatsApp session so connecting is expected.
+            if self._process is None or self._process.returncode is not None:
+                break
+
+            try:
+                data = await asyncio.wait_for(
+                    _http_get_unix(self._config.bridge_socket, _STATUS_ENDPOINT),
+                    timeout=10.0,
+                )
+                state = data.get("state", "unknown")
+                logger.debug("Bridge startup /status: state=%s", state)
+                if state == "connected":
+                    self._connected_event.set()
+                    break
+                # 'connecting' is an expected transient state during startup —
+                # keep polling rather than entering degraded mode.
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Bridge startup /status poll failed (retrying): %s", exc)
+
     async def _health_poll_loop(self) -> None:
         """Periodically poll /status and update connected/degraded state."""
         while not self._stopping:
@@ -545,6 +605,9 @@ class BridgeSubprocessManager:
                 self._degraded_reason = None
             self._connected_event.set()
         elif state in ("disconnected", "connecting"):
+            # Post-startup: 'connecting' means the bridge dropped its session
+            # and is attempting to reconnect.  Treat this as degraded until it
+            # recovers to 'connected' — the next poll may clear it automatically.
             logger.warning("Bridge /status reports '%s' — entering degraded mode", state)
             self._set_degraded(f"Bridge status: {state}")
         elif state == "pair_required":

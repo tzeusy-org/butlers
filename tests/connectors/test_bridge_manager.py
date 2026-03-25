@@ -215,7 +215,7 @@ class TestLifecycle:
     async def test_start_sets_is_running(self):
         mgr = await self._make_running_mgr()
         try:
-            assert mgr.is_running or True  # process may have exited in mock
+            assert mgr._process is not None, "start() must create a subprocess"
         finally:
             await mgr.stop()
 
@@ -249,6 +249,45 @@ class TestLifecycle:
 
         assert not mgr.is_degraded
         assert mgr.degraded_reason is None
+        await mgr.stop()
+
+    async def test_start_polls_status_until_connected(self):
+        """start() must poll /status via _startup_poll_loop until bridge reports connected."""
+        mgr = BridgeSubprocessManager(
+            _make_config(startup_timeout_s=5.0, health_poll_interval_s=9999.0)
+        )
+        proc = _fake_process(returncode=None)
+        poll_calls: list[int] = []
+
+        async def _fake_create(*args, **kwargs):
+            return proc
+
+        async def _fake_get_unix(socket_path: str, path: str):
+            poll_calls.append(len(poll_calls) + 1)
+            if len(poll_calls) >= 2:
+                # Report connected on the second poll so startup completes
+                return {"state": "connected"}
+            # First poll returns 'connecting' — should NOT enter degraded mode
+            return {"state": "connecting"}
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/whatsapp-bridge"),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
+            patch(
+                "butlers.connectors.bridge_manager._http_get_unix",
+                side_effect=_fake_get_unix,
+            ),
+            patch(
+                "butlers.connectors.bridge_manager.BridgeSubprocessManager._STARTUP_POLL_INTERVAL_S",
+                new=0.01,
+            ),
+        ):
+            await mgr.start()
+
+        # At least two polls were issued (connecting → connected)
+        assert len(poll_calls) >= 2, f"Expected >=2 startup polls, got {len(poll_calls)}"
+        # 'connecting' during startup must not mark the bridge degraded
+        assert not mgr.is_degraded, "connecting during startup should not set degraded"
         await mgr.stop()
 
 
