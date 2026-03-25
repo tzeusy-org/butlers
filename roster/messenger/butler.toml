@@ -44,6 +44,18 @@ enabled = false
 address_env = "BUTLER_EMAIL_ADDRESS"
 password_env = "BUTLER_EMAIL_PASSWORD"
 
+[modules.whatsapp]
+# send_tools=true registers whatsapp_send_message and whatsapp_reply_to_message.
+# Only the Messenger butler should set send_tools=true.
+send_tools = true
+# send_enabled=false keeps tools present but functionally disabled by default.
+# Set send_enabled=true only after assessing WhatsApp ban risk for your account.
+send_enabled = false
+
+[modules.whatsapp.user]
+enabled = true
+session_env = "WHATSAPP_USER_SESSION"
+
 [modules.approvals]
 enabled = true
 default_expiry_hours = 48
@@ -65,6 +77,12 @@ risk_tier = "medium"
 risk_tier = "medium"
 
 [modules.approvals.gated_tools.notify]
+risk_tier = "medium"
+
+[modules.approvals.gated_tools.whatsapp_send_message]
+risk_tier = "medium"
+
+[modules.approvals.gated_tools.whatsapp_reply_to_message]
 risk_tier = "medium"
 
 [modules.messenger]
