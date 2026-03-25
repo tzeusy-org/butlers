@@ -68,6 +68,15 @@ class BridgeConfig:
     args: list[str] = field(default_factory=list)
     """Additional CLI arguments forwarded verbatim to the binary."""
 
+    env: dict[str, str] = field(default_factory=dict)
+    """Extra environment variables injected into the bridge subprocess.
+
+    Use this to pass credentials (e.g. ``WA_BRIDGE_DSN``) without exposing
+    them in the process argument list (visible in ``ps``/``/proc``).
+
+    Values here are merged on top of the inherited process environment.
+    """
+
     bridge_socket: str = "/tmp/wa-bridge.sock"
     """Unix domain socket path on which the bridge listens."""
 
@@ -206,7 +215,10 @@ class BridgeSubprocessManager:
 
     Usage::
 
-        cfg = BridgeConfig(args=["--db-dsn", dsn, "--listen", f"unix://{socket}"])
+        cfg = BridgeConfig(
+            args=["--listen", f"unix://{socket}"],
+            env={"WA_BRIDGE_DSN": dsn},
+        )
         mgr = BridgeSubprocessManager(cfg)
         await mgr.start()          # raises RuntimeError if binary not found
         # … run forever …
@@ -352,6 +364,7 @@ class BridgeSubprocessManager:
 
     async def _spawn(self) -> None:
         """Launch the bridge binary as an asyncio subprocess."""
+        import os
         import shutil
 
         binary_path = shutil.which(self._config.binary)
@@ -361,14 +374,22 @@ class BridgeSubprocessManager:
             )
 
         cmd = [binary_path, *self._config.args]
-        # Log only the binary name to avoid leaking sensitive flags (e.g. --db-dsn credentials).
+        # Log only the binary name to avoid leaking sensitive flags (e.g. WA_BRIDGE_DSN).
         logger.info("Spawning bridge: %s (%d extra args)", binary_path, len(self._config.args))
         self._last_start_time = time.monotonic()
+
+        # Build subprocess environment: inherit current env, then overlay config.env.
+        # Credentials (e.g. WA_BRIDGE_DSN) are passed here rather than in args so
+        # they are not visible in ps / /proc/<pid>/cmdline output.
+        subprocess_env: dict[str, str] | None = None
+        if self._config.env:
+            subprocess_env = {**os.environ, **self._config.env}
 
         self._process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=subprocess_env,
         )
         logger.info("Bridge PID %d started", self._process.pid)
 

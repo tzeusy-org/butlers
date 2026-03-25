@@ -167,16 +167,17 @@ class WhatsAppModule(Module):
         else:
             logger.debug("WhatsApp module: no DB pool available; skipping credential resolution")
 
-        # Build bridge args for --db-dsn and --listen.
-        bridge_args: list[str] = []
+        # Build bridge config: pass DSN via env var to avoid leaking credentials
+        # in ps / /proc/<pid>/cmdline output.
+        bridge_env: dict[str, str] = {}
         dsn = _get_db_dsn(db)
         if dsn:
-            bridge_args.extend(["--db-dsn", dsn])
-        bridge_args.extend(["--listen", f"unix://{self._config.bridge_socket}"])
+            bridge_env["WA_BRIDGE_DSN"] = dsn
 
         bridge_cfg = BridgeConfig(
             binary="whatsapp-bridge",
-            args=bridge_args,
+            args=["--listen", f"unix://{self._config.bridge_socket}"],
+            env=bridge_env,
             bridge_socket=self._config.bridge_socket,
             startup_timeout_s=30.0,
             health_poll_interval_s=30.0,

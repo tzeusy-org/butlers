@@ -7,6 +7,7 @@ Tests cover:
 - health poll: state transitions (connected → degraded → recovered)
 - restart loop: unexpected-exit triggers restart; no-restart codes skip it
 - binary-not-found: RuntimeError with correct message
+- credential safety: DSN passed via env var, not CLI args
 """
 
 from __future__ import annotations
@@ -578,3 +579,86 @@ class TestRestartLoop:
                 pass
 
             assert mgr.is_degraded, f"rc={code} should set degraded"
+
+
+# ---------------------------------------------------------------------------
+# Credential safety: DSN passed via env var, not CLI args
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialSafety:
+    """Verify that sensitive values like the DB DSN are passed via environment
+    variables to the subprocess rather than as CLI arguments.
+
+    This prevents credentials from appearing in ps / /proc/<pid>/cmdline output.
+    """
+
+    async def test_env_dict_passed_to_subprocess_exec(self):
+        """BridgeConfig.env is forwarded to create_subprocess_exec as the env kwarg."""
+        dsn = "postgres://user:secret@db:5432/butlers"
+        cfg = BridgeConfig(
+            binary="whatsapp-bridge",
+            args=["--listen", "unix:///tmp/test.sock"],
+            env={"WA_BRIDGE_DSN": dsn},
+            bridge_socket="/tmp/test.sock",
+        )
+        mgr = BridgeSubprocessManager(cfg)
+
+        captured_kwargs: dict = {}
+
+        async def _fake_create(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _fake_process(returncode=None)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/whatsapp-bridge"),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
+        ):
+            await mgr._spawn()
+
+        # env kwarg must be present and contain WA_BRIDGE_DSN
+        assert "env" in captured_kwargs, "_spawn() must pass env= to create_subprocess_exec"
+        assert captured_kwargs["env"] is not None
+        assert captured_kwargs["env"]["WA_BRIDGE_DSN"] == dsn
+
+        # The inherited environment must also be present (we merge on top of os.environ)
+        assert "PATH" in captured_kwargs["env"] or len(captured_kwargs["env"]) > 1
+
+    async def test_dsn_not_in_args_when_using_env(self):
+        """When DSN is in BridgeConfig.env, it must NOT appear in the CLI args."""
+        dsn = "postgres://user:secret@db:5432/butlers"
+        cfg = BridgeConfig(
+            binary="whatsapp-bridge",
+            args=["--listen", "unix:///tmp/test.sock"],
+            env={"WA_BRIDGE_DSN": dsn},
+        )
+        # The args list must not contain the raw DSN string
+        args_str = " ".join(cfg.args)
+        assert dsn not in args_str, "DSN must not appear in CLI args"
+        assert "secret" not in args_str, "Password must not appear in CLI args"
+
+    async def test_no_env_override_passes_none_to_subprocess(self):
+        """When BridgeConfig.env is empty, env=None is passed (inherit parent env)."""
+        cfg = BridgeConfig(
+            binary="whatsapp-bridge",
+            args=["--listen", "unix:///tmp/test.sock"],
+            # env not set — defaults to empty dict
+        )
+        mgr = BridgeSubprocessManager(cfg)
+
+        captured_kwargs: dict = {}
+
+        async def _fake_create(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _fake_process(returncode=None)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/whatsapp-bridge"),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
+        ):
+            await mgr._spawn()
+
+        # When no extra env vars are set, env= should be None (full inheritance)
+        assert captured_kwargs.get("env") is None, (
+            "Empty BridgeConfig.env must result in env=None (inherit parent env)"
+        )

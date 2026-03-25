@@ -439,15 +439,12 @@ class WhatsAppUserClientConnector:
         if self._cursor_pool is None:
             raise ValueError("DB cursor pool is required")
 
-        # Start Go bridge
+        # Start Go bridge — pass DSN via env var to avoid leaking credentials
+        # in ps / /proc/<pid>/cmdline output.
         bridge_cfg = BridgeConfig(
             binary="whatsapp-bridge",
-            args=[
-                "--db-dsn",
-                _get_bridge_db_dsn(),
-                "--listen",
-                f"unix://{self._config.bridge_socket}",
-            ],
+            args=["--listen", f"unix://{self._config.bridge_socket}"],
+            env={"WA_BRIDGE_DSN": _get_bridge_db_dsn()},
             bridge_socket=self._config.bridge_socket,
             startup_timeout_s=_BRIDGE_STARTUP_TIMEOUT_S,
         )

@@ -2,9 +2,13 @@
 //
 // Usage:
 //
-//	whatsapp-bridge --db-dsn <dsn> --listen unix:///tmp/wa-bridge.sock   # run (default)
-//	whatsapp-bridge pair --db-dsn <dsn>                                   # interactive QR pairing
-//	whatsapp-bridge status --db-dsn <dsn>                                 # print session state
+//	WA_BRIDGE_DSN=<dsn> whatsapp-bridge --listen unix:///tmp/wa-bridge.sock   # run (default)
+//	WA_BRIDGE_DSN=<dsn> whatsapp-bridge pair                                  # interactive QR pairing
+//	WA_BRIDGE_DSN=<dsn> whatsapp-bridge status                                # print session state
+//
+// The DSN is read from the WA_BRIDGE_DSN environment variable to avoid
+// exposing credentials in the process argument list (visible in ps / /proc).
+// The --db-dsn flag is still accepted as an explicit override.
 package main
 
 import (
@@ -64,9 +68,10 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  whatsapp-bridge [--db-dsn DSN] [--listen unix:///tmp/wa-bridge.sock]")
-	fmt.Fprintln(os.Stderr, "  whatsapp-bridge pair --db-dsn DSN")
-	fmt.Fprintln(os.Stderr, "  whatsapp-bridge status --db-dsn DSN")
+	fmt.Fprintln(os.Stderr, "  WA_BRIDGE_DSN=<dsn> whatsapp-bridge [--listen unix:///tmp/wa-bridge.sock]")
+	fmt.Fprintln(os.Stderr, "  WA_BRIDGE_DSN=<dsn> whatsapp-bridge pair")
+	fmt.Fprintln(os.Stderr, "  WA_BRIDGE_DSN=<dsn> whatsapp-bridge status")
+	fmt.Fprintln(os.Stderr, "  # --db-dsn flag still accepted as explicit override")
 }
 
 // ------------------------------------------------------------------
@@ -75,7 +80,7 @@ func printUsage() {
 
 func runBridge(args []string) {
 	fs := flag.NewFlagSet("bridge", flag.ExitOnError)
-	dbDSN := fs.String("db-dsn", envOrDefault("WA_DB_DSN", ""), "PostgreSQL DSN")
+	dbDSN := fs.String("db-dsn", envOrDefault("WA_BRIDGE_DSN", ""), "PostgreSQL DSN (overrides WA_BRIDGE_DSN env var)")
 	listenAddr := fs.String("listen", envOrDefault("WA_LISTEN", "unix:///tmp/wa-bridge.sock"), "Listen address (unix:// or tcp://)")
 	_ = fs.Parse(args)
 
@@ -84,7 +89,7 @@ func runBridge(args []string) {
 	exitCode := exitOK
 
 	if *dbDSN == "" {
-		log.Fatal("--db-dsn is required")
+		log.Fatal("WA_BRIDGE_DSN env var (or --db-dsn flag) is required")
 	}
 
 	socketPath := parseSocketPath(*listenAddr)
@@ -264,11 +269,11 @@ func runBridge(args []string) {
 
 func runPair(args []string) {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
-	dbDSN := fs.String("db-dsn", envOrDefault("WA_DB_DSN", ""), "PostgreSQL DSN")
+	dbDSN := fs.String("db-dsn", envOrDefault("WA_BRIDGE_DSN", ""), "PostgreSQL DSN (overrides WA_BRIDGE_DSN env var)")
 	_ = fs.Parse(args)
 
 	if *dbDSN == "" {
-		log.Fatal("--db-dsn is required")
+		log.Fatal("WA_BRIDGE_DSN env var (or --db-dsn flag) is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), pairingTimeout)
@@ -374,11 +379,11 @@ func runPair(args []string) {
 
 func runStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	dbDSN := fs.String("db-dsn", envOrDefault("WA_DB_DSN", ""), "PostgreSQL DSN")
+	dbDSN := fs.String("db-dsn", envOrDefault("WA_BRIDGE_DSN", ""), "PostgreSQL DSN (overrides WA_BRIDGE_DSN env var)")
 	_ = fs.Parse(args)
 
 	if *dbDSN == "" {
-		log.Fatal("--db-dsn is required")
+		log.Fatal("WA_BRIDGE_DSN env var (or --db-dsn flag) is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
