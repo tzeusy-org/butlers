@@ -29,11 +29,15 @@ Schema:
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 
 Indexes:
-  idx_corrections_target_session_id     — look up all corrections for a session
-  idx_corrections_correcting_session_id — look up corrections by correcting session
-                                          (rate-limit query path)
-  idx_corrections_created_at            — time-range scans / pruning
-  idx_corrections_correction_type       — filter by correction type
+  idx_corrections_target_session_id_created_at     — composite index covering the
+                                                      target_session_id equality
+                                                      filter + ORDER BY created_at
+  idx_corrections_correcting_session_id_created_at — composite index covering the
+                                                      correcting_session_id equality
+                                                      filter + created_at range
+                                                      predicate (rate-limit path)
+  idx_corrections_correction_type                  — filter by correction type
+                                                     (dashboard, audit exports)
 """
 
 from __future__ import annotations
@@ -82,15 +86,19 @@ def upgrade() -> None:
 
     # Rate-limit query: count corrections made BY a correcting session in the
     # rolling hour window (_check_rate_limit in corrections.py).
+    # Composite index covers both the equality filter and the time-range
+    # predicate (created_at >= now() - 1h) in a single index scan.
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_corrections_correcting_session_id
-            ON corrections (correcting_session_id)
+        CREATE INDEX IF NOT EXISTS idx_corrections_correcting_session_id_created_at
+            ON corrections (correcting_session_id, created_at)
     """)
 
-    # Time-range scans (rate-limit window, audit queries, pruning).
+    # Audit query: fetch all corrections targeting a session ordered by time
+    # (get_corrections_for_session in corrections.py uses ORDER BY created_at).
+    # Composite index eliminates the sort step entirely.
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_corrections_created_at
-            ON corrections (created_at)
+        CREATE INDEX IF NOT EXISTS idx_corrections_target_session_id_created_at
+            ON corrections (target_session_id, created_at)
     """)
 
     # Filter by correction type (dashboard, audit exports).
@@ -102,7 +110,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_corrections_correction_type")
-    op.execute("DROP INDEX IF EXISTS idx_corrections_created_at")
-    op.execute("DROP INDEX IF EXISTS idx_corrections_correcting_session_id")
-    op.execute("DROP INDEX IF EXISTS idx_corrections_target_session_id")
+    op.execute("DROP INDEX IF EXISTS idx_corrections_correcting_session_id_created_at")
+    op.execute("DROP INDEX IF EXISTS idx_corrections_target_session_id_created_at")
     op.execute("DROP TABLE IF EXISTS corrections")

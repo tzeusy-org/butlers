@@ -168,26 +168,19 @@ class TestCorrectionsTable:
 
 
 class TestIndexes:
-    def test_index_on_target_session_id(self) -> None:
-        """upgrade() creates an index on target_session_id."""
+    def test_index_on_target_session_id_created_at(self) -> None:
+        """upgrade() creates a composite index on (target_session_id, created_at)."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "idx_corrections_target_session_id" in source
-        assert "ON corrections (target_session_id)" in source
+        assert "idx_corrections_target_session_id_created_at" in source
+        assert "ON corrections (target_session_id, created_at)" in source
 
-    def test_index_on_correcting_session_id(self) -> None:
-        """upgrade() creates an index on correcting_session_id (rate-limit path)."""
+    def test_index_on_correcting_session_id_created_at(self) -> None:
+        """upgrade() creates a composite index on (correcting_session_id, created_at)."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "idx_corrections_correcting_session_id" in source
-        assert "ON corrections (correcting_session_id)" in source
-
-    def test_index_on_created_at(self) -> None:
-        """upgrade() creates an index on created_at."""
-        mod = _load_migration()
-        source = inspect.getsource(mod.upgrade)
-        assert "idx_corrections_created_at" in source
-        assert "ON corrections (created_at)" in source
+        assert "idx_corrections_correcting_session_id_created_at" in source
+        assert "ON corrections (correcting_session_id, created_at)" in source
 
     def test_index_on_correction_type(self) -> None:
         """upgrade() creates an index on correction_type."""
@@ -197,21 +190,23 @@ class TestIndexes:
         assert "ON corrections (correction_type)" in source
 
     def test_all_indexes_use_if_not_exists(self) -> None:
-        """All index creation statements use IF NOT EXISTS."""
+        """All index creation statements use IF NOT EXISTS (per-index check)."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        # Each CREATE INDEX must be guarded
         idx_names = [
-            "idx_corrections_target_session_id",
-            "idx_corrections_correcting_session_id",
-            "idx_corrections_created_at",
+            "idx_corrections_target_session_id_created_at",
+            "idx_corrections_correcting_session_id_created_at",
             "idx_corrections_correction_type",
         ]
         for idx in idx_names:
-            # Verify IF NOT EXISTS appears before the index name in the source
-            pos_guard = source.find("CREATE INDEX IF NOT EXISTS")
+            # Find the index name in the source and check that the text
+            # immediately preceding it contains the IF NOT EXISTS guard.
             pos_idx = source.find(idx)
-            assert pos_guard < pos_idx, f"Index '{idx}' not preceded by CREATE INDEX IF NOT EXISTS"
+            assert pos_idx != -1, f"Index '{idx}' not found in upgrade() source"
+            before_idx = source[:pos_idx]
+            assert "CREATE INDEX IF NOT EXISTS" in before_idx, (
+                f"Index '{idx}' not preceded by CREATE INDEX IF NOT EXISTS"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -227,22 +222,16 @@ class TestDowngrade:
         assert "DROP TABLE IF EXISTS corrections" in source
 
     def test_drops_target_session_index(self) -> None:
-        """downgrade() drops the target_session_id index."""
+        """downgrade() drops the composite target_session_id_created_at index."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
-        assert "idx_corrections_target_session_id" in source
+        assert "idx_corrections_target_session_id_created_at" in source
 
     def test_drops_correcting_session_index(self) -> None:
-        """downgrade() drops the correcting_session_id index."""
+        """downgrade() drops the composite correcting_session_id_created_at index."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
-        assert "idx_corrections_correcting_session_id" in source
-
-    def test_drops_created_at_index(self) -> None:
-        """downgrade() drops the created_at index."""
-        mod = _load_migration()
-        source = inspect.getsource(mod.downgrade)
-        assert "idx_corrections_created_at" in source
+        assert "idx_corrections_correcting_session_id_created_at" in source
 
     def test_drops_correction_type_index(self) -> None:
         """downgrade() drops the correction_type index."""
