@@ -25,7 +25,7 @@ The notify envelope includes `schema_version` ("notify.v1"), `origin_butler` (re
 - **AND** `origin_butler` matches the calling butler's name
 
 ### Requirement: Delivery Intent Validation
-Three delivery intents are supported: `send`, `reply`, and `react`. Each has specific field requirements.
+Four delivery intents are supported: `send`, `reply`, `react`, and `insight`. Each has specific field requirements.
 
 #### Scenario: Send intent
 - **WHEN** `intent="send"` is used
@@ -44,12 +44,19 @@ Three delivery intents are supported: `send`, `reply`, and `react`. Each has spe
 - **AND** `request_context` must include `source_thread_identity` (for telegram: `<chat_id>:<message_id>`)
 - **AND** `message` is not required
 
-#### Scenario: Missing message for send/reply
-- **WHEN** `intent="send"` and `message` is `None` or empty
+#### Scenario: Insight intent
+- **WHEN** `intent="insight"` is used
+- **THEN** `message` is required and must be non-empty
+- **AND** `request_context` is optional
+- **AND** the Messenger butler SHALL treat this as functionally equivalent to `intent="send"` for delivery mechanics
+- **AND** the Messenger MAY apply visual differentiation for insight messages (e.g., formatting, labels)
+
+#### Scenario: Missing message for send/reply/insight
+- **WHEN** `intent` is `"send"`, `"reply"`, or `"insight"` and `message` is `None` or empty
 - **THEN** the tool returns `{"status": "error", "error": "Missing required 'message' parameter..."}`
 
 #### Scenario: Unsupported intent
-- **WHEN** `intent` is not one of `send`, `reply`, `react`
+- **WHEN** `intent` is not one of `send`, `reply`, `react`, `insight`
 - **THEN** the tool returns an error response
 
 ### Requirement: Channel Validation
