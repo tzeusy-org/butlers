@@ -190,9 +190,9 @@ def upgrade() -> None:
     #    env is set to the current butler schema; use schema-qualified DDL).
     # -------------------------------------------------------------------------
     union_terms = "\n    UNION ALL\n    ".join(
-        f"SELECT {_quote_literal(schema)} AS butler, key, value "
-        f"FROM {_quote_ident(schema)}.state "
-        f"WHERE key LIKE 'briefing/daily/%'"
+        f"SELECT {_quote_literal(schema)} AS butler, {_quote_ident('key')}, {_quote_ident('value')} "
+        f"FROM {_quote_ident(schema)}.{_quote_ident('state')} "
+        f"WHERE {_quote_ident('key')} LIKE 'briefing/daily/%'"
         for schema in _SPECIALIST_SCHEMAS
     )
 
