@@ -35,6 +35,7 @@ COPY alembic/alembic.ini alembic.ini
 COPY alembic/ alembic/
 COPY scripts/ scripts/
 COPY roster/ roster/
+COPY pricing.toml pricing.toml
 
 # --frozen: don't re-sync at runtime. --no-dev: skip dev deps.
 ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "butlers"]
