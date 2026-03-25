@@ -1,8 +1,3 @@
-# Cross-Butler Briefing Contribution
-
-## Purpose
-Defines the per-butler deterministic job that extracts domain highlights and writes structured JSON to each specialist butler's state store for daily briefing aggregation. Covers the contribution schema, scheduling, per-domain extraction logic, and state store cleanup.
-
 ## ADDED Requirements
 
 ### Requirement: Briefing Contribution Schema

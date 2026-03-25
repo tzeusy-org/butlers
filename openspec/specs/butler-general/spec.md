@@ -42,6 +42,20 @@ The general butler runs memory maintenance, briefing aggregation, and a daily en
 - **WHEN** the `eod-tomorrow-prep` prompt executes and `briefing/combined/<today>` is absent or empty
 - **THEN** the briefing degrades gracefully to calendar-only format (current behavior preserved)
 
+### Requirement: General Butler Skills
+The general butler has a data organization skill plus shared skills.
+
+#### Scenario: Skill inventory
+- **WHEN** the general butler operates
+- **THEN** it has access to `data-organizer` (collection and entity organization patterns, JSONB query patterns, data hygiene) plus shared skills `butler-memory` and `butler-notifications`
+
+### Requirement: General Memory Taxonomy
+The general butler uses a flexible memory taxonomy for broad knowledge capture.
+
+#### Scenario: Memory classification
+- **WHEN** the general butler extracts facts
+- **THEN** it uses flexible subjects like topic names or "user"; predicates like `goal`, `preference`, `resource`, `idea`, `note`, `deadline`, `status`; permanence `standard` for most general knowledge, `volatile` for temporary notes, `stable` for long-term preferences
+
 ### Requirement: EOD Briefing Multi-Domain Format
 The EOD briefing message SHALL follow a structured multi-domain format when specialist contributions are available. The message SHALL be under 500 words for mobile readability.
 
@@ -57,17 +71,3 @@ The EOD briefing message SHALL follow a structured multi-domain format when spec
 #### Scenario: Calendar-only fallback
 - **WHEN** no specialist contributions have `has_updates=true`
 - **THEN** the briefing renders the calendar timeline only, matching the existing format
-
-### Requirement: General Butler Skills
-The general butler has a data organization skill plus shared skills.
-
-#### Scenario: Skill inventory
-- **WHEN** the general butler operates
-- **THEN** it has access to `data-organizer` (collection and entity organization patterns, JSONB query patterns, data hygiene) plus shared skills `butler-memory` and `butler-notifications`
-
-### Requirement: General Memory Taxonomy
-The general butler uses a flexible memory taxonomy for broad knowledge capture.
-
-#### Scenario: Memory classification
-- **WHEN** the general butler extracts facts
-- **THEN** it uses flexible subjects like topic names or "user"; predicates like `goal`, `preference`, `resource`, `idea`, `note`, `deadline`, `status`; permanence `standard` for most general knowledge, `volatile` for temporary notes, `stable` for long-term preferences

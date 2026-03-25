@@ -1,8 +1,3 @@
-# Cross-Butler Briefing Aggregation
-
-## Purpose
-Defines the General butler's aggregation job that reads specialist briefing contributions cross-schema, merges them into a combined briefing payload, and makes that payload available for the EOD prompt. Covers the cross-schema SQL view, aggregation logic, combined output format, and database migration requirements.
-
 ## ADDED Requirements
 
 ### Requirement: Cross-Schema Briefing View
