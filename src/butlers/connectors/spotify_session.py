@@ -18,9 +18,12 @@ State machine transitions (per openspec connector-spotify design D7):
 Poll result protocol
 --------------------
 Callers pass a ``PollResult`` dataclass to ``on_poll()``.  The method returns
-a list of ``SessionEvent`` objects describing what happened during the poll:
-zero or more ``track_change`` events followed by zero or one ``session_summary``
-event.
+a list of ``SessionEvent`` objects, in emission order, describing what happened
+during the poll.  Each poll may emit zero or more ``track_change`` events and
+at most one ``session_summary`` event.  On context changes (or when draining
+playback resumes with a different context), a ``spotify.session_summary`` is
+emitted for the previous session before the ``spotify.track_change`` event for
+the new context.
 
 Usage::
 
@@ -319,7 +322,7 @@ class ListeningSessionTracker:
         self,
         result: PollResult,
         played_at_ms: int,
-        now: float,  # noqa: ARG002
+        now: float,
     ) -> list[SessionEvent]:
         """Handle a poll result while in ACTIVE state."""
         events: list[SessionEvent] = []
@@ -437,7 +440,7 @@ class ListeningSessionTracker:
             elapsed = now - self._drain_started_at
             if elapsed >= self._idle_timeout_s:
                 assert self._session is not None
-                end_ms = int(self._drain_started_at * 1000) + int(elapsed * 1000)
+                end_ms = int(now * 1000)
                 summary = self._session.build_summary_event(end_ms)
                 events.append(summary)
                 logger.debug(
