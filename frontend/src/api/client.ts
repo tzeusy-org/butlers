@@ -155,6 +155,7 @@ import type {
   WhatsAppPairPollResponse,
   WhatsAppPairStartResponse,
   WhatsAppStatusResponse,
+  DunbarRankingResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2697,4 +2698,9 @@ export function disconnectWhatsApp(): Promise<WhatsAppDisconnectResponse> {
 /** GET /api/connectors/whatsapp/health — session health for badge */
 export function getWhatsAppHealth(): Promise<WhatsAppHealthResponse> {
   return apiFetch<WhatsAppHealthResponse>("/connectors/whatsapp/health");
+}
+
+/** GET /api/relationship/dunbar/ranking — Dunbar tier ranking for social map visualization. */
+export function getDunbarRanking(): Promise<DunbarRankingResponse> {
+  return apiFetch<DunbarRankingResponse>("/relationship/dunbar/ranking");
 }

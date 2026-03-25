@@ -490,6 +490,7 @@ export {
   getEducationQuizResponses,
   requestEducationCurriculum,
   updateEducationMindMapStatus,
+  getDunbarRanking,
 } from "./client.ts";
 
 export type {
@@ -508,4 +509,6 @@ export type {
   QuizResponse,
   QuizResponseParams,
   TeachingFlow,
+  DunbarEntry,
+  DunbarRankingResponse,
 } from "./types.ts";

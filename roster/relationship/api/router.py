@@ -73,6 +73,8 @@ if _models_path.exists():
         CreateEntityInfoRequest = _models_module.CreateEntityInfoRequest
         CreateEntityInfoResponse = _models_module.CreateEntityInfoResponse
         UpdateEntityInfoRequest = _models_module.UpdateEntityInfoRequest
+        DunbarEntry = _models_module.DunbarEntry
+        DunbarRankingResponse = _models_module.DunbarRankingResponse
 
 logger = logging.getLogger(__name__)
 
@@ -2321,3 +2323,68 @@ async def reveal_entity_secret(
         )
 
     return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}
+
+
+# ---------------------------------------------------------------------------
+# GET /dunbar/ranking — Dunbar tier ranking for all contacts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/dunbar/ranking", response_model=DunbarRankingResponse)
+async def get_dunbar_ranking(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> DunbarRankingResponse:
+    """Return the current Dunbar tier ranking for all listed, entity-linked contacts.
+
+    Delegates to the shared Dunbar scoring engine (compute_tier_ranking) which
+    applies exponential decay scores, rank-to-tier mapping with hysteresis, and
+    manual tier overrides.  Also returns the owner entity ID for centering the
+    concentric circles visualization.
+
+    This endpoint is used by the social map visualization in the entities page.
+    """
+    from butlers.tools.relationship import dunbar as _dunbar
+
+    pool = _pool(db)
+
+    # Use the canonical scoring engine — includes decay, overrides, and hysteresis.
+    ranked = await _dunbar.compute_tier_ranking(pool)
+
+    # Fetch canonical names for all entity IDs returned by the ranking.
+    entity_ids = [r["entity_id"] for r in ranked if r["entity_id"] is not None]
+    entity_name_rows, owner_row = await asyncio.gather(
+        pool.fetch(
+            """
+            SELECT e.id, e.canonical_name
+            FROM shared.entities e
+            WHERE e.id = ANY($1::uuid[])
+            """,
+            entity_ids,
+        ),
+        pool.fetchrow(
+            """
+            SELECT entity_id FROM contacts
+            WHERE 'owner' = ANY(roles) AND entity_id IS NOT NULL
+            LIMIT 1
+            """
+        ),
+    )
+
+    entity_names: dict[UUID, str] = {row["id"]: row["canonical_name"] for row in entity_name_rows}
+
+    entries: list[DunbarEntry] = [
+        DunbarEntry(
+            contact_id=r["contact_id"],
+            entity_id=r["entity_id"],
+            canonical_name=entity_names.get(r["entity_id"], "Unknown"),
+            dunbar_tier=r["dunbar_tier"],
+            dunbar_score=r["dunbar_score"],
+            dunbar_tier_override=r.get("dunbar_tier_override", False),
+        )
+        for r in ranked
+        if r["entity_id"] is not None
+    ]
+
+    owner_entity_id = owner_row["entity_id"] if owner_row else None
+
+    return DunbarRankingResponse(entries=entries, owner_entity_id=owner_entity_id)

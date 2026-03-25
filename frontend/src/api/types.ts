@@ -2438,3 +2438,23 @@ export interface WhatsAppDisconnectResponse {
   success: boolean;
   message: string;
 }
+
+// ---------------------------------------------------------------------------
+// Dunbar tier ranking
+// ---------------------------------------------------------------------------
+
+/** A single contact's Dunbar tier ranking entry. */
+export interface DunbarEntry {
+  contact_id: string;
+  entity_id: string;
+  canonical_name: string;
+  dunbar_tier: number;
+  dunbar_score: number;
+  dunbar_tier_override: boolean;
+}
+
+/** Response from GET /api/relationship/dunbar/ranking */
+export interface DunbarRankingResponse {
+  entries: DunbarEntry[];
+  owner_entity_id: string | null;
+}

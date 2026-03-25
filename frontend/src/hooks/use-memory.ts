@@ -25,6 +25,7 @@ import {
   unlinkEntityContact,
   updateEntity,
   updateEntityInfo,
+  getDunbarRanking,
 } from "@/api/index.ts";
 import type {
   CreateEntityInfoRequest,
@@ -281,5 +282,15 @@ export function useUnlinkContact() {
       void queryClient.invalidateQueries({ queryKey: ["contact"] });
       void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
     },
+  });
+}
+
+/** Fetch the Dunbar tier ranking for the social map visualization. */
+export function useDunbarRanking(enabled: boolean = false) {
+  return useQuery({
+    queryKey: ["dunbar-ranking"],
+    queryFn: () => getDunbarRanking(),
+    enabled,
+    staleTime: 60_000,
   });
 }

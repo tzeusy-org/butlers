@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { ConcentricCirclesDialog } from "@/components/memory/ConcentricCirclesDialog";
+
 import type { EntityParams, EntitySummary } from "@/api/types";
 import {
   AlertDialog,
@@ -612,11 +614,16 @@ export default function EntitiesPage() {
   return (
     <div className="space-y-6">
       {/* Page heading */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Entities</h1>
-        <p className="text-muted-foreground mt-1">
-          Browse the knowledge graph — people, organizations, places, and more.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Entities</h1>
+          <p className="text-muted-foreground mt-1">
+            Browse the knowledge graph — people, organizations, places, and more.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 pt-1">
+          <ConcentricCirclesDialog />
+        </div>
       </div>
 
       {/* Unidentified entities needing disambiguation */}

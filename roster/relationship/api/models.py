@@ -391,3 +391,21 @@ class CreateEntityInfoResponse(BaseModel):
     label: str | None = None
     is_primary: bool
     secured: bool
+
+
+class DunbarEntry(BaseModel):
+    """Dunbar tier ranking entry for a single contact/entity."""
+
+    contact_id: UUID
+    entity_id: UUID
+    canonical_name: str
+    dunbar_tier: int
+    dunbar_score: float
+    dunbar_tier_override: bool
+
+
+class DunbarRankingResponse(BaseModel):
+    """Response for GET /dunbar/ranking."""
+
+    entries: list[DunbarEntry]
+    owner_entity_id: UUID | None = None
