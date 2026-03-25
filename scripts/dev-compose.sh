@@ -71,14 +71,56 @@ echo "  Profiles: ${PROFILES[*]:-default}"
 echo "  Compose:  ${CMD[*]} up"
 echo ""
 
+# ── Resolve tailnet hosts for egress firewall allowlist ───────────────
+# Butlers needs these tailnet services. Resolve IPs dynamically so the
+# firewall stays correct even if tailscale reassigns addresses.
+if [ -z "${ALLOWED_TAILNET_HOSTS:-}" ] && command -v tailscale &>/dev/null; then
+  # Tailnet services Butlers needs to reach. Uses DNS names (the stable
+  # identifiers in tailscale) to resolve current IPs.
+  TAILNET_SERVICES=(
+    otel               # OpenTelemetry collector (tracing)
+    butlers-db-dev     # PostgreSQL (future external DB)
+    ollama             # Local LLM inference
+    tzehouse-synology  # Garage S3 storage
+  )
+  resolved=()
+  ts_domain=$(tailscale status --json 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('MagicDNSSuffix',''))" \
+    2>/dev/null) || true
+  for host in "${TAILNET_SERVICES[@]}"; do
+    ip=$(tailscale status --json 2>/dev/null \
+      | python3 -c "
+import sys, json
+target_dns = '${host}.${ts_domain}.'
+peers = json.load(sys.stdin).get('Peer', {})
+for p in peers.values():
+    if p.get('DNSName','') == target_dns:
+        addrs = p.get('TailscaleIPs', [])
+        if addrs:
+            print(addrs[0])
+            break
+" 2>/dev/null) || true
+    if [ -n "$ip" ]; then
+      resolved+=("$ip")
+    else
+      echo "  WARN: tailnet host '$host' not found (skipped)"
+    fi
+  done
+  if [ ${#resolved[@]} -gt 0 ]; then
+    export ALLOWED_TAILNET_HOSTS="${resolved[*]}"
+    echo "Tailnet allowlist: ${ALLOWED_TAILNET_HOSTS}"
+  fi
+fi
+
 # ── Apply egress firewall (blocks private subnet access from containers) ─
 # Needs the egress network to exist, so start infra services first.
 "${CMD[@]}" up -d postgres
 if sudo -n true 2>/dev/null; then
-  sudo "${SCRIPT_DIR}/egress-firewall.sh" && echo ""
+  sudo ALLOWED_TAILNET_HOSTS="${ALLOWED_TAILNET_HOSTS:-}" \
+    "${SCRIPT_DIR}/egress-firewall.sh" && echo ""
 else
-  echo "NOTE: Run 'sudo ./scripts/egress-firewall.sh' to block container access to LAN/Tailscale."
-  echo "  (Skipped — sudo requires a password. Containers have unrestricted outbound access.)"
+  echo "NOTE: Run 'sudo ALLOWED_TAILNET_HOSTS=\"${ALLOWED_TAILNET_HOSTS:-}\" ./scripts/egress-firewall.sh'"
+  echo "  to block container access to LAN/Tailscale (sudo requires a password)."
   echo ""
 fi
 
