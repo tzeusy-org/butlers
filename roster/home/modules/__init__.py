@@ -23,6 +23,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 from urllib.parse import quote
 
@@ -587,6 +588,83 @@ class HomeAssistantModule(Module):
             """
             return await module._activate_scene(entity_id=entity_id, transition=transition)
 
+        async def ha_maintenance_create(
+            name: str,
+            category: str,
+            interval_days: int,
+            notes: str | None = None,
+        ) -> dict[str, Any]:
+            """Create a recurring maintenance item.
+
+            Parameters
+            ----------
+            name:
+                Unique human-readable name for the item
+                (e.g. ``"HVAC filter"``).  Duplicate names are rejected.
+            category:
+                One of ``filter``, ``hvac``, ``appliance``, ``plumbing``,
+                ``electrical``, or ``general``.
+            interval_days:
+                How often (in days) this item should be performed.
+            notes:
+                Optional free-text notes about the item.
+            """
+            return await module._maintenance_create(
+                name=name, category=category, interval_days=interval_days, notes=notes
+            )
+
+        async def ha_maintenance_complete(
+            name: str,
+            completed_at: str | None = None,
+        ) -> dict[str, Any]:
+            """Mark a maintenance item as completed and recompute next_due_at.
+
+            Parameters
+            ----------
+            name:
+                Name of the maintenance item to mark complete.
+            completed_at:
+                Optional ISO 8601 timestamp of when completion occurred.
+                Defaults to ``now()`` when omitted.
+            """
+            return await module._maintenance_complete(name=name, completed_at=completed_at)
+
+        async def ha_maintenance_list(
+            category: str | None = None,
+            status: str | None = None,
+        ) -> list[dict[str, Any]]:
+            """List maintenance items, optionally filtered by category or status.
+
+            Parameters
+            ----------
+            category:
+                If provided, only items in this category are returned
+                (``filter``, ``hvac``, ``appliance``, ``plumbing``,
+                ``electrical``, ``general``).
+            status:
+                If provided, filter by computed status:
+
+                - ``due`` — ``next_due_at <= now()``
+                - ``upcoming`` — ``next_due_at`` within the next 7 days
+                - ``ok`` — ``next_due_at`` more than 7 days away
+                  (or NULL with a prior completion date)
+
+                Items with ``next_due_at IS NULL`` and no prior completion
+                are classified as ``due`` (never-completed, setup needed).
+            """
+            return await module._maintenance_list(category=category, status=status)
+
+        async def ha_maintenance_remove(name: str) -> dict[str, Any]:
+            """Delete a maintenance item by name.
+
+            Parameters
+            ----------
+            name:
+                Name of the maintenance item to remove.  Returns an error
+                message if no item with this name exists.
+            """
+            return await module._maintenance_remove(name=name)
+
         mcp.tool()(ha_get_entity_state)
         mcp.tool()(ha_list_entities)
         mcp.tool()(ha_list_areas)
@@ -594,6 +672,10 @@ class HomeAssistantModule(Module):
         mcp.tool()(ha_get_history)
         mcp.tool()(ha_get_statistics)
         mcp.tool()(ha_render_template)
+        mcp.tool()(ha_maintenance_create)
+        mcp.tool()(ha_maintenance_complete)
+        mcp.tool()(ha_maintenance_list)
+        mcp.tool()(ha_maintenance_remove)
         if not self._config.read_only:
             mcp.tool()(ha_call_service)
             mcp.tool()(ha_activate_scene)
@@ -1943,3 +2025,307 @@ class HomeAssistantModule(Module):
             persisted,
             errors,
         )
+
+    # ------------------------------------------------------------------
+    # Maintenance scheduling tools
+    # ------------------------------------------------------------------
+
+    _VALID_CATEGORIES = frozenset(
+        {"filter", "hvac", "appliance", "plumbing", "electrical", "general"}
+    )
+
+    async def _maintenance_create(
+        self,
+        name: str,
+        category: str,
+        interval_days: int,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Insert a new maintenance item; reject duplicate names.
+
+        Parameters
+        ----------
+        name:
+            Unique human-readable name for the item.
+        category:
+            Category string; must be one of the allowed values.
+        interval_days:
+            Recurrence interval in days (must be positive).
+        notes:
+            Optional free-text notes.
+
+        Returns
+        -------
+        dict
+            Created item fields (``id``, ``name``, ``category``,
+            ``interval_days``, ``next_due_at``) on success, or an
+            ``{"error": ...}`` dict when input is invalid or the name
+            is already taken.
+        """
+        if category not in self._VALID_CATEGORIES:
+            return {
+                "error": (
+                    f"Invalid category {category!r}. "
+                    f"Allowed values: {sorted(self._VALID_CATEGORIES)}"
+                ),
+                "hint": "Provide one of the listed category values.",
+            }
+        if interval_days <= 0:
+            return {
+                "error": f"interval_days must be a positive integer, got {interval_days}.",
+                "hint": "Use a value >= 1.",
+            }
+
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return {"error": "Database not available.", "hint": "Check butler DB connection."}
+
+        # Check for duplicate before INSERT to return a clear error message.
+        existing = await pool.fetchrow(
+            "SELECT id FROM maintenance_items WHERE name = $1",
+            name,
+        )
+        if existing is not None:
+            return {
+                "error": f"A maintenance item named {name!r} already exists.",
+                "hint": "Use ha_maintenance_list to review existing items.",
+            }
+
+        row = await pool.fetchrow(
+            """
+            INSERT INTO maintenance_items (name, category, interval_days, notes)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, name, category, interval_days, next_due_at
+            """,
+            name,
+            category,
+            interval_days,
+            notes,
+        )
+        return {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "category": row["category"],
+            "interval_days": row["interval_days"],
+            "next_due_at": row["next_due_at"].isoformat() if row["next_due_at"] else None,
+        }
+
+    async def _maintenance_complete(
+        self,
+        name: str,
+        completed_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Mark a maintenance item complete and recompute next_due_at.
+
+        Also stores a memory fact recording the completion event.
+
+        Parameters
+        ----------
+        name:
+            Name of the maintenance item to mark complete.
+        completed_at:
+            ISO 8601 timestamp of completion; defaults to ``now()``.
+
+        Returns
+        -------
+        dict
+            Updated item fields, or an ``{"error": ...}`` dict.
+        """
+        from datetime import datetime
+
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return {"error": "Database not available.", "hint": "Check butler DB connection."}
+
+        # Determine completion timestamp.
+        if completed_at is not None:
+            try:
+                ts = datetime.fromisoformat(completed_at)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+            except ValueError:
+                return {
+                    "error": f"Invalid completed_at timestamp: {completed_at!r}",
+                    "hint": "Provide an ISO 8601 datetime string (e.g. '2026-03-25T10:00:00Z').",
+                }
+        else:
+            ts = datetime.now(UTC)
+
+        row = await pool.fetchrow(
+            """
+            UPDATE maintenance_items
+            SET
+                last_completed_at = $2,
+                next_due_at       = $2 + (interval_days * interval '1 day'),
+                updated_at        = now()
+            WHERE name = $1
+            RETURNING id, name, category, interval_days, last_completed_at, next_due_at
+            """,
+            name,
+            ts,
+        )
+        if row is None:
+            return {
+                "error": f"No maintenance item named {name!r} found.",
+                "hint": "Use ha_maintenance_list to see available items.",
+            }
+
+        result = {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "category": row["category"],
+            "interval_days": row["interval_days"],
+            "last_completed_at": (
+                row["last_completed_at"].isoformat() if row["last_completed_at"] else None
+            ),
+            "next_due_at": row["next_due_at"].isoformat() if row["next_due_at"] else None,
+        }
+
+        # Store completion fact in memory for historical tracking.
+        try:
+            from butlers.modules.memory.embedding import EmbeddingEngine
+            from butlers.modules.memory.storage import store_fact
+
+            pool_for_fact = pool
+            embedding_engine = EmbeddingEngine()
+            try:
+                from butlers.modules.memory.tools import get_embedding_engine
+
+                embedding_engine = get_embedding_engine()
+            except Exception:
+                pass  # fall back to no-op engine
+
+            category = row["category"]
+            await store_fact(
+                pool_for_fact,
+                subject=name,
+                predicate="device_issue",
+                content=f"{category.capitalize()} maintenance completed: {name}",
+                embedding_engine=embedding_engine,
+                permanence="standard",
+                importance=5.0,
+                scope="home",
+                tags=["maintenance", category],
+                source_butler="home",
+            )
+        except Exception as exc:
+            logger.warning(
+                "HomeAssistantModule: failed to store completion fact for %r: %s", name, exc
+            )
+
+        return result
+
+    async def _maintenance_list(
+        self,
+        category: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return maintenance items, optionally filtered by category or status.
+
+        Parameters
+        ----------
+        category:
+            If provided, only items in this category are returned.
+        status:
+            ``due``, ``upcoming`` (within 7 days), or ``ok``.
+
+        Returns
+        -------
+        list[dict]
+            Items sorted by ``next_due_at`` ascending (NULLs first), each
+            containing ``id``, ``name``, ``category``, ``interval_days``,
+            ``last_completed_at``, ``next_due_at``, ``notes``, and
+            ``status`` (computed).
+        """
+        _valid_statuses = frozenset({"due", "upcoming", "ok"})
+        if status is not None and status not in _valid_statuses:
+            return [
+                {
+                    "error": f"Invalid status filter {status!r}.",
+                    "hint": f"Allowed values: {sorted(_valid_statuses)}",
+                }
+            ]
+        if category is not None and category not in self._VALID_CATEGORIES:
+            return [
+                {
+                    "error": f"Invalid category {category!r}.",
+                    "hint": f"Allowed values: {sorted(self._VALID_CATEGORIES)}",
+                }
+            ]
+
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return [{"error": "Database not available.", "hint": "Check butler DB connection."}]
+
+        query = """
+            SELECT
+                id,
+                name,
+                category,
+                interval_days,
+                last_completed_at,
+                next_due_at,
+                notes,
+                CASE
+                    WHEN next_due_at IS NULL AND last_completed_at IS NULL THEN 'due'
+                    WHEN next_due_at <= now() THEN 'due'
+                    WHEN next_due_at <= now() + interval '7 days' THEN 'upcoming'
+                    ELSE 'ok'
+                END AS status
+            FROM maintenance_items
+            WHERE ($1::text IS NULL OR category = $1)
+            ORDER BY next_due_at ASC NULLS FIRST
+        """
+        rows = await pool.fetch(query, category)
+
+        items = []
+        for row in rows:
+            computed_status = row["status"]
+            if status is not None and computed_status != status:
+                continue
+            items.append(
+                {
+                    "id": str(row["id"]),
+                    "name": row["name"],
+                    "category": row["category"],
+                    "interval_days": row["interval_days"],
+                    "last_completed_at": (
+                        row["last_completed_at"].isoformat() if row["last_completed_at"] else None
+                    ),
+                    "next_due_at": row["next_due_at"].isoformat() if row["next_due_at"] else None,
+                    "notes": row["notes"],
+                    "status": computed_status,
+                }
+            )
+        return items
+
+    async def _maintenance_remove(self, name: str) -> dict[str, Any]:
+        """Delete a maintenance item by name.
+
+        Parameters
+        ----------
+        name:
+            Name of the item to delete.
+
+        Returns
+        -------
+        dict
+            ``{"deleted": true, "name": name}`` on success, or
+            ``{"error": ...}`` if not found.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return {"error": "Database not available.", "hint": "Check butler DB connection."}
+
+        result = await pool.execute(
+            "DELETE FROM maintenance_items WHERE name = $1",
+            name,
+        )
+        # asyncpg returns e.g. "DELETE 1" or "DELETE 0"
+        deleted_count = int(result.split()[-1])
+        if deleted_count == 0:
+            return {
+                "error": f"No maintenance item named {name!r} found.",
+                "hint": "Use ha_maintenance_list to see available items.",
+            }
+        return {"deleted": True, "name": name}
