@@ -10,7 +10,7 @@
  * after `message_complete`.
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { MessageSquareIcon } from "lucide-react";
 
@@ -73,7 +73,10 @@ function ChatContent({ butlerName }: ChatContentProps) {
   // Fetch conversations list
   const { data: conversationsData, isLoading: isLoadingConversations } =
     useConversations(butlerName);
-  const conversations: ConversationSummary[] = conversationsData?.data ?? [];
+  const conversations: ConversationSummary[] = useMemo(
+    () => conversationsData?.data ?? [],
+    [conversationsData],
+  );
 
   // Fetch messages for the active conversation
   const { data: messagesData, isLoading: isLoadingMessages } =
