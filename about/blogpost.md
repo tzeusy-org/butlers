@@ -1,96 +1,135 @@
-# Your AI Agent Doesn't Need to Be One Agent
+# Butlers: Nine Specialists Instead of One Generalist
 
-Most people building personal AI systems make the same mistake: they build one agent and keep making it bigger.
+A few weeks ago, while recovering from surgery and exploring vibe coding, I started building a personal digital butler. The idea isn't new --- thousands of people have the same itch, and projects like OpenClaw have shown there's real appetite for it. But I wanted to build my own, for reasons that shaped the architecture in ways I didn't expect.
 
-It starts innocently. You want an AI assistant that handles your email. Then you add calendar. Then health tracking. Then your contacts. Then financial awareness. Each feature is a new system prompt paragraph, a new set of tools, a wider context window. Six months in, you have a 15,000-token system prompt, a model that confuses your blood pressure with your bank balance, and a vague sense that something went structurally wrong.
+Six things pushed me toward a custom build:
 
-Something did. You built a monolith.
+1. I wanted to learn vibe coding properly, inspired by Gas Town and Jeffrey Emanuel's work in agentic coding
+2. My personal setup (tailnet, Home Assistant, specific integrations) needed custom wiring, not contributions to someone else's platform
+3. I had a fundamentally different architectural idea than what I'd seen
+4. End-to-end security and code control mattered more than ecosystem breadth
+5. Security through customization --- a bespoke system has a different attack surface than the most-starred project on GitHub
+6. I wanted an automated CRM that didn't require me to manually ingest data
 
-I've been building Butlers for the past few months --- a personal AI agent system that takes the opposite approach. Instead of one agent that does everything, it's nine specialized daemons, each owning a life domain, connected by a protocol they all speak natively. This post is about why that architecture exists, what I got wrong along the way, and what I think matters if you're building something similar.
+What came out is Butlers --- a system of nine domain-specialized AI agents running as persistent daemons on my machine. Not one agent that does everything. Nine that each do one thing well.
 
-## The Problem With One Big Agent
+This is possible now because LLMs have become competent enough to serve as universal intent-to-workflow translation layers. Machine output converts to intuitive English. The costs are affordable and dropping. Agent skills and MCP tooling have matured to the point where this isn't a research project --- it's usable infrastructure.
 
-A single agent handling health, relationships, finance, education, travel, and home automation will inevitably hit three walls:
+## What Is a Butler?
 
-**Context pollution.** Your health history leaks into finance sessions. Your relationship notes consume tokens during calendar queries. Every session pays the cost of every domain, whether it's relevant or not. This isn't a theoretical concern --- it's the first thing you notice when you start logging real data across multiple life domains.
+A butler is a secretary with both autonomous and interactive capabilities, interacting with customizable, modular digital life components. Wherever I have a digital presence with an accessible API, modules expose read/write capabilities to LLMs operating based on:
 
-**Personality incoherence.** A health companion should be patient and non-judgmental. A financial advisor should be precise and risk-aware. A relationship tracker should be warm and recall-oriented. These are different modes of interaction. Cramming them into one system prompt produces a personality that's mediocre at everything and excellent at nothing.
+1. Preconfigured prompts and personality definitions
+2. Inputs from other data sources (email, Telegram, calendar, Home Assistant)
+3. User-defined scheduled workflows, reminders, and TODOs
 
-**Scope creep without guardrails.** When there's no boundary, every feature belongs everywhere. Where does "remind me to call Mom about her doctor's appointment" live? Health? Relationships? Calendar? In a monolith, the answer is "wherever the prompt happens to route it today." In a specialized system, the Relationship butler owns it, because the manifesto says so.
+This means data from arbitrary systems can meaningfully affect other systems, with LLMs and prompts as the translation layer between them.
 
-## Nine Daemons, One Protocol
+A concrete example: a wedding invitation email arrives. The Gmail connector picks it up and submits it to the Switchboard. The Switchboard classifies it and fans out to multiple butlers. The Calendar module registers the event in Google Calendar. The Relationship butler documents the marriage, updates the participants' contact records, and notes it as a life event. I didn't touch anything. The system understood the email, extracted the structured data, and wired it to the right places.
 
-Butlers runs nine domain-specialized butlers as persistent async daemons:
+## Why Not One Big Agent?
 
-- **Switchboard** --- the central router. Every message enters here.
-- **Health** --- measurements, medications, conditions, symptoms, nutrition.
-- **Relationship** --- contacts, interactions, important dates, gifts, the Dunbar model.
-- **Finance** --- financial signals and awareness.
-- **Education** --- learning tracking and knowledge management.
+I started with the same instinct everyone has: one agent, keep adding tools. It breaks down fast for three reasons.
+
+**Context pollution.** Your health history leaks into finance sessions. Your relationship notes consume tokens during calendar queries. Every session pays the cost of every domain, whether it's relevant or not. This is the first thing you notice when you start logging real data across multiple life domains --- it's not theoretical.
+
+**Personality incoherence.** A health companion should be patient and non-judgmental. A financial advisor should be precise and risk-aware. A relationship tracker should be warm and recall-oriented. Cramming them into one system prompt produces a personality that's mediocre at everything.
+
+**Context window constraints.** Domain specialization provides immediate "quick wins" by reducing the contextualization load --- prompts, personas, tooling --- per session. This is critical given that context windows are finite and expensive. A health session loads health tools and health personality. It doesn't carry the weight of education curricula or home automation schemas.
+
+The solution requires an intelligent routing layer deciding which butler(s) receive which payload sections, plus context propagation maintaining critical details --- chat_id, message_id, email_id --- throughout the entire flow lifecycle.
+
+## The Architecture: Three Orthogonal Dimensions
+
+The system organizes along three dimensions:
+
+1. **Roster** --- nine domain-specialized butlers
+2. **Modules** --- pluggable tools and capabilities per butler
+3. **Connectors** --- data ingestion from external systems
+
+With two interaction modes: a chat medium (Telegram primarily) and a frontend dashboard for investigation and overviews.
+
+### The Roster
+
+- **Switchboard** --- the intelligent front door. Every message enters here, gets classified, and routes to the right specialist.
+- **Health** --- measurements, medications, conditions, symptoms, nutrition, research. Tracks the full picture of your wellbeing longitudinally.
+- **Relationship** --- a personal CRM built on the Dunbar model. Contacts, interactions, important dates, gifts, relationship health scores that decay without interaction.
+- **Finance** --- financial signal tracking and awareness.
+- **Education** --- curricula, spaced repetition, learning tracking, and knowledge management.
 - **Travel** --- trip planning and context.
-- **Home** --- home automation awareness via Home Assistant.
+- **Home** --- deep wiring of the Home Assistant API for home automation awareness.
 - **General** --- the catch-all. Freeform collections for everything that doesn't have a specialist.
 - **Messenger** --- outbound notification delivery.
 
-They communicate exclusively through MCP (Model Context Protocol). This isn't a convenience choice --- it's a structural constraint. Butler A cannot import Butler B's code, access Butler B's database schema, or communicate through any side channel. The Switchboard is the only bridge.
+They communicate exclusively through MCP (Model Context Protocol). Butler A cannot import Butler B's code, access Butler B's database schema, or communicate through any side channel. The Switchboard is the only bridge. This isn't a convention --- it's enforced at the process level.
 
-Why MCP specifically? Because it's the same protocol that LLM sessions use to call tools. A butler can't tell whether a tool call came from a Claude session or from the Switchboard dispatching a classified message. This symmetry means the butler's MCP tools are its complete interface --- no hidden backdoors, no special internal APIs.
+### Why MCP?
 
-## Intelligence and Infrastructure Are Different Things
+MCP serves as the universal protocol for three relationships:
 
-Here's the opinion that shaped everything: **the daemon should be dumb.**
+1. **LLM-to-butler:** Ephemeral sessions call the butler's tools to read state, send messages, and interact with services.
+2. **Butler-to-butler:** The Switchboard dispatches work to domain butlers. Domain butlers never call each other directly.
+3. **Client-to-butler:** The dashboard and connectors interact through the same MCP endpoints.
 
-Each butler daemon is deterministic infrastructure. It manages lifecycle, runs migrations, registers tools, enforces cron schedules, and logs sessions. It does not reason, classify, or decide. It's testable, debuggable, and predictable.
+A butler can't tell whether a tool call came from a Claude session or from the Switchboard dispatching a classified message. This symmetry is deliberate --- the butler's MCP tools are its complete interface, with no hidden backdoors.
 
-Intelligence lives exclusively in ephemeral LLM sessions that the daemon spawns on demand. When a trigger fires --- an incoming message, a cron tick, a connector submission --- the daemon generates a locked-down MCP config, spawns a fresh Claude Code (or Codex, or Gemini) session with only that butler's tools available, and lets the LLM do its thing. The session runs, calls tools, reads and writes state, then exits. The daemon logs what happened: tokens consumed, tools called, duration, cost.
+MCP servers also enable constraint-based workflow design. Instead of exposing powerful tools like arbitrary CLI access, each butler gets precisely the tools its modules provide. Static, locally-run docstrings controlled entirely by the codebase. Composed modules eliminate tooling waste. Local-only configuration eliminates authentication concerns.
 
-This separation matters more than it sounds. When the daemon is stateless and predictable, you can test it with normal unit tests. When intelligence is confined to ephemeral sessions, you can swap models, adjust prompts, and change behavior without touching infrastructure code. The two concerns evolve independently.
+### The Daemon Model: Dumb Infrastructure, Smart Sessions
 
-The alternative --- mixing LLM logic into the daemon, making the infrastructure "smart" --- is a defect in this architecture. I've caught myself doing it twice and reverted both times.
+Each butler concretizes as a **persistent MCP server** with preconfigured tools that spawns **ephemeral LLM sessions** upon specific **triggers**.
 
-## The Switchboard: Routing as a First-Class Problem
+The daemon itself is deterministic infrastructure. It manages lifecycle, runs migrations, registers tools, enforces cron schedules, and logs sessions. It does not reason, classify, or decide. It's testable, debuggable, and predictable.
 
-When you message the system --- from Telegram, Gmail, Discord, wherever --- the Switchboard receives it first. It uses LLM-based classification to determine which butler should handle it, then dispatches via MCP.
+Intelligence lives exclusively in the ephemeral LLM sessions the daemon spawns on demand. When a trigger fires --- an incoming message, a cron tick, a connector submission --- the daemon generates a locked-down MCP config, spawns a fresh session with only that butler's tools available, and lets the LLM work. The session runs, calls tools, reads and writes state, then exits. The daemon logs everything: tokens consumed, tools called, duration, cost.
 
-"I've been feeling tired lately" goes to Health. "Coffee with Alex tomorrow" goes to Relationships. "What's on my shopping list?" goes to General. The user never has to think about routing. They just talk.
+For the LLM runtime, I had two options: wrap existing CLIs (Claude Code, Codex, OpenCode) or use application-specific SDKs (Claude Agent SDK). I went with CLI wrapping for three reasons:
 
-This works because the Switchboard knows each butler's capabilities and can match intent against domain. Thread affinity means follow-up messages in an existing conversation stick to the same butler without re-classification. Fanout support means a message that genuinely spans domains can reach multiple butlers.
+1. **Piggyback active development.** CLIs automatically support emerging capabilities --- system prompts, tool orchestration, skills configuration --- without me maintaining SDK integrations.
+2. **Ephemeral sessions don't need interactivity.** CLI invocation is a natural fit for the spawn-run-exit model.
+3. **Avoids maintenance burden.** No library updates, deprecations, or cross-SDK incompatibilities to manage.
 
-The key insight: **connectors and routing are separate concerns.** The Telegram connector doesn't know about health or relationships. It normalizes Telegram events into a canonical envelope format (`ingest.v1`) and submits them to the Switchboard. Gmail does the same with email. Discord with websocket events. Each connector is a standalone process that handles exactly one transport's connection model, authentication, rate limits, and failure modes.
+This also enables model agnosticism. The spawner has pluggable runtime adapters for Claude Code, Codex, Gemini CLI, and OpenCode. Swapping the model behind a butler is a config change, not a code change.
+
+### Skills: Lazy-Loaded Context
+
+Agent Skills introduce specialized butler capabilities that work naturally with the modular design. Each butler accesses both its own skills and shared skills.
+
+Skills are extremely context-efficient. Instead of embedding entire workflows in scheduled prompts, skills can be invoked selectively. Only the YAML frontmatter consumes context at session start --- the full skill body is "lazy-loaded" when the LLM decides it's relevant. This means a butler can have access to a dozen complex workflows (memory taxonomy, health check-in protocols, relationship maintenance routines) without paying the token cost unless they're actually needed.
+
+### Connectors: Transport Without Opinion
+
+Connectors are standalone processes that bridge external event sources to the Switchboard. They normalize events into a canonical envelope format (`ingest.v1`) and submit via MCP. They do not classify or route --- that's the Switchboard's job.
+
+The Telegram connector doesn't know about health or relationships. Gmail doesn't know about calendar. Each connector handles exactly one transport's connection model, authentication, rate limits, and failure modes.
 
 This means the Telegram connector can crash and restart without affecting any butler. A butler can restart without dropping Telegram connections. Transport diversity doesn't infect domain logic.
 
-## Manifestos Are Not Documentation
-
-Every butler has a `MANIFESTO.md` that defines its identity, purpose, and boundaries. This sounds like documentation. It isn't. It's a binding contract.
-
-The Health Butler's manifesto says: *"Your health is not a snapshot --- it's a story told over weeks, months, and years."* That's not marketing. It tells you that the health tools must support longitudinal tracking, that trend analysis is core, and that one-off queries without history are insufficient.
-
-The Relationship Butler's manifesto incorporates the Dunbar model --- concentric layers of social connection at 5, 15, 50, 150, 500, and 1500 contacts. This isn't a nice-to-have feature. It's the foundational model for how the butler prioritizes attention. Inner-circle relationships get more frequent check-ins. Relationship health scores decay without interaction. The architecture follows from the manifesto.
-
-When two butlers could plausibly own a capability, the manifestos resolve the dispute. When a proposed feature contradicts a manifesto, the feature doesn't ship --- or the manifesto gets updated first, with full consideration of the implications.
-
-I've found this to be the single most useful architectural decision in the project. It turns "where should this go?" from a judgment call into a lookup.
-
-## Modules: The Only Extension Mechanism
+### Modules: The Only Extension Mechanism
 
 Capabilities are added through modules. A module implements an abstract base class with three hooks:
 
-- `register_tools()` --- adds MCP tools.
-- `migrations()` --- declares database migrations.
-- `on_startup()` / `on_shutdown()` --- lifecycle hooks.
+- `register_tools()` --- adds MCP tools
+- `migrations()` --- declares database migrations
+- `on_startup()` / `on_shutdown()` --- lifecycle hooks
 
-That's it. Modules only add tools. They never modify core infrastructure --- the state store, the scheduler, the spawner, or the session log. If a capability requires core changes, it belongs in core, not in a module.
+That's it. Modules only add tools. They never modify core infrastructure. If a capability requires core changes, it belongs in core, not in a module.
 
-This sounds restrictive. It is. That's the point.
+A butler opts into exactly the modules it needs via `butler.toml`. The health butler has measurements, medications, and nutrition. The general butler has collections and calendar. Neither carries the other's weight. Dependencies between modules are declared explicitly and resolved via topological sort at startup.
 
-It prevents capability sprawl --- if it's not a module, it doesn't exist. It enforces isolation --- each module owns its own tables, can't touch another module's schema. It enables composition --- a butler opts into exactly the modules it needs via `butler.toml`. The health butler has measurements, medications, and nutrition. The general butler has collections and calendar. Neither carries the other's weight.
+### Manifestos: Identity as Architecture
 
-Dependencies between modules are declared explicitly and resolved via topological sort at startup. No circular deps, no implicit ordering, no surprises.
+Every butler has a `MANIFESTO.md` that defines its identity, purpose, and boundaries. This sounds like documentation. It isn't. It's a binding contract.
 
-## Memory: Three Tiers, Not One
+The Health Butler's manifesto says: *"Your health is not a snapshot --- it's a story told over weeks, months, and years."* That tells you the health tools must support longitudinal tracking, that trend analysis is core, and that one-off queries without history are insufficient.
 
-The memory subsystem is worth calling out because most agent memory implementations are a flat key-value store or a single vector database. Butlers uses a three-tier model:
+The Relationship Butler's manifesto incorporates the Dunbar model --- concentric layers of social connection at 5, 15, 50, 150, 500, and 1500 contacts. Inner-circle relationships get more frequent check-ins. Relationship health scores decay without interaction. The architecture follows from the manifesto.
+
+When two butlers could plausibly own a capability, the manifestos resolve the dispute. This has been the single most useful architectural decision in the project --- it turns "where should this go?" from a judgment call into a lookup.
+
+## Memory: Inspired by the JVM
+
+Most agent memory implementations are a flat key-value store or a single vector database. Butlers uses a three-tier model inspired by Java's JVM garbage collection design:
 
 **Eden** (short-term): Raw observations from LLM sessions. Everything goes here first. High volume, unprocessed.
 
@@ -98,54 +137,75 @@ The memory subsystem is worth calling out because most agent memory implementati
 
 **Long-Term** (archival): Promoted from mid-term based on relevance and access frequency. Compressed, stable facts that persist across months.
 
-Each butler that enables the memory module gets its own tiers within its database schema. Memory is per-butler. The health butler's memory is about health. The relationship butler's memory is about people. No cross-contamination.
+Each butler that enables the memory module gets its own tiers within its database schema. The health butler's memory is about health. The relationship butler's memory is about people. No cross-contamination.
 
-The consolidation job is the key piece. It's the difference between "the agent said something about my blood pressure once" and "the system knows my blood pressure trends over the past six months." Raw observations become structured knowledge through periodic processing, not through heroic single-session context windows.
+The consolidation job is the key piece. It's the difference between "the agent said something about my blood pressure once" and "the system knows my blood pressure trends over the past six months." Raw observations become structured knowledge through periodic processing, not through heroic single-session context windows. The goal is multi-year information retention that builds knowledge bases and a personalized "voice" over time.
 
-## User-Federated: One User, One Instance
+## Telemetry: Non-Negotiable for Agentic Systems
+
+I've come to believe that end-to-end telemetry is not optional for agentic system design. You need it for:
+
+- **Propagation visibility.** Understanding how a user query flows across butlers and tool calls. OpenTelemetry traces from ingestion through classification, routing, and session execution. The spawner injects `TRACEPARENT` into LLM CLI subprocesses, so you get connected traces across the entire flow.
+- **Error surfacing.** Explicit stack traces and error logging when LLMs mis-invoke MCP tools --- which they do, regularly.
+- **Prompt injection detection.** External inputs (emails, newsletters) can contain inadvertent prompt injections. I discovered that Marginal Revolution newsletters contain "Add a comment to this post: {URL}" button text that the model was treating as instructions. Telemetry surfaced this immediately.
+- **Cost tracking.** Full visibility into token usage, query history, and system load per butler, per session.
+
+Grafana Alloy collects everything. Tempo stores traces. Prometheus scrapes metrics. The dashboard surfaces it all.
+
+## Security: One User, Full Sovereignty
 
 This is the non-negotiable rule that shapes every other decision: **one user, one instance, full sovereignty.**
 
-You own the database, the credentials, the LLM API keys, and all data. There is no cloud service, no account, no subscription. If someone else wants Butlers, they run their own.
+I own the database, the credentials, the LLM API keys, and all data. There is no cloud service, no account, no subscription. The system runs exclusively within my private tailnet with personal data. If someone else wants Butlers, they run their own.
 
 This simplifies security enormously. There's no multi-tenant isolation because there's no multi-tenancy. The threat model is: protect the owner's data from unauthorized access, and prevent agents from acting beyond their intended scope. That's it.
 
-All nine butlers share a single PostgreSQL database with schema-level isolation. One connection string, one backup target, one monitoring endpoint. Running nine separate databases for a single-user system would be absurd.
+All nine butlers share a single PostgreSQL database with schema-level isolation. Credentials follow a DB-first model --- runtime secrets live in the database and are managed through the dashboard, not scattered across `.env` files.
 
-Credentials follow a DB-first model --- the `CredentialStore` checks a database table first, falling back to environment variables only for infrastructure bootstrap (database connection params, OTEL endpoint). Runtime secrets --- API keys, OAuth tokens --- live in the database and are managed through the dashboard. No `.env` files with 47 API keys.
+Approval gates provide the last line of defense for sensitive operations --- sending messages on your behalf, modifying calendar events, deleting data. The gate is enforced at the MCP server level, not in the prompt. The LLM can't bypass it. Timeouts result in denial, not silent approval.
 
-## The Boring Parts That Matter
+## Examples of It in Use
 
-**Observability**: OpenTelemetry traces from ingestion through classification, routing, and session execution. The spawner injects `TRACEPARENT` into LLM CLI subprocesses, so you get connected traces across the entire flow. Grafana Alloy collects; Tempo stores traces; Prometheus scrapes metrics.
+### Education Butler: Curricula + Spaced Repetition
 
-**Self-healing**: When an LLM session crashes, the system fingerprints the error, tracks recurrence, and can dispatch a healing session using a dedicated model tier. This sounds like magic. In practice it's pattern matching and retry logic. But it means the system recovers from transient failures without waking you up.
+The Education Butler generates full curricula via curriculum-planning skills, delivers lessons through Telegram, and grades my responses. It adjusts curriculum progress and focus areas based on my performance. I'm using it to study topics where I want structured, paced learning --- the butler handles the pedagogy, I just show up and answer questions.
 
-**Approval gates**: Sensitive operations --- sending messages on your behalf, modifying calendar events, deleting data --- require explicit owner confirmation. The gate is enforced at the MCP server level, not in the prompt. The LLM can't bypass it. Timeouts result in denial, not silent approval.
+### Home Butler: Home Assistant Integration
 
-**Dashboard**: FastAPI backend with a Vite frontend. Real-time butler status, session logs, contact and identity views, ingestion monitoring, credential configuration. It's not pretty yet, but it's functional.
+The Home Butler has deep read access to the Home Assistant API. It generates comprehensive home environment reports --- temperature, humidity, air quality, energy usage. The Health Butler can correlate bedroom temperature and humidity with sleep quality, or indoor air quality with respiratory symptoms. Environmental data becomes health data when the right butler can see it.
+
+### Relationship Butler: Automated CRM
+
+This was one of the original motivations. When I have coffee with someone, I tell Telegram about it. The Relationship butler logs the interaction, updates the contact's health score (Dunbar decay model), extracts any facts mentioned, and notes follow-up items. No manual data entry into a CRM. No forgetting to update a spreadsheet. The butler remembers so I can focus on being present.
+
+### Cross-Butler Workflows
+
+The wedding invitation example captures the real power: a single email triggers calendar events, relationship updates, and memory storage across multiple butlers. I didn't configure this workflow explicitly. The Switchboard classified the content and fanned out to the relevant specialists. Each butler did what its manifesto says it should do.
+
+## Current Thoughts
+
+The barrier to entry for application development has genuinely vanished. What limits progress now is concretizing ideas and understanding fundamentals. Coming from a software engineering and SRE background, I'm aware there are significant knowledge gaps that probably produced suboptimal architectural decisions in places. An experienced distributed systems engineer would handle some of this differently.
+
+But the system already delivers meaningful daily value at alpha stage. It handles my daily information flow, tracks health data, maintains relationship context, and routes messages intelligently. It's been running for weeks without major intervention.
+
+The honest assessment: it's early, it's vibe-coded, but the intent is a system that runs continuously, handles real data, and is trusted with real decisions. The bar is reliability, not novelty.
 
 ## What I'd Do Differently
 
-**Start with fewer butlers.** Nine was ambitious for v1. Three or four would have validated the architecture faster with less surface area. The Switchboard, Health, Relationship, and General cover 80% of daily use.
+**Start with fewer butlers.** Nine was ambitious for v1. Three or four would have validated the architecture faster. The Switchboard, Health, Relationship, and General cover 80% of daily use.
 
 **The module system came too late.** Early butlers had capabilities baked directly into their daemon code. Extracting those into modules was painful. If I were starting over, the module system would exist before any domain butler.
 
-**Connector testing is hard.** Each connector has its own transport model, authentication flow, and failure mode. Integration testing across Telegram, Gmail, and Discord simultaneously is a logistics problem as much as a technical one. I still don't have a great answer here.
+**Connector testing is hard.** Each connector has its own transport model, authentication flow, and failure mode. Integration testing across Telegram, Gmail, and Discord simultaneously is a logistics problem as much as a technical one.
 
-## What Matters
+## Next Milestones
 
-If you're building a personal AI system, here's what I think actually matters:
+1. **Model agnosticism.** Move toward a local-first design with no external dependencies via OpenCode and Ollama support. The runtime adapter system already supports this --- it's a matter of testing and tuning.
+2. **Performance.** Complex workflows currently take around 60 seconds end-to-end. Faster models (thinking-mode variants, smaller specialists for simple routing) could make the UX feel instant for common interactions.
+3. **WhatsApp connector.** Adding a Go sidecar using whatsmeow for WhatsApp bridge support --- already in progress.
 
-1. **Separate intelligence from infrastructure.** Make the daemon predictable. Let the LLM be creative. Don't mix them.
+## Try It
 
-2. **Domain boundaries should be process boundaries.** If two agents can't access each other's database, you'll never have context leakage. Convention-based isolation doesn't hold.
+There's no hosted demo --- the system runs exclusively within my private tailnet with personal data. But the code is open. Clone the repo and run `./scripts/dev.sh`. You'll need Docker, a PostgreSQL instance, and at least one LLM API key.
 
-3. **Give every agent an identity document.** Call it a manifesto, a constitution, whatever. Write down what it cares about, what it refuses, and what frameworks it uses. Then enforce it.
-
-4. **Memory needs structure, not just storage.** A flat vector store is not memory. Consolidation, tiering, and periodic processing turn observations into knowledge.
-
-5. **You are the only user.** If you're building for yourself, embrace it. Single-user systems are simpler, more secure, and more honest about their constraints. Multi-tenancy is a different product.
-
-Butlers runs on my machine, handles my daily information flow, and absorbs the mental labor I used to spend on tracking, remembering, and routing. It's not finished. It might never be. But it works, and it works because it's nine specialists collaborating through a protocol, not one generalist drowning in context.
-
-The measure isn't feature count. It's the amount of mental labor the system reliably absorbs. By that measure, it's already worth it.
+The measure of this system isn't feature count. It's the amount of mental labor it reliably absorbs. By that measure, it's already worth it.
