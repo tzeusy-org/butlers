@@ -4,6 +4,7 @@ import { Link, useParams, useSearchParams } from "react-router";
 import type { SessionParams, SessionSummary } from "@/api/types";
 import ButlerConfigTab from "@/components/butler-detail/ButlerConfigTab";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
+import { ChatPanel } from "@/components/chat/ChatPanel.tsx";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { SessionTable } from "@/components/sessions/SessionTable";
 import { Badge } from "@/components/ui/badge";
@@ -390,7 +391,10 @@ export default function ButlerDetailPage() {
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[{ label: "Overview", href: "/" }, { label: "Butlers", href: "/butlers" }, { label: name }]} />
-      <h1 className="text-2xl font-bold tracking-tight">{name}</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold tracking-tight">{name}</h1>
+        <ChatPanel butlerName={name} />
+      </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
