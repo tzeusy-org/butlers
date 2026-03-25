@@ -1,97 +1,108 @@
 ---
 name: relationship-maintenance
-description: Weekly scheduled task (Mon 9am) — identify contacts not interacted with in 30+ days, recall context, and suggest 3 people to reach out to this week via notify.
-version: 1.0.0
-tags: [relationship, scheduling, maintenance, outreach]
+description: Weekly scheduled task (Mon 9am) — rank overdue contacts by Dunbar tier-weighted urgency and suggest top 3 reconnections via notify.
+version: 2.0.0
+tags: [relationship, scheduling, maintenance, outreach, dunbar]
 ---
 
 # Relationship Maintenance
 
-Scheduled weekly on Monday at 9am. Review contacts not interacted with in 30+ days and suggest 3 people to reach out to this week, with context on last interaction and upcoming dates.
+Scheduled weekly on Monday at 9am. Identify overdue contacts ranked by Dunbar
+tier-weighted urgency and suggest the top 3 reconnections for the week.
 
 ## Purpose
 
-Prevent relationships from going stale through proactive, contextual reconnection suggestions delivered at the start of each week.
+Prevent relationships from going stale through proactive, tier-aware reconnection
+suggestions delivered at the start of each week. Inner-circle contacts (tier 5, 15)
+are surfaced with higher urgency — their shorter cadences reflect their importance.
 
 ## Tool Sequence
 
-### Step 1: Find Stale Contacts
-
-Query for contacts with no recent interaction:
+### Step 1: Get Overdue Contacts
 
 ```python
-# Get contacts with last interaction older than 30 days
-interaction_list(stale_days=30)
+contacts_overdue()
 ```
 
-If the tool doesn't support `stale_days` directly, retrieve all contacts and filter by last interaction date:
+This returns contacts enriched with `dunbar_tier`, `dunbar_score`, `effective_cadence`,
+and `days_since_last_interaction`. Effective cadence is `stay_in_touch_days` if set,
+otherwise the tier default (tier 5=14d, 15=21d, 50=45d, 150=120d, 500=270d).
 
-```python
-contact_search(limit=100)
-# For each contact:
-interaction_list(contact_id="<contact_id>", limit=1)
-# Filter: keep contacts where last interaction is >30 days ago or never
+Tier 1500 contacts with no `stay_in_touch_days` are excluded automatically.
+
+### Step 2: Compute Urgency for Each Overdue Contact
+
+For each overdue contact:
+
+```
+urgency = (days_since_last_interaction / effective_cadence) * tier_weight + context_bonus
 ```
 
-### Step 2: Gather Context for Each Stale Contact
+**Tier weights:** 5→5.0, 15→3.0, 50→2.0, 150→1.0, 500→0.5
 
-For each stale contact, collect context to support a meaningful outreach suggestion:
+**Context bonus** (gather these for each contact):
 
 ```python
-# Last interaction summary
+# Check upcoming dates
+upcoming_dates(days_ahead=14)  # filter for this contact
+
+# Check pending gifts
+gift_list(contact_id="<contact_id>")  # +1.0 if any not yet 'given'
+
+# Check recent notes for positive emotion
+note_list(contact_id="<contact_id>", limit=1)  # +0.5 if positive emotion tag
+```
+
+**Bonus values:**
+- +2.0 if contact has an upcoming date within 14 days
+- +1.0 if contact has a pending gift (status not 'given')
+- +0.5 if most recent note has positive emotional context
+
+For contacts with `days_since_last_interaction = None` (never interacted),
+use `effective_cadence * 10` as the numerator to treat them as maximally urgent.
+
+### Step 3: Rank and Select Top 3
+
+Sort by urgency descending. Take the top 3.
+
+If fewer than 3 contacts are overdue, take all of them.
+
+### Step 4: Gather Rich Context for Each
+
+For each of the top 3 contacts:
+
+```python
+# Last interaction
 interaction_list(contact_id="<contact_id>", limit=1)
 
-# Recall relevant facts from memory
-memory_recall(topic="<contact_name>", limit=5)
+# Key facts
+fact_list(contact_id="<contact_id>")
 
-# Check for upcoming dates (birthday, anniversary)
-upcoming_dates(contact_id="<contact_id>", days_ahead=30)
-
-# Check for pending gift ideas
-gift_list(contact_id="<contact_id>")
-
-# Recent notes
+# Notes
 note_list(contact_id="<contact_id>", limit=3)
 ```
 
-### Step 3: Score and Prioritize
+### Step 5: Compose Suggestions
 
-Rank stale contacts by reconnection priority:
-
-**Priority signals** (highest to lowest):
-1. Upcoming birthday or anniversary within 14 days
-2. Pending gift idea or open reminder
-3. Relationship tier: close friends and family > friends > acquaintances
-4. Staleness severity: contacts longest overdue rank higher
-5. Positive emotional context in recent notes (suggests good relationship to maintain)
-
-Select the **top 3** contacts to suggest. If fewer than 3 contacts are stale, suggest only the stale ones.
-
-### Step 4: Compose Outreach Suggestions
-
-For each of the top 3 contacts, draft a personalized suggestion:
-
-**Template — upcoming date hook:**
+**Template — upcoming date:**
 ```
-Reach out to [Name] — their [birthday/anniversary] is in [X days].
-Last talked: [date, summary]. Consider: [personal hook from memory/notes].
+Reach out to [Name] — [birthday/anniversary] in [X days].
+Last talked [date] about [summary]. Consider: [personal hook].
 ```
 
-**Template — follow-up on previous conversation:**
+**Template — follow-up:**
 ```
-Check in with [Name] — it's been [X days] since you [last interaction summary].
-Hook: [relevant fact or note that gives a natural reason to reach out].
-```
-
-**Template — general reconnection:**
-```
-Reconnect with [Name] — [X days] since last contact.
-[One sentence of context: shared interest, recent life event, or pending item].
+Check in with [Name] (tier [X] — [N] days overdue).
+[Hook from memory/notes].
 ```
 
-### Step 5: Deliver via notify
+**Template — general:**
+```
+Reconnect with [Name] — [N] days since last contact.
+[Context sentence].
+```
 
-Send the weekly suggestions as a single message:
+### Step 6: Deliver via notify
 
 ```python
 notify(
@@ -106,21 +117,29 @@ notify(
 ```
 Weekly relationship check-in:
 
-1. Alice Chen — birthday in 5 days (Feb 15). You last talked 6 weeks ago about her new job. Consider sending a message early.
+1. Alice Chen (tier 5 — 28 days, cadence 14d, urgency 7.2)
+   Birthday in 3 days. Last talked 4 weeks ago about her new job.
+   → Send a birthday message early. Mention her new job.
 
-2. Bob Martinez — 45 days since your last coffee meeting. He was working on a marathon training plan — good conversation starter.
+2. Bob Martinez (tier 15 — 45 days, cadence 21d, urgency 3.1)
+   Pending gift idea. He was working on a marathon.
+   → Plan to give the gift and ask how the marathon went.
 
-3. Carol Lee — 8 weeks since last contact. You mentioned wanting to catch up over dinner. She's in the same neighborhood now.
+3. Carol Lee (tier 50 — 60 days, cadence 45d, urgency 1.8)
+   You mentioned wanting to catch up over dinner.
+   → Simple check-in, suggest dinner.
 
 Want me to set reminders for any of these?
 ```
 
 ## Edge Cases
 
-- **Fewer than 3 stale contacts**: Suggest only those that qualify; don't pad with non-stale contacts
-- **No stale contacts**: Send a brief positive message: "All your key relationships are up to date — no overdue check-ins this week."
+- **No overdue contacts**: Send "All your key relationships are up to date — no overdue check-ins this week."
+- **Fewer than 3 overdue**: Suggest only those that qualify
 - **Contact has active reminder**: Note it in the suggestion rather than creating a duplicate
 - **Opted-out contacts**: Respect any "do not suggest" labels or facts on a contact
+- **Dunbar tiers calibrating** (new user, few interactions): Note in suggestions that tier
+  assignments will become more accurate as more interactions are logged
 
 ## Integration Notes
 
@@ -128,3 +147,4 @@ Want me to set reminders for any of these?
 - Works alongside the `reconnect-planner` skill, which handles on-demand staleness checks
 - After the user selects contacts to reach out to, use `reminder_create` to set follow-up reminders
 - Log completed outreach with `interaction_log` when the user confirms they made contact
+- Use `dunbar_tier_set(contact_id, tier)` when the computed tier doesn't match reality

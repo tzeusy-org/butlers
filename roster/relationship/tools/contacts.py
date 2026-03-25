@@ -433,7 +433,7 @@ async def contact_update(
 async def contact_get(
     pool: asyncpg.Pool, contact_id: uuid.UUID, *, allow_missing: bool = False
 ) -> dict[str, Any] | None:
-    """Get a contact by ID."""
+    """Get a contact by ID, enriched with Dunbar tier and decay score."""
     row = await pool.fetchrow("SELECT * FROM contacts WHERE id = $1", contact_id)
     if row is None:
         if allow_missing:
@@ -442,13 +442,24 @@ async def contact_get(
             f"Contact {contact_id} not found. "
             "Use contact_search(query=<name>) to find the correct contact ID."
         )
-    return _parse_contact(row)
+    result = _parse_contact(row)
+    try:
+        from butlers.tools.relationship.dunbar import get_contact_dunbar
+
+        dunbar = await get_contact_dunbar(pool, contact_id)
+        result.update(dunbar)
+    except Exception:
+        logger.exception("Failed to compute Dunbar fields for contact %s", contact_id)
+        result.setdefault("dunbar_tier", 1500)
+        result.setdefault("dunbar_score", 0.0)
+        result.setdefault("dunbar_tier_override", False)
+    return result
 
 
 async def contact_search(
     pool: asyncpg.Pool, query: str, limit: int = 20, offset: int = 0
 ) -> list[dict[str, Any]]:
-    """Search contacts by legacy and spec fields."""
+    """Search contacts by legacy and spec fields, enriched with Dunbar tier/score."""
     cols = await table_columns(pool, "contacts")
     conditions: list[str] = []
 
@@ -493,7 +504,28 @@ async def contact_search(
         limit,
         offset,
     )
-    return [_parse_contact(row) for row in rows]
+    contacts = [_parse_contact(row) for row in rows]
+
+    # Enrich each contact with Dunbar tier, score, and override (batch via compute_tier_ranking)
+    try:
+        from butlers.tools.relationship.dunbar import compute_tier_ranking
+
+        all_dunbar = await compute_tier_ranking(pool)
+        dunbar_by_cid: dict[str, Any] = {str(entry["contact_id"]): entry for entry in all_dunbar}
+        for contact in contacts:
+            cid = str(contact["id"])
+            info = dunbar_by_cid.get(cid, {})
+            contact["dunbar_tier"] = info.get("dunbar_tier", 1500)
+            contact["dunbar_score"] = info.get("dunbar_score", 0.0)
+            contact["dunbar_tier_override"] = info.get("dunbar_tier_override", False)
+    except Exception:
+        logger.exception("Failed to enrich contacts with Dunbar scores")
+        for contact in contacts:
+            contact.setdefault("dunbar_tier", 1500)
+            contact.setdefault("dunbar_score", 0.0)
+            contact.setdefault("dunbar_tier_override", False)
+
+    return contacts
 
 
 async def contact_archive(pool: asyncpg.Pool, contact_id: uuid.UUID) -> dict[str, Any]:
