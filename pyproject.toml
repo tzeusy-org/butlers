@@ -42,6 +42,9 @@ live-listener = [
     "onnxruntime>=1.17.0",
     "numpy>=1.26.0",
 ]
+whatsapp = [
+    "qrcode[pil]>=7.4.2",
+]
 
 [dependency-groups]
 dev = [

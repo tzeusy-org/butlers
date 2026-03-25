@@ -226,6 +226,31 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  connector-whatsapp-user:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EXTRAS: whatsapp
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/whatsapp_user", "uv", "run", "python", "-m", "butlers.connectors.whatsapp_user_client"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: whatsapp
+      CONNECTOR_CHANNEL: whatsapp_user_client
+      CONNECTOR_HEALTH_PORT: "40082"
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      switchboard:
+        condition: service_healthy
+    restart: unless-stopped
+
   connector-live-listener:
     build:
       context: .
