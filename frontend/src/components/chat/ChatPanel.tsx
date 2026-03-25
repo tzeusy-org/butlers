@@ -64,6 +64,16 @@ function ChatContent({ butlerName }: ChatContentProps) {
   // AbortController for the current SSE stream
   const abortRef = useRef<AbortController | null>(null);
 
+  // Abort any in-flight SSE stream when this component unmounts
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
+  }, []);
+
   // Load pricing map once
   useEffect(() => {
     fetchPricingMap()
@@ -88,10 +98,12 @@ function ChatContent({ butlerName }: ChatContentProps) {
   );
 
   // Sync server messages into local state
+  // Avoid overwriting optimistic/streaming messages while an SSE stream is active.
   useEffect(() => {
+    if (streaming) return;
     const msgs = messagesData?.data ?? [];
     setLocalMessages(msgs);
-  }, [messagesData]);
+  }, [messagesData, streaming]);
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations
   useEffect(() => {
@@ -259,7 +271,27 @@ function ChatContent({ butlerName }: ChatContentProps) {
         );
         setTimeout(() => setStreaming(null), 1500);
       } else {
+        // Non-abort error before or during streaming: clear streaming state
+        // and append a local assistant error message so the user sees a failure.
         setStreaming(null);
+
+        const errorMessage: Message = {
+          id: `local-error-${Date.now()}`,
+          conversation_id: currentConversationId ?? "",
+          role: "assistant",
+          content: "There was a problem sending your message. Please try again in a moment.",
+          tool_calls: null,
+          error: err instanceof Error ? err.message : "Unknown error",
+          model: null,
+          input_tokens: null,
+          output_tokens: null,
+          duration_ms: null,
+          session_id: null,
+          request_id: null,
+          created_at: new Date().toISOString(),
+        };
+
+        setLocalMessages((prev) => [...prev, errorMessage]);
       }
     }
   }, [inputValue, activeConversationId, butlerName, queryClient]);

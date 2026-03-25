@@ -53,7 +53,7 @@ function ToolCallEntry({ toolCall }: ToolCallEntryProps) {
             <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mt-1.5 mb-0.5">
               Arguments
             </p>
-            <pre className="overflow-x-auto bg-muted/30 rounded p-1.5 text-[11px] max-h-32">
+            <pre className="overflow-x-auto overflow-y-auto bg-muted/30 rounded p-1.5 text-[11px] max-h-32">
               {JSON.stringify(toolCall.arguments, null, 2)}
             </pre>
           </div>
@@ -62,7 +62,7 @@ function ToolCallEntry({ toolCall }: ToolCallEntryProps) {
               <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-0.5">
                 Result
               </p>
-              <pre className="overflow-x-auto bg-muted/30 rounded p-1.5 text-[11px] max-h-32">
+              <pre className="overflow-x-auto overflow-y-auto bg-muted/30 rounded p-1.5 text-[11px] max-h-32">
                 {JSON.stringify(toolCall.result, null, 2)}
               </pre>
             </div>
