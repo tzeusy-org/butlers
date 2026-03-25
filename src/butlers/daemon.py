@@ -524,7 +524,7 @@ async def _run_home_device_health_check_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run device health check for the home butler (delegates to stub).
+    """Run device health check job for the home butler.
 
     Delegates to ``butlers.jobs.home.run_device_health_check``, which is
     currently a no-op stub pending full implementation.
@@ -539,7 +539,7 @@ async def _run_home_environment_report_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run environment report for the home butler (delegates to stub).
+    """Run environment report job for the home butler.
 
     Delegates to ``butlers.jobs.home.run_environment_report``, which is
     currently a no-op stub pending full implementation.
@@ -554,15 +554,15 @@ async def _run_home_energy_digest_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run weekly energy digest for the home butler (delegates to stub).
+    """Run weekly energy digest job for the home butler.
 
-    Delegates to ``butlers.jobs.home.run_energy_digest``, which is
-    currently a no-op stub pending full implementation.
+    Delegates to ``butlers.jobs.home.run_energy_digest`` which discovers energy
+    sensors, fetches weekly statistics via HA REST API, computes top consumers,
+    detects anomalies, and sends a structured digest via Telegram.
     """
-    del job_args
     from butlers.jobs.home import run_energy_digest
 
-    return await run_energy_digest(pool=pool)
+    return await run_energy_digest(pool, job_args)
 
 
 async def _run_home_maintenance_schedule_check_job(
@@ -614,8 +614,8 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     },
     "home": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        "daily_briefing_contribution": _run_home_briefing_contribution_job,
         **_HOME_DETERMINISTIC_JOB_HANDLERS,
+        "daily_briefing_contribution": _run_home_briefing_contribution_job,
     },
     "switchboard": {
         "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
