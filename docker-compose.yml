@@ -251,6 +251,32 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  connector-google-calendar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_calendar", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_calendar"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: google_calendar
+      CONNECTOR_CHANNEL: google_calendar
+      CONNECTOR_HEALTH_PORT: "40085"
+      CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
+      BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
+      BUTLER_SHARED_DB_SCHEMA: shared
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      butlers-up:
+        condition: service_healthy
+    restart: unless-stopped
+
   connector-live-listener:
     build:
       context: .
