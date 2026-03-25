@@ -475,6 +475,73 @@ async def _run_collect_briefing_contributions_job(
     return await run_collect_briefing_contributions(pool=pool)
 
 
+async def _run_home_device_health_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run device health check for the home butler (delegates to stub).
+
+    Delegates to ``butlers.jobs.home.run_device_health_check``, which is
+    currently a no-op stub pending full implementation.
+    """
+    del job_args
+    from butlers.jobs.home import run_device_health_check
+
+    return await run_device_health_check(pool=pool)
+
+
+async def _run_home_environment_report_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run environment report for the home butler (delegates to stub).
+
+    Delegates to ``butlers.jobs.home.run_environment_report``, which is
+    currently a no-op stub pending full implementation.
+    """
+    del job_args
+    from butlers.jobs.home import run_environment_report
+
+    return await run_environment_report(pool=pool)
+
+
+async def _run_home_energy_digest_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run weekly energy digest for the home butler (delegates to stub).
+
+    Delegates to ``butlers.jobs.home.run_energy_digest``, which is
+    currently a no-op stub pending full implementation.
+    """
+    del job_args
+    from butlers.jobs.home import run_energy_digest
+
+    return await run_energy_digest(pool=pool)
+
+
+async def _run_home_maintenance_schedule_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run maintenance schedule check for the home butler (delegates to stub).
+
+    Delegates to ``butlers.jobs.home.run_maintenance_schedule_check``, which is
+    currently a no-op stub pending full implementation.
+    """
+    del job_args
+    from butlers.jobs.home import run_maintenance_schedule_check
+
+    return await run_maintenance_schedule_check(pool=pool)
+
+
+_HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
+    "device_health_check": _run_home_device_health_check_job,
+    "environment_report": _run_home_environment_report_job,
+    "energy_digest": _run_home_energy_digest_job,
+    "maintenance_schedule_check": _run_home_maintenance_schedule_check_job,
+}
+
 _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
     "general": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -501,6 +568,7 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     "home": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
         "daily_briefing_contribution": _run_daily_briefing_contribution_job,
+        **_HOME_DETERMINISTIC_JOB_HANDLERS,
     },
     "switchboard": {
         "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
