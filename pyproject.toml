@@ -9,7 +9,6 @@ description = "AI agent framework — long-running MCP server daemons with plugg
 requires-python = ">= 3.12"
 dependencies = [
     "fastmcp",
-    "claude-agent-sdk",
     "asyncpg",
     "croniter",
     "opentelemetry-sdk",

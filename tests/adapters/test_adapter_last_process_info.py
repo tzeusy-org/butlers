@@ -14,14 +14,23 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.runtimes import CodexAdapter, GeminiAdapter, RuntimeAdapter
+from butlers.core.runtimes import ClaudeCodeAdapter, CodexAdapter, GeminiAdapter, RuntimeAdapter
 
 pytestmark = pytest.mark.unit
 
+_CLAUDE_EXEC = "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec"
 _CODEX_EXEC = "butlers.core.runtimes.codex.asyncio.create_subprocess_exec"
 _GEMINI_EXEC = "butlers.core.runtimes.gemini.asyncio.create_subprocess_exec"
 
 _SUBPROCESS_ADAPTERS = [
+    pytest.param(
+        ClaudeCodeAdapter,
+        "claude_binary",
+        "/usr/bin/claude",
+        _CLAUDE_EXEC,
+        "claude",
+        id="claude",
+    ),
     pytest.param(CodexAdapter, "codex_binary", "/usr/bin/codex", _CODEX_EXEC, "codex", id="codex"),
     pytest.param(
         GeminiAdapter, "gemini_binary", "/usr/bin/gemini", _GEMINI_EXEC, "gemini", id="gemini"
@@ -344,44 +353,6 @@ async def test_last_process_info_updated_on_repeated_invoke(
 
 
 # ---------------------------------------------------------------------------
-# ClaudeCodeAdapter: last_process_info inherits base default (None)
+# ClaudeCodeAdapter: last_process_info is None before first invoke
+# (Covered by the parametrized _SUBPROCESS_ADAPTERS tests above)
 # ---------------------------------------------------------------------------
-
-
-def test_claude_code_adapter_last_process_info_is_none():
-    """ClaudeCodeAdapter inherits base default: last_process_info is always None."""
-    from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
-
-    adapter = ClaudeCodeAdapter()
-    assert adapter.last_process_info is None
-
-
-async def test_claude_code_adapter_last_process_info_none_after_invoke():
-    """ClaudeCodeAdapter returns None for last_process_info even after invoke()."""
-    from claude_agent_sdk import ResultMessage
-
-    from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
-
-    async def mock_query(*, prompt, options):
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.0,
-            usage={},
-            result="Done",
-        )
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
-    await adapter.invoke(
-        prompt="test",
-        system_prompt="sys",
-        mcp_servers={},
-        env={},
-    )
-
-    # SDK-based adapter — no subprocess, so last_process_info stays None
-    assert adapter.last_process_info is None

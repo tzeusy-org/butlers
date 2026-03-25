@@ -25,6 +25,7 @@ from butlers.core.runtimes import (
     RuntimeAdapter,
     get_adapter,
 )
+from butlers.core.runtimes.claude_code import _parse_claude_output
 from butlers.core.runtimes.codex import _extract_tool_call as codex_extract_tool_call
 from butlers.core.runtimes.codex import _parse_codex_output
 from butlers.core.runtimes.gemini import _extract_tool_call as gemini_extract_tool_call
@@ -169,10 +170,16 @@ def _opencode_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | No
     return result_text, tool_calls
 
 
+def _claude_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None, list]:
+    result_text, tool_calls, _usage = _parse_claude_output(stdout, stderr, returncode)
+    return result_text, tool_calls
+
+
 _PARSE_PARAMS = [
     pytest.param(_codex_parse, id="codex"),
     pytest.param(_gemini_parse, id="gemini"),
     pytest.param(_opencode_parse, id="opencode"),
+    pytest.param(_claude_parse, id="claude"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -350,11 +357,19 @@ def test_extract_tool_call_missing_fields(extract_tool_call) -> None:
 # invoke() behavioral contract — shared behaviors across subprocess adapters
 # ---------------------------------------------------------------------------
 
+_CLAUDE_EXEC = "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec"
 _CODEX_EXEC = "butlers.core.runtimes.codex.asyncio.create_subprocess_exec"
 _GEMINI_EXEC = "butlers.core.runtimes.gemini.asyncio.create_subprocess_exec"
 _OPENCODE_EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
 
 _INVOKE_PARAMS = [
+    pytest.param(
+        ClaudeCodeAdapter,
+        "/usr/bin/claude",
+        "claude_binary",
+        _CLAUDE_EXEC,
+        id="claude",
+    ),
     pytest.param(
         CodexAdapter,
         "/usr/bin/codex",
@@ -576,29 +591,31 @@ def test_opencode_usage_contract_partial_tokens_defaults_to_zero():
 
 
 async def test_claude_usage_contract_int_tokens():
-    """ClaudeCodeAdapter.invoke() returns int-typed usage fields from the SDK ResultMessage."""
-    from unittest.mock import MagicMock
+    """ClaudeCodeAdapter.invoke() returns int-typed usage fields from stream-json result event."""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
 
-    from claude_agent_sdk import ResultMessage
-
-    # Use a plain dict so dict(message.usage) works correctly. MagicMock has a
-    # .keys() method by default, which causes dict() to use the mapping protocol
-    # and yield an empty result when keys() is not configured to return real keys.
-    mock_usage = {"input_tokens": 150, "output_tokens": 60}
-    mock_result = MagicMock(spec=ResultMessage)
-    mock_result.result = "Done"
-    mock_result.usage = mock_usage
-
-    async def mock_sdk_query(**kwargs):
-        yield mock_result
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_sdk_query)
-    result_text, tool_calls, usage = await adapter.invoke(
-        prompt="hello",
-        system_prompt="",
-        mcp_servers={},
-        env={},
+    output = _json.dumps(
+        {
+            "type": "result",
+            "result": "Done",
+            "usage": {"input_tokens": 150, "output_tokens": 60},
+        }
     )
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output.encode(), b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
+
+    _CLAUDE_EXEC = "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec"
+    with patch(_CLAUDE_EXEC, return_value=mock_proc):
+        adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="hello",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
 
     assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
     assert usage is not None

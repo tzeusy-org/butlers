@@ -1,66 +1,259 @@
-"""ClaudeCodeAdapter — RuntimeAdapter implementation for Claude Agent SDK.
+"""ClaudeCodeAdapter — RuntimeAdapter implementation for the Claude CLI binary.
 
-Encapsulates all Claude Agent SDK-specific logic:
-- claude_agent_sdk imports (ClaudeAgentOptions, ResultMessage, ToolUseBlock,
-  McpHttpServerConfig, McpSSEServerConfig, query)
+Encapsulates all Claude CLI-specific logic:
+- Binary discovery: shutil.which("claude") with FileNotFoundError + install hint
+- Subprocess invocation: asyncio.create_subprocess_exec with stream-json output
 - MCP config file writing (JSON format with mcpServers key)
-- SDK invocation (building ClaudeAgentOptions, calling query(),
-  parsing ResultMessage/ToolUseBlock)
+- Output parsing: stream-json JSON-lines → result text, tool calls, usage
 - CLAUDE.md reading logic
+
+The ``claude`` binary is invoked in print mode (``-p``) with
+``--output-format stream-json`` for structured JSON-line event output.
+Flags used:
+
+- ``--bare``: skips hooks, LSP, auto-memory, CLAUDE.md auto-discovery
+- ``--no-session-persistence``: ephemeral session (not stored in Claude Code history)
+- ``--strict-mcp-config``: prevents host MCP servers leaking into butler sessions
+- ``--permission-mode bypassPermissions``: full tool access without confirmations
+- ``--system-prompt <text>``: butler's system prompt
+- ``--mcp-config <path>``: butler's MCP server config
+- ``--model <model>``: (optional) model to use
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, ToolUseBlock, query
-from claude_agent_sdk.types import McpHttpServerConfig, McpSSEServerConfig
-
-from butlers.core.mcp_urls import resolve_runtime_mcp_transport
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
 logger = logging.getLogger(__name__)
 
+# Default timeout for Claude CLI invocation (5 minutes)
+_DEFAULT_TIMEOUT_SECONDS = 300
 
-class ClaudeCodeAdapter(RuntimeAdapter):
-    """Runtime adapter for the Claude Agent SDK.
 
-    Handles SDK invocation, MCP config file generation (JSON format),
-    and CLAUDE.md system prompt reading.
+def _find_claude_binary() -> str:
+    """Locate the claude binary on PATH.
+
+    Returns
+    -------
+    str
+        Absolute path to the claude binary.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the claude binary is not found on PATH.
+    """
+    path = shutil.which("claude")
+    if path is None:
+        raise FileNotFoundError(
+            "Claude CLI binary not found on PATH. "
+            "Install it with: npm install -g @anthropic-ai/claude-code"
+        )
+    return path
+
+
+def _parse_claude_output(
+    stdout: str, stderr: str, returncode: int
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """Parse Claude CLI stream-json output into (result_text, tool_calls, usage).
+
+    The ``--output-format stream-json`` output emits JSON-lines events.
+    We look for:
+    - ``type: "result"`` — final result with ``result`` text and ``usage`` object
+    - ``type: "assistant"`` — assistant messages with tool_use content blocks
+    - ``type: "message"`` — message events with text or list content blocks
+    - ``type: "tool_use"`` / standalone tool call events
+
+    If the output is not valid JSON-lines, we treat the entire stdout as plain
+    text result.
+
+    Non-zero exit codes are surfaced as an error result string
+    (e.g. ``"Error: <detail>"``) with no tool calls and ``None`` usage,
+    rather than raising an exception.
 
     Parameters
     ----------
-    sdk_query:
-        Callable to use for the actual SDK invocation. Defaults to
-        ``claude_agent_sdk.query``. Override in tests to inject a mock.
+    stdout:
+        Raw stdout from the Claude process.
+    stderr:
+        Raw stderr from the Claude process.
+    returncode:
+        Exit code from the Claude process.
+
+    Returns
+    -------
+    tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
+        (result_text, tool_calls, usage)
+    """
+    if returncode != 0:
+        error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+        logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
+        return (f"Error: {error_detail}", [], None)
+
+    tool_calls: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    usage: dict[str, Any] | None = None
+
+    lines = stdout.strip().splitlines()
+    parsed_any_json = False
+    fallback_text_parts: list[str] = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            if not parsed_any_json:
+                fallback_text_parts.append(line)
+            continue
+
+        if not isinstance(obj, dict):
+            if not parsed_any_json:
+                fallback_text_parts.append(line)
+            continue
+
+        parsed_any_json = True
+        obj_type = obj.get("type", "")
+
+        if obj_type == "result":
+            # Final result event — extract result text and usage
+            result_content = obj.get("result", "")
+            if result_content:
+                text_parts.append(str(result_content))
+            raw_usage = obj.get("usage")
+            if isinstance(raw_usage, dict):
+                input_tokens = raw_usage.get("input_tokens")
+                output_tokens = raw_usage.get("output_tokens")
+                if isinstance(input_tokens, int) or isinstance(output_tokens, int):
+                    usage = {
+                        "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
+                        "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
+                    }
+                    cache_read = raw_usage.get("cache_read_input_tokens")
+                    cache_creation = raw_usage.get("cache_creation_input_tokens")
+                    if isinstance(cache_read, int):
+                        usage["cache_read_input_tokens"] = cache_read
+                    if isinstance(cache_creation, int):
+                        usage["cache_creation_input_tokens"] = cache_creation
+
+        elif obj_type in ("assistant", "message"):
+            # Assistant or message events — extract text and tool_use from content blocks
+            content = obj.get("content", "")
+            if isinstance(content, str) and content:
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type")
+                    if block_type == "text":
+                        text_val = block.get("text", "")
+                        if text_val:
+                            text_parts.append(text_val)
+                    elif block_type == "tool_use":
+                        tool_calls.append(
+                            {
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "input": block.get("input", {}),
+                            }
+                        )
+
+        elif obj_type == "tool_use":
+            # Standalone tool_use event
+            tool_calls.append(
+                {
+                    "id": obj.get("id", ""),
+                    "name": obj.get("name", ""),
+                    "input": obj.get("input", {}),
+                }
+            )
+
+        else:
+            # Unknown type — check for text or content fields (shared contract)
+            if "text" in obj:
+                text_parts.append(str(obj["text"]))
+            elif "content" in obj and isinstance(obj["content"], str):
+                text_parts.append(obj["content"])
+
+    # If we couldn't parse any JSON, treat entire stdout as result text
+    if not parsed_any_json and not text_parts:
+        text_parts = fallback_text_parts or ([stdout.strip()] if stdout.strip() else [])
+
+    result_text = "\n".join(text_parts) if text_parts else None
+    return result_text, tool_calls, usage
+
+
+class ClaudeCodeAdapter(RuntimeAdapter):
+    """Runtime adapter for the Claude CLI binary (subprocess-based).
+
+    Invokes the ``claude`` binary via subprocess in print mode (``-p``) with
+    ``--output-format stream-json``. The adapter handles:
+
+    - Locating the ``claude`` binary on PATH
+    - Running in non-interactive print mode with structured JSON-line output
+    - Passing system prompts via ``--system-prompt``
+    - Writing MCP config in JSON format and passing via ``--mcp-config``
+    - Parsing stream-json output into (result_text, tool_calls, usage)
+    - Capturing stderr to a per-butler log file
+
+    Parameters
+    ----------
+    claude_binary:
+        Path to the claude binary. If None, will be auto-detected on PATH
+        at invocation time.
     butler_name:
         Name of the butler this adapter serves. Used to construct per-butler
-        stderr log paths. Optional; when omitted stderr is not captured.
+        stderr log paths. Optional; when omitted stderr is not logged to file.
     log_root:
-        Root directory for log files. When set, stderr from Claude Code CLI
-        subprocesses is written to
+        Root directory for log files. When set, stderr from the Claude CLI
+        subprocess is written to
         ``{log_root}/butlers/{butler_name}_cc_stderr.log``. When ``None``,
         stderr capture is disabled.
+
+    Notes
+    -----
+    The ``max_turns`` parameter in ``invoke()`` is accepted but not enforced
+    by the CLI — there is no equivalent ``--max-turns`` flag. Timeout is the
+    primary safety mechanism.
     """
 
     def __init__(
         self,
-        sdk_query: Any = None,
+        claude_binary: str | None = None,
         butler_name: str | None = None,
         log_root: Path | None = None,
     ) -> None:
-        self._sdk_query = sdk_query or query
+        self._claude_binary = claude_binary
         self._butler_name = butler_name
         self._log_root = log_root
+        self._last_process_info: dict[str, Any] | None = None
+
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        """Process-level metadata from the most recent invoke() call.
+
+        Returns a dict with keys: pid, exit_code, command, stderr, runtime_type.
+        Available after invoke() completes (success or failure). None before
+        first invocation.
+        """
+        return self._last_process_info
 
     def create_worker(self) -> RuntimeAdapter:
         """Create an independent adapter for a pooled spawner worker."""
         return ClaudeCodeAdapter(
-            sdk_query=self._sdk_query,
+            claude_binary=self._claude_binary,
             butler_name=self._butler_name,
             log_root=self._log_root,
         )
@@ -68,6 +261,12 @@ class ClaudeCodeAdapter(RuntimeAdapter):
     @property
     def binary_name(self) -> str:
         return "claude"
+
+    def _get_binary(self) -> str:
+        """Get the claude binary path, auto-detecting if needed."""
+        if self._claude_binary is not None:
+            return self._claude_binary
+        return _find_claude_binary()
 
     async def invoke(
         self,
@@ -81,96 +280,191 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         cwd: Path | None = None,
         timeout: int | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
-        """Invoke Claude Agent SDK with the given prompt and configuration.
+        """Invoke the Claude CLI binary with the given prompt and configuration.
 
-        Builds ClaudeAgentOptions with MCP server configs (as
-        McpSSEServerConfig), calls query(), and parses
-        ResultMessage/ToolUseBlock from the response stream.
+        Builds the command line for ``claude -p --output-format stream-json``,
+        passes system prompt and MCP config, and parses JSON-line output events.
+
+        Parameters
+        ----------
+        prompt:
+            The user prompt to send to Claude.
+        system_prompt:
+            System-level instructions (from CLAUDE.md).
+        mcp_servers:
+            MCP server configurations for the butler.
+        env:
+            Filtered environment variables for the subprocess.
+        max_turns:
+            Accepted but not enforced — the Claude CLI has no ``--max-turns``
+            flag. Timeout is the primary safety mechanism.
+        model:
+            Optional model to use (passed via ``--model``).
+        runtime_args:
+            Additional CLI arguments inserted after fixed flags (e.g.
+            ``["--effort", "high"]``).
+        cwd:
+            Working directory for the Claude process.
+        timeout:
+            Maximum execution time in seconds.
 
         Returns
         -------
         tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
             A tuple of (result_text, tool_calls, usage). Usage contains
-            token counts extracted from the SDK's ResultMessage.
-        """
-        # Build MCP server config objects for SDK
-        sdk_mcp_servers: dict[str, McpHttpServerConfig | McpSSEServerConfig] = {}
-        for name, server_cfg in mcp_servers.items():
-            if isinstance(server_cfg, dict):
-                transport = resolve_runtime_mcp_transport(server_cfg)
-                if transport == "sse":
-                    sdk_mcp_servers[name] = McpSSEServerConfig(
-                        type="sse",
-                        url=server_cfg["url"],
-                    )
-                else:
-                    sdk_mcp_servers[name] = McpHttpServerConfig(
-                        type="http",
-                        url=server_cfg["url"],
-                    )
-            else:
-                # Already an McpSSEServerConfig or compatible object
-                sdk_mcp_servers[name] = server_cfg
+            input_tokens, output_tokens, and optionally cache token counts.
 
-        # Open per-butler stderr log file for Claude Code CLI diagnostics
-        stderr_file = None
-        stderr_kwargs: dict[str, Any] = {}
+        Raises
+        ------
+        FileNotFoundError
+            If the claude binary is not found on PATH.
+        TimeoutError
+            If the Claude process exceeds the timeout.
+        RuntimeError
+            If the Claude process exits with a non-zero exit code.
+        """
+        import tempfile
+
+        binary = self._get_binary()
+        effective_timeout = _DEFAULT_TIMEOUT_SECONDS if timeout is None else timeout
+
+        # Open per-butler stderr log file for Claude CLI diagnostics
+        stderr_log_file = None
         if self._butler_name and self._log_root is not None:
             try:
                 stderr_dir = self._log_root / "butlers"
                 stderr_dir.mkdir(parents=True, exist_ok=True)
                 stderr_path = stderr_dir / f"{self._butler_name}_cc_stderr.log"
-                stderr_file = open(stderr_path, "a", buffering=1)  # noqa: SIM115
+                stderr_log_file = open(stderr_path, "a", buffering=1)  # noqa: SIM115
                 ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                stderr_file.write(f"\n--- runtime session start: {ts} ---\n")
-                stderr_file.flush()
-                stderr_kwargs = {
-                    "debug_stderr": stderr_file,
-                    "extra_args": {"debug-to-stderr": None},
-                }
+                stderr_log_file.write(f"\n--- runtime session start: {ts} ---\n")
+                stderr_log_file.flush()
             except OSError:
                 logger.warning(
-                    "Could not open CC stderr log for %s", self._butler_name, exc_info=True
+                    "Could not open Claude CC stderr log for %s",
+                    self._butler_name,
+                    exc_info=True,
                 )
+                stderr_log_file = None
+
+        # Write MCP config file into a temporary directory.
+        # tempdir is created here so that cleanup in the finally block is guaranteed
+        # even if build_config_file raises (e.g., serialization or filesystem error).
+        tmp_dir_obj = tempfile.TemporaryDirectory()
+        proc = None
 
         try:
-            options = ClaudeAgentOptions(
-                system_prompt=system_prompt,
-                mcp_servers=sdk_mcp_servers,
-                permission_mode="bypassPermissions",
-                model=model,
+            tmp_dir = Path(tmp_dir_obj.name)
+            mcp_config_path = self.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_dir)
+
+            # Build command
+            cmd = [
+                binary,
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--bare",
+                "--no-session-persistence",
+                "--permission-mode",
+                "bypassPermissions",
+                "--strict-mcp-config",
+                "--mcp-config",
+                str(mcp_config_path),
+            ]
+
+            if system_prompt:
+                cmd.extend(["--system-prompt", system_prompt])
+
+            if isinstance(model, str) and model.strip():
+                cmd.extend(["--model", model.strip()])
+
+            if runtime_args:
+                cmd.extend(runtime_args)
+
+            # Prompt is the final positional argument
+            cmd.append(prompt)
+
+            logger.debug("Invoking Claude CLI: %s", " ".join(cmd[:6]) + " ...")
+
+            # Sanitise command for logging:
+            # - redact the value of --system-prompt (may contain sensitive data)
+            # - drop the final prompt arg which can be huge
+            sanitized_cmd: list[str] = []
+            skip_next = False
+            for token in cmd:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if token == "--system-prompt":
+                    sanitized_cmd.extend(["--system-prompt", "<redacted>"])
+                    skip_next = True
+                else:
+                    sanitized_cmd.append(token)
+            cmd_for_log = " ".join(sanitized_cmd[:-1]) + " ..."
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 env=env,
-                max_turns=max_turns,
                 cwd=str(cwd) if cwd else None,
-                **stderr_kwargs,
             )
 
-            result_text: str | None = None
-            tool_calls: list[dict[str, Any]] = []
-            usage: dict[str, Any] | None = None
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=effective_timeout,
+            )
 
-            async for message in self._sdk_query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage):
-                    result_text = message.result or ""
-                    # Extract token usage from the ResultMessage
-                    if message.usage:
-                        usage = dict(message.usage)
-                elif hasattr(message, "content"):
-                    for block in getattr(message, "content", []):
-                        if isinstance(block, ToolUseBlock):
-                            tool_calls.append(
-                                {
-                                    "id": block.id,
-                                    "name": block.name,
-                                    "input": block.input,
-                                }
-                            )
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
 
+            if stderr:
+                logger.debug("Claude CLI stderr: %s", stderr[:500])
+                if stderr_log_file is not None:
+                    try:
+                        stderr_log_file.write(stderr)
+                        stderr_log_file.flush()
+                    except OSError:
+                        pass
+
+            returncode = proc.returncode or 0
+
+            # Capture process info for session diagnostics
+            self._last_process_info = {
+                "pid": proc.pid,
+                "exit_code": returncode,
+                "command": cmd_for_log,
+                "stderr": stderr,
+                "runtime_type": "claude",
+            }
+
+            if returncode != 0:
+                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
+                raise RuntimeError(f"Claude CLI exited with code {returncode}: {error_detail}")
+
+            result_text, tool_calls, usage = _parse_claude_output(stdout, stderr, returncode)
             return result_text, tool_calls, usage
+
+        except TimeoutError:
+            logger.error("Claude CLI timed out after %ds", effective_timeout)
+            self._last_process_info = {
+                "pid": proc.pid if proc else None,
+                "exit_code": -1,
+                "command": cmd_for_log,
+                "stderr": "(timeout — process killed)",
+                "runtime_type": "claude",
+            }
+            if proc:
+                proc.kill()
+                await proc.wait()
+            raise TimeoutError(f"Claude CLI timed out after {effective_timeout} seconds") from None
+
         finally:
-            if stderr_file is not None:
+            tmp_dir_obj.cleanup()
+            if stderr_log_file is not None:
                 try:
-                    stderr_file.close()
+                    stderr_log_file.close()
                 except OSError:
                     pass
 

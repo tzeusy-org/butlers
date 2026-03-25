@@ -328,12 +328,8 @@ def test_claude_code_adapter_build_config_file(tmp_path: Path):
 
 def test_claude_code_adapter_create_worker_preserves_constructor_args(tmp_path: Path):
     """create_worker() returns a new adapter with identical configuration."""
-
-    async def _fake_query(*args, **kwargs):  # pragma: no cover - not invoked
-        yield None
-
     adapter = ClaudeCodeAdapter(
-        sdk_query=_fake_query,
+        claude_binary="/usr/bin/claude",
         butler_name="switchboard",
         log_root=tmp_path,
     )
@@ -341,7 +337,7 @@ def test_claude_code_adapter_create_worker_preserves_constructor_args(tmp_path: 
     worker = adapter.create_worker()
     assert worker is not adapter
     assert isinstance(worker, ClaudeCodeAdapter)
-    assert worker._sdk_query is _fake_query
+    assert worker._claude_binary == "/usr/bin/claude"
     assert worker._butler_name == "switchboard"
     assert worker._log_root == tmp_path
 
@@ -371,63 +367,67 @@ def test_claude_code_adapter_parse_empty_prompt(tmp_path: Path):
     assert prompt == ""
 
 
+_CLAUDE_EXEC = "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec"
+
+
 async def test_claude_code_adapter_invoke_with_mock():
-    """ClaudeCodeAdapter.invoke() calls sdk_query and parses results."""
-    from claude_agent_sdk import ResultMessage
+    """ClaudeCodeAdapter.invoke() parses stream-json result event."""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
 
-    async def mock_query(*, prompt, options):
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.0,
-            usage={},
-            result="Hello!",
+    output = _json.dumps({"type": "result", "result": "Hello!"})
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output.encode(), b""))
+    mock_proc.returncode = 0
+
+    with patch(_CLAUDE_EXEC, return_value=mock_proc):
+        adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="hi",
+            system_prompt="you are helpful",
+            mcp_servers={},
+            env={},
         )
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
-    result_text, tool_calls, usage = await adapter.invoke(
-        prompt="hi",
-        system_prompt="you are helpful",
-        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-        env={"ANTHROPIC_API_KEY": "sk-test"},
-    )
     assert result_text == "Hello!"
     assert tool_calls == []
-    assert usage is None  # empty dict becomes None
+    assert usage is None  # no usage in result event
 
 
 async def test_claude_code_adapter_invoke_with_tool_calls():
-    """ClaudeCodeAdapter.invoke() captures ToolUseBlock tool calls."""
-    from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
+    """ClaudeCodeAdapter.invoke() captures tool_use content blocks."""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
 
-    async def mock_query(*, prompt, options):
-        yield AssistantMessage(
-            content=[ToolUseBlock(id="t1", name="state_get", input={"key": "foo"})],
-            model="claude-test",
-        )
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.0,
-            usage={},
-            result="Done",
-        )
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
-    result_text, tool_calls, usage = await adapter.invoke(
-        prompt="use tools",
-        system_prompt="you are helpful",
-        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-        env={},
+    output_lines = "\n".join(
+        [
+            _json.dumps(
+                {
+                    "type": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "state_get",
+                            "input": {"key": "foo"},
+                        }
+                    ],
+                }
+            ),
+            _json.dumps({"type": "result", "result": "Done"}),
+        ]
     )
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
+    mock_proc.returncode = 0
+
+    with patch(_CLAUDE_EXEC, return_value=mock_proc):
+        adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="use tools",
+            system_prompt="you are helpful",
+            mcp_servers={},
+            env={},
+        )
     assert result_text == "Done"
     assert len(tool_calls) == 1
     assert tool_calls[0]["name"] == "state_get"
@@ -435,29 +435,29 @@ async def test_claude_code_adapter_invoke_with_tool_calls():
 
 
 async def test_claude_code_adapter_invoke_captures_usage():
-    """ClaudeCodeAdapter.invoke() extracts token usage from ResultMessage."""
-    from claude_agent_sdk import ResultMessage
+    """ClaudeCodeAdapter.invoke() extracts token usage from result event."""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
 
-    async def mock_query(*, prompt, options):
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.01,
-            usage={"input_tokens": 150, "output_tokens": 300},
-            result="With usage!",
-        )
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
-    result_text, tool_calls, usage = await adapter.invoke(
-        prompt="test",
-        system_prompt="you are helpful",
-        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-        env={},
+    output = _json.dumps(
+        {
+            "type": "result",
+            "result": "With usage!",
+            "usage": {"input_tokens": 150, "output_tokens": 300},
+        }
     )
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output.encode(), b""))
+    mock_proc.returncode = 0
+
+    with patch(_CLAUDE_EXEC, return_value=mock_proc):
+        adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="test",
+            system_prompt="you are helpful",
+            mcp_servers={},
+            env={},
+        )
     assert result_text == "With usage!"
     assert usage is not None
     assert usage["input_tokens"] == 150
@@ -465,93 +465,57 @@ async def test_claude_code_adapter_invoke_captures_usage():
 
 
 async def test_claude_code_adapter_invoke_none_usage():
-    """ClaudeCodeAdapter.invoke() returns None usage when SDK usage is None."""
-    from claude_agent_sdk import ResultMessage
+    """ClaudeCodeAdapter.invoke() returns None usage when no usage in result."""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
 
-    async def mock_query(*, prompt, options):
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.0,
-            usage=None,
-            result="No usage",
+    output = _json.dumps({"type": "result", "result": "No usage"})
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output.encode(), b""))
+    mock_proc.returncode = 0
+
+    with patch(_CLAUDE_EXEC, return_value=mock_proc):
+        adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="test",
+            system_prompt="you are helpful",
+            mcp_servers={},
+            env={},
         )
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
-    result_text, tool_calls, usage = await adapter.invoke(
-        prompt="test",
-        system_prompt="you are helpful",
-        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-        env={},
-    )
     assert result_text == "No usage"
     assert usage is None
 
 
-async def test_claude_code_adapter_uses_http_transport_for_streamable_mcp():
-    """ClaudeCodeAdapter uses MCP HTTP transport for streamable endpoints."""
-    from claude_agent_sdk import ResultMessage
+async def test_claude_code_adapter_command_includes_mcp_config(tmp_path: Path):
+    """ClaudeCodeAdapter includes --mcp-config and --strict-mcp-config flags."""
+    from unittest.mock import AsyncMock, patch
 
-    captured_options = {}
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
 
-    async def mock_query(*, prompt, options):
-        captured_options["mcp_servers"] = options.mcp_servers
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.0,
-            usage={},
-            result="ok",
+    captured_cmd: list[str] = []
+
+    async def capturing_exec(*args, **kwargs):
+        captured_cmd.extend(args)
+        return mock_proc
+
+    with patch(_CLAUDE_EXEC, side_effect=capturing_exec):
+        adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="sys",
+            mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
+            env={},
         )
 
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
-    await adapter.invoke(
-        prompt="test",
-        system_prompt="sys",
-        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-        env={},
-    )
-
-    assert captured_options["mcp_servers"]["test"]["type"] == "http"
-
-
-async def test_claude_code_adapter_keeps_sse_transport_for_legacy_sse_url():
-    """ClaudeCodeAdapter keeps SSE transport for legacy `/sse` endpoints."""
-    from claude_agent_sdk import ResultMessage
-
-    captured_options = {}
-
-    async def mock_query(*, prompt, options):
-        captured_options["mcp_servers"] = options.mcp_servers
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.0,
-            usage={},
-            result="ok",
-        )
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
-    await adapter.invoke(
-        prompt="test",
-        system_prompt="sys",
-        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
-        env={},
-    )
-
-    assert captured_options["mcp_servers"]["test"]["type"] == "sse"
+    assert "--mcp-config" in captured_cmd
+    assert "--strict-mcp-config" in captured_cmd
+    assert "--bare" in captured_cmd
+    assert "--no-session-persistence" in captured_cmd
+    assert "--permission-mode" in captured_cmd
+    assert "bypassPermissions" in captured_cmd
 
 
 # ---------------------------------------------------------------------------
@@ -559,42 +523,29 @@ async def test_claude_code_adapter_keeps_sse_transport_for_legacy_sse_url():
 # ---------------------------------------------------------------------------
 
 
-async def test_claude_code_adapter_passes_stderr_options_when_butler_name_set(tmp_path: Path):
-    """ClaudeCodeAdapter passes debug_stderr and extra_args when butler_name is set."""
-    from claude_agent_sdk import ResultMessage
+async def test_claude_code_adapter_creates_stderr_log_when_butler_name_set(tmp_path: Path):
+    """ClaudeCodeAdapter creates per-butler stderr log file when butler_name is set."""
+    from unittest.mock import AsyncMock, patch
 
-    captured_options = {}
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"some stderr output"))
+    mock_proc.returncode = 0
+    mock_proc.pid = 42
 
-    async def mock_query(*, prompt, options):
-        captured_options["debug_stderr"] = options.debug_stderr
-        captured_options["extra_args"] = options.extra_args
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.0,
-            usage={},
-            result="ok",
+    with patch(_CLAUDE_EXEC, return_value=mock_proc):
+        adapter = ClaudeCodeAdapter(
+            claude_binary="/usr/bin/claude",
+            butler_name="test-butler",
+            log_root=tmp_path,
+        )
+        await adapter.invoke(
+            prompt="hi",
+            system_prompt="sys",
+            mcp_servers={},
+            env={},
         )
 
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query, butler_name="test-butler", log_root=tmp_path)
-    await adapter.invoke(
-        prompt="hi",
-        system_prompt="sys",
-        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-        env={},
-    )
-
-    # Verify the options were set correctly
-    assert captured_options["extra_args"] == {"debug-to-stderr": None}
-    assert captured_options["debug_stderr"] is not None
-    # File should have been closed after invoke returns
-    assert captured_options["debug_stderr"].closed
-
-    # Verify the log file was created
+    # Verify the log file was created with session start marker
     stderr_log = tmp_path / "butlers" / "test-butler_cc_stderr.log"
     assert stderr_log.exists()
     content = stderr_log.read_text()
@@ -602,58 +553,23 @@ async def test_claude_code_adapter_passes_stderr_options_when_butler_name_set(tm
 
 
 async def test_claude_code_adapter_no_stderr_without_butler_name():
-    """ClaudeCodeAdapter does not set debug_stderr when butler_name is not set."""
-    from claude_agent_sdk import ResultMessage
+    """ClaudeCodeAdapter does not create stderr log when butler_name is not set."""
+    from unittest.mock import AsyncMock, patch
 
-    captured_options = {}
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
 
-    async def mock_query(*, prompt, options):
-        captured_options["debug_stderr"] = options.debug_stderr
-        captured_options["extra_args"] = options.extra_args
-        yield ResultMessage(
-            subtype="result",
-            duration_ms=10,
-            duration_api_ms=8,
-            is_error=False,
-            num_turns=1,
-            session_id="test",
-            total_cost_usd=0.0,
-            usage={},
-            result="ok",
-        )
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
-    await adapter.invoke(
-        prompt="hi",
-        system_prompt="sys",
-        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-        env={},
-    )
-
-    # Without butler_name, extra_args should be default empty dict
-    assert captured_options["extra_args"] == {}
-
-
-async def test_claude_code_adapter_stderr_closed_on_error(tmp_path: Path):
-    """ClaudeCodeAdapter closes stderr file even when SDK raises an error."""
-    captured_options = {}
-
-    async def mock_query(*, prompt, options):
-        captured_options["debug_stderr"] = options.debug_stderr
-        raise RuntimeError("SDK error")
-        yield  # make it a generator  # pragma: no cover
-
-    adapter = ClaudeCodeAdapter(sdk_query=mock_query, butler_name="test-butler", log_root=tmp_path)
-    with pytest.raises(RuntimeError, match="SDK error"):
+    with patch(_CLAUDE_EXEC, return_value=mock_proc):
+        adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+        # Should not raise — no log file needed
         await adapter.invoke(
             prompt="hi",
             system_prompt="sys",
-            mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
+            mcp_servers={},
             env={},
         )
-
-    # File should be closed even after error
-    assert captured_options["debug_stderr"].closed
 
 
 # ---------------------------------------------------------------------------

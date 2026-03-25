@@ -1,8 +1,8 @@
-"""Integration tests for Claude Code adapter — invokes the real Claude Agent SDK.
+"""Integration tests for Claude Code adapter — invokes the real claude binary.
 
 These tests call ClaudeCodeAdapter.invoke() against the live Anthropic API and
-verify that the SDK invocation, tool call extraction, and token usage reporting
-all work correctly end-to-end.
+verify that the subprocess invocation, tool call extraction, and token usage
+reporting all work correctly end-to-end.
 
 Marked ``nightly`` so they are excluded from default CI runs (addopts includes
 ``-m 'not nightly'``). Run explicitly with::
@@ -11,12 +11,7 @@ Marked ``nightly`` so they are excluded from default CI runs (addopts includes
 
 Requirements:
 - ``ANTHROPIC_API_KEY`` environment variable set with a valid API key
-- ``claude`` binary accessible via the Claude Agent SDK (claude-agent-sdk)
-
-Note: There is no raw output format tier for ClaudeCodeAdapter because the SDK
-provides structured Python objects (ResultMessage, ToolUseBlock) rather than
-raw JSON-lines output. Format verification is therefore done at the object level
-via the parsed results.
+- ``claude`` binary on PATH (claude-code CLI)
 """
 
 from __future__ import annotations
@@ -39,12 +34,12 @@ pytestmark = [
 
 
 # ---------------------------------------------------------------------------
-# Full SDK invoke() integration — end-to-end with real Anthropic API
+# Full subprocess invoke() integration — end-to-end with real Anthropic API
 # ---------------------------------------------------------------------------
 
 
 class TestAdapterInvoke:
-    """End-to-end test of ClaudeCodeAdapter.invoke() with the real SDK."""
+    """End-to-end test of ClaudeCodeAdapter.invoke() via subprocess."""
 
     async def test_invoke_returns_text_and_usage(self):
         """Full invoke() returns non-empty text and positive token counts."""
@@ -70,9 +65,9 @@ class TestAdapterInvoke:
         assert usage["output_tokens"] > 0, "output_tokens should be positive"
 
     async def test_invoke_with_tool_call_extraction(self):
-        """invoke() extracts ToolUseBlock records from tool-using sessions.
+        """invoke() extracts tool_use records from tool-using sessions.
 
-        Triggers a tool-using session and verifies that the ToolUseBlock
+        Triggers a tool-using session and verifies that the tool_use block
         parsing produces tool call dicts with non-empty name, id, and input.
         """
         adapter = ClaudeCodeAdapter()
@@ -122,3 +117,20 @@ class TestAdapterInvoke:
 
         assert result_text is not None, "invoke() returned None result_text"
         assert len(result_text) > 0, "invoke() returned empty result_text"
+
+    async def test_invoke_populates_last_process_info(self):
+        """last_process_info is populated with subprocess metadata after invoke()."""
+        adapter = ClaudeCodeAdapter()
+        await adapter.invoke(
+            prompt="Say 'hello'.",
+            system_prompt="",
+            mcp_servers={},
+            env=dict(os.environ),
+            timeout=120,
+        )
+
+        info = adapter.last_process_info
+        assert info is not None, "last_process_info is None after invoke()"
+        assert isinstance(info.get("pid"), int), f"pid is not int: {info}"
+        assert info.get("exit_code") == 0, f"exit_code is not 0: {info}"
+        assert info.get("runtime_type") == "claude", f"runtime_type mismatch: {info}"

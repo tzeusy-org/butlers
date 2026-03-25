@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from butlers.config import ButlerConfig
-from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
+from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
 pytestmark = pytest.mark.unit
@@ -26,6 +26,36 @@ def _make_config(
     )
 
 
+class _CapturingAdapter(RuntimeAdapter):
+    """Minimal capturing adapter for prompt context tests."""
+
+    def __init__(self) -> None:
+        self.captured_prompts: list[str] = []
+
+    @property
+    def binary_name(self) -> str:
+        return "mock"
+
+    async def invoke(
+        self,
+        prompt: str,
+        system_prompt: str,
+        mcp_servers: dict,
+        env: dict,
+        **kwargs: Any,
+    ) -> tuple:
+        self.captured_prompts.append(prompt)
+        return "Done", [], None
+
+    def build_config_file(self, mcp_servers: dict, tmp_dir: Any) -> Any:
+        config_path = tmp_dir / "mock.json"
+        config_path.write_text("{}")
+        return config_path
+
+    def parse_system_prompt_file(self, config_dir: Any) -> str:
+        return ""
+
+
 class TestContextParameter:
     """Test that context parameter is properly prepended to prompt."""
 
@@ -35,33 +65,15 @@ class TestContextParameter:
         config_dir.mkdir()
         config = _make_config()
 
-        captured_prompt: str | None = None
-
-        async def capturing_sdk(*, prompt: str, options: Any):
-            nonlocal captured_prompt
-            captured_prompt = prompt
-            from claude_agent_sdk import ResultMessage
-
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="test-session",
-                total_cost_usd=0.005,
-                usage={},
-                result="Done",
-            )
-
+        adapter = _CapturingAdapter()
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
+            runtime=adapter,
         )
 
         await spawner.trigger(prompt="do task", trigger_source="trigger_tool")
-        assert captured_prompt == "do task"
+        assert adapter.captured_prompts[-1] == "do task"
 
     async def test_trigger_with_context(self, tmp_path: Path):
         """When context is provided, it is prepended to the prompt."""
@@ -69,29 +81,11 @@ class TestContextParameter:
         config_dir.mkdir()
         config = _make_config()
 
-        captured_prompt: str | None = None
-
-        async def capturing_sdk(*, prompt: str, options: Any):
-            nonlocal captured_prompt
-            captured_prompt = prompt
-            from claude_agent_sdk import ResultMessage
-
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="test-session",
-                total_cost_usd=0.005,
-                usage={},
-                result="Done",
-            )
-
+        adapter = _CapturingAdapter()
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
+            runtime=adapter,
         )
 
         await spawner.trigger(
@@ -99,7 +93,7 @@ class TestContextParameter:
             context="Here is some context.",
             trigger_source="trigger_tool",
         )
-        assert captured_prompt == "Here is some context.\n\ndo task"
+        assert adapter.captured_prompts[-1] == "Here is some context.\n\ndo task"
 
     async def test_trigger_with_empty_context(self, tmp_path: Path):
         """When context is empty string, prompt is used as-is."""
@@ -107,29 +101,11 @@ class TestContextParameter:
         config_dir.mkdir()
         config = _make_config()
 
-        captured_prompt: str | None = None
-
-        async def capturing_sdk(*, prompt: str, options: Any):
-            nonlocal captured_prompt
-            captured_prompt = prompt
-            from claude_agent_sdk import ResultMessage
-
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="test-session",
-                total_cost_usd=0.005,
-                usage={},
-                result="Done",
-            )
-
+        adapter = _CapturingAdapter()
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
+            runtime=adapter,
         )
 
         await spawner.trigger(
@@ -137,4 +113,4 @@ class TestContextParameter:
             context="",
             trigger_source="trigger_tool",
         )
-        assert captured_prompt == "do task"
+        assert adapter.captured_prompts[-1] == "do task"

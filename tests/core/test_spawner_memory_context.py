@@ -11,7 +11,7 @@ import asyncpg
 import pytest
 
 from butlers.config import ButlerConfig
-from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
+from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner, fetch_memory_context
 
 pytestmark = pytest.mark.unit
@@ -104,6 +104,39 @@ class TestFetchMemoryContext:
         assert record.exc_info is None
 
 
+class _CapturingAdapter(RuntimeAdapter):
+    """Minimal capturing adapter for system_prompt injection tests."""
+
+    def __init__(self) -> None:
+        self.captured_system_prompts: list[str] = []
+
+    @property
+    def binary_name(self) -> str:
+        return "mock"
+
+    async def invoke(
+        self,
+        prompt: str,
+        system_prompt: str,
+        mcp_servers: dict,
+        env: dict,
+        **kwargs: Any,
+    ) -> tuple:
+        self.captured_system_prompts.append(system_prompt)
+        return "Done", [], None
+
+    def build_config_file(self, mcp_servers: dict, tmp_dir: Any) -> Any:
+        config_path = tmp_dir / "mock.json"
+        config_path.write_text("{}")
+        return config_path
+
+    def parse_system_prompt_file(self, config_dir: Any) -> str:
+        claude_md = config_dir / "CLAUDE.md"
+        if claude_md.exists():
+            return claude_md.read_text().strip()
+        return ""
+
+
 class TestSpawnerMemoryContextInjection:
     async def test_memory_context_injected_when_memory_module_enabled(self, tmp_path: Path):
         config_dir = tmp_path / "config"
@@ -111,29 +144,11 @@ class TestSpawnerMemoryContextInjection:
         (config_dir / "CLAUDE.md").write_text("Base prompt.")
         config = _make_config(modules={"memory": {"retrieval": {"context_token_budget": 1234}}})
 
-        captured_system_prompt: str | None = None
-
-        async def capturing_sdk(*, prompt: str, options: Any):
-            nonlocal captured_system_prompt
-            captured_system_prompt = getattr(options, "system_prompt", None)
-            from claude_agent_sdk import ResultMessage
-
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="test-session",
-                total_cost_usd=0.005,
-                usage={},
-                result="Done",
-            )
-
+        adapter = _CapturingAdapter()
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
+            runtime=adapter,
         )
 
         with patch(
@@ -143,7 +158,7 @@ class TestSpawnerMemoryContextInjection:
         ) as mock_fetch:
             await spawner.trigger(prompt="do task", trigger_source="trigger")
 
-        assert captured_system_prompt == (
+        assert adapter.captured_system_prompts[-1] == (
             "Base prompt.\n\nRemembered: user prefers concise answers."
         )
         mock_fetch.assert_awaited_once_with(
@@ -159,24 +174,8 @@ class TestSpawnerMemoryContextInjection:
         (config_dir / "CLAUDE.md").write_text("Base prompt.")
         config = _make_config(modules={})
 
-        async def fake_sdk(*, prompt: str, options: Any):
-            from claude_agent_sdk import ResultMessage
-
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="test-session",
-                total_cost_usd=0.005,
-                usage={},
-                result="Done",
-            )
-
-        spawner = Spawner(
-            config=config, config_dir=config_dir, runtime=ClaudeCodeAdapter(sdk_query=fake_sdk)
-        )
+        adapter = _CapturingAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
 
         with patch(
             "butlers.core.spawner.fetch_memory_context",

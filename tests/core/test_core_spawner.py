@@ -27,7 +27,6 @@ import pytest
 
 from butlers.config import ButlerConfig, RuntimeConfig
 from butlers.core.runtimes.base import RuntimeAdapter
-from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 from butlers.core.spawner import (
     Spawner,
     SpawnerResult,
@@ -1209,7 +1208,7 @@ class TestSessionLogging:
                 config=config,
                 config_dir=config_dir,
                 pool=mock_pool,
-                runtime=ClaudeCodeAdapter(sdk_query=_result_sdk_query),
+                runtime=MockAdapter(result_text="Result from helper"),
             )
 
             await spawner.trigger("model test", "schedule")
@@ -1223,89 +1222,60 @@ class TestSessionLogging:
 
 
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# SDK query helpers for legacy compat tests
-# ---------------------------------------------------------------------------
-
-
-async def _result_sdk_query(*, prompt: str, options: Any):
-    """Mock SDK query that returns a successful result."""
-    from claude_agent_sdk import ResultMessage
-
-    yield ResultMessage(
-        subtype="result",
-        duration_ms=10,
-        duration_api_ms=8,
-        is_error=False,
-        num_turns=1,
-        session_id="helper-test",
-        total_cost_usd=0.0,
-        usage={},
-        result="Result from helper",
-    )
-
-
-async def _error_sdk_query(*, prompt: str, options: Any):
-    """Mock SDK query that raises an error."""
-    raise RuntimeError("SDK query failed")
-    yield  # makes this an async generator
-
-
 # Model passthrough tests
 # ---------------------------------------------------------------------------
 
 
-class TestModelPassthrough:
-    """Model string from config is passed through to SDK options."""
+class CapturingMockAdapter(MockAdapter):
+    """MockAdapter that captures the model kwarg passed to invoke()."""
 
-    async def test_model_passed_to_sdk_options(self, tmp_path: Path):
-        """When model is set in config, it appears in ClaudeAgentOptions."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.captured_models: list[str | None] = []
+
+    async def invoke(self, *args, model: str | None = None, **kwargs):
+        self.captured_models.append(model)
+        return await super().invoke(*args, model=model, **kwargs)
+
+
+class TestModelPassthrough:
+    """Model string from config is passed through to invoke() kwargs."""
+
+    async def test_model_passed_to_invoke(self, tmp_path: Path):
+        """When model is set in config, it appears in invoke() model kwarg."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(model="claude-sonnet-4-20250514")
 
-        captured_options: list[Any] = []
-
-        async def capturing_sdk(*, prompt: str, options: Any):
-            captured_options.append(options)
-            return
-            yield
-
+        adapter = CapturingMockAdapter(result_text="ok")
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
+            runtime=adapter,
         )
 
         await spawner.trigger("test model", "tick")
 
-        assert len(captured_options) == 1
-        assert captured_options[0].model == "claude-sonnet-4-20250514"
+        assert len(adapter.captured_models) == 1
+        assert adapter.captured_models[0] == "claude-sonnet-4-20250514"
 
     async def test_model_default_when_not_configured(self, tmp_path: Path):
-        """When model is not set, ClaudeAgentOptions.model defaults to Haiku."""
+        """When model is not set, default model (Haiku) is passed to invoke()."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()  # model defaults to Haiku
 
-        captured_options: list[Any] = []
-
-        async def capturing_sdk(*, prompt: str, options: Any):
-            captured_options.append(options)
-            return
-            yield
-
+        adapter = CapturingMockAdapter(result_text="ok")
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=capturing_sdk),
+            runtime=adapter,
         )
 
         await spawner.trigger("test default", "tick")
 
-        assert len(captured_options) == 1
-        assert captured_options[0].model == "claude-haiku-4-5-20251001"
+        assert len(adapter.captured_models) == 1
+        assert adapter.captured_models[0] == "claude-haiku-4-5-20251001"
 
     async def test_model_in_spawner_result_on_success(self, tmp_path: Path):
         """SpawnerResult includes the model used on successful invocation."""
@@ -1316,7 +1286,7 @@ class TestModelPassthrough:
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=_result_sdk_query),
+            runtime=MockAdapter(result_text="Result from helper"),
         )
 
         result = await spawner.trigger("test", "tick")
@@ -1331,7 +1301,7 @@ class TestModelPassthrough:
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=_error_sdk_query),
+            runtime=MockAdapter(error="invocation failed"),
         )
 
         result = await spawner.trigger("fail", "tick")
@@ -1347,7 +1317,7 @@ class TestModelPassthrough:
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=_result_sdk_query),
+            runtime=MockAdapter(result_text="Result from helper"),
         )
 
         result = await spawner.trigger("test", "tick")
@@ -1765,94 +1735,52 @@ class TestTokenUsageCapture:
             assert kwargs["input_tokens"] is None
             assert kwargs["output_tokens"] is None
 
-    async def test_token_counts_from_claude_agent_sdk(self, tmp_path: Path):
-        """End-to-end: token counts extracted from Claude Agent SDK ResultMessage."""
+    async def test_token_counts_from_adapter_usage(self, tmp_path: Path):
+        """End-to-end: token counts from adapter usage dict propagate to SpawnerResult."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
-        from claude_agent_sdk import ResultMessage
-
-        async def sdk_with_usage(*, prompt: str, options: Any):
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=50,
-                duration_api_ms=40,
-                is_error=False,
-                num_turns=2,
-                session_id="token-test",
-                total_cost_usd=0.05,
-                usage={"input_tokens": 1234, "output_tokens": 5678},
-                result="Done with tokens!",
-            )
-
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=sdk_with_usage),
+            runtime=MockAdapter(
+                result_text="Done with tokens!",
+                usage={"input_tokens": 1234, "output_tokens": 5678},
+            ),
         )
 
-        result = await spawner.trigger("test sdk tokens", "tick")
+        result = await spawner.trigger("test tokens", "tick")
         assert result.output == "Done with tokens!"
         assert result.input_tokens == 1234
         assert result.output_tokens == 5678
 
-    async def test_token_counts_none_with_empty_sdk_usage(self, tmp_path: Path):
-        """Token counts are None when SDK usage dict is empty."""
+    async def test_token_counts_none_with_empty_usage(self, tmp_path: Path):
+        """Token counts are None when adapter returns usage=None."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
-        from claude_agent_sdk import ResultMessage
-
-        async def sdk_empty_usage(*, prompt: str, options: Any):
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="empty-usage",
-                total_cost_usd=0.0,
-                usage={},
-                result="Empty usage",
-            )
-
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=sdk_empty_usage),
+            runtime=MockAdapter(result_text="Empty usage", usage=None),
         )
 
         result = await spawner.trigger("test empty usage", "tick")
         assert result.input_tokens is None
         assert result.output_tokens is None
 
-    async def test_token_counts_none_with_none_sdk_usage(self, tmp_path: Path):
-        """Token counts are None when SDK usage is None."""
+    async def test_token_counts_none_with_none_usage(self, tmp_path: Path):
+        """Token counts are None when adapter returns usage dict with no token fields."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
-        from claude_agent_sdk import ResultMessage
-
-        async def sdk_none_usage(*, prompt: str, options: Any):
-            yield ResultMessage(
-                subtype="result",
-                duration_ms=10,
-                duration_api_ms=8,
-                is_error=False,
-                num_turns=1,
-                session_id="none-usage",
-                total_cost_usd=0.0,
-                usage=None,
-                result="None usage",
-            )
-
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=ClaudeCodeAdapter(sdk_query=sdk_none_usage),
+            runtime=MockAdapter(result_text="None usage", usage={}),
         )
 
         result = await spawner.trigger("test none usage", "tick")

@@ -19,7 +19,7 @@ import pytest
 from pydantic import BaseModel
 
 from butlers.config import load_config
-from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
+from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 from butlers.daemon import ButlerDaemon
 from butlers.modules.base import Module
@@ -295,15 +295,58 @@ class TestShutdownTimeoutConfig:
 # ---------------------------------------------------------------------------
 
 
+class _SlowMockAdapter(RuntimeAdapter):
+    """Adapter that signals startup and blocks until released."""
+
+    def __init__(self, started_event: asyncio.Event, delay: float = 999) -> None:
+        self._started_event = started_event
+        self._delay = delay
+
+    @property
+    def binary_name(self) -> str:
+        return "mock"
+
+    async def invoke(self, *args, **kwargs):
+        self._started_event.set()
+        await asyncio.sleep(self._delay)
+        return "done", [], None
+
+    def build_config_file(self, mcp_servers, tmp_dir):
+        p = tmp_dir / "mock.json"
+        p.write_text("{}")
+        return p
+
+    def parse_system_prompt_file(self, config_dir):
+        return ""
+
+
+class _SimpleMockAdapter(RuntimeAdapter):
+    """Adapter that returns immediately."""
+
+    @property
+    def binary_name(self) -> str:
+        return "mock"
+
+    async def invoke(self, *args, **kwargs):
+        return "ok", [], None
+
+    def build_config_file(self, mcp_servers, tmp_dir):
+        p = tmp_dir / "mock.json"
+        p.write_text("{}")
+        return p
+
+    def parse_system_prompt_file(self, config_dir):
+        return ""
+
+
 class TestSpawnerDraining:
     """Test Spawner session tracking and drain behavior."""
 
-    def _make_spawner(self, sdk_query=None) -> Spawner:
+    def _make_spawner(self, runtime=None) -> Spawner:
         """Create a spawner with no pool (no DB logging)."""
         from butlers.config import ButlerConfig
 
         config = ButlerConfig(name="test", port=9100)
-        runtime = ClaudeCodeAdapter(sdk_query=sdk_query) if sdk_query is not None else None
         return Spawner(
             config=config,
             config_dir=Path("/tmp/nonexistent"),
@@ -335,24 +378,26 @@ class TestSpawnerDraining:
         session_completed = asyncio.Event()
         drain_started = asyncio.Event()
 
-        async def slow_sdk_query(prompt, options):
-            # Signal that we're running, then wait to be released
-            drain_started.set()
-            await asyncio.sleep(0.3)
-            session_completed.set()
-            return
-            yield  # Make it an async generator
+        class _SlowCompletingAdapter(RuntimeAdapter):
+            @property
+            def binary_name(self):
+                return "mock"
 
-        # Need a proper async generator
-        async def slow_sdk(prompt, options):
-            drain_started.set()
-            await asyncio.sleep(0.3)
-            session_completed.set()
-            # Yield nothing — just complete
-            return
-            yield
+            async def invoke(self, *args, **kwargs):
+                drain_started.set()
+                await asyncio.sleep(0.3)
+                session_completed.set()
+                return "done", [], None
 
-        spawner = self._make_spawner(sdk_query=slow_sdk)
+            def build_config_file(self, mcp_servers, tmp_dir):
+                p = tmp_dir / "mock.json"
+                p.write_text("{}")
+                return p
+
+            def parse_system_prompt_file(self, config_dir):
+                return ""
+
+        spawner = self._make_spawner(runtime=_SlowCompletingAdapter())
 
         # Start a trigger in a background task
         trigger_task = asyncio.create_task(
@@ -378,15 +423,7 @@ class TestSpawnerDraining:
     async def test_drain_timeout_cancels_sessions(self) -> None:
         """drain() should cancel sessions that exceed the timeout."""
         session_started = asyncio.Event()
-
-        async def hanging_sdk(prompt, options):
-            session_started.set()
-            # Hang forever — should be cancelled
-            await asyncio.sleep(999)
-            return
-            yield
-
-        spawner = self._make_spawner(sdk_query=hanging_sdk)
+        spawner = self._make_spawner(runtime=_SlowMockAdapter(started_event=session_started))
 
         # Start a trigger in a background task
         trigger_task = asyncio.create_task(
