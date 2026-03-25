@@ -155,6 +155,11 @@ import type {
   WhatsAppPairPollResponse,
   WhatsAppPairStartResponse,
   WhatsAppStatusResponse,
+  SpotifyConfigRequest,
+  SpotifyConfigResponse,
+  SpotifyDisconnectResponse,
+  SpotifyOAuthStartResponse,
+  SpotifyStatusResponse,
   DunbarRankingResponse,
 } from "./types.ts";
 
@@ -2703,4 +2708,36 @@ export function getWhatsAppHealth(): Promise<WhatsAppHealthResponse> {
 /** GET /api/relationship/dunbar/ranking — Dunbar tier ranking for social map visualization. */
 export function getDunbarRanking(): Promise<DunbarRankingResponse> {
   return apiFetch<DunbarRankingResponse>("/relationship/dunbar/ranking");
+}
+
+// ---------------------------------------------------------------------------
+// Spotify connector API
+// ---------------------------------------------------------------------------
+
+/** GET /api/spotify/status — current Spotify connection state */
+export function getSpotifyStatus(): Promise<SpotifyStatusResponse> {
+  return apiFetch<SpotifyStatusResponse>("/spotify/status");
+}
+
+/** POST /api/spotify/oauth/start — initiate PKCE OAuth flow, returns authorization URL */
+export function startSpotifyOAuth(): Promise<SpotifyOAuthStartResponse> {
+  return apiFetch<SpotifyOAuthStartResponse>("/spotify/oauth/start", {
+    method: "POST",
+  });
+}
+
+/** POST /api/spotify/config — store Spotify client_id */
+export function saveSpotifyConfig(data: SpotifyConfigRequest): Promise<SpotifyConfigResponse> {
+  return apiFetch<SpotifyConfigResponse>("/spotify/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+/** POST /api/spotify/disconnect — remove all Spotify credentials */
+export function disconnectSpotify(): Promise<SpotifyDisconnectResponse> {
+  return apiFetch<SpotifyDisconnectResponse>("/spotify/disconnect", {
+    method: "POST",
+  });
 }

@@ -2440,6 +2440,44 @@ export interface WhatsAppDisconnectResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Spotify connector types
+// ---------------------------------------------------------------------------
+
+/** Connection state for the Spotify account. */
+export type SpotifyState = "connected" | "disconnected" | "error" | "not_configured";
+
+/** Response from GET /api/spotify/status */
+export interface SpotifyStatusResponse {
+  connected: boolean;
+  state: SpotifyState;
+  spotify_user_id: string | null;
+  display_name: string | null;
+  account_type: string | null;
+  last_sync_at: string | null;
+  error: string | null;
+}
+
+/** Response from POST /api/spotify/oauth/start */
+export interface SpotifyOAuthStartResponse {
+  authorization_url: string;
+}
+
+/** Request body for POST /api/spotify/config */
+export interface SpotifyConfigRequest {
+  client_id: string;
+}
+
+/** Response from POST /api/spotify/config */
+export interface SpotifyConfigResponse {
+  configured: boolean;
+}
+
+/** Response from POST /api/spotify/disconnect */
+export interface SpotifyDisconnectResponse {
+  disconnected: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Dunbar tier ranking
 // ---------------------------------------------------------------------------
 

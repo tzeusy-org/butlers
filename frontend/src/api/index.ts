@@ -479,6 +479,22 @@ export type {
 } from "./types.ts";
 
 export {
+  disconnectSpotify,
+  getSpotifyStatus,
+  saveSpotifyConfig,
+  startSpotifyOAuth,
+} from "./client.ts";
+
+export type {
+  SpotifyConfigRequest,
+  SpotifyConfigResponse,
+  SpotifyDisconnectResponse,
+  SpotifyOAuthStartResponse,
+  SpotifyState,
+  SpotifyStatusResponse,
+} from "./types.ts";
+
+export {
   getEducationCrossTopicAnalytics,
   getEducationFlows,
   getEducationMasterySummary,
