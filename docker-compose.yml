@@ -112,6 +112,10 @@ services:
       postgres:
         condition: service_healthy
 
+  # Butler daemons: each spawns LLM CLI subprocesses (codex, opencode, etc.)
+  # and runs modules (telegram, email) that need outbound internet via egress.
+  # Runtime config dirs (runtime_*) persist OAuth tokens across restarts.
+
   # Switchboard butler - message router
   switchboard:
     build:
@@ -121,13 +125,18 @@ services:
       - "127.0.0.1:41100:41100"
     volumes:
       - ./roster/switchboard:/etc/butler:ro
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
     command: ["run", "--config", "/etc/butler"]
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel.parrot-hen.ts.net:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - HOME=/root
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41100/health || exit 1"]
       interval: 5s
@@ -139,7 +148,7 @@ services:
         condition: service_healthy
       migrations:
         condition: service_completed_successfully
-    networks: [db, backend]
+    networks: [db, backend, egress]
 
   # General butler - catch-all assistant
   general:
@@ -150,19 +159,24 @@ services:
       - "127.0.0.1:41101:41101"
     volumes:
       - ./roster/general:/etc/butler:ro
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
     command: ["run", "--config", "/etc/butler"]
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel.parrot-hen.ts.net:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - HOME=/root
     depends_on:
       postgres:
         condition: service_healthy
       migrations:
         condition: service_completed_successfully
-    networks: [db, backend]
+    networks: [db, backend, egress]
 
   # Relationship butler - contacts and interactions
   relationship:
@@ -173,19 +187,24 @@ services:
       - "127.0.0.1:41102:41102"
     volumes:
       - ./roster/relationship:/etc/butler:ro
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
     command: ["run", "--config", "/etc/butler"]
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel.parrot-hen.ts.net:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - HOME=/root
     depends_on:
       postgres:
         condition: service_healthy
       migrations:
         condition: service_completed_successfully
-    networks: [db, backend]
+    networks: [db, backend, egress]
 
   # Health butler - medications and health tracking
   health:
@@ -196,19 +215,24 @@ services:
       - "127.0.0.1:41103:41103"
     volumes:
       - ./roster/health:/etc/butler:ro
+      - runtime_claude:/root/.claude
+      - runtime_codex:/root/.codex
+      - runtime_opencode:/root/.opencode
+      - runtime_gemini:/root/.gemini
     command: ["run", "--config", "/etc/butler"]
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
       - POSTGRES_PASSWORD=butlers
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel.parrot-hen.ts.net:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - HOME=/root
     depends_on:
       postgres:
         condition: service_healthy
       migrations:
         condition: service_completed_successfully
-    networks: [db, backend]
+    networks: [db, backend, egress]
 
   # Dashboard API - web UI backend for monitoring and managing butlers
   dashboard-api:
@@ -259,6 +283,11 @@ volumes:
     name: butlers_postgres_data
   minio_data:
   frontend_node_modules:
+  # Persistent config/auth dirs for LLM runtime CLIs.
+  runtime_claude:
+  runtime_codex:
+  runtime_opencode:
+  runtime_gemini:
 
 networks:
   db:
