@@ -20,7 +20,7 @@ from croniter import croniter
 logger = logging.getLogger(__name__)
 
 # Valid trigger_source base values (schedule uses pattern "schedule:<task-name>")
-TRIGGER_SOURCES = frozenset({"tick", "external", "trigger", "route", "healing"})
+TRIGGER_SOURCES = frozenset({"tick", "external", "trigger", "route", "healing", "dashboard"})
 
 
 def _strip_null_bytes(value: str | None) -> str | None:
@@ -43,6 +43,8 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
     - "external"
     - "trigger"
     - "route"
+    - "healing"
+    - "dashboard"
     - "schedule:<task-name>" where task-name is any non-empty string
     """
     if trigger_source in TRIGGER_SOURCES:
@@ -80,7 +82,7 @@ async def session_create(
         prompt: The prompt text sent to the runtime instance.
         trigger_source: What caused this session. Must be one of:
             ``"tick"``, ``"external"``, ``"trigger"``, ``"route"``,
-            or ``"schedule:<task-name>"``.
+            ``"healing"``, ``"dashboard"``, or ``"schedule:<task-name>"``.
         trace_id: Optional OpenTelemetry trace ID for correlation.
         model: Optional model identifier used for this invocation.
         request_id: Required request ID for this session (UUIDv7 format).
@@ -110,7 +112,7 @@ async def session_create(
     if not _is_valid_trigger_source(trigger_source):
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', 'external', "
-            f"'trigger', 'route', 'healing', or 'schedule:<task-name>'"
+            f"'trigger', 'route', 'healing', 'dashboard', or 'schedule:<task-name>'"
         )
 
     session_id: uuid.UUID = await pool.fetchval(
