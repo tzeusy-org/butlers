@@ -96,6 +96,8 @@ _DEFAULT_STARTING_SOON_LEAD_MINUTES = 15
 _DEFAULT_STARTING_SOON_WINDOW_HOURS = 2
 _DEFAULT_HEALTH_PORT = 40085
 _DEFAULT_MAX_INFLIGHT = 8
+# Seen-set pruning: remove entries for events that started this many minutes ago
+_SEEN_SET_PRUNE_PAST_MINUTES = 60
 
 # Rate-limit retry config
 _RATE_LIMIT_MAX_RETRIES = 3
@@ -334,8 +336,463 @@ class StartingSoonSeenSet:
             del self._entries[key]
         return len(to_remove)
 
+    def prune_past_events(self, now: datetime | None = None) -> int:
+        """Alias for prune() with optional now parameter.
+
+        Task 4.4: Remove seen-set entries for events that started in the past.
+        More than _SEEN_SET_PRUNE_PAST_MINUTES minutes ago.
+        """
+        if now is None:
+            now = datetime.now(UTC)
+        cutoff = now - timedelta(minutes=_SEEN_SET_PRUNE_PAST_MINUTES)
+        to_remove = [key for key, start in self._entries.items() if start < cutoff]
+        for key in to_remove:
+            del self._entries[key]
+        return len(to_remove)
+
+    def size(self) -> int:
+        """Return the number of entries in the seen-set."""
+        return len(self._entries)
+
     def __len__(self) -> int:
         return len(self._entries)
+
+
+# ---------------------------------------------------------------------------
+# Compat config + standalone envelope/scan functions (task 4.1-4.5 public API)
+# ---------------------------------------------------------------------------
+# These standalone classes/functions provide a testable, side-effect-free API
+# for the starting-soon notification logic. They are also used by PR #728 tests.
+
+
+class GoogleCalendarConnectorConfig:
+    """Compat per-account config for direct CalendarConnectorRuntime instantiation.
+
+    This is the config shape used by tests and single-account deployments. The
+    multi-account manager uses CalendarAccountConfig instead.
+
+    Adapts to CalendarAccountConfig via to_account_config().
+    """
+
+    def __init__(
+        self,
+        *,
+        switchboard_mcp_url: str,
+        connector_endpoint_identity: str,
+        gcal_client_id: str,
+        gcal_client_secret: str,
+        gcal_refresh_token: str,
+        connector_provider: str = "google_calendar",
+        connector_channel: str = "google_calendar",
+        connector_max_inflight: int = _DEFAULT_MAX_INFLIGHT,
+        gcal_starting_soon_lead_minutes: int = _DEFAULT_STARTING_SOON_LEAD_MINUTES,
+        gcal_poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S,
+        gcal_calendar_ids: list[str] | None = None,
+    ) -> None:
+        self.switchboard_mcp_url = switchboard_mcp_url
+        self.connector_endpoint_identity = connector_endpoint_identity
+        self.gcal_client_id = gcal_client_id
+        self.gcal_client_secret = gcal_client_secret
+        self.gcal_refresh_token = gcal_refresh_token
+        self.connector_provider = connector_provider
+        self.connector_channel = connector_channel
+        self.connector_max_inflight = connector_max_inflight
+        self.gcal_starting_soon_lead_minutes = gcal_starting_soon_lead_minutes
+        self.gcal_poll_interval_s = gcal_poll_interval_s
+        self.gcal_calendar_ids = gcal_calendar_ids or []
+
+    def to_account_config(self) -> CalendarAccountConfig:
+        """Convert to the manager-facing CalendarAccountConfig."""
+        # Extract email from endpoint_identity pattern: "google_calendar:user:<email>"
+        parts = self.connector_endpoint_identity.split(":", 2)
+        email = parts[2] if len(parts) >= 3 else self.connector_endpoint_identity
+        return CalendarAccountConfig(
+            email=email,
+            client_id=self.gcal_client_id,
+            client_secret=self.gcal_client_secret,
+            refresh_token=self.gcal_refresh_token,
+            switchboard_mcp_url=self.switchboard_mcp_url,
+            max_inflight=self.connector_max_inflight,
+            starting_soon_lead_minutes=self.gcal_starting_soon_lead_minutes,
+            poll_interval_s=self.gcal_poll_interval_s,
+        )
+
+
+# Compat alias: GoogleCalendarAccountRuntime for tests that import the old name
+# The real implementation lives in CalendarConnectorRuntime.
+_GoogleCalendarAccountRuntimeBase = None  # resolved below after class definition
+
+
+def build_event_envelope(
+    event: dict[str, Any],
+    *,
+    event_type: str,
+    endpoint_identity: str,
+    connector_channel: str = "google_calendar",
+    connector_provider: str = "google_calendar",
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Build an ingest.v1 envelope for a Google Calendar event change.
+
+    Standalone function for testability. Used by scan_starting_soon family.
+    Per spec: connector-google-calendar/spec.md §Requirement: ingest.v1 Field Mapping.
+    """
+    if observed_at is None:
+        observed_at = datetime.now(UTC)
+
+    event_id = event.get("id", "unknown")
+    updated = event.get("updated", observed_at.isoformat())
+    organizer_email = event.get("organizer", {}).get("email", "")
+    idempotency_key = f"gcal:{endpoint_identity}:{event_id}:{updated}"
+
+    # Build simple normalized text for this envelope
+    summary = event.get("summary", "(no title)")
+    start_raw = event.get("start", {})
+    end_raw = event.get("end", {})
+    start_str = start_raw.get("dateTime") or start_raw.get("date") or "?"
+    end_str = end_raw.get("dateTime") or end_raw.get("date") or "?"
+    normalized_text = (
+        f"[Calendar: {event_type}] {summary} | {start_str} - {end_str}"
+        f" | Organizer: {organizer_email}"
+    )
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": connector_channel,
+            "provider": connector_provider,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": event_id,
+            "external_thread_id": event_id,
+            "observed_at": observed_at.isoformat(),
+        },
+        "sender": {
+            "identity": organizer_email,
+        },
+        "payload": {
+            "raw": event,
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "idempotency_key": idempotency_key,
+            "ingestion_tier": "full",
+            "policy_tier": "default",
+        },
+    }
+
+
+def build_starting_soon_envelope(
+    event: dict[str, Any],
+    *,
+    lead_minutes: int,
+    endpoint_identity: str,
+    connector_channel: str = "google_calendar",
+    connector_provider: str = "google_calendar",
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Build an ingest.v1 envelope for an 'event starting soon' notification.
+
+    Per spec: connector-google-calendar/spec.md §Scenario: Starting soon event field mapping.
+    - external_event_id: "starting_soon:<event_id>"
+    - idempotency_key: "gcal:<endpoint_identity>:starting_soon:<event_id>:<lead_minutes>"
+    - policy_tier: "interactive" (time-sensitive)
+
+    Task 4.3: event_starting_soon envelope with interactive policy tier.
+    """
+    if observed_at is None:
+        observed_at = datetime.now(UTC)
+
+    event_id = event.get("id", "unknown")
+    organizer_email = event.get("organizer", {}).get("email", "")
+    idempotency_key = f"gcal:{endpoint_identity}:starting_soon:{event_id}:{lead_minutes}"
+
+    # Build normalized text for starting-soon
+    summary = event.get("summary", "(no title)")
+    start_raw = event.get("start", {})
+    start_str = start_raw.get("dateTime") or start_raw.get("date") or ""
+    normalized_text = (
+        f"[Calendar: starting_soon] {summary} | {start_str} | Organizer: {organizer_email}"
+    )
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": connector_channel,
+            "provider": connector_provider,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": f"starting_soon:{event_id}",
+            "external_thread_id": event_id,
+            "observed_at": observed_at.isoformat(),
+        },
+        "sender": {
+            "identity": organizer_email,
+        },
+        "payload": {
+            "raw": event,
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "idempotency_key": idempotency_key,
+            "ingestion_tier": "full",
+            "policy_tier": "interactive",
+        },
+    }
+
+
+def _is_event_cancelled(event: dict[str, Any]) -> bool:
+    """Return True if the event is cancelled."""
+    return event.get("status") == "cancelled"
+
+
+def scan_starting_soon(
+    events: list[dict[str, Any]],
+    seen_set: StartingSoonSeenSet,
+    *,
+    lead_minutes: int,
+    now: datetime | None = None,
+    endpoint_identity: str,
+    connector_channel: str = "google_calendar",
+    connector_provider: str = "google_calendar",
+) -> list[dict[str, Any]]:
+    """Scan upcoming events and return starting-soon ingest envelopes.
+
+    Implements tasks 4.1-4.4 (not 4.5 — restart recovery is scan_starting_soon_on_restart):
+    - Task 4.1: Scan upcoming events within the lead-time window after each sync cycle.
+    - Task 4.2: Check in-memory seen-set keyed by (event_id, lead_minutes).
+    - Task 4.3: Build event_starting_soon envelopes with 'interactive' policy tier.
+    - Task 4.4: Prune seen-set of past events before scanning.
+
+    Returns a list of ingest.v1 envelopes for events newly entering the lead-time window.
+    """
+    if lead_minutes <= 0:
+        return []
+
+    if now is None:
+        now = datetime.now(UTC)
+
+    # Task 4.4: Prune past events before scanning
+    pruned = seen_set.prune_past_events(now=now)
+    if pruned > 0:
+        logger.debug(
+            "Starting-soon seen-set: pruned %d past entries (endpoint=%s)",
+            pruned,
+            endpoint_identity,
+        )
+
+    envelopes: list[dict[str, Any]] = []
+    window_end = now + timedelta(minutes=lead_minutes)
+
+    for event in events:
+        if _is_event_cancelled(event):
+            continue
+
+        # Skip all-day events — only timed events can have starting-soon notifications
+        if not event.get("start", {}).get("dateTime"):
+            continue
+
+        event_start = _parse_event_start(event)
+        if event_start is None:
+            continue
+
+        # Skip events that have already started
+        if event_start <= now:
+            continue
+
+        # Check if event falls within the lead-time window
+        if event_start > window_end:
+            continue
+
+        event_id = event.get("id", "")
+        if not event_id:
+            continue
+
+        # Task 4.2: Dedup check against seen-set
+        if seen_set.has_seen(event_id, lead_minutes):
+            logger.debug(
+                "Starting-soon: skipping already-seen event_id=%s lead_minutes=%d",
+                event_id,
+                lead_minutes,
+            )
+            continue
+
+        # Task 4.3: Build starting-soon envelope with interactive policy tier
+        envelope = build_starting_soon_envelope(
+            event,
+            lead_minutes=lead_minutes,
+            endpoint_identity=endpoint_identity,
+            connector_channel=connector_channel,
+            connector_provider=connector_provider,
+            observed_at=now,
+        )
+        envelopes.append(envelope)
+
+        # Task 4.2: Mark as seen to prevent duplicate notifications
+        seen_set.mark_seen(event_id, lead_minutes, event_start)
+        logger.info(
+            "Starting-soon notification queued: event_id=%s lead_minutes=%d start=%s",
+            event_id,
+            lead_minutes,
+            event_start.isoformat(),
+        )
+
+    return envelopes
+
+
+def scan_starting_soon_on_restart(
+    events: list[dict[str, Any]],
+    seen_set: StartingSoonSeenSet,
+    *,
+    lead_minutes: int,
+    now: datetime | None = None,
+    endpoint_identity: str,
+    connector_channel: str = "google_calendar",
+    connector_provider: str = "google_calendar",
+) -> list[dict[str, Any]]:
+    """Emit starting-soon notifications on connector restart for events not yet started.
+
+    Task 4.5: Restart recovery — on restart, check upcoming events within the
+    lead-time window and emit notifications for events that have not yet started.
+    These may be overdue (the connector was down during the normal lead-time window)
+    but the event hasn't started yet.
+
+    Called once at startup; does NOT prune the seen-set (it's empty on restart anyway).
+    """
+    if lead_minutes <= 0:
+        return []
+
+    if now is None:
+        now = datetime.now(UTC)
+
+    envelopes: list[dict[str, Any]] = []
+    # On restart, catch overdue notifications: no lower bound on window
+    window_end = now + timedelta(minutes=lead_minutes)
+
+    for event in events:
+        if _is_event_cancelled(event):
+            continue
+
+        # Skip all-day events
+        if not event.get("start", {}).get("dateTime"):
+            continue
+
+        event_start = _parse_event_start(event)
+        if event_start is None:
+            continue
+
+        # Only emit for events that haven't started yet
+        if event_start <= now:
+            continue
+
+        # On restart, emit for any upcoming event within the lead window
+        if event_start > window_end:
+            continue
+
+        event_id = event.get("id", "")
+        if not event_id:
+            continue
+
+        # Dedup check (seen-set is empty on fresh start, but guard anyway)
+        if seen_set.has_seen(event_id, lead_minutes):
+            continue
+
+        envelope = build_starting_soon_envelope(
+            event,
+            lead_minutes=lead_minutes,
+            endpoint_identity=endpoint_identity,
+            connector_channel=connector_channel,
+            connector_provider=connector_provider,
+            observed_at=now,
+        )
+        envelopes.append(envelope)
+        seen_set.mark_seen(event_id, lead_minutes, event_start)
+        logger.info(
+            "Restart recovery: starting-soon notification queued: "
+            "event_id=%s lead_minutes=%d start=%s",
+            event_id,
+            lead_minutes,
+            event_start.isoformat(),
+        )
+
+    return envelopes
+
+
+class GoogleCalendarAccountRuntime:
+    """Compat runtime class for tests and single-account deployments.
+
+    Wraps the standalone scan_starting_soon / scan_starting_soon_on_restart functions
+    and provides a testable _emit_starting_soon_notifications interface. Accepts a
+    GoogleCalendarConnectorConfig (PR-style config with gcal_* field names) and a
+    pre-wired mcp_client for unit tests.
+
+    Task 4.1-4.5: Used by test_google_calendar_notifications.py to verify the
+    starting-soon notification pipeline.
+    """
+
+    def __init__(
+        self,
+        config: GoogleCalendarConnectorConfig | CalendarAccountConfig,
+        cursor_pool: Any = None,
+        shared_pool: Any = None,
+        *,
+        mcp_client: CachedMCPClient | None = None,
+    ) -> None:
+        if isinstance(config, GoogleCalendarConnectorConfig):
+            self._config = config.to_account_config()
+        else:
+            self._config = config
+
+        self._mcp_client = mcp_client
+        self._seen_set: StartingSoonSeenSet = StartingSoonSeenSet()
+        # In-memory upcoming events cache (event_id -> full event dict)
+        self._upcoming_events: dict[str, dict[str, Any]] = {}
+
+    async def _emit_starting_soon_notifications(
+        self,
+        *,
+        is_restart: bool = False,
+    ) -> None:
+        """Scan upcoming events and emit starting-soon notifications.
+
+        Task 4.1: Called after each sync cycle.
+        Task 4.5: Called on startup with is_restart=True for recovery.
+        """
+        lead_minutes = self._config.starting_soon_lead_minutes
+        if lead_minutes <= 0:
+            return
+
+        upcoming = list(self._upcoming_events.values())
+        now = datetime.now(UTC)
+        endpoint_identity = self._config.endpoint_identity
+
+        if is_restart:
+            envelopes = scan_starting_soon_on_restart(
+                upcoming,
+                self._seen_set,
+                lead_minutes=lead_minutes,
+                now=now,
+                endpoint_identity=endpoint_identity,
+            )
+        else:
+            envelopes = scan_starting_soon(
+                upcoming,
+                self._seen_set,
+                lead_minutes=lead_minutes,
+                now=now,
+                endpoint_identity=endpoint_identity,
+            )
+
+        if not envelopes:
+            return
+
+        if self._mcp_client is None:
+            raise RuntimeError("MCP client not initialized")
+
+        for envelope in envelopes:
+            await self._mcp_client.call_tool("ingest", envelope)
 
 
 # ---------------------------------------------------------------------------
@@ -1689,7 +2146,14 @@ def _parse_event_end(event: dict[str, Any]) -> datetime | None:
 
 
 def _parse_dt(dt_str: str) -> datetime | None:
-    """Parse an ISO-8601 datetime string to an aware datetime."""
+    """Parse an ISO-8601 datetime string to an aware datetime.
+
+    Handles:
+    - All-day events (YYYY-MM-DD): returns midnight UTC on that date.
+    - RFC3339 with Z suffix (2026-04-01T10:00:00Z): normalizes Z→+00:00.
+    - Naive datetimes (no timezone info): assumed UTC.
+    - Fractional seconds: handled by fromisoformat.
+    """
     if not dt_str:
         return None
     try:
@@ -1701,9 +2165,13 @@ def _parse_dt(dt_str: str) -> datetime | None:
                 int(dt_str[8:10]),
                 tzinfo=UTC,
             )
-        # Strip 'Z' and replace with +00:00 for fromisoformat compat
+        # Strip 'Z' and replace with +00:00 for fromisoformat compat (handles Z suffix)
         normalized = dt_str.replace("Z", "+00:00")
-        return datetime.fromisoformat(normalized)
+        dt = datetime.fromisoformat(normalized)
+        # Assume UTC for naive datetimes (no timezone info)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
     except (ValueError, IndexError):
         return None
 
