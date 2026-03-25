@@ -1,3 +1,4 @@
+import type React from "react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
@@ -75,6 +76,33 @@ function entityTypeBadgeVariant(
       return "secondary";
     default:
       return "outline";
+  }
+}
+
+const DUNBAR_TIER_LABELS: Record<number, string> = {
+  5: "Support Clique",
+  15: "Sympathy Group",
+  50: "Good Friends",
+  150: "Meaningful",
+  500: "Acquaintances",
+  1500: "Recognizable",
+};
+
+/** Returns inline style colors for a Dunbar tier badge. Inner tiers get warmer colours. */
+function dunbarTierBadgeStyle(tier: number): React.CSSProperties {
+  switch (tier) {
+    case 5:
+      return { backgroundColor: "#b91c1c", color: "#fff" }; // deep red
+    case 15:
+      return { backgroundColor: "#c2410c", color: "#fff" }; // orange-red
+    case 50:
+      return { backgroundColor: "#92400e", color: "#fff" }; // amber-800 (~7:1 contrast, WCAG AA)
+    case 150:
+      return { backgroundColor: "#15803d", color: "#fff" }; // green
+    case 500:
+      return { backgroundColor: "#0369a1", color: "#fff" }; // blue
+    default:
+      return { backgroundColor: "#6b7280", color: "#fff" }; // gray (tier 1500 / cold-start)
   }
 }
 
@@ -646,6 +674,7 @@ export default function EntitiesPage() {
                     <tr className="border-b text-left text-muted-foreground">
                       <th className="pb-2 pr-4 font-medium">Name</th>
                       <th className="pb-2 pr-4 font-medium">Type</th>
+                      <th className="pb-2 pr-4 font-medium">Tier</th>
                       <th className="pb-2 pr-4 font-medium text-right">Facts</th>
                       <th className="pb-2 pr-4 font-medium">Created</th>
                       <th className="pb-2 font-medium w-[120px]">Actions</th>
@@ -687,6 +716,28 @@ export default function EntitiesPage() {
                           <Badge variant={entityTypeBadgeVariant(entity.entity_type)}>
                             {entity.entity_type}
                           </Badge>
+                        </td>
+                        <td className="py-2 pr-4">
+                          {entity.entity_type === "person" && entity.dunbar_tier != null ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Badge
+                                  style={dunbarTierBadgeStyle(entity.dunbar_tier)}
+                                  className="text-xs cursor-default"
+                                >
+                                  {entity.dunbar_tier}
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {DUNBAR_TIER_LABELS[entity.dunbar_tier] ?? `Tier ${entity.dunbar_tier}`}
+                                {entity.dunbar_score != null && entity.dunbar_score > 0
+                                  ? ` · score ${entity.dunbar_score.toFixed(2)}`
+                                  : ""}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">—</span>
+                          )}
                         </td>
                         <td className="py-2 pr-4 text-right tabular-nums">
                           {entity.fact_count}
