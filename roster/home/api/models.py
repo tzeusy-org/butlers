@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 
 
 class EntityStateResponse(BaseModel):
@@ -120,7 +120,7 @@ class EnergyDataPoint(BaseModel):
 
     timestamp: datetime
     total_kwh: float
-    devices: dict[str, float] = {}
+    devices: dict[str, float] = Field(default_factory=dict)
 
 
 class TopConsumerEntry(BaseModel):
@@ -213,11 +213,11 @@ class EnergyThresholds(BaseModel):
 class ThresholdConfig(BaseModel):
     """Full threshold configuration for all home monitoring jobs."""
 
-    battery: BatteryThresholds = BatteryThresholds()
-    offline_hours: OfflineHoursThresholds = OfflineHoursThresholds()
-    comfort_defaults: ComfortDefaults = ComfortDefaults()
-    comfort_deviation: ComfortDeviation = ComfortDeviation()
-    energy: EnergyThresholds = EnergyThresholds()
+    battery: BatteryThresholds = Field(default_factory=BatteryThresholds)
+    offline_hours: OfflineHoursThresholds = Field(default_factory=OfflineHoursThresholds)
+    comfort_defaults: ComfortDefaults = Field(default_factory=ComfortDefaults)
+    comfort_deviation: ComfortDeviation = Field(default_factory=ComfortDeviation)
+    energy: EnergyThresholds = Field(default_factory=EnergyThresholds)
 
 
 class ThresholdUpdateRequest(BaseModel):

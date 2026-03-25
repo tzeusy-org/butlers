@@ -998,3 +998,34 @@ class TestUpdateThresholds:
         assert resp.status_code == 200
         # execute should be called twice (once per group)
         assert mock_pool.execute.call_count == 2
+
+    async def test_nested_partial_preserves_existing_subfields(self, app):
+        """PATCH with nested partial preserves existing warning/info values.
+
+        Sending only {"battery": {"critical": 15}} must NOT reset warning/info
+        to model defaults — unset subfields should be preserved from stored values.
+        """
+        _app_with_mock_db(app, fetch_rows=[])
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # Fetch defaults first
+            get_resp = await client.get("/api/home/settings/thresholds")
+            assert get_resp.status_code == 200
+            before = get_resp.json()
+            prev_warning = before["battery"]["warning"]
+            prev_info = before["battery"]["info"]
+
+            # Send a nested partial update that only changes 'critical'
+            patch_resp = await client.patch(
+                "/api/home/settings/thresholds",
+                json={"battery": {"critical": 5}},
+            )
+
+        assert patch_resp.status_code == 200
+        after = patch_resp.json()
+        assert after["battery"]["critical"] == 5
+        # Unspecified nested fields must be preserved, not reset to defaults
+        assert after["battery"]["warning"] == prev_warning
+        assert after["battery"]["info"] == prev_info

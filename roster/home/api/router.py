@@ -349,7 +349,7 @@ def _compute_health_status(state: str | None) -> str:
     return "healthy"
 
 
-@router.get("/devices")
+@router.get("/devices", response_model=DeviceInventoryResponse)
 async def list_devices(
     domain: str | None = Query(None, description="Filter by HA domain (e.g. 'light', 'switch')"),
     area: str | None = Query(None, description="Filter by area name from entity attributes"),
@@ -357,7 +357,7 @@ async def list_devices(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> dict[str, Any]:
+) -> DeviceInventoryResponse:
     """List all known HA devices with current state, area, and health status.
 
     Supports optional filtering by domain, area name, and health status.
@@ -431,35 +431,17 @@ async def list_devices(
             )
         )
 
-    import math
-
-    total_pages = max(1, math.ceil(total_count / page_size)) if page_size > 0 else 1
-
-    return {
-        "data": [e.model_dump(mode="json") for e in data],
-        "meta": {
-            "page": page,
-            "page_size": page_size,
-            "total_count": total_count,
-            "total_pages": total_pages,
-        },
-    }
+    meta = DevicePaginationMeta(
+        page=page,
+        page_size=page_size,
+        total_count=total_count,
+    )
+    return DeviceInventoryResponse(data=data, meta=meta)
 
 
 # ---------------------------------------------------------------------------
 # GET /api/home/energy — energy consumption time series
 # ---------------------------------------------------------------------------
-
-
-def _get_ha_config(pool) -> tuple[str | None, str | None]:
-    """Extract HA URL and token from butler config stored in state store.
-
-    Returns (ha_url, ha_token) — either may be None if not configured.
-    This is a synchronous helper; callers are responsible for awaiting.
-    """
-    # Values are expected to be stored in the state table; see butler.toml
-    # for ha_url / ha_token keys. We return None when unavailable.
-    return None, None
 
 
 async def _get_ha_credentials(pool) -> tuple[str | None, str | None]:
@@ -504,9 +486,21 @@ async def get_energy(
     start_dt = now - timedelta(days=7)
 
     if start is not None:
-        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        try:
+            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid 'start' datetime format. Expected ISO 8601.",
+            )
     if end is not None:
-        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        try:
+            end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid 'end' datetime format. Expected ISO 8601.",
+            )
 
     ha_url, ha_token = await _get_ha_credentials(pool)
     if not ha_url or not ha_token:
@@ -574,7 +568,13 @@ async def get_energy(
             ts = stat.get("start") or stat.get("end")
             if ts is None:
                 continue
-            kwh = float(stat.get("sum") or stat.get("mean") or 0)
+            sum_val = stat.get("sum")
+            if sum_val is not None:
+                raw_value = sum_val
+            else:
+                mean_val = stat.get("mean")
+                raw_value = mean_val if mean_val is not None else 0
+            kwh = float(raw_value)
             if ts not in buckets:
                 buckets[ts] = {}
             buckets[ts][entity_id] = buckets[ts].get(entity_id, 0) + kwh
@@ -621,9 +621,21 @@ async def get_energy_top_consumers(
     start_dt = now - timedelta(days=7)
 
     if start is not None:
-        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        try:
+            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid ISO 8601 datetime for 'start'",
+            ) from exc
     if end is not None:
-        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        try:
+            end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid ISO 8601 datetime for 'end'",
+            ) from exc
 
     ha_url, ha_token = await _get_ha_credentials(pool)
     if not ha_url or not ha_token:
@@ -682,10 +694,18 @@ async def get_energy_top_consumers(
     except Exception:
         raise HTTPException(status_code=503, detail="Home Assistant returned invalid data")
 
+    def _get_stat_value(s: dict) -> float:
+        value = s.get("sum")
+        if value is None:
+            value = s.get("mean")
+        if value is None:
+            return 0.0
+        return float(value)
+
     # Sum per device
     device_totals: dict[str, float] = {}
     for entity_id, stat_list in ha_data.items():
-        total = sum(float(s.get("sum") or s.get("mean") or 0) for s in stat_list)
+        total = sum(_get_stat_value(s) for s in stat_list)
         device_totals[entity_id] = total
 
     grand_total = sum(device_totals.values())
@@ -1067,20 +1087,32 @@ async def update_thresholds(
     # Load current values
     current = await _load_thresholds(pool)
 
-    # Merge updates
+    # Deep-merge updates: for each group provided, merge only the explicitly set
+    # subfields into the current stored values, preserving unset subfields.
     update_map: dict[str, Any] = {}
     if body.battery is not None:
-        update_map["battery"] = body.battery.model_dump()
-        _validate_battery_thresholds(update_map["battery"])
+        merged = {**current.get("battery", {}), **body.battery.model_dump(exclude_unset=True)}
+        _validate_battery_thresholds(merged)
+        update_map["battery"] = merged
     if body.offline_hours is not None:
-        update_map["offline_hours"] = body.offline_hours.model_dump()
+        update_map["offline_hours"] = {
+            **current.get("offline_hours", {}),
+            **body.offline_hours.model_dump(exclude_unset=True),
+        }
     if body.comfort_defaults is not None:
-        update_map["comfort_defaults"] = body.comfort_defaults.model_dump()
+        update_map["comfort_defaults"] = {
+            **current.get("comfort_defaults", {}),
+            **body.comfort_defaults.model_dump(exclude_unset=True),
+        }
     if body.comfort_deviation is not None:
-        update_map["comfort_deviation"] = body.comfort_deviation.model_dump()
+        update_map["comfort_deviation"] = {
+            **current.get("comfort_deviation", {}),
+            **body.comfort_deviation.model_dump(exclude_unset=True),
+        }
     if body.energy is not None:
-        update_map["energy"] = body.energy.model_dump()
-        _validate_energy_thresholds(update_map["energy"])
+        merged = {**current.get("energy", {}), **body.energy.model_dump(exclude_unset=True)}
+        _validate_energy_thresholds(merged)
+        update_map["energy"] = merged
 
     # Persist each updated key to the state store
     for name, value in update_map.items():
