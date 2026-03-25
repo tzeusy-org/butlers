@@ -30,6 +30,15 @@ from butlers.tools.relationship.dates import (
     date_list,
     upcoming_dates,
 )
+from butlers.tools.relationship.dunbar import (
+    DUNBAR_TIERS,
+    TIER_CADENCE,
+    TIER_WEIGHT,
+    compute_dunbar_scores,
+    compute_tier_ranking,
+    compute_urgency,
+    get_tier_ranking,
+)
 from butlers.tools.relationship.facts import (
     fact_list,
     fact_set,
@@ -111,6 +120,9 @@ __all__ = [
     "CONFIDENCE_HIGH",
     "CONFIDENCE_MEDIUM",
     "CONFIDENCE_NONE",
+    "DUNBAR_TIERS",
+    "TIER_CADENCE",
+    "TIER_WEIGHT",
     "_GIFT_STATUS_ORDER",
     "_log_activity",
     "_parse_contact",
@@ -118,6 +130,9 @@ __all__ = [
     "address_list",
     "address_remove",
     "address_update",
+    "compute_dunbar_scores",
+    "compute_tier_ranking",
+    "compute_urgency",
     "contact_archive",
     "contact_create",
     "contact_merge",
@@ -138,6 +153,7 @@ __all__ = [
     "fact_list",
     "fact_set",
     "feed_get",
+    "get_tier_ranking",
     "gift_add",
     "gift_list",
     "gift_update_status",
