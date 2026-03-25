@@ -33,8 +33,8 @@ Environment variables:
 - CONNECTOR_INGESTION_TIER (optional, default "metadata"): "metadata" or "full"
 - CONNECTOR_HEALTH_PORT (optional, default 40083): HTTP server port
 - CONNECTOR_HEARTBEAT_INTERVAL_S (optional, default 120)
-- CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for cursor/policy)
-- BUTLER_SHARED_DB_NAME (optional; shared credential DB, defaults to 'butlers')
+- BUTLER_SHARED_DB_NAME (optional; shared butler DB used for connector state
+  and credentials, defaults to 'butlers')
 
 Security requirements:
 - Bearer token validated with constant-time hmac.compare_digest
@@ -495,6 +495,7 @@ class OwnTracksConnector:
                 scope=scope,
                 db_pool=self._db_pool,
             )
+            await self._ingestion_policy.ensure_loaded()
 
             # Phase 2: Initialize heartbeat
             self._init_heartbeat()
@@ -603,6 +604,32 @@ class OwnTracksConnector:
             get_checkpoint=self._get_checkpoint_info,
         )
 
+    def _endpoint_identity_ready(self) -> None:
+        """Re-initialize identity-bound components once the real endpoint identity is known.
+
+        Called once when the first event's ``tid`` resolves the endpoint identity from the
+        placeholder ``owntracks:unknown`` to the actual device tracker ID.  This keeps
+        ConnectorMetrics labels, FilteredEventBuffer flush keys, IngestionPolicyEvaluator
+        scope, and HeartbeatConfig endpoint all consistent with the real identity.
+        """
+        self._metrics = ConnectorMetrics(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=self._endpoint_identity,
+        )
+
+        scope = f"connector:{_CONNECTOR_TYPE}:{self._endpoint_identity}"
+        self._ingestion_policy = IngestionPolicyEvaluator(
+            scope=scope,
+            db_pool=self._db_pool,
+        )
+
+        self._filtered_event_buffer = FilteredEventBuffer(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=self._endpoint_identity,
+        )
+
+        self._init_heartbeat()
+
     # ------------------------------------------------------------------
     # Webhook event processing
     # ------------------------------------------------------------------
@@ -616,10 +643,16 @@ class OwnTracksConnector:
         payload_type = body.get("_type", "")
         observed_at = datetime.now(UTC).isoformat()
 
-        # Determine endpoint identity from tid if not overridden
+        # Determine endpoint identity from tid if not overridden.
+        # On first event carrying a real tid, re-initialize identity-bound
+        # components (metrics, policy, buffer, heartbeat) so they all use the
+        # resolved identity rather than the placeholder "owntracks:unknown".
         tid = body.get("tid")
         if tid and not self._config.tracker_id_override:
-            self._endpoint_identity = f"owntracks:{tid}"
+            resolved = f"owntracks:{tid}"
+            if resolved != self._endpoint_identity:
+                self._endpoint_identity = resolved
+                self._endpoint_identity_ready()
 
         # Track event counter for today (task 6.3)
         now_date = datetime.now(UTC).date()
@@ -714,7 +747,7 @@ class OwnTracksConnector:
         start_t = time.perf_counter()
         status = "success"
         try:
-            await self._mcp_client.call_tool("ingest.submit", envelope)
+            await self._mcp_client.call_tool("ingest", envelope)
             self._last_ingest_ok = True
             self._health_error = None
             logger.debug(
@@ -756,7 +789,7 @@ class OwnTracksConnector:
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""
-        await self._mcp_client.call_tool("ingest.submit", envelope)
+        await self._mcp_client.call_tool("ingest", envelope)
 
     # ------------------------------------------------------------------
     # Checkpoint
@@ -946,8 +979,20 @@ class OwnTracksConnector:
         return app
 
     def _start_health_server(self, app: FastAPI) -> None:
-        """Start the combined webhook/health/metrics HTTP server in a background thread."""
+        """Start the combined webhook/health/metrics HTTP server in a background thread.
+
+        The OwnTracks mobile app pushes webhook events over the internet, so the server
+        must listen on all interfaces (0.0.0.0).  This means /health and /metrics are
+        also publicly reachable on the same port.  In production, place a reverse proxy
+        in front of this server that restricts /health and /metrics to internal networks.
+        """
         port = self._config.health_port
+        logger.warning(
+            "OwnTracksConnector: webhook server binding to 0.0.0.0:%d. "
+            "/health and /metrics are publicly reachable. "
+            "Use a reverse proxy to restrict access to those paths in production.",
+            port,
+        )
         try:
             sock = make_health_socket("0.0.0.0", port)
         except Exception as exc:

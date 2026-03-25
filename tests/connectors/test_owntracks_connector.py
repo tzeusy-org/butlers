@@ -512,28 +512,39 @@ class TestOwnTracksConnectorWebhookProcessing:
         """Test that unsupported _type increments 'ignored' counter."""
         from prometheus_client import REGISTRY
 
-        def _get_counter(event_type: str) -> float:
+        payload = {"_type": "lwt", "tst": 1700000000, "tid": "ph"}
+        # Resolve the endpoint identity that the connector will use when processing this payload.
+        expected_identity = "owntracks:ph"
+
+        def _get_counter(event_type: str, identity: str) -> float:
             for metric in REGISTRY.collect():
                 if metric.name == "connector_owntracks_events_received":
                     for sample in metric.samples:
-                        if sample.labels.get("event_type") == event_type:
+                        if (
+                            sample.labels.get("event_type") == event_type
+                            and sample.labels.get("endpoint_identity") == identity
+                        ):
                             return sample.value
             return 0.0
 
-        payload = {"_type": "lwt", "tst": 1700000000, "tid": "ph"}
-        before = _get_counter("ignored")
+        before = _get_counter("ignored", expected_identity)
         await connector._process_webhook_event(payload)
-        after = _get_counter("ignored")
+        after = _get_counter("ignored", expected_identity)
 
-        assert after >= before  # may or may not increment depending on label match
+        assert after == before + 1
 
     async def test_policy_blocked_event_recorded_in_filtered_buffer(
         self,
-        connector: OwnTracksConnector,
+        config: OwnTracksConnectorConfig,
         location_payload: dict[str, Any],
     ) -> None:
         """Test that a policy-blocked event is added to filtered event buffer (task 6.4)."""
         from butlers.ingestion_policy import PolicyDecision
+
+        # Pin the tracker ID so _process_webhook_event never replaces the mock policy
+        # via _endpoint_identity_ready() on the first event.
+        config.tracker_id_override = "ph"
+        connector = OwnTracksConnector(config=config, webhook_token="test-secret-token")
 
         mock_policy = MagicMock()
         mock_policy.evaluate = MagicMock(
@@ -565,7 +576,7 @@ class TestOwnTracksConnectorWebhookProcessing:
 
         mock_mcp_client.call_tool.assert_called_once()
         call_args = mock_mcp_client.call_tool.call_args
-        assert call_args[0][0] == "ingest.submit"
+        assert call_args[0][0] == "ingest"
         envelope = call_args[0][1]
         assert envelope["schema_version"] == "ingest.v1"
         assert envelope["source"]["channel"] == "owntracks"
