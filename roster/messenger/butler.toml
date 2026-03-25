@@ -50,6 +50,8 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 send_tools = true
 # send_enabled=false keeps tools present but functionally disabled by default.
 # Set send_enabled=true only after assessing WhatsApp ban risk for your account.
+# Rate limit target: 10 messages/min (conservative — unofficial protocol, ban risk).
+# Per-request timeout: 20s (bridge IPC + WhatsApp relay).
 send_enabled = false
 
 [modules.whatsapp.user]
