@@ -26,6 +26,8 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0006](rfcs/0006-database-schema-and-isolation.md) | Database Schema and Isolation | Single-PG multi-schema model, shared identity tables, per-butler schema contents, multi-chain Alembic migrations, credential store. |
 | [0007](rfcs/0007-dashboard-and-api-surface.md) | Dashboard and API Surface | FastAPI + Vite architecture, auto-discovered butler routes, route map, backend API contract, tab structures, data access patterns, command palette. |
 | [0008](rfcs/0008-deployment-network-security.md) | Deployment Network Security | Four-network isolation model, egress firewall with tailnet allowlist, localhost port binding, container environment isolation, persistent runtime state. |
+| [0009](rfcs/0009-situational-context-bus.md) | Situational Context Bus | Shared user_context table with TTL-based signals, pull-based context queries, per-signal write permissions, context preamble for LLM sessions. |
+| [0010](rfcs/0010-cross-butler-briefing-exception.md) | Cross-Butler Briefing Exception | Sanctioned Rule 3 exception: read-only SQL view for daily briefing aggregation, five guardrails, reuse criteria for future cross-schema exceptions. |
 
 ## Conventions
 
