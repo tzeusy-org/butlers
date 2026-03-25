@@ -121,6 +121,20 @@ class TestResolveOwner:
             await _resolve_owner(mock_pool)
         assert "butler" in str(exc_info.value).lower() or "startup" in str(exc_info.value).lower()
 
+    async def test_primary_path_uses_entities_roles_not_contacts_roles(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """Primary path filters on e.roles (shared.entities), not c.roles (dropped in core_016)."""
+        mock_pool.fetchrow = AsyncMock(
+            return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME}
+        )
+        await _resolve_owner(mock_pool)
+        first_call_sql = mock_pool.fetchrow.call_args_list[0].args[0]
+        # Must not reference c.roles (dropped column)
+        assert "c.roles" not in first_call_sql
+        # Must filter via e.roles (correct column after core_016)
+        assert "e.roles" in first_call_sql or "ANY(e.roles)" in first_call_sql
+
 
 # ---------------------------------------------------------------------------
 # Tests — set_preference
@@ -292,6 +306,27 @@ class TestSetPreference:
         """A generic predicate raises ValueError with format hint."""
         with pytest.raises(ValueError, match="preferences:"):
             await set_preference(mock_pool, "favorite_color", "blue")
+
+    async def test_predicate_validation_raises_on_empty_after_prefix(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """'preferences:' with nothing after it raises ValueError (no domain_name segment)."""
+        with pytest.raises(ValueError, match="preferences:"):
+            await set_preference(mock_pool, "preferences:", "value")
+
+    async def test_predicate_validation_raises_on_missing_underscore(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """'preferences:nodomain' with no underscore raises ValueError."""
+        with pytest.raises(ValueError, match="preferences:"):
+            await set_preference(mock_pool, "preferences:nodomain", "value")
+
+    async def test_predicate_validation_raises_on_leading_underscore(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        """'preferences:_name' with leading underscore (empty domain) raises ValueError."""
+        with pytest.raises(ValueError, match="preferences:"):
+            await set_preference(mock_pool, "preferences:_name", "value")
 
     async def test_error_message_includes_format_hint(self, mock_pool: AsyncMock) -> None:
         """ValueError message includes the correct format hint."""
@@ -505,3 +540,38 @@ class TestGetPreferences:
         sql_arg = mock_pool.fetch.call_args.args[0]
         assert "LIKE" in sql_arg
         assert "preferences" in sql_arg or "predicate" in sql_arg
+
+    async def test_zero_confidence_preserved(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """confidence=0.0 must not be coerced to 1.0 via falsy check."""
+        mock_pool.fetch = AsyncMock(return_value=[self._make_row(confidence=0.0, decay_rate=0.0)])
+        results = await get_preferences(mock_pool)
+        assert results[0]["effective_confidence"] == 0.0
+
+    async def test_effective_confidence_uses_exponential_decay_not_compound(
+        self, mock_pool: AsyncMock, mock_resolve_owner: AsyncMock
+    ) -> None:
+        """effective_confidence uses exp(-rate * days), not (1 - rate) ** days.
+
+        At rate=0.5, 10 days:
+            exp(-0.5 * 10) = exp(-5) ≈ 0.0067
+            (1 - 0.5)**10  = 0.5**10 ≈ 0.000977
+        These are far enough apart to verify the correct formula.
+        """
+        from datetime import timedelta
+
+        # Use a fixed 10-day-old anchor (relative to "now" at test run time).
+        ten_days_ago = datetime.now(UTC) - timedelta(days=10)
+        row = self._make_row(confidence=1.0, decay_rate=0.5, last_confirmed_at=ten_days_ago)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        results = await get_preferences(mock_pool)
+        eff = results[0]["effective_confidence"]
+
+        # The actual days elapsed may differ slightly from 10 (sub-second precision).
+        # We just need to verify the value is NOT consistent with compound decay.
+        compound_at_10 = round((1.0 - 0.5) ** 10, 4)  # ≈ 0.001
+        # exp formula produces much higher value (~0.0067) — well above compound.
+        assert eff > compound_at_10 * 3, (
+            f"Expected exp(-rate*days) >> (1-rate)**days, got eff={eff}, compound≈{compound_at_10}"
+        )

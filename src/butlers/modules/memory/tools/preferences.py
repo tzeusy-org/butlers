@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -37,12 +38,13 @@ async def _resolve_owner(pool: Pool) -> tuple[uuid.UUID, str]:
         ValueError: When no owner entity can be resolved.
     """
     # Primary path: contacts table with entity_id FK.
+    # Note: shared.contacts.roles was dropped in core_016; roles are on shared.entities.
     row = await pool.fetchrow(
         """
         SELECT e.id, e.canonical_name
         FROM shared.contacts c
         JOIN shared.entities e ON c.entity_id = e.id
-        WHERE c.roles @> '["owner"]'::jsonb
+        WHERE 'owner' = ANY(e.roles)
           AND c.entity_id IS NOT NULL
         LIMIT 1
         """
@@ -140,7 +142,18 @@ async def set_preference(
     Raises:
         ValueError: On predicate validation failure or owner resolution failure.
     """
-    if not predicate.startswith(PREFERENCE_PREDICATE_PREFIX):
+    # Enforce the documented 'preferences:<domain>_<name>' format so that
+    # _derive_scope always receives a predicate with a non-empty domain and name.
+    has_prefix = predicate.startswith(PREFERENCE_PREDICATE_PREFIX)
+    remainder = predicate[len(PREFERENCE_PREDICATE_PREFIX) :] if has_prefix else ""
+    domain_and_name = remainder.split("_", 1)
+    if (
+        not has_prefix
+        or not remainder
+        or len(domain_and_name) != 2
+        or not domain_and_name[0]
+        or not domain_and_name[1]
+    ):
         raise ValueError(
             f"Invalid preference predicate {predicate!r}. "
             "Preference predicates must start with 'preferences:' and use the format "
@@ -252,22 +265,26 @@ async def get_preferences(
 
     rows = await pool.fetch(sql, *params)
 
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime  # noqa: PLC0415 (late import ok in async function)
 
     now = datetime.now(UTC)
     results = []
     for row in rows:
         d = dict(row)
-        # Compute effective confidence using standard decay formula.
-        confidence = float(d.get("confidence") or 1.0)
-        decay_rate = float(d.get("decay_rate") or 0.0)
+        # Compute effective confidence using standard exponential decay formula:
+        # effective = confidence * exp(-decay_rate * days_elapsed)
+        # Use explicit None checks to preserve 0.0 values (falsy check would coerce to default).
+        confidence_raw = d.get("confidence")
+        confidence = float(confidence_raw) if confidence_raw is not None else 1.0
+        decay_rate_raw = d.get("decay_rate")
+        decay_rate = float(decay_rate_raw) if decay_rate_raw is not None else 0.0
         last_confirmed_at = d.get("last_confirmed_at") or d.get("updated_at")
 
         if last_confirmed_at is not None and decay_rate > 0.0:
             if last_confirmed_at.tzinfo is None:
                 last_confirmed_at = last_confirmed_at.replace(tzinfo=UTC)
             days_elapsed = max(0.0, (now - last_confirmed_at).total_seconds() / 86400.0)
-            effective_confidence = round(confidence * (1.0 - decay_rate) ** days_elapsed, 4)
+            effective_confidence = round(confidence * math.exp(-decay_rate * days_elapsed), 4)
         else:
             effective_confidence = round(confidence, 4)
 
