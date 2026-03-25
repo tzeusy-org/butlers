@@ -6,12 +6,18 @@ costs for formulaic monitoring work.
 
 Jobs read current entity state from the connector-populated ``ha_entity_snapshot``
 table and load monitoring thresholds from the state store (``home:thresholds:*``),
-falling back to direct HA REST API calls only for historical statistics queries.
+falling back to direct HA REST API calls only for historical statistics queries
+(energy digest) or hardcoded defaults (environment report).
 
 The ``run_maintenance_schedule_check`` function is fully implemented: it queries
 ``home.maintenance_items`` for items that are due, overdue, or upcoming within 7
 days; classifies each item by severity; builds a notification summary; and returns
 a structured result.
+
+The ``run_environment_report`` function discovers environmental sensors from
+``ha_entity_snapshot``, loads comfort thresholds from the state store, classifies
+deviations (ok/minor/moderate/critical), stores comfort_deviation facts, and sends
+a room-by-room Telegram notification.
 
 Design reference: openspec/changes/archive/home-butler-enhancements/
 """
@@ -37,10 +43,15 @@ logger = logging.getLogger(__name__)
 
 
 class _NullEmbeddingEngine:
-    """Sentinel embedding engine that returns empty vectors for deterministic jobs."""
+    """Sentinel embedding engine that returns zero vectors for deterministic jobs.
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [[] for _ in texts]
+    Matches the synchronous ``EmbeddingEngine.embed(text: str) -> list[float]``
+    interface expected by ``store_fact``.  Returns an empty vector so that
+    vector-similarity searches simply skip these facts.
+    """
+
+    def embed(self, text: str) -> list[float]:  # noqa: ARG002
+        return []
 
 
 class _NoOpEmbeddingEngine:
@@ -84,6 +95,25 @@ _SEVERITY_IMPORTANCE: dict[str, float] = {
 
 _TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
+_DEFAULT_COMFORT_DEFAULTS: dict[str, float] = {
+    "temp_min_f": 68.0,
+    "temp_max_f": 76.0,
+    "humidity_min": 30.0,
+    "humidity_max": 60.0,
+    "co2_max_ppm": 1000.0,
+}
+
+_DEFAULT_COMFORT_DEVIATION: dict[str, float] = {
+    "minor_temp_f": 2.0,
+    "moderate_temp_f": 5.0,
+    "minor_humidity": 10.0,
+    "moderate_humidity": 20.0,
+    "critical_temp_low_f": 60.0,
+    "critical_temp_high_f": 85.0,
+    "critical_co2_ppm": 1500.0,
+    "critical_humidity_low": 15.0,
+    "critical_humidity_high": 80.0,
+}
 _DEFAULT_ENERGY_THRESHOLDS: dict[str, float] = {
     "anomaly_pct": 20.0,
     "high_severity_pct": 100.0,
@@ -342,6 +372,449 @@ def _extract_numeric_state(state: str | None) -> float | None:
         return float(state)
     except (ValueError, TypeError):
         return None
+
+
+# Sensor domain/keyword filters for environment sensors
+_TEMP_KEYWORDS = ("temperature", "temp")
+_HUMIDITY_KEYWORDS = ("humidity", "humid")
+_CO2_KEYWORDS = ("co2", "carbon_dioxide", "air_quality", "voc", "co2_ppm")
+_ILLUMINANCE_KEYWORDS = ("illuminance", "lux", "light_level")
+
+# At most 3 recommendations per report (per spec)
+_MAX_RECOMMENDATIONS = 3
+
+
+# ---------------------------------------------------------------------------
+# Threshold loading helpers — environment report
+# ---------------------------------------------------------------------------
+
+
+async def _load_comfort_defaults(pool: asyncpg.Pool) -> dict[str, float]:
+    """Load comfort defaults from state store, falling back to hardcoded defaults.
+
+    Returns a dict with keys: ``temp_min_f``, ``temp_max_f``,
+    ``humidity_min``, ``humidity_max``, ``co2_max_ppm``.
+    """
+    raw = await state_get(pool, "home:thresholds:comfort_defaults")
+    if raw is None:
+        logger.warning(
+            "home:thresholds:comfort_defaults not found in state store — using default thresholds "
+            "(temp=%.0f-%.0f°F, humidity=%.0f-%.0f%%, co2_max=%.0f ppm)",
+            _DEFAULT_COMFORT_DEFAULTS["temp_min_f"],
+            _DEFAULT_COMFORT_DEFAULTS["temp_max_f"],
+            _DEFAULT_COMFORT_DEFAULTS["humidity_min"],
+            _DEFAULT_COMFORT_DEFAULTS["humidity_max"],
+            _DEFAULT_COMFORT_DEFAULTS["co2_max_ppm"],
+        )
+        return dict(_DEFAULT_COMFORT_DEFAULTS)
+
+    if not isinstance(raw, dict):
+        logger.warning(
+            "home:thresholds:comfort_defaults is not a dict (got %r) — using defaults",
+            type(raw).__name__,
+        )
+        return dict(_DEFAULT_COMFORT_DEFAULTS)
+
+    result = dict(_DEFAULT_COMFORT_DEFAULTS)
+    for key in _DEFAULT_COMFORT_DEFAULTS:
+        if key in raw:
+            try:
+                result[key] = float(raw[key])
+            except (TypeError, ValueError):
+                logger.warning(
+                    "home:thresholds:comfort_defaults.%s is not numeric (%r) — using default %.1f",
+                    key,
+                    raw[key],
+                    _DEFAULT_COMFORT_DEFAULTS[key],
+                )
+    return result
+
+
+async def _load_comfort_deviation(pool: asyncpg.Pool) -> dict[str, float]:
+    """Load comfort deviation thresholds from state store, falling back to hardcoded defaults.
+
+    Returns a dict with keys: ``minor_temp_f``, ``moderate_temp_f``,
+    ``minor_humidity``, ``moderate_humidity``, ``critical_temp_low_f``,
+    ``critical_temp_high_f``, ``critical_co2_ppm``, ``critical_humidity_low``,
+    ``critical_humidity_high``.
+    """
+    raw = await state_get(pool, "home:thresholds:comfort_deviation")
+    if raw is None:
+        logger.warning(
+            "home:thresholds:comfort_deviation not found in state store — using default thresholds"
+        )
+        return dict(_DEFAULT_COMFORT_DEVIATION)
+
+    if not isinstance(raw, dict):
+        logger.warning(
+            "home:thresholds:comfort_deviation is not a dict (got %r) — using defaults",
+            type(raw).__name__,
+        )
+        return dict(_DEFAULT_COMFORT_DEVIATION)
+
+    result = dict(_DEFAULT_COMFORT_DEVIATION)
+    for key in _DEFAULT_COMFORT_DEVIATION:
+        if key in raw:
+            try:
+                result[key] = float(raw[key])
+            except (TypeError, ValueError):
+                logger.warning(
+                    "home:thresholds:comfort_deviation.%s is not numeric (%r) — using default %.1f",
+                    key,
+                    raw[key],
+                    _DEFAULT_COMFORT_DEVIATION[key],
+                )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Sensor classification helpers
+# ---------------------------------------------------------------------------
+
+
+def _classify_sensor_type(entity_id: str, friendly_name: str | None) -> str | None:
+    """Classify a sensor entity as temperature/humidity/co2/illuminance or None.
+
+    Returns one of ``"temperature"``, ``"humidity"``, ``"co2"``,
+    ``"illuminance"``, or ``None`` if not classified.
+    """
+    combined = f"{entity_id} {friendly_name or ''}".lower()
+    if any(kw in combined for kw in _TEMP_KEYWORDS):
+        return "temperature"
+    if any(kw in combined for kw in _HUMIDITY_KEYWORDS):
+        return "humidity"
+    if any(kw in combined for kw in _CO2_KEYWORDS):
+        return "co2"
+    if any(kw in combined for kw in _ILLUMINANCE_KEYWORDS):
+        return "illuminance"
+    return None
+
+
+def _extract_area(attributes: dict[str, Any]) -> str | None:
+    """Extract area name from entity attributes, trying common HA fields."""
+    area = attributes.get("area_id") or attributes.get("area") or attributes.get("room")
+    return str(area).strip() if area else None
+
+
+# ---------------------------------------------------------------------------
+# Deviation classification
+# ---------------------------------------------------------------------------
+
+
+def classify_deviation(
+    sensor_type: str,
+    value: float,
+    *,
+    comfort_defaults: dict[str, float],
+    deviation_thresholds: dict[str, float],
+    area_preference: dict[str, Any] | None = None,
+) -> str:
+    """Classify a sensor reading against comfort preferences and deviation thresholds.
+
+    Args:
+        sensor_type: One of ``"temperature"``, ``"humidity"``, ``"co2"``,
+            ``"illuminance"``.
+        value: The current sensor reading.
+        comfort_defaults: Default comfort range thresholds (from state store or hardcoded).
+        deviation_thresholds: Deviation severity thresholds (from state store or hardcoded).
+        area_preference: Optional area-specific preference dict that may override defaults.
+            Expected keys: ``temp_min_f``, ``temp_max_f``, ``humidity_min``,
+            ``humidity_max``, ``co2_max_ppm`` (same as ``comfort_defaults``).
+
+    Returns:
+        One of ``"ok"``, ``"minor"``, ``"moderate"``, or ``"critical"``.
+    """
+    # Merge area preference on top of defaults
+    prefs = dict(comfort_defaults)
+    if area_preference:
+        for key in comfort_defaults:
+            if key in area_preference:
+                try:
+                    prefs[key] = float(area_preference[key])
+                except (TypeError, ValueError):
+                    pass
+
+    if sensor_type == "temperature":
+        temp_min = prefs["temp_min_f"]
+        temp_max = prefs["temp_max_f"]
+        crit_low = deviation_thresholds["critical_temp_low_f"]
+        crit_high = deviation_thresholds["critical_temp_high_f"]
+        minor = deviation_thresholds["minor_temp_f"]
+        moderate = deviation_thresholds["moderate_temp_f"]
+
+        # Critical first
+        if value < crit_low or value > crit_high:
+            return "critical"
+        # Within range = ok
+        if temp_min <= value <= temp_max:
+            return "ok"
+        # Below range
+        distance = temp_min - value if value < temp_min else value - temp_max
+        if distance > moderate:
+            return "moderate"
+        if distance > minor:
+            return "moderate"
+        if distance > 0:
+            return "minor"
+        return "ok"
+
+    if sensor_type == "humidity":
+        hum_min = prefs["humidity_min"]
+        hum_max = prefs["humidity_max"]
+        crit_low = deviation_thresholds["critical_humidity_low"]
+        crit_high = deviation_thresholds["critical_humidity_high"]
+        minor = deviation_thresholds["minor_humidity"]
+        moderate = deviation_thresholds["moderate_humidity"]
+
+        if value < crit_low or value > crit_high:
+            return "critical"
+        if hum_min <= value <= hum_max:
+            return "ok"
+        distance = hum_min - value if value < hum_min else value - hum_max
+        if distance > moderate:
+            return "moderate"
+        if distance > minor:
+            return "moderate"
+        if distance > 0:
+            return "minor"
+        return "ok"
+
+    if sensor_type == "co2":
+        co2_max = prefs["co2_max_ppm"]
+        crit_co2 = deviation_thresholds["critical_co2_ppm"]
+
+        if value > crit_co2:
+            return "critical"
+        if value > co2_max:
+            return "moderate"
+        return "ok"
+
+    # illuminance and unknown types: no classification, treat as ok
+    return "ok"
+
+
+# ---------------------------------------------------------------------------
+# Area/sensor discovery
+# ---------------------------------------------------------------------------
+
+
+async def _discover_areas_and_sensors(
+    pool: asyncpg.Pool,
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Query ha_entity_snapshot to build area -> sensor type -> list of readings.
+
+    Returns a nested dict:
+    ``{area_name: {sensor_type: [{entity_id, friendly_name, value, state}, ...]}}``
+
+    Only sensors classified as temperature/humidity/co2/illuminance are included.
+    Sensors without a recognisable area go under ``"unknown"``.
+    """
+    rows = await pool.fetch("SELECT entity_id, state, attributes FROM ha_entity_snapshot")
+    areas: dict[str, dict[str, list[dict[str, Any]]]] = {}
+
+    for row in rows:
+        entity_id: str = row["entity_id"]
+        state: str | None = row["state"]
+        attrs: Any = row["attributes"] or {}
+        if isinstance(attrs, str):
+            try:
+                attrs = json.loads(attrs)
+            except (ValueError, TypeError):
+                attrs = {}
+        if not isinstance(attrs, dict):
+            attrs = {}
+
+        friendly = attrs.get("friendly_name") or entity_id
+        sensor_type = _classify_sensor_type(entity_id, friendly)
+        if sensor_type is None:
+            continue  # not an env sensor we care about
+
+        value = _extract_numeric_state(state)
+        if value is None:
+            continue  # no numeric reading available
+
+        area = _extract_area(attrs) or "unknown"
+
+        areas.setdefault(area, {}).setdefault(sensor_type, []).append(
+            {
+                "entity_id": entity_id,
+                "friendly_name": friendly,
+                "value": value,
+                "state": state,
+            }
+        )
+
+    return areas
+
+
+# ---------------------------------------------------------------------------
+# Comfort preference lookup from memory
+# ---------------------------------------------------------------------------
+
+
+async def _load_area_comfort_preference(
+    pool: asyncpg.Pool,
+    area_name: str,
+) -> dict[str, Any] | None:
+    """Query memory facts for a comfort_preference fact for the given area.
+
+    Returns the most recent matching fact's content parsed as dict,
+    or None if no stored preference exists.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT content FROM facts
+            WHERE predicate = 'comfort_preference'
+              AND subject = $1
+              AND validity = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            area_name,
+        )
+    except Exception:
+        logger.debug(
+            "_load_area_comfort_preference: could not query facts for area=%r",
+            area_name,
+            exc_info=True,
+        )
+        return None
+
+    if row is None:
+        return None
+
+    content = row["content"]
+    if isinstance(content, dict):
+        return content
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except (ValueError, TypeError):
+            pass
+    # Content exists but is not a parseable dict — log and ignore
+    logger.debug(
+        "_load_area_comfort_preference: area=%r fact content is not a JSON dict (%r)",
+        area_name,
+        type(content).__name__,
+    )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Report message builder
+# ---------------------------------------------------------------------------
+
+_DEVIATION_RECS: dict[str, dict[str, str]] = {
+    "temperature": {
+        "low": "temperature is low — consider raising the thermostat",
+        "high": "temperature is high — consider lowering the thermostat or improving ventilation",
+    },
+    "humidity": {
+        "low": "humidity is low — consider running a humidifier",
+        "high": "humidity is high — consider running a dehumidifier or improving ventilation",
+    },
+    "co2": {
+        "high": "CO\u2082 is elevated — open a window or increase ventilation",
+    },
+}
+
+
+def _recommendation_for(
+    sensor_type: str,
+    value: float,
+    comfort_defaults: dict[str, float],
+) -> str | None:
+    """Return a human-readable recommendation string for a deviation, or None."""
+    recs = _DEVIATION_RECS.get(sensor_type)
+    if not recs:
+        return None
+
+    if sensor_type == "temperature":
+        midpoint = (comfort_defaults["temp_min_f"] + comfort_defaults["temp_max_f"]) / 2
+        direction = "low" if value < midpoint else "high"
+    elif sensor_type == "humidity":
+        midpoint = (comfort_defaults["humidity_min"] + comfort_defaults["humidity_max"]) / 2
+        direction = "low" if value < midpoint else "high"
+    elif sensor_type == "co2":
+        direction = "high"
+    else:
+        return None
+
+    return recs.get(direction)
+
+
+def _build_environment_report_message(
+    area_results: list[dict[str, Any]],
+    comfort_defaults: dict[str, float],
+) -> str:
+    """Build the room-by-room environment report Telegram message.
+
+    Args:
+        area_results: List of per-area result dicts, each containing:
+            ``area``, ``readings`` (dict sensor_type -> value),
+            ``deviations`` (dict sensor_type -> severity).
+        comfort_defaults: Default comfort thresholds (for recommendation hints).
+
+    Returns:
+        HTML-formatted message string.
+    """
+    lines: list[str] = ["<b>Daily Environment Report</b>"]
+
+    all_recommendations: list[str] = []
+
+    for area_info in area_results:
+        area = area_info["area"]
+        readings: dict[str, float] = area_info["readings"]
+        deviations: dict[str, str] = area_info["deviations"]
+
+        if not readings:
+            continue
+
+        status_parts: list[str] = []
+        for sensor_type, value in readings.items():
+            sev = deviations.get(sensor_type, "ok")
+            if sensor_type == "temperature":
+                label = f"{value:.1f}\u00b0F"
+            elif sensor_type == "humidity":
+                label = f"{value:.0f}% RH"
+            elif sensor_type == "co2":
+                label = f"{value:.0f} ppm CO\u2082"
+            elif sensor_type == "illuminance":
+                label = f"{value:.0f} lux"
+            else:
+                label = f"{value:.1f}"
+
+            status_icon = ""
+            if sev == "ok":
+                status_icon = "\u2705"
+            elif sev == "minor":
+                status_icon = "\U0001f535"
+            elif sev == "moderate":
+                status_icon = "\U0001f7e1"
+            elif sev == "critical":
+                status_icon = "\U0001f534"
+
+            status_parts.append(f"{status_icon} {label}")
+
+            if sev not in ("ok", "minor") and len(all_recommendations) < _MAX_RECOMMENDATIONS:
+                rec = _recommendation_for(sensor_type, value, comfort_defaults)
+                if rec:
+                    rec_text = f"{html.escape(area.replace('_', ' ').title())}: {rec}"
+                    if rec_text not in all_recommendations:
+                        all_recommendations.append(rec_text)
+
+        area_label = html.escape(area.replace("_", " ").title())
+        lines.append(f"\n<b>{area_label}</b>: {', '.join(status_parts)}")
+
+    if all_recommendations:
+        lines.append("\n<b>Recommendations:</b>")
+        for rec in all_recommendations[:_MAX_RECOMMENDATIONS]:
+            lines.append(f"  \u2022 {rec}")
+
+    return "\n".join(lines)
 
 
 async def _load_energy_thresholds(pool: asyncpg.Pool) -> dict[str, float]:
@@ -1186,29 +1659,169 @@ async def run_device_health_check(
 
 
 # ---------------------------------------------------------------------------
-# Environment report (stub — full implementation in a future issue)
+# Environment report — main entry point
 # ---------------------------------------------------------------------------
 
 
-async def run_environment_report(pool: asyncpg.Pool) -> dict[str, Any]:
-    """Stub: environment report for the home butler (no-op).
+async def run_environment_report(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the daily environment report for the Home butler.
 
-    Full implementation pending (home-deterministic-jobs feature work).
-    When implemented, this will read temperature, humidity, CO2, and illuminance
-    sensor readings grouped by Home Assistant area from the connector-populated
-    snapshot, compare against stored comfort preferences and configurable
-    deviation thresholds (``home:thresholds:comfort_defaults``,
-    ``home:thresholds:comfort_deviation``), store deviations in memory, and send
-    a room-by-room Telegram notification.
+    Steps:
+    1. Verify ha_entity_snapshot is populated; alert owner if empty.
+    2. Discover areas and environmental sensors from ha_entity_snapshot.
+    3. Load comfort defaults from state store (``home:thresholds:comfort_defaults``).
+    4. Load deviation thresholds from state store (``home:thresholds:comfort_deviation``).
+    5. For each area, retrieve stored comfort preferences from memory (facts table).
+    6. Classify each sensor reading as ok/minor/moderate/critical.
+    7. Store comfort_deviation facts for moderate or critical deviations.
+    8. Build and send room-by-room Telegram notification.
 
-    Returns a zeroed summary dict with keys: ``areas_checked``, ``sensors_read``,
-    ``deviations_found``.
+    Args:
+        pool: asyncpg connection pool for the Home butler's database.
+        job_args: Optional job arguments (currently unused; reserved for future use).
+
+    Returns:
+        ``{"areas_checked": int, "sensors_read": int, "deviations_found": int}`` on success,
+        or ``{"error": "no_entity_snapshot"}`` when the snapshot table is empty.
     """
-    logger.info("environment_report: stub — full implementation pending")
+    del job_args  # reserved for future parameterisation
+
+    # ------------------------------------------------------------------
+    # 1. Verify snapshot is populated
+    # ------------------------------------------------------------------
+    try:
+        snapshot_count = await pool.fetchval("SELECT count(*) FROM ha_entity_snapshot") or 0
+    except Exception:
+        logger.exception("run_environment_report: failed to query ha_entity_snapshot")
+        snapshot_count = 0
+
+    if snapshot_count == 0:
+        logger.warning("run_environment_report: ha_entity_snapshot is empty — skipping")
+        await _notify_owner_telegram(
+            pool,
+            "\u26a0\ufe0f Environment report skipped: Home Assistant entity data is unavailable. "
+            "Check that the HA connector is running.",
+        )
+        return {"error": "no_entity_snapshot"}
+
+    # ------------------------------------------------------------------
+    # 2. Discover areas and sensors
+    # ------------------------------------------------------------------
+    areas_map = await _discover_areas_and_sensors(pool)
+    if not areas_map:
+        logger.info("run_environment_report: no environment sensors found in snapshot")
+        await _notify_owner_telegram(
+            pool,
+            "Environment report: no temperature, humidity, CO\u2082, or illuminance sensors found "
+            "in Home Assistant.",
+        )
+        return {"areas_checked": 0, "sensors_read": 0, "deviations_found": 0}
+
+    # ------------------------------------------------------------------
+    # 3 & 4. Load thresholds once
+    # ------------------------------------------------------------------
+    comfort_defaults = await _load_comfort_defaults(pool)
+    deviation_thresholds = await _load_comfort_deviation(pool)
+
+    # ------------------------------------------------------------------
+    # 5-6. Per-area: load preferences, classify deviations
+    # ------------------------------------------------------------------
+    eng = _NullEmbeddingEngine()
+    total_sensors = 0
+    total_deviations = 0
+    area_results: list[dict[str, Any]] = []
+
+    for area_name, sensor_types in sorted(areas_map.items()):
+        area_preference = await _load_area_comfort_preference(pool, area_name)
+
+        readings: dict[str, float] = {}
+        deviations: dict[str, str] = {}
+        area_sensor_count = 0
+
+        for sensor_type, sensor_list in sensor_types.items():
+            if not sensor_list:
+                continue
+            # Use the first sensor of each type per area (most relevant reading)
+            sensor = sensor_list[0]
+            value = sensor["value"]
+            readings[sensor_type] = value
+            area_sensor_count += 1
+
+            severity = classify_deviation(
+                sensor_type,
+                value,
+                comfort_defaults=comfort_defaults,
+                deviation_thresholds=deviation_thresholds,
+                area_preference=area_preference,
+            )
+            deviations[sensor_type] = severity
+
+            # ------------------------------------------------------------------
+            # 7. Store comfort_deviation facts for moderate or critical
+            # ------------------------------------------------------------------
+            if severity in ("moderate", "critical"):
+                total_deviations += 1
+                importance = 8.0 if severity == "critical" else 6.0
+                try:
+                    await store_fact(
+                        pool,
+                        subject=area_name,
+                        predicate="comfort_deviation",
+                        content=(
+                            f"{area_name} {sensor_type} deviation: "
+                            f"value={value:.1f}, severity={severity}"
+                        ),
+                        embedding_engine=eng,
+                        importance=importance,
+                        permanence="volatile",
+                        tags=["comfort", "deviation", sensor_type, area_name],
+                    )
+                    logger.info(
+                        "run_environment_report: stored comfort_deviation fact "
+                        "area=%r type=%r severity=%r",
+                        area_name,
+                        sensor_type,
+                        severity,
+                    )
+                except Exception:
+                    logger.warning(
+                        "run_environment_report: failed to store comfort_deviation fact "
+                        "area=%r type=%r",
+                        area_name,
+                        sensor_type,
+                        exc_info=True,
+                    )
+
+        total_sensors += area_sensor_count
+        area_results.append(
+            {
+                "area": area_name,
+                "readings": readings,
+                "deviations": deviations,
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # 8. Build and send report
+    # ------------------------------------------------------------------
+    message = _build_environment_report_message(area_results, comfort_defaults)
+    await _notify_owner_telegram(pool, message)
+
+    areas_checked = len(area_results)
+    logger.info(
+        "run_environment_report: complete — areas=%d sensors=%d deviations=%d",
+        areas_checked,
+        total_sensors,
+        total_deviations,
+    )
+
     return {
-        "areas_checked": 0,
-        "sensors_read": 0,
-        "deviations_found": 0,
+        "areas_checked": areas_checked,
+        "sensors_read": total_sensors,
+        "deviations_found": total_deviations,
     }
 
 
