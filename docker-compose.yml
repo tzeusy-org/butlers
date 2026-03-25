@@ -50,7 +50,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "54320:5432"
+      - "127.0.0.1:54320:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U butlers"]
       interval: 5s
@@ -66,8 +66,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -113,7 +113,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "41100:41100"
+      - "127.0.0.1:41100:41100"
     volumes:
       - ./roster/switchboard:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -144,7 +144,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "41101:41101"
+      - "127.0.0.1:41101:41101"
     volumes:
       - ./roster/general:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -169,7 +169,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "41102:41102"
+      - "127.0.0.1:41102:41102"
     volumes:
       - ./roster/relationship:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -194,7 +194,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "41103:41103"
+      - "127.0.0.1:41103:41103"
     volumes:
       - ./roster/health:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -219,7 +219,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "41200:41200"
+      - "127.0.0.1:41200:41200"
     volumes:
       - ./roster:/app/roster:ro
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
@@ -248,7 +248,7 @@ services:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
     ports:
-      - "41173:41173"
+      - "127.0.0.1:41173:41173"
     environment:
       - VITE_API_URL=http://dashboard-api:41200
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"

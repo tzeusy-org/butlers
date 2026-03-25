@@ -15,7 +15,7 @@ export default defineConfig({
     include: ["@dagrejs/dagre"],
   },
   server: {
-    allowedHosts: true,
+    allowedHosts: ["localhost", "127.0.0.1", "dashboard-api"],
     proxy: {
       "/api": {
         target: process.env.VITE_PROXY_TARGET || "http://localhost:41200",

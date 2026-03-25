@@ -275,7 +275,7 @@ services:
     entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers dashboard --host 0.0.0.0 --port 41200"]
     command: []
     ports:
-      - "41200:41200"
+      - "127.0.0.1:41200:41200"
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
