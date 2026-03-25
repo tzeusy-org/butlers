@@ -16,7 +16,7 @@ POST /api/butlers/{name}/conversations
     ``message_complete``, and ``done`` events.
 
 GET  /api/butlers/{name}/conversations/search
-    Full-text search across conversation messages.
+    Substring search across conversation messages (case-insensitive ILIKE).
 
 GET  /api/butlers/{name}/conversations/summary
     Aggregate statistics for all conversations of a butler.
@@ -64,7 +64,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -308,6 +308,7 @@ async def _stream_conversation_response(
         await conversation_update_aggregates(
             pool,
             conversation_id,
+            butler_name=butler_name,
             input_tokens=input_tokens or 0,
             output_tokens=output_tokens or 0,
             duration_ms=duration_ms or 0,
@@ -382,7 +383,10 @@ async def _poll_session_completion(
 @router.get("/{name}/conversations", response_model=PaginatedResponse[ConversationSummary])
 async def list_conversations(
     name: str,
-    status: str = Query("active", description="Filter by status: 'active', 'archived', or 'all'"),
+    status: Annotated[
+        Literal["active", "archived", "all"],
+        Query(description="Filter by status: 'active', 'archived', or 'all'"),
+    ] = "active",
     limit: int = Query(20, ge=1, le=100, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -414,7 +418,10 @@ async def list_conversations(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{name}/conversations/search")
+@router.get(
+    "/{name}/conversations/search",
+    response_model=PaginatedResponse[ConversationSearchResult],
+)
 async def search_conversations(
     name: str,
     q: str | None = Query(None, description="Search query string"),
@@ -422,11 +429,12 @@ async def search_conversations(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ConversationSearchResult]:
-    """Search conversations by message content.
+    """Search conversations by message content (case-insensitive substring match).
 
-    Returns conversations whose messages contain the search term, ordered
-    by most recent match first.  Each result includes a ``snippet`` with
-    the matching message content (truncated to 200 characters).
+    Returns conversations whose messages contain the search term as a
+    substring (``ILIKE '%query%'``), ordered by most recent matching message
+    first.  Each result includes a ``snippet`` with the matching message
+    content (truncated to 200 characters).
 
     Returns 400 when ``q`` is empty or missing.
     """
@@ -512,7 +520,7 @@ async def create_conversation(
     )
 
     # Increment conversation message count for the user message
-    await conversation_message_count_increment(pool, conversation_id)
+    await conversation_message_count_increment(pool, conversation_id, butler_name=name)
 
     # Build ingest envelope
     envelope = build_dashboard_envelope(
@@ -639,7 +647,7 @@ async def send_message(
     )
 
     # Increment conversation message count for the user message
-    await conversation_message_count_increment(pool, conversation_id)
+    await conversation_message_count_increment(pool, conversation_id, butler_name=name)
 
     # Build ingest envelope with conversation context
     envelope = build_dashboard_envelope(

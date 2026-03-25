@@ -232,6 +232,17 @@ class TestListConversations:
 
         assert resp.status_code == 200
 
+    async def test_rejects_invalid_status(self, app: FastAPI):
+        """?status=invalid should return 422 Unprocessable Entity."""
+        _app_with_mock_db(app)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/butlers/{_BUTLER}/conversations?status=invalid")
+
+        assert resp.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # GET /api/butlers/{name}/conversations/search

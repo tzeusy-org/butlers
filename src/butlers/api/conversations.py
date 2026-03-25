@@ -235,22 +235,29 @@ async def conversation_update_aggregates(
     pool: asyncpg.Pool,
     conversation_id: UUID,
     *,
+    butler_name: str,
     input_tokens: int = 0,
     output_tokens: int = 0,
     duration_ms: int = 0,
 ) -> None:
-    """Increment conversation denormalized aggregate counters."""
+    """Increment conversation denormalized aggregate counters.
+
+    Scoped by both ``id`` and ``butler_name`` to prevent accidental
+    cross-butler updates if the helper is reused outside the current
+    router's "conversation_get first" pattern.
+    """
     await pool.execute(
         """
         UPDATE shared.dashboard_conversations
         SET message_count = message_count + 1,
-            total_input_tokens = total_input_tokens + $2,
-            total_output_tokens = total_output_tokens + $3,
-            total_duration_ms = total_duration_ms + $4,
+            total_input_tokens = total_input_tokens + $3,
+            total_output_tokens = total_output_tokens + $4,
+            total_duration_ms = total_duration_ms + $5,
             updated_at = now()
-        WHERE id = $1
+        WHERE id = $1 AND butler_name = $2
         """,
         conversation_id,
+        butler_name,
         input_tokens,
         output_tokens,
         duration_ms,
@@ -265,23 +272,32 @@ async def conversation_search(
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Full-text search across conversation messages for a butler.
+    """Substring search across conversation messages for a butler.
 
     Returns (results, total_count).  Each result includes the conversation
-    metadata plus a ``snippet`` field from the matching message.
+    metadata plus a ``snippet`` field from the matching message.  Results are
+    ordered by most recent matching message first (``msg_created_at DESC``).
     """
     rows = await pool.fetch(
         """
-        SELECT DISTINCT ON (c.id)
-            c.id, c.butler_name, c.title, c.status, c.created_at, c.updated_at,
-            c.message_count, c.total_input_tokens, c.total_output_tokens, c.total_duration_ms,
-            substring(m.content, 1, 200) AS snippet,
-            m.created_at AS msg_created_at
-        FROM shared.dashboard_conversations c
-        JOIN shared.dashboard_messages m ON m.conversation_id = c.id
-        WHERE c.butler_name = $1
-          AND m.content ILIKE $2
-        ORDER BY c.id, m.created_at DESC
+        SELECT
+            sub.id, sub.butler_name, sub.title, sub.status,
+            sub.created_at, sub.updated_at,
+            sub.message_count, sub.total_input_tokens, sub.total_output_tokens,
+            sub.total_duration_ms, sub.snippet, sub.msg_created_at
+        FROM (
+            SELECT DISTINCT ON (c.id)
+                c.id, c.butler_name, c.title, c.status, c.created_at, c.updated_at,
+                c.message_count, c.total_input_tokens, c.total_output_tokens, c.total_duration_ms,
+                substring(m.content, 1, 200) AS snippet,
+                m.created_at AS msg_created_at
+            FROM shared.dashboard_conversations c
+            JOIN shared.dashboard_messages m ON m.conversation_id = c.id
+            WHERE c.butler_name = $1
+              AND m.content ILIKE $2
+            ORDER BY c.id, m.created_at DESC
+        ) AS sub
+        ORDER BY sub.msg_created_at DESC
         LIMIT $3 OFFSET $4
         """,
         butler_name,
@@ -464,13 +480,20 @@ async def message_list(
 async def conversation_message_count_increment(
     pool: asyncpg.Pool,
     conversation_id: UUID,
+    *,
+    butler_name: str,
 ) -> None:
-    """Increment the user message count on a conversation (no token data)."""
+    """Increment the user message count on a conversation (no token data).
+
+    Scoped by both ``id`` and ``butler_name`` to prevent accidental
+    cross-butler updates.
+    """
     await pool.execute(
         """
         UPDATE shared.dashboard_conversations
         SET message_count = message_count + 1, updated_at = now()
-        WHERE id = $1
+        WHERE id = $1 AND butler_name = $2
         """,
         conversation_id,
+        butler_name,
     )
