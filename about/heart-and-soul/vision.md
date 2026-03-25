@@ -66,11 +66,12 @@ does not ship.
    files under `roster/`. Runtime state is in the database. Identity is in git.
    If it is not in git, it is not part of who the butler is.
 
-6. **Each butler has a manifesto that governs its scope and personality.** The
-   manifesto is not decoration. It defines what the butler cares about, what it
-   promises, and what it refuses. Features, tools, and UX decisions for a butler
-   must be deeply aligned with its manifesto. A tool that contradicts the
-   manifesto must not be added.
+6. **Each butler has a manifesto that governs its scope, personality, and domain
+   model.** The manifesto is not decoration. It defines what the butler cares
+   about, what it promises, what it refuses, and the conceptual frameworks it
+   uses to structure and prioritize knowledge within its domain. Features,
+   tools, and UX decisions for a butler must be deeply aligned with its
+   manifesto. A tool that contradicts the manifesto must not be added.
 
 7. **Transport is connector responsibility; butlers never know about transport
    details.** Connectors normalize external events into a canonical ingestion
