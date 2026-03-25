@@ -672,13 +672,13 @@ class HomeAssistantModule(Module):
         mcp.tool()(ha_get_history)
         mcp.tool()(ha_get_statistics)
         mcp.tool()(ha_render_template)
-        mcp.tool()(ha_maintenance_create)
-        mcp.tool()(ha_maintenance_complete)
         mcp.tool()(ha_maintenance_list)
-        mcp.tool()(ha_maintenance_remove)
         if not self._config.read_only:
             mcp.tool()(ha_call_service)
             mcp.tool()(ha_activate_scene)
+            mcp.tool()(ha_maintenance_create)
+            mcp.tool()(ha_maintenance_complete)
+            mcp.tool()(ha_maintenance_remove)
 
     # ------------------------------------------------------------------
     # WebSocket transport — connection and authentication
@@ -2258,46 +2258,45 @@ class HomeAssistantModule(Module):
             return [{"error": "Database not available.", "hint": "Check butler DB connection."}]
 
         query = """
-            SELECT
-                id,
-                name,
-                category,
-                interval_days,
-                last_completed_at,
-                next_due_at,
-                notes,
-                CASE
-                    WHEN next_due_at IS NULL AND last_completed_at IS NULL THEN 'due'
-                    WHEN next_due_at <= now() THEN 'due'
-                    WHEN next_due_at <= now() + interval '7 days' THEN 'upcoming'
-                    ELSE 'ok'
-                END AS status
-            FROM maintenance_items
-            WHERE ($1::text IS NULL OR category = $1)
+            WITH items_with_status AS (
+                SELECT
+                    id,
+                    name,
+                    category,
+                    interval_days,
+                    last_completed_at,
+                    next_due_at,
+                    notes,
+                    CASE
+                        WHEN next_due_at IS NULL AND last_completed_at IS NULL THEN 'due'
+                        WHEN next_due_at <= now() THEN 'due'
+                        WHEN next_due_at <= now() + interval '7 days' THEN 'upcoming'
+                        ELSE 'ok'
+                    END AS status
+                FROM maintenance_items
+                WHERE ($1::text IS NULL OR category = $1)
+            )
+            SELECT * FROM items_with_status
+            WHERE ($2::text IS NULL OR status = $2)
             ORDER BY next_due_at ASC NULLS FIRST
         """
-        rows = await pool.fetch(query, category)
+        rows = await pool.fetch(query, category, status)
 
-        items = []
-        for row in rows:
-            computed_status = row["status"]
-            if status is not None and computed_status != status:
-                continue
-            items.append(
-                {
-                    "id": str(row["id"]),
-                    "name": row["name"],
-                    "category": row["category"],
-                    "interval_days": row["interval_days"],
-                    "last_completed_at": (
-                        row["last_completed_at"].isoformat() if row["last_completed_at"] else None
-                    ),
-                    "next_due_at": row["next_due_at"].isoformat() if row["next_due_at"] else None,
-                    "notes": row["notes"],
-                    "status": computed_status,
-                }
-            )
-        return items
+        return [
+            {
+                "id": str(row["id"]),
+                "name": row["name"],
+                "category": row["category"],
+                "interval_days": row["interval_days"],
+                "last_completed_at": (
+                    row["last_completed_at"].isoformat() if row["last_completed_at"] else None
+                ),
+                "next_due_at": row["next_due_at"].isoformat() if row["next_due_at"] else None,
+                "notes": row["notes"],
+                "status": row["status"],
+            }
+            for row in rows
+        ]
 
     async def _maintenance_remove(self, name: str) -> dict[str, Any]:
         """Delete a maintenance item by name.

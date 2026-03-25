@@ -377,11 +377,9 @@ class TestMaintenanceList:
     async def test_list_with_status_filter(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        """Status filter excludes items with different status."""
-        rows = [
-            self._make_row("Filter 1", "filter", status="due"),
-            self._make_row("HVAC service", "hvac", status="ok"),
-        ]
+        """Status filter is pushed to the DB query; only matching rows returned."""
+        # DB already filters by status — mock returns only the due item.
+        rows = [self._make_row("Filter 1", "filter", status="due")]
         mock_pool.fetch = AsyncMock(return_value=rows)
 
         result = await module_with_pool._maintenance_list(status="due")
@@ -389,6 +387,9 @@ class TestMaintenanceList:
         assert len(result) == 1
         assert result[0]["name"] == "Filter 1"
         assert result[0]["status"] == "due"
+        # Verify status was passed to the fetch call as DB parameter.
+        fetch_call_args = mock_pool.fetch.call_args.args
+        assert "due" in fetch_call_args
 
     async def test_list_with_category_filter(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
@@ -443,11 +444,9 @@ class TestMaintenanceList:
     async def test_list_upcoming_status(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        """Upcoming status filter returns only upcoming items."""
-        rows = [
-            self._make_row("Water filter", "filter", status="upcoming"),
-            self._make_row("HVAC service", "hvac", status="ok"),
-        ]
+        """Upcoming status filter is pushed to the DB; only upcoming items returned."""
+        # DB already filters by status — mock returns only the upcoming item.
+        rows = [self._make_row("Water filter", "filter", status="upcoming")]
         mock_pool.fetch = AsyncMock(return_value=rows)
 
         result = await module_with_pool._maintenance_list(status="upcoming")
@@ -455,6 +454,9 @@ class TestMaintenanceList:
         assert len(result) == 1
         assert result[0]["name"] == "Water filter"
         assert result[0]["status"] == "upcoming"
+        # Verify status was passed to the fetch call as DB parameter.
+        fetch_call_args = mock_pool.fetch.call_args.args
+        assert "upcoming" in fetch_call_args
 
 
 # ---------------------------------------------------------------------------
