@@ -1,0 +1,51 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.tmp/
+
+# Node
+frontend/node_modules/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and runtime data
+logs/
+*.log
+
+# Secrets (never send to Docker)
+.env
+/secrets/
+
+# Build artifacts
+dist/
+build/
+*.whl
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docs and non-runtime files
+docs/
+about/
+openspec/
+*.md
+!alembic/README
+!src/**/*.md
+
+# Beads
+.beads/
+
+# Claude/agent state
+.claude/

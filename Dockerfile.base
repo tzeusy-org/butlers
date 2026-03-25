@@ -1,0 +1,55 @@
+# Butlers base image — system deps, LLM runtime CLIs, Go binaries.
+#
+# This image changes infrequently (only when system deps, npm packages, or
+# Go source change). Build it once and reference from Dockerfile:
+#
+#   docker build -f Dockerfile.base -t butlers-base .
+#
+# The main Dockerfile (Dockerfile) uses this as its base, so rebuilds only
+# re-run Python dependency install and source copy (~30s vs ~10min).
+
+# --- Stage 1: Go builder ---------------------------------------------------
+FROM golang:1.25-bookworm AS go-builder
+
+WORKDIR /build
+
+COPY whatsapp-bridge/go.mod whatsapp-bridge/go.sum ./
+RUN go mod download
+
+COPY whatsapp-bridge/ ./
+RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w" \
+    -o /out/whatsapp-bridge \
+    ./cmd/bridge
+
+# --- Stage 2: Runtime base --------------------------------------------------
+FROM python:3.12-slim
+
+# System dependencies (single layer, sorted for readability)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22 (for LLM runtime CLIs)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# LLM runtime CLIs — each butler can use any of these via butler.toml
+RUN npm install -g \
+    @anthropic-ai/claude-code \
+    @google/gemini-cli \
+    @openai/codex \
+    opencode-ai
+
+# uv package manager
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# WhatsApp bridge binary from Go builder
+COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
+
+WORKDIR /app

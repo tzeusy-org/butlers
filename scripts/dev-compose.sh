@@ -66,6 +66,19 @@ for p in "${PROFILES[@]}"; do
   fi
 done
 
+# ── Ensure base image exists ───────────────────────────────────────────
+# The base image (butlers-base) contains system deps, Node.js, LLM CLIs,
+# Go binaries, and uv. It changes rarely. Build it once; Dockerfile uses
+# it as FROM. Rebuild manually with: docker build -f Dockerfile.base -t butlers-base .
+if ! docker image inspect butlers-base:latest &>/dev/null; then
+  echo "Building butlers-base image (first time only, ~5-10 min)..."
+  docker build -f Dockerfile.base -t butlers-base . || {
+    echo "ERROR: Failed to build butlers-base image" >&2
+    exit 1
+  }
+  echo ""
+fi
+
 echo "Starting Butlers dev stack..."
 echo "  Profiles: ${PROFILES[*]:-default}"
 echo "  Compose:  ${CMD[*]} up"
