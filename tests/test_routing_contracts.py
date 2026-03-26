@@ -862,3 +862,73 @@ def test_owntracks_in_allowed_providers_by_channel():
 
     assert "owntracks" in _ALLOWED_PROVIDERS_BY_CHANNEL
     assert _ALLOWED_PROVIDERS_BY_CHANNEL["owntracks"] == frozenset({"owntracks"})
+
+
+# ---------------------------------------------------------------------------
+# Home Assistant channel/provider contract validations  [bu-6kyb]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_home_assistant_channel_accepted():
+    """IngestEnvelopeV1 accepts home_assistant as a valid source channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="home_assistant",
+        provider="home_assistant",
+        endpoint_identity="ha:http://homeassistant.local:8123",
+        sender_identity="ha:light.living_room",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert parsed.source.channel == "home_assistant"
+    assert parsed.source.provider == "home_assistant"
+
+
+@pytest.mark.unit
+def test_home_assistant_channel_rejects_invalid_provider():
+    """home_assistant channel rejects non-home_assistant providers."""
+    envelope = _build_valid_ingest_envelope(
+        channel="home_assistant",
+        provider="internal",  # wrong provider
+        endpoint_identity="ha:http://homeassistant.local:8123",
+        sender_identity="ha:light.living_room",
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+    assert "home_assistant" in str(exc_info.value) or "internal" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_home_assistant_provider_rejected_for_telegram_channel():
+    """home_assistant provider is invalid for telegram_bot channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="telegram_bot",
+        provider="home_assistant",  # wrong provider for telegram_bot
+    )
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(envelope)
+
+
+@pytest.mark.unit
+def test_home_assistant_in_allowed_providers_by_channel():
+    """home_assistant is registered in _ALLOWED_PROVIDERS_BY_CHANNEL."""
+    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
+
+    assert "home_assistant" in _ALLOWED_PROVIDERS_BY_CHANNEL
+    assert _ALLOWED_PROVIDERS_BY_CHANNEL["home_assistant"] == frozenset({"home_assistant"})
+
+
+@pytest.mark.unit
+def test_home_assistant_idempotency_key_format():
+    """IngestEnvelopeV1 accepts home_assistant-prefixed idempotency key."""
+    envelope = _build_valid_ingest_envelope(
+        channel="home_assistant",
+        provider="home_assistant",
+        endpoint_identity="ha:http://homeassistant.local:8123",
+        sender_identity="ha:light.living_room",
+        idempotency_key="ha:http://homeassistant.local:8123:light.living_room:1711497600000",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert (
+        parsed.control.idempotency_key
+        == "ha:http://homeassistant.local:8123:light.living_room:1711497600000"
+    )

@@ -34,6 +34,7 @@ SourceChannel = Literal[
     "spotify_user_client",
     "owntracks",
     "dashboard",
+    "home_assistant",
 ]
 SourceProvider = Literal[
     "telegram",
@@ -46,6 +47,7 @@ SourceProvider = Literal[
     "google_calendar",
     "spotify",
     "owntracks",
+    "home_assistant",
 ]
 NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
 NotifyIntent = Literal["send", "reply", "react"]
@@ -65,6 +67,7 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "spotify_user_client": frozenset({"spotify"}),
     "owntracks": frozenset({"owntracks"}),
     "dashboard": frozenset({"internal"}),
+    "home_assistant": frozenset({"home_assistant"}),
 }
 _THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(
