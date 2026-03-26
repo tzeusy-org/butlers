@@ -1204,6 +1204,22 @@ class MessagePipeline:
                     ),
                 )
 
+                # --- Engagement detection ---
+                # On each ingress request, mark unengaged insight_engagement rows
+                # delivered within the last 60 minutes as engaged=TRUE.
+                # This is a best-effort side effect — failures must not block routing.
+                try:
+                    from butlers.tools.switchboard.insight.broker import (
+                        check_and_update_engagement,
+                    )
+
+                    await check_and_update_engagement(self._pool)
+                except Exception:
+                    logger.debug(
+                        "Engagement detection failed; proceeding without update",
+                        exc_info=True,
+                    )
+
                 # --- Mark as processing so the scanner does not re-enqueue ---
                 if message_inbox_id is not None:
                     try:
