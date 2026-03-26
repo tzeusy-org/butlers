@@ -95,9 +95,6 @@ Check context for a REQUEST CONTEXT JSON block. If present and `source_channel` 
 **User message**: "I can't stand country music"
 
 **Actions**:
-1. `memory_store_fact(subject="user", predicate="food_dislike", content="dislikes country music genre", permanence="DURABLE", importance=6.0, tags=["music", "genre", "dislike"])`
-
-Wait — this is a music dislike, not a food dislike. Use the correct taxonomy:
 1. `memory_store_fact(subject="user", predicate="likes_genre", content="dislikes country music — finds it grating", permanence="DURABLE", importance=6.0, tags=["music", "genre", "dislike"])`
 2. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
 
