@@ -14,8 +14,10 @@ Database tables used (all in the ``public`` schema):
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import zoneinfo
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -219,8 +221,6 @@ async def propose_insight_candidate(
         return {"status": "filtered", "reason": "verbosity is off"}
 
     # --- Insert candidate ---
-    import json
-
     await pool.execute(
         """
         INSERT INTO insight_candidates
@@ -429,11 +429,12 @@ def _is_quiet_hours(settings: dict[str, Any], *, now: datetime | None = None) ->
     # Convert to user's timezone
     if quiet_timezone:
         try:
-            import zoneinfo
-
             tz = zoneinfo.ZoneInfo(quiet_timezone)
             local_now = now.astimezone(tz)
-        except Exception:
+        except zoneinfo.ZoneInfoNotFoundError:
+            logger.warning(
+                "Timezone %r not found for quiet hours, falling back to UTC.", quiet_timezone
+            )
             local_now = now
     else:
         local_now = now
@@ -458,18 +459,21 @@ async def record_cooldowns(
     if now is None:
         now = datetime.now(UTC)
 
+    cooldown_data = []
     for candidate in candidates:
         cooldown_days = candidate.get("cooldown_days") or _get_default_cooldown(
             candidate["priority"]
         )
         cooldown_until = now + timedelta(days=cooldown_days)
-        await pool.execute(
+        cooldown_data.append((candidate["dedup_key"], cooldown_until))
+
+    if cooldown_data:
+        await pool.executemany(
             """
             INSERT INTO insight_cooldowns (dedup_key, cooldown_until, reason)
             VALUES ($1, $2, 'delivered')
             """,
-            candidate["dedup_key"],
-            cooldown_until,
+            cooldown_data,
         )
 
 
@@ -485,15 +489,14 @@ async def record_engagement_rows(
     if delivered_at is None:
         delivered_at = datetime.now(UTC)
 
-    for cid in candidate_ids:
-        await pool.execute(
-            """
-            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-            VALUES ($1::uuid, $2, FALSE)
-            """,
-            cid,
-            delivered_at,
-        )
+    engagement_data = [(cid, delivered_at) for cid in candidate_ids]
+    await pool.executemany(
+        """
+        INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+        VALUES ($1::uuid, $2, FALSE)
+        """,
+        engagement_data,
+    )
 
 
 async def cleanup_old_rows(
