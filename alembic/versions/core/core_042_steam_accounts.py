@@ -181,21 +181,27 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 4. Create connectors.steam_cursors table.
     #    Per-account, per-data-type cursor persistence for polling loops.
+    #    Keyed by (endpoint_identity, data_type) so the connector can store
+    #    rich state: last_poll_at, state_hash (SHA-256 of response), and
+    #    state_snapshot (full JSONB of the last-known state for delta detection).
     # -------------------------------------------------------------------------
     op.execute("""
         CREATE TABLE IF NOT EXISTS connectors.steam_cursors (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            steam_id BIGINT NOT NULL,
+            endpoint_identity VARCHAR NOT NULL,
             data_type VARCHAR NOT NULL,
-            cursor_value TEXT,
+            last_poll_at TIMESTAMPTZ,
+            state_hash VARCHAR,
+            state_snapshot JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT uq_steam_cursors_account_type UNIQUE (steam_id, data_type)
+            CONSTRAINT uq_steam_cursors_identity_type UNIQUE (endpoint_identity, data_type)
         )
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS ix_steam_cursors_steam_id
-            ON connectors.steam_cursors (steam_id)
+        CREATE INDEX IF NOT EXISTS ix_steam_cursors_endpoint_identity
+            ON connectors.steam_cursors (endpoint_identity)
     """)
 
     # -------------------------------------------------------------------------
@@ -270,6 +276,7 @@ def downgrade() -> None:
     # 5 + 4. Drop connectors tables.
     # -------------------------------------------------------------------------
     op.execute("DROP TABLE IF EXISTS connectors.steam_play_history CASCADE")
+    op.execute("DROP INDEX IF EXISTS connectors.ix_steam_cursors_endpoint_identity")
     op.execute("DROP TABLE IF EXISTS connectors.steam_cursors CASCADE")
 
     # -------------------------------------------------------------------------
