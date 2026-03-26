@@ -362,6 +362,50 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  connector-home-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/home_assistant", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.home_assistant"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: home_assistant
+      CONNECTOR_CHANNEL: home_assistant
+      CONNECTOR_HEALTH_PORT: "40087"
+      CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
+      CONNECTOR_BUTLER_DB_SCHEMA: shared
+      BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
+      BUTLER_SHARED_DB_SCHEMA: shared
+      # Optional overrides (credentials resolved from CredentialStore by default)
+      HA_BASE_URL: ${HA_BASE_URL:-}
+      HA_ACCESS_TOKEN: ${HA_ACCESS_TOKEN:-}
+      # Optional tuning
+      HA_DOMAIN_ALLOWLIST: ${HA_DOMAIN_ALLOWLIST:-}
+      HA_POLL_INTERVAL_S: ${HA_POLL_INTERVAL_S:-60}
+      HA_CHECKPOINT_OVERLAP_S: ${HA_CHECKPOINT_OVERLAP_S:-30}
+      HA_WS_PING_INTERVAL_S: ${HA_WS_PING_INTERVAL_S:-30}
+      HA_WS_PONG_TIMEOUT_S: ${HA_WS_PONG_TIMEOUT_S:-10}
+      HA_DISCRETION_TIMEOUT_S: ${HA_DISCRETION_TIMEOUT_S:-5}
+      HA_EVENT_QUEUE_MAX: ${HA_EVENT_QUEUE_MAX:-100}
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      butlers-up:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:40087/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
   # ── Layer 2: OAuth Gate ───────────────────────────────────────────────
 
   oauth-gate:
