@@ -173,6 +173,15 @@ async def _validate_steam_credentials(
                 version=2,
             )
     except SteamRateLimitError as exc:
+        # HTTP 403 means invalid/unauthorized key; HTTP 429 means genuine rate-limiting.
+        # SteamAPIClient raises SteamRateLimitError for both (see client._RATE_LIMIT_STATUSES).
+        if exc.status_code == 403:
+            raise _SteamValidationError(
+                "Steam API key is invalid or unauthorized (HTTP 403). "
+                "Check your Steam Web API key at https://steamcommunity.com/dev/apikey",
+                category="invalid_api_key",
+                http_status=400,
+            ) from exc
         raise _SteamValidationError(
             f"Steam API is rate-limited; retry after {exc.retry_after_s:.0f}s. "
             "Wait before connecting the account.",
@@ -180,9 +189,9 @@ async def _validate_steam_credentials(
             http_status=429,
         ) from exc
     except SteamAPIError as exc:
-        if exc.status_code in (401, 403):
+        if exc.status_code == 401:
             raise _SteamValidationError(
-                "Steam API key is invalid or unauthorized (HTTP 403). "
+                "Steam API key is invalid or unauthorized (HTTP 401). "
                 "Check your Steam Web API key at https://steamcommunity.com/dev/apikey",
                 category="invalid_api_key",
                 http_status=400,
@@ -640,13 +649,21 @@ async def _fetch_playtime_data(
         )
         owned_data, recent_data = await asyncio.gather(owned_task, recent_task)
     except SteamRateLimitError as exc:
+        # HTTP 403 means invalid/unauthorized key; HTTP 429 means genuine rate-limiting.
+        # SteamAPIClient raises SteamRateLimitError for both (see client._RATE_LIMIT_STATUSES).
+        if exc.status_code == 403:
+            raise _SteamPlaytimeError(
+                "Steam API access denied (HTTP 403): API key may be invalid. "
+                "Reconnect the account via POST /api/steam/accounts.",
+                http_status=400,
+            ) from exc
         raise _SteamPlaytimeError(
             f"Steam API is rate-limited; retry after {exc.retry_after_s:.0f}s. "
             "Wait before retrying.",
             http_status=429,
         ) from exc
     except SteamAPIError as exc:
-        if exc.status_code in (401, 403):
+        if exc.status_code == 401:
             raise _SteamPlaytimeError(
                 f"Steam API returned HTTP {exc.status_code}: access denied. "
                 "The profile may be private, or the API key may be invalid. "

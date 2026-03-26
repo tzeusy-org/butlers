@@ -826,9 +826,17 @@ class TestValidateSteamCredentials:
         assert result["personaname"] == "GamerDude"
 
     async def test_raises_invalid_api_key_on_403(self):
-        """Validation raises _SteamValidationError(invalid_api_key) on SteamAPIError 403."""
+        """Validation raises _SteamValidationError(invalid_api_key) on HTTP 403.
+
+        Steam returns HTTP 403 for invalid/unauthorized API keys. SteamAPIClient
+        converts this to SteamRateLimitError(status_code=403) — not SteamAPIError —
+        because both 403 and 429 are in _RATE_LIMIT_STATUSES. The router must
+        distinguish 403 (bad key) from 429 (genuine rate limit) via status_code.
+        """
         mock_client = AsyncMock()
-        mock_client.request = AsyncMock(side_effect=SteamAPIError(403, "Forbidden"))
+        mock_client.request = AsyncMock(
+            side_effect=SteamRateLimitError(retry_after_s=60.0, status_code=403)
+        )
 
         with patch("butlers.api.routers.steam.SteamAPIClient") as mock_cls:
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
