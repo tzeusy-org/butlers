@@ -197,7 +197,7 @@ class TestLayer2SignificanceFilter:
     def test_binary_on_off_always_passes(self) -> None:
         cache = SignificanceStateCache()
         # Simulate light on -> off transition
-        result = filter_layer2_significance("light.bedroom", "None", "on", "off", cache)
+        result = filter_layer2_significance("light.bedroom", None, "on", "off", cache)
         assert result is None
 
     def test_binary_open_closed_always_passes(self) -> None:

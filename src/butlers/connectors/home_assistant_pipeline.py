@@ -237,7 +237,7 @@ def _should_bypass_significance(old_state_str: str | None, new_state_str: str | 
     1. Either state is ``None`` (unavailable data) — pass to preserve safety.
     2. Either state is in ``_BYPASS_SIGNIFICANCE_STATES`` (``"unavailable"`` or
        ``"unknown"``).
-    3. Both states are binary entity values (on/off, open/closed, etc.).
+    3. Either state is a binary entity value (on/off, open/closed, etc.).
     """
     # Null states: pass
     if old_state_str is None or new_state_str is None:
@@ -294,41 +294,18 @@ def filter_layer2_significance(
     """
     effective_thresholds = thresholds if thresholds is not None else DEFAULT_SIGNIFICANCE_THRESHOLDS
 
-    # Bypass check (task 5.3)
-    if _should_bypass_significance(old_state_str, new_state_str):
-        # Update cache with new numeric value if parseable
+    # Resolve the threshold for this device class (None when no class or unknown class).
+    threshold = effective_thresholds.get(device_class) if device_class else None
+
+    # Bypass if: binary/unavailable/unknown transition, no device class, or no known threshold.
+    # In all these cases update the cache with the new numeric value if parseable and pass.
+    if _should_bypass_significance(old_state_str, new_state_str) or threshold is None:
         if new_state_str is not None:
             try:
                 new_val = float(new_state_str)
                 state_cache.set(entity_id, new_val)
             except ValueError:
                 pass
-        return None
-
-    # No device class → no threshold to apply → pass
-    if not device_class:
-        if new_state_str is not None:
-            try:
-                new_val = float(new_state_str)
-                state_cache.set(entity_id, new_val)
-            except ValueError:
-                pass
-        return None
-
-    # Check if there's a threshold for this device class
-    threshold = effective_thresholds.get(device_class)
-    if threshold is None:
-        # Unknown device class → pass (no opinion)
-        if new_state_str is not None:
-            try:
-                new_val = float(new_state_str)
-                state_cache.set(entity_id, new_val)
-            except ValueError:
-                pass
-        return None
-
-    # Try to parse new_state_str as float
-    if new_state_str is None:
         return None
 
     try:
