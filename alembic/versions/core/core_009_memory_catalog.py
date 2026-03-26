@@ -117,9 +117,9 @@ def _grant_schema_usage_if_exists(schema: str, role: str) -> None:
 
 def upgrade() -> None:
     # -------------------------------------------------------------------------
-    # 1. Ensure pgvector extension is available.
+    # 1. pgvector extension must be pre-installed by a superuser.
+    #    See core_001_foundation.py IMPORTANT comment for the full list.
     # -------------------------------------------------------------------------
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA public")
 
     # -------------------------------------------------------------------------
     # 2. Create public.memory_catalog table (core_023 + core_024 columns merged).
