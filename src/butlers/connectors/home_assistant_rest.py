@@ -67,10 +67,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_POLL_INTERVAL_S = 60
 _DEFAULT_WS_FAILURE_THRESHOLD = 3
 
-# HA states that indicate the entity is not providing real data
-_UNAVAILABLE_STATES = frozenset({"unavailable", "unknown"})
-
-
 # ---------------------------------------------------------------------------
 # State snapshot (task 4.2)
 # ---------------------------------------------------------------------------
@@ -333,7 +329,7 @@ class HARestPoller:
             logger.debug("HARestPoller: already running, ignoring start()")
             return
         self._shutdown = False
-        self._task = asyncio.ensure_future(self._poll_loop())
+        self._task = asyncio.create_task(self._poll_loop())
         logger.info(
             "HARestPoller: started (interval=%ds, base_url=%s)",
             self._poll_interval_s,
@@ -402,15 +398,12 @@ class HARestPoller:
     async def _poll_loop(self) -> None:
         """Main poll loop — runs until cancelled or ``stop()`` is called.
 
-        Sleeps ``poll_interval_s`` between cycles, then calls :meth:`poll_once`.
-        Failures are logged and invoke ``on_poll_error``; the loop continues.
+        Polls immediately on start, then sleeps ``poll_interval_s`` between
+        subsequent cycles.  Failures are logged and invoke ``on_poll_error``;
+        the loop continues.
         """
         try:
             while not self._shutdown:
-                await asyncio.sleep(self._poll_interval_s)
-                if self._shutdown:
-                    break
-
                 try:
                     diffs = await self.poll_once()
                     logger.debug(
@@ -424,6 +417,10 @@ class HARestPoller:
                     logger.warning("HARestPoller: poll failed: %s", exc)
                     if self._on_poll_error is not None:
                         self._on_poll_error(exc)
+
+                if self._shutdown:
+                    break
+                await asyncio.sleep(self._poll_interval_s)
 
         except asyncio.CancelledError:
             logger.debug("HARestPoller: poll loop cancelled")

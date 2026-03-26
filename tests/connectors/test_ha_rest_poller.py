@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,6 +26,8 @@ from butlers.connectors.home_assistant_rest import (
 )
 
 pytestmark = pytest.mark.unit
+
+_PATCH_TARGET = "butlers.connectors.home_assistant_rest.aiohttp.ClientSession"
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +55,34 @@ def _ha_state(
 def _snap(entity_id: str, state: str = "on") -> EntityStateSnapshot:
     """Build a minimal EntityStateSnapshot for test assertions."""
     return EntityStateSnapshot(entity_id=entity_id, state=state)
+
+
+# ---------------------------------------------------------------------------
+# aiohttp mock fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_ha_session() -> Generator[tuple[MagicMock, AsyncMock], None, None]:
+    """Patch aiohttp.ClientSession for HARestPoller tests.
+
+    Yields:
+        (mock_session, mock_resp) — callers may override ``mock_resp.json``
+        return value per test.
+    """
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = AsyncMock(return_value=[])
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session = MagicMock()
+    mock_session.get = MagicMock(return_value=mock_resp)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(_PATCH_TARGET, return_value=mock_session):
+        yield mock_session, mock_resp
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +337,7 @@ class TestHARestPoller:
         poller = self._make_poller()
         assert poller.is_running is False
 
-    def test_start_creates_background_task(self) -> None:
+    async def test_start_creates_background_task(self) -> None:
         poller = self._make_poller(poll_interval_s=1000)
         try:
             poller.start()
@@ -314,7 +345,7 @@ class TestHARestPoller:
         finally:
             poller.stop()
 
-    def test_start_is_idempotent(self) -> None:
+    async def test_start_is_idempotent(self) -> None:
         """Calling start() twice does not create a second task."""
         poller = self._make_poller(poll_interval_s=1000)
         try:
@@ -325,7 +356,7 @@ class TestHARestPoller:
         finally:
             poller.stop()
 
-    def test_stop_cancels_task(self) -> None:
+    async def test_stop_cancels_task(self) -> None:
         poller = self._make_poller(poll_interval_s=1000)
         poller.start()
         assert poller.is_running is True
@@ -337,30 +368,22 @@ class TestHARestPoller:
         poller = self._make_poller()
         poller.stop()  # should not raise
 
-    async def test_poll_once_fetches_states_and_updates_cache(self) -> None:
+    async def test_poll_once_fetches_states_and_updates_cache(
+        self, mock_ha_session: tuple[MagicMock, AsyncMock]
+    ) -> None:
         """poll_once calls /api/states and updates the cache."""
+        _, mock_resp = mock_ha_session
         cache = HAStateCache()
         poller = self._make_poller(cache=cache)
 
-        raw_states = [
-            _ha_state("light.kitchen", "on"),
-            _ha_state("sensor.temp", "22.5"),
-        ]
+        mock_resp.json = AsyncMock(
+            return_value=[
+                _ha_state("light.kitchen", "on"),
+                _ha_state("sensor.temp", "22.5"),
+            ]
+        )
 
-        mock_resp = AsyncMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json = AsyncMock(return_value=raw_states)
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        _patch_target = "butlers.connectors.home_assistant_rest.aiohttp.ClientSession"
-        with patch(_patch_target, return_value=mock_session):
-            diffs = await poller.poll_once()
+        diffs = await poller.poll_once()
 
         # Both entities are new → 2 diffs (first-poll baseline)
         assert len(diffs) == 2
@@ -368,37 +391,29 @@ class TestHARestPoller:
         assert cache.get("light.kitchen") is not None
         assert cache.get("sensor.temp") is not None
 
-    async def test_poll_once_detects_state_changes(self) -> None:
+    async def test_poll_once_detects_state_changes(
+        self, mock_ha_session: tuple[MagicMock, AsyncMock]
+    ) -> None:
         """poll_once detects state changes after the first poll."""
+        _, mock_resp = mock_ha_session
         cache = HAStateCache()
         cache.apply([_snap("light.kitchen", "off")])
-
         poller = self._make_poller(cache=cache)
 
-        raw_states = [_ha_state("light.kitchen", "on")]
+        mock_resp.json = AsyncMock(return_value=[_ha_state("light.kitchen", "on")])
 
-        mock_resp = AsyncMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json = AsyncMock(return_value=raw_states)
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        _patch_target = "butlers.connectors.home_assistant_rest.aiohttp.ClientSession"
-        with patch(_patch_target, return_value=mock_session):
-            diffs = await poller.poll_once()
+        diffs = await poller.poll_once()
 
         assert len(diffs) == 1
         old, new = diffs[0]
         assert old is not None and old.state == "off"
         assert new.state == "on"
 
-    async def test_poll_once_invokes_on_state_changed_callback(self) -> None:
+    async def test_poll_once_invokes_on_state_changed_callback(
+        self, mock_ha_session: tuple[MagicMock, AsyncMock]
+    ) -> None:
         """poll_once invokes on_state_changed for each detected change."""
+        _, mock_resp = mock_ha_session
         cache = HAStateCache()
         cache.apply([_snap("light.x", "off")])
 
@@ -409,20 +424,9 @@ class TestHARestPoller:
 
         poller = self._make_poller(cache=cache, on_state_changed=_cb)
 
-        mock_resp = AsyncMock()
-        mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value=[_ha_state("light.x", "on")])
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        _patch_target = "butlers.connectors.home_assistant_rest.aiohttp.ClientSession"
-        with patch(_patch_target, return_value=mock_session):
-            await poller.poll_once()
+        await poller.poll_once()
 
         assert len(changes_received) == 1
         _old, _new, event = changes_received[0]
@@ -430,7 +434,9 @@ class TestHARestPoller:
         assert _new.entity_id == "light.x"
         assert event["event_type"] == "state_changed"
 
-    async def test_poll_once_invokes_on_poll_success(self) -> None:
+    async def test_poll_once_invokes_on_poll_success(
+        self, mock_ha_session: tuple[MagicMock, AsyncMock]
+    ) -> None:
         """poll_once invokes on_poll_success after a successful poll."""
         success_calls = []
 
@@ -439,28 +445,15 @@ class TestHARestPoller:
 
         poller = self._make_poller(on_poll_success=_on_success)
 
-        mock_resp = AsyncMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json = AsyncMock(return_value=[])
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        _patch_target = "butlers.connectors.home_assistant_rest.aiohttp.ClientSession"
-        with patch(_patch_target, return_value=mock_session):
-            await poller.poll_once()
+        await poller.poll_once()
 
         assert len(success_calls) == 1
 
-    async def test_poll_once_raises_on_http_error(self) -> None:
+    async def test_poll_once_raises_on_http_error(
+        self, mock_ha_session: tuple[MagicMock, AsyncMock]
+    ) -> None:
         """poll_once propagates HTTP errors to the caller."""
-        poller = self._make_poller()
-
-        mock_resp = AsyncMock()
+        _, mock_resp = mock_ha_session
         mock_resp.raise_for_status = MagicMock(
             side_effect=aiohttp.ClientResponseError(
                 request_info=MagicMock(),
@@ -468,18 +461,10 @@ class TestHARestPoller:
                 status=401,
             )
         )
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        poller = self._make_poller()
 
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        _patch_target = "butlers.connectors.home_assistant_rest.aiohttp.ClientSession"
-        with patch(_patch_target, return_value=mock_session):
-            with pytest.raises(aiohttp.ClientResponseError):
-                await poller.poll_once()
+        with pytest.raises(aiohttp.ClientResponseError):
+            await poller.poll_once()
 
     async def test_poll_loop_calls_on_poll_error_on_failure(self) -> None:
         """The poll loop invokes on_poll_error when poll_once raises."""
@@ -531,13 +516,6 @@ class TestHARestPoller:
         """poll_once uses the configured access token as a Bearer header."""
         captured_headers: list[dict] = []
 
-        cache = HAStateCache()
-        poller = HARestPoller(
-            base_url="http://ha.local:8123",
-            access_token="secret-token-xyz",
-            state_cache=cache,
-        )
-
         mock_resp = AsyncMock()
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value=[])
@@ -554,8 +532,13 @@ class TestHARestPoller:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        _patch_target = "butlers.connectors.home_assistant_rest.aiohttp.ClientSession"
-        with patch(_patch_target, return_value=mock_session):
+        poller = HARestPoller(
+            base_url="http://ha.local:8123",
+            access_token="secret-token-xyz",
+            state_cache=HAStateCache(),
+        )
+
+        with patch(_PATCH_TARGET, return_value=mock_session):
             await poller.poll_once()
 
         assert len(captured_headers) == 1
