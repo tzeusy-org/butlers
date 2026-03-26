@@ -757,3 +757,484 @@ async def test_trip_document_expiry_boarding_pass_included(provisioned_postgres_
         result = await run_trip_document_expiry(pool)
 
         assert result["documents_scanned"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Insight scan: helpers
+# ---------------------------------------------------------------------------
+
+
+async def _setup_insight_tables(pool) -> None:
+    """Create insight_candidates and related tables for insight scan tests."""
+    from butlers.tools.switchboard.insight.broker import create_insight_tables
+
+    await create_insight_tables(pool)
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — no data / no-op paths
+# ---------------------------------------------------------------------------
+
+
+async def test_insight_scan_no_trips_no_documents(provisioned_postgres_pool):
+    """No-op: returns zeros when no trips or documents exist."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_proposed"] == 0
+        assert result["candidates_accepted"] == 0
+        assert result["candidates_filtered"] == 0
+        assert result["candidates_errored"] == 0
+        assert result["early_exit"] is False
+
+
+async def test_insight_scan_excludes_completed_trips(provisioned_postgres_pool):
+    """Completed and cancelled trips do not generate pre-trip insights."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await _insert_trip(pool, start_date=_today() + timedelta(days=3), status="completed")
+        await _insert_trip(pool, start_date=_today() + timedelta(days=3), status="cancelled")
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_proposed"] == 0
+
+
+async def test_insight_scan_excludes_trips_beyond_window(provisioned_postgres_pool):
+    """Trips departing beyond 7 days are excluded from pre-trip insights."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await _insert_trip(pool, start_date=_today() + timedelta(days=10))
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_proposed"] == 0
+
+
+async def test_insight_scan_excludes_past_trips(provisioned_postgres_pool):
+    """Trips with departure dates in the past are excluded."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await _insert_trip(pool, start_date=_today() - timedelta(days=1))
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_proposed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — pre-trip preparation priorities
+# ---------------------------------------------------------------------------
+
+
+async def test_insight_scan_pretrip_priority_critical_1_day(provisioned_postgres_pool):
+    """Trip departing in 1 day gets priority 92 (time-critical)."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await _insert_trip(
+            pool, name="Tokyo", destination="Tokyo", start_date=_today() + timedelta(days=1)
+        )
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_proposed"] >= 1
+        assert result["candidates_accepted"] >= 1
+
+        rows = await pool.fetch(
+            "SELECT priority, dedup_key, message FROM insight_candidates"
+            " WHERE origin_butler = 'travel'"
+        )
+        pretrip_rows = [r for r in rows if "pre-trip" in r["dedup_key"]]
+        assert len(pretrip_rows) == 1
+        assert pretrip_rows[0]["priority"] == 92
+        assert "Tokyo" in pretrip_rows[0]["message"]
+
+
+async def test_insight_scan_pretrip_priority_urgent_3_days(provisioned_postgres_pool):
+    """Trip departing in 3 days gets priority 78."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await _insert_trip(
+            pool, name="Paris", destination="Paris", start_date=_today() + timedelta(days=3)
+        )
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_accepted"] >= 1
+        rows = await pool.fetch(
+            "SELECT priority FROM insight_candidates"
+            " WHERE origin_butler = 'travel' AND category = 'pre-trip'"
+        )
+        assert rows[0]["priority"] == 78
+
+
+async def test_insight_scan_pretrip_priority_info_7_days(provisioned_postgres_pool):
+    """Trip departing in 5-7 days gets priority 65."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await _insert_trip(
+            pool, name="London", destination="London", start_date=_today() + timedelta(days=6)
+        )
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_accepted"] >= 1
+        rows = await pool.fetch(
+            "SELECT priority FROM insight_candidates"
+            " WHERE origin_butler = 'travel' AND category = 'pre-trip'"
+        )
+        assert rows[0]["priority"] == 65
+
+
+async def test_insight_scan_pretrip_dedup_key_format(provisioned_postgres_pool):
+    """Pre-trip dedup_key follows travel:pre-trip:{trip-id}:{departure-date} format."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        departure = _today() + timedelta(days=4)
+        trip_id = await _insert_trip(pool, start_date=departure)
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT dedup_key FROM insight_candidates WHERE category = 'pre-trip'"
+        )
+        assert len(rows) == 1
+        dedup_key = rows[0]["dedup_key"]
+        assert dedup_key.startswith("travel:pre-trip:")
+        assert trip_id in dedup_key
+        assert departure.isoformat() in dedup_key
+
+
+async def test_insight_scan_pretrip_message_references_destination(provisioned_postgres_pool):
+    """Pre-trip message references the destination and pre-trip checklist."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await _insert_trip(
+            pool,
+            name="Bali Trip",
+            destination="Bali",
+            start_date=_today() + timedelta(days=5),
+        )
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT message FROM insight_candidates WHERE category = 'pre-trip'"
+        )
+        assert len(rows) == 1
+        message = rows[0]["message"]
+        assert "Bali" in message
+        assert "checklist" in message.lower()
+
+
+async def test_insight_scan_pretrip_expires_at_is_departure_date(provisioned_postgres_pool):
+    """Pre-trip candidate expires_at is set to the departure date."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        departure = _today() + timedelta(days=4)
+        await _insert_trip(pool, start_date=departure)
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT expires_at FROM insight_candidates WHERE category = 'pre-trip'"
+        )
+        assert len(rows) == 1
+        expires_at = rows[0]["expires_at"]
+        assert expires_at.date() == departure
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — document expiry
+# ---------------------------------------------------------------------------
+
+
+async def test_insight_scan_document_expiry_30_days_priority_85(provisioned_postgres_pool):
+    """Visa expiring within 30 days generates priority 85 insight."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        trip_id = await _insert_trip(pool)
+        expiry = _today() + timedelta(days=20)
+        await _insert_document(pool, trip_id=trip_id, doc_type="visa", expiry_date=expiry)
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_accepted"] >= 1
+        rows = await pool.fetch(
+            "SELECT priority, cooldown_days FROM insight_candidates"
+            " WHERE category = 'document-expiry'"
+        )
+        assert len(rows) == 1
+        assert rows[0]["priority"] == 85
+        assert rows[0]["cooldown_days"] == 3
+
+
+async def test_insight_scan_document_expiry_60_days_priority_65(provisioned_postgres_pool):
+    """Document expiring within 31-60 days generates priority 65 insight."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        trip_id = await _insert_trip(pool)
+        expiry = _today() + timedelta(days=45)
+        await _insert_document(pool, trip_id=trip_id, doc_type="insurance", expiry_date=expiry)
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_accepted"] >= 1
+        rows = await pool.fetch(
+            "SELECT priority, cooldown_days FROM insight_candidates"
+            " WHERE category = 'document-expiry'"
+        )
+        assert len(rows) == 1
+        assert rows[0]["priority"] == 65
+        assert rows[0]["cooldown_days"] == 7
+
+
+async def test_insight_scan_document_expiry_90_days_priority_45(provisioned_postgres_pool):
+    """Document expiring within 61-90 days generates priority 45 insight."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        trip_id = await _insert_trip(pool)
+        expiry = _today() + timedelta(days=75)
+        await _insert_document(pool, trip_id=trip_id, doc_type="visa", expiry_date=expiry)
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_accepted"] >= 1
+        rows = await pool.fetch(
+            "SELECT priority, cooldown_days FROM insight_candidates"
+            " WHERE category = 'document-expiry'"
+        )
+        assert len(rows) == 1
+        assert rows[0]["priority"] == 45
+        assert rows[0]["cooldown_days"] == 14
+
+
+async def test_insight_scan_document_expiry_dedup_key_format(provisioned_postgres_pool):
+    """Document expiry dedup_key follows travel:document-expiry:{type}:{expiry-date} format."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        trip_id = await _insert_trip(pool)
+        expiry = _today() + timedelta(days=25)
+        await _insert_document(pool, trip_id=trip_id, doc_type="visa", expiry_date=expiry)
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT dedup_key FROM insight_candidates WHERE category = 'document-expiry'"
+        )
+        assert len(rows) == 1
+        dedup_key = rows[0]["dedup_key"]
+        assert dedup_key == f"travel:document-expiry:visa:{expiry.isoformat()}"
+
+
+async def test_insight_scan_document_excludes_receipt_type(provisioned_postgres_pool):
+    """Receipt documents are excluded from document expiry insight scan."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        # Use trip outside pre-trip window so only document type matters
+        trip_id = await _insert_trip(pool, start_date=_today() + timedelta(days=30))
+        await _insert_document(
+            pool,
+            trip_id=trip_id,
+            doc_type="receipt",
+            expiry_date=_today() + timedelta(days=10),
+        )
+
+        result = await run_insight_scan(pool)
+
+        doc_rows = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'document-expiry'"
+        )
+        assert len(doc_rows) == 0
+        assert result["candidates_proposed"] == 0
+
+
+async def test_insight_scan_document_excludes_beyond_90_days(provisioned_postgres_pool):
+    """Documents expiring beyond 90 days are excluded from insight scan."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        # Use trip outside pre-trip window so only document expiry matters
+        trip_id = await _insert_trip(pool, start_date=_today() + timedelta(days=30))
+        await _insert_document(
+            pool,
+            trip_id=trip_id,
+            doc_type="visa",
+            expiry_date=_today() + timedelta(days=120),
+        )
+
+        result = await run_insight_scan(pool)
+
+        doc_rows = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'document-expiry'"
+        )
+        assert len(doc_rows) == 0
+        assert result["candidates_proposed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — verbosity=off early exit
+# ---------------------------------------------------------------------------
+
+
+async def test_insight_scan_verbosity_off_exits_early(provisioned_postgres_pool):
+    """When verbosity=off, first candidate returns filtered and job exits early."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await pool.execute(
+            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'off') "
+            "ON CONFLICT (id) DO UPDATE SET verbosity = 'off'"
+        )
+
+        await _insert_trip(pool, name="Trip A", start_date=_today() + timedelta(days=2))
+        await _insert_trip(pool, name="Trip B", start_date=_today() + timedelta(days=4))
+
+        result = await run_insight_scan(pool)
+
+        assert result["early_exit"] is True
+        assert result["candidates_proposed"] >= 1
+        assert result["candidates_accepted"] == 0
+        rows = await pool.fetch("SELECT id FROM insight_candidates WHERE status = 'pending'")
+        assert len(rows) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — multiple candidates in one run
+# ---------------------------------------------------------------------------
+
+
+async def test_insight_scan_multiple_trips_generate_multiple_candidates(
+    provisioned_postgres_pool,
+):
+    """Multiple trips within window each generate their own pre-trip candidate."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        await _insert_trip(pool, name="Trip A", start_date=_today() + timedelta(days=2))
+        await _insert_trip(pool, name="Trip B", start_date=_today() + timedelta(days=5))
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_proposed"] == 2
+        assert result["candidates_accepted"] == 2
+        rows = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'pre-trip'")
+        assert len(rows) == 2
+
+
+async def test_insight_scan_combined_pretrip_and_document_candidates(
+    provisioned_postgres_pool,
+):
+    """Pre-trip and document expiry candidates coexist in one scan run."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        trip_id = await _insert_trip(pool, start_date=_today() + timedelta(days=4))
+        await _insert_document(
+            pool,
+            trip_id=trip_id,
+            doc_type="visa",
+            expiry_date=_today() + timedelta(days=25),
+        )
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_proposed"] == 2
+        assert result["candidates_accepted"] == 2
+
+        pretrip = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'pre-trip'")
+        doc_expiry = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'document-expiry'"
+        )
+        assert len(pretrip) == 1
+        assert len(doc_expiry) == 1
+
+
+async def test_insight_scan_result_keys_present(provisioned_postgres_pool):
+    """Result dict always contains all expected keys."""
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        result = await run_insight_scan(pool)
+
+        assert "candidates_proposed" in result
+        assert "candidates_accepted" in result
+        assert "candidates_filtered" in result
+        assert "candidates_errored" in result
+        assert "early_exit" in result

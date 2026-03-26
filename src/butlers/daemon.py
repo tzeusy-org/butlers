@@ -485,6 +485,17 @@ async def _run_travel_briefing_contribution_job(
     return await run_travel_briefing_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_travel_insight_scan_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run travel butler insight scan job."""
+    del job_args
+    from roster.travel.jobs.travel_jobs import run_insight_scan
+
+    return await run_insight_scan(pool)
+
+
 async def _run_education_briefing_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -617,6 +628,7 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     },
     "travel": {
         "daily_briefing_contribution": _run_travel_briefing_contribution_job,
+        "insight_scan": _run_travel_insight_scan_job,
     },
     "education": {
         "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,

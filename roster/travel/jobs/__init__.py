@@ -1,6 +1,7 @@
 """Scheduled jobs for the Travel butler."""
 
 from roster.travel.jobs.travel_jobs import (
+    run_insight_scan,
     run_trip_document_expiry,
     run_upcoming_travel_check,
 )
@@ -8,4 +9,5 @@ from roster.travel.jobs.travel_jobs import (
 __all__ = [
     "run_upcoming_travel_check",
     "run_trip_document_expiry",
+    "run_insight_scan",
 ]
