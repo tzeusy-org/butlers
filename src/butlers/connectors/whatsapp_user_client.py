@@ -35,7 +35,7 @@ Environment variables:
 
 Security requirements:
 - Never commit credentials or session artifacts to version control
-- whatsapp_phone resolved exclusively from owner entity_info (DB-only)
+- whatsapp_phone resolved from owner entity_info (DB) or bridge /status after pairing
 - The Go bridge manages its own session keys from whatsapp_sessions table
 - Explicit user consent required (QR pairing ceremony = physical consent)
 """
@@ -448,6 +448,25 @@ class WhatsAppUserClientConnector:
         )
         self._bridge_manager = BridgeSubprocessManager(bridge_cfg)
         await self._bridge_manager.start()
+
+        # Resolve phone from bridge if endpoint_identity is still pending
+        if self._config.endpoint_identity == "whatsapp:pending":
+            status = await self._bridge_manager.get_status()
+            bridge_phone = status.get("phone")
+            if bridge_phone:
+                self._config = replace(
+                    self._config, endpoint_identity=f"whatsapp:{bridge_phone}"
+                )
+                logger.info(
+                    "Resolved endpoint_identity from bridge: %s",
+                    self._config.endpoint_identity,
+                )
+            else:
+                logger.warning(
+                    "Bridge connected but did not report phone number — "
+                    "using endpoint_identity=%s",
+                    self._config.endpoint_identity,
+                )
 
         # Load checkpoint
         await self._load_checkpoint()
@@ -1355,7 +1374,10 @@ async def _resolve_whatsapp_phone_from_db() -> str | None:
 async def run_whatsapp_user_client_connector() -> None:
     """CLI entry point for running the WhatsApp user-client connector.
 
-    whatsapp_phone is resolved exclusively from owner entity_info (DB-only).
+    Phone resolution order:
+    1. Owner entity_info in the DB (``whatsapp_phone`` key)
+    2. Bridge /status ``phone`` field after QR pairing completes
+
     Non-credential configuration is read from environment variables.
     Health server and connector run concurrently.
     """
@@ -1364,24 +1386,24 @@ async def run_whatsapp_user_client_connector() -> None:
     # Step 1: Load non-credential config from env
     config = WhatsAppUserClientConnectorConfig.from_env()
 
-    # Step 2: Resolve whatsapp_phone from owner entity_info
+    # Step 2: Try to resolve whatsapp_phone from owner entity_info
     phone = await _resolve_whatsapp_phone_from_db()
-    if phone is None:
-        raise RuntimeError(
-            "WhatsApp user-client connector: could not resolve whatsapp_phone from "
-            "owner entity_info. Configure whatsapp_phone on the owner entity via the dashboard."
+    if phone:
+        endpoint_identity = f"whatsapp:{phone}"
+        config = replace(config, endpoint_identity=endpoint_identity)
+        logger.info(
+            "WhatsApp user-client connector: endpoint_identity=%s (from DB)",
+            endpoint_identity,
+        )
+    else:
+        # Use a placeholder — will be resolved from bridge after pairing.
+        config = replace(config, endpoint_identity="whatsapp:pending")
+        logger.info(
+            "WhatsApp user-client connector: whatsapp_phone not in DB, "
+            "will resolve from bridge after pairing"
         )
 
-    # Step 3: Build endpoint identity
-    endpoint_identity = f"whatsapp:{phone}"
-    config = replace(config, endpoint_identity=endpoint_identity)
-
-    logger.info(
-        "WhatsApp user-client connector: endpoint_identity=%s",
-        endpoint_identity,
-    )
-
-    # Step 4: Create DB pools for cursor and filtered events
+    # Step 3: Create DB pools for cursor and filtered events
     from butlers.connectors.cursor_store import create_cursor_pool_from_env
 
     cursor_pool = await create_cursor_pool_from_env()
@@ -1389,7 +1411,7 @@ async def run_whatsapp_user_client_connector() -> None:
 
     connector = WhatsAppUserClientConnector(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
 
-    # Step 5: Run health server and connector concurrently
+    # Step 4: Run health server and connector concurrently
     health_task = asyncio.create_task(
         _run_health_server(config.health_port, connector),
         name="wa-health-server",

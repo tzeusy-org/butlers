@@ -269,6 +269,21 @@ class BridgeSubprocessManager:
         """True if the subprocess is currently alive."""
         return self._process is not None and self._process.returncode is None
 
+    async def get_status(self) -> dict[str, Any]:
+        """Poll the bridge /status endpoint and return the parsed JSON dict.
+
+        Returns an empty dict if the bridge is not running or the poll fails.
+        """
+        if not self.is_running:
+            return {}
+        try:
+            return await asyncio.wait_for(
+                _http_get_unix(self._config.bridge_socket, _STATUS_ENDPOINT),
+                timeout=10.0,
+            )
+        except Exception:
+            return {}
+
     async def start(self) -> None:
         """Start the bridge subprocess and wait until it reports 'connected'.
 

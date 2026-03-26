@@ -141,16 +141,19 @@ services:
     volumes:
       - ./roster:/app/roster:ro
       - ./logs:/app/logs
+      - wa_bridge_socket:/tmp/wa-bridge
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      SPOTIFY_OAUTH_REDIRECT_URI: ${SPOTIFY_OAUTH_REDIRECT_URI:-}
       OWNTRACKS_CONNECTOR_HOST: ${OWNTRACKS_CONNECTOR_HOST:-}
       OWNTRACKS_CONNECTOR_PORT: ${OWNTRACKS_CONNECTOR_PORT:-}
       BUTLERS_DISABLE_FILE_LOGGING: "1"
       BUTLERS_HOST: butlers-up
+      WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -240,8 +243,10 @@ services:
       CONNECTOR_PROVIDER: whatsapp
       CONNECTOR_CHANNEL: whatsapp_user_client
       CONNECTOR_HEALTH_PORT: "40082"
+      WA_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
     volumes:
       - ./logs:/app/logs
+      - wa_bridge_socket:/tmp/wa-bridge
     networks: [db, backend, egress]
     depends_on:
       log-init:
@@ -493,16 +498,19 @@ services:
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      SPOTIFY_OAUTH_REDIRECT_URI: ${SPOTIFY_OAUTH_REDIRECT_URI:-}
       OWNTRACKS_CONNECTOR_HOST: ${OWNTRACKS_CONNECTOR_HOST:-}
       OWNTRACKS_CONNECTOR_PORT: ${OWNTRACKS_CONNECTOR_PORT:-}
       BUTLERS_DISABLE_FILE_LOGGING: "1"
       BUTLERS_HOST: butlers-up
+      WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./logs:/app/logs
       - uv_cache:/root/.cache/uv
+      - wa_bridge_socket:/tmp/wa-bridge
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41200/health || exit 1"]
       interval: 5s
@@ -527,6 +535,7 @@ volumes:
   runtime_codex:
   runtime_opencode:
   runtime_gemini:
+  wa_bridge_socket:
 
 # ── Networks ────────────────────────────────────────────────────────────
 
