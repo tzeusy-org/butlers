@@ -860,7 +860,7 @@ class TelegramUserClientConnector:
         - event.external_event_id: "batch:<chat_id>:<min_id>-<max_id>"
         - sender.identity: "multiple" (batch contains multiple senders)
         - payload.normalized_text: framed conversation text with header/footer
-        - payload.conversation_history: ordered list of all context messages
+        - payload.raw.conversation_history: ordered list of all context messages
         - control.idempotency_key: "tg_batch:<chat_id>:<min_id>:<max_id>"
 
         The normalized_text is enriched with:
@@ -988,9 +988,8 @@ class TelegramUserClientConnector:
                 "identity": "multiple",
             },
             "payload": {
-                "raw": {},
+                "raw": {"conversation_history": conversation_history},
                 "normalized_text": normalized_text,
-                "conversation_history": conversation_history,
             },
             "control": {
                 "idempotency_key": f"tg_batch:{chat_id}:{min_id}:{max_id}",

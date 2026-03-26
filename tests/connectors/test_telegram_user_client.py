@@ -2045,7 +2045,7 @@ class TestBuildBatchEnvelope:
         buffered = [new1]
         context = [hist, new1]
         envelope = connector._build_batch_envelope("chat1", buffered, context)
-        history = envelope["payload"]["conversation_history"]
+        history = envelope["payload"]["raw"]["conversation_history"]
         ids_in_history = [e["message_id"] for e in history]
         assert 1 in ids_in_history
         assert 5 in ids_in_history
@@ -2060,7 +2060,7 @@ class TestBuildBatchEnvelope:
         buffered = [new1]
         context = [hist, new1]
         envelope = connector._build_batch_envelope("chat1", buffered, context)
-        history = envelope["payload"]["conversation_history"]
+        history = envelope["payload"]["raw"]["conversation_history"]
         by_id = {e["message_id"]: e for e in history}
         assert by_id[1]["is_new"] is False
         assert by_id[5]["is_new"] is True
@@ -2073,7 +2073,7 @@ class TestBuildBatchEnvelope:
         msg_date = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
         msg = _make_batch_msg(7, sender_id=55, text="test text", date=msg_date, reply_to_msg_id=3)
         envelope = connector._build_batch_envelope("chat1", [msg], [msg])
-        entry = envelope["payload"]["conversation_history"][0]
+        entry = envelope["payload"]["raw"]["conversation_history"][0]
         assert entry["message_id"] == 7
         assert entry["sender_id"] == 55
         assert entry["text"] == "test text"
@@ -2088,15 +2088,17 @@ class TestBuildBatchEnvelope:
         context = [_make_batch_msg(10), _make_batch_msg(5), _make_batch_msg(8)]
         buffered = context[:1]  # doesn't matter for sort test
         envelope = connector._build_batch_envelope("chat1", buffered, context)
-        ids = [e["message_id"] for e in envelope["payload"]["conversation_history"]]
+        ids = [e["message_id"] for e in envelope["payload"]["raw"]["conversation_history"]]
         assert ids == sorted(ids)
 
-    def test_raw_payload_is_empty_dict(self, config: TelegramUserClientConnectorConfig) -> None:
-        """payload.raw is an empty dict for batch envelopes (too large to include)."""
+    def test_raw_payload_contains_conversation_history(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """payload.raw contains conversation_history for batch envelopes."""
         connector = TelegramUserClientConnector(config)
         buffered = [_make_batch_msg(1)]
         envelope = connector._build_batch_envelope("chat1", buffered, buffered)
-        assert envelope["payload"]["raw"] == {}
+        assert "conversation_history" in envelope["payload"]["raw"]
 
     def test_source_fields_from_config(self, config: TelegramUserClientConnectorConfig) -> None:
         """source fields are populated from the connector config."""
@@ -2115,7 +2117,7 @@ class TestBuildBatchEnvelope:
         msg = _make_batch_msg(1, date=None)
         msg.date = None  # explicitly clear after helper sets it
         envelope = connector._build_batch_envelope("chat1", [msg], [msg])
-        entry = envelope["payload"]["conversation_history"][0]
+        entry = envelope["payload"]["raw"]["conversation_history"][0]
         assert entry["timestamp"] is None
 
 
@@ -2279,7 +2281,7 @@ class TestBuildBatchEnvelopeFraming:
         msg_date = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
         msg = _make_batch_msg(7, sender_id=55, text="test text", date=msg_date, reply_to_msg_id=3)
         envelope = connector._build_batch_envelope("chat1", [msg], [msg])
-        entry = envelope["payload"]["conversation_history"][0]
+        entry = envelope["payload"]["raw"]["conversation_history"][0]
         # conversation_history remains raw/unchanged
         assert entry["message_id"] == 7
         assert entry["sender_id"] == 55
