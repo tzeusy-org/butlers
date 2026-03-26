@@ -32,8 +32,9 @@ token_usage_ledger is range-partitioned on ``recorded_at``.  Child partitions
 must be moved before the parent, and pg_partman configuration (if present) is
 updated to reflect the new schema.
 
-After all tables are moved, ``DROP SCHEMA IF EXISTS shared CASCADE`` removes
-any residual objects (sequences, types, etc.).
+The shared schema is left empty (not dropped) because historical core
+migrations reference it in guarded DDL blocks, and each butler runs the
+full core chain independently.
 
 downgrade() recreates the shared schema and moves all tables back.
 """
@@ -181,11 +182,14 @@ def upgrade() -> None:
             )
         )
 
-    # -------------------------------------------------------------------------
-    # 4. Drop the shared schema and any residual objects.
-    # -------------------------------------------------------------------------
-    conn.execute(text("DROP SCHEMA IF EXISTS shared CASCADE"))
-    log.info("dropped shared schema")
+    # NOTE: Do NOT drop the shared schema here.  Historical core migrations
+    # (core_007, core_014, etc.) reference it in guarded DO $$ blocks, and each
+    # butler runs the full core chain independently.  If the first butler's
+    # core_041 drops 'shared', subsequent butlers' core_007 fails because the
+    # schema no longer exists for to_regclass() lookups.  Leaving the empty
+    # schema is harmless — alembic/env.py already creates it as part of the
+    # migration search_path.
+    log.info("shared schema is now empty — tables moved to public")
 
 
 def downgrade() -> None:
