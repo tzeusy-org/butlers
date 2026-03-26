@@ -41,6 +41,7 @@ SPECIALIST_BUTLERS: tuple[str, ...] = (
     "finance",
     "health",
     "home",
+    "lifestyle",
     "relationship",
     "travel",
 )
@@ -1245,6 +1246,129 @@ async def collect_briefing_contributions(
         "missing_count": len(missing_butlers),
         "missing_butlers": missing_butlers,
         "state_key": state_key,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Lifestyle butler contribution job
+# ---------------------------------------------------------------------------
+
+
+async def run_lifestyle_briefing_contribution(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Lifestyle butler daily briefing contribution job.
+
+    Queries recent TRANSIENT memory facts to surface what the user has been
+    consuming or enjoying in the past 24 hours:
+    - New TRANSIENT facts added today (watches, reads, plays, listens_to)
+    - Newly captured DURABLE taste preferences (likes_genre, likes_artist,
+      likes_cuisine, favorite_restaurant, hobby, food_preference, food_dislike)
+    """
+    del job_args
+
+    today_dt = today_sgt()
+    today_str = today_dt.isoformat()
+    sgt_midnight = datetime(today_dt.year, today_dt.month, today_dt.day, tzinfo=SGT)
+    today_start = sgt_midnight.astimezone(UTC)
+
+    highlights: list[BriefingHighlight] = []
+
+    # --- Recent consumption facts (volatile permanence, added today) ---
+    transient_rows = await pool.fetch(
+        """
+        SELECT predicate, content, created_at
+        FROM facts
+        WHERE validity = 'active'
+          AND permanence = 'volatile'
+          AND predicate = ANY($1::text[])
+          AND created_at >= $2
+        ORDER BY created_at DESC
+        LIMIT 10
+        """,
+        ["watches", "reads", "plays", "listens_to"],
+        today_start,
+    )
+
+    for row in transient_rows:
+        predicate = row["predicate"]
+        content = row["content"]
+        label_map = {
+            "watches": "Watching",
+            "reads": "Reading",
+            "plays": "Playing",
+            "listens_to": "Listening to",
+        }
+        label = label_map.get(predicate, predicate.replace("_", " ").capitalize())
+        highlights.append(
+            {
+                "category": "consumption",
+                "text": f"{label}: {content[:100]}",
+                "priority": "low",
+            }
+        )
+
+    # --- Newly captured stable taste preferences (added today) ---
+    durable_rows = await pool.fetch(
+        """
+        SELECT predicate, content, created_at
+        FROM facts
+        WHERE validity = 'active'
+          AND permanence = 'stable'
+          AND predicate = ANY($1::text[])
+          AND created_at >= $2
+        ORDER BY created_at DESC
+        LIMIT 5
+        """,
+        [
+            "likes_genre",
+            "likes_artist",
+            "likes_cuisine",
+            "favorite_restaurant",
+            "hobby",
+            "food_preference",
+            "food_dislike",
+        ],
+        today_start,
+    )
+
+    for row in durable_rows:
+        predicate = row["predicate"]
+        content = row["content"]
+        label = predicate.replace("_", " ").capitalize()
+        highlights.append(
+            {
+                "category": "taste-updates",
+                "text": f"{label}: {content[:100]}",
+                "priority": "low",
+            }
+        )
+
+    has_updates = len(highlights) > 0
+
+    parts: list[str] = []
+    if transient_rows:
+        parts.append(f"{len(transient_rows)} new consumption note(s) today.")
+    if durable_rows:
+        parts.append(f"{len(durable_rows)} taste preference(s) captured today.")
+    summary = " ".join(parts) if parts else "No lifestyle updates today."
+
+    envelope: BriefingContribution = {
+        "butler": "lifestyle",
+        "date": today_str,
+        "has_updates": has_updates,
+        "highlights": highlights,
+        "summary": summary,
+    }
+
+    await _write_contribution(pool, envelope)
+    return {
+        "butler": "lifestyle",
+        "date": today_str,
+        "has_updates": has_updates,
+        "consumption_notes": len(transient_rows),
+        "taste_updates": len(durable_rows),
     }
 
 

@@ -505,6 +505,16 @@ async def _run_home_briefing_contribution_job(
     return await run_home_briefing_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_lifestyle_briefing_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run lifestyle butler daily briefing contribution job."""
+    from butlers.jobs.briefing import run_lifestyle_briefing_contribution
+
+    return await run_lifestyle_briefing_contribution(pool=pool, job_args=job_args)
+
+
 async def _run_collect_briefing_contributions_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -616,6 +626,10 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
         **_HOME_DETERMINISTIC_JOB_HANDLERS,
         "daily_briefing_contribution": _run_home_briefing_contribution_job,
+    },
+    "lifestyle": {
+        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+        "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
     },
     "switchboard": {
         "eligibility_sweep": _run_switchboard_eligibility_sweep_job,

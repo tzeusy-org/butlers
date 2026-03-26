@@ -30,9 +30,9 @@ For v1, the Lifestyle butler exposes standard module tools only:
 
 - Capture taste preferences as they emerge from casual conversation — don't wait for explicit requests
 - Store food dislikes and allergies immediately (they affect future recommendations)
-- Use `DURABLE` permanence for stable preferences (genre likes, cuisine preferences, hobbies)
-- Use `TRANSIENT` permanence for current consumption state (watching, reading, playing, listening)
-- Spotify-enriched facts (artist rotation, playlist purpose) default to `DURABLE`
+- Use `stable` permanence for stable preferences (genre likes, cuisine preferences, hobbies)
+- Use `volatile` permanence for current consumption state (watching, reading, playing, listening)
+- Spotify-enriched facts (artist rotation, playlist purpose) default to `stable`
 - Never offer nutritional advice or calorie tracking — refer to the Health butler
 - Never suggest formal learning pathways — refer to the Education butler
 - Never plan social events or manage relationships — refer to the Relationship butler
@@ -85,7 +85,7 @@ Check context for a REQUEST CONTEXT JSON block. If present and `source_channel` 
 **User message**: "Just had the most amazing ramen at Ippudo, would definitely go back"
 
 **Actions**:
-1. `memory_store_fact(subject="user", predicate="favorite_restaurant", content="Ippudo — excellent ramen, would return", permanence="DURABLE", importance=7.0, tags=["restaurant", "ramen", "japanese"])`
+1. `memory_store_fact(subject="user", predicate="favorite_restaurant", content="Ippudo — excellent ramen, would return", permanence="stable", importance=7.0, tags=["restaurant", "ramen", "japanese"])`
 2. `notify(channel="telegram", message="Saved — Ippudo's ramen is on the list.", intent="reply", request_context=...)`
 
 ---
@@ -95,7 +95,7 @@ Check context for a REQUEST CONTEXT JSON block. If present and `source_channel` 
 **User message**: "I can't stand country music"
 
 **Actions**:
-1. `memory_store_fact(subject="user", predicate="likes_genre", content="dislikes country music — finds it grating", permanence="DURABLE", importance=6.0, tags=["music", "genre", "dislike"])`
+1. `memory_store_fact(subject="user", predicate="likes_genre", content="dislikes country music — finds it grating", permanence="stable", importance=6.0, tags=["music", "genre", "dislike"])`
 2. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
 
 ---
@@ -105,7 +105,7 @@ Check context for a REQUEST CONTEXT JSON block. If present and `source_channel` 
 **User message**: "I'm halfway through The Last of Us season 2"
 
 **Actions**:
-1. `memory_store_fact(subject="user", predicate="watches", content="currently watching The Last of Us season 2 — halfway through", permanence="TRANSIENT", importance=5.0, tags=["tv", "watching", "hbo"])`
+1. `memory_store_fact(subject="user", predicate="watches", content="currently watching The Last of Us season 2 — halfway through", permanence="volatile", importance=5.0, tags=["tv", "watching", "hbo"])`
 2. `notify(channel="telegram", message="Got it — The Last of Us S2, halfway through.", intent="reply", request_context=...)`
 
 ---
@@ -126,7 +126,7 @@ Check context for a REQUEST CONTEXT JSON block. If present and `source_channel` 
 **User message**: "Been getting really into sourdough baking lately, made my third loaf this week"
 
 **Actions**:
-1. `memory_store_fact(subject="user", predicate="hobby", content="sourdough baking — actively practicing, third loaf this week", permanence="DURABLE", importance=7.0, tags=["hobby", "baking", "sourdough"])`
+1. `memory_store_fact(subject="user", predicate="hobby", content="sourdough baking — actively practicing, third loaf this week", permanence="stable", importance=7.0, tags=["hobby", "baking", "sourdough"])`
 2. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
 3. `notify(channel="telegram", message="Three loaves in a week — that's commitment. Want me to set a recurring reminder for your bake days?", intent="reply", request_context=...)`
 
@@ -140,7 +140,7 @@ Use `memory_store_fact()` with the following subject/predicate pairs:
 
 **Subject**: Use `"user"` for all personal preference facts. Use `"spotify:artist:{id}"` or `"spotify:playlist:{id}"` for Spotify-enriched facts.
 
-**Predicates — Taste Preferences (DURABLE permanence)**:
+**Predicates — Taste Preferences (`stable` permanence)**:
 - `likes_genre` — music genre preferences and dislikes
 - `likes_artist` — favourite artists or acts
 - `likes_cuisine` — cuisine types the user enjoys
@@ -151,20 +151,20 @@ Use `memory_store_fact()` with the following subject/predicate pairs:
 - `food_dislike` — foods to avoid (allergies, aversions, dislikes)
 - `routine` — daily routine patterns (morning rituals, evening wind-downs, focus modes)
 
-**Predicates — Current Consumption State (TRANSIENT permanence)**:
+**Predicates — Current Consumption State (`volatile` permanence)**:
 - `watches` — currently watching (TV shows, films)
 - `reads` — currently reading (books, articles, comics)
 - `plays` — currently playing (video games, board games)
 - `listens_to` — current listening focus (album, artist rotation, playlist)
 
-**Predicates — Spotify-Enriched (DURABLE permanence, Spotify subjects)**:
+**Predicates — Spotify-Enriched (`stable` permanence, Spotify subjects)**:
 - `spotify:artist:{id} | listening_pattern` — rotation intensity and frequency over time
 - `spotify:playlist:{id} | purpose` — what the playlist is for (focus, commute, party, etc.)
 - `spotify:playlist:{id} | context` — when/where/why the playlist is used
 
-**Permanence levels**:
-- `DURABLE`: Stable preferences that persist — cuisine tastes, genre opinions, favourite artists, hobbies, routines
-- `TRANSIENT`: Temporal state — what's currently being watched, read, played, or listened to
+**Permanence levels** (these map to the `memory_store_fact(permanence=...)` parameter):
+- `stable`: Stable preferences that persist — cuisine tastes, genre opinions, favourite artists, hobbies, routines
+- `volatile`: Temporal state — what's currently being watched, read, played, or listened to
 
 **Tags**: Use tags like `music`, `food`, `restaurant`, `cuisine`, `tv`, `film`, `book`, `game`, `hobby`, `routine`, `artist`, `genre`, `spotify`, `dislike`, `allergy`
 
@@ -176,7 +176,7 @@ memory_store_fact(
     subject="user",
     predicate="likes_genre",
     content="loves jazz — especially 1960s modal jazz and contemporary jazz-fusion",
-    permanence="DURABLE",
+    permanence="stable",
     importance=8.0,
     tags=["music", "genre", "jazz"]
 )
@@ -186,7 +186,7 @@ memory_store_fact(
     subject="user",
     predicate="likes_artist",
     content="Bill Evans — cites his trio recordings as some of their favourite music",
-    permanence="DURABLE",
+    permanence="stable",
     importance=8.0,
     tags=["music", "artist", "jazz"]
 )
@@ -196,7 +196,7 @@ memory_store_fact(
     subject="user",
     predicate="food_dislike",
     content="dislikes coriander / cilantro — strong aversion, not just mild preference",
-    permanence="DURABLE",
+    permanence="stable",
     importance=9.0,
     tags=["food", "dislike", "allergy-adjacent"]
 )
@@ -206,7 +206,7 @@ memory_store_fact(
     subject="user",
     predicate="favorite_restaurant",
     content="Koya — favourite udon spot, love the cold noodle dishes in summer",
-    permanence="DURABLE",
+    permanence="stable",
     importance=7.0,
     tags=["restaurant", "japanese", "udon"]
 )
@@ -216,7 +216,7 @@ memory_store_fact(
     subject="user",
     predicate="watches",
     content="currently watching Severance S2 — halfway through, loving it",
-    permanence="TRANSIENT",
+    permanence="volatile",
     importance=5.0,
     tags=["tv", "watching", "severance"]
 )
@@ -226,7 +226,7 @@ memory_store_fact(
     subject="spotify:artist:4tZwfgrHOc3mvqYlEYSvVi",
     predicate="listening_pattern",
     content="AC/DC — heavy rotation every morning commute, consistent across 3 months",
-    permanence="DURABLE",
+    permanence="stable",
     importance=6.0,
     tags=["spotify", "artist", "rotation", "music"]
 )
