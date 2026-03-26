@@ -178,7 +178,10 @@ def _build_webhook_url(host: str, port: int) -> str:
     scheme = "http" if host in _LOCALHOST_HOSTS else "https"
     # Wrap bare IPv6 literals in brackets (e.g. "::1" → "[::1]")
     host_part = f"[{host}]" if ":" in host else host
-    return f"{scheme}://{host_part}:{port}/owntracks/webhook"
+    # Omit port when it matches the scheme default (80 for http, 443 for https)
+    default_port = 80 if scheme == "http" else 443
+    port_suffix = "" if port == default_port else f":{port}"
+    return f"{scheme}://{host_part}{port_suffix}/owntracks/webhook"
 
 
 def _mask_token(token: str | None) -> str | None:

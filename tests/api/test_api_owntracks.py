@@ -147,6 +147,16 @@ class TestWebhookURL:
         assert "[::1]" in url
         assert url.endswith("/owntracks/webhook")
 
+    def test_https_port_443_omitted(self):
+        """Default HTTPS port 443 should not appear in the URL."""
+        url = _build_webhook_url("my-device.ts.net", 443)
+        assert url == "https://my-device.ts.net/owntracks/webhook"
+
+    def test_http_port_80_omitted(self):
+        """Default HTTP port 80 should not appear in the URL."""
+        url = _build_webhook_url("localhost", 80)
+        assert url == "http://localhost/owntracks/webhook"
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: connection state derivation

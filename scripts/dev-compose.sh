@@ -6,7 +6,7 @@
 #   ./scripts/dev-compose.sh                       # standard mode
 #   ./scripts/dev-compose.sh --hotreload           # volume-mount source for live changes
 #   ./scripts/dev-compose.sh --skip-oauth-check    # skip OAuth gate
-#   ./scripts/dev-compose.sh --skip-tailscale-check
+#   ./scripts/dev-compose.sh --skip-tailscale-check  # skip tailscale serve setup
 #   ./scripts/dev-compose.sh --audio               # include live-listener (needs /dev/snd)
 set -euo pipefail
 
@@ -29,7 +29,10 @@ for arg in "$@"; do
   esac
 done
 
-# ── Tailscale prerequisite check ──────────────────────────────────────
+# ── Tailscale serve configuration ─────────────────────────────────────
+# Configure tailscale serve to expose all externally-accessible services
+# with TLS termination. Required for Google OAuth (HTTPS redirect URIs)
+# and for mobile app connectivity (OwnTracks).
 if [ "$SKIP_TAILSCALE" = "false" ]; then
   if ! command -v tailscale &>/dev/null; then
     echo "ERROR: tailscale CLI not found. Install from https://tailscale.com/download" >&2
@@ -43,7 +46,110 @@ if [ "$SKIP_TAILSCALE" = "false" ]; then
     echo "ERROR: tailscale not authenticated (state: ${ts_state}). Run: tailscale up" >&2
     exit 1
   fi
-  echo "Tailscale: OK (state: ${ts_state})"
+
+  TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-443}"
+  FRONTEND_PORT="${FRONTEND_PORT:-41173}"
+
+  # Tailscale serve path mappings: "path_prefix|local_target"
+  # Each entry creates an HTTPS -> HTTP proxy via tailscale serve.
+  SERVE_MAPPINGS=(
+    "/butlers|http://localhost:${FRONTEND_PORT}/butlers"       # Dashboard UI
+    "/butlers-api|http://localhost:41200"                      # Dashboard API
+    "/owntracks|http://localhost:40086/owntracks"              # OwnTracks webhook
+  )
+
+  # ── Helper: apply a single tailscale serve mapping ──────────────────
+  _ts_run_serve() {
+    local path_prefix="$1" target="$2"
+    local out="" rc=0
+    if [ "$path_prefix" = "/" ]; then
+      out=$(tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}" "$target" 2>&1) || rc=$?
+    else
+      out=$(tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}" --set-path "$path_prefix" "$target" 2>&1) || rc=$?
+    fi
+    # Fallback for older tailscale CLI syntax
+    if [ "$rc" -ne 0 ] && echo "$out" | grep -Eqi "(invalid argument format|unknown flag|usage)"; then
+      rc=0
+      if [ "$path_prefix" = "/" ]; then
+        out=$(tailscale serve "https:${TAILSCALE_HTTPS_PORT}" "$target" 2>&1) || rc=$?
+      else
+        out=$(tailscale serve "https:${TAILSCALE_HTTPS_PORT}" "$path_prefix" "$target" 2>&1) || rc=$?
+      fi
+    fi
+    [ -n "$out" ] && echo "    $out"
+    return "$rc"
+  }
+
+  # ── Helper: check if a mapping already exists ──────────────────────
+  _ts_check_mapping() {
+    local target="$1" path_prefix="$2" status_json="$3"
+    SERVE_STATUS_JSON="$status_json" python3 - "$target" "$path_prefix" "$TAILSCALE_HTTPS_PORT" <<'PY'
+import json, os, sys
+target, path_prefix, wanted_port = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.loads(os.environ.get("SERVE_STATUS_JSON", "{}"))
+for hostport, cfg in (data.get("Web") or {}).items():
+    for hp, handler in ((cfg or {}).get("Handlers") or {}).items():
+        if hp == path_prefix and isinstance(handler, dict) and handler.get("Proxy") == target:
+            try:
+                port = hostport.rsplit(":", 1)[1]
+            except Exception:
+                port = "443"
+            if port == wanted_port:
+                raise SystemExit(0)
+raise SystemExit(1)
+PY
+  }
+
+  # ── Apply mappings ─────────────────────────────────────────────────
+  echo "Tailscale serve: configuring HTTPS mappings (port ${TAILSCALE_HTTPS_PORT})..."
+  serve_status=$(tailscale serve status --json 2>/dev/null || echo "{}")
+  ts_serve_ok=true
+  for mapping in "${SERVE_MAPPINGS[@]}"; do
+    IFS='|' read -r path_prefix target <<< "$mapping"
+    if _ts_check_mapping "$target" "$path_prefix" "$serve_status" 2>/dev/null; then
+      echo "  ${path_prefix} -> ${target} (ok)"
+    else
+      echo "  ${path_prefix} -> ${target} (configuring...)"
+      if ! _ts_run_serve "$path_prefix" "$target"; then
+        echo "  ERROR: failed to configure ${path_prefix}" >&2
+        ts_serve_ok=false
+      fi
+    fi
+  done
+
+  if [ "$ts_serve_ok" = "false" ]; then
+    echo "" >&2
+    echo "ERROR: Some tailscale serve mappings failed." >&2
+    echo "  If 'Access denied', run: sudo tailscale set --operator=$USER" >&2
+    echo "  To skip: $0 --skip-tailscale-check" >&2
+    exit 1
+  fi
+
+  # ── Export computed URLs for docker-compose interpolation ───────────
+  TS_HOSTNAME=$(tailscale status --json 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" \
+    2>/dev/null || echo "")
+
+  if [ -n "$TS_HOSTNAME" ]; then
+    if [ "$TAILSCALE_HTTPS_PORT" = "443" ]; then
+      TS_BASE="https://${TS_HOSTNAME}"
+    else
+      TS_BASE="https://${TS_HOSTNAME}:${TAILSCALE_HTTPS_PORT}"
+    fi
+    export GOOGLE_OAUTH_REDIRECT_URI="${TS_BASE}/butlers-api/api/oauth/google/callback"
+    export OWNTRACKS_CONNECTOR_HOST="${TS_HOSTNAME}"
+    export OWNTRACKS_CONNECTOR_PORT="${TAILSCALE_HTTPS_PORT}"
+
+    echo ""
+    echo "Tailscale serve: ready (${TS_HOSTNAME})"
+    echo "  Dashboard:      ${TS_BASE}/butlers/"
+    echo "  API:            ${TS_BASE}/butlers-api/api"
+    echo "  OwnTracks:      ${TS_BASE}/owntracks/webhook"
+    echo "  OAuth callback: ${GOOGLE_OAUTH_REDIRECT_URI}"
+  else
+    echo "Tailscale serve: mappings applied (could not resolve hostname)"
+  fi
+  echo ""
 fi
 
 # ── Build compose command ─────────────────────────────────────────────
