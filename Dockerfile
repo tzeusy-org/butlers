@@ -26,8 +26,8 @@ COPY src/ src/
 # 3. Install production dependencies
 #    UV_TORCH_BACKEND=cpu: use CPU-only PyTorch wheels — avoids pulling
 #    NVIDIA CUDA packages that can't install in slim containers.
-RUN UV_TORCH_BACKEND=cpu \
-    if [ -n "$EXTRAS" ]; then \
+ENV UV_TORCH_BACKEND=cpu
+RUN if [ -n "$EXTRAS" ]; then \
       uv sync --no-dev --extra "$EXTRAS"; \
     else \
       uv sync --no-dev; \
