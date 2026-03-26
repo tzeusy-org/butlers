@@ -558,6 +558,9 @@ const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered");
 
 const PAGE_SIZE = 50;
 
+/** Keep auto-loading pages until at least this many rows survive client-side filtering. */
+const MIN_VISIBLE_ROWS = 30;
+
 interface TimelineTabProps {
   isActive: boolean;
   /** Override the default enabled statuses (for testing). */
@@ -635,6 +638,18 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
 
   // Client-side status filtering
   const events = allEvents.filter((e) => enabledStatuses.has(e.status));
+
+  // Auto-load more pages when too few rows survive the client-side filter
+  useEffect(() => {
+    if (
+      !isLoading &&
+      !isError &&
+      hasMore &&
+      events.length < MIN_VISIBLE_ROWS
+    ) {
+      setOffset((prev) => prev + PAGE_SIZE);
+    }
+  }, [isLoading, isError, hasMore, events.length]);
 
   const handleToggle = useCallback(
     (id: string) => {
