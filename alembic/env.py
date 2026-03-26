@@ -169,6 +169,16 @@ def run_migrations_online() -> None:
             # Alembic ensures version_table before running revisions, so create
             # the target schema first when running schema-scoped migrations.
             connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {own_schema}")
+            connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {shared_schema}")
+            # Ensure FK-compatible stub tables exist in shared for historical
+            # migrations (core_007 adds FKs to shared.contacts/entities).
+            # After core_041 moves real tables to public, these stubs let
+            # subsequent butlers' core_007 succeed.
+            for _stub in ("contacts", "entities"):
+                connection.exec_driver_sql(
+                    f"CREATE TABLE IF NOT EXISTS {shared_schema}.{_stub}"
+                    f" (id UUID PRIMARY KEY)"
+                )
             connection.exec_driver_sql(f"SET search_path TO {own_schema}, {shared_schema}, public")
             # SQLAlchemy opens an implicit transaction for the preflight DDL/SET
             # above; commit it so Alembic controls the migration transaction.
