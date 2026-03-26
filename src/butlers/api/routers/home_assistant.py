@@ -90,7 +90,9 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
                 butler_names[0],
             )
         except Exception:  # noqa: BLE001 — pool API is dynamic; exception type is unknown
-            logger.debug("Failed to obtain fallback DB pool; credential store unavailable.", exc_info=True)
+            logger.debug(
+                "Failed to obtain fallback DB pool; credential store unavailable.", exc_info=True
+            )
             return None
 
     return CredentialStore(pool)
