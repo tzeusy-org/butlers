@@ -107,16 +107,6 @@ def _n_months_ago(today: date, n: int) -> date:
     return date(year, month, 1)
 
 
-def _add_months(d: date, n: int) -> date:
-    """Add n months to a date (first-of-month arithmetic)."""
-    year = d.year
-    month = d.month + n
-    while month > 12:
-        month -= 12
-        year += 1
-    return date(year, month, 1)
-
-
 def _period_label(d: date) -> str:
     """Return YYYY-MM label for a date."""
     return d.strftime("%Y-%m")
@@ -798,7 +788,7 @@ async def spending_forecast(
                 budgets_by_cat[br["category"]] = Decimal(str(br["amount"]))
             except (InvalidOperation, TypeError):
                 pass
-    except (asyncpg.UndefinedTableError, asyncpg.PostgresError):
+    except asyncpg.UndefinedTableError:
         # budgets table may not exist yet (pre-migration); gracefully skip
         pass
 
