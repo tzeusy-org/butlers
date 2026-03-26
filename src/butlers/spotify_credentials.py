@@ -45,6 +45,3 @@ SPOTIFY_TOKEN_EXPIRES_AT = "SPOTIFY_TOKEN_EXPIRES_AT"
 
 SPOTIFY_CATEGORY = "spotify"
 """Category label used when storing Spotify credentials in butler_secrets."""
-
-# Backwards-compatibility alias for code importing the private name.
-_SPOTIFY_CATEGORY = SPOTIFY_CATEGORY

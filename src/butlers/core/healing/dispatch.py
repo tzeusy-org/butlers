@@ -217,10 +217,6 @@ class DispatchResult:
 #: Statuses that count against the circuit breaker.
 CIRCUIT_BREAKER_FAILURE_STATUSES = frozenset({"failed", "timeout", "anonymization_failed"})
 
-# Keep the private alias for backward compatibility with any callers that used
-# the old name during the transition period.
-_CIRCUIT_BREAKER_FAILURE_STATUSES = CIRCUIT_BREAKER_FAILURE_STATUSES
-
 
 async def _is_circuit_breaker_tripped(
     pool: asyncpg.Pool,
@@ -235,7 +231,7 @@ async def _is_circuit_breaker_tripped(
     recent_statuses = await get_recent_terminal_statuses(pool, limit=threshold)
     if len(recent_statuses) < threshold:
         return False
-    return all(s in _CIRCUIT_BREAKER_FAILURE_STATUSES for s in recent_statuses)
+    return all(s in CIRCUIT_BREAKER_FAILURE_STATUSES for s in recent_statuses)
 
 
 # ---------------------------------------------------------------------------
