@@ -555,23 +555,3 @@ export type {
   ConversationSseEventType,
   ConversationSseEvent,
 } from "./types.ts";
-
-export {
-  listConversations,
-  getConversation,
-  getConversationMessages,
-  searchConversations,
-  createConversation,
-  sendMessage,
-} from "./client.ts";
-
-export type {
-  ConversationSummary,
-  ConversationListParams,
-  Message,
-  MessageToolCall,
-  CreateConversationRequest,
-  SendMessageRequest,
-  ConversationSseEventType,
-  ConversationSseEvent,
-} from "./types.ts";

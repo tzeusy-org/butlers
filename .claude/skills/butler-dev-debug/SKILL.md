@@ -9,7 +9,7 @@ description: >
 
 # Butler Dev Debug
 
-Guide for investigating butler errors, failed sessions, and runtime issues in the Butlers development environment.
+Guide for investigating butler errors, failed sessions, and runtime issues in the Butlers Docker Compose development environment.
 
 ## When to Use
 
@@ -20,31 +20,54 @@ Guide for investigating butler errors, failed sessions, and runtime issues in th
 
 ---
 
+## Environment Overview
+
+The dev environment runs via `./scripts/dev-compose.sh` using Docker Compose. Key services:
+
+| Service | Container | Port (host) | Description |
+|---------|-----------|-------------|-------------|
+| `butlers-up` | `rig-butlers-up-1` | 41100 | All butler daemons (switchboard, general, etc.) |
+| `dashboard-api` | `rig-dashboard-api-1` | 41200 | FastAPI dashboard backend |
+| `frontend-dev` | `rig-frontend-dev-1` | 41173 | Vite dev server (profile: dev) |
+| `postgres` | `rig-postgres-1` | 54320 | PostgreSQL (pgvector/pg17) |
+| `connector-telegram-bot` | `rig-connector-telegram-bot-1` | — | Telegram bot connector |
+| `connector-telegram-user` | `rig-connector-telegram-user-1` | — | Telegram userbot connector |
+| `connector-gmail` | `rig-connector-gmail-1` | — | Gmail connector |
+| `connector-google-calendar` | `rig-connector-google-calendar-1` | — | Google Calendar connector |
+| `connector-spotify` | `rig-connector-spotify-1` | — | Spotify connector |
+| `connector-whatsapp-user` | `rig-connector-whatsapp-user-1` | — | WhatsApp connector |
+| `connector-owntracks` | `rig-connector-owntracks-1` | — | OwnTracks connector |
+| `connector-live-listener` | `rig-connector-live-listener-1` | — | Voice connector (profile: audio) |
+
+---
+
 ## Investigating a Session by ID
 
-### Step 1: Find the session in logs
+### Step 1: Find the session in Docker logs
 
-Search structured logs for the session UUID:
+All butler daemon output goes to the `butlers-up` container. Search for a session UUID:
 
 ```bash
-grep "<session-id>" logs/latest/butlers/up.log
+docker compose logs butlers-up 2>&1 | grep "<session-id>"
 ```
 
-`up.log` contains all butler daemon output and logs session creation/completion:
-```
-Session created: <id> (trigger=tick, model=gpt-5.1)
-Session completed: <id> (70094 ms, success=True, in=133240, out=5267)
-```
+For connector-related issues, check the specific connector:
 
-Also check per-butler logs in `logs/butlers/`:
 ```bash
-grep "<session-id>" logs/butlers/switchboard.log
-grep "<session-id>" logs/butlers/<butler-name>.log
+docker compose logs connector-gmail 2>&1 | grep "<session-id>"
+docker compose logs connector-telegram-bot 2>&1 | grep "<session-id>"
+```
+
+To follow logs live while reproducing an issue:
+
+```bash
+docker compose logs -f butlers-up
+docker compose logs -f --since 5m butlers-up    # last 5 minutes, then follow
 ```
 
 ### Step 2: Query session from PostgreSQL
 
-Sessions are stored in each butler's schema in the `sessions` table:
+Sessions are stored in each butler's schema in the `sessions` table. Postgres is exposed on host port 54320:
 
 ```bash
 psql -h localhost -p 54320 -U butlers -d butlers -c "
@@ -109,7 +132,7 @@ FROM session_process_logs WHERE session_id = '<session-id>';
 
 ### Step 6: Query via Dashboard API
 
-If the dashboard is running (port 41200):
+The dashboard API is on host port 41200:
 
 ```bash
 # Single session detail (includes process_log if available)
@@ -173,54 +196,64 @@ module. Verify the target butler is registered and has the correct module in its
 
 ---
 
-## Dev Logs Structure (`logs/latest`)
+## Docker Compose Log Structure
 
-`logs/latest` is a symlink to the most recent log run directory (e.g., `logs/20260312_110644`).
+### Accessing logs
+
+All service output goes to Docker's logging driver and is accessible via `docker compose logs`:
+
+```bash
+# All services
+docker compose --profile dev logs --since 10m
+
+# Specific service
+docker compose logs butlers-up --since 5m
+docker compose logs dashboard-api --since 5m
+
+# Follow live
+docker compose logs -f butlers-up
+docker compose logs -f connector-gmail connector-telegram-bot   # multiple services
+
+# Filter for errors across all services
+docker compose --profile dev logs --since 10m 2>&1 | grep -iE 'error|traceback|failed|exception'
+```
+
+### File-based logs (bind-mounted `./logs/`)
+
+Services also write to file-based logs via `scripts/dev_entrypoint.sh`, which tees output to `./logs/<run_dir>/<service>/output.log`. The `logs/latest` symlink points to the current run.
 
 ```
-logs/latest/
-├── butlers/
-│   └── up.log              # Main daemon output — ALL butlers combined
-│                             # Contains: session lifecycle, tool calls, errors,
-│                             # module init, scheduler events
-│                             # Format: structlog (key=value pairs)
-│                             # Key fields: butler=, trace_id=, span_id=
-│
-├── uvicorn/
-│   └── dashboard.log        # Dashboard API server (FastAPI/Uvicorn)
-│                             # Contains: HTTP request logs, API errors
-│                             # Format: Uvicorn access log
-│
+logs/latest/                          # symlink → timestamped run dir
+├── butlers/up/output.log             # butlers-up daemon (all butlers combined)
 ├── connectors/
-│   ├── telegram_bot.log     # Telegram bot connector
-│   ├── telegram_user_client.log  # Telegram userbot connector
-│   └── gmail.log            # Gmail connector (IMAP polling + OAuth)
-│                             # Contains: message ingestion, webhook delivery,
-│                             # connector heartbeats, auth refresh
-│                             # Format: structlog JSON
-│
-└── frontend/
-    └── vite.log             # Vite dev server for dashboard frontend
+│   ├── telegram_bot/output.log
+│   ├── telegram_user/output.log
+│   ├── gmail/output.log
+│   ├── google_calendar/output.log
+│   ├── spotify/output.log
+│   ├── whatsapp_user/output.log
+│   └── owntracks/output.log
 ```
 
-### Per-butler logs (persistent, not per-run)
+### Searching file-based logs
 
-```
-logs/butlers/
-├── switchboard.log          # Switchboard daemon (structlog JSON)
-├── switchboard_cc_stderr.log  # Claude Code stderr from switchboard sessions
-├── general.log              # General butler daemon
-├── general_cc_stderr.log    # Claude Code stderr from general sessions
-├── health.log               # Health butler
-├── education.log            # Education butler
-├── finance.log              # Finance butler
-├── travel.log               # Travel butler
-├── messenger.log            # Messenger butler
-├── relationship.log         # Relationship butler
-└── home.log                 # Home butler
+```bash
+# Find all sessions for a butler today
+grep '"Session created"' logs/latest/butlers/up/output.log | grep "$(date +%Y-%m-%d)"
+
+# Find errors
+grep '"level": "error"' logs/latest/butlers/up/output.log | tail -20
+
+# Find by trace_id (correlate across services)
+grep '<trace-id>' logs/latest/butlers/up/output.log logs/latest/connectors/*/output.log
+
+# Find route.execute calls
+grep 'route.execute' logs/latest/butlers/up/output.log
 ```
 
-**Per-butler log format** (structlog JSON, one object per line):
+### Log format
+
+Butler daemon logs use structlog (one JSON object per line):
 ```json
 {
   "event": "Session created: <uuid> (trigger=tick, model=gpt-5.1)",
@@ -233,23 +266,49 @@ logs/butlers/
 }
 ```
 
-### Searching logs effectively
+---
+
+## Docker Compose Service Management
+
+### Checking service health
 
 ```bash
-# Find all sessions for a butler today
-grep '"Session created"' logs/butlers/switchboard.log | grep '2026-03-12'
+# Service status (running, healthy, exited)
+docker compose --profile dev ps
 
-# Find errors
-grep '"level": "error"' logs/butlers/switchboard.log | tail -20
+# Health check for butlers-up
+curl -sf http://localhost:41100/health | python3 -m json.tool
 
-# Find by trace_id (correlate across butlers)
-grep '<trace-id>' logs/butlers/*.log
+# Health check for dashboard-api
+curl -sf http://localhost:41200/health | python3 -m json.tool
+```
 
-# Find route.execute calls
-grep 'route.execute' logs/butlers/switchboard.log
+### Restarting services
 
-# CC stderr for debugging LLM runtime issues
-tail -50 logs/butlers/switchboard_cc_stderr.log
+```bash
+# Restart a single service (preserves other services)
+docker compose --profile dev restart butlers-up
+docker compose --profile dev restart frontend-dev
+docker compose --profile dev restart connector-gmail
+
+# Rebuild and restart (after code changes, without hotreload profile)
+docker compose --profile dev up --build -d butlers-up
+
+# Full stack restart
+docker compose --profile dev down && ./scripts/dev-compose.sh
+```
+
+### Exec into a running container
+
+```bash
+# Shell into butlers-up for live debugging
+docker compose exec butlers-up bash
+
+# Run a one-off psql query from inside the network
+docker compose exec postgres psql -U butlers -d butlers
+
+# Check connector environment
+docker compose exec connector-gmail env | sort
 ```
 
 ---
@@ -258,9 +317,10 @@ tail -50 logs/butlers/switchboard_cc_stderr.log
 
 1. **Get session ID** — from user report, dashboard, or logs
 2. **Identify butler** — which butler schema to query
-3. **Query session** — get prompt, result, tool_calls, error from PostgreSQL
-4. **Check tool calls** — look for `status: error` in tool_calls JSONB
-5. **Check logs** — grep session ID in `up.log` and per-butler logs
-6. **Check CC stderr** — if the LLM process crashed
-7. **Check trace** — use trace_id to follow request across butlers
-8. **Check dashboard API** — if running, use `/api/butlers/<name>/sessions/<id>`
+3. **Check docker logs** — `docker compose logs butlers-up --since 10m 2>&1 | grep "<session-id>"`
+4. **Query session** — get prompt, result, tool_calls, error from PostgreSQL (host port 54320)
+5. **Check tool calls** — look for `status: error` in tool_calls JSONB
+6. **Check file logs** — `grep "<session-id>" logs/latest/butlers/up/output.log`
+7. **Check trace** — use trace_id to follow request across services
+8. **Check dashboard API** — `curl http://localhost:41200/api/butlers/<name>/sessions/<id>`
+9. **Check service health** — `docker compose --profile dev ps` for crashed/restarting containers

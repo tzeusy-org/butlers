@@ -64,7 +64,7 @@ class TestViteProxyConfig:
         """The /api proxy target must point to localhost:41200."""
         content = VITE_CONFIG_PATH.read_text()
         # Match the proxy target URL — expect http://localhost:41200
-        match = re.search(r'target:\s*["\']([^"\']+)["\']', content)
+        match = re.search(r'target:\s*(?:.*\|\|\s*)?["\']([^"\']+)["\']', content)
         assert match, "Could not find proxy target in vite.config.ts"
         target_url = match.group(1)
         assert "localhost:41200" in target_url, (

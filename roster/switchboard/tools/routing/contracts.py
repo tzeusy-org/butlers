@@ -33,6 +33,7 @@ SourceChannel = Literal[
     "google_calendar",
     "spotify_user_client",
     "owntracks",
+    "dashboard",
 ]
 SourceProvider = Literal[
     "telegram",
@@ -63,6 +64,7 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "google_calendar": frozenset({"google_calendar"}),
     "spotify_user_client": frozenset({"spotify"}),
     "owntracks": frozenset({"owntracks"}),
+    "dashboard": frozenset({"internal"}),
 }
 _THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(
