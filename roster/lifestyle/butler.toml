@@ -74,7 +74,7 @@ provider = "google"
 include_other_contacts = false
 
 [modules.contacts.sync]
-enabled = true
+enabled = false
 run_on_startup = true
 interval_minutes = 15
 full_sync_interval_days = 6
