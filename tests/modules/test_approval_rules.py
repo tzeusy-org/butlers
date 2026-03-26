@@ -1297,14 +1297,15 @@ class TestSuggestRuleConstraints:
 
 
 class TestRegisterToolsCount:
-    """Verify register_tools creates all 13 tools."""
+    """Verify register_tools creates all 16 tools."""
 
     async def test_registers_thirteen_tools(self, module: ApprovalsModule, mock_db: MockDB):
+        """Module now registers 16 tools (13 original + 3 suggestion tools)."""
         mcp = MagicMock()
         mcp.tool.return_value = lambda fn: fn
 
         await module.register_tools(mcp=mcp, config=None, db=mock_db)
-        assert mcp.tool.call_count == 13
+        assert mcp.tool.call_count == 16
 
     async def test_all_tool_names(self, module: ApprovalsModule, mock_db: MockDB):
         mcp = MagicMock()
@@ -1337,6 +1338,10 @@ class TestRegisterToolsCount:
             "show_approval_rule",
             "revoke_approval_rule",
             "suggest_rule_constraints",
+            # 3 suggestion tools
+            "list_promotion_suggestions",
+            "confirm_promotion_suggestion",
+            "dismiss_promotion_suggestion",
         }
         assert set(registered_tools.keys()) == expected
 

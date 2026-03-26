@@ -249,6 +249,30 @@ async def execute_approved_action(
         occurred_at=now,
     )
 
+    # Post-execution demotion hook (task 7.2):
+    # If execution failed on an auto-approved action, create a demotion suggestion.
+    if not execution_result.success and approval_rule_id is not None:
+        try:
+            from butlers.modules.approvals.autonomy_suggestions import create_demotion_suggestion
+            from butlers.modules.approvals.models import PendingAction
+
+            action_row = await pool.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", action_id
+            )
+            if action_row is not None:
+                action_obj = PendingAction.from_row(action_row)
+                await create_demotion_suggestion(
+                    pool=pool,
+                    action=action_obj,
+                    rule_id=approval_rule_id,
+                    error_details=execution_result.error or "unknown error",
+                )
+        except Exception:
+            logger.exception(
+                "Demotion suggestion hook failed for action %s — execution result not affected",
+                action_id,
+            )
+
     return execution_result
 
 

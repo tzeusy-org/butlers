@@ -18,6 +18,18 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from butlers.modules.approvals.autonomy_suggestions import (
+    supersede_matching_suggestions as _supersede_matching_suggestions,
+)
+from butlers.modules.approvals.autonomy_tracker import (
+    check_promotion_threshold as _check_promotion_threshold,
+)
+from butlers.modules.approvals.autonomy_tracker import (
+    compute_fingerprint as _compute_fingerprint,
+)
+from butlers.modules.approvals.autonomy_tracker import (
+    record_approval as _record_approval,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
@@ -105,6 +117,30 @@ async def approve_action(
         metadata={"tool_name": action.tool_name},
         occurred_at=now,
     )
+
+    # Post-approval autonomy tracker hook (task 7.1)
+    # Wrap in try/except so tracker failure doesn't block approval
+    try:
+        # Re-read to get decided_at
+        updated_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+        if updated_row is not None:
+            updated_action = PendingAction.from_row(updated_row)
+            await _record_approval(pool, updated_action)
+            # Use a minimal config namespace with defaults (no module import needed)
+            _default_config = type(
+                "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
+            )()
+            await _check_promotion_threshold(
+                pool=pool,
+                pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
+                tool_name=action.tool_name,
+                tool_args=action.tool_args,
+                config=_default_config,
+            )
+    except Exception:
+        logger.exception(
+            "Autonomy tracker hook failed for action %s — approval not blocked", action_id
+        )
 
     # Optionally create a standing rule
     rule_dict: dict[str, Any] | None = None
@@ -349,6 +385,16 @@ async def create_approval_rule(
         occurred_at=now,
     )
 
+    # Rule-creation supersede hook (task 7.3)
+    try:
+        await _supersede_matching_suggestions(
+            pool=pool,
+            tool_name=tool_name,
+            arg_constraints=arg_constraints,
+        )
+    except Exception:
+        logger.exception("Supersede hook failed for rule %s — rule creation not blocked", rule.id)
+
     return rule.to_dict()
 
 
@@ -436,6 +482,16 @@ async def create_rule_from_action(
         metadata={"tool_name": rule.tool_name},
         occurred_at=now,
     )
+
+    # Rule-creation supersede hook (task 7.3)
+    try:
+        await _supersede_matching_suggestions(
+            pool=pool,
+            tool_name=action.tool_name,
+            arg_constraints=suggested,
+        )
+    except Exception:
+        logger.exception("Supersede hook failed for rule %s — rule creation not blocked", rule.id)
 
     return rule.to_dict()
 

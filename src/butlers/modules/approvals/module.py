@@ -1,6 +1,6 @@
 """Approvals module — MCP tools for managing the pending action approval queue.
 
-Provides thirteen tools:
+Provides sixteen tools:
 - list_pending_actions: list actions with optional status filter
 - show_pending_action: show full details for a single action
 - approve_action: approve and execute a pending action
@@ -14,6 +14,9 @@ Provides thirteen tools:
 - revoke_approval_rule: deactivate a standing approval rule
 - suggest_rule_constraints: preview suggested constraints for a pending action
 - list_executed_actions: query executed actions for audit review
+- list_promotion_suggestions: list autonomy promotion/demotion suggestions
+- confirm_promotion_suggestion: confirm a suggestion (creates rule or revokes rule)
+- dismiss_promotion_suggestion: dismiss a suggestion with optional reason
 """
 
 from __future__ import annotations
@@ -30,6 +33,27 @@ from fastmcp.server.dependencies import AccessToken, get_access_token
 from pydantic import BaseModel, ConfigDict
 
 from butlers.config import ApprovalConfig, ApprovalRiskTier
+from butlers.modules.approvals.autonomy_suggestions import (
+    confirm_suggestion as _confirm_suggestion,
+)
+from butlers.modules.approvals.autonomy_suggestions import (
+    dismiss_suggestion as _dismiss_suggestion,
+)
+from butlers.modules.approvals.autonomy_suggestions import (
+    list_suggestions as _list_suggestions,
+)
+from butlers.modules.approvals.autonomy_suggestions import (
+    supersede_matching_suggestions as _supersede_matching_suggestions,
+)
+from butlers.modules.approvals.autonomy_tracker import (
+    check_promotion_threshold as _check_promotion_threshold,
+)
+from butlers.modules.approvals.autonomy_tracker import (
+    compute_fingerprint as _compute_fingerprint,
+)
+from butlers.modules.approvals.autonomy_tracker import (
+    record_approval as _record_approval,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.executor import (
@@ -81,6 +105,10 @@ class ApprovalsConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     default_limit: int = 50
+    # Progressive autonomy ladder config
+    promotion_threshold: int = 5
+    velocity_window: int = 10
+    suggestion_cooldown_days: int = 30
 
 
 # Type alias for tool executor callbacks
@@ -284,7 +312,7 @@ class ApprovalsModule(Module):
         return None
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register all 13 approval MCP tools (7 queue + 6 rules CRUD)."""
+        """Register all 16 approval MCP tools (7 queue + 6 rules CRUD + 3 suggestion tools)."""
         self._config = (
             config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))
         )
@@ -411,6 +439,41 @@ class ApprovalsModule(Module):
         async def suggest_rule_constraints(action_id: str) -> dict:
             """Preview suggested constraints for creating a rule from a pending action."""
             return await module._suggest_rule_constraints(action_id)
+
+        # --- Autonomy suggestion tools (3) ---
+
+        @mcp.tool()
+        async def list_promotion_suggestions(
+            status: str | None = "pending",
+            suggestion_type: str | None = None,
+            limit: int | None = None,
+        ) -> list[dict]:
+            """List autonomy promotion/demotion suggestions with optional filters."""
+            return await module._list_promotion_suggestions(
+                status=status,
+                suggestion_type=suggestion_type,
+                limit=limit,
+            )
+
+        @mcp.tool()
+        async def confirm_promotion_suggestion(suggestion_id: str) -> dict:
+            """Confirm a pending promotion suggestion (creates rule) or demotion (revokes rule)."""
+            return await module._confirm_promotion_suggestion(
+                suggestion_id=suggestion_id,
+                actor=_actor_from_access_token(get_access_token()),
+            )
+
+        @mcp.tool()
+        async def dismiss_promotion_suggestion(
+            suggestion_id: str,
+            reason: str | None = None,
+        ) -> dict:
+            """Dismiss a pending promotion or demotion suggestion with optional reason."""
+            return await module._dismiss_promotion_suggestion(
+                suggestion_id=suggestion_id,
+                reason=reason,
+                actor=_actor_from_access_token(get_access_token()),
+            )
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Initialize config and store db reference."""
@@ -570,6 +633,29 @@ class ApprovalsModule(Module):
                         f"to '{ActionStatus.EXECUTED.value}'"
                     )
                 }
+
+        # Post-approval autonomy tracker hook (task 7.1)
+        # Wrap in try/except so tracker failure doesn't block approval
+        try:
+            # Re-read the action to get decided_at for velocity computation
+            updated_action_row = await self._db.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+            )
+            if updated_action_row is not None:
+                updated_action = PendingAction.from_row(updated_action_row)
+                await _record_approval(self._db, updated_action)
+                await _check_promotion_threshold(
+                    pool=self._db,
+                    pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
+                    tool_name=action.tool_name,
+                    tool_args=action.tool_args,
+                    config=self._config,
+                )
+        except Exception:
+            logger.exception(
+                "Autonomy tracker hook failed for action %s — approval not blocked",
+                action_id,
+            )
 
         # Optionally create an approval rule from this action
         rule_dict: dict[str, Any] | None = None
@@ -835,6 +921,19 @@ class ApprovalsModule(Module):
             occurred_at=now,
         )
 
+        # Rule-creation supersede hook (task 7.3)
+        try:
+            await _supersede_matching_suggestions(
+                pool=self._db,
+                tool_name=tool_name,
+                arg_constraints=arg_constraints,
+            )
+        except Exception:
+            logger.exception(
+                "Supersede hook failed for rule %s — rule creation not blocked",
+                rule.id,
+            )
+
         return rule.to_dict()
 
     async def _create_rule_from_action(
@@ -919,6 +1018,19 @@ class ApprovalsModule(Module):
             metadata={"tool_name": rule.tool_name},
             occurred_at=now,
         )
+
+        # Rule-creation supersede hook (task 7.3)
+        try:
+            await _supersede_matching_suggestions(
+                pool=self._db,
+                tool_name=action.tool_name,
+                arg_constraints=suggested,
+            )
+        except Exception:
+            logger.exception(
+                "Supersede hook failed for rule %s — rule creation not blocked",
+                rule.id,
+            )
 
         return rule.to_dict()
 
@@ -1058,3 +1170,59 @@ class ApprovalsModule(Module):
             "tool_args": action.tool_args,
             "suggested_constraints": suggested,
         }
+
+    # ------------------------------------------------------------------
+    # Autonomy suggestion tool implementations
+    # ------------------------------------------------------------------
+
+    async def _list_promotion_suggestions(
+        self,
+        status: str | None = "pending",
+        suggestion_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """List promotion/demotion suggestions with optional filters."""
+        effective_limit = limit if limit is not None else 20
+        return await _list_suggestions(
+            pool=self._db,
+            status=status,
+            suggestion_type=suggestion_type,
+            limit=effective_limit,
+        )
+
+    async def _confirm_promotion_suggestion(
+        self,
+        suggestion_id: str,
+        actor: ActorContext | None = None,
+    ) -> dict:
+        """Confirm a pending promotion or demotion suggestion."""
+        actor_result = _require_authenticated_human_actor("confirm_promotion_suggestion", actor)
+        if isinstance(actor_result, dict):
+            return actor_result
+        actor_id = actor_result
+
+        return await _confirm_suggestion(
+            pool=self._db,
+            suggestion_id=suggestion_id,
+            actor=actor_id,
+        )
+
+    async def _dismiss_promotion_suggestion(
+        self,
+        suggestion_id: str,
+        reason: str | None = None,
+        actor: ActorContext | None = None,
+    ) -> dict:
+        """Dismiss a pending promotion or demotion suggestion."""
+        actor_result = _require_authenticated_human_actor("dismiss_promotion_suggestion", actor)
+        if isinstance(actor_result, dict):
+            return actor_result
+        actor_id = actor_result
+
+        return await _dismiss_suggestion(
+            pool=self._db,
+            suggestion_id=suggestion_id,
+            actor=actor_id,
+            reason=reason,
+            cooldown_days=self._config.suggestion_cooldown_days,
+        )

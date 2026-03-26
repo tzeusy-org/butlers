@@ -338,12 +338,27 @@ async def test_approve_action_success(app):
     pending = _make_pending_action_record(action_id=action_id, status="pending")
     approved = _make_pending_action_record(action_id=action_id, status="approved")
 
-    # fetchrow calls: read tool_args, initial SELECT, CAS approve RETURNING, final SELECT
+    # fetchrow calls:
+    # 1. router: SELECT tool_name, tool_args (pre-dispatch read)
+    # 2. operations.py: SELECT * (initial)
+    # 3. operations.py: UPDATE RETURNING (CAS approve)
+    # 4. operations.py (tracker): SELECT * (re-read for tracker)
+    # 5. operations.py (tracker): SELECT COUNT (get_approval_count → 0 = below threshold)
+    # 6. operations.py: SELECT * (final SELECT)
     app, mock_conn = _app_with_mock_db(
         app,
         fetchrow_return=pending,
     )
-    mock_conn.fetchrow = AsyncMock(side_effect=[pending, pending, approved, approved])
+    mock_conn.fetchrow = AsyncMock(
+        side_effect=[
+            pending,  # 1. router pre-dispatch read (tool_name/tool_args)
+            pending,  # 2. operations initial SELECT
+            approved,  # 3. operations CAS UPDATE RETURNING
+            approved,  # 4. tracker re-read
+            {"cnt": 0},  # 5. tracker get_approval_count (0 < threshold, exits early)
+            approved,  # 6. operations final SELECT
+        ]
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
