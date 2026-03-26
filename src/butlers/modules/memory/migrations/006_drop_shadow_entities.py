@@ -1,8 +1,8 @@
 """drop_shadow_entities
 
-Drop per-butler entities tables that shadow shared.entities.  After this
-migration the only entities table is shared.entities; per-butler facts keep
-an FK to shared.entities(id).
+Drop per-butler entities tables that shadow public.entities.  After this
+migration the only entities table is public.entities; per-butler facts keep
+an FK to public.entities(id).
 
 Revision ID: mem_006
 Revises: mem_005
@@ -38,11 +38,11 @@ def upgrade() -> None:
         $$;
     """)
 
-    # 2. Drop the per-butler entities table (shadow of shared.entities).
+    # 2. Drop the per-butler entities table (shadow of public.entities).
     #    Use CASCADE to also drop indexes created by mem_002.
     #    IMPORTANT: Only drop if the entities table lives in the butler's own
     #    schema, NOT in shared.  An unqualified DROP resolves via search_path
-    #    and would destroy shared.entities for schemas that have no local shadow.
+    #    and would destroy public.entities for schemas that have no local shadow.
     op.execute("""
         DO $$
         DECLARE
@@ -59,11 +59,11 @@ def upgrade() -> None:
         $$;
     """)
 
-    # 3. Re-add FK from facts.entity_id to shared.entities.
+    # 3. Re-add FK from facts.entity_id to public.entities.
     op.execute("""
         DO $$
         BEGIN
-            IF to_regclass('shared.entities') IS NOT NULL
+            IF to_regclass('public.entities') IS NOT NULL
                AND NOT EXISTS (
                    SELECT 1 FROM pg_constraint c
                    JOIN pg_class t ON t.oid = c.conrelid
@@ -74,7 +74,7 @@ def upgrade() -> None:
                 ALTER TABLE facts
                     ADD CONSTRAINT facts_entity_id_shared_fkey
                     FOREIGN KEY (entity_id)
-                    REFERENCES shared.entities(id)
+                    REFERENCES public.entities(id)
                     ON DELETE RESTRICT;
             END IF;
         END

@@ -1,6 +1,6 @@
 """fix_partial_unique_deleted_at — mem_021
 
-Widen the partial unique index on shared.entities to also exclude
+Widen the partial unique index on public.entities to also exclude
 soft-deleted entities (metadata->>'deleted_at' IS NOT NULL).
 
 Migration 018 only excluded merged entities (metadata->>'merged_into'),
@@ -33,7 +33,7 @@ def upgrade() -> None:
     # Recreate with both tombstone conditions excluded
     op.execute("""
         CREATE UNIQUE INDEX uq_entities_tenant_canonical_type_live
-        ON shared.entities (tenant_id, canonical_name, entity_type)
+        ON public.entities (tenant_id, canonical_name, entity_type)
         WHERE (metadata->>'merged_into') IS NULL
           AND (metadata->>'deleted_at') IS NULL
     """)
@@ -47,6 +47,6 @@ def downgrade() -> None:
 
     op.execute("""
         CREATE UNIQUE INDEX uq_entities_tenant_canonical_type_live
-        ON shared.entities (tenant_id, canonical_name, entity_type)
+        ON public.entities (tenant_id, canonical_name, entity_type)
         WHERE (metadata->>'merged_into') IS NULL
     """)

@@ -33,7 +33,7 @@ def upgrade() -> None:
     # Drop the old absolute unique constraint (may not exist if table was
     # recreated by migration 006 without it — DROP IF EXISTS is safe).
     op.execute("""
-        ALTER TABLE shared.entities
+        ALTER TABLE public.entities
         DROP CONSTRAINT IF EXISTS uq_entities_tenant_canonical_type
     """)
 
@@ -41,7 +41,7 @@ def upgrade() -> None:
     # (both merged and soft-deleted)
     op.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_tenant_canonical_type_live
-        ON shared.entities (tenant_id, canonical_name, entity_type)
+        ON public.entities (tenant_id, canonical_name, entity_type)
         WHERE (metadata->>'merged_into') IS NULL
           AND (metadata->>'deleted_at') IS NULL
     """)
@@ -53,7 +53,7 @@ def downgrade() -> None:
     """)
 
     op.execute("""
-        ALTER TABLE shared.entities
+        ALTER TABLE public.entities
         ADD CONSTRAINT uq_entities_tenant_canonical_type
         UNIQUE (tenant_id, canonical_name, entity_type)
     """)

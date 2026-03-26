@@ -22,7 +22,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1. Add nullable object_entity_id column with FK to shared.entities.
+    # 1. Add nullable object_entity_id column with FK to public.entities.
     op.execute("""
         ALTER TABLE facts
         ADD COLUMN IF NOT EXISTS object_entity_id UUID
@@ -31,7 +31,7 @@ def upgrade() -> None:
     op.execute("""
         DO $$
         BEGIN
-            IF to_regclass('shared.entities') IS NOT NULL
+            IF to_regclass('public.entities') IS NOT NULL
                AND NOT EXISTS (
                    SELECT 1 FROM pg_constraint c
                    JOIN pg_class t ON t.oid = c.conrelid
@@ -42,7 +42,7 @@ def upgrade() -> None:
                 ALTER TABLE facts
                     ADD CONSTRAINT facts_object_entity_id_shared_fkey
                     FOREIGN KEY (object_entity_id)
-                    REFERENCES shared.entities(id)
+                    REFERENCES public.entities(id)
                     ON DELETE RESTRICT;
             END IF;
         END

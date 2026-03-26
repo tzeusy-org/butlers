@@ -16,9 +16,9 @@ Background:
   hit UndefinedTableError on every backfill apply and sync poll cycle.
 
 Design:
-  - Creates shared.contact_info if it does not already exist.
-  - Migrates any existing per-schema contact_info rows to shared.contact_info.
-  - Grants INSERT, UPDATE, DELETE on shared.contact_info to the butler runtime
+  - Creates public.contact_info if it does not already exist.
+  - Migrates any existing per-schema contact_info rows to public.contact_info.
+  - Grants INSERT, UPDATE, DELETE on public.contact_info to the butler runtime
     roles that run the contacts module (general, health, relationship).
   - The relationship butler migration rel_002c retains its CREATE TABLE IF NOT
     EXISTS statement; on fresh installs, that table will be empty and skipped
@@ -36,7 +36,7 @@ branch_labels = None
 depends_on = None
 
 # Butler roles that have the contacts module enabled and need write access to
-# shared.contact_info.  Add new roles here when new butlers enable contacts.
+# public.contact_info.  Add new roles here when new butlers enable contacts.
 _CONTACTS_MODULE_ROLES = (
     "butler_general_rw",
     "butler_health_rw",
@@ -80,12 +80,12 @@ def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS shared")
 
     # -------------------------------------------------------------------------
-    # 2. Create shared.contact_info if it doesn't already exist.
+    # 2. Create public.contact_info if it doesn't already exist.
     #    Schema-qualified DDL so this runs correctly regardless of the current
     #    search_path set by the Alembic environment.
     # -------------------------------------------------------------------------
     op.execute("""
-        CREATE TABLE IF NOT EXISTS shared.contact_info (
+        CREATE TABLE IF NOT EXISTS public.contact_info (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             contact_id UUID NOT NULL,
             type VARCHAR NOT NULL,
@@ -98,12 +98,12 @@ def upgrade() -> None:
 
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_shared_contact_info_type_value
-            ON shared.contact_info (type, value)
+            ON public.contact_info (type, value)
     """)
 
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_shared_contact_info_contact_id
-            ON shared.contact_info (contact_id)
+            ON public.contact_info (contact_id)
     """)
 
     # -------------------------------------------------------------------------
@@ -116,9 +116,9 @@ def upgrade() -> None:
         DO $$
         BEGIN
             IF to_regclass(format('%I.contact_info', current_schema())) IS NOT NULL
-               AND to_regclass('shared.contact_info') IS NOT NULL
+               AND to_regclass('public.contact_info') IS NOT NULL
             THEN
-                INSERT INTO shared.contact_info
+                INSERT INTO public.contact_info
                     (id, contact_id, type, value, label, is_primary, created_at)
                 SELECT id, contact_id, type, value, label, is_primary, created_at
                 FROM contact_info
@@ -129,7 +129,7 @@ def upgrade() -> None:
     """)
 
     # -------------------------------------------------------------------------
-    # 4. Grant write privileges on shared.contact_info to contacts module roles.
+    # 4. Grant write privileges on public.contact_info to contacts module roles.
     #    Butler roles normally only have SELECT on shared tables (set by
     #    core_001). The contacts module requires INSERT/UPDATE/DELETE here.
     # -------------------------------------------------------------------------
@@ -161,6 +161,6 @@ def downgrade() -> None:
             role_name=role,
         )
 
-    op.execute("DROP INDEX IF EXISTS shared.idx_shared_contact_info_contact_id")
-    op.execute("DROP INDEX IF EXISTS shared.idx_shared_contact_info_type_value")
-    op.execute("DROP TABLE IF EXISTS shared.contact_info")
+    op.execute("DROP INDEX IF EXISTS public.idx_shared_contact_info_contact_id")
+    op.execute("DROP INDEX IF EXISTS public.idx_shared_contact_info_type_value")
+    op.execute("DROP TABLE IF EXISTS public.contact_info")
