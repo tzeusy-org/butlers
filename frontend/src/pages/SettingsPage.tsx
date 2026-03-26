@@ -7,17 +7,13 @@ import type {
   CLIAuthHealthState,
   CLIAuthProvider,
   CLIAuthSessionState,
-  GoogleAccount,
-  OAuthCredentialState,
   ProviderConfig,
   ProviderConfigCreate,
   ProviderConfigUpdate,
 } from "@/api/index.ts";
 import { getGoogleOAuthStartUrl } from "@/api/index.ts";
+import { IntegrationsCard } from "@/components/settings/IntegrationsCard.tsx";
 import { ModelCatalogCard } from "@/components/settings/ModelCatalogCard.tsx";
-import { OwnTracksSetupCard } from "@/components/settings/OwnTracksSetupCard.tsx";
-import { SpotifySetupCard } from "@/components/settings/SpotifySetupCard.tsx";
-import { WhatsAppSetupCard } from "@/components/settings/WhatsAppSetupCard.tsx";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,7 +31,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -65,11 +60,8 @@ import {
   useUpdateProvider,
 } from "@/hooks/use-providers";
 import {
-  useDisconnectAccount,
   useGoogleAccounts,
   useGoogleAccountsHealth,
-  useGoogleCredentialStatus,
-  useSetPrimaryAccount,
 } from "@/hooks/use-secrets";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { RECENT_SEARCHES_KEY } from "@/lib/local-settings";
@@ -84,50 +76,6 @@ function getRecentSearchCount() {
     return Array.isArray(parsed) ? parsed.length : 0;
   } catch {
     return 0;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Google OAuth helpers
-// ---------------------------------------------------------------------------
-
-function healthBadgeVariant(
-  state: OAuthCredentialState,
-): "default" | "secondary" | "destructive" | "outline" {
-  switch (state) {
-    case "connected":
-      return "default";
-    case "not_configured":
-      return "outline";
-    case "expired":
-    case "missing_scope":
-    case "redirect_uri_mismatch":
-    case "unapproved_tester":
-    case "unknown_error":
-      return "destructive";
-    default:
-      return "secondary";
-  }
-}
-
-function healthBadgeLabel(state: OAuthCredentialState): string {
-  switch (state) {
-    case "connected":
-      return "Connected";
-    case "not_configured":
-      return "Not configured";
-    case "expired":
-      return "Expired";
-    case "missing_scope":
-      return "Missing scope";
-    case "redirect_uri_mismatch":
-      return "Redirect URI mismatch";
-    case "unapproved_tester":
-      return "Unapproved tester";
-    case "unknown_error":
-      return "Unknown error";
-    default:
-      return state;
   }
 }
 
@@ -816,292 +764,6 @@ function CLIAuthCard() {
 }
 
 // ---------------------------------------------------------------------------
-// Account status badge helpers
-// ---------------------------------------------------------------------------
-
-function accountStatusBadge(
-  status: GoogleAccount["status"],
-): { variant: "default" | "secondary" | "destructive" | "outline"; label: string } {
-  switch (status) {
-    case "active":
-      return { variant: "default", label: "Active" };
-    case "revoked":
-      return { variant: "destructive", label: "Revoked" };
-    case "expired":
-      return { variant: "destructive", label: "Expired" };
-    default:
-      return { variant: "secondary", label: status };
-  }
-}
-
-function formatTimestamp(ts: string | null): string {
-  if (!ts) return "—";
-  try {
-    return new Date(ts).toLocaleString();
-  } catch {
-    return ts;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Disconnect dialog
-// ---------------------------------------------------------------------------
-
-function DisconnectAccountDialog({
-  account,
-  onDismiss,
-}: {
-  account: GoogleAccount;
-  onDismiss: () => void;
-}) {
-  const [hardDelete, setHardDelete] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const disconnectMutation = useDisconnectAccount();
-
-  async function handleDisconnect() {
-    setError(null);
-    try {
-      await disconnectMutation.mutateAsync({ accountId: account.id, hardDelete });
-      onDismiss();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to disconnect account.");
-    }
-  }
-
-  const displayName = account.email ?? account.display_name ?? account.id;
-
-  return (
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>Disconnect Google account?</DialogTitle>
-        <DialogDescription>
-          This will disconnect <strong>{displayName}</strong> from the butler.
-          The OAuth token will be revoked.
-        </DialogDescription>
-      </DialogHeader>
-      <div className="space-y-3">
-        <label className="flex items-center gap-2 text-sm cursor-pointer">
-          <input
-            type="checkbox"
-            checked={hardDelete}
-            onChange={(e) => setHardDelete(e.target.checked)}
-            className="rounded"
-          />
-          <span>Permanently delete account record (hard delete)</span>
-        </label>
-        <p className="text-xs text-muted-foreground">
-          Without hard delete, the account row is retained with status &quot;disconnected&quot;.
-          Hard delete removes the row and its companion entity entirely.
-        </p>
-      </div>
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <DialogFooter>
-        <Button variant="outline" onClick={onDismiss}>
-          Cancel
-        </Button>
-        <Button
-          variant="destructive"
-          onClick={handleDisconnect}
-          disabled={disconnectMutation.isPending}
-        >
-          {disconnectMutation.isPending ? "Disconnecting..." : "Disconnect"}
-        </Button>
-      </DialogFooter>
-    </DialogContent>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Single account row
-// ---------------------------------------------------------------------------
-
-function GoogleAccountRow({ account }: { account: GoogleAccount }) {
-  const [disconnectOpen, setDisconnectOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const setPrimaryMutation = useSetPrimaryAccount();
-
-  async function handleSetPrimary() {
-    setError(null);
-    try {
-      await setPrimaryMutation.mutateAsync(account.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to set primary.");
-    }
-  }
-
-  const { variant: statusVariant, label: statusLabel } = accountStatusBadge(account.status);
-  const displayEmail = account.email ?? account.display_name ?? "Unknown account";
-  const reAuthUrl = getGoogleOAuthStartUrl({
-    accountHint: account.email ?? undefined,
-    forceConsent: true,
-  });
-
-  return (
-    <div className="py-4 border-b border-border last:border-0 space-y-2">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm font-medium truncate">{displayEmail}</p>
-            {account.display_name && account.email && (
-              <span className="text-xs text-muted-foreground truncate">
-                {account.display_name}
-              </span>
-            )}
-            {account.is_primary && (
-              <Badge variant="secondary" className="text-xs">Primary</Badge>
-            )}
-            <Badge variant={statusVariant}>{statusLabel}</Badge>
-          </div>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Connected: {formatTimestamp(account.connected_at)}
-            {account.last_token_refresh_at && (
-              <> &middot; Last refresh: {formatTimestamp(account.last_token_refresh_at)}</>
-            )}
-          </p>
-          {account.granted_scopes.length > 0 && (
-            <p className="text-xs text-muted-foreground mt-0.5 font-mono break-all">
-              Scopes: {account.granted_scopes.join(", ")}
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {!account.is_primary && account.status === "active" && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleSetPrimary}
-              disabled={setPrimaryMutation.isPending}
-            >
-              {setPrimaryMutation.isPending ? "Setting..." : "Set primary"}
-            </Button>
-          )}
-          <a href={reAuthUrl} target="_blank" rel="noopener noreferrer">
-            <Button variant="outline" size="sm">
-              Re-authorize
-            </Button>
-          </a>
-          <Dialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
-            <DialogTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-destructive hover:text-destructive"
-              >
-                Disconnect
-              </Button>
-            </DialogTrigger>
-            <DisconnectAccountDialog
-              account={account}
-              onDismiss={() => setDisconnectOpen(false)}
-            />
-          </Dialog>
-        </div>
-      </div>
-      {error && <p className="text-sm text-destructive">{error}</p>}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Google accounts section (replaces GoogleOAuthCard)
-// ---------------------------------------------------------------------------
-
-function GoogleAccountsSection() {
-  const credStatusQuery = useGoogleCredentialStatus();
-  const credStatus = credStatusQuery.data;
-  const accountsQuery = useGoogleAccounts();
-  const accounts = accountsQuery.data ?? [];
-  const isLoading = credStatusQuery.isLoading || accountsQuery.isLoading;
-  const isError = credStatusQuery.isError;
-  const canStartOAuth =
-    credStatus?.client_id_configured && credStatus?.client_secret_configured;
-
-  // Aggregate health badge: worst-case across all accounts
-  const overallHealth = credStatus?.oauth_health ?? "not_configured";
-
-  const connectUrl = getGoogleOAuthStartUrl();
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle>Google OAuth</CardTitle>
-            <CardDescription>
-              Manage connected Google accounts for Calendars, Emails, and Contacts.
-            </CardDescription>
-          </div>
-          {isLoading ? (
-            <Skeleton className="h-6 w-24" />
-          ) : isError ? (
-            <Badge variant="destructive">Unavailable</Badge>
-          ) : (
-            <Badge variant={healthBadgeVariant(overallHealth)}>
-              {healthBadgeLabel(overallHealth)}
-            </Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Connected accounts list */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-medium">Connected accounts</p>
-            <a
-              href={connectUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => {
-                if (!canStartOAuth) e.preventDefault();
-              }}
-            >
-              <Button size="sm" disabled={!canStartOAuth || isLoading}>
-                Connect new Google account
-              </Button>
-            </a>
-          </div>
-          {!canStartOAuth && !isLoading && (
-            <p className="text-xs text-muted-foreground">
-              Configure app credentials in{" "}
-              <a href="/butlers/secrets" className="underline underline-offset-2">
-                Secrets
-              </a>{" "}
-              before connecting accounts.
-            </p>
-          )}
-          {isError ? (
-            <p className="text-sm text-destructive">
-              Failed to load account status. Ensure the dashboard API is running.
-            </p>
-          ) : isLoading ? (
-            <div className="space-y-2">
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
-            </div>
-          ) : accounts.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border p-6 text-center">
-              <p className="text-sm text-muted-foreground">No Google accounts connected yet.</p>
-              {canStartOAuth && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  Click &quot;Connect new Google account&quot; to start the OAuth flow.
-                </p>
-              )}
-            </div>
-          ) : (
-            <div>
-              {accounts.map((account) => (
-                <GoogleAccountRow key={account.id} account={account} />
-              ))}
-            </div>
-          )}
-        </div>
-
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Expired auth warning banner
 // ---------------------------------------------------------------------------
 
@@ -1212,13 +874,7 @@ export default function SettingsPage() {
 
       <CLIAuthCard />
 
-      <GoogleAccountsSection />
-
-      <WhatsAppSetupCard />
-
-      <SpotifySetupCard />
-
-      <OwnTracksSetupCard />
+      <IntegrationsCard />
 
       <Card>
         <CardHeader>

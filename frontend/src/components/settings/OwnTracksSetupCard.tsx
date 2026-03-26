@@ -337,6 +337,173 @@ function NoEventsHint() {
 }
 
 // ---------------------------------------------------------------------------
+// OwnTracksSection — embeddable variant (no Card wrapper)
+// ---------------------------------------------------------------------------
+
+export function OwnTracksSection() {
+  const statusQuery = useOwnTracksStatus();
+  const configQuery = useOwnTracksConfig();
+  const generateTokenMutation = useOwnTracksGenerateToken();
+
+  const [revealedToken, setRevealedToken] = useState<string | null>(null);
+  const [regenerateDialogOpen, setRegenerateDialogOpen] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(false);
+
+  const status = statusQuery.data;
+  const config = configQuery.data;
+  const displayState: OwnTracksState = status?.state ?? "not_configured";
+  const tokenConfigured = status?.token_configured ?? false;
+
+  async function handleGenerateToken() {
+    try {
+      const result = await generateTokenMutation.mutateAsync();
+      setRevealedToken(result.token);
+      toast.success("Bearer token generated");
+    } catch {
+      toast.error("Failed to generate token");
+    }
+  }
+
+  async function handleRegenerateConfirm() {
+    try {
+      const result = await generateTokenMutation.mutateAsync();
+      setRevealedToken(result.token);
+      setRegenerateDialogOpen(false);
+      toast.success("Bearer token regenerated");
+    } catch {
+      toast.error("Failed to regenerate token");
+    }
+  }
+
+  if (statusQuery.isLoading) {
+    return (
+      <div>
+        <h3 className="leading-none font-semibold">OwnTracks</h3>
+        <Skeleton className="mt-3 h-12 w-full" />
+      </div>
+    );
+  }
+
+  if (statusQuery.isError) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="leading-none font-semibold">OwnTracks</h3>
+          <Badge variant="destructive">Error</Badge>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Could not load OwnTracks connector status. Please check your connection and try
+          again.
+        </p>
+        <Button size="sm" variant="outline" onClick={() => statusQuery.refetch()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="leading-none font-semibold">OwnTracks</h3>
+            <p className="text-muted-foreground text-sm mt-2">
+              Receive location events from the OwnTracks mobile app via a private webhook.
+              Raw GPS coordinates are not stored at rest (metadata tier by default).
+            </p>
+          </div>
+          <Badge variant={stateBadgeVariant(displayState)}>
+            {stateBadgeLabel(displayState)}
+          </Badge>
+        </div>
+
+        {displayState === "active" && status && (
+          <div className="space-y-1 text-sm">
+            {status.last_event_at && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Last event</span>
+                <span>{formatDateTime(status.last_event_at)}</span>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">Events today</span>
+              <span>{status.events_today}</span>
+            </div>
+          </div>
+        )}
+
+        {displayState === "idle" && <NoEventsHint />}
+
+        {displayState === "not_configured" && !tokenConfigured && (
+          <p className="text-sm text-muted-foreground">
+            Generate a bearer token to activate the OwnTracks webhook endpoint, then configure
+            the app with the URL and token shown below.
+          </p>
+        )}
+
+        {config && tokenConfigured && (
+          <WebhookURLRow url={config.webhook_url} />
+        )}
+
+        {revealedToken && (
+          <TokenRevealPanel
+            token={revealedToken}
+            onDismiss={() => setRevealedToken(null)}
+          />
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          {!tokenConfigured && (
+            <Button
+              size="sm"
+              onClick={handleGenerateToken}
+              disabled={generateTokenMutation.isPending}
+            >
+              {generateTokenMutation.isPending ? "Generating..." : "Generate token"}
+            </Button>
+          )}
+          {tokenConfigured && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setRegenerateDialogOpen(true)}
+              disabled={generateTokenMutation.isPending}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Regenerate token
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => setShowInstructions((v) => !v)}
+          >
+            {showInstructions ? "Hide setup guide" : "Show setup guide"}
+          </Button>
+        </div>
+
+        {showInstructions && config && (
+          <SetupInstructions
+            webhookUrl={config.webhook_url}
+            token={revealedToken ?? undefined}
+          />
+        )}
+      </div>
+
+      <RegenerateDialog
+        open={regenerateDialogOpen}
+        onOpenChange={setRegenerateDialogOpen}
+        onConfirm={handleRegenerateConfirm}
+        isPending={generateTokenMutation.isPending}
+      />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // OwnTracksSetupCard — main component
 // ---------------------------------------------------------------------------
 

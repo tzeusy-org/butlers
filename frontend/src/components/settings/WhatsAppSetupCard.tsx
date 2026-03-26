@@ -123,6 +123,135 @@ function DisconnectDialog({
 }
 
 // ---------------------------------------------------------------------------
+// WhatsAppSection — embeddable variant (no Card wrapper)
+// ---------------------------------------------------------------------------
+
+export function WhatsAppSection() {
+  const statusQuery = useWhatsAppStatus();
+  const healthQuery = useWhatsAppHealth();
+  const disconnectMutation = useWhatsAppDisconnect();
+
+  const [pairModalOpen, setPairModalOpen] = useState(false);
+  const [disconnectDialogOpen, setDisconnectDialogOpen] = useState(false);
+
+  const status = statusQuery.data;
+  const health = healthQuery.data;
+
+  const displayState: WhatsAppState =
+    health?.state ?? status?.state ?? "not_configured";
+  const bridgeRunning = health?.bridge_running ?? status?.bridge_running ?? false;
+
+  async function handleDisconnect() {
+    try {
+      await disconnectMutation.mutateAsync();
+      toast.success("WhatsApp disconnected");
+      setDisconnectDialogOpen(false);
+    } catch {
+      toast.error("Failed to disconnect WhatsApp");
+    }
+  }
+
+  if (statusQuery.isLoading) {
+    return (
+      <div>
+        <h3 className="leading-none font-semibold">WhatsApp</h3>
+        <Skeleton className="mt-3 h-12 w-full" />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="leading-none font-semibold">WhatsApp</h3>
+            <p className="text-muted-foreground text-sm mt-2">
+              Connect your WhatsApp to give butlers awareness of your conversations.
+              Read-only — butlers will not send messages.
+            </p>
+          </div>
+          <Badge variant={stateBadgeVariant(displayState)}>
+            {stateBadgeLabel(displayState)}
+          </Badge>
+        </div>
+
+        {displayState === "connected" && status && (
+          <div className="space-y-1 text-sm">
+            {status.phone && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Phone</span>
+                <span className="font-mono">{status.phone}</span>
+              </div>
+            )}
+            {status.paired_at && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Paired</span>
+                <span>{formatDate(status.paired_at)}</span>
+              </div>
+            )}
+            {status.last_sync_at && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Last sync</span>
+                <span>{formatDate(status.last_sync_at)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {displayState === "disconnected" && !bridgeRunning && (
+          <p className="text-sm text-muted-foreground">
+            WhatsApp bridge is not running. The connector service may be stopped.
+          </p>
+        )}
+
+        {displayState === "not_configured" && (
+          <p className="text-sm text-muted-foreground">
+            No WhatsApp account linked. Click the button below to scan a QR code
+            with your phone to connect.
+          </p>
+        )}
+
+        <div className="flex items-center gap-2">
+          {displayState === "connected" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive hover:bg-destructive/10"
+              onClick={() => setDisconnectDialogOpen(true)}
+            >
+              Disconnect
+            </Button>
+          )}
+          {(displayState === "not_configured" || displayState === "pair_required") && (
+            <Button size="sm" onClick={() => setPairModalOpen(true)}>
+              {displayState === "pair_required" ? "Re-pair Account" : "Link WhatsApp Account"}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <WhatsAppPairModal
+        open={pairModalOpen}
+        onOpenChange={setPairModalOpen}
+        onPaired={() => {
+          setPairModalOpen(false);
+          statusQuery.refetch();
+          healthQuery.refetch();
+        }}
+      />
+
+      <DisconnectDialog
+        open={disconnectDialogOpen}
+        onOpenChange={setDisconnectDialogOpen}
+        onConfirm={handleDisconnect}
+        isPending={disconnectMutation.isPending}
+      />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 

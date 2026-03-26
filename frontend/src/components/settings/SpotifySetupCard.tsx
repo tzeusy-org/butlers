@@ -158,7 +158,13 @@ function SpotifyClientIdInput({ onSaved }: { onSaved: () => void }) {
 // SpotifyConnectButton — OAuth PKCE flow trigger
 // ---------------------------------------------------------------------------
 
-function SpotifyConnectButton({ label = "Connect Spotify" }: { label?: string }) {
+function SpotifyConnectButton({
+  label = "Connect Spotify",
+  variant = "default",
+}: {
+  label?: string;
+  variant?: "default" | "outline" | "secondary" | "ghost" | "destructive";
+}) {
   const oauthMutation = useSpotifyOAuthStart();
 
   async function handleConnect() {
@@ -171,7 +177,7 @@ function SpotifyConnectButton({ label = "Connect Spotify" }: { label?: string })
   }
 
   return (
-    <Button size="sm" onClick={handleConnect} disabled={oauthMutation.isPending}>
+    <Button size="sm" variant={variant} onClick={handleConnect} disabled={oauthMutation.isPending}>
       {oauthMutation.isPending ? "Redirecting..." : label}
     </Button>
   );
@@ -211,6 +217,147 @@ function DisconnectDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SpotifySection — embeddable variant (no Card wrapper)
+// ---------------------------------------------------------------------------
+
+export function SpotifySection() {
+  const statusQuery = useSpotifyStatus();
+  const disconnectMutation = useSpotifyDisconnect();
+
+  const [showClientIdInput, setShowClientIdInput] = useState(false);
+  const [disconnectDialogOpen, setDisconnectDialogOpen] = useState(false);
+
+  const status = statusQuery.data;
+  const displayState: SpotifyState = status?.state ?? "not_configured";
+
+  async function handleDisconnect() {
+    try {
+      await disconnectMutation.mutateAsync();
+      toast.success("Spotify disconnected");
+      setDisconnectDialogOpen(false);
+    } catch {
+      toast.error("Failed to disconnect Spotify");
+    }
+  }
+
+  if (statusQuery.isLoading) {
+    return (
+      <div>
+        <h3 className="leading-none font-semibold">Spotify</h3>
+        <Skeleton className="mt-3 h-12 w-full" />
+      </div>
+    );
+  }
+
+  if (statusQuery.isError) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="leading-none font-semibold">Spotify</h3>
+          <Badge variant="destructive">Error</Badge>
+        </div>
+        <p className="text-sm text-destructive">
+          Failed to fetch Spotify status. Please refresh to try again.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="leading-none font-semibold">Spotify</h3>
+            <p className="text-muted-foreground text-sm mt-2">
+              Connect your Spotify account to let butlers track your listening history and
+              sessions. Read-only — butlers will not control playback.
+            </p>
+          </div>
+          <Badge variant={stateBadgeVariant(displayState)}>
+            {stateBadgeLabel(displayState)}
+          </Badge>
+        </div>
+
+        {displayState === "connected" && status && (
+          <div className="space-y-1 text-sm">
+            {status.display_name && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Account</span>
+                <span>{status.display_name}</span>
+              </div>
+            )}
+            {status.account_type && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Type</span>
+                <span className="capitalize">{status.account_type}</span>
+              </div>
+            )}
+            {status.last_sync_at && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Last sync</span>
+                <span>{formatDate(status.last_sync_at)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {displayState === "error" && status?.error && (
+          <p className="text-sm text-destructive">{status.error}</p>
+        )}
+
+        {displayState === "not_configured" && (
+          <>
+            {showClientIdInput ? (
+              <SpotifyClientIdInput onSaved={() => setShowClientIdInput(false)} />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No Spotify account linked. Configure your Spotify app credentials and then
+                authorize access.
+              </p>
+            )}
+          </>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          {displayState === "connected" && (
+            <>
+              <SpotifyConnectButton label="Re-authorize" variant="outline" />
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive hover:bg-destructive/10"
+                onClick={() => setDisconnectDialogOpen(true)}
+              >
+                Disconnect
+              </Button>
+            </>
+          )}
+          {displayState === "error" && (
+            <SpotifyConnectButton label="Re-connect Spotify" />
+          )}
+          {displayState === "not_configured" && !showClientIdInput && (
+            <Button size="sm" variant="outline" onClick={() => setShowClientIdInput(true)}>
+              Set Client ID
+            </Button>
+          )}
+          {(displayState === "not_configured" || displayState === "needs_auth" || displayState === "disconnected") && (
+            <SpotifyConnectButton />
+          )}
+        </div>
+      </div>
+
+      <DisconnectDialog
+        open={disconnectDialogOpen}
+        onOpenChange={setDisconnectDialogOpen}
+        onConfirm={handleDisconnect}
+        isPending={disconnectMutation.isPending}
+      />
+    </>
   );
 }
 
@@ -335,14 +482,17 @@ export function SpotifySetupCard() {
           {/* Action buttons */}
           <div className="flex flex-wrap items-center gap-2">
             {displayState === "connected" && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-destructive hover:bg-destructive/10"
-                onClick={() => setDisconnectDialogOpen(true)}
-              >
-                Disconnect
-              </Button>
+              <>
+                <SpotifyConnectButton label="Re-authorize" variant="outline" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:bg-destructive/10"
+                  onClick={() => setDisconnectDialogOpen(true)}
+                >
+                  Disconnect
+                </Button>
+              </>
             )}
 
             {displayState === "error" && (
@@ -355,7 +505,7 @@ export function SpotifySetupCard() {
               </Button>
             )}
 
-            {(displayState === "not_configured" || displayState === "disconnected") && (
+            {(displayState === "not_configured" || displayState === "needs_auth" || displayState === "disconnected") && (
               <SpotifyConnectButton />
             )}
           </div>
