@@ -89,7 +89,7 @@ The dashboard SHALL detect when existing tokens lack required scopes and prompt 
 - **WHEN** the Spotify status endpoint is called
 - **AND** valid tokens exist but were authorized with a subset of the required scopes
 - **THEN** the status response SHALL include `state: "needs_reauth"` and `missing_scopes` listing the scopes not yet granted
-- **AND** the dashboard SHALL display a "Re-authorize" button with explanation: "New Spotify features require additional permissions."
+- **AND** the dashboard SHALL display a "Re-authorize" button with explanation: "Your Spotify authorization is missing required permissions. Please re-authorize to grant access."
 
 #### Scenario: Re-authorization preserves connection
 
