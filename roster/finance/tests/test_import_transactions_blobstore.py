@@ -242,22 +242,14 @@ class TestImportTransactionsToolRegistration:
         assert isinstance(call_kwargs.get("column_map"), dict)
         assert call_kwargs["column_map"]["date"] == "Date"
 
-    def test_import_transactions_not_registered_without_data_import_module(self):
-        """import_transactions is NOT registered when data_import module is absent."""
-        import sys
+    def test_import_transactions_registered_when_data_import_module_present(self):
+        """import_transactions IS registered when data_import module is importable.
 
-        from roster.finance.modules.tools import register_tools
-
-        mcp = _FakeMCP()
-        module = _FakeModule(blob_store=MagicMock())
-
-        # Ensure the module is NOT in sys.modules (it normally doesn't exist yet)
-        data_import_key = "butlers.tools.finance.data_import"
-        sys.modules.pop(data_import_key, None)
-
-        register_tools(mcp, module)
-
-        assert "import_transactions" not in mcp.tools
+        The data_import module has been implemented (bu-w5dv); this test verifies
+        that the registration path works end-to-end when the module is present.
+        """
+        mcp, _, _ = self._register_with_data_import(blob_store=MagicMock())
+        assert "import_transactions" in mcp.tools
 
 
 # ---------------------------------------------------------------------------
