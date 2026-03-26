@@ -32,11 +32,15 @@ ConnectorState = Literal["healthy", "degraded", "error"]
 
 # Known valid connector types that can register via heartbeat
 VALID_CONNECTOR_TYPES = {
+    "discord_user",
+    "gmail",
+    "google_calendar",
+    "live_listener",
+    "owntracks",
+    "spotify",
     "telegram_bot",
     "telegram_user_client",
-    "gmail",
-    "discord_user",
-    "live_listener",
+    "whatsapp_user_client",
 }
 
 
