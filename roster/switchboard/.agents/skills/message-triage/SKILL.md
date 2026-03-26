@@ -317,13 +317,13 @@ Example: If history shows the butler asked "Should I send an email to X with bod
 
 ---
 
-### Example 3: Food preference (routes to health)
+### Example 3: Food preference (routes to lifestyle)
 
 **Input:** "I like chicken rice"
 
-**Action:** Call `route_to_butler(butler="health", prompt="I like chicken rice")`
+**Action:** Call `route_to_butler(butler="lifestyle", prompt="The user likes chicken rice. Store this as a food preference.")`
 
-**Response:** "Routed food preference to health butler for nutrition tracking."
+**Response:** "Routed food preference to lifestyle butler — taste preference, not nutrition tracking."
 
 ---
 
