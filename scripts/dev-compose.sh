@@ -126,14 +126,18 @@ for p in peers.values():
   fi
 fi
 
-# ── Idempotent restart: tear down stale containers, rebuild, bring up ──
-# down --remove-orphans clears containers from previous runs (renamed
-# services, removed profiles, etc.) so ports and networks are clean.
+# ── Build images while existing stack keeps running ────────────────────
+# This means zero downtime during rebuilds — old containers serve traffic
+# until the new images are ready, then we swap.
+echo "Building images (existing stack stays up)..."
+"${CMD[@]}" build --scale connector-whatsapp-user=0 2>/dev/null || true
+
+# ── Swap: stop old containers, start new ones ─────────────────────────
+# --remove-orphans clears containers from renamed/removed services.
 "${CMD[@]}" down --remove-orphans 2>/dev/null || true
+"${CMD[@]}" up -d "${SCALE_ARGS[@]}" --scale connector-whatsapp-user=0
 
 # ── Apply egress firewall (blocks private subnet access from containers) ─
-# Needs the egress network to exist, so start postgres first.
-"${CMD[@]}" up -d postgres
 if sudo -n true 2>/dev/null; then
   sudo ALLOWED_TAILNET_HOSTS="${ALLOWED_TAILNET_HOSTS:-}" \
     "${SCRIPT_DIR}/egress-firewall.sh" && echo ""
@@ -143,12 +147,6 @@ else
   echo ""
 fi
 
-# ── Build and start ────────────────────────────────────────────────────
-# First pass: build + start all services except whatsapp (fast, no Go stage).
-# Second pass: build + start whatsapp separately (slow Go stage, non-blocking).
-"${CMD[@]}" up -d --build "${SCALE_ARGS[@]}" \
-  --scale connector-whatsapp-user=0 2>/dev/null || true
-
-# Build whatsapp in background (Go stage takes 5-10 min on first build).
-echo "Starting whatsapp connector build in background..."
+# ── Whatsapp connector (slow Go build, non-blocking) ──────────────────
+echo "Building whatsapp connector in background (Go stage, ~5 min first time)..."
 "${CMD[@]}" up -d --build connector-whatsapp-user 2>/dev/null &
