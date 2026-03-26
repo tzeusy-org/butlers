@@ -473,15 +473,16 @@ class TestSteamAccountPollerRecentlyPlayed:
         # No events should be submitted (first poll = baseline)
         mcp.call_tool.assert_not_called()
 
-        # Cursor should be saved
+        # Cursor should be saved with string keys (str keys survive JSON round-trip).
         cursor = poller._state.cursors.get("recently_played")
         assert cursor is not None
         assert cursor.state_snapshot is not None
-        assert 730 in cursor.state_snapshot
+        assert "730" in cursor.state_snapshot  # str key, not int
 
     async def test_no_change_emits_no_events(self) -> None:
         """Second poll with same state should not emit events."""
-        prev_state = {730: {"playtime_2weeks": 120, "playtime_forever": 500}}
+        # Use string keys to match the storage format (str keys survive JSON round-trip).
+        prev_state = {"730": {"playtime_2weeks": 120, "playtime_forever": 500}}
         prev_hash = _state_hash(prev_state)
         cursor = SteamCursor(
             endpoint_identity=_ENDPOINT,
@@ -506,7 +507,7 @@ class TestSteamAccountPollerRecentlyPlayed:
 
     async def test_playtime_increase_emits_play_session_event(self) -> None:
         """Increased playtime_2weeks emits a play_session event."""
-        prev_state = {730: {"playtime_2weeks": 100, "playtime_forever": 500}}
+        prev_state = {"730": {"playtime_2weeks": 100, "playtime_forever": 500}}
         prev_hash = _state_hash(prev_state)
         cursor = SteamCursor(
             endpoint_identity=_ENDPOINT,
@@ -536,7 +537,7 @@ class TestSteamAccountPollerRecentlyPlayed:
 
     async def test_new_game_in_recently_played_emits_event(self) -> None:
         """A new game appearing in recently_played emits a play_session event."""
-        prev_state = {730: {"playtime_2weeks": 100, "playtime_forever": 500}}
+        prev_state = {"730": {"playtime_2weeks": 100, "playtime_forever": 500}}
         prev_hash = _state_hash(prev_state)
         cursor = SteamCursor(
             endpoint_identity=_ENDPOINT,
@@ -571,6 +572,49 @@ class TestSteamAccountPollerRecentlyPlayed:
         await poller._poll_recently_played()
 
         mcp.call_tool.assert_not_called()
+
+    async def test_db_restored_snapshot_correct_delta(self) -> None:
+        """After restart, DB-restored snapshot has str keys; delta must still be correct.
+
+        JSON serialisation converts integer dict keys to strings.  A cursor
+        loaded from the DB therefore has state_snapshot with str keys
+        (e.g. "730") rather than int keys (730).  The poller must use str
+        lookups so the delta is computed from the previous playtime, not from
+        zero (which would inflate the delta to the full playtime_2weeks value).
+        """
+        import json
+
+        # Simulate DB round-trip: integer keys become string keys.
+        prev_state_original = {730: {"playtime_2weeks": 100, "playtime_forever": 500}}
+        prev_state_from_db: dict = json.loads(json.dumps(prev_state_original))
+        # Sanity-check that DB simulation produces str keys.
+        assert "730" in prev_state_from_db and 730 not in prev_state_from_db
+
+        prev_hash = _state_hash(prev_state_from_db)
+        cursor = SteamCursor(
+            endpoint_identity=_ENDPOINT,
+            data_type="recently_played",
+            state_hash=prev_hash,
+            state_snapshot=prev_state_from_db,
+        )
+        poller, mcp = self._make_poller(cursors={"recently_played": cursor})
+        poller._steam_client = AsyncMock()
+        poller._steam_client.request = AsyncMock(
+            return_value={
+                "games": [
+                    {"appid": 730, "name": "CS2", "playtime_2weeks": 145, "playtime_forever": 545}
+                ]
+            }
+        )
+
+        await poller._poll_recently_played()
+
+        # Must emit exactly one event with the correct incremental delta (45 min),
+        # NOT the full playtime_2weeks (145 min), which would indicate that the
+        # DB-restored str key was not matched and delta was computed from zero.
+        mcp.call_tool.assert_called_once()
+        envelope = mcp.call_tool.call_args[0][1]
+        assert envelope["payload"]["raw"]["playtime_delta_minutes"] == 45
 
 
 # ---------------------------------------------------------------------------

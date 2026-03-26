@@ -873,15 +873,20 @@ class SteamAccountPoller:
             )
             return
 
-        # Update tracked games from recently played (for achievement polling)
+        # Update tracked games from recently played (for achievement polling).
+        # Achievement cursors are keyed "achievements:<app_id>", not "achievements",
+        # so we check whether tracked_games was explicitly pre-configured via metadata.
         recent_app_ids = [str(g["appid"]) for g in games[: self._max_tracked_games]]
-        # Only override auto-detect if no explicit config
-        if not self._state.cursors.get("achievements"):
+        # Only override if no explicit tracked_games config was provided at startup.
+        if not self._state.tracked_games:
             self._state.tracked_games = recent_app_ids
 
-        # Build state for delta detection
+        # Build state for delta detection.
+        # Keys are stored as strings to survive JSON round-trip through the DB:
+        # json.dumps({730: ...}) → {"730": ...} → json.loads → {"730": ...}.
+        # Using str keys here keeps prev_snapshot lookups consistent after restart.
         current_state: dict[str, Any] = {
-            g["appid"]: {
+            str(g["appid"]): {
                 "playtime_2weeks": g.get("playtime_2weeks", 0),
                 "playtime_forever": g.get("playtime_forever", 0),
             }
@@ -904,7 +909,8 @@ class SteamAccountPoller:
             app_id = game["appid"]
             game_name = game.get("name", f"App {app_id}")
             playtime_2weeks = game.get("playtime_2weeks", 0)
-            prev_entry = (prev_snapshot or {}).get(app_id, {})
+            # Use str key to match current_state and DB-restored snapshots.
+            prev_entry = (prev_snapshot or {}).get(str(app_id), {})
             prev_playtime = prev_entry.get("playtime_2weeks", 0) if prev_entry else None
 
             # Emit event if:
