@@ -51,6 +51,11 @@ def _quote_ident(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _quote_literal(value: str) -> str:
+    """Quote a string as a SQL literal (single-quote escaping)."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _grant_if_table_exists(table_fqn: str, privilege: str, role: str) -> None:
     """GRANT privilege ON table TO role only when table and role exist."""
     op.execute(
@@ -58,7 +63,7 @@ def _grant_if_table_exists(table_fqn: str, privilege: str, role: str) -> None:
         DO $$
         BEGIN
             IF to_regclass('{table_fqn}') IS NOT NULL
-               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}')
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role)})
             THEN
                 EXECUTE 'GRANT {privilege} ON TABLE {table_fqn} TO {_quote_ident(role)}';
             END IF;
@@ -80,7 +85,7 @@ def _revoke_if_table_exists(table_fqn: str, privilege: str, role: str) -> None:
         DO $$
         BEGIN
             IF to_regclass('{table_fqn}') IS NOT NULL
-               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}')
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role)})
             THEN
                 EXECUTE 'REVOKE {privilege} ON TABLE {table_fqn} FROM {_quote_ident(role)}';
             END IF;
@@ -97,10 +102,6 @@ def _revoke_if_table_exists(table_fqn: str, privilege: str, role: str) -> None:
 
 def _execute_best_effort(statement: str, *, role_name: str | None = None) -> None:
     """Execute SQL while tolerating privilege/role availability differences."""
-
-    def _quote_literal(value: str) -> str:
-        return "'" + value.replace("'", "''") + "'"
-
     condition = "TRUE"
     if role_name is not None:
         condition = f"EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role_name)})"
