@@ -147,7 +147,7 @@ This exception pattern is not a blanket authorization for cross-schema access. E
 
 ## Alternatives Considered
 
-**Switchboard MCP fan-out.** General sends an MCP request to each specialist, each spawns an LLM session to answer. Architecturally pure but costs 8 LLM sessions per day (1 request + 6 responses + 1 synthesis) for zero-reasoning work. At typical LLM pricing, this is approximately 8x the cost for the same output. Rejected on cost grounds.
+**Switchboard MCP fan-out.** General sends an MCP request to each specialist, each spawns an LLM session to answer. Architecturally pure but costs 9 LLM sessions per day (1 request + 7 responses + 1 synthesis) for zero-reasoning work. At typical LLM pricing, this is approximately 9x the cost for the same output. Rejected on cost grounds.
 
 **Shared briefing table (public.briefing_contributions).** All specialists write to a table in the public schema. Rejected because it introduces write coupling to the public schema, which is currently read-only for most butlers (RFC 0006). It would also require extending the public schema access model, creating precedent for arbitrary shared tables.
 

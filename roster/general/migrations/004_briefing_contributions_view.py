@@ -57,6 +57,7 @@ _SPECIALIST_SCHEMAS: tuple[str, ...] = (
     "finance",
     "health",
     "home",
+    "lifestyle",
     "relationship",
     "travel",
 )

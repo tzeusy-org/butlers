@@ -26,6 +26,7 @@ _SPECIALIST_SCHEMAS = (
     "finance",
     "health",
     "home",
+    "lifestyle",
     "relationship",
     "travel",
 )
@@ -112,7 +113,7 @@ class TestModuleConstants:
             assert schema in mod._SPECIALIST_SCHEMAS, f"Missing specialist schema: {schema}"
 
     def test_specialist_schemas_count(self) -> None:
-        """_SPECIALIST_SCHEMAS has exactly 6 entries."""
+        """_SPECIALIST_SCHEMAS has exactly 7 entries."""
         mod = _load_migration()
         assert len(mod._SPECIALIST_SCHEMAS) == len(_SPECIALIST_SCHEMAS)
 
