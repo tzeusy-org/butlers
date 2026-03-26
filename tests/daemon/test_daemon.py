@@ -2663,7 +2663,7 @@ class TestNotifyTool:
         assert set(channel_prop["enum"]) == {"telegram", "email", "whatsapp"}
 
         intent_prop = params["properties"]["intent"]
-        assert set(intent_prop["enum"]) == {"send", "reply", "react"}
+        assert set(intent_prop["enum"]) == {"send", "reply", "react", "insight"}
 
         request_context_param = params["properties"]["request_context"]
         request_context_json = json.dumps(request_context_param)
