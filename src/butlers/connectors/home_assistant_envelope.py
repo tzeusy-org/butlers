@@ -234,7 +234,8 @@ def build_state_changed_envelope(
     old_state_val: str | None = old_state.get("state") if old_state else None
     new_state_val: str | None = new_state.get("state") if new_state else None
 
-    time_ms = time_fired_unix_ms(time_fired)
+    observed_at_dt = parse_time_fired(time_fired)
+    time_ms = int(observed_at_dt.timestamp() * 1000)
     idempotency_key = mint_idempotency_key(endpoint_identity, entity_id, time_ms)
 
     # Build raw payload — preserve full context for replay and forensics
@@ -272,7 +273,7 @@ def build_state_changed_envelope(
         "event": {
             "external_event_id": f"ha:{entity_id}:{time_ms}",
             "external_thread_id": f"ha:entity:{entity_id}",
-            "observed_at": parse_time_fired(time_fired).isoformat(),
+            "observed_at": observed_at_dt.isoformat(),
         },
         "sender": {
             "identity": entity_id,
@@ -336,7 +337,8 @@ def build_automation_triggered_envelope(
     if domain is None:
         domain = "automation"
 
-    time_ms = time_fired_unix_ms(time_fired)
+    observed_at_dt = parse_time_fired(time_fired)
+    time_ms = int(observed_at_dt.timestamp() * 1000)
     idempotency_key = mint_idempotency_key(endpoint_identity, entity_id, time_ms)
 
     # Build raw payload
@@ -368,7 +370,7 @@ def build_automation_triggered_envelope(
         "event": {
             "external_event_id": f"ha:automation:{entity_id}:{time_ms}",
             "external_thread_id": f"ha:automation:{entity_id}",
-            "observed_at": parse_time_fired(time_fired).isoformat(),
+            "observed_at": observed_at_dt.isoformat(),
         },
         "sender": {
             "identity": entity_id,
