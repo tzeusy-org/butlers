@@ -282,27 +282,12 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             # No doses logged in 30 days — can't estimate depletion
             continue
 
-        # Estimate: if expected doses per day and we have N doses logged over D days,
-        # actual consumption rate = N / D doses/day.
-        # Days of supply remaining = unknown without quantity.
+        # Estimate depletion using a standard 30-day supply assumption.
+        # Without an explicit supply quantity in the schema, we compute how many days
+        # of a 30-day supply have been consumed based on the prescribed dose frequency:
+        #   days_consumed = doses_logged / doses_per_day
+        # Days remaining = 30 - days_consumed.  If remaining <= threshold, fire insight.
         #
-        # Alternative approach per spec: use "dose logging frequency suggests supply runout".
-        # We interpret this as: if we know doses_per_day (prescribed) and the last dose
-        # was logged recently, estimate when supply would run out based on a standard 30-day
-        # supply assumption (common default). Days remaining = supply_days - days_since_fill.
-        #
-        # Without actual supply quantity in the schema, we estimate based on recent dose
-        # frequency. If the user logs at the prescribed rate, we compute when a 30-day
-        # supply (the most common refill period) would be exhausted based on the first
-        # dose in the current 30-day window.
-        earliest_in_window = min(
-            _parse_datetime_from_db(row["taken_at"])
-            for row in dose_rows
-            if _parse_datetime_from_db(row["taken_at"]) is not None
-        )
-        if earliest_in_window is None:
-            continue
-
         # dose_rows already filters skipped=false, so all rows are non-skipped doses
         doses_logged = len(dose_rows)
 
