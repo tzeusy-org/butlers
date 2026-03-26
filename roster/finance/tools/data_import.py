@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 import re
 import uuid
@@ -677,9 +678,11 @@ async def _insert_batch(
                 txn["currency"],
                 txn["direction"],
                 txn["category"],
-                (
-                    f'{{"import_batch_id": "{import_batch_id}",'
-                    f' "raw_merchant": "{txn.get("raw_merchant", "")}"}}'
+                json.dumps(
+                    {
+                        "import_batch_id": import_batch_id,
+                        "raw_merchant": txn.get("raw_merchant", ""),
+                    }
                 ),
             )
             imported += 1
