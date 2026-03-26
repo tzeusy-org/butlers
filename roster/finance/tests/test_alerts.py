@@ -117,6 +117,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 )
 """
+# Mirrors the production unique partial index on the facts table so that
+# supersession tests exercise the real uniqueness constraint.
+_DDL_FACTS_UNIQUE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS facts_active_property_unique
+    ON facts(scope, subject, predicate, valid_at)
+    WHERE entity_id IS NULL AND validity = 'active'
+"""
 
 
 @pytest.fixture
@@ -126,6 +133,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute(_DDL_SHARED_SCHEMA)
         await p.execute(_DDL_SHARED_ENTITIES)
         await p.execute(_DDL_FACTS)
+        await p.execute(_DDL_FACTS_UNIQUE_INDEX)
         await p.execute(_DDL_SUBSCRIPTIONS)
         await p.execute(_DDL_TRANSACTIONS)
         yield p
@@ -204,7 +212,7 @@ class TestAlertConfigure:
 
         result = await alert_configure(
             pool,
-            type="large_transaction",
+            alert_type="large_transaction",
             threshold=500.0,
             currency="USD",
             enabled=True,
@@ -222,7 +230,7 @@ class TestAlertConfigure:
 
         result = await alert_configure(
             pool,
-            type="budget_exceeded",
+            alert_type="budget_exceeded",
             enabled=True,
         )
 
@@ -234,7 +242,7 @@ class TestAlertConfigure:
         """Configure a new_merchant alert."""
         from butlers.tools.finance.alerts import alert_configure
 
-        result = await alert_configure(pool, type="new_merchant")
+        result = await alert_configure(pool, alert_type="new_merchant")
         assert result["type"] == "new_merchant"
         assert result["enabled"] is True
 
@@ -242,7 +250,7 @@ class TestAlertConfigure:
         """Configure a price_change alert."""
         from butlers.tools.finance.alerts import alert_configure
 
-        result = await alert_configure(pool, type="price_change")
+        result = await alert_configure(pool, alert_type="price_change")
         assert result["type"] == "price_change"
         assert result["enabled"] is True
 
@@ -250,7 +258,7 @@ class TestAlertConfigure:
         """Configure an alert with enabled=False."""
         from butlers.tools.finance.alerts import alert_configure
 
-        result = await alert_configure(pool, type="new_merchant", enabled=False)
+        result = await alert_configure(pool, alert_type="new_merchant", enabled=False)
         assert result["enabled"] is False
 
     async def test_configure_invalid_type_raises(self, pool):
@@ -258,21 +266,21 @@ class TestAlertConfigure:
         from butlers.tools.finance.alerts import alert_configure
 
         with pytest.raises(ValueError, match="Invalid alert type"):
-            await alert_configure(pool, type="unknown_type")
+            await alert_configure(pool, alert_type="unknown_type")
 
     async def test_configure_large_transaction_without_threshold_raises(self, pool):
         """large_transaction alert without threshold raises ValueError."""
         from butlers.tools.finance.alerts import alert_configure
 
         with pytest.raises(ValueError, match="threshold is required"):
-            await alert_configure(pool, type="large_transaction")
+            await alert_configure(pool, alert_type="large_transaction")
 
     async def test_configure_supersedes_existing(self, pool):
         """Re-configuring same alert type supersedes the previous fact."""
         from butlers.tools.finance.alerts import alert_configure
 
-        first = await alert_configure(pool, type="large_transaction", threshold=500.0)
-        second = await alert_configure(pool, type="large_transaction", threshold=1000.0)
+        first = await alert_configure(pool, alert_type="large_transaction", threshold=500.0)
+        second = await alert_configure(pool, alert_type="large_transaction", threshold=1000.0)
 
         assert second["fact_id"] != first["fact_id"]
         assert second["threshold"] == 1000.0
@@ -288,7 +296,7 @@ class TestAlertConfigure:
         """Configured alert creates a fact with predicate='alert_config'."""
         from butlers.tools.finance.alerts import alert_configure
 
-        result = await alert_configure(pool, type="price_change")
+        result = await alert_configure(pool, alert_type="price_change")
 
         row = await pool.fetchrow(
             "SELECT subject, predicate, content, validity FROM facts WHERE id = $1::uuid",
@@ -304,7 +312,7 @@ class TestAlertConfigure:
         from butlers.tools.finance.alerts import alert_configure
 
         result = await alert_configure(
-            pool, type="large_transaction", threshold=1000.0, currency="EUR"
+            pool, alert_type="large_transaction", threshold=1000.0, currency="EUR"
         )
         assert result["currency"] == "EUR"
 
@@ -329,7 +337,7 @@ class TestAlertList:
         """alert_list returns configured alert."""
         from butlers.tools.finance.alerts import alert_configure, alert_list
 
-        await alert_configure(pool, type="new_merchant")
+        await alert_configure(pool, alert_type="new_merchant")
         result = await alert_list(pool)
 
         assert result["total"] == 1
@@ -339,9 +347,9 @@ class TestAlertList:
         """alert_list returns all configured alerts."""
         from butlers.tools.finance.alerts import alert_configure, alert_list
 
-        await alert_configure(pool, type="large_transaction", threshold=500.0)
-        await alert_configure(pool, type="new_merchant")
-        await alert_configure(pool, type="price_change")
+        await alert_configure(pool, alert_type="large_transaction", threshold=500.0)
+        await alert_configure(pool, alert_type="new_merchant")
+        await alert_configure(pool, alert_type="price_change")
 
         result = await alert_list(pool)
         assert result["total"] == 3
@@ -353,8 +361,8 @@ class TestAlertList:
         """alert_list returns only active (latest) alert config per type."""
         from butlers.tools.finance.alerts import alert_configure, alert_list
 
-        await alert_configure(pool, type="large_transaction", threshold=500.0)
-        await alert_configure(pool, type="large_transaction", threshold=1000.0)
+        await alert_configure(pool, alert_type="large_transaction", threshold=500.0)
+        await alert_configure(pool, alert_type="large_transaction", threshold=1000.0)
 
         result = await alert_list(pool)
         # Should have only one large_transaction alert (the active one)
@@ -368,7 +376,7 @@ class TestAlertList:
 
         await alert_configure(
             pool,
-            type="large_transaction",
+            alert_type="large_transaction",
             threshold=750.0,
             currency="GBP",
             enabled=False,

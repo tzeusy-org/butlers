@@ -97,7 +97,7 @@ def _parse_alert_fact(row: asyncpg.Record) -> dict[str, Any]:
 
 async def alert_configure(
     pool: asyncpg.Pool,
-    type: str,
+    alert_type: str,
     threshold: float | None = None,
     currency: str = "USD",
     enabled: bool = True,
@@ -112,7 +112,7 @@ async def alert_configure(
     ----------
     pool:
         asyncpg connection pool.
-    type:
+    alert_type:
         Alert type identifier. One of: large_transaction, budget_exceeded,
         new_merchant, price_change.
     threshold:
@@ -127,11 +127,11 @@ async def alert_configure(
     dict
         {type, threshold, currency, enabled, fact_id}
     """
-    if type not in _VALID_ALERT_TYPES:
+    if alert_type not in _VALID_ALERT_TYPES:
         raise ValueError(
-            f"Invalid alert type {type!r}. Must be one of {sorted(_VALID_ALERT_TYPES)}"
+            f"Invalid alert type {alert_type!r}. Must be one of {sorted(_VALID_ALERT_TYPES)}"
         )
-    if type == "large_transaction" and threshold is None:
+    if alert_type == "large_transaction" and threshold is None:
         raise ValueError("threshold is required for large_transaction alerts")
 
     metadata: dict[str, Any] = {
@@ -155,34 +155,37 @@ async def alert_configure(
         ORDER BY created_at DESC
         LIMIT 1
         """,
-        type,
+        alert_type,
         _PREDICATE_ALERT_CONFIG,
     )
 
     now = datetime.now(UTC)
 
     if existing is not None:
-        # Supersede existing fact: mark old as superseded, insert new
+        # Supersede existing fact atomically: UPDATE old fact first so the unique
+        # partial index on active (scope, subject, predicate, valid_at) facts is
+        # not violated when inserting the new active row.
         old_id = existing["id"]
-        new_row = await pool.fetchrow(
-            """
-            INSERT INTO facts (subject, predicate, content, importance, permanence,
-                               scope, metadata, supersedes_id, created_at, observed_at)
-            VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4::jsonb, $5, $6, $6)
-            RETURNING id
-            """,
-            type,
-            _PREDICATE_ALERT_CONFIG,
-            type,
-            metadata_json,
-            old_id,
-            now,
-        )
-        # Mark the old fact as superseded
-        await pool.execute(
-            "UPDATE facts SET validity = 'superseded' WHERE id = $1",
-            old_id,
-        )
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE facts SET validity = 'superseded' WHERE id = $1",
+                    old_id,
+                )
+                new_row = await conn.fetchrow(
+                    """
+                    INSERT INTO facts (subject, predicate, content, importance, permanence,
+                                       scope, metadata, supersedes_id, created_at, observed_at)
+                    VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4::jsonb, $5, $6, $6)
+                    RETURNING id
+                    """,
+                    alert_type,
+                    _PREDICATE_ALERT_CONFIG,
+                    alert_type,
+                    metadata_json,
+                    old_id,
+                    now,
+                )
         fact_id = str(new_row["id"])
     else:
         new_row = await pool.fetchrow(
@@ -192,16 +195,16 @@ async def alert_configure(
             VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4::jsonb, $5, $5)
             RETURNING id
             """,
-            type,
+            alert_type,
             _PREDICATE_ALERT_CONFIG,
-            type,
+            alert_type,
             metadata_json,
             now,
         )
         fact_id = str(new_row["id"])
 
     return {
-        "type": type,
+        "type": alert_type,
         "threshold": threshold,
         "currency": currency,
         "enabled": enabled,
@@ -300,20 +303,21 @@ async def detect_price_changes(
         currency = sub["currency"]
 
         # Find the most recent transaction for this merchant (ILIKE match)
-        # within the look-back window. Use the median amount of recent charges
-        # to avoid one-off anomalies masking the real price.
+        # within the look-back window. Escape LIKE metacharacters in the service
+        # name so that '%' or '_' in the name do not broaden the search.
+        escaped_service = service.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         recent_rows = await pool.fetch(
             """
             SELECT amount, posted_at
             FROM transactions
-            WHERE merchant ILIKE $1
+            WHERE merchant ILIKE $1 ESCAPE '\\'
               AND posted_at >= $2
               AND direction = 'debit'
               AND deleted_at IS NULL
             ORDER BY posted_at DESC
             LIMIT 10
             """,
-            f"%{service}%",
+            f"%{escaped_service}%",
             since,
         )
 
