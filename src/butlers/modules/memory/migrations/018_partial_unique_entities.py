@@ -49,7 +49,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("""
-        DROP INDEX IF EXISTS shared.uq_entities_tenant_canonical_type_live
+        DROP INDEX IF EXISTS public.uq_entities_tenant_canonical_type_live
     """)
 
     op.execute("""

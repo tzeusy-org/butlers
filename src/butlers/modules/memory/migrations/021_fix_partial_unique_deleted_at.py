@@ -27,12 +27,12 @@ depends_on = None
 def upgrade() -> None:
     # Drop the old partial index (may exclude only merged_into)
     op.execute("""
-        DROP INDEX IF EXISTS shared.uq_entities_tenant_canonical_type_live
+        DROP INDEX IF EXISTS public.uq_entities_tenant_canonical_type_live
     """)
 
     # Recreate with both tombstone conditions excluded
     op.execute("""
-        CREATE UNIQUE INDEX uq_entities_tenant_canonical_type_live
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_tenant_canonical_type_live
         ON public.entities (tenant_id, canonical_name, entity_type)
         WHERE (metadata->>'merged_into') IS NULL
           AND (metadata->>'deleted_at') IS NULL
@@ -42,11 +42,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Revert to the 018 version (only merged_into excluded)
     op.execute("""
-        DROP INDEX IF EXISTS shared.uq_entities_tenant_canonical_type_live
+        DROP INDEX IF EXISTS public.uq_entities_tenant_canonical_type_live
     """)
 
     op.execute("""
-        CREATE UNIQUE INDEX uq_entities_tenant_canonical_type_live
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_tenant_canonical_type_live
         ON public.entities (tenant_id, canonical_name, entity_type)
         WHERE (metadata->>'merged_into') IS NULL
     """)

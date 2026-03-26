@@ -118,7 +118,7 @@ def upgrade() -> None:
     #    (Already created by the memory module baseline, but guard here for
     #    environments where this migration runs before the memory module.)
     # -------------------------------------------------------------------------
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA public")
 
     # -------------------------------------------------------------------------
     # 2. Create shared.memory_catalog table.
