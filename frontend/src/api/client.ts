@@ -2724,19 +2724,19 @@ export function getDunbarRanking(): Promise<DunbarRankingResponse> {
 
 /** GET /api/spotify/status — current Spotify connection state */
 export function getSpotifyStatus(): Promise<SpotifyStatusResponse> {
-  return apiFetch<SpotifyStatusResponse>("/spotify/status");
+  return apiFetch<SpotifyStatusResponse>("/connectors/spotify/status");
 }
 
 /** POST /api/spotify/oauth/start — initiate PKCE OAuth flow, returns authorization URL */
 export function startSpotifyOAuth(): Promise<SpotifyOAuthStartResponse> {
-  return apiFetch<SpotifyOAuthStartResponse>("/spotify/oauth/start", {
+  return apiFetch<SpotifyOAuthStartResponse>("/connectors/spotify/oauth/start", {
     method: "POST",
   });
 }
 
 /** POST /api/spotify/config — store Spotify client_id */
 export function saveSpotifyConfig(data: SpotifyConfigRequest): Promise<SpotifyConfigResponse> {
-  return apiFetch<SpotifyConfigResponse>("/spotify/config", {
+  return apiFetch<SpotifyConfigResponse>("/connectors/spotify/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -2745,7 +2745,7 @@ export function saveSpotifyConfig(data: SpotifyConfigRequest): Promise<SpotifyCo
 
 /** POST /api/spotify/disconnect — remove all Spotify credentials */
 export function disconnectSpotify(): Promise<SpotifyDisconnectResponse> {
-  return apiFetch<SpotifyDisconnectResponse>("/spotify/disconnect", {
+  return apiFetch<SpotifyDisconnectResponse>("/connectors/spotify/disconnect", {
     method: "POST",
   });
 }
