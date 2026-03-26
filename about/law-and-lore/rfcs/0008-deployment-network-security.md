@@ -106,7 +106,7 @@ ACCEPT rules are inserted before DROP rules (using `iptables -I` for ACCEPTs, `i
 
 ### Tailnet Host Allowlist
 
-`dev-compose.sh` dynamically resolves tailnet IPs at startup:
+`compose.sh` dynamically resolves tailnet IPs at startup:
 
 ```bash
 TAILNET_SERVICES=(
@@ -161,12 +161,12 @@ These volumes persist across container restarts. `HOME=/root` is set explicitly 
 3. All `ports:` mappings MUST bind to `127.0.0.1`.
 4. No compose service MUST use `privileged: true`, mount the Docker socket, or use `cap_add`.
 5. The `ALLOWED_TAILNET_HOSTS` list MUST be the minimal set of tailnet hosts required for operation.
-6. Adding a new tailnet dependency MUST be documented in the `TAILNET_SERVICES` array in `dev-compose.sh` and in this RFC.
+6. Adding a new tailnet dependency MUST be documented in the `TAILNET_SERVICES` array in `compose.sh` and in this RFC.
 
 ## Operational Commands
 
 ```bash
-# Apply egress firewall (auto-run by dev-compose.sh)
+# Apply egress firewall (auto-run by compose.sh)
 sudo ./scripts/egress-firewall.sh
 
 # Remove egress firewall rules

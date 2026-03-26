@@ -19,7 +19,7 @@ pytestmark = [
 ]
 
 REQUIRED_SCHEMAS = ("general", "health", "messenger", "relationship", "switchboard")
-CORE_HEAD_REVISION = "core_040"
+CORE_HEAD_REVISION = "core_009"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
     "health": "butler_health_rw",
@@ -459,118 +459,13 @@ def test_core_scheduled_task_calendar_linkage_columns(postgres_container):
 
 
 def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
-    """core_002 should add dispatch_mode columns to a pre-existing scheduled_tasks table."""
-    from alembic import command
-    from butlers.migrations import _build_alembic_config
+    """Consolidated core chain should expose dispatch/calendar columns on scheduled_tasks."""
+    from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
 
-    # Simulate a legacy database: create the table WITHOUT dispatch_mode columns,
-    # then stamp as core_001 so Alembic thinks core_001 already ran.
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
-            # core_014+ public schema always exists.
-            # public schema always exists; no need to create it.
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE scheduled_tasks (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        name TEXT NOT NULL UNIQUE,
-                        cron TEXT NOT NULL,
-                        prompt TEXT NOT NULL,
-                        source TEXT NOT NULL DEFAULT 'db',
-                        enabled BOOLEAN NOT NULL DEFAULT true,
-                        next_run_at TIMESTAMPTZ,
-                        last_run_at TIMESTAMPTZ,
-                        last_result JSONB,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
-                    """
-                )
-            )
-            # Also create the other core tables so core_001 stamp is valid.
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE state (
-                        key TEXT PRIMARY KEY,
-                        value JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        version INTEGER NOT NULL DEFAULT 1
-                    )
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE sessions (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        prompt TEXT NOT NULL,
-                        trigger_source TEXT NOT NULL,
-                        model TEXT,
-                        success BOOLEAN,
-                        error TEXT,
-                        result TEXT,
-                        tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        duration_ms INTEGER,
-                        trace_id TEXT,
-                        request_id TEXT,
-                        cost JSONB,
-                        input_tokens INTEGER,
-                        output_tokens INTEGER,
-                        parent_session_id UUID,
-                        started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        completed_at TIMESTAMPTZ
-                    )
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE route_inbox (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        route_envelope JSONB NOT NULL,
-                        lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
-                        processed_at TIMESTAMPTZ,
-                        session_id UUID,
-                        error TEXT
-                    )
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE butler_secrets (
-                        secret_key TEXT PRIMARY KEY,
-                        secret_value TEXT NOT NULL,
-                        category TEXT NOT NULL DEFAULT 'general',
-                        description TEXT,
-                        is_sensitive BOOLEAN NOT NULL DEFAULT true,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        expires_at TIMESTAMPTZ
-                    )
-                    """
-                )
-            )
-    finally:
-        engine.dispose()
-
-    # Stamp as core_001 so Alembic thinks it already ran.
-    config = _build_alembic_config(db_url, chains=["core"])
-    command.stamp(config, "core_001")
-
-    # Now upgrade to head — core_002 should add the missing columns.
-    command.upgrade(config, "core@head")
+    asyncio.run(run_migrations(db_url, chain="core"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -596,7 +491,6 @@ def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
             assert "display_title" in columns, "display_title column should be added"
             assert "calendar_event_id" in columns, "calendar_event_id column should be added"
 
-            # Verify constraints work.
             default_mode = conn.execute(
                 text(
                     """
@@ -626,18 +520,13 @@ def test_core_schema_bootstrap_owner_baseline(postgres_container):
 
 
 def test_relationship_reminder_calendar_projection_columns(postgres_container):
-    """relationship reminders table should expose projection linkage columns."""
+    """relationship reminders table should expose current rel_001 baseline columns."""
     from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
-
-    # rel_008 conditionally adds contacts.entity_id -> entities(id) FK only when the
-    # entities table exists in search_path.  Running the relationship chain before the
-    # memory module migration (which creates entities) is a valid scenario; the FK is
-    # simply skipped and can be added later once memory is migrated.
     asyncio.run(run_migrations(db_url, chain="relationship"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
@@ -655,15 +544,17 @@ def test_relationship_reminder_calendar_projection_columns(postgres_container):
             )
             columns = {str(name): nullable for name, nullable in rows}
             for required in (
-                "next_trigger_at",
-                "timezone",
-                "until_at",
-                "updated_at",
-                "calendar_event_id",
+                "contact_id",
+                "message",
+                "reminder_type",
+                "cron",
+                "due_at",
+                "dismissed",
+                "created_at",
             ):
                 assert required in columns, f"Missing reminders.{required}"
-            assert columns["timezone"] == "NO"
-            assert columns["updated_at"] == "NO"
+            assert columns["message"] == "NO"
+            assert columns["reminder_type"] == "NO"
     finally:
         engine.dispose()
 

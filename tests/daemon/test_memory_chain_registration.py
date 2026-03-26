@@ -64,35 +64,8 @@ class TestMemoryChainRegistration:
             f.name for f in chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
         )
         assert migration_files == [
-            "001_memory_baseline.py",
-            "002_entities.py",
-            "003_memory_events.py",
-            "004_object_entity_id.py",
-            "005_predicate_registry.py",
-            "006_drop_shadow_entities.py",
-            "007_bitemporal_facts.py",
-            "008_fix_valid_at_null_semantics.py",
-            "009_health_predicates.py",
-            "010_finance_predicates.py",
-            "011_relationship_predicates.py",
-            "012_facts_gin_indexes.py",
-            "013_fix_owner_tenant_id.py",
-            "014_tenant_request_lineage.py",
-            "015_consolidation_state_machine.py",
-            "016_temporal_fact_safety.py",
-            "017_memory_policies.py",
-            "018_partial_unique_entities.py",
-            "019_rule_applications.py",
-            "020_fix_memory_policies.py",
-            "021_fix_partial_unique_deleted_at.py",
-            "022_events_enrichment.py",
-            "023_predicate_hybrid_search.py",
-            "023_predicate_lifecycle.py",
-            "023_predicate_scope.py",
-            "024_deprecate_baseline_predicates.py",
-            "025_predicate_aliases.py",
-            "025_predicate_example_json.py",
-            "025_predicate_inverse_symmetric.py",
+            "001_memory_schema.py",
+            "002_seed_predicates.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:
@@ -123,19 +96,8 @@ class TestBaselineRevisionChain:
     """Validate the single baseline revision chain for memory."""
 
     EXPECTED_CHAIN = [
-        ("001_memory_baseline.py", "mem_001", None),
-        ("002_entities.py", "mem_002", "mem_001"),
-        ("003_memory_events.py", "mem_003", "mem_002"),
-        ("004_object_entity_id.py", "mem_004", "mem_003"),
-        ("005_predicate_registry.py", "mem_005", "mem_004"),
-        ("006_drop_shadow_entities.py", "mem_006", "mem_005"),
-        ("007_bitemporal_facts.py", "mem_007", "mem_006"),
-        ("008_fix_valid_at_null_semantics.py", "mem_008", "mem_007"),
-        ("009_health_predicates.py", "mem_009", "mem_008"),
-        ("010_finance_predicates.py", "mem_010", "mem_009"),
-        ("011_relationship_predicates.py", "mem_011", "mem_010"),
-        ("012_facts_gin_indexes.py", "mem_012", "mem_011"),
-        ("013_fix_owner_tenant_id.py", "mem_013", "mem_012"),
+        ("001_memory_schema.py", "mem_001", None),
+        ("002_seed_predicates.py", "mem_002", "mem_001"),
     ]
 
     @staticmethod
@@ -200,7 +162,7 @@ class TestBaselineRevisionChain:
             chain_map[mod.revision] = mod.down_revision
 
         # Walk from head to root
-        current = "mem_013"
+        current = "mem_002"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -210,15 +172,4 @@ class TestBaselineRevisionChain:
         assert path == [
             "mem_001",
             "mem_002",
-            "mem_003",
-            "mem_004",
-            "mem_005",
-            "mem_006",
-            "mem_007",
-            "mem_008",
-            "mem_009",
-            "mem_010",
-            "mem_011",
-            "mem_012",
-            "mem_013",
-        ], f"Expected linear chain [mem_001 -> ... -> mem_013], got {path}"
+        ], f"Expected linear chain [mem_001 -> mem_002], got {path}"

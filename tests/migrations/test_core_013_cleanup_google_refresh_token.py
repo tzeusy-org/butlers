@@ -1,7 +1,8 @@
-"""Unit tests for core_013 Alembic migration: cleanup GOOGLE_REFRESH_TOKEN.
+"""Unit tests for consolidated Google refresh-token promotion in core_008.
 
-These tests verify the migration file structure and SQL logic without
-requiring a live PostgreSQL connection.
+The incremental core_013 migration was removed during chain consolidation.
+Its behavior now lives in core_008_external_accounts.py, where existing
+owner google_oauth_refresh rows are promoted into google_accounts.
 """
 
 from __future__ import annotations
@@ -15,12 +16,12 @@ import pytest
 pytestmark = pytest.mark.unit
 
 VERSIONS_DIR = Path(__file__).resolve().parent.parent.parent / "alembic" / "versions" / "core"
-MIGRATION_FILE = VERSIONS_DIR / "core_013_cleanup_google_refresh_token.py"
+MIGRATION_FILE = VERSIONS_DIR / "core_008_external_accounts.py"
 
 
 def _load_migration():
-    """Dynamically load the core_013 migration module."""
-    spec = importlib.util.spec_from_file_location("core_013", MIGRATION_FILE)
+    """Dynamically load the core_008 migration module."""
+    spec = importlib.util.spec_from_file_location("core_008", MIGRATION_FILE)
     assert spec is not None
     assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -40,14 +41,14 @@ class TestMigrationFileLayout:
 
 class TestRevisionMetadata:
     def test_revision_id(self) -> None:
-        """revision == 'core_013'."""
+        """revision == 'core_008'."""
         mod = _load_migration()
-        assert mod.revision == "core_013"
+        assert mod.revision == "core_008"
 
     def test_down_revision(self) -> None:
-        """down_revision points to core_012."""
+        """down_revision points to core_007."""
         mod = _load_migration()
-        assert mod.down_revision == "core_012"
+        assert mod.down_revision == "core_007"
 
     def test_branch_labels_are_none(self) -> None:
         """branch_labels is None (inherits core branch)."""
@@ -71,62 +72,37 @@ class TestRevisionMetadata:
 
 
 class TestUpgradeSQL:
-    def test_deletes_google_refresh_token_key(self) -> None:
-        """Upgrade targets GOOGLE_REFRESH_TOKEN via the module-level _REMOVED_KEYS constant."""
+    def test_handles_google_oauth_refresh_promotion(self) -> None:
+        """Upgrade includes promotion logic for existing google_oauth_refresh records."""
         mod = _load_migration()
-        assert hasattr(mod, "_REMOVED_KEYS")
-        assert "GOOGLE_REFRESH_TOKEN" in mod._REMOVED_KEYS
-        # The upgrade function must reference the constant (not hardcode the key inline).
         source = inspect.getsource(mod.upgrade)
-        assert "_REMOVED_KEYS" in source
+        assert "google_oauth_refresh" in source
+        assert "public.google_accounts" in source
+        assert "UPDATE public.entity_info" in source
 
-    def test_deletes_from_butler_secrets(self) -> None:
-        """Upgrade SQL issues a DELETE against butler_secrets."""
+    def test_promotion_block_is_idempotent_and_guarded(self) -> None:
+        """Promotion logic checks table existence and uses conflict-safe inserts."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "DELETE FROM butler_secrets" in source
+        assert "to_regclass('public.entities')" in source
+        assert "ON CONFLICT DO NOTHING" in source
 
-    def test_guarded_by_table_existence_check(self) -> None:
-        """Upgrade SQL is wrapped in an existence guard for butler_secrets."""
+    def test_upgrade_no_longer_references_legacy_secret_key(self) -> None:
+        """Consolidated core chain should not mention legacy GOOGLE_REFRESH_TOKEN key."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "to_regclass" in source
-        assert "butler_secrets" in source
-
-    def test_uses_do_block(self) -> None:
-        """Upgrade SQL uses a DO $$ ... $$ block for safe execution."""
-        mod = _load_migration()
-        source = inspect.getsource(mod.upgrade)
-        assert "DO $$" in source or "DO\n$$" in source or "DO\n    $$" in source
-
-    def test_no_other_keys_deleted(self) -> None:
-        """Upgrade only targets GOOGLE_REFRESH_TOKEN — does not delete other keys."""
-        mod = _load_migration()
-        source = inspect.getsource(mod.upgrade)
-        # Should not delete keys that were already handled in core_009.
-        assert "USER_EMAIL_ADDRESS" not in source
-        assert "TELEGRAM_API_HASH" not in source
-        assert "BUTLER_TELEGRAM_CHAT_ID" not in source
+        assert "GOOGLE_REFRESH_TOKEN" not in source
 
 
 class TestDowngrade:
     def test_downgrade_is_noop(self) -> None:
-        """downgrade() is a no-op (cannot restore deleted secrets)."""
+        """downgrade() should remain callable."""
         mod = _load_migration()
-        source = inspect.getsource(mod.downgrade)
-        # Should not issue any SQL DML to re-insert the secret (value is gone).
-        # Check for SQL keywords that would indicate active DML, not just comments.
-        lines = [
-            ln.strip()
-            for ln in source.splitlines()
-            if ln.strip() and not ln.strip().startswith("#")
-        ]
-        body = " ".join(lines).upper()
-        assert "INSERT INTO" not in body
-        assert "DELETE FROM" not in body
+        assert callable(mod.downgrade)
 
     def test_downgrade_has_docstring_or_comment(self) -> None:
-        """downgrade() documents why it is a no-op."""
+        """downgrade() removes the external-account tables."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
-        assert "contact_info" in source.lower() or "Cannot restore" in source or "pass" in source
+        assert "DROP TABLE IF EXISTS connectors.steam_play_history" in source
+        assert "DROP TABLE IF EXISTS public.google_accounts" in source

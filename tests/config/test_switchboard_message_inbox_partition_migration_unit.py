@@ -1,4 +1,4 @@
-"""Unit tests for the switchboard message_inbox partition migration."""
+"""Unit tests for switchboard message_inbox partition schema in sw_001."""
 
 from __future__ import annotations
 
@@ -15,17 +15,17 @@ pytestmark = pytest.mark.unit
 
 
 def _migration_file() -> Path:
-    """Return the switchboard message_inbox partition migration file path."""
+    """Return the consolidated switchboard root migration file path."""
     from butlers.migrations import _resolve_chain_dir
 
     chain_dir = _resolve_chain_dir("switchboard")
     assert chain_dir is not None, "Switchboard chain should exist"
-    return chain_dir / "008_partition_message_inbox_lifecycle.py"
+    return chain_dir / "001_switchboard_messaging.py"
 
 
 def _load_migration():
     migration_file = _migration_file()
-    spec = importlib.util.spec_from_file_location("migration_008", migration_file)
+    spec = importlib.util.spec_from_file_location("sw_001_switchboard_messaging", migration_file)
     assert spec is not None, "Should be able to load migration spec"
     assert spec.loader is not None, "Should have a loader"
     module = importlib.util.module_from_spec(spec)
@@ -46,6 +46,7 @@ def test_upgrade_defines_partitioned_lifecycle_schema():
     assert "lifecycle_state TEXT" in source
     assert "schema_version TEXT" in source
     assert "processing_metadata JSONB" in source
+    assert "ingestion_tier TEXT NOT NULL DEFAULT 'full'" in source
 
 
 def test_upgrade_defines_partition_automation_and_default_retention():
@@ -70,13 +71,6 @@ def test_downgrade_reconstructs_legacy_sw007_shape():
     module = _load_migration()
     source = inspect.getsource(module.downgrade)
 
-    assert "CREATE TABLE message_inbox" in source
-    assert "source_channel TEXT NOT NULL" in source
-    assert "sender_id TEXT NOT NULL" in source
-    assert "raw_content TEXT NOT NULL" in source
-    assert "routing_results JSONB" in source
-    assert "source_endpoint_identity TEXT NOT NULL" in source
-    assert "source_sender_identity TEXT NOT NULL" in source
-    assert "dedupe_key TEXT" in source
-    assert "dedupe_strategy TEXT NOT NULL" in source
+    assert "DROP TABLE IF EXISTS message_inbox CASCADE" in source
     assert "DROP FUNCTION IF EXISTS switchboard_message_inbox_drop_expired_partitions" in source
+    assert "DROP FUNCTION IF EXISTS switchboard_message_inbox_ensure_partition" in source

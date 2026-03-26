@@ -1,4 +1,4 @@
-"""Unit tests for the core_029 sessions complexity/resolution_source migration."""
+"""Unit tests for sessions complexity fields in core_001 foundation migration."""
 
 from __future__ import annotations
 
@@ -10,84 +10,34 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-# Generic migration contract checks (file existence, metadata, callable guards, chain
-# membership) for this migration are covered canonically in test_migration_contract.py.
-
 
 def _migration_file() -> Path:
     from butlers.migrations import _resolve_chain_dir
 
     chain_dir = _resolve_chain_dir("core")
-    assert chain_dir is not None, "Core chain should exist"
-    return chain_dir / "core_029_sessions_add_complexity_resolution_source.py"
+    assert chain_dir is not None
+    return chain_dir / "core_001_foundation.py"
 
 
 def _load_migration():
-    migration_file = _migration_file()
-    spec = importlib.util.spec_from_file_location("core_029", migration_file)
-    assert spec is not None, "Should be able to load migration spec"
-    assert spec.loader is not None, "Should have a loader"
+    spec = importlib.util.spec_from_file_location("core_001_foundation", _migration_file())
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-# ---------------------------------------------------------------------------
-# Migration metadata
-# ---------------------------------------------------------------------------
-
-
-def test_revision_is_core_029():
+def test_revision_metadata() -> None:
     module = _load_migration()
-    assert module.revision == "core_029"
+    assert module.revision == "core_001"
 
 
-def test_down_revision_is_core_028():
-    module = _load_migration()
-    assert module.down_revision == "core_028"
+def test_sessions_include_complexity_and_resolution_source_defaults() -> None:
+    source = inspect.getsource(_load_migration()._create_core_tables)
+    assert "complexity TEXT DEFAULT 'medium'" in source
+    assert "resolution_source TEXT DEFAULT 'toml_fallback'" in source
 
 
-# ---------------------------------------------------------------------------
-# upgrade() content assertions
-# ---------------------------------------------------------------------------
-
-
-def test_upgrade_adds_complexity_column():
-    module = _load_migration()
-    source = inspect.getsource(module.upgrade)
-    assert "complexity" in source
-
-
-def test_upgrade_adds_resolution_source_column():
-    module = _load_migration()
-    source = inspect.getsource(module.upgrade)
-    assert "resolution_source" in source
-
-
-def test_upgrade_complexity_has_medium_default():
-    module = _load_migration()
-    source = inspect.getsource(module.upgrade)
-    assert "medium" in source
-
-
-def test_upgrade_resolution_source_has_toml_fallback_default():
-    module = _load_migration()
-    source = inspect.getsource(module.upgrade)
-    assert "toml_fallback" in source
-
-
-# ---------------------------------------------------------------------------
-# downgrade() content assertions
-# ---------------------------------------------------------------------------
-
-
-def test_downgrade_drops_resolution_source_column():
-    module = _load_migration()
-    source = inspect.getsource(module.downgrade)
-    assert "resolution_source" in source
-
-
-def test_downgrade_drops_complexity_column():
-    module = _load_migration()
-    source = inspect.getsource(module.downgrade)
-    assert "complexity" in source
+def test_downgrade_drops_sessions_table() -> None:
+    source = inspect.getsource(_load_migration().downgrade)
+    assert "DROP TABLE IF EXISTS sessions" in source

@@ -6,12 +6,14 @@
 #   docker compose --profile dev up                # + frontend dev server
 #   docker compose --profile hotreload up          # + live source code reload
 #   docker compose --profile audio up              # + live-listener connector
-#   ./scripts/dev-compose.sh                       # recommended dev launcher
-#   ./scripts/dev-compose.sh --hotreload           # with live code reload
+#   ./scripts/compose.sh                            # recommended dev launcher
+#   ./scripts/compose.sh --hotreload               # with live code reload
+#   ./scripts/compose.sh --prod                    # production database
 #
 # PROFILES:
-#   (default)  — all core services: postgres, migrations, butlers-up, connectors,
+#   (default)  — all core services: migrations, butlers-up, connectors,
 #                dashboard-api, oauth-gate, log infrastructure
+#                (postgres is external — configured via .env.dev / .env.prod)
 #   dev        — + Vite frontend dev server
 #   hotreload  — + volume-mount src/ for live code changes (scales down butlers-up
 #                and dashboard-api, replaces with *-hotreload variants)
@@ -19,7 +21,7 @@
 #   minio      — + local S3-compatible storage (production uses Garage on tailnet)
 #
 # NETWORK MODEL (see RFC 0008):
-#   db        (internal) — postgres, minio, migrations
+#   db        (internal) — minio, migrations (external postgres via tailnet)
 #   backend   (internal) — inter-service communication
 #   frontend  (internal) — Vite dev server <-> dashboard-api
 #   egress    (bridge)   — outbound internet for LLM APIs, Google OAuth, etc.
@@ -28,10 +30,11 @@
 # ── Shared environment anchors ──────────────────────────────────────────
 
 x-postgres-env: &postgres-env
-  POSTGRES_HOST: postgres
-  POSTGRES_PORT: "5432"
-  POSTGRES_USER: butlers
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-butlers}
+  POSTGRES_HOST: ${POSTGRES_HOST:?Set POSTGRES_HOST in .env.dev or .env.prod}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_USER: ${POSTGRES_USER:-butlers}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.dev or .env.prod}
+  POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
 
 x-connector-env: &connector-env
   <<: *postgres-env
@@ -46,25 +49,6 @@ x-connector-env: &connector-env
 services:
 
   # ── Layer 0: Infrastructure ───────────────────────────────────────────
-
-  postgres:
-    image: pgvector/pgvector:pg17
-    environment:
-      POSTGRES_USER: butlers
-      POSTGRES_PASSWORD: butlers
-      POSTGRES_DB: butlers
-      POSTGRES_HOST_AUTH_METHOD: trust
-    command: ["postgres", "-c", "max_connections=200"]
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:54320:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U butlers"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks: [db]
 
   # MinIO — local S3 (optional). Production uses Garage on tailnet.
   minio:
@@ -112,9 +96,6 @@ services:
     volumes:
       - ./roster:/app/roster:ro
     networks: [db]
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   log-init:
     image: alpine:3.19
@@ -137,7 +118,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:41200:41200"
+      - "127.0.0.1:${DASHBOARD_HOST_PORT:-41200}:41200"
     volumes:
       - ./roster:/app/roster:ro
       - ./logs:/app/logs
@@ -151,6 +132,7 @@ services:
       SPOTIFY_OAUTH_REDIRECT_URI: ${SPOTIFY_OAUTH_REDIRECT_URI:-}
       OWNTRACKS_CONNECTOR_HOST: ${OWNTRACKS_CONNECTOR_HOST:-}
       OWNTRACKS_CONNECTOR_PORT: ${OWNTRACKS_CONNECTOR_PORT:-}
+      OWNTRACKS_WEBHOOK_BASE_PATH: ${OWNTRACKS_WEBHOOK_BASE_PATH:-/owntracks}
       BUTLERS_DISABLE_FILE_LOGGING: "1"
       BUTLERS_HOST: butlers-up
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
@@ -173,7 +155,7 @@ services:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
     ports:
-      - "127.0.0.1:41173:41173"
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-41173}:41173"
     environment:
       - VITE_API_URL=${VITE_API_URL:-/butlers-api/api}
       - VITE_PROXY_TARGET=http://dashboard-api:41200
@@ -349,7 +331,7 @@ services:
       CONNECTOR_CHANNEL: owntracks
       CONNECTOR_HEALTH_PORT: "40086"
     ports:
-      - "127.0.0.1:40086:40086"
+      - "127.0.0.1:${OWNTRACKS_HOST_PORT:-40086}:40086"
     volumes:
       - ./logs:/app/logs
     networks: [db, backend]
@@ -437,7 +419,7 @@ services:
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "uv", "run", "--frozen", "--no-dev", "butlers", "up"]
     command: []
     ports:
-      - "127.0.0.1:41100:41100"
+      - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
     environment:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://localhost:41100
@@ -536,7 +518,7 @@ services:
     entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers dashboard --host 0.0.0.0 --port 41200"]
     command: []
     ports:
-      - "127.0.0.1:41200:41200"
+      - "127.0.0.1:${DASHBOARD_HOST_PORT:-41200}:41200"
     environment:
       <<: *postgres-env
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
@@ -545,6 +527,7 @@ services:
       SPOTIFY_OAUTH_REDIRECT_URI: ${SPOTIFY_OAUTH_REDIRECT_URI:-}
       OWNTRACKS_CONNECTOR_HOST: ${OWNTRACKS_CONNECTOR_HOST:-}
       OWNTRACKS_CONNECTOR_PORT: ${OWNTRACKS_CONNECTOR_PORT:-}
+      OWNTRACKS_WEBHOOK_BASE_PATH: ${OWNTRACKS_WEBHOOK_BASE_PATH:-/owntracks}
       BUTLERS_DISABLE_FILE_LOGGING: "1"
       BUTLERS_HOST: butlers-up
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
@@ -569,9 +552,6 @@ services:
 # ── Volumes ─────────────────────────────────────────────────────────────
 
 volumes:
-  postgres_data:
-    external: true
-    name: butlers_postgres_data
   minio_data:
   frontend_node_modules:
   uv_cache:

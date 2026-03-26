@@ -1729,9 +1729,7 @@ async def run_owntracks_connector() -> None:
         }
         if shared_schema:
             try:
-                pool_kwargs["server_settings"] = {
-                    "search_path": schema_search_path(shared_schema)
-                }
+                pool_kwargs["server_settings"] = {"search_path": schema_search_path(shared_schema)}
             except ValueError:
                 pass
         try:

@@ -315,9 +315,9 @@ def test_downgrade_drops_all_objects(postgres_container):
     assert table_exists(db_url, "connector_heartbeat_log")
     assert _function_exists(db_url, "switchboard_connector_heartbeat_log_ensure_partition")
 
-    # Downgrade by one step (sw_013 -> sw_012) using Alembic command directly
+    # Downgrade to sw_001 (before connector tables/functions introduced in sw_002).
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.downgrade(config, "switchboard@sw_012")
+    command.downgrade(config, "switchboard@sw_001")
 
     # Verify objects are dropped
     assert not table_exists(db_url, "connector_registry"), (

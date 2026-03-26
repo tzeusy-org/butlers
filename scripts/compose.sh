@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Launch Butlers dev environment via Docker Compose.
-# Replaces scripts/dev.sh (tmux-based) with compose orchestration.
+# Launch Butlers via Docker Compose (dev by default, --prod for production DB).
 #
 # Usage:
-#   ./scripts/dev-compose.sh                       # standard mode
-#   ./scripts/dev-compose.sh --hotreload           # volume-mount source for live changes
-#   ./scripts/dev-compose.sh --skip-oauth-check    # skip OAuth gate
-#   ./scripts/dev-compose.sh --skip-tailscale-check  # skip tailscale serve setup
-#   ./scripts/dev-compose.sh --audio               # include live-listener (needs /dev/snd)
+#   ./scripts/compose.sh                           # dev database (default)
+#   ./scripts/compose.sh --prod                    # production database
+#   ./scripts/compose.sh --hotreload               # volume-mount source for live changes
+#   ./scripts/compose.sh --skip-oauth-check        # skip OAuth gate
+#   ./scripts/compose.sh --skip-tailscale-check    # skip tailscale serve setup
+#   ./scripts/compose.sh --audio                   # include live-listener (needs /dev/snd)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,9 +18,11 @@ cd "$PROJECT_DIR"
 PROFILES=(dev)
 COMPOSE_ENV=()
 SKIP_TAILSCALE=false
+BUTLERS_MODE=dev
 
 for arg in "$@"; do
   case "$arg" in
+    --prod)                 BUTLERS_MODE=prod ;;
     --hotreload)            PROFILES+=(hotreload) ;;
     --audio)                PROFILES+=(audio) ;;
     --skip-oauth-check)     COMPOSE_ENV+=("SKIP_OAUTH_CHECK=true") ;;
@@ -28,6 +30,45 @@ for arg in "$@"; do
     *)                      echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
 done
+
+# ── Load environment-specific database config ──────────────────────────
+ENV_FILE="${PROJECT_DIR}/.env.${BUTLERS_MODE}"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "ERROR: Missing ${ENV_FILE}" >&2
+  echo "  Create it with POSTGRES_HOST, POSTGRES_PASSWORD, etc." >&2
+  exit 1
+fi
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+echo "Database: ${BUTLERS_MODE} (${POSTGRES_HOST}:${POSTGRES_PORT:-5432})"
+
+# ── Mode-dependent configuration ────────────────────────────────────────
+# Prod and dev use different URL prefixes, host ports, and project names
+# so both can run simultaneously on the same machine.
+if [ "$BUTLERS_MODE" = "prod" ]; then
+  URL_PREFIX="butlers"
+  API_PREFIX="butlers-api"
+  OWNTRACKS_PREFIX="owntracks"
+  export COMPOSE_PROJECT_NAME="butlers"
+  export SWITCHBOARD_HOST_PORT=41100
+  export DASHBOARD_HOST_PORT=41200
+  export FRONTEND_HOST_PORT=41173
+  export OWNTRACKS_HOST_PORT=40086
+else
+  URL_PREFIX="butlers-dev"
+  API_PREFIX="butlers-dev-api"
+  OWNTRACKS_PREFIX="owntracks-dev"
+  export COMPOSE_PROJECT_NAME="butlers-dev"
+  export SWITCHBOARD_HOST_PORT=42100
+  export DASHBOARD_HOST_PORT=42200
+  export FRONTEND_HOST_PORT=42173
+  export OWNTRACKS_HOST_PORT=42086
+fi
+export FRONTEND_BASE_PATH="/${URL_PREFIX}/"
+export VITE_API_URL="/${API_PREFIX}/api"
+export OWNTRACKS_WEBHOOK_BASE_PATH="/${OWNTRACKS_PREFIX}"
 
 # ── Tailscale serve configuration ─────────────────────────────────────
 # Configure tailscale serve to expose all externally-accessible services
@@ -48,14 +89,13 @@ if [ "$SKIP_TAILSCALE" = "false" ]; then
   fi
 
   TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-443}"
-  FRONTEND_PORT="${FRONTEND_PORT:-41173}"
 
   # Tailscale serve path mappings: "path_prefix|local_target"
   # Each entry creates an HTTPS -> HTTP proxy via tailscale serve.
   SERVE_MAPPINGS=(
-    "/butlers|http://localhost:${FRONTEND_PORT}/butlers"       # Dashboard UI
-    "/butlers-api|http://localhost:41200"                      # Dashboard API
-    "/owntracks|http://localhost:40086/owntracks"              # OwnTracks webhook
+    "/${URL_PREFIX}|http://localhost:${FRONTEND_HOST_PORT}/${URL_PREFIX}"       # Dashboard UI
+    "/${API_PREFIX}|http://localhost:${DASHBOARD_HOST_PORT}"                    # Dashboard API
+    "/${OWNTRACKS_PREFIX}|http://localhost:${OWNTRACKS_HOST_PORT}/owntracks"    # OwnTracks webhook
   )
 
   # ── Helper: apply a single tailscale serve mapping ──────────────────
@@ -136,16 +176,16 @@ PY
     else
       TS_BASE="https://${TS_HOSTNAME}:${TAILSCALE_HTTPS_PORT}"
     fi
-    export GOOGLE_OAUTH_REDIRECT_URI="${TS_BASE}/butlers-api/api/oauth/google/callback"
-    export SPOTIFY_OAUTH_REDIRECT_URI="${TS_BASE}/butlers-api/api/connectors/spotify/oauth/callback"
+    export GOOGLE_OAUTH_REDIRECT_URI="${TS_BASE}/${API_PREFIX}/api/oauth/google/callback"
+    export SPOTIFY_OAUTH_REDIRECT_URI="${TS_BASE}/${API_PREFIX}/api/connectors/spotify/oauth/callback"
     export OWNTRACKS_CONNECTOR_HOST="${TS_HOSTNAME}"
     export OWNTRACKS_CONNECTOR_PORT="${TAILSCALE_HTTPS_PORT}"
 
     echo ""
     echo "Tailscale serve: ready (${TS_HOSTNAME})"
-    echo "  Dashboard:      ${TS_BASE}/butlers/"
-    echo "  API:            ${TS_BASE}/butlers-api/api"
-    echo "  OwnTracks:      ${TS_BASE}/owntracks/webhook"
+    echo "  Dashboard:      ${TS_BASE}/${URL_PREFIX}/"
+    echo "  API:            ${TS_BASE}/${API_PREFIX}/api"
+    echo "  OwnTracks:      ${TS_BASE}/${OWNTRACKS_PREFIX}/webhook"
     echo "  OAuth (Google):  ${GOOGLE_OAUTH_REDIRECT_URI}"
     echo "  OAuth (Spotify): ${SPOTIFY_OAUTH_REDIRECT_URI}"
   else
@@ -187,7 +227,7 @@ if ! docker image inspect butlers-base:latest &>/dev/null; then
   echo ""
 fi
 
-echo "Starting Butlers dev stack..."
+echo "Starting Butlers stack (${BUTLERS_MODE})..."
 echo "  Profiles: ${PROFILES[*]:-default}"
 echo "  Compose:  ${CMD[*]} up"
 echo ""
@@ -200,7 +240,8 @@ if [ -z "${ALLOWED_TAILNET_HOSTS:-}" ] && command -v tailscale &>/dev/null; then
   # identifiers in tailscale) to resolve current IPs.
   TAILNET_SERVICES=(
     otel               # OpenTelemetry collector (tracing)
-    butlers-db-dev     # PostgreSQL (future external DB)
+    butlers-db-dev     # PostgreSQL dev
+    butlers-db         # PostgreSQL prod
     ollama             # Local LLM inference
     tzehouse-synology  # Garage S3 storage
     homeassistant      # Home Assistant (home + health butler modules)

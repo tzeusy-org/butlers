@@ -168,6 +168,15 @@ def _get_connector_port() -> int:
         return _DEFAULT_CONNECTOR_PORT
 
 
+def _get_webhook_base_path() -> str:
+    """Read OWNTRACKS_WEBHOOK_BASE_PATH env var or return default ``/owntracks``."""
+    raw = os.environ.get("OWNTRACKS_WEBHOOK_BASE_PATH")
+    if raw is None:
+        return "/owntracks"
+    stripped = raw.strip().rstrip("/")
+    return stripped or "/owntracks"
+
+
 def _build_webhook_url(host: str, port: int) -> str:
     """Construct the full webhook URL from host and port.
 
@@ -181,7 +190,8 @@ def _build_webhook_url(host: str, port: int) -> str:
     # Omit port when it matches the scheme default (80 for http, 443 for https)
     default_port = 80 if scheme == "http" else 443
     port_suffix = "" if port == default_port else f":{port}"
-    return f"{scheme}://{host_part}{port_suffix}/owntracks/webhook"
+    base_path = _get_webhook_base_path()
+    return f"{scheme}://{host_part}{port_suffix}{base_path}/webhook"
 
 
 def _mask_token(token: str | None) -> str | None:

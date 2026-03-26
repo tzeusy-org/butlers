@@ -205,7 +205,7 @@ default using iptables rules on the `DOCKER-USER` chain:
 
 - **Blocked:** RFC1918 (LAN), Tailscale CGNAT (100.64.0.0/10), link-local.
 - **Allowed:** Specific tailnet hosts listed in `ALLOWED_TAILNET_HOSTS`
-  (resolved dynamically by `dev-compose.sh` at startup).
+  (resolved dynamically by `compose.sh` at startup).
 
 This prevents a compromised container from pivoting to LAN machines, SSH'ing
 into other hosts, or scanning the tailnet --- while still allowing the specific

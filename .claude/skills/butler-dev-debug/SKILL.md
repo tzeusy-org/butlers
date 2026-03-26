@@ -22,7 +22,7 @@ Guide for investigating butler errors, failed sessions, and runtime issues in th
 
 ## Environment Overview
 
-The dev environment runs via `./scripts/dev-compose.sh` using Docker Compose. Key services:
+The dev environment runs via `./scripts/compose.sh` using Docker Compose. Key services:
 
 | Service | Container | Port (host) | Description |
 |---------|-----------|-------------|-------------|
@@ -295,7 +295,7 @@ docker compose --profile dev restart connector-gmail
 docker compose --profile dev up --build -d butlers-up
 
 # Full stack restart
-docker compose --profile dev down && ./scripts/dev-compose.sh
+docker compose --profile dev down && ./scripts/compose.sh
 ```
 
 ### Exec into a running container

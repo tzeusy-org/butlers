@@ -184,15 +184,8 @@ def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
     assert not table_exists(db_url, "message_inbox_p202401")
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.downgrade(config, "switchboard@sw_007")
+    command.downgrade(config, "switchboard@base")
 
-    assert table_exists(db_url, "message_inbox")
-    assert _table_relkind(db_url, "message_inbox") == "r"
-    assert _column_exists(db_url, "message_inbox", "raw_content")
-    assert _column_exists(db_url, "message_inbox", "routing_results")
-    assert _column_exists(db_url, "message_inbox", "source_endpoint_identity")
-    assert _column_exists(db_url, "message_inbox", "dedupe_key")
-    assert _column_exists(db_url, "message_inbox", "dedupe_strategy")
-
+    assert not table_exists(db_url, "message_inbox")
     assert not _function_exists(db_url, "switchboard_message_inbox_ensure_partition")
     assert not _function_exists(db_url, "switchboard_message_inbox_drop_expired_partitions")

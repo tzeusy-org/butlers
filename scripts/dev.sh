@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DEPRECATED: Use scripts/dev-compose.sh for Docker Compose-based dev environment.
+# DEPRECATED: Use scripts/compose.sh for Docker Compose-based dev environment.
 # This tmux-based script is preserved for reference and will be removed in a future release.
 # Bootstrap a full Butlers dev environment in tmux.
 # Creates three windows:

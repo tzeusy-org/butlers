@@ -1,20 +1,4 @@
-"""Canonical migration contract tests.
-
-This module is the single source of truth for generic migration file contracts:
-  - File existence
-  - Required Alembic metadata attributes (revision, down_revision, branch_labels, depends_on)
-  - Callable guards (upgrade, downgrade)
-  - Chain membership
-
-Role-specific schema checks (column types, constraints, index names, DDL content)
-live in the per-butler unit test files alongside the migration they describe.
-
-Previously these five boilerplate checks were duplicated verbatim in:
-  - tests/config/test_switchboard_connector_heartbeat_migration_unit.py
-  - tests/config/test_switchboard_notifications_migration_unit.py
-
-Those files now only contain role-specific assertions.
-"""
+"""Canonical migration contract tests for current consolidated chains."""
 
 from __future__ import annotations
 
@@ -28,8 +12,6 @@ pytestmark = pytest.mark.unit
 
 @dataclass(frozen=True)
 class MigrationSpec:
-    """Describes one migration file whose generic contract should be verified."""
-
     chain: str
     filename: str
     revision: str
@@ -42,90 +24,28 @@ class MigrationSpec:
         return f"{self.chain}/{self.filename}"
 
 
-# ---------------------------------------------------------------------------
-# Registry of migrations under generic contract verification.
-#
-# Add an entry here for any migration whose boilerplate (file-exists, metadata,
-# upgrade/downgrade callable) should be checked without a standalone unit file.
-# Role-specific DDL/schema checks still belong in per-butler unit test files.
-# ---------------------------------------------------------------------------
-
 _MIGRATION_SPECS = [
-    # Switchboard chain – non-root migrations whose boilerplate was previously
-    # duplicated across two standalone _unit.py files.
-    MigrationSpec(
-        chain="switchboard",
-        filename="003_add_notifications_table.py",
-        revision="sw_003",
-        down_revision="sw_002",
-        branch_labels=None,
-        depends_on=None,
-    ),
-    MigrationSpec(
-        chain="switchboard",
-        filename="013_create_connector_heartbeat_tables.py",
-        revision="sw_013",
-        down_revision="sw_012",
-        branch_labels=None,
-        depends_on=None,
-    ),
-    MigrationSpec(
-        chain="switchboard",
-        filename="008_partition_message_inbox_lifecycle.py",
-        revision="sw_008",
-        down_revision="sw_007",
-        branch_labels=None,
-        depends_on=None,
-    ),
-    MigrationSpec(
-        chain="switchboard",
-        filename="018_create_backfill_jobs.py",
-        revision="sw_018",
-        down_revision="sw_017",
-        branch_labels=None,
-        depends_on=None,
-    ),
-    # Finance butler chain root migration
-    MigrationSpec(
-        chain="finance",
-        filename="001_finance_tables.py",
-        revision="finance_001",
-        down_revision=None,
-        branch_labels=("finance",),
-        depends_on=None,
-    ),
-    # Core chain – connectors schema + filtered_events partitioned table
-    MigrationSpec(
-        chain="core",
-        filename="core_027_connectors_schema_filtered_events.py",
-        revision="core_027",
-        down_revision="core_026",
-        branch_labels=None,
-        depends_on=None,
-    ),
-    # Core chain – filtered_events ensure_partition next-month proactive creation
-    MigrationSpec(
-        chain="core",
-        filename="core_028_filtered_events_ensure_partition_next_month.py",
-        revision="core_028",
-        down_revision="core_027",
-        branch_labels=None,
-        depends_on=None,
-    ),
-    # Core chain – sessions add complexity and resolution_source columns
-    MigrationSpec(
-        chain="core",
-        filename="core_029_sessions_add_complexity_resolution_source.py",
-        revision="core_029",
-        down_revision="core_028",
-        branch_labels=None,
-        depends_on=None,
-    ),
+    # Core consolidated chain
+    MigrationSpec("core", "core_001_foundation.py", "core_001", None, ("core",)),
+    MigrationSpec("core", "core_002_identity.py", "core_002", "core_001", None),
+    MigrationSpec("core", "core_003_calendar.py", "core_003", "core_002", None),
+    MigrationSpec("core", "core_004_model_and_tokens.py", "core_004", "core_003", None),
+    MigrationSpec("core", "core_005_self_healing.py", "core_005", "core_004", None),
+    MigrationSpec("core", "core_006_dashboard.py", "core_006", "core_005", None),
+    MigrationSpec("core", "core_007_connectors.py", "core_007", "core_006", None),
+    MigrationSpec("core", "core_008_external_accounts.py", "core_008", "core_007", None),
+    MigrationSpec("core", "core_009_memory_catalog.py", "core_009", "core_008", None),
+    # Switchboard consolidated chain
+    MigrationSpec("switchboard", "001_switchboard_messaging.py", "sw_001", None, ("switchboard",)),
+    MigrationSpec("switchboard", "002_switchboard_operations.py", "sw_002", "sw_001", None),
+    MigrationSpec("switchboard", "003_switchboard_routing.py", "sw_003", "sw_002", None),
+    MigrationSpec("switchboard", "004_switchboard_email.py", "sw_004", "sw_003", None),
+    # Finance root
+    MigrationSpec("finance", "001_finance_tables.py", "finance_001", None, ("finance",)),
 ]
 
 
 def _load_migration_module(chain: str, filename: str):
-    """Load and return a migration module by chain and filename."""
     from butlers.migrations import _resolve_chain_dir
 
     chain_dir = _resolve_chain_dir(chain)
@@ -142,7 +62,6 @@ def _load_migration_module(chain: str, filename: str):
 
 @pytest.mark.parametrize("mspec", _MIGRATION_SPECS, ids=lambda m: m.id)
 def test_migration_file_exists(mspec: MigrationSpec) -> None:
-    """Migration file must exist at the expected path in its chain directory."""
     from butlers.migrations import _resolve_chain_dir
 
     chain_dir = _resolve_chain_dir(mspec.chain)
@@ -154,48 +73,21 @@ def test_migration_file_exists(mspec: MigrationSpec) -> None:
 
 @pytest.mark.parametrize("mspec", _MIGRATION_SPECS, ids=lambda m: m.id)
 def test_migration_metadata(mspec: MigrationSpec) -> None:
-    """Alembic metadata attributes must match the declared spec."""
     module = _load_migration_module(mspec.chain, mspec.filename)
 
-    assert getattr(module, "revision", None) == mspec.revision, (
-        f"revision mismatch: expected {mspec.revision!r}"
-    )
-    assert getattr(module, "down_revision", None) == mspec.down_revision, (
-        f"down_revision mismatch: expected {mspec.down_revision!r}"
-    )
-    assert getattr(module, "branch_labels", None) == mspec.branch_labels, (
-        f"branch_labels mismatch: expected {mspec.branch_labels!r}"
-    )
-    assert getattr(module, "depends_on", None) == mspec.depends_on, (
-        f"depends_on mismatch: expected {mspec.depends_on!r}"
-    )
+    assert getattr(module, "revision", None) == mspec.revision
+    assert getattr(module, "down_revision", None) == mspec.down_revision
+    assert getattr(module, "branch_labels", None) == mspec.branch_labels
+    assert getattr(module, "depends_on", None) == mspec.depends_on
 
 
 @pytest.mark.parametrize("mspec", _MIGRATION_SPECS, ids=lambda m: m.id)
 def test_migration_upgrade_callable(mspec: MigrationSpec) -> None:
-    """upgrade() must be defined and callable."""
     module = _load_migration_module(mspec.chain, mspec.filename)
-    assert hasattr(module, "upgrade") and callable(module.upgrade), (
-        f"{mspec.chain}/{mspec.filename}: upgrade() must be callable"
-    )
+    assert hasattr(module, "upgrade") and callable(module.upgrade)
 
 
 @pytest.mark.parametrize("mspec", _MIGRATION_SPECS, ids=lambda m: m.id)
 def test_migration_downgrade_callable(mspec: MigrationSpec) -> None:
-    """downgrade() must be defined and callable."""
     module = _load_migration_module(mspec.chain, mspec.filename)
-    assert hasattr(module, "downgrade") and callable(module.downgrade), (
-        f"{mspec.chain}/{mspec.filename}: downgrade() must be callable"
-    )
-
-
-@pytest.mark.parametrize("mspec", _MIGRATION_SPECS, ids=lambda m: m.id)
-def test_migration_chain_membership(mspec: MigrationSpec) -> None:
-    """Migration file must appear in its chain directory."""
-    from butlers.migrations import _resolve_chain_dir
-
-    chain_dir = _resolve_chain_dir(mspec.chain)
-    assert chain_dir is not None, f"Chain {mspec.chain!r} should exist"
-
-    present = [f.name for f in chain_dir.glob("*.py") if f.name != "__init__.py"]
-    assert mspec.filename in present, f"{mspec.filename} should be in {mspec.chain} chain directory"
+    assert hasattr(module, "downgrade") and callable(module.downgrade)

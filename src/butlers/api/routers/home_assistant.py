@@ -262,19 +262,14 @@ async def configure_ha(
     if cred_store is None:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Credential database is unavailable. "
-                "Ensure the database service is running."
-            ),
+            detail=("Credential database is unavailable. Ensure the database service is running."),
         )
 
     # Validate connection before storing credentials
     try:
         await _validate_ha_connection(body.url, body.token)
     except _HAValidationError as exc:
-        logger.warning(
-            "HA connection validation failed (category=%s): %s", exc.category, exc
-        )
+        logger.warning("HA connection validation failed (category=%s): %s", exc.category, exc)
         raise HTTPException(
             status_code=502,
             detail=str(exc),
@@ -323,9 +318,7 @@ async def delete_ha_config(
     cred_store = _make_credential_store(db_manager)
     if cred_store is None:
         # No DB — nothing to delete; treat as success
-        logger.info(
-            "HA delete requested but credential store is unavailable; treating as success"
-        )
+        logger.info("HA delete requested but credential store is unavailable; treating as success")
         return HADeleteResponse(
             success=True,
             message="Home Assistant credentials removed (credential store was unavailable)",
