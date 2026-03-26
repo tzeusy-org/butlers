@@ -385,6 +385,27 @@ class TestBuildRoutingPrompt:
         prompt = _build_routing_prompt("I ate chicken", butlers)
         assert "food" in prompt.lower() or "health" in prompt.lower()
 
+    def test_lifestyle_routing_guidance_overrides_health_food(self):
+        """When lifestyle butler is present, food preferences route to lifestyle."""
+        butlers = [
+            {"name": "health", "description": "Health", "modules": ["health"]},
+            {"name": "lifestyle", "description": "Lifestyle", "modules": []},
+            {"name": "general", "description": "General", "modules": []},
+        ]
+        prompt = _build_routing_prompt("I love Thai food", butlers)
+        assert "lifestyle" in prompt.lower()
+        assert "food" in prompt.lower()
+
+    def test_lifestyle_routing_guidance_no_health(self):
+        """When only lifestyle is present (no health), lifestyle gets food guidance."""
+        butlers = [
+            {"name": "lifestyle", "description": "Lifestyle", "modules": []},
+            {"name": "general", "description": "General", "modules": []},
+        ]
+        prompt = _build_routing_prompt("I love Thai food", butlers)
+        assert "lifestyle" in prompt.lower()
+        assert "food" in prompt.lower()
+
 
 # ---------------------------------------------------------------------------
 # Routing context lifecycle
