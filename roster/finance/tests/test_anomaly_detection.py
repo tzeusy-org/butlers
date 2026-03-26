@@ -177,7 +177,8 @@ class TestComputeBaselines:
         """3+ debit transactions from same merchant produce median/stddev baseline."""
         from butlers.tools.finance.anomaly_detection import compute_baselines
 
-        base = datetime(2025, 8, 1, 12, 0, tzinfo=UTC)
+        # Use recent dates within the 6-month rolling window
+        base = datetime.now(UTC) - timedelta(days=60)
         for i, amt in enumerate(["10.00", "20.00", "15.00"]):
             await _insert_txn(
                 pool, merchant="Walmart", amount=amt, posted_at=base + timedelta(days=i * 5)
@@ -199,7 +200,8 @@ class TestComputeBaselines:
         """Merchant with < 3 transactions is excluded from baselines."""
         from butlers.tools.finance.anomaly_detection import compute_baselines
 
-        base = datetime(2025, 8, 1, 12, 0, tzinfo=UTC)
+        # Use recent dates within the 6-month rolling window
+        base = datetime.now(UTC) - timedelta(days=60)
         # Only 2 transactions for "RareShop"
         for i in range(2):
             await _insert_txn(
@@ -221,8 +223,9 @@ class TestComputeBaselines:
         """Soft-deleted transactions are not included in baseline computation."""
         from butlers.tools.finance.anomaly_detection import compute_baselines
 
-        base = datetime(2025, 8, 1, 12, 0, tzinfo=UTC)
-        deleted_time = datetime(2025, 8, 10, 12, 0, tzinfo=UTC)
+        # Use recent dates within the 6-month rolling window
+        base = datetime.now(UTC) - timedelta(days=60)
+        deleted_time = datetime.now(UTC) - timedelta(days=30)
         # Insert 2 live and 3 deleted — deleted takes the merchant below threshold
         for i in range(2):
             await _insert_txn(
@@ -247,8 +250,9 @@ class TestComputeBaselines:
         """Category with 4+ weeks of data produces a weekly_velocity baseline."""
         from butlers.tools.finance.anomaly_detection import compute_baselines
 
-        # Insert 4 weeks of groceries spend (Monday of each week)
-        base = datetime(2025, 7, 7, 12, 0, tzinfo=UTC)  # Monday
+        # Insert 4 weeks of groceries spend within the 6-month window
+        # Use a Monday that's within the rolling 180-day window
+        base = datetime.now(UTC) - timedelta(days=100)
         for week in range(4):
             week_start = base + timedelta(weeks=week)
             for day in range(3):
@@ -274,7 +278,8 @@ class TestComputeBaselines:
         from butlers.tools.finance.anomaly_detection import compute_baselines
 
         # 3 distinct merchants to satisfy merchant threshold, 3 weeks of category data
-        base = datetime(2025, 8, 1, 12, 0, tzinfo=UTC)
+        # Use dates within the 6-month rolling window
+        base = datetime.now(UTC) - timedelta(days=90)
         for week in range(3):
             await _insert_txn(
                 pool,
@@ -303,7 +308,7 @@ class TestComputeBaselines:
         """Credit transactions are excluded from baseline computation."""
         from butlers.tools.finance.anomaly_detection import compute_baselines
 
-        base = datetime(2025, 8, 1, 12, 0, tzinfo=UTC)
+        base = datetime.now(UTC) - timedelta(days=60)
         for i in range(3):
             await _insert_txn(
                 pool,
