@@ -83,42 +83,6 @@ def _months_ago(reference: date, n: int) -> date:
     return date(year, month, 1)
 
 
-async def _ensure_balance_snapshots_table(pool: asyncpg.Pool) -> None:
-    """Create balance_snapshots and accounts tables if they don't exist.
-
-    Used in tests and during staged roll-out before the finance-data-model-redesign
-    migration has run.  The helper is idempotent (CREATE TABLE IF NOT EXISTS).
-    """
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS accounts (
-            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            institution TEXT NOT NULL,
-            type        TEXT NOT NULL
-                            CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-            name        TEXT,
-            last_four   CHAR(4),
-            currency    CHAR(3) NOT NULL DEFAULT 'USD',
-            metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS balance_snapshots (
-            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            account_id  UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-            balance     NUMERIC(14, 2) NOT NULL,
-            currency    CHAR(3) NOT NULL DEFAULT 'USD',
-            as_of_date  DATE NOT NULL,
-            source      TEXT NOT NULL DEFAULT 'manual',
-            metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT uq_balance_snapshot_account_date UNIQUE (account_id, as_of_date)
-        )
-    """)
-
-
 async def _get_or_create_account(
     pool: asyncpg.Pool,
     name: str,
@@ -158,7 +122,7 @@ async def _get_or_create_account(
         institution,
         inferred_type,
         name,
-        currency,
+        currency.upper(),
     )
     return str(new_row["id"])
 
@@ -228,7 +192,7 @@ async def net_worth_snapshot(
     result = _row_to_dict(row)
     result["account"] = account
     result["institution"] = institution
-    result["balance"] = str(stored_balance)
+    result["balance"] = str(row["balance"])
     return result
 
 
@@ -776,19 +740,6 @@ async def flag_tax_deductible(
     for cat, tax_cat in _DEFAULT_TAX_CATEGORIES.items():
         if cat not in tax_category_map:
             tax_category_map[cat] = tax_cat
-
-    if not tax_category_map:
-        # No categories at all — return empty result.
-        return {
-            "transactions": [],
-            "summary": {
-                "total_flagged_amount": "0",
-                "flagged_count": 0,
-                "by_tax_category": {},
-            },
-            "year": year,
-            "disclaimer": _TAX_DISCLAIMER,
-        }
 
     # Check for deleted_at column.
     has_deleted_at = await pool.fetchval(

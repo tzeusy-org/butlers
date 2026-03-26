@@ -87,18 +87,15 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS recurring_groups (
             id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             merchant             TEXT NOT NULL UNIQUE,
-            estimated_frequency  TEXT NOT NULL
-                                     CHECK (estimated_frequency IN (
+            estimated_frequency  TEXT
+                                     CHECK (estimated_frequency IS NULL OR estimated_frequency IN (
                                          'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
                                      )),
             avg_amount           NUMERIC(14, 2) NOT NULL,
-            currency             CHAR(3) NOT NULL DEFAULT 'USD',
-            confidence           FLOAT NOT NULL DEFAULT 0.0,
-            already_tracked      BOOLEAN NOT NULL DEFAULT false,
-            occurrences          INTEGER NOT NULL DEFAULT 0,
-            first_seen_at        TIMESTAMPTZ,
-            last_seen_at         TIMESTAMPTZ,
-            metadata             JSONB NOT NULL DEFAULT '{}'::jsonb,
+            currency             CHAR(3) DEFAULT 'USD',
+            last_seen_date       DATE,
+            next_expected_date   DATE,
+            is_active            BOOLEAN NOT NULL DEFAULT true,
             created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
         )
@@ -108,12 +105,13 @@ def upgrade() -> None:
             ON recurring_groups (merchant)
     """)
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_recurring_groups_already_tracked
-            ON recurring_groups (already_tracked)
+        CREATE INDEX IF NOT EXISTS idx_recurring_groups_is_active
+            ON recurring_groups (is_active)
+            WHERE is_active = true
     """)
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_recurring_groups_last_seen_at
-            ON recurring_groups (last_seen_at DESC)
+        CREATE INDEX IF NOT EXISTS idx_recurring_groups_last_seen_date
+            ON recurring_groups (last_seen_date DESC)
     """)
 
 
