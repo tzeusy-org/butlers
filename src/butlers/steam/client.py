@@ -137,14 +137,12 @@ def _make_request_redact_hook(api_key: str) -> Any:
         if not api_key:
             return
         # Replace api_key value in the query string if present.
-        raw_url = str(request.url)
-        if api_key in raw_url:
-            # We must rebuild the URL through httpx to avoid encoding issues.
-            # Mutate the request's URL object via internal repr.
-            params = dict(request.url.params)
-            if "key" in params and params["key"] == api_key:
-                params["key"] = _REDACTED
-                request.url = request.url.copy_with(params=params)
+        # Use the params dict directly — more robust than substring-matching
+        # the raw URL string, which could yield false positives.
+        params = dict(request.url.params)
+        if "key" in params and params["key"] == api_key:
+            params["key"] = _REDACTED
+            request.url = request.url.copy_with(params=params)
 
     return _redact_request
 
