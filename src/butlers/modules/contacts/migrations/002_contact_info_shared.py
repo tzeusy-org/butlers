@@ -133,7 +133,7 @@ def upgrade() -> None:
     #    Butler roles normally only have SELECT on shared tables (set by
     #    core_001). The contacts module requires INSERT/UPDATE/DELETE here.
     # -------------------------------------------------------------------------
-    quoted_shared = _quote_ident("shared")
+    quoted_shared = _quote_ident("public")
     quoted_table = f"{quoted_shared}.contact_info"
 
     for role in _CONTACTS_MODULE_ROLES:
@@ -150,7 +150,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    quoted_shared = _quote_ident("shared")
+    quoted_shared = _quote_ident("public")
     quoted_table = f"{quoted_shared}.contact_info"
 
     # Revoke elevated privileges from contacts module roles.
