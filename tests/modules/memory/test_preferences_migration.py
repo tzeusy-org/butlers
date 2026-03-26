@@ -70,7 +70,7 @@ class TestPreferencesMigrationContent:
 
     @pytest.fixture(scope="class")
     def predicate_names(self, mod) -> set[str]:
-        return {name for name, _ in mod._PREFERENCES_PREDICATES}
+        return {name for name, _, _ in mod._PREFERENCES_PREDICATES}
 
     @pytest.fixture(scope="class")
     def upgrade_source(self, mod) -> str:
@@ -203,7 +203,7 @@ class TestPreferencesMigrationModule:
     def test_all_required_predicates_in_module_list(self) -> None:
         """The _PREFERENCES_PREDICATES list contains all spec-required predicates."""
         mod = _load_migration("026_preferences_predicates.py")
-        names = {name for name, _ in mod._PREFERENCES_PREDICATES}
+        names = {name for name, _, _ in mod._PREFERENCES_PREDICATES}
 
         required = {
             # Travel
@@ -243,7 +243,7 @@ class TestPreferencesMigrationModule:
     def test_all_predicates_use_preferences_namespace(self) -> None:
         """Every predicate in the list starts with 'preferences:'."""
         mod = _load_migration("026_preferences_predicates.py")
-        for name, _ in mod._PREFERENCES_PREDICATES:
+        for name, _, _ in mod._PREFERENCES_PREDICATES:
             assert name.startswith("preferences:"), (
                 f"Predicate {name!r} does not use 'preferences:' namespace"
             )
@@ -251,8 +251,48 @@ class TestPreferencesMigrationModule:
     def test_all_predicates_have_non_empty_description(self) -> None:
         """Every predicate has a non-empty description."""
         mod = _load_migration("026_preferences_predicates.py")
-        for name, desc in mod._PREFERENCES_PREDICATES:
+        for name, _, desc in mod._PREFERENCES_PREDICATES:
             assert desc.strip(), f"Predicate {name!r} has empty description"
+
+    def test_all_predicates_have_valid_scope(self) -> None:
+        """Every predicate has a scope value allowed by the predicate_registry CHECK constraint."""
+        mod = _load_migration("026_preferences_predicates.py")
+        valid_scopes = {"global", "health", "relationship", "finance", "home", "travel"}
+        for name, scope, _ in mod._PREFERENCES_PREDICATES:
+            assert scope in valid_scopes, (
+                f"Predicate {name!r} has invalid scope {scope!r}; "
+                f"must be one of {sorted(valid_scopes)}"
+            )
+
+    def test_travel_predicates_have_travel_scope(self) -> None:
+        """preferences:travel_* predicates must have scope='travel'."""
+        mod = _load_migration("026_preferences_predicates.py")
+        for name, scope, _ in mod._PREFERENCES_PREDICATES:
+            if name.startswith("preferences:travel_"):
+                assert scope == "travel", (
+                    f"Travel predicate {name!r} has scope {scope!r}, expected 'travel'"
+                )
+
+    def test_general_predicates_have_global_scope(self) -> None:
+        """preferences:general_* predicates must have scope='global' (per _derive_scope)."""
+        mod = _load_migration("026_preferences_predicates.py")
+        for name, scope, _ in mod._PREFERENCES_PREDICATES:
+            if name.startswith("preferences:general_"):
+                assert scope == "global", (
+                    f"General predicate {name!r} has scope {scope!r}, expected 'global'"
+                )
+
+    def test_scope_column_included_in_insert(self) -> None:
+        """upgrade() INSERT statement must include the scope column."""
+        mod = _load_migration("026_preferences_predicates.py")
+        upgrade_src = inspect.getsource(mod.upgrade)
+        assert "scope" in upgrade_src
+
+    def test_upgrade_extends_scope_constraint_for_travel(self) -> None:
+        """upgrade() must extend the scope CHECK constraint to include 'travel'."""
+        mod = _load_migration("026_preferences_predicates.py")
+        upgrade_src = inspect.getsource(mod.upgrade)
+        assert "travel" in upgrade_src
 
     def test_downgrade_references_module_predicates(self) -> None:
         """downgrade() must use the same _PREFERENCES_PREDICATES list as upgrade().

@@ -261,17 +261,17 @@ class TestPreferencesInProfileFacts:
         assert "confidence:" in result
 
     async def test_preference_with_stable_permanence_has_low_decay(self) -> None:
-        """Stable permanence (decay_rate=0.002) still shows high confidence in Profile Facts."""
+        """Stable permanence (no decay) still shows full confidence in Profile Facts."""
         pref_fact = _make_preference_fact(
             predicate="preferences:general_timezone",
             content="America/New_York",
             confidence=1.0,
-            decay_rate=0.002,  # stable default
+            decay_rate=0.0,  # no decay — confidence is time-independent
         )
         result = await self._call_context([pref_fact])
         assert "America/New_York" in result
-        # Confidence near 1.0 (very slow decay) should be present
-        assert "confidence: 1.00" in result or "confidence: 0.9" in result
+        # No decay means confidence stays at 1.00 regardless of when the test runs
+        assert "confidence: 1.00" in result
 
 
 # ---------------------------------------------------------------------------
