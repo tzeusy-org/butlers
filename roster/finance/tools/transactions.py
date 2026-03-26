@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
@@ -224,7 +224,19 @@ async def list_transactions(
     limit = min(max(1, limit), 500)
     offset = max(0, offset)
 
+    # Check whether the transactions table has a deleted_at column; guard
+    # against schemas that predate migration finance_004.
+    has_deleted_at = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
+        """
+    )
+
     conditions: list[str] = []
+    if has_deleted_at:
+        conditions.append("deleted_at IS NULL")
     params: list[Any] = []
     idx = 1
 
@@ -398,3 +410,429 @@ async def update_transaction(
             )
 
     return _row_to_dict(row)
+
+
+async def delete_transaction(
+    pool: asyncpg.Pool,
+    transaction_id: str,
+) -> dict[str, Any]:
+    """Soft-delete a transaction by setting ``deleted_at`` to now().
+
+    Deleted transactions are excluded from all queries and analytics.
+    Deletion is idempotent: calling again on an already-deleted transaction
+    returns the existing record unchanged.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    transaction_id:
+        UUID string of the transaction to soft-delete.
+
+    Returns
+    -------
+    dict
+        Updated TransactionRecord dict with ``deleted_at`` set, or
+        ``{"error": "transaction_not_found", "transaction_id": ...}``
+        when the transaction does not exist.
+    """
+    has_deleted_at = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
+        """
+    )
+    if not has_deleted_at:
+        return {"error": "soft_delete_not_supported", "transaction_id": transaction_id}
+
+    row = await pool.fetchrow(
+        """
+        UPDATE transactions
+        SET deleted_at = COALESCE(deleted_at, now()),
+            updated_at = now()
+        WHERE id = $1::uuid
+        RETURNING *
+        """,
+        transaction_id,
+    )
+    if row is None:
+        return {"error": "transaction_not_found", "transaction_id": transaction_id}
+
+    await _log_activity(
+        pool,
+        "transaction_deleted",
+        f"Soft-deleted transaction {transaction_id}",
+        entity_type="transaction",
+        entity_id=transaction_id,
+    )
+    return _row_to_dict(row)
+
+
+async def merge_duplicates(
+    pool: asyncpg.Pool,
+    keep_id: str,
+    discard_id: str,
+) -> dict[str, Any]:
+    """Merge two duplicate transactions, keeping one and soft-deleting the other.
+
+    The ``metadata`` of the discarded record is deep-merged into the kept
+    record before the discard record is soft-deleted.  The kept record's
+    ``updated_at`` is refreshed.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    keep_id:
+        UUID string of the transaction to keep.
+    discard_id:
+        UUID string of the transaction to soft-delete.
+
+    Returns
+    -------
+    dict
+        Updated TransactionRecord dict for the kept transaction, or
+        ``{"error": ..., "keep_id": ..., "discard_id": ...}`` on failure.
+    """
+    if keep_id == discard_id:
+        return {
+            "error": "keep_id and discard_id must be different",
+            "keep_id": keep_id,
+            "discard_id": discard_id,
+        }
+
+    has_deleted_at = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
+        """
+    )
+    if not has_deleted_at:
+        return {
+            "error": "soft_delete_not_supported",
+            "keep_id": keep_id,
+            "discard_id": discard_id,
+        }
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            keep_row = await conn.fetchrow(
+                "SELECT * FROM transactions WHERE id = $1::uuid AND deleted_at IS NULL",
+                keep_id,
+            )
+            if keep_row is None:
+                return {
+                    "error": "keep_transaction_not_found",
+                    "keep_id": keep_id,
+                    "discard_id": discard_id,
+                }
+
+            discard_row = await conn.fetchrow(
+                "SELECT * FROM transactions WHERE id = $1::uuid AND deleted_at IS NULL",
+                discard_id,
+            )
+            if discard_row is None:
+                return {
+                    "error": "discard_transaction_not_found",
+                    "keep_id": keep_id,
+                    "discard_id": discard_id,
+                }
+
+            # Deep-merge metadata: keep's values win on conflict.
+            # asyncpg may return JSONB as a string or a dict depending on codec registration.
+            def _parse_row_meta(val: Any) -> dict[str, Any]:
+                if val is None:
+                    return {}
+                if isinstance(val, str):
+                    return json.loads(val)
+                return dict(val)
+
+            keep_meta = _parse_row_meta(keep_row["metadata"])
+            discard_meta = _parse_row_meta(discard_row["metadata"])
+            merged_meta = {**discard_meta, **keep_meta}
+
+            updated_row = await conn.fetchrow(
+                """
+                UPDATE transactions
+                SET metadata = $1::jsonb,
+                    updated_at = now()
+                WHERE id = $2::uuid
+                RETURNING *
+                """,
+                json.dumps(merged_meta),
+                keep_id,
+            )
+
+            await conn.execute(
+                """
+                UPDATE transactions
+                SET deleted_at = COALESCE(deleted_at, now()),
+                    updated_at = now()
+                WHERE id = $1::uuid
+                """,
+                discard_id,
+            )
+
+    await _log_activity(
+        pool,
+        "transaction_merged",
+        f"Merged transaction {discard_id} into {keep_id}",
+        entity_type="transaction",
+        entity_id=keep_id,
+    )
+    return _row_to_dict(updated_row)
+
+
+async def split_transaction(
+    pool: asyncpg.Pool,
+    transaction_id: str,
+    splits: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Split a single transaction into multiple records with different amounts/categories.
+
+    All split amounts must sum to the original transaction's stored amount
+    (absolute value, NUMERIC precision).  The original transaction is
+    soft-deleted after the split records are inserted.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    transaction_id:
+        UUID string of the transaction to split.
+    splits:
+        List of split objects.  Each must contain:
+
+        - ``amount`` (str or numeric): Split amount as a decimal string.
+          Must be positive (absolute value); direction is inherited from
+          the original transaction.
+        - ``category`` (str): Category for this split.
+        - ``description`` (str, optional): Description override for this split.
+
+    Returns
+    -------
+    dict
+        ``{"original_id": ..., "splits": [<TransactionRecord>, ...]}``
+        or ``{"error": ..., "transaction_id": ...}`` on failure.
+    """
+    # Check whether the transactions table has a deleted_at column.
+    has_deleted_at = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
+        """
+    )
+    not_deleted_cond = "AND deleted_at IS NULL" if has_deleted_at else ""
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            original = await conn.fetchrow(
+                f"SELECT * FROM transactions WHERE id = $1::uuid {not_deleted_cond}",
+                transaction_id,
+            )
+            if original is None:
+                return {
+                    "error": "transaction_not_found",
+                    "transaction_id": transaction_id,
+                }
+
+            if not splits:
+                return {
+                    "error": "splits must not be empty",
+                    "transaction_id": transaction_id,
+                }
+
+            # Validate and parse split amounts.
+            parsed_splits: list[dict[str, Any]] = []
+            total_split = Decimal("0")
+            for i, s in enumerate(splits):
+                raw_amount = s.get("amount")
+                if raw_amount is None:
+                    return {
+                        "error": f"split[{i}] missing required field 'amount'",
+                        "transaction_id": transaction_id,
+                    }
+                category = s.get("category")
+                if not category:
+                    return {
+                        "error": f"split[{i}] missing required field 'category'",
+                        "transaction_id": transaction_id,
+                    }
+                try:
+                    amt = abs(Decimal(str(raw_amount)))
+                except InvalidOperation:
+                    return {
+                        "error": f"split[{i}] invalid amount: {raw_amount!r}",
+                        "transaction_id": transaction_id,
+                    }
+                total_split += amt
+                parsed_splits.append(
+                    {
+                        "amount": amt,
+                        "category": category,
+                        "description": s.get("description"),
+                    }
+                )
+
+            original_amount = Decimal(str(original["amount"]))
+            if total_split != original_amount:
+                return {
+                    "error": (
+                        f"split amounts sum to {total_split} "
+                        f"but original amount is {original_amount}"
+                    ),
+                    "transaction_id": transaction_id,
+                }
+
+            # Insert split records.
+            inserted: list[dict[str, Any]] = []
+            for s in parsed_splits:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO transactions (
+                        account_id, source_message_id, posted_at, merchant,
+                        description, amount, currency, direction, category,
+                        payment_method, receipt_url, external_ref, metadata
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb
+                    )
+                    RETURNING *
+                    """,
+                    original["account_id"],
+                    original["source_message_id"],
+                    original["posted_at"],
+                    original["merchant"],
+                    s["description"] or original["description"],
+                    s["amount"],
+                    original["currency"],
+                    original["direction"],
+                    s["category"],
+                    original["payment_method"],
+                    original["receipt_url"],
+                    original["external_ref"],
+                    json.dumps(
+                        json.loads(original["metadata"])
+                        if isinstance(original["metadata"], str)
+                        else dict(original["metadata"] or {})
+                    ),
+                )
+                inserted.append(_row_to_dict(row))
+
+            # Soft-delete the original (only when column exists).
+            if has_deleted_at:
+                await conn.execute(
+                    """
+                    UPDATE transactions
+                    SET deleted_at = now(), updated_at = now()
+                    WHERE id = $1::uuid
+                    """,
+                    transaction_id,
+                )
+
+    await _log_activity(
+        pool,
+        "transaction_split",
+        f"Split transaction {transaction_id} into {len(inserted)} records",
+        entity_type="transaction",
+        entity_id=transaction_id,
+    )
+    return {"original_id": transaction_id, "splits": inserted}
+
+
+async def bulk_recategorize(
+    pool: asyncpg.Pool,
+    merchant_pattern: str,
+    new_category: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Reassign category for all transactions matching a merchant pattern (ILIKE).
+
+    Excludes soft-deleted transactions.  When ``dry_run=True``, returns a
+    preview of affected transactions without modifying them.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    merchant_pattern:
+        ILIKE pattern (e.g. ``"%Netflix%"``, ``"Starbucks"``).
+    new_category:
+        Target category to assign.
+    dry_run:
+        When ``True``, returns matching transactions without updating them.
+
+    Returns
+    -------
+    dict
+        ``{matched, updated, dry_run, sample_transactions}``
+        where ``updated`` is 0 when ``dry_run=True``.
+    """
+    # Guard: check if deleted_at column exists.
+    has_deleted_at = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
+        """
+    )
+    deleted_cond = "AND deleted_at IS NULL" if has_deleted_at else ""
+
+    sample_rows = await pool.fetch(
+        f"""
+        SELECT * FROM transactions
+        WHERE lower(merchant) LIKE lower($1)
+          {deleted_cond}
+        ORDER BY posted_at DESC
+        LIMIT 10
+        """,
+        merchant_pattern,
+    )
+
+    matched = await pool.fetchval(
+        f"""
+        SELECT COUNT(*) FROM transactions
+        WHERE lower(merchant) LIKE lower($1)
+          {deleted_cond}
+        """,
+        merchant_pattern,
+    )
+
+    updated = 0
+    if not dry_run:
+        result = await pool.execute(
+            f"""
+            UPDATE transactions
+            SET category = $1, updated_at = now()
+            WHERE lower(merchant) LIKE lower($2)
+              {deleted_cond}
+            """,
+            new_category,
+            merchant_pattern,
+        )
+        # asyncpg execute() returns "UPDATE N" string
+        try:
+            updated = int(result.split()[-1])
+        except (IndexError, ValueError):
+            updated = matched
+
+        # Refresh merchant mappings after bulk category change.
+        if updated > 0:
+            try:
+                from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+                await learn_merchant_categories(pool)
+            except Exception:
+                logger.warning(
+                    "bulk_recategorize: merchant mapping refresh failed",
+                    exc_info=True,
+                )
+
+    return {
+        "matched": matched,
+        "updated": updated,
+        "dry_run": dry_run,
+        "sample_transactions": [_row_to_dict(r) for r in sample_rows],
+    }
