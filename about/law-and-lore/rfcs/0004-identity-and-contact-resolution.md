@@ -68,6 +68,15 @@ Extended identity-bound data linked to entities. Used for credentials that belon
 | `value` | TEXT | The stored value |
 | `is_primary` | BOOLEAN | Preferred entry when multiple exist |
 
+**Registered `info_type` values:**
+
+| `info_type` | Description | Secured |
+|-------------|-------------|---------|
+| `google_oauth_refresh` | Google OAuth 2.0 refresh token | yes |
+| `telegram_api_id` | Telegram user-client API ID | no |
+| `telegram_api_hash` | Telegram user-client API hash | yes |
+| `steam_api_key` | Steam Web API key for the gaming butler | yes |
+
 ### resolve_contact_by_channel()
 
 The core identity operation in `src/butlers/identity.py`. Given a channel type and value, it performs:

@@ -21,8 +21,8 @@ Connectors submit events using this canonical envelope:
 {
   "schema_version": "ingest.v1",
   "source": {
-    "channel": "telegram|slack|email|api|mcp",
-    "provider": "telegram|slack|gmail|imap|internal",
+    "channel": "telegram|slack|email|api|mcp|gaming",
+    "provider": "telegram|slack|gmail|imap|internal|steam",
     "endpoint_identity": "<auto-resolved at startup>"
   },
   "event": {
@@ -47,7 +47,7 @@ Connectors submit events using this canonical envelope:
 
 **Field contracts:**
 
-- `source.channel` and `source.provider` MUST use canonical pairings: `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`.
+- `source.channel` and `source.provider` MUST use canonical pairings: `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `gaming/steam`.
 - `source.endpoint_identity` is auto-resolved from the source API at connector startup (e.g., Telegram `getMe()` yields `telegram:bot:@username`; Gmail yields `gmail:user:email`).
 - `event.external_event_id` is REQUIRED when the source provides a stable event identifier (Telegram `update_id`, email `Message-ID`).
 - `sender.identity` is the provider-native identifier used for identity resolution (see RFC 0004).
