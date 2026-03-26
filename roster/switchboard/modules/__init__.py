@@ -1,7 +1,13 @@
-"""Switchboard module — wires switchboard domain tools into the butler's MCP server.
+"""Switchboard roster modules.
 
-Registers MCP tools for routing, operator controls, notification delivery,
-extraction audit, backfill management, and dead-letter queue operations.
+Exports all concrete Module subclasses discovered by the ModuleRegistry scanner.
+Each module is implemented in a dedicated sub-module:
+
+- ``SwitchboardModule``    — routing, operator controls, notification delivery,
+                            extraction audit, backfill, and dead-letter tools.
+- ``InsightBrokerModule`` — proactive insight candidate submission tool
+                            (``propose_insight_candidate``).
+
 The tool closures strip infrastructure arguments (pool, conn) from the
 MCP-visible signature and inject them from module state at call time.
 
@@ -25,7 +31,17 @@ from pydantic import BaseModel
 
 from butlers.modules.base import Module
 
+from .insight_broker import InsightBrokerConfig, InsightBrokerModule  # noqa: F401
+
 logger = logging.getLogger(__name__)
+
+
+__all__ = [
+    "InsightBrokerConfig",
+    "InsightBrokerModule",
+    "SwitchboardModule",
+    "SwitchboardModuleConfig",
+]
 
 
 class SwitchboardModuleConfig(BaseModel):

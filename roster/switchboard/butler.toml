@@ -51,6 +51,8 @@ enable_ingress_dedupe = true
 
 [modules.switchboard]
 
+[modules.insight_broker]
+
 [[butler.schedule]]
 name = "memory_consolidation"
 cron = "0 */6 * * *"
@@ -69,4 +71,11 @@ name = "eligibility_sweep"
 cron = "*/5 * * * *"
 dispatch_mode = "job"
 job_name = "eligibility_sweep"
+
+# Proactive insight delivery — runs daily at 08:00 UTC
+[[butler.schedule]]
+name = "insight-delivery-cycle"
+cron = "0 8 * * *"
+dispatch_mode = "job"
+job_name = "insight_delivery_cycle"
 
