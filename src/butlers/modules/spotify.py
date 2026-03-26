@@ -93,7 +93,7 @@ class SpotifyModule(Module):
 
     def __init__(self) -> None:
         self._config: SpotifyModuleConfig = SpotifyModuleConfig()
-        self._client: Any = None  # SpotifyClient instance
+        self._client: SpotifyClient | None = None
         self._user_profile: dict[str, Any] | None = None
         self._credentials_ok: bool = False
 
@@ -319,8 +319,9 @@ class SpotifyModule(Module):
                     seed_genres=seed_genres,
                     limit=min(limit, 100),
                 )
-                # If empty tracks due to 403/404, return actionable message
-                if result == {"tracks": []}:
+                # A valid recommendation response always includes a "seeds" key.
+                # If absent, the API is unavailable for this app (e.g., 403/404 sentinel).
+                if "seeds" not in result:
                     return {"error": _RECOMMENDATIONS_UNAVAILABLE_ERROR}
                 return result
             except Exception as exc:  # noqa: BLE001

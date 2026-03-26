@@ -509,7 +509,8 @@ class TestDiscoveryTools:
         self, connected_module: SpotifyModule, mock_mcp: MagicMock
     ):
         connected_module._client.get_recommendations.return_value = {
-            "tracks": [{"name": "Karma Police"}]
+            "tracks": [{"name": "Karma Police"}],
+            "seeds": [{"id": "abc", "type": "ARTIST"}],
         }
         tools = mock_mcp._registered_tools
         result = await tools["spotify_get_recommendations"](
@@ -521,7 +522,7 @@ class TestDiscoveryTools:
     async def test_get_recommendations_unavailable_returns_error(
         self, connected_module: SpotifyModule, mock_mcp: MagicMock
     ):
-        """Empty tracks result triggers the unavailable error."""
+        """Response without 'seeds' key triggers the unavailable error."""
         connected_module._client.get_recommendations.return_value = {"tracks": []}
         tools = mock_mcp._registered_tools
         result = await tools["spotify_get_recommendations"]()
