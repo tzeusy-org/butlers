@@ -29,7 +29,7 @@ from butlers.modules._roster_home import (
     HomeAssistantModule,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +393,11 @@ class TestWebSocketLifecycle:
         module._fetch_entity_registry = _mock_fetch  # type: ignore[method-assign]
         module._ws_subscribe_events = _mock_subscribe  # type: ignore[method-assign]
 
-        await module._ws_reconnect_loop(initial_delay=0.0)
+        async def _fast_sleep(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        with patch("butlers.modules._roster_home.asyncio.sleep", new=_fast_sleep):
+            await module._ws_reconnect_loop(initial_delay=0.0)
 
         assert fallback_stopped, "REST fallback should be stopped after successful reconnect"
         assert "message_loop" in tasks_started
@@ -803,7 +807,8 @@ class TestRestFallback:
         module._fetch_entity_registry = _noop  # type: ignore[method-assign]
         module._ws_subscribe_events = _noop  # type: ignore[method-assign]
 
-        await module._ws_reconnect_loop(initial_delay=0.0)
+        with patch("butlers.modules._roster_home.asyncio.sleep", new=AsyncMock()):
+            await module._ws_reconnect_loop(initial_delay=0.0)
 
         assert stopped, "REST fallback should be stopped after successful reconnect"
 
@@ -833,8 +838,8 @@ class TestDashboardSettingsFlow:
     credential storage layer and the connector's startup credential resolution.
     """
 
-    async def test_credential_store_saves_and_resolves_base_url(self) -> None:
-        """CredentialStore round-trips home_assistant:base_url."""
+    async def test_credential_store_saves_base_url(self) -> None:
+        """CredentialStore stores home_assistant:base_url."""
         from butlers.credential_store import CredentialStore
 
         stored: dict[str, Any] = {}
@@ -867,8 +872,8 @@ class TestDashboardSettingsFlow:
 
         assert stored.get("home_assistant:base_url") == "http://homeassistant.local:8123"
 
-    async def test_credential_store_saves_and_resolves_access_token(self) -> None:
-        """CredentialStore round-trips home_assistant:access_token."""
+    async def test_credential_store_saves_access_token(self) -> None:
+        """CredentialStore stores home_assistant:access_token."""
         from butlers.credential_store import CredentialStore
 
         stored: dict[str, Any] = {}
@@ -1057,14 +1062,22 @@ class TestDashboardSettingsFlow:
 
         mock_cred_store.store = _mock_store
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_http_client = AsyncMock()
-            mock_http_client.get = AsyncMock(return_value=mock_ha_response)
-            mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
-            mock_http_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_http_client
+        # Keep a reference to the real AsyncClient so the ASGI test transport is
+        # not affected. Only the outbound HA validation call (inside the endpoint
+        # handler) is mocked — not the ASGI client used by the test itself.
+        _real_async_client = httpx.AsyncClient
 
-            async with httpx.AsyncClient(
+        async def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
+            if "transport" in kwargs and isinstance(kwargs["transport"], httpx.ASGITransport):
+                return _real_async_client(*args, **kwargs)
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_ha_response)
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=None)
+            return mock_http
+
+        with patch("httpx.AsyncClient", side_effect=_patched_client_factory):
+            async with _real_async_client(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
             ) as client:
@@ -1102,14 +1115,19 @@ class TestDashboardSettingsFlow:
         mock_ha_response.status_code = 401
         mock_ha_response.raise_for_status.side_effect = Exception("401 Unauthorized")
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_http_client = AsyncMock()
-            mock_http_client.get = AsyncMock(return_value=mock_ha_response)
-            mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
-            mock_http_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_http_client
+        _real_async_client = httpx.AsyncClient
 
-            async with httpx.AsyncClient(
+        async def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
+            if "transport" in kwargs and isinstance(kwargs["transport"], httpx.ASGITransport):
+                return _real_async_client(*args, **kwargs)
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_ha_response)
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=None)
+            return mock_http
+
+        with patch("httpx.AsyncClient", side_effect=_patched_client_factory):
+            async with _real_async_client(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
             ) as client:
@@ -1144,14 +1162,19 @@ class TestDashboardSettingsFlow:
 
         app = create_app(api_key="")
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_http_client = AsyncMock()
-            mock_http_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
-            mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
-            mock_http_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_http_client
+        _real_async_client = httpx.AsyncClient
 
-            async with httpx.AsyncClient(
+        async def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
+            if "transport" in kwargs and isinstance(kwargs["transport"], httpx.ASGITransport):
+                return _real_async_client(*args, **kwargs)
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=None)
+            return mock_http
+
+        with patch("httpx.AsyncClient", side_effect=_patched_client_factory):
+            async with _real_async_client(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
             ) as client:
