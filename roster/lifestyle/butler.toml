@@ -1,0 +1,79 @@
+[butler]
+name = "lifestyle"
+port = 41109
+description = "Lifestyle assistant for taste, music, entertainment, food preferences, hobbies, and daily routines"
+
+[butler.runtime]
+max_concurrent_sessions = 3
+
+[butler.db]
+name = "butlers"
+schema = "lifestyle"
+
+[butler.switchboard]
+url = "http://localhost:41100/mcp"
+
+[butler.seed_configs]
+runtime_type = "codex"
+model = "gpt-5.1"
+liveness_ttl_seconds = 300
+route_contract_min = 1
+route_contract_max = 1
+
+[[butler.schedule]]
+name = "memory_consolidation"
+cron = "0 */6 * * *"
+dispatch_mode = "job"
+job_name = "memory_consolidation"
+
+[[butler.schedule]]
+name = "memory_episode_cleanup"
+cron = "0 4 * * *"
+dispatch_mode = "job"
+job_name = "memory_episode_cleanup"
+
+[[butler.schedule]]
+name = "memory_purge_superseded"
+cron = "10 4 * * *"
+dispatch_mode = "job"
+job_name = "memory_purge_superseded"
+
+[[butler.schedule]]
+name = "daily_briefing_contribution"
+cron = "55 6 * * *"
+dispatch_mode = "job"
+job_name = "daily_briefing_contribution"
+
+[[butler.schedule]]
+name = "weekly-taste-digest"
+cron = "0 21 * * 0"
+prompt = """
+Generate a weekly taste digest summarizing the past week's highlights:
+- Music: top artists listened to, new discoveries, playlist activity, listening hours
+- Entertainment: what was watched, read, or played this week
+- Food: notable meals, restaurant visits, or food experiences
+- Hobbies: activity highlights and anything new tried
+
+Search memory for recent facts using the lifestyle domain taxonomy (likes_artist, watches, reads, plays, listens_to, food_preference, favorite_restaurant, hobby predicates).
+
+Deliver the digest via notify(channel="telegram", intent="send", message=<digest>).
+If there are no notable highlights this week, exit silently without sending.
+"""
+
+[modules.memory]
+
+[modules.calendar]
+provider = "google"
+
+[modules.calendar.conflicts]
+policy = "suggest"
+
+[modules.contacts]
+provider = "google"
+include_other_contacts = false
+
+[modules.contacts.sync]
+enabled = true
+run_on_startup = true
+interval_minutes = 15
+full_sync_interval_days = 6
