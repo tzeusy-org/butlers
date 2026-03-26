@@ -114,21 +114,27 @@ except (ImportError, AttributeError):
     anomaly_scan = None  # type: ignore[assignment]
     detect_duplicates = None  # type: ignore[assignment]
 
-# --- Budget management and spending analytics (finance-intelligence) ---
+# --- Budget management CRUD (bu-wkzn) ---
 try:
     from butlers.tools.finance.budgets import (  # type: ignore[attr-defined]
         budget_list,
         budget_remove,
         budget_set,
         budget_status,
-        spending_forecast,
-        spending_trends,
     )
 except (ImportError, AttributeError):
     budget_set = None  # type: ignore[assignment]
     budget_list = None  # type: ignore[assignment]
     budget_remove = None  # type: ignore[assignment]
     budget_status = None  # type: ignore[assignment]
+
+# --- Spending analytics (finance-intelligence) ---
+try:
+    from butlers.tools.finance.budgets import (  # type: ignore[attr-defined]
+        spending_forecast,
+        spending_trends,
+    )
+except (ImportError, AttributeError):
     spending_trends = None  # type: ignore[assignment]
     spending_forecast = None  # type: ignore[assignment]
 

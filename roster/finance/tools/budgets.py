@@ -192,6 +192,14 @@ async def budget_set(
         Decimal(str(alert_threshold)) if alert_threshold is not None else DEFAULT_ALERT_THRESHOLD
     )
 
+    # Validate threshold ranges and ordering.
+    if not (Decimal("0") <= warn <= Decimal("1")):
+        raise ValueError(f"warn_threshold must be between 0.0 and 1.0 inclusive, got: {warn}")
+    if not (Decimal("0") <= alert <= Decimal("2")):
+        raise ValueError(f"alert_threshold must be between 0.0 and 2.0 inclusive, got: {alert}")
+    if warn > alert:
+        raise ValueError(f"warn_threshold ({warn}) must not exceed alert_threshold ({alert})")
+
     now = datetime.now(UTC)
 
     async with pool.acquire() as conn:
@@ -350,6 +358,21 @@ async def budget_status(
         return {"items": [], "count": 0}
 
     now = datetime.now(UTC)
+
+    # Check whether transactions.deleted_at exists (added by finance-data-model-redesign).
+    # Guard the filter dynamically so budget_status works on schemas both with and without it.
+    has_deleted_at = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name   = 'transactions'
+               AND column_name  = 'deleted_at'
+        )
+        """
+    )
+    deleted_filter = "AND deleted_at IS NULL" if has_deleted_at else ""
+
     items: list[dict[str, Any]] = []
 
     for budget in budgets:
@@ -362,22 +385,21 @@ async def budget_status(
 
         trunc_unit = _period_trunc(period)
 
-        # Aggregate debit spending in the current period window.
-        # Note: deleted_at IS NULL guard is intentional — the finance-data-model-redesign
-        # change adds soft-delete support to transactions. Until that migration is applied,
-        # no rows will have deleted_at set, so this clause safely no-ops on older schemas.
-        # Tests provision the table with deleted_at to validate the full contract.
+        # Aggregate debit spending for this category and currency in the current period window.
+        # Filter by currency to avoid incorrect cross-currency aggregation.
         spending_row = await pool.fetchrow(
-            """
+            f"""
             SELECT COALESCE(SUM(amount), 0) AS spent
               FROM transactions
              WHERE direction = 'debit'
-               AND deleted_at IS NULL
+               {deleted_filter}
                AND category = $1
-               AND DATE_TRUNC($2, posted_at AT TIME ZONE 'UTC')
-                   = DATE_TRUNC($2, $3::TIMESTAMPTZ AT TIME ZONE 'UTC')
+               AND currency = $2
+               AND DATE_TRUNC($3, posted_at AT TIME ZONE 'UTC')
+                   = DATE_TRUNC($3, $4::TIMESTAMPTZ AT TIME ZONE 'UTC')
             """,
             category,
+            currency,
             trunc_unit,
             now,
         )
