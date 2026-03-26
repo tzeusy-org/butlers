@@ -567,34 +567,30 @@ class TestScenario5DiscoveryFallback:
     async def test_recommendations_403_returns_unavailable_error(
         self, module_with_valid_creds: tuple[SpotifyModule, MagicMock]
     ) -> None:
-        """A 403 from the recommendations endpoint returns the unavailability error."""
-        from butlers.connectors.spotify_client import SpotifyAPIError
+        """A 403 from the recommendations endpoint returns the unavailability error.
 
+        SpotifyClient.get_recommendations catches 403 and returns {"tracks": []}
+        (no "seeds" key). The module tool detects the missing "seeds" sentinel and
+        returns _RECOMMENDATIONS_UNAVAILABLE_ERROR.
+        """
         module, mcp = module_with_valid_creds
         assert module._client is not None
 
-        # Inject a 403 response — the SpotifyClient will raise SpotifyAPIError
+        # Inject a 403 response at the HTTP level.
+        # SpotifyClient._request raises SpotifyAPIError(403) → get_recommendations
+        # catches it and returns {"tracks": []} (no "seeds" key) → the module tool
+        # returns _RECOMMENDATIONS_UNAVAILABLE_ERROR.
         forbidden_response = _make_http_response(
             403, {"error": {"status": 403, "message": "Forbidden"}}
         )
         module._client._http_client = _make_mock_http_client([forbidden_response])
 
-        # Patch SpotifyClient.get_recommendations to raise SpotifyAPIError(403, ...)
-        # since the HTTP-level mock on _http_client will be invoked through _request()
-        from unittest.mock import patch
-
-        async def _raise_403(*args: Any, **kwargs: Any) -> dict[str, Any]:
-            raise SpotifyAPIError(403, "Forbidden: not available for this app")
-
-        with patch.object(module._client, "get_recommendations", side_effect=_raise_403):
-            result = await mcp._registered_tools["spotify_get_recommendations"](
-                seed_genres=["rock"], limit=5
-            )
+        result = await mcp._registered_tools["spotify_get_recommendations"](
+            seed_genres=["rock"], limit=5
+        )
 
         assert "error" in result
-        # 403 with "premium" in body → premium required; without → generic API error
-        # The _RECOMMENDATIONS_UNAVAILABLE_ERROR is returned only when seeds are missing
-        assert result["error"]
+        assert result["error"] == _RECOMMENDATIONS_UNAVAILABLE_ERROR
 
     async def test_recommendations_missing_seeds_key_triggers_fallback(
         self, module_with_valid_creds: tuple[SpotifyModule, MagicMock]
