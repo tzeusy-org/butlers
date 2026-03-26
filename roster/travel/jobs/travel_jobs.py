@@ -336,6 +336,20 @@ async def run_trip_document_expiry(db_pool: asyncpg.Pool) -> dict[str, Any]:
     }
 
 
+def _parse_date_from_db(value: Any) -> date | None:
+    """Parse a date value from a database row which may be a date, datetime, or string."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
 async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Generate proactive insight candidates for the travel domain.
 
@@ -415,7 +429,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         SELECT id, name, destination, start_date, end_date, status
         FROM travel.trips
         WHERE status = 'planned'
-          AND start_date > $1
+          AND start_date >= $1
           AND start_date <= $2
         ORDER BY start_date ASC
         """,
@@ -424,12 +438,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     )
 
     for row in trip_rows:
-        start_date_val = row["start_date"]
-        if isinstance(start_date_val, str):
-            start_d = date.fromisoformat(start_date_val)
-        elif isinstance(start_date_val, date):
-            start_d = start_date_val
-        else:
+        start_d = _parse_date_from_db(row["start_date"])
+        if start_d is None:
             continue
 
         days_until = (start_d - today).days
@@ -489,12 +499,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     )
 
     for row in doc_rows:
-        expiry_val = row["expiry_date"]
-        if isinstance(expiry_val, str):
-            expiry_d = date.fromisoformat(expiry_val)
-        elif isinstance(expiry_val, date):
-            expiry_d = expiry_val
-        else:
+        expiry_d = _parse_date_from_db(row["expiry_date"])
+        if expiry_d is None:
             continue
 
         days_until_expiry = (expiry_d - today).days
@@ -553,7 +559,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         )
         if med_row is not None:
             has_active_meds = bool(med_row["has_meds"])
-    except Exception:
+    except (asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError):
         # shared.medications may not exist on all deployments — graceful no-op
         logger.debug(
             "Travel insight scan: shared.medications not available, "
@@ -567,7 +573,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             SELECT id, name, destination, start_date, end_date, status
             FROM travel.trips
             WHERE status = 'planned'
-              AND start_date > $1
+              AND start_date >= $1
               AND start_date <= $2
             ORDER BY start_date ASC
             """,
@@ -576,19 +582,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         )
 
         for row in med_trip_rows:
-            start_date_val = row["start_date"]
-            end_date_val = row["end_date"]
-            if isinstance(start_date_val, str):
-                start_d = date.fromisoformat(start_date_val)
-            elif isinstance(start_date_val, date):
-                start_d = start_date_val
-            else:
-                continue
-            if isinstance(end_date_val, str):
-                end_d = date.fromisoformat(end_date_val)
-            elif isinstance(end_date_val, date):
-                end_d = end_date_val
-            else:
+            start_d = _parse_date_from_db(row["start_date"])
+            end_d = _parse_date_from_db(row["end_date"])
+            if start_d is None or end_d is None:
                 continue
 
             trip_duration = (end_d - start_d).days
