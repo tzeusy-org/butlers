@@ -1,0 +1,4 @@
+interface:
+  display_name: "Adding Connectors & Modules"
+  short_description: "Guide for adding new connectors and modules to Butlers"
+  default_prompt: "Use $adding-connectors-and-modules to plan and spec a new external service integration"
