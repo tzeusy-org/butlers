@@ -11,7 +11,8 @@ Adds two tables for the progressive autonomy ladder:
   suggestions with their lifecycle state.
 
 Also extends the approval_events_type_check constraint to include the seven new
-autonomy lifecycle event types.
+autonomy lifecycle event types, and relaxes approval_events_link_check to allow
+suggestion lifecycle events to have both action_id and rule_id as NULL.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ def upgrade() -> None:
             pattern_fingerprint VARCHAR(64) NOT NULL,
             tool_name TEXT NOT NULL,
             tool_args JSONB NOT NULL,
-            action_id UUID REFERENCES pending_actions(id),
+            action_id UUID REFERENCES pending_actions(id) ON DELETE SET NULL,
             approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             time_to_decision_seconds DOUBLE PRECISION
         )
@@ -61,7 +62,7 @@ def upgrade() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             decided_at TIMESTAMPTZ,
             decided_by TEXT,
-            resulting_rule_id UUID REFERENCES approval_rules(id),
+            resulting_rule_id UUID REFERENCES approval_rules(id) ON DELETE SET NULL,
             cooldown_until TIMESTAMPTZ,
             dismissal_reason TEXT,
             CONSTRAINT autonomy_suggestions_type_check
@@ -80,8 +81,10 @@ def upgrade() -> None:
             ON autonomy_suggestions (status, created_at)
     """)
 
-    # --- extend approval_events CHECK constraint with autonomy event types ----
+    # --- extend approval_events CHECK constraints with autonomy event types ---
     # PostgreSQL does not support ALTER CONSTRAINT directly; we drop and recreate.
+
+    # 1. Extend approval_events_type_check to include the seven new autonomy types.
     op.execute("""
         DO $$
         BEGIN
@@ -119,9 +122,50 @@ def upgrade() -> None:
                 ))
     """)
 
+    # 2. Relax approval_events_link_check to allow suggestion lifecycle events
+    #    (promotion_*/demotion_*) to carry NULL action_id AND NULL rule_id.
+    #    The original constraint required at least one FK to be non-NULL, which
+    #    breaks when recording events such as promotion_suggested / demotion_dismissed
+    #    that are not tied to a specific action or rule.
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE table_name = 'approval_events'
+                  AND constraint_name = 'approval_events_link_check'
+            ) THEN
+                ALTER TABLE approval_events
+                    DROP CONSTRAINT approval_events_link_check;
+            END IF;
+        END;
+        $$;
+    """)
+    op.execute("""
+        ALTER TABLE approval_events
+            ADD CONSTRAINT approval_events_link_check
+                CHECK (
+                    action_id IS NOT NULL
+                    OR rule_id IS NOT NULL
+                    OR event_type IN (
+                        'promotion_suggested',
+                        'promotion_confirmed',
+                        'promotion_dismissed',
+                        'promotion_superseded',
+                        'demotion_suggested',
+                        'demotion_confirmed',
+                        'demotion_dismissed'
+                    )
+                )
+    """)
+
 
 def downgrade() -> None:
-    # Restore the original CHECK constraint (sans autonomy types)
+    # Drop new tables before restoring constraints (tables may hold FK references).
+    op.execute("DROP TABLE IF EXISTS autonomy_suggestions")
+    op.execute("DROP TABLE IF EXISTS autonomy_approval_history")
+
+    # Restore the original approval_events_type_check (sans autonomy types).
     op.execute("""
         DO $$
         BEGIN
@@ -152,5 +196,23 @@ def downgrade() -> None:
                 ))
     """)
 
-    op.execute("DROP TABLE IF EXISTS autonomy_suggestions")
-    op.execute("DROP TABLE IF EXISTS autonomy_approval_history")
+    # Restore the original approval_events_link_check (requiring action_id or rule_id).
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE table_name = 'approval_events'
+                  AND constraint_name = 'approval_events_link_check'
+            ) THEN
+                ALTER TABLE approval_events
+                    DROP CONSTRAINT approval_events_link_check;
+            END IF;
+        END;
+        $$;
+    """)
+    op.execute("""
+        ALTER TABLE approval_events
+            ADD CONSTRAINT approval_events_link_check
+                CHECK (action_id IS NOT NULL OR rule_id IS NOT NULL)
+    """)
