@@ -112,4 +112,5 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_corrections_correction_type")
     op.execute("DROP INDEX IF EXISTS idx_corrections_correcting_session_id_created_at")
     op.execute("DROP INDEX IF EXISTS idx_corrections_target_session_id_created_at")
+    op.execute("DROP INDEX IF EXISTS idx_corrections_target_session_id")
     op.execute("DROP TABLE IF EXISTS corrections")
