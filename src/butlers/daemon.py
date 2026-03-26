@@ -1559,6 +1559,19 @@ class ButlerDaemon:
             )
             await self.blob_store.startup_check()
 
+        # 8c2. Restore CLI auth tokens from DB to filesystem (non-fatal).
+        #      Ensures LLM runtime CLIs have their auth files (e.g. OpenCode's
+        #      auth.json) written to disk before the spawner tries to invoke them.
+        try:
+            from butlers.cli_auth.persistence import restore_tokens
+
+            results = await restore_tokens(credential_store)
+            restored = sum(1 for v in results.values() if v)
+            if restored:
+                logger.info("Restored %d CLI auth token(s) from DB", restored)
+        except Exception:
+            logger.debug("CLI auth token restoration skipped", exc_info=True)
+
         # 8d. Bootstrap owner entity (idempotent; non-fatal).
         #     Ensures owner entity exists in shared.entities.
         await _ensure_owner_entity(pool)

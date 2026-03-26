@@ -934,6 +934,23 @@ class OpenCodeAdapter(RuntimeAdapter):
                         f"OpenCode CLI exited with code {returncode}: {error_detail}"
                     )
 
+                # OpenCode CLI exits 0 even on fatal errors like
+                # ProviderModelNotFoundError. Detect these via stderr.
+                if stderr and not stdout.strip():
+                    for pattern in (
+                        "ProviderModelNotFoundError",
+                        "Model not found:",
+                        "AuthenticationError",
+                    ):
+                        if pattern in stderr:
+                            logger.error(
+                                "OpenCode CLI exited 0 but stderr indicates failure: %s",
+                                stderr[:500],
+                            )
+                            raise RuntimeError(
+                                f"OpenCode CLI error (exit 0): {stderr.strip()[:300]}"
+                            )
+
                 result_text, tool_calls, usage = _parse_opencode_output(stdout, stderr, returncode)
                 return result_text, tool_calls, usage
 

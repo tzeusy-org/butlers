@@ -2203,3 +2203,58 @@ async def test_invoke_with_envelope_output():
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Stderr error detection (exit code 0 + fatal error on stderr)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_invoke_exit_zero_with_provider_model_not_found_raises():
+    """invoke() raises RuntimeError when exit 0 but stderr has ProviderModelNotFoundError."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    stderr_msg = (
+        "ProviderModelNotFoundError: ProviderModelNotFoundError\n"
+        " data: {\n"
+        '  providerID: "opencode-go",\n'
+        '  modelID: "minimax-m2.7",\n'
+        "  suggestions: [],\n"
+        "},\n"
+    )
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", stderr_msg.encode()))
+    mock_proc.returncode = 0
+    mock_proc.pid = 999
+
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError, match="ProviderModelNotFoundError"):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
+
+
+@pytest.mark.asyncio
+async def test_invoke_exit_zero_with_stderr_but_stdout_present_does_not_raise():
+    """invoke() does NOT raise when stderr has warnings but stdout has valid output."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    stdout = json.dumps({"type": "result", "result": "OK"}) + "\n"
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(stdout.encode(), b"some warning text"))
+    mock_proc.returncode = 0
+    mock_proc.pid = 999
+
+    with patch(_EXEC, return_value=mock_proc):
+        result_text, _, _ = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    assert result_text == "OK"
