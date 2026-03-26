@@ -57,6 +57,12 @@ cron = "55 6 * * *"
 dispatch_mode = "job"
 job_name = "daily_briefing_contribution"
 
+[[butler.schedule]]
+name = "insight_scan"
+cron = "0 7 15 * *"
+dispatch_mode = "job"
+job_name = "insight_scan"
+
 [modules.calendar]
 provider = "google"
 
