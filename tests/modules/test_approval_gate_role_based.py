@@ -807,6 +807,44 @@ class TestRoleBasedGating:
         assert rule is not None
         assert rule["use_count"] == 0, "Standing rule should NOT be used for owner auto-approve"
 
+    async def test_insight_intent_owner_targeted_auto_approves(self):
+        """Owner-targeted notify with insight intent auto-approves (role-based bypass). [bu-iuuc]
+
+        The approval gate is intent-agnostic: it resolves the target contact and
+        auto-approves when they have the owner role, regardless of intent.
+        """
+        pool = RoleAwareMockPool()
+        pool.register_contact("telegram", OWNER_CHAT_ID, _make_owner_contact())
+
+        mock_mcp = _make_mock_mcp()
+        call_log: list[dict] = []
+
+        @mock_mcp.tool()
+        async def notify(channel: str, recipient: str, message: str, intent: str = "send") -> dict:
+            call_log.append({"channel": channel, "recipient": recipient, "intent": intent})
+            return {"status": "sent"}
+
+        config = _make_approval_config("notify")
+        await apply_approval_gates(mock_mcp, config, pool)
+
+        wrapper = (await mock_mcp._tool_manager.get_tools())["notify"].fn
+        result = await wrapper(
+            channel="telegram",
+            recipient=OWNER_CHAT_ID,
+            message="Your resting heart rate trend improved this week.",
+            intent="insight",
+        )
+
+        # Should execute immediately (not pending) — owner bypass is intent-agnostic
+        assert result.get("status") == "sent"
+        assert call_log, "Original tool function should have been called"
+        assert call_log[0]["intent"] == "insight"
+
+        # Action persisted as APPROVED (not PENDING)
+        assert len(pool.pending_actions) == 1
+        action = next(iter(pool.pending_actions.values()))
+        assert action["decided_by"] == "role:owner"
+
     async def test_pending_response_structure(self):
         """Pending approval response has correct structure and fields."""
         pool = RoleAwareMockPool()

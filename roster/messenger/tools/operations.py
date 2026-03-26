@@ -79,9 +79,12 @@ async def messenger_validate_notify(
 
     # Required delivery fields
     intent = delivery.get("intent")
-    if intent not in ("send", "reply"):
+    if intent not in ("send", "reply", "insight"):
         errors.append(
-            {"field": "delivery.intent", "error": f"must be 'send' or 'reply', got: {intent}"}
+            {
+                "field": "delivery.intent",
+                "error": f"must be 'send', 'reply', or 'insight', got: {intent}",
+            }
         )
 
     channel = delivery.get("channel")
@@ -184,8 +187,8 @@ async def messenger_dry_run(
 
     # Target resolution
     target_identity: str | None = None
-    if intent == "send":
-        # Explicit recipient or policy default
+    if intent in ("send", "insight"):
+        # Explicit recipient or policy default (insight behaves like send for delivery mechanics)
         target_identity = delivery.get("recipient")
         if not target_identity:
             target_identity = f"<policy-default-for-{channel}>"

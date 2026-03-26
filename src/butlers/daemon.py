@@ -4442,8 +4442,10 @@ class ButlerDaemon:
                 Field(description="Optional subject line (email channel)."),
             ] = None,
             intent: Annotated[
-                Literal["send", "reply", "react"],
-                Field(description="Delivery intent. Allowed values: send | reply | react."),
+                Literal["send", "reply", "react", "insight"],
+                Field(
+                    description="Delivery intent. Allowed values: send | reply | react | insight."
+                ),
             ] = "send",
             emoji: Annotated[
                 str | None,
@@ -4487,7 +4489,7 @@ class ButlerDaemon:
               preferred. If no matching entry exists the notification is parked as a pending_action
               and `{"status": "pending_missing_identifier"}` is returned.
             - `subject` (string)
-            - `intent` (string enum): `send` | `reply` | `react`
+            - `intent` (string enum): `send` | `reply` | `react` | `insight`
             - `emoji` (string): required when `intent="react"`
             - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
               include `request_id`, `source_channel`, `source_endpoint_identity`,
@@ -4548,10 +4550,10 @@ class ButlerDaemon:
                     ),
                 }
 
-            if intent not in {"send", "reply", "react"}:
+            if intent not in {"send", "reply", "react", "insight"}:
                 return {
                     "status": "error",
-                    "error": "Unsupported notify intent. Supported intents: send, reply, react",
+                    "error": "Unsupported notify intent. Supported intents: send, reply, react, insight",  # noqa: E501
                 }
 
             # React intent validation
@@ -4715,7 +4717,11 @@ class ButlerDaemon:
                     request_context=request_context,
                 )
 
-            if channel == "telegram" and intent == "send" and resolved_recipient is None:
+            if (
+                channel == "telegram"
+                and intent in {"send", "insight"}
+                and resolved_recipient is None
+            ):
                 return {
                     "status": "error",
                     "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,

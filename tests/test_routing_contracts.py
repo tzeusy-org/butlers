@@ -932,3 +932,139 @@ def test_home_assistant_idempotency_key_format():
         parsed.control.idempotency_key
         == "ha:http://homeassistant.local:8123:light.living_room:1711497600000"
     )
+
+
+# ---------------------------------------------------------------------------
+# Insight intent contract validations (bu-iuuc)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_insight_intent_accepted():
+    """notify.v1 insight intent is accepted as a valid delivery intent."""
+    payload = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+            "message": "Your resting heart rate trend improved this week.",
+            "recipient": "123456789",
+        },
+    }
+    result = parse_notify_request(payload)
+    assert result.delivery.intent == "insight"
+    assert result.delivery.message == "Your resting heart rate trend improved this week."
+
+
+@pytest.mark.unit
+def test_insight_intent_requires_message():
+    """notify.v1 insight intent rejects empty message."""
+    payload = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+            "message": "",
+            "recipient": "123456789",
+        },
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        parse_notify_request(payload)
+    assert "message" in str(exc_info.value).lower() or "insight" in str(exc_info.value).lower()
+
+
+@pytest.mark.unit
+def test_insight_intent_rejects_whitespace_only_message():
+    """notify.v1 insight intent rejects whitespace-only message."""
+    payload = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+            "message": "   ",
+            "recipient": "123456789",
+        },
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        parse_notify_request(payload)
+    assert "message" in str(exc_info.value).lower() or "insight" in str(exc_info.value).lower()
+
+
+@pytest.mark.unit
+def test_insight_intent_request_context_is_optional():
+    """notify.v1 insight intent does not require request_context (same as send)."""
+    payload = {
+        "schema_version": "notify.v1",
+        "origin_butler": "finance",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+            "message": "Your monthly spending is on track.",
+            "recipient": "987654321",
+        },
+        # request_context intentionally omitted
+    }
+    result = parse_notify_request(payload)
+    assert result.delivery.intent == "insight"
+    assert result.request_context is None
+
+
+@pytest.mark.unit
+def test_insight_intent_accepts_optional_request_context():
+    """notify.v1 insight intent accepts an optional request_context when provided."""
+    req_id = "01916b9d-1234-7000-abcd-123456789abc"
+    payload = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+            "message": "You hit 8,000 steps today!",
+            "recipient": "123456789",
+        },
+        "request_context": {
+            "request_id": req_id,
+            "source_channel": "mcp",
+            "source_endpoint_identity": "butler:health",
+            "source_sender_identity": "health",
+        },
+    }
+    result = parse_notify_request(payload)
+    assert result.delivery.intent == "insight"
+    assert result.request_context is not None
+    assert result.request_context.source_sender_identity == "health"
+
+
+@pytest.mark.unit
+def test_insight_intent_is_in_notify_intent_literal():
+    """NotifyIntent literal includes 'insight' as a valid value."""
+    from butlers.tools.switchboard.routing.contracts import NotifyDeliveryV1
+
+    # Build a delivery with insight intent — should not raise
+    delivery = NotifyDeliveryV1(
+        intent="insight",
+        channel="telegram",
+        message="Test insight message",
+        recipient="123456789",
+    )
+    assert delivery.intent == "insight"
+
+
+@pytest.mark.unit
+def test_unsupported_intent_rejected():
+    """notify.v1 rejects unknown delivery intent values."""
+    payload = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "broadcast",  # not a valid intent
+            "channel": "telegram",
+            "message": "Some message",
+            "recipient": "123456789",
+        },
+    }
+    with pytest.raises(ValidationError):
+        parse_notify_request(payload)
