@@ -229,7 +229,8 @@ async def list_transactions(
     has_deleted_at = await pool.fetchval(
         """
         SELECT COUNT(*) FROM information_schema.columns
-        WHERE table_name = 'transactions' AND column_name = 'deleted_at'
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
         """
     )
 
@@ -435,6 +436,16 @@ async def delete_transaction(
         ``{"error": "transaction_not_found", "transaction_id": ...}``
         when the transaction does not exist.
     """
+    has_deleted_at = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
+        """
+    )
+    if not has_deleted_at:
+        return {"error": "soft_delete_not_supported", "transaction_id": transaction_id}
+
     row = await pool.fetchrow(
         """
         UPDATE transactions
@@ -491,10 +502,24 @@ async def merge_duplicates(
             "discard_id": discard_id,
         }
 
+    has_deleted_at = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
+        """
+    )
+    if not has_deleted_at:
+        return {
+            "error": "soft_delete_not_supported",
+            "keep_id": keep_id,
+            "discard_id": discard_id,
+        }
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             keep_row = await conn.fetchrow(
-                "SELECT * FROM transactions WHERE id = $1::uuid",
+                "SELECT * FROM transactions WHERE id = $1::uuid AND deleted_at IS NULL",
                 keep_id,
             )
             if keep_row is None:
@@ -505,7 +530,7 @@ async def merge_duplicates(
                 }
 
             discard_row = await conn.fetchrow(
-                "SELECT * FROM transactions WHERE id = $1::uuid",
+                "SELECT * FROM transactions WHERE id = $1::uuid AND deleted_at IS NULL",
                 discard_id,
             )
             if discard_row is None:
@@ -596,7 +621,8 @@ async def split_transaction(
     has_deleted_at = await pool.fetchval(
         """
         SELECT COUNT(*) FROM information_schema.columns
-        WHERE table_name = 'transactions' AND column_name = 'deleted_at'
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
         """
     )
     not_deleted_cond = "AND deleted_at IS NULL" if has_deleted_at else ""
@@ -748,7 +774,8 @@ async def bulk_recategorize(
     has_deleted_at = await pool.fetchval(
         """
         SELECT COUNT(*) FROM information_schema.columns
-        WHERE table_name = 'transactions' AND column_name = 'deleted_at'
+        WHERE table_schema = current_schema()
+          AND table_name = 'transactions' AND column_name = 'deleted_at'
         """
     )
     deleted_cond = "AND deleted_at IS NULL" if has_deleted_at else ""
