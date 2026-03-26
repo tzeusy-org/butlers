@@ -137,6 +137,7 @@ PY
       TS_BASE="https://${TS_HOSTNAME}:${TAILSCALE_HTTPS_PORT}"
     fi
     export GOOGLE_OAUTH_REDIRECT_URI="${TS_BASE}/butlers-api/api/oauth/google/callback"
+    export SPOTIFY_OAUTH_REDIRECT_URI="${TS_BASE}/butlers-api/api/connectors/spotify/oauth/callback"
     export OWNTRACKS_CONNECTOR_HOST="${TS_HOSTNAME}"
     export OWNTRACKS_CONNECTOR_PORT="${TAILSCALE_HTTPS_PORT}"
 
@@ -145,7 +146,8 @@ PY
     echo "  Dashboard:      ${TS_BASE}/butlers/"
     echo "  API:            ${TS_BASE}/butlers-api/api"
     echo "  OwnTracks:      ${TS_BASE}/owntracks/webhook"
-    echo "  OAuth callback: ${GOOGLE_OAUTH_REDIRECT_URI}"
+    echo "  OAuth (Google):  ${GOOGLE_OAUTH_REDIRECT_URI}"
+    echo "  OAuth (Spotify): ${SPOTIFY_OAUTH_REDIRECT_URI}"
   else
     echo "Tailscale serve: mappings applied (could not resolve hostname)"
   fi

@@ -71,7 +71,7 @@ from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
-from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 if TYPE_CHECKING:
@@ -1714,6 +1714,7 @@ async def run_owntracks_connector() -> None:
 
     db_params = db_params_from_env()
     shared_db_name = shared_db_name_from_env()
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared")
     # Create DB pool for credentials and policy rules
     db_pool: asyncpg.Pool | None = None
     try:
@@ -1726,6 +1727,13 @@ async def run_owntracks_connector() -> None:
             "min_size": 1,
             "max_size": 5,
         }
+        if shared_schema:
+            try:
+                pool_kwargs["server_settings"] = {
+                    "search_path": schema_search_path(shared_schema)
+                }
+            except ValueError:
+                pass
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)
         except Exception as exc:

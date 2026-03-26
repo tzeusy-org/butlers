@@ -69,7 +69,7 @@ from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
-from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 if TYPE_CHECKING:
@@ -1611,6 +1611,7 @@ async def run_spotify_connector() -> None:
 
     db_params = db_params_from_env()
     shared_db_name = shared_db_name_from_env()
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared")
     local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers").strip() or "butlers"
 
     # Create DB pool for credentials and policy rules
@@ -1626,6 +1627,13 @@ async def run_spotify_connector() -> None:
             "max_size": 5,
             "command_timeout": 10,
         }
+        if shared_schema:
+            try:
+                pool_kwargs["server_settings"] = {
+                    "search_path": schema_search_path(shared_schema)
+                }
+            except ValueError:
+                pass
         ssl = db_params.get("ssl")
         if ssl is not None:
             pool_kwargs["ssl"] = ssl
