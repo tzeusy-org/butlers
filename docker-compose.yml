@@ -474,6 +474,40 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  connector-google-drive:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_drive", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_drive"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: google_drive
+      CONNECTOR_CHANNEL: google_drive
+      CONNECTOR_HEALTH_PORT: "40088"
+      CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
+      BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
+      BUTLER_SHARED_DB_SCHEMA: shared
+      GDRIVE_POLL_INTERVAL_S: ${GDRIVE_POLL_INTERVAL_S:-300}
+      GDRIVE_ACCOUNT_RESCAN_INTERVAL_S: ${GDRIVE_ACCOUNT_RESCAN_INTERVAL_S:-300}
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      butlers-up:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:40088/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
   # ── Hotreload profile ─────────────────────────────────────────────────
   # Volume-mount source for live code changes. Use --scale butlers-up=0
   # --scale dashboard-api=0 to prevent conflicts (handled by dev-compose.sh).
