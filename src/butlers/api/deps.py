@@ -461,6 +461,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         sessions,
         spotify,
         state,
+        steam,
         timeline,
     )
 
@@ -488,6 +489,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         sessions,
         spotify,
         state,
+        steam,
         timeline,
     ]:
         app.dependency_overrides[module._get_db_manager] = get_db_manager
