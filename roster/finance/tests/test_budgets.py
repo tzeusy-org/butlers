@@ -6,7 +6,7 @@ a real database (no Docker required). All tests are marked unit.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -685,3 +685,730 @@ class TestSpendingForecastResponseShape:
             result = await spending_forecast(pool)
 
         assert result["categories"] == []
+
+
+# =============================================================================
+# Budget CRUD integration tests (require provisioned_postgres_pool fixture)
+# These tests run against a real in-process Postgres instance and are NOT marked
+# "unit" so they are excluded from the mock-only test run.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Schema helpers (CRUD tests provision their own tables)
+# ---------------------------------------------------------------------------
+
+_CREATE_BUDGETS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS budgets (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    category         TEXT NOT NULL,
+    period           TEXT NOT NULL
+                         CHECK (period IN ('weekly', 'monthly', 'quarterly', 'yearly')),
+    amount           NUMERIC(14, 2) NOT NULL,
+    currency         CHAR(3) NOT NULL DEFAULT 'USD',
+    warn_threshold   NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
+    alert_threshold  NUMERIC(5, 4) NOT NULL DEFAULT 1.0000,
+    is_active        BOOLEAN NOT NULL DEFAULT true,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+# Includes deleted_at column per finance-data-model-redesign spec contract
+_CREATE_TRANSACTIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS transactions (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id        UUID,
+    source_message_id TEXT,
+    posted_at         TIMESTAMPTZ NOT NULL,
+    merchant          TEXT NOT NULL,
+    description       TEXT,
+    amount            NUMERIC(14, 2) NOT NULL,
+    currency          CHAR(3) NOT NULL,
+    direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
+    category          TEXT NOT NULL,
+    payment_method    TEXT,
+    receipt_url       TEXT,
+    external_ref      TEXT,
+    deleted_at        TIMESTAMPTZ,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+
+@pytest.fixture
+async def budget_pool(provisioned_postgres_pool):
+    """Provision a fresh database with finance budgets and transactions tables."""
+    async with provisioned_postgres_pool() as p:
+        await p.execute(_CREATE_BUDGETS_TABLE_SQL)
+        await p.execute(_CREATE_TRANSACTIONS_TABLE_SQL)
+        yield p
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _insert_tx(
+    pool,
+    *,
+    merchant: str = "Test Merchant",
+    amount: str = "50.00",
+    currency: str = "USD",
+    direction: str = "debit",
+    category: str = "groceries",
+    posted_at: datetime | None = None,
+    deleted_at: datetime | None = None,
+) -> None:
+    """Insert a transaction row directly for test setup."""
+    if posted_at is None:
+        posted_at = datetime.now(UTC)
+    await pool.execute(
+        """
+        INSERT INTO transactions
+            (merchant, amount, currency, direction, category, posted_at, deleted_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+        merchant,
+        Decimal(amount),
+        currency,
+        direction,
+        category,
+        posted_at,
+        deleted_at,
+    )
+
+
+def _now_mid_month() -> datetime:
+    """Return a datetime firmly within the current calendar month."""
+    today = datetime.now(UTC)
+    return today.replace(day=max(1, today.day - 1), hour=12, minute=0, second=0, microsecond=0)
+
+
+# ---------------------------------------------------------------------------
+# budget_set tests
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetSet:
+    """Tests for budget_set (create/upsert)."""
+
+    async def test_creates_new_budget(self, budget_pool):
+        """Creating a new budget returns a full budget row."""
+        from butlers.tools.finance.budgets import budget_set
+
+        result = await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+
+        assert result["category"] == "groceries"
+        assert Decimal(result["amount"]) == Decimal("500.00")
+        assert result["period"] == "monthly"
+        assert result["currency"] == "USD"
+        assert result["is_active"] is True
+        assert result["id"] is not None
+        assert "created_at" in result
+
+    async def test_creates_with_explicit_currency(self, budget_pool):
+        """Budget currency is stored as uppercase ISO-4217."""
+        from butlers.tools.finance.budgets import budget_set
+
+        result = await budget_set(
+            budget_pool, category="travel", amount=1000.0, period="monthly", currency="eur"
+        )
+        assert result["currency"] == "EUR"
+
+    async def test_creates_with_custom_thresholds(self, budget_pool):
+        """Custom warn/alert thresholds are persisted correctly."""
+        from butlers.tools.finance.budgets import budget_set
+
+        result = await budget_set(
+            budget_pool,
+            category="dining",
+            amount=200.0,
+            period="monthly",
+            warn_threshold=0.75,
+            alert_threshold=0.95,
+        )
+        assert Decimal(result["warn_threshold"]) == Decimal("0.7500")
+        assert Decimal(result["alert_threshold"]) == Decimal("0.9500")
+
+    async def test_default_thresholds(self, budget_pool):
+        """Default warn=0.80 and alert=1.00 are applied when not specified."""
+        from butlers.tools.finance.budgets import budget_set
+
+        result = await budget_set(
+            budget_pool, category="utilities", amount=150.0, period="monthly"
+        )
+        assert Decimal(result["warn_threshold"]) == Decimal("0.8000")
+        assert Decimal(result["alert_threshold"]) == Decimal("1.0000")
+
+    async def test_upsert_deactivates_existing(self, budget_pool):
+        """Setting a budget for the same category+period deactivates the previous one."""
+        from butlers.tools.finance.budgets import budget_set
+
+        first = await budget_set(
+            budget_pool, category="groceries", amount=400.0, period="monthly"
+        )
+        first_id = first["id"]
+
+        second = await budget_set(
+            budget_pool, category="groceries", amount=600.0, period="monthly"
+        )
+
+        # The new budget is active
+        assert second["is_active"] is True
+        assert Decimal(second["amount"]) == Decimal("600.00")
+
+        # The old budget should be deactivated
+        old_row = await budget_pool.fetchrow(
+            "SELECT is_active FROM budgets WHERE id = $1::uuid", first_id
+        )
+        assert old_row["is_active"] is False
+
+    async def test_upsert_preserves_different_period(self, budget_pool):
+        """Setting monthly budget does not affect the yearly budget for the same category."""
+        from butlers.tools.finance.budgets import budget_set
+
+        monthly = await budget_set(
+            budget_pool, category="groceries", amount=400.0, period="monthly"
+        )
+        yearly = await budget_set(
+            budget_pool, category="groceries", amount=4800.0, period="yearly"
+        )
+
+        # Monthly budget is still active
+        monthly_row = await budget_pool.fetchrow(
+            "SELECT is_active FROM budgets WHERE id = $1::uuid", monthly["id"]
+        )
+        assert monthly_row["is_active"] is True
+
+        # Yearly budget is active too
+        assert yearly["is_active"] is True
+
+    async def test_invalid_period_raises(self, budget_pool):
+        """An unsupported period raises ValueError."""
+        from butlers.tools.finance.budgets import budget_set
+
+        with pytest.raises(ValueError, match="Unsupported period"):
+            await budget_set(budget_pool, category="food", amount=100.0, period="bi-weekly")
+
+    async def test_invalid_amount_raises(self, budget_pool):
+        """A non-positive amount raises ValueError."""
+        from butlers.tools.finance.budgets import budget_set
+
+        with pytest.raises(ValueError, match="must be positive"):
+            await budget_set(budget_pool, category="food", amount=0.0, period="monthly")
+
+        with pytest.raises(ValueError, match="must be positive"):
+            await budget_set(budget_pool, category="food", amount=-50.0, period="monthly")
+
+    async def test_all_valid_periods(self, budget_pool):
+        """All four valid period values are accepted."""
+        from butlers.tools.finance.budgets import budget_set
+
+        for period in ("weekly", "monthly", "quarterly", "yearly"):
+            result = await budget_set(
+                budget_pool, category=f"cat_{period}", amount=100.0, period=period
+            )
+            assert result["period"] == period
+
+
+# ---------------------------------------------------------------------------
+# budget_list tests
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetList:
+    """Tests for budget_list (list active budgets)."""
+
+    async def test_empty_when_no_budgets(self, budget_pool):
+        """Returns empty list and count=0 when no budgets exist."""
+        from butlers.tools.finance.budgets import budget_list
+
+        result = await budget_list(budget_pool)
+        assert result["budgets"] == []
+        assert result["count"] == 0
+
+    async def test_returns_active_budgets(self, budget_pool):
+        """Returns all active budgets."""
+        from butlers.tools.finance.budgets import budget_list, budget_set
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+        await budget_set(budget_pool, category="dining", amount=200.0, period="monthly")
+
+        result = await budget_list(budget_pool)
+        assert result["count"] == 2
+        categories = [b["category"] for b in result["budgets"]]
+        assert "groceries" in categories
+        assert "dining" in categories
+
+    async def test_excludes_inactive_budgets(self, budget_pool):
+        """Deactivated budgets are not returned."""
+        from butlers.tools.finance.budgets import budget_list, budget_set
+
+        await budget_set(budget_pool, category="groceries", amount=400.0, period="monthly")
+        # Upsert deactivates the old one and creates a new one
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+
+        result = await budget_list(budget_pool)
+        # Only one active budget should appear
+        assert result["count"] == 1
+        assert Decimal(result["budgets"][0]["amount"]) == Decimal("500.00")
+
+    async def test_returns_full_row_structure(self, budget_pool):
+        """Each budget entry has the expected fields."""
+        from butlers.tools.finance.budgets import budget_list, budget_set
+
+        await budget_set(budget_pool, category="utilities", amount=150.0, period="monthly")
+        result = await budget_list(budget_pool)
+
+        assert result["count"] == 1
+        budget = result["budgets"][0]
+        expected_keys = {
+            "id",
+            "category",
+            "period",
+            "amount",
+            "currency",
+            "warn_threshold",
+            "alert_threshold",
+            "is_active",
+            "created_at",
+            "updated_at",
+        }
+        assert expected_keys.issubset(set(budget.keys()))
+
+    async def test_ordered_by_category_period(self, budget_pool):
+        """Results are ordered by category ASC, period ASC."""
+        from butlers.tools.finance.budgets import budget_list, budget_set
+
+        await budget_set(budget_pool, category="transport", amount=100.0, period="monthly")
+        await budget_set(budget_pool, category="dining", amount=200.0, period="monthly")
+        await budget_set(budget_pool, category="dining", amount=300.0, period="yearly")
+
+        result = await budget_list(budget_pool)
+        categories = [b["category"] for b in result["budgets"]]
+        # dining (monthly, yearly) comes before transport
+        assert categories[0] == "dining"
+        assert categories[-1] == "transport"
+
+
+# ---------------------------------------------------------------------------
+# budget_remove tests
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetRemove:
+    """Tests for budget_remove (soft-delete)."""
+
+    async def test_removes_active_budget(self, budget_pool):
+        """Removing an existing active budget returns removed=True."""
+        from butlers.tools.finance.budgets import budget_remove, budget_set
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+        result = await budget_remove(budget_pool, category="groceries", period="monthly")
+
+        assert result["removed"] is True
+        assert result["category"] == "groceries"
+        assert result["period"] == "monthly"
+
+    async def test_removed_budget_no_longer_active(self, budget_pool):
+        """After removal, the budget does not appear in budget_list."""
+        from butlers.tools.finance.budgets import budget_list, budget_remove, budget_set
+
+        await budget_set(budget_pool, category="dining", amount=200.0, period="monthly")
+        await budget_remove(budget_pool, category="dining", period="monthly")
+
+        result = await budget_list(budget_pool)
+        assert result["count"] == 0
+
+    async def test_remove_nonexistent_returns_false(self, budget_pool):
+        """Removing a budget that doesn't exist returns removed=False."""
+        from butlers.tools.finance.budgets import budget_remove
+
+        result = await budget_remove(budget_pool, category="nonexistent", period="monthly")
+        assert result["removed"] is False
+
+    async def test_remove_already_inactive_returns_false(self, budget_pool):
+        """Removing an already-deactivated budget returns removed=False."""
+        from butlers.tools.finance.budgets import budget_remove, budget_set
+
+        await budget_set(budget_pool, category="travel", amount=800.0, period="monthly")
+        # First removal succeeds
+        first = await budget_remove(budget_pool, category="travel", period="monthly")
+        assert first["removed"] is True
+        # Second removal on already-inactive budget
+        second = await budget_remove(budget_pool, category="travel", period="monthly")
+        assert second["removed"] is False
+
+    async def test_remove_only_matching_period(self, budget_pool):
+        """Removing monthly budget does not affect the yearly budget."""
+        from butlers.tools.finance.budgets import budget_list, budget_remove, budget_set
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+        await budget_set(budget_pool, category="groceries", amount=6000.0, period="yearly")
+
+        await budget_remove(budget_pool, category="groceries", period="monthly")
+
+        result = await budget_list(budget_pool)
+        assert result["count"] == 1
+        assert result["budgets"][0]["period"] == "yearly"
+
+    async def test_invalid_period_raises(self, budget_pool):
+        """An unsupported period raises ValueError."""
+        from butlers.tools.finance.budgets import budget_remove
+
+        with pytest.raises(ValueError, match="Unsupported period"):
+            await budget_remove(budget_pool, category="food", period="bi-weekly")
+
+
+# ---------------------------------------------------------------------------
+# budget_status tests
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetStatus:
+    """Tests for budget_status (per-category utilization)."""
+
+    async def test_empty_when_no_budgets(self, budget_pool):
+        """Returns empty items and count=0 when no budgets are active."""
+        from butlers.tools.finance.budgets import budget_status
+
+        result = await budget_status(budget_pool)
+        assert result["items"] == []
+        assert result["count"] == 0
+
+    async def test_on_track_with_no_spending(self, budget_pool):
+        """A budget with no spending is on_track with 0% utilization."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+
+        result = await budget_status(budget_pool)
+        assert result["count"] == 1
+        item = result["items"][0]
+        assert item["category"] == "groceries"
+        assert item["status"] == "on_track"
+        assert Decimal(item["spent"]) == Decimal("0")
+        assert item["utilization_pct"] == 0.0
+
+    async def test_on_track_below_warn_threshold(self, budget_pool):
+        """Spending below warn_threshold returns on_track status."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(
+            budget_pool, category="dining", amount=200.0, period="monthly", warn_threshold=0.8
+        )
+        await _insert_tx(budget_pool, category="dining", amount="100.00")  # 50% utilization
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert item["status"] == "on_track"
+        assert item["utilization_pct"] == pytest.approx(50.0, rel=1e-3)
+
+    async def test_warning_at_warn_threshold(self, budget_pool):
+        """Spending at exactly warn_threshold returns warning status."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(
+            budget_pool,
+            category="dining",
+            amount=200.0,
+            period="monthly",
+            warn_threshold=0.8,
+            alert_threshold=1.0,
+        )
+        await _insert_tx(budget_pool, category="dining", amount="160.00")  # 80%
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert item["status"] == "warning"
+        assert item["utilization_pct"] == pytest.approx(80.0, rel=1e-3)
+
+    async def test_warning_between_thresholds(self, budget_pool):
+        """Spending between warn and alert thresholds returns warning."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(
+            budget_pool,
+            category="dining",
+            amount=200.0,
+            period="monthly",
+            warn_threshold=0.8,
+            alert_threshold=1.0,
+        )
+        await _insert_tx(budget_pool, category="dining", amount="180.00")  # 90%
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert item["status"] == "warning"
+
+    async def test_exceeded_at_alert_threshold(self, budget_pool):
+        """Spending at exactly alert_threshold (default 100%) returns exceeded."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="dining", amount=200.0, period="monthly")
+        await _insert_tx(budget_pool, category="dining", amount="200.00")  # 100%
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert item["status"] == "exceeded"
+        assert item["utilization_pct"] == pytest.approx(100.0, rel=1e-3)
+
+    async def test_exceeded_over_budget(self, budget_pool):
+        """Spending over budget returns exceeded and negative remaining."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="dining", amount=200.0, period="monthly")
+        await _insert_tx(budget_pool, category="dining", amount="250.00")  # 125%
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert item["status"] == "exceeded"
+        assert Decimal(item["remaining"]) == Decimal("-50.00")
+        assert item["utilization_pct"] == pytest.approx(125.0, rel=1e-3)
+
+    async def test_excludes_credit_transactions(self, budget_pool):
+        """Credit-direction transactions are not counted toward spending."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+        await _insert_tx(budget_pool, category="groceries", amount="100.00", direction="debit")
+        await _insert_tx(budget_pool, category="groceries", amount="50.00", direction="credit")
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert Decimal(item["spent"]) == Decimal("100.00")
+
+    async def test_excludes_deleted_transactions(self, budget_pool):
+        """Soft-deleted transactions (deleted_at IS NOT NULL) are excluded."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+        await _insert_tx(budget_pool, category="groceries", amount="100.00")
+        # Insert a soft-deleted transaction
+        await _insert_tx(
+            budget_pool, category="groceries", amount="999.00", deleted_at=datetime.now(UTC)
+        )
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert Decimal(item["spent"]) == Decimal("100.00")
+
+    async def test_period_alignment_excludes_prior_period(self, budget_pool):
+        """Transactions from a prior period are excluded from the current period total."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+
+        # Transaction in the current month
+        this_month = _now_mid_month()
+        await _insert_tx(
+            budget_pool, category="groceries", amount="100.00", posted_at=this_month
+        )
+
+        # Transaction in the prior month
+        prior_month = (this_month.replace(day=1) - timedelta(days=1)).replace(
+            day=1, hour=12, minute=0, second=0, microsecond=0
+        )
+        await _insert_tx(
+            budget_pool, category="groceries", amount="999.00", posted_at=prior_month
+        )
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        # Only the current-month transaction should be counted
+        assert Decimal(item["spent"]) == Decimal("100.00")
+
+    async def test_multiple_categories_independent(self, budget_pool):
+        """Spending for one category does not affect another category's status."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+        await budget_set(budget_pool, category="dining", amount=200.0, period="monthly")
+
+        await _insert_tx(budget_pool, category="groceries", amount="400.00")
+        await _insert_tx(budget_pool, category="dining", amount="50.00")
+
+        result = await budget_status(budget_pool)
+        assert result["count"] == 2
+
+        by_category = {item["category"]: item for item in result["items"]}
+        assert by_category["groceries"]["status"] == "warning"  # 80%
+        assert by_category["dining"]["status"] == "on_track"  # 25%
+
+    async def test_response_shape(self, budget_pool):
+        """budget_status returns the expected keys on each item."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+        result = await budget_status(budget_pool)
+
+        item = result["items"][0]
+        expected_keys = {
+            "category",
+            "period",
+            "budget_amount",
+            "currency",
+            "spent",
+            "remaining",
+            "utilization_pct",
+            "status",
+            "warn_threshold",
+            "alert_threshold",
+        }
+        assert expected_keys == set(item.keys())
+
+    async def test_excludes_inactive_budgets_from_status(self, budget_pool):
+        """Deactivated budgets are not included in budget_status."""
+        from butlers.tools.finance.budgets import budget_remove, budget_set, budget_status
+
+        await budget_set(budget_pool, category="travel", amount=1000.0, period="monthly")
+        await budget_remove(budget_pool, category="travel", period="monthly")
+
+        result = await budget_status(budget_pool)
+        assert result["count"] == 0
+
+    async def test_custom_thresholds_affect_status(self, budget_pool):
+        """Custom warn/alert thresholds determine the status boundaries correctly."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(
+            budget_pool,
+            category="entertainment",
+            amount=100.0,
+            period="monthly",
+            warn_threshold=0.5,
+            alert_threshold=0.9,
+        )
+        await _insert_tx(budget_pool, category="entertainment", amount="60.00")  # 60%
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert item["status"] == "warning"
+
+    async def test_excludes_different_currency_transactions(self, budget_pool):
+        """Transactions in a different currency are not counted against a USD budget."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(
+            budget_pool, category="groceries", amount=500.0, period="monthly", currency="USD"
+        )
+        await _insert_tx(budget_pool, category="groceries", amount="100.00", currency="USD")
+        # EUR transaction should NOT be counted toward the USD budget
+        await _insert_tx(budget_pool, category="groceries", amount="200.00", currency="EUR")
+
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+        assert Decimal(item["spent"]) == Decimal("100.00")
+
+
+# ---------------------------------------------------------------------------
+# budget_set threshold validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetSetThresholdValidation:
+    """Tests for warn_threshold / alert_threshold validation in budget_set."""
+
+    async def test_warn_threshold_above_one_raises(self, budget_pool):
+        """warn_threshold > 1.0 raises ValueError."""
+        from butlers.tools.finance.budgets import budget_set
+
+        with pytest.raises(ValueError, match="warn_threshold must be between"):
+            await budget_set(
+                budget_pool,
+                category="food",
+                amount=100.0,
+                period="monthly",
+                warn_threshold=1.5,
+            )
+
+    async def test_warn_threshold_negative_raises(self, budget_pool):
+        """warn_threshold < 0.0 raises ValueError."""
+        from butlers.tools.finance.budgets import budget_set
+
+        with pytest.raises(ValueError, match="warn_threshold must be between"):
+            await budget_set(
+                budget_pool,
+                category="food",
+                amount=100.0,
+                period="monthly",
+                warn_threshold=-0.1,
+            )
+
+    async def test_alert_threshold_above_two_raises(self, budget_pool):
+        """alert_threshold > 2.0 raises ValueError."""
+        from butlers.tools.finance.budgets import budget_set
+
+        with pytest.raises(ValueError, match="alert_threshold must be between"):
+            await budget_set(
+                budget_pool,
+                category="food",
+                amount=100.0,
+                period="monthly",
+                alert_threshold=2.5,
+            )
+
+    async def test_alert_threshold_negative_raises(self, budget_pool):
+        """alert_threshold < 0.0 raises ValueError."""
+        from butlers.tools.finance.budgets import budget_set
+
+        with pytest.raises(ValueError, match="alert_threshold must be between"):
+            await budget_set(
+                budget_pool,
+                category="food",
+                amount=100.0,
+                period="monthly",
+                alert_threshold=-0.1,
+            )
+
+    async def test_warn_greater_than_alert_raises(self, budget_pool):
+        """warn_threshold > alert_threshold raises ValueError."""
+        from butlers.tools.finance.budgets import budget_set
+
+        with pytest.raises(ValueError, match="warn_threshold.*must not exceed.*alert_threshold"):
+            await budget_set(
+                budget_pool,
+                category="food",
+                amount=100.0,
+                period="monthly",
+                warn_threshold=0.9,
+                alert_threshold=0.5,
+            )
+
+    async def test_valid_boundary_thresholds_accepted(self, budget_pool):
+        """warn_threshold=0.0 and alert_threshold=2.0 are accepted as boundary values."""
+        from butlers.tools.finance.budgets import budget_set
+
+        result = await budget_set(
+            budget_pool,
+            category="food",
+            amount=100.0,
+            period="monthly",
+            warn_threshold=0.0,
+            alert_threshold=2.0,
+        )
+        assert Decimal(result["warn_threshold"]) == Decimal("0.0000")
+        assert Decimal(result["alert_threshold"]) == Decimal("2.0000")
+
+
+# ---------------------------------------------------------------------------
+# Package import tests
+# ---------------------------------------------------------------------------
+
+
+async def test_budget_crud_functions_importable_from_package():
+    """budget_set, budget_list, budget_remove, budget_status are importable from finance."""
+    from butlers.tools.finance import (  # noqa: F401
+        budget_list,
+        budget_remove,
+        budget_set,
+        budget_status,
+    )
+
+    assert callable(budget_set)
+    assert callable(budget_list)
+    assert callable(budget_remove)
+    assert callable(budget_status)
