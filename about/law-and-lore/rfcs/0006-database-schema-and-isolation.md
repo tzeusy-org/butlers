@@ -55,6 +55,11 @@ PostgreSQL Database
   |     +-- alembic_version
   |     +-- [module-specific tables]
   |
+  +-- lifestyle schema
+  |     +-- state, sessions, scheduled_tasks, butler_secrets
+  |     +-- alembic_version
+  |     +-- [module-specific tables]
+  |
   +-- [additional butler schemas...]
 ```
 

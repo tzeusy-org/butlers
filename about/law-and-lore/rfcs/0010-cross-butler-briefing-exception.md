@@ -5,13 +5,13 @@
 
 ## Summary
 
-This RFC documents a sanctioned exception to the MCP-only inter-butler communication principle (Rule 3). The General butler's daily briefing aggregation job reads specialist butlers' state stores via a read-only SQL view (`general.v_briefing_contributions`) that unions briefing contribution entries across six specialist schemas. The exception is justified by an 8:1 LLM session cost ratio: the compliant alternative (Switchboard fan-out) would require 8 LLM sessions per day for what is a deterministic, zero-reasoning data extraction. Five guardrails constrain scope creep. This RFC defines when this pattern MAY be reused and when it MUST NOT.
+This RFC documents a sanctioned exception to the MCP-only inter-butler communication principle (Rule 3). The General butler's daily briefing aggregation job reads specialist butlers' state stores via a read-only SQL view (`general.v_briefing_contributions`) that unions briefing contribution entries across seven specialist schemas. The exception is justified by a 9:1 LLM session cost ratio: the compliant alternative (Switchboard fan-out) would require 9 LLM sessions per day for what is a deterministic, zero-reasoning data extraction. Five guardrails constrain scope creep. This RFC defines when this pattern MAY be reused and when it MUST NOT.
 
 ## Motivation
 
-The General butler produces a daily end-of-day briefing (cron `0 7 * * *` UTC). Today it covers only calendar events. Specialist butlers -- Health, Finance, Relationship, Travel, Education, Home -- each maintain domain-specific data that would make the briefing significantly more useful: upcoming bills, missed medication doses, birthdays, departures, learning streaks, device alerts.
+The General butler produces a daily end-of-day briefing (cron `0 7 * * *` UTC). Today it covers only calendar events. Specialist butlers -- Health, Finance, Relationship, Travel, Education, Home, Lifestyle -- each maintain domain-specific data that would make the briefing significantly more useful: upcoming bills, missed medication doses, birthdays, departures, learning streaks, habit streaks, device alerts.
 
-The architecturally compliant approach is Switchboard fan-out: General sends an MCP request to each specialist butler via the Switchboard, each specialist spawns an LLM session to formulate its response, and General spawns a final session to synthesize the results. This costs 1 (General request) + 6 (specialist responses) + 1 (General synthesis) = 8 LLM sessions per day.
+The architecturally compliant approach is Switchboard fan-out: General sends an MCP request to each specialist butler via the Switchboard, each specialist spawns an LLM session to formulate its response, and General spawns a final session to synthesize the results. This costs 1 (General request) + 7 (specialist responses) + 1 (General synthesis) = 9 LLM sessions per day.
 
 But every specialist's contribution is a deterministic SQL query against its own domain tables. No LLM reasoning is required to extract "bills due in 48 hours" or "missed medication doses today." The data extraction is pure infrastructure code -- the same class of work as a database migration or a cron-triggered cleanup job.
 
@@ -48,6 +48,9 @@ CREATE VIEW general.v_briefing_contributions AS
         WHERE key LIKE 'briefing/daily/%'
     UNION ALL
     SELECT 'home' AS butler, key, value FROM home.state
+        WHERE key LIKE 'briefing/daily/%'
+    UNION ALL
+    SELECT 'lifestyle' AS butler, key, value FROM lifestyle.state
         WHERE key LIKE 'briefing/daily/%';
 ```
 
@@ -77,6 +80,7 @@ These guardrails exist specifically to prevent this exception from becoming a ge
   travel.daily_briefing_contribution    -> travel.state['briefing/daily/2026-03-25']
   education.daily_briefing_contribution -> education.state['briefing/daily/2026-03-25']
   home.daily_briefing_contribution      -> home.state['briefing/daily/2026-03-25']
+  lifestyle.daily_briefing_contribution -> lifestyle.state['briefing/daily/2026-03-25']
 
 14:58 SGT (cron 58 6 * * *)
   general.collect_briefing_contributions
@@ -143,7 +147,7 @@ This exception pattern is not a blanket authorization for cross-schema access. E
 
 ## Alternatives Considered
 
-**Switchboard MCP fan-out.** General sends an MCP request to each specialist, each spawns an LLM session to answer. Architecturally pure but costs 8 LLM sessions per day (1 request + 6 responses + 1 synthesis) for zero-reasoning work. At typical LLM pricing, this is approximately 8x the cost for the same output. Rejected on cost grounds.
+**Switchboard MCP fan-out.** General sends an MCP request to each specialist, each spawns an LLM session to answer. Architecturally pure but costs 9 LLM sessions per day (1 request + 7 responses + 1 synthesis) for zero-reasoning work. At typical LLM pricing, this is approximately 9x the cost for the same output. Rejected on cost grounds.
 
 **Shared briefing table (public.briefing_contributions).** All specialists write to a table in the public schema. Rejected because it introduces write coupling to the public schema, which is currently read-only for most butlers (RFC 0006). It would also require extending the public schema access model, creating precedent for arbitrary shared tables.
 
