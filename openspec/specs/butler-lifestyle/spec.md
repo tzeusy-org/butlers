@@ -84,7 +84,7 @@ The Lifestyle butler SHALL maintain a domain-specific memory taxonomy for taste 
   - `user | food_preference` — dietary patterns and preferences
   - `user | food_dislike` — foods to avoid (allergies, taste aversions)
   - `user | routine` — daily routine patterns
-- **AND** taste preferences SHALL default to `DURABLE` permanence
+- **AND** taste preferences SHALL default to `stable` permanence
 
 #### Scenario: Consumption tracking facts
 
@@ -94,7 +94,7 @@ The Lifestyle butler SHALL maintain a domain-specific memory taxonomy for taste 
   - `user | reads` — currently reading
   - `user | plays` — currently playing (games)
   - `user | listens_to` — current listening focus
-- **AND** these SHALL default to `TRANSIENT` permanence
+- **AND** these SHALL default to `volatile` permanence
 
 #### Scenario: Spotify-enriched memory
 
@@ -103,7 +103,7 @@ The Lifestyle butler SHALL maintain a domain-specific memory taxonomy for taste 
   - `spotify:artist:{id} | listening_pattern` — rotation intensity over time
   - `spotify:playlist:{id} | purpose` — what the playlist is for
   - `spotify:playlist:{id} | context` — when/where/why it's used
-- **AND** these SHALL default to `DURABLE` permanence
+- **AND** these SHALL default to `stable` permanence
 
 ### Requirement: Scheduled Tasks
 
@@ -119,7 +119,7 @@ The Lifestyle butler SHALL run standard memory maintenance and domain-specific s
 
 #### Scenario: Weekly taste digest
 
-- **WHEN** Sunday at 21:00 (configured cron)
+- **WHEN** the `weekly-taste-digest` job runs at `0 21 * * 0` (Sunday at 21:00)
 - **THEN** the butler SHALL generate a weekly digest summarizing:
   - Music: top artists, new discoveries, playlist activity, listening hours
   - Entertainment: what was watched/read/played
