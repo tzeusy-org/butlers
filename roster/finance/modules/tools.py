@@ -673,8 +673,8 @@ def register_tools(mcp: Any, module: Any) -> None:
             if module.blob_store is None:
                 return {
                     "error": "Blob storage is not configured. "
-                    "Set BLOB_S3_ENDPOINT, BLOB_S3_BUCKET, BLOB_S3_ACCESS_KEY, "
-                    "and BLOB_S3_SECRET_KEY in the dashboard secrets UI (/secrets) "
+                    "Set BLOB_S3_ENDPOINT_URL, BLOB_S3_BUCKET, BLOB_S3_ACCESS_KEY_ID, "
+                    "and BLOB_S3_SECRET_ACCESS_KEY in the dashboard secrets UI (/secrets) "
                     "to enable CSV import from blob storage.",
                     "status": "blob_store_not_configured",
                 }
