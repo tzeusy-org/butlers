@@ -40,6 +40,7 @@ from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.costs import router as costs_router
 from butlers.api.routers.healing import router as healing_router
+from butlers.api.routers.home_assistant import router as home_assistant_router
 from butlers.api.routers.ingestion_events import router as ingestion_events_router
 from butlers.api.routers.issues import router as issues_router
 from butlers.api.routers.memory import router as memory_router
@@ -234,6 +235,7 @@ def create_app(
     app.include_router(healing_router)
     app.include_router(provider_settings_router)
     app.include_router(owntracks_router)
+    app.include_router(home_assistant_router)
     app.include_router(spotify_router)
     app.include_router(whatsapp_router)
     app.include_router(conversations_router)
