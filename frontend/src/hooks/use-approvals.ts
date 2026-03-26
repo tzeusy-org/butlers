@@ -1,14 +1,17 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   approveAction,
+  confirmAutonomySuggestion,
   createApprovalRule,
   createRuleFromAction,
+  dismissAutonomySuggestion,
   expireStaleActions,
   getApprovalAction,
   getApprovalActions,
   getApprovalMetrics,
   getApprovalRule,
   getApprovalRules,
+  getAutonomySuggestions,
   getExecutedActions,
   getRuleSuggestions,
   rejectAction,
@@ -22,6 +25,8 @@ import type {
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
+  AutonomySuggestionDismissRequest,
+  AutonomySuggestionParams,
 } from "@/api/index.ts";
 
 // Query keys
@@ -34,6 +39,8 @@ export const approvalKeys = {
   rule: (id: string) => ["approvals", "rule", id] as const,
   metrics: () => ["approvals", "metrics"] as const,
   suggestions: (actionId: string) => ["approvals", "suggestions", actionId] as const,
+  autonomySuggestions: (params?: AutonomySuggestionParams) =>
+    ["approvals", "autonomy-suggestions", params] as const,
 };
 
 // Queries
@@ -162,6 +169,45 @@ export function useRevokeRule() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: approvalKeys.rules() });
       queryClient.invalidateQueries({ queryKey: approvalKeys.metrics() });
+    },
+  });
+}
+
+// Autonomy suggestions hooks
+
+export function useAutonomySuggestions(params?: AutonomySuggestionParams) {
+  return useQuery({
+    queryKey: approvalKeys.autonomySuggestions(params),
+    queryFn: () => getAutonomySuggestions(params),
+  });
+}
+
+export function useConfirmAutonomySuggestion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (suggestionId: string) => confirmAutonomySuggestion(suggestionId),
+    onSuccess: () => {
+      // Invalidate by prefix to catch all autonomy-suggestions queries regardless of params.
+      queryClient.invalidateQueries({ queryKey: ["approvals", "autonomy-suggestions"] });
+      queryClient.invalidateQueries({ queryKey: approvalKeys.rules() });
+      queryClient.invalidateQueries({ queryKey: approvalKeys.metrics() });
+    },
+  });
+}
+
+export function useDismissAutonomySuggestion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      suggestionId,
+      request,
+    }: {
+      suggestionId: string;
+      request?: AutonomySuggestionDismissRequest;
+    }) => dismissAutonomySuggestion(suggestionId, request),
+    onSuccess: () => {
+      // Invalidate by prefix to catch all autonomy-suggestions queries regardless of params.
+      queryClient.invalidateQueries({ queryKey: ["approvals", "autonomy-suggestions"] });
     },
   });
 }

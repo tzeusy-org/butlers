@@ -14,6 +14,9 @@ import type {
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
+  AutonomySuggestion,
+  AutonomySuggestionDismissRequest,
+  AutonomySuggestionParams,
   ExpireStaleActionsResponse,
   RuleConstraintSuggestion,
   ActivityFeedItem,
@@ -1490,6 +1493,46 @@ export function getRuleSuggestions(
 
 export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
   return apiFetch<ApiResponse<ApprovalMetrics>>("/approvals/metrics");
+}
+
+function autonomySuggestionSearchParams(params?: AutonomySuggestionParams): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  if (params?.suggestion_type) qs.set("suggestion_type", params.suggestion_type);
+  if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+  return qs;
+}
+
+export function getAutonomySuggestions(
+  params?: AutonomySuggestionParams,
+): Promise<PaginatedResponse<AutonomySuggestion>> {
+  const qs = autonomySuggestionSearchParams(params).toString();
+  return apiFetch<PaginatedResponse<AutonomySuggestion>>(
+    qs ? `/approvals/suggestions?${qs}` : "/approvals/suggestions",
+  );
+}
+
+export function confirmAutonomySuggestion(
+  suggestionId: string,
+): Promise<ApiResponse<AutonomySuggestion>> {
+  return apiFetch<ApiResponse<AutonomySuggestion>>(
+    `/approvals/suggestions/${encodeURIComponent(suggestionId)}/confirm`,
+    { method: "POST" },
+  );
+}
+
+export function dismissAutonomySuggestion(
+  suggestionId: string,
+  request?: AutonomySuggestionDismissRequest,
+): Promise<ApiResponse<AutonomySuggestion>> {
+  return apiFetch<ApiResponse<AutonomySuggestion>>(
+    `/approvals/suggestions/${encodeURIComponent(suggestionId)}/dismiss`,
+    {
+      method: "POST",
+      body: JSON.stringify(request ?? {}),
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -3,11 +3,18 @@ import { Card, CardContent } from "@/components/ui/card";
 
 interface ApprovalMetricsBarProps {
   metrics: ApprovalMetrics;
+  /** Number of pending autonomy suggestions to display as a badge metric. */
+  activeSuggestionsCount?: number;
 }
 
-export function ApprovalMetricsBar({ metrics }: ApprovalMetricsBarProps) {
+export function ApprovalMetricsBar({ metrics, activeSuggestionsCount }: ApprovalMetricsBarProps) {
+  const cols =
+    activeSuggestionsCount !== undefined
+      ? "grid gap-4 md:grid-cols-2 lg:grid-cols-6"
+      : "grid gap-4 md:grid-cols-2 lg:grid-cols-5";
+
   return (
-    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+    <div className={cols}>
       <Card>
         <CardContent className="p-6">
           <div className="text-2xl font-bold">{metrics.total_pending}</div>
@@ -44,6 +51,18 @@ export function ApprovalMetricsBar({ metrics }: ApprovalMetricsBarProps) {
           <p className="text-xs text-muted-foreground">Auto-Approval Rate</p>
         </CardContent>
       </Card>
+      {activeSuggestionsCount !== undefined && (
+        <Card>
+          <CardContent className="p-6">
+            <div
+              className={`text-2xl font-bold ${activeSuggestionsCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}
+            >
+              {activeSuggestionsCount}
+            </div>
+            <p className="text-xs text-muted-foreground">Active Suggestions</p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

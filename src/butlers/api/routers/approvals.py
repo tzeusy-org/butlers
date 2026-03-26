@@ -33,6 +33,8 @@ from butlers.api.models.approval import (
     ApprovalRule,
     ApprovalRuleCreateRequest,
     ApprovalRuleFromActionRequest,
+    AutonomySuggestion,
+    AutonomySuggestionDismissRequest,
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
     TargetContact,
@@ -1101,3 +1103,346 @@ async def get_metrics(
     )
 
     return ApiResponse(data=metrics)
+
+
+# ---------------------------------------------------------------------------
+# Autonomy suggestions endpoints
+# ---------------------------------------------------------------------------
+
+_SUGGESTIONS_TABLE = "autonomy_suggestions"
+
+
+def _generate_scope_description(tool_name: str, representative_args: dict) -> str:
+    """Produce a human-readable scope description for an autonomy suggestion.
+
+    Lists every (arg_key, arg_value) pair with exact match semantics, e.g.:
+    "Auto-approve send_telegram when chat_id = 'mom_123' AND text = 'Good morning'"
+    """
+    if not representative_args:
+        return f"Auto-approve {tool_name} (no argument constraints)"
+    parts = [f"{k} = {v!r}" for k, v in sorted(representative_args.items())]
+    return f"Auto-approve {tool_name} when {' AND '.join(parts)}"
+
+
+def _row_to_autonomy_suggestion(row: dict) -> AutonomySuggestion:
+    """Convert a database row to an AutonomySuggestion API model."""
+    representative_args = row.get("representative_args") or {}
+    if isinstance(representative_args, str):
+        import json as _json
+
+        try:
+            representative_args = _json.loads(representative_args)
+        except _json.JSONDecodeError:
+            logger.warning(
+                "Failed to decode representative_args JSON for autonomy suggestion row; "
+                "falling back to empty dict. Raw value: %r",
+                representative_args,
+            )
+            representative_args = {}
+
+    # Redact sensitive fields before exposing them in the API response.
+    redacted_args = redact_tool_args(row["tool_name"], representative_args)
+
+    # Generate scope_description from the redacted view to avoid leaking secrets.
+    scope_description = _generate_scope_description(row["tool_name"], redacted_args)
+
+    return AutonomySuggestion(
+        id=str(row["id"]),
+        suggestion_type=row.get("suggestion_type") or "promotion",
+        pattern_fingerprint=row["pattern_fingerprint"],
+        tool_name=row["tool_name"],
+        representative_args=redacted_args,
+        status=row["status"],
+        approval_count_at_creation=row.get("approval_count_at_creation") or 0,
+        scope_description=scope_description,
+        created_at=row["created_at"],
+        decided_at=row.get("decided_at"),
+        decided_by=row.get("decided_by"),
+        resulting_rule_id=str(row["resulting_rule_id"]) if row.get("resulting_rule_id") else None,
+        cooldown_until=row.get("cooldown_until"),
+        dismissal_reason=row.get("dismissal_reason"),
+        velocity=None,  # Velocity data fetched separately from state store when available
+    )
+
+
+@router.get("/suggestions")
+async def list_suggestions(
+    status: str | None = Query(default="pending"),
+    suggestion_type: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[AutonomySuggestion]:
+    """List autonomy suggestions with filtering and pagination.
+
+    Returns promotion and demotion suggestions. Filters on status (default:
+    ``pending``) and suggestion_type (``promotion`` or ``demotion``).
+    When the autonomy_suggestions table does not yet exist, returns an empty
+    list so the dashboard degrades gracefully.
+    """
+    suggestion_pools = await _find_all_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
+
+    if not suggestion_pools:
+        return PaginatedResponse(
+            data=[],
+            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        )
+
+    conditions: list[str] = []
+    args: list = []
+    idx = 1
+
+    if status not in (None, "", "all"):
+        conditions.append(f"status = ${idx}")
+        args.append(status)
+        idx += 1
+
+    if suggestion_type not in (None, ""):
+        conditions.append(f"suggestion_type = ${idx}")
+        args.append(suggestion_type)
+        idx += 1
+
+    where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    all_rows: list[dict] = []
+    total = 0
+    for pool in suggestion_pools:
+        try:
+            async with pool.acquire() as conn:
+                total += (
+                    await conn.fetchval(
+                        f"SELECT COUNT(*) FROM {_SUGGESTIONS_TABLE}{where_clause}",
+                        *args,
+                    )
+                    or 0
+                )
+                rows = await conn.fetch(
+                    f"SELECT * FROM {_SUGGESTIONS_TABLE}{where_clause} ORDER BY created_at DESC",
+                    *args,
+                )
+                all_rows.extend(dict(r) for r in rows)
+        except Exception:
+            logger.warning("Failed to query autonomy_suggestions from a pool", exc_info=True)
+
+    all_rows.sort(key=lambda r: r["created_at"], reverse=True)
+    page_rows = all_rows[offset : offset + limit]
+
+    suggestions = [_row_to_autonomy_suggestion(row) for row in page_rows]
+
+    return PaginatedResponse(
+        data=suggestions,
+        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )
+
+
+@router.post("/suggestions/{suggestion_id}/confirm")
+async def confirm_suggestion(
+    suggestion_id: str,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[AutonomySuggestion]:
+    """Confirm an autonomy suggestion, creating a standing approval rule.
+
+    For promotion suggestions, creates a new standing rule with exact constraints
+    from the suggestion's representative_args. For demotion suggestions, revokes
+    the referenced standing rule.
+
+    Requires a valid UUID suggestion_id. Returns 404 if not found and 409 if
+    the suggestion has already been decided.
+    """
+    try:
+        parsed_id = UUID(suggestion_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
+
+    suggestion_pools = await _find_all_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
+    if not suggestion_pools:
+        raise HTTPException(status_code=503, detail="Autonomy suggestions subsystem unavailable")
+
+    # Find the pool containing this suggestion
+    target_pool = None
+    row = None
+    for pool in suggestion_pools:
+        try:
+            async with pool.acquire() as conn:
+                found = await conn.fetchrow(
+                    f"SELECT * FROM {_SUGGESTIONS_TABLE} WHERE id = $1",
+                    parsed_id,
+                )
+                if found is not None:
+                    target_pool = pool
+                    row = dict(found)
+                    break
+        except Exception:
+            continue
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Suggestion not found: {suggestion_id}")
+
+    if row["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Suggestion has already been decided (status: {row['status']})",
+        )
+
+    assert target_pool is not None
+
+    representative_args = row.get("representative_args") or {}
+    if isinstance(representative_args, str):
+        import json as _json
+
+        try:
+            representative_args = _json.loads(representative_args)
+        except _json.JSONDecodeError:
+            logger.warning(
+                "Failed to decode representative_args JSON in confirm_suggestion; "
+                "falling back to empty dict. Raw value: %r",
+                representative_args,
+            )
+            representative_args = {}
+
+    now = datetime.now(UTC)
+    actor = "dashboard:rest-api"
+
+    async with target_pool.acquire() as conn:
+        if row.get("suggestion_type") == "demotion":
+            # Revoke the referenced standing rule via the operations layer so that
+            # the RULE_REVOKED audit event is recorded consistently.
+            # Use the already-parsed representative_args dict (not raw row value) to
+            # avoid AttributeError when the DB stores args as JSON text.
+            rule_id = row.get("resulting_rule_id") or representative_args.get("rule_id")
+            if rule_id:
+                revoke_result = await approvals_ops.revoke_approval_rule(
+                    conn,
+                    rule_id=str(rule_id),
+                    actor_id=actor,
+                )
+                if "error" in revoke_result:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to revoke approval rule for demotion suggestion: "
+                        f"{revoke_result['error']}",
+                    )
+
+            updated = await conn.fetchrow(
+                f"UPDATE {_SUGGESTIONS_TABLE} "
+                "SET status = 'confirmed', decided_at = $1, decided_by = $2 "
+                "WHERE id = $3 RETURNING *",
+                now,
+                actor,
+                parsed_id,
+            )
+        else:
+            # Promotion: create exact standing rule from representative_args via the
+            # operations layer so that the RULE_CREATED audit event is recorded.
+            arg_constraints = {
+                k: {"type": "exact", "value": v} for k, v in representative_args.items()
+            }
+            tool_name = row["tool_name"]
+            scope_desc = _generate_scope_description(tool_name, representative_args)
+
+            create_result = await approvals_ops.create_approval_rule(
+                conn,
+                tool_name=tool_name,
+                arg_constraints=arg_constraints,
+                description=scope_desc,
+                actor_id=actor,
+            )
+            if "error" in create_result:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create approval rule from suggestion: "
+                    f"{create_result['error']}",
+                )
+            new_rule_id = create_result.get("id")
+
+            updated = await conn.fetchrow(
+                f"UPDATE {_SUGGESTIONS_TABLE} "
+                "SET status = 'confirmed', decided_at = $1, decided_by = $2, "
+                "resulting_rule_id = $3 "
+                "WHERE id = $4 RETURNING *",
+                now,
+                actor,
+                new_rule_id,
+                parsed_id,
+            )
+
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Failed to confirm suggestion")
+
+    suggestion = _row_to_autonomy_suggestion(dict(updated))
+    return ApiResponse(data=suggestion)
+
+
+@router.post("/suggestions/{suggestion_id}/dismiss")
+async def dismiss_suggestion(
+    suggestion_id: str,
+    request: AutonomySuggestionDismissRequest = Body(default=AutonomySuggestionDismissRequest()),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[AutonomySuggestion]:
+    """Dismiss an autonomy suggestion with an optional reason and cooldown.
+
+    Transitions the suggestion to ``dismissed`` status and sets ``cooldown_until``
+    so the pattern won't resurface until the cooldown expires.
+
+    Returns 404 if not found and 409 if already decided.
+    """
+    try:
+        parsed_id = UUID(suggestion_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
+
+    suggestion_pools = await _find_all_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
+    if not suggestion_pools:
+        raise HTTPException(status_code=503, detail="Autonomy suggestions subsystem unavailable")
+
+    target_pool = None
+    row = None
+    for pool in suggestion_pools:
+        try:
+            async with pool.acquire() as conn:
+                found = await conn.fetchrow(
+                    f"SELECT * FROM {_SUGGESTIONS_TABLE} WHERE id = $1",
+                    parsed_id,
+                )
+                if found is not None:
+                    target_pool = pool
+                    row = dict(found)
+                    break
+        except Exception:
+            continue
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Suggestion not found: {suggestion_id}")
+
+    if row["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Suggestion has already been decided (status: {row['status']})",
+        )
+
+    assert target_pool is not None
+
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    cooldown_until = now + timedelta(days=request.cooldown_days)
+    actor = "dashboard"
+
+    async with target_pool.acquire() as conn:
+        updated = await conn.fetchrow(
+            f"UPDATE {_SUGGESTIONS_TABLE} "
+            "SET status = 'dismissed', decided_at = $1, decided_by = $2, "
+            "cooldown_until = $3, dismissal_reason = $4 "
+            "WHERE id = $5 RETURNING *",
+            now,
+            actor,
+            cooldown_until,
+            request.reason,
+            parsed_id,
+        )
+
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Failed to dismiss suggestion")
+
+    suggestion = _row_to_autonomy_suggestion(dict(updated))
+    return ApiResponse(data=suggestion)

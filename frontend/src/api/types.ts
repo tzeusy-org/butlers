@@ -1464,6 +1464,43 @@ export interface ExpireStaleActionsResponse {
   expired_ids: string[];
 }
 
+export interface AutonomySuggestionVelocity {
+  avg_seconds?: number | null;
+  sample_count: number;
+  fast_approval: boolean;
+  updated_at?: string | null;
+}
+
+export interface AutonomySuggestion {
+  id: string;
+  suggestion_type: "promotion" | "demotion";
+  pattern_fingerprint: string;
+  tool_name: string;
+  representative_args: Record<string, unknown>;
+  status: "pending" | "confirmed" | "dismissed" | "superseded";
+  approval_count_at_creation: number;
+  scope_description: string;
+  created_at: string;
+  decided_at?: string | null;
+  decided_by?: string | null;
+  resulting_rule_id?: string | null;
+  cooldown_until?: string | null;
+  dismissal_reason?: string | null;
+  velocity?: AutonomySuggestionVelocity | null;
+}
+
+export interface AutonomySuggestionParams {
+  status?: string;
+  suggestion_type?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AutonomySuggestionDismissRequest {
+  reason?: string | null;
+  cooldown_days?: number;
+}
+
 // ---------------------------------------------------------------------------
 // OAuth / Secrets management types
 // ---------------------------------------------------------------------------
