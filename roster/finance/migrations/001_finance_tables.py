@@ -65,12 +65,18 @@ def upgrade() -> None:
             external_ref      TEXT,
             metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
             created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+            deleted_at        TIMESTAMPTZ
         )
     """)
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_transactions_posted_at
             ON transactions (posted_at DESC)
+    """)
+    op.execute("""
+        CREATE INDEX IF NOT EXISTS idx_transactions_active_posted_at
+            ON transactions (posted_at DESC)
+            WHERE deleted_at IS NULL
     """)
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_transactions_merchant
