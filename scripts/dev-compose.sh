@@ -143,4 +143,12 @@ else
   echo ""
 fi
 
-"${CMD[@]}" up --build "${SCALE_ARGS[@]}"
+# ── Build and start ────────────────────────────────────────────────────
+# First pass: build + start all services except whatsapp (fast, no Go stage).
+# Second pass: build + start whatsapp separately (slow Go stage, non-blocking).
+"${CMD[@]}" up -d --build "${SCALE_ARGS[@]}" \
+  --scale connector-whatsapp-user=0 2>/dev/null || true
+
+# Build whatsapp in background (Go stage takes 5-10 min on first build).
+echo "Starting whatsapp connector build in background..."
+"${CMD[@]}" up -d --build connector-whatsapp-user 2>/dev/null &
