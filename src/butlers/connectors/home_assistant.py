@@ -344,7 +344,7 @@ class HAWebSocketClient:
         """Start the keepalive ping task as a background asyncio task (task 3.4)."""
         if self._ping_task is not None and not self._ping_task.done():
             return
-        self._ping_task = asyncio.ensure_future(self._ping_loop())
+        self._ping_task = asyncio.create_task(self._ping_loop())
 
     async def _ping_loop(self) -> None:
         """Send keepalive pings and detect missed pongs (task 3.4).
@@ -399,7 +399,7 @@ class HAWebSocketClient:
         """Start the WebSocket message dispatch loop as a background task."""
         if self._loop_task is not None and not self._loop_task.done():
             return
-        self._loop_task = asyncio.ensure_future(self._message_loop())
+        self._loop_task = asyncio.create_task(self._message_loop())
 
     async def _message_loop(self) -> None:
         """Read messages from the WebSocket and dispatch by type.
@@ -634,7 +634,7 @@ class HAWebSocketClient:
             if self._on_disconnected is not None:
                 self._on_disconnected()
             # Start reconnect loop in background; don't block run()
-            asyncio.ensure_future(self._reconnect_loop())
+            asyncio.create_task(self._reconnect_loop())
         else:
             self._start_message_loop()
             self._start_ping_task()
@@ -656,7 +656,7 @@ class HAWebSocketClient:
                     if not any(
                         t is not None and not t.done() for t in (self._loop_task, self._ping_task)
                     ):
-                        asyncio.ensure_future(self._reconnect_loop())
+                        asyncio.create_task(self._reconnect_loop())
         except asyncio.CancelledError:
             pass
         finally:
@@ -1405,7 +1405,7 @@ async def _main() -> None:
         pass
 
     # Run the WS client; stop when a signal arrives
-    ws_task = asyncio.ensure_future(ws_client.run())
+    ws_task = asyncio.create_task(ws_client.run())
     await stop_event.wait()
 
     logger.info("HAConnector: shutting down")
@@ -1414,7 +1414,6 @@ async def _main() -> None:
         await ws_task
     except (asyncio.CancelledError, Exception):
         pass
-    await ws_client.stop()
     await connector.stop_heartbeat()
 
 

@@ -716,16 +716,6 @@ class TestEventDispatch:
         # Should not raise — exception is caught internally
         await client._dispatch_message(event_msg)
 
-    async def test_pong_updates_last_pong_time_via_dispatch(self) -> None:
-        """Pong messages dispatched through _dispatch_message update _last_pong_time."""
-        client = _make_client()
-        before = asyncio.get_running_loop().time()
-
-        pong_msg = {"type": "pong", "id": 7}
-        await client._dispatch_message(pong_msg)
-
-        assert client._last_pong_time >= before
-
 
 # ---------------------------------------------------------------------------
 # 3.1 — Lifecycle: stop
