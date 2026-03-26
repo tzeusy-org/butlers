@@ -91,14 +91,25 @@ _DEFAULT_SCOPES = " ".join(
         "user-read-playback-state",
         "user-read-recently-played",
         "user-top-read",
+        "playlist-read-private",
+        "playlist-read-collaborative",
+        "playlist-modify-public",
+        "playlist-modify-private",
+        "user-modify-playback-state",
+        "user-library-read",
+        "user-library-modify",
     ]
 )
+
+# Set of required scopes for fast membership checks
+_REQUIRED_SCOPES: frozenset[str] = frozenset(_DEFAULT_SCOPES.split())
 
 # Credential keys used in CredentialStore
 _CRED_CLIENT_ID = "SPOTIFY_CLIENT_ID"
 _CRED_ACCESS_TOKEN = "SPOTIFY_ACCESS_TOKEN"
 _CRED_REFRESH_TOKEN = "SPOTIFY_REFRESH_TOKEN"
 _CRED_TOKEN_EXPIRES_AT = "SPOTIFY_TOKEN_EXPIRES_AT"
+_CRED_GRANTED_SCOPES = "SPOTIFY_GRANTED_SCOPES"
 
 # All credential keys managed by this module (used for validation/cleanup).
 _ALL_CRED_KEYS = (
@@ -106,6 +117,7 @@ _ALL_CRED_KEYS = (
     _CRED_ACCESS_TOKEN,
     _CRED_REFRESH_TOKEN,
     _CRED_TOKEN_EXPIRES_AT,
+    _CRED_GRANTED_SCOPES,
 )
 
 # Token-only keys that are cleared on disconnect (client_id is preserved).
@@ -113,6 +125,7 @@ _TOKEN_CRED_KEYS = (
     _CRED_ACCESS_TOKEN,
     _CRED_REFRESH_TOKEN,
     _CRED_TOKEN_EXPIRES_AT,
+    _CRED_GRANTED_SCOPES,
 )
 
 # ---------------------------------------------------------------------------
@@ -586,6 +599,7 @@ async def spotify_oauth_callback(
     access_token = token_data.get("access_token", "")
     refresh_token = token_data.get("refresh_token", "")
     expires_in = token_data.get("expires_in", 3600)
+    granted_scope = token_data.get("scope", "")
 
     if not access_token:
         raise HTTPException(
@@ -620,11 +634,20 @@ async def spotify_oauth_callback(
         description="Spotify access token expiry (ISO 8601 UTC)",
         is_sensitive=False,
     )
+    if granted_scope:
+        await cred_store.store(
+            _CRED_GRANTED_SCOPES,
+            granted_scope,
+            category="spotify",
+            description="Spotify OAuth granted scopes (space-separated)",
+            is_sensitive=False,
+        )
 
     logger.info(
-        "Spotify OAuth tokens stored (expires_at=%s, has_refresh=%s)",
+        "Spotify OAuth tokens stored (expires_at=%s, has_refresh=%s, scopes=%r)",
         expires_at_iso,
         bool(refresh_token),
+        granted_scope,
     )
 
     if dashboard_url:
@@ -659,7 +682,8 @@ async def get_spotify_status(
 
     Returns not_configured when no client_id has been stored.
     Returns needs_auth when a client_id is stored but no tokens exist.
-    Returns connected when GET /me succeeds.
+    Returns needs_reauth when tokens exist but granted scopes are insufficient.
+    Returns connected when GET /me succeeds and all required scopes are granted.
     Returns disconnected when tokens are present but GET /me fails.
     """
     cred_store = _make_credential_store(db_manager)
@@ -682,6 +706,19 @@ async def get_spotify_status(
             state=SpotifyConnectionState.needs_auth,
             client_id_configured=True,
         )
+
+    # Check for scope mismatch before verifying connectivity
+    granted_scopes_str = await cred_store.resolve(_CRED_GRANTED_SCOPES)
+    if granted_scopes_str is not None:
+        granted_scopes = frozenset(granted_scopes_str.split())
+        missing_scopes = sorted(_REQUIRED_SCOPES - granted_scopes)
+        if missing_scopes:
+            return SpotifyStatusResponse(
+                state=SpotifyConnectionState.needs_reauth,
+                client_id_configured=True,
+                needs_reauth=True,
+                missing_scopes=missing_scopes,
+            )
 
     # Verify token against Spotify API
     me_data = await _fetch_spotify_me(access_token)

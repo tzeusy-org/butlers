@@ -41,11 +41,26 @@ _FETCH_ME_PATCH = "butlers.api.routers.spotify._fetch_spotify_me"
 # Fake token response
 # ---------------------------------------------------------------------------
 
+_FULL_SCOPES = " ".join(
+    [
+        "user-read-playback-state",
+        "user-read-recently-played",
+        "user-top-read",
+        "playlist-read-private",
+        "playlist-read-collaborative",
+        "playlist-modify-public",
+        "playlist-modify-private",
+        "user-modify-playback-state",
+        "user-library-read",
+        "user-library-modify",
+    ]
+)
+
 _FAKE_TOKENS = {
     "access_token": "BQA_fake_access_token",
     "refresh_token": "AQA_fake_refresh_token",
     "expires_in": 3600,
-    "scope": "user-read-playback-state user-read-recently-played user-top-read",
+    "scope": _FULL_SCOPES,
     "token_type": "Bearer",
 }
 
@@ -67,6 +82,7 @@ def _make_cred_store(
     access_token: str | None = None,
     refresh_token: str | None = None,
     token_expires_at: str | None = None,
+    granted_scopes: str | None = None,
 ) -> MagicMock:
     """Build a mock CredentialStore that returns specified values per key."""
     store = MagicMock()
@@ -76,6 +92,7 @@ def _make_cred_store(
         "SPOTIFY_ACCESS_TOKEN": access_token,
         "SPOTIFY_REFRESH_TOKEN": refresh_token,
         "SPOTIFY_TOKEN_EXPIRES_AT": token_expires_at,
+        "SPOTIFY_GRANTED_SCOPES": granted_scopes,
     }
 
     async def _resolve(key: str, **_kwargs) -> str | None:
@@ -153,6 +170,19 @@ def cred_store_connected():
         access_token="BQA_fake_access_token",
         refresh_token="AQA_fake_refresh_token",
         token_expires_at=datetime.now(UTC).isoformat(),
+        granted_scopes=_FULL_SCOPES,
+    )
+
+
+@pytest.fixture
+def cred_store_insufficient_scopes():
+    """Store with tokens but only the old 3 read-only scopes (missing write scopes)."""
+    return _make_cred_store(
+        client_id="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+        access_token="BQA_fake_access_token",
+        refresh_token="AQA_fake_refresh_token",
+        token_expires_at=datetime.now(UTC).isoformat(),
+        granted_scopes="user-read-playback-state user-read-recently-played user-top-read",
     )
 
 
@@ -306,7 +336,12 @@ class TestSpotifyOAuthStart:
         assert url.startswith("https://accounts.spotify.com/authorize")
         assert "code_challenge=" in url
         assert "code_challenge_method=S256" in url
+        # Verify original scopes are still present
         assert "user-read-playback-state" in url
+        # Verify new write scopes are included
+        assert "playlist-modify-public" in url
+        assert "user-library-modify" in url
+        assert "user-modify-playback-state" in url
 
     async def test_start_stores_state_entry(self, cred_store_client_id_only):
         """oauth/start persists a state entry in the in-memory store."""
@@ -406,6 +441,7 @@ class TestSpotifyOAuthCallback:
         assert call_args.get("SPOTIFY_ACCESS_TOKEN") == _FAKE_TOKENS["access_token"]
         assert call_args.get("SPOTIFY_REFRESH_TOKEN") == _FAKE_TOKENS["refresh_token"]
         assert "SPOTIFY_TOKEN_EXPIRES_AT" in call_args
+        assert call_args.get("SPOTIFY_GRANTED_SCOPES") == _FULL_SCOPES
 
     async def test_callback_redirects_when_dashboard_url_set(self, cred_store_client_id_only):
         """Callback redirects to dashboard URL when OAUTH_DASHBOARD_URL is set."""
@@ -638,6 +674,109 @@ class TestSpotifyStatus:
         assert resp.status_code == 200
         assert resp.json()["state"] == "disconnected"
 
+    async def test_status_needs_reauth_when_scopes_insufficient(
+        self, cred_store_insufficient_scopes
+    ):
+        """Status returns needs_reauth when stored scopes are missing required ones."""
+        app = _build_app(cred_store_insufficient_scopes)
+        with patch(
+            "butlers.api.routers.spotify._make_credential_store",
+            return_value=cred_store_insufficient_scopes,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/connectors/spotify/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"] == "needs_reauth"
+        assert data["needs_reauth"] is True
+        assert data["client_id_configured"] is True
+        missing = data["missing_scopes"]
+        assert isinstance(missing, list)
+        assert len(missing) > 0
+        # The 7 new scopes should all be missing
+        expected_missing = {
+            "playlist-read-private",
+            "playlist-read-collaborative",
+            "playlist-modify-public",
+            "playlist-modify-private",
+            "user-modify-playback-state",
+            "user-library-read",
+            "user-library-modify",
+        }
+        assert set(missing) == expected_missing
+
+    async def test_status_connected_when_all_scopes_granted(self, cred_store_connected):
+        """Status returns connected (not needs_reauth) when all scopes are granted."""
+        app = _build_app(cred_store_connected)
+        with (
+            patch(
+                "butlers.api.routers.spotify._make_credential_store",
+                return_value=cred_store_connected,
+            ),
+            patch(_FETCH_ME_PATCH, new=AsyncMock(return_value=_FAKE_ME)),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/connectors/spotify/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"] == "connected"
+        assert data["needs_reauth"] is False
+        assert data["missing_scopes"] == []
+
+    async def test_status_needs_reauth_does_not_call_spotify_me(
+        self, cred_store_insufficient_scopes
+    ):
+        """When scopes are insufficient, /me is not called (avoid unnecessary API hit)."""
+        app = _build_app(cred_store_insufficient_scopes)
+        with (
+            patch(
+                "butlers.api.routers.spotify._make_credential_store",
+                return_value=cred_store_insufficient_scopes,
+            ),
+            patch(_FETCH_ME_PATCH, new=AsyncMock(return_value=_FAKE_ME)) as mock_me,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/connectors/spotify/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "needs_reauth"
+        mock_me.assert_not_called()
+
+    async def test_status_no_granted_scopes_stored_skips_scope_check(self, cred_store_connected):
+        """When SPOTIFY_GRANTED_SCOPES is absent, scope check is skipped (legacy tokens)."""
+        # Override the connected store to have no granted scopes stored
+        store_no_scopes = _make_cred_store(
+            client_id="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+            access_token="BQA_fake_access_token",
+            refresh_token="AQA_fake_refresh_token",
+            token_expires_at=datetime.now(UTC).isoformat(),
+            granted_scopes=None,
+        )
+        app = _build_app(store_no_scopes)
+        with (
+            patch(
+                "butlers.api.routers.spotify._make_credential_store",
+                return_value=store_no_scopes,
+            ),
+            patch(_FETCH_ME_PATCH, new=AsyncMock(return_value=_FAKE_ME)),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/connectors/spotify/status")
+
+        assert resp.status_code == 200
+        # Without stored scopes, we fall through to the /me check
+        assert resp.json()["state"] == "connected"
+
 
 # ---------------------------------------------------------------------------
 # POST /api/connectors/spotify/disconnect
@@ -660,11 +799,12 @@ class TestSpotifyDisconnect:
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
-        # Ensure delete was called for all 3 token keys (not client_id)
+        # Ensure delete was called for all token keys (not client_id)
         deleted_keys = [call.args[0] for call in cred_store_connected.delete.call_args_list]
         assert "SPOTIFY_ACCESS_TOKEN" in deleted_keys
         assert "SPOTIFY_REFRESH_TOKEN" in deleted_keys
         assert "SPOTIFY_TOKEN_EXPIRES_AT" in deleted_keys
+        assert "SPOTIFY_GRANTED_SCOPES" in deleted_keys
         assert "SPOTIFY_CLIENT_ID" not in deleted_keys
 
     async def test_disconnect_idempotent_when_no_db(self):
@@ -683,7 +823,7 @@ class TestSpotifyDisconnect:
         assert resp.json()["success"] is True
 
     async def test_disconnect_preserves_client_id(self, cred_store_connected):
-        """Disconnect does not delete SPOTIFY_CLIENT_ID."""
+        """Disconnect does not delete SPOTIFY_CLIENT_ID but does delete SPOTIFY_GRANTED_SCOPES."""
         app = _build_app(cred_store_connected)
         with patch(
             "butlers.api.routers.spotify._make_credential_store",
@@ -696,3 +836,4 @@ class TestSpotifyDisconnect:
 
         deleted_keys = [call.args[0] for call in cred_store_connected.delete.call_args_list]
         assert "SPOTIFY_CLIENT_ID" not in deleted_keys
+        assert "SPOTIFY_GRANTED_SCOPES" in deleted_keys

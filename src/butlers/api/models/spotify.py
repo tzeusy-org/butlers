@@ -33,6 +33,9 @@ class SpotifyConnectionState(StrEnum):
     needs_auth = "needs_auth"
     """Client ID configured but no OAuth tokens — authorization required."""
 
+    needs_reauth = "needs_reauth"
+    """Tokens present but granted scopes are insufficient — re-authorization required."""
+
 
 class SpotifyStatusResponse(BaseModel):
     """Response for GET /api/connectors/spotify/status.
@@ -57,6 +60,12 @@ class SpotifyStatusResponse(BaseModel):
 
     client_id_configured: bool = False
     """Whether a client_id is stored in CredentialStore."""
+
+    needs_reauth: bool = False
+    """True when stored scopes are insufficient for current requirements."""
+
+    missing_scopes: list[str] = []
+    """List of OAuth scopes that are required but were not granted."""
 
 
 class SpotifyOAuthStartResponse(BaseModel):

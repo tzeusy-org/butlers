@@ -55,6 +55,8 @@ function stateBadgeVariant(
       return "secondary";
     case "error":
       return "destructive";
+    case "needs_reauth":
+      return "destructive";
     case "not_configured":
       return "outline";
     default:
@@ -70,6 +72,10 @@ function stateBadgeLabel(state: SpotifyState): string {
       return "Disconnected";
     case "error":
       return "Error";
+    case "needs_reauth":
+      return "Re-authorize required";
+    case "needs_auth":
+      return "Authorization required";
     case "not_configured":
       return "Not configured";
     default:
@@ -306,6 +312,21 @@ export function SpotifySection() {
           </div>
         )}
 
+        {displayState === "needs_reauth" && (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            <p className="font-medium">Re-authorization required</p>
+            <p className="mt-1 text-muted-foreground">
+              Your Spotify authorization is missing required permissions. Please re-authorize to
+              grant access.
+            </p>
+            {status?.missing_scopes && status.missing_scopes.length > 0 && (
+              <p className="mt-1 font-mono text-xs">
+                Missing: {status.missing_scopes.join(", ")}
+              </p>
+            )}
+          </div>
+        )}
+
         {displayState === "error" && status?.error && (
           <p className="text-sm text-destructive">{status.error}</p>
         )}
@@ -336,6 +357,9 @@ export function SpotifySection() {
                 Disconnect
               </Button>
             </>
+          )}
+          {displayState === "needs_reauth" && (
+            <SpotifyConnectButton label="Re-authorize Spotify" />
           )}
           {displayState === "error" && (
             <SpotifyConnectButton label="Re-connect Spotify" />
@@ -460,6 +484,22 @@ export function SpotifySetupCard() {
             </div>
           )}
 
+          {/* needs_reauth: show re-authorize banner */}
+          {displayState === "needs_reauth" && (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              <p className="font-medium">Re-authorization required</p>
+              <p className="mt-1 text-muted-foreground">
+                Your Spotify authorization is missing required permissions. Please re-authorize to
+                grant access.
+              </p>
+              {status?.missing_scopes && status.missing_scopes.length > 0 && (
+                <p className="mt-1 font-mono text-xs">
+                  Missing: {status.missing_scopes.join(", ")}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Error state: show error message */}
           {displayState === "error" && status?.error && (
             <p className="text-sm text-destructive">{status.error}</p>
@@ -493,6 +533,10 @@ export function SpotifySetupCard() {
                   Disconnect
                 </Button>
               </>
+            )}
+
+            {displayState === "needs_reauth" && (
+              <SpotifyConnectButton label="Re-authorize Spotify" />
             )}
 
             {displayState === "error" && (
