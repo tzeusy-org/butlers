@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import statistics
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -179,8 +180,6 @@ async def detect_recurring(
         }
 
     # Group by merchant.
-    from collections import defaultdict
-
     merchant_data: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         merchant_data[row["merchant"]].append(
@@ -283,12 +282,16 @@ async def detect_recurring(
         price_change_detected = False
         merchant_lower = merchant.lower()
         for sub_name, sub_data in subscriptions_by_merchant.items():
-            if sub_name in merchant_lower or merchant_lower in sub_name:
+            # Use exact match or whole-word containment (min 4 chars) to avoid
+            # spurious matches like "a" matching any merchant name.
+            if sub_name == merchant_lower or (
+                len(sub_name) >= 4 and (sub_name in merchant_lower or merchant_lower in sub_name)
+            ):
                 already_tracked = True
                 sub_amount = sub_data["amount"]
                 if sub_amount > 0:
-                    price_diff = abs(float(avg_amount) - float(sub_amount)) / float(sub_amount)
-                    if price_diff > _PRICE_CHANGE_THRESHOLD:
+                    price_diff = abs(avg_amount - sub_amount) / sub_amount
+                    if price_diff > Decimal(str(_PRICE_CHANGE_THRESHOLD)):
                         price_change_detected = True
                 break
 
@@ -650,8 +653,6 @@ async def predict_bills(
             "status": "insufficient_data",
             "as_of": datetime.now(UTC).isoformat(),
         }
-
-    from collections import defaultdict
 
     merchant_data: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:

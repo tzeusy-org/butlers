@@ -19,7 +19,7 @@ Covers:
 from __future__ import annotations
 
 import shutil
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -440,7 +440,7 @@ class TestDetectRecurringEdgeCases:
         from butlers.tools.finance.pattern_recognition import detect_recurring
 
         base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
-        deleted_at = datetime.now(UTC)
+        deleted_at = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
 
         # Insert 3 charges but mark them as deleted
         for i in range(3):
@@ -647,8 +647,6 @@ class TestDetectRecurringSubscriptionCrossReference:
         assert "last_seen_date" in p
         assert "next_expected_date" in p
         # Verify they're ISO date strings
-        from datetime import date
-
         date.fromisoformat(p["last_seen_date"])
         date.fromisoformat(p["next_expected_date"])
 
