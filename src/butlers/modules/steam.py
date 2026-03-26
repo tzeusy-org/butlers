@@ -21,6 +21,7 @@ Configured via ``[modules.steam]`` in ``butler.toml``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -137,6 +138,7 @@ class SteamModule(Module):
 
     def __init__(self) -> None:
         self._client: SteamAPIClient | None = None
+        self._public_client: SteamAPIClient | None = None
         self._primary_steam_id: str | None = None
         self._credentials_ok: bool = False
 
@@ -184,14 +186,29 @@ class SteamModule(Module):
         self._credentials_ok = False
         self._primary_steam_id = None
         self._client = None
+        self._public_client = None
+
+        # Always open a public client so that unauthenticated endpoints
+        # (steam_get_game_news, steam_get_current_players) work even when
+        # no Steam account is connected.  Steam's public API endpoints accept
+        # requests with an empty key.
+        public_client = SteamAPIClient(api_key="")
+        await public_client.open()
+        self._public_client = public_client
 
         if db is None:
-            logger.warning("Steam module: no database available, tools will be disabled.")
+            logger.warning(
+                "Steam module: no database available — private tools disabled, "
+                "public endpoints (game_news, current_players) remain available."
+            )
             return
 
         pool = getattr(db, "pool", None)
         if pool is None:
-            logger.warning("Steam module: db.pool is None, tools will be disabled.")
+            logger.warning(
+                "Steam module: db.pool is None — private tools disabled, "
+                "public endpoints remain available."
+            )
             return
 
         try:
@@ -227,10 +244,13 @@ class SteamModule(Module):
         )
 
     async def on_shutdown(self) -> None:
-        """Close the ``SteamAPIClient`` HTTP client."""
+        """Close the ``SteamAPIClient`` HTTP clients."""
         if self._client is not None:
             await self._client.close()
             self._client = None
+        if self._public_client is not None:
+            await self._public_client.close()
+            self._public_client = None
 
     # ------------------------------------------------------------------
     # Tool metadata (all tools are read-only)
@@ -429,12 +449,17 @@ class SteamModule(Module):
                 friends = result.get("friendslist", {}).get("friends", [])
                 if enrich and friends:
                     friend_ids = [f["steamid"] for f in friends]
-                    # Batch in chunks of _FRIEND_ENRICH_BATCH (100)
-                    summaries: list[dict[str, Any]] = []
-                    for i in range(0, len(friend_ids), _FRIEND_ENRICH_BATCH):
-                        batch = friend_ids[i : i + _FRIEND_ENRICH_BATCH]
-                        batch_result = await module._client.get_player_summaries(batch)
-                        summaries.extend(batch_result)
+                    # Fetch all batches concurrently (100 SteamIDs per call).
+                    tasks = [
+                        module._client.get_player_summaries(
+                            friend_ids[i : i + _FRIEND_ENRICH_BATCH]
+                        )
+                        for i in range(0, len(friend_ids), _FRIEND_ENRICH_BATCH)
+                    ]
+                    batch_results = await asyncio.gather(*tasks)
+                    summaries: list[dict[str, Any]] = [
+                        player for batch in batch_results for player in batch
+                    ]
                     summary_map = {p["steamid"]: p for p in summaries}
                     for friend in friends:
                         friend["summary"] = summary_map.get(friend["steamid"])
@@ -464,10 +489,11 @@ class SteamModule(Module):
                 count: Number of news items to return (default 5, max 20).
                 max_length: Maximum character length per article body (default 300).
             """
-            if not module._credentials_ok or module._client is None:
+            client = module._client or module._public_client
+            if client is None:
                 return _no_credentials_error()
             try:
-                result = await module._client.request(
+                result = await client.request(
                     "ISteamNews",
                     "GetNewsForApp",
                     params={
@@ -519,10 +545,11 @@ class SteamModule(Module):
             Args:
                 app_id: Steam AppID of the game.
             """
-            if not module._credentials_ok or module._client is None:
+            client = module._client or module._public_client
+            if client is None:
                 return _no_credentials_error()
             try:
-                result = await module._client.request(
+                result = await client.request(
                     "ISteamUserStats",
                     "GetNumberOfCurrentPlayers",
                     params={"appid": app_id},

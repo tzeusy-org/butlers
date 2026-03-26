@@ -198,16 +198,16 @@ class TestToolMetadata:
 
 
 class TestNoCredentials:
-    """All tools return structured error when not connected."""
+    """All tools return structured error when no startup has run (no clients at all)."""
 
-    async def test_all_tools_return_error_when_no_credentials(
+    async def test_private_tools_return_error_when_no_credentials(
         self, steam_module: SteamModule, mock_mcp: MagicMock
     ):
-        # Module is not connected by default
+        # Module has not been started up — both _client and _public_client are None.
         await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
         tools = mock_mcp._registered_tools
 
-        # Each tool should return a credentials error
+        # Private (account-specific) tools should return a credentials error.
         no_creds = _no_credentials_error()
 
         result = await tools["steam_get_player_summary"]()
@@ -225,16 +225,66 @@ class TestNoCredentials:
         result = await tools["steam_get_friend_list"]()
         assert result == no_creds
 
-        result = await tools["steam_get_game_news"](app_id=730)
+        result = await tools["steam_get_player_level"]()
         assert result == no_creds
 
-        result = await tools["steam_get_player_level"]()
+        result = await tools["steam_resolve_vanity_url"](vanity_url="gaben")
+        assert result == no_creds
+
+    async def test_public_tools_return_error_when_no_clients(
+        self, steam_module: SteamModule, mock_mcp: MagicMock
+    ):
+        """Public endpoints also fail before on_startup (no public client yet)."""
+        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        tools = mock_mcp._registered_tools
+        no_creds = _no_credentials_error()
+
+        result = await tools["steam_get_game_news"](app_id=730)
         assert result == no_creds
 
         result = await tools["steam_get_current_players"](app_id=730)
         assert result == no_creds
 
-        result = await tools["steam_resolve_vanity_url"](vanity_url="gaben")
+
+class TestPublicEndpointsWithoutCredentials:
+    """Public endpoints work in degraded mode (public_client available, no credentials)."""
+
+    async def test_game_news_works_with_public_client(
+        self, steam_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
+    ):
+        """steam_get_game_news uses the public client when no authenticated client is set."""
+        steam_module._public_client = mock_steam_client
+        mock_steam_client.request = AsyncMock(
+            return_value={"appnews": {"appid": 730, "newsitems": []}}
+        )
+        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        tools = mock_mcp._registered_tools
+
+        result = await tools["steam_get_game_news"](app_id=730)
+        assert "appnews" in result
+
+    async def test_current_players_works_with_public_client(
+        self, steam_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
+    ):
+        """steam_get_current_players uses the public client when no authenticated client is set."""
+        steam_module._public_client = mock_steam_client
+        mock_steam_client.request = AsyncMock(return_value={"player_count": 12345})
+        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        tools = mock_mcp._registered_tools
+
+        result = await tools["steam_get_current_players"](app_id=730)
+        assert result["player_count"] == 12345
+
+    async def test_private_tools_still_fail_without_credentials(
+        self, steam_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
+    ):
+        """Private tools still return no_credentials_error even if public_client is set."""
+        steam_module._public_client = mock_steam_client
+        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        tools = mock_mcp._registered_tools
+
+        no_creds = _no_credentials_error()
+        result = await tools["steam_get_player_summary"]()
         assert result == no_creds
 
 
@@ -244,31 +294,48 @@ class TestNoCredentials:
 
 
 class TestStartup:
-    async def test_startup_no_db_sets_not_connected(self, steam_module: SteamModule):
-        await steam_module.on_startup(config={}, db=None)
+    async def test_startup_no_db_sets_not_connected(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
+        with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client):
+            await steam_module.on_startup(config={}, db=None)
         assert not steam_module._credentials_ok
+        # Public client is still created even without a DB.
+        assert steam_module._public_client is mock_steam_client
 
-    async def test_startup_no_pool_sets_not_connected(self, steam_module: SteamModule):
+    async def test_startup_no_pool_sets_not_connected(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
         db = MagicMock()
         db.pool = None
-        await steam_module.on_startup(config={}, db=db)
+        with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client):
+            await steam_module.on_startup(config={}, db=db)
         assert not steam_module._credentials_ok
+        assert steam_module._public_client is mock_steam_client
 
-    async def test_startup_missing_primary_account_graceful(self, steam_module: SteamModule):
+    async def test_startup_missing_primary_account_graceful(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
         from butlers.steam_account_registry import MissingSteamCredentialsError
 
         db = MagicMock()
         db.pool = MagicMock()
 
-        with patch(
-            "butlers.modules.steam.resolve_steam_account",
-            AsyncMock(side_effect=MissingSteamCredentialsError("no primary")),
+        with (
+            patch("butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client),
+            patch(
+                "butlers.modules.steam.resolve_steam_account",
+                AsyncMock(side_effect=MissingSteamCredentialsError("no primary")),
+            ),
         ):
             await steam_module.on_startup(config={}, db=db)
 
         assert not steam_module._credentials_ok
+        assert steam_module._public_client is mock_steam_client
 
-    async def test_startup_no_api_key_graceful(self, steam_module: SteamModule):
+    async def test_startup_no_api_key_graceful(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
         import uuid
         from datetime import UTC, datetime
 
@@ -292,6 +359,7 @@ class TestStartup:
         db.pool = MagicMock()
 
         with (
+            patch("butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client),
             patch(
                 "butlers.modules.steam.resolve_steam_account",
                 AsyncMock(return_value=dummy_account),
@@ -355,6 +423,15 @@ class TestStartup:
         await steam_module.on_shutdown()
         mock_steam_client.close.assert_called_once()
         assert steam_module._client is None
+
+    async def test_shutdown_closes_public_client(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
+        """on_shutdown must close the public client even when no authenticated client is set."""
+        steam_module._public_client = mock_steam_client
+        await steam_module.on_shutdown()
+        mock_steam_client.close.assert_called_once()
+        assert steam_module._public_client is None
 
     async def test_shutdown_noop_when_not_connected(self, steam_module: SteamModule):
         # Should not raise
