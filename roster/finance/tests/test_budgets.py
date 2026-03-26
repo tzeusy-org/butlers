@@ -837,9 +837,7 @@ class TestBudgetSet:
         """Default warn=0.80 and alert=1.00 are applied when not specified."""
         from butlers.tools.finance.budgets import budget_set
 
-        result = await budget_set(
-            budget_pool, category="utilities", amount=150.0, period="monthly"
-        )
+        result = await budget_set(budget_pool, category="utilities", amount=150.0, period="monthly")
         assert Decimal(result["warn_threshold"]) == Decimal("0.8000")
         assert Decimal(result["alert_threshold"]) == Decimal("1.0000")
 
@@ -847,14 +845,10 @@ class TestBudgetSet:
         """Setting a budget for the same category+period deactivates the previous one."""
         from butlers.tools.finance.budgets import budget_set
 
-        first = await budget_set(
-            budget_pool, category="groceries", amount=400.0, period="monthly"
-        )
+        first = await budget_set(budget_pool, category="groceries", amount=400.0, period="monthly")
         first_id = first["id"]
 
-        second = await budget_set(
-            budget_pool, category="groceries", amount=600.0, period="monthly"
-        )
+        second = await budget_set(budget_pool, category="groceries", amount=600.0, period="monthly")
 
         # The new budget is active
         assert second["is_active"] is True
@@ -873,9 +867,7 @@ class TestBudgetSet:
         monthly = await budget_set(
             budget_pool, category="groceries", amount=400.0, period="monthly"
         )
-        yearly = await budget_set(
-            budget_pool, category="groceries", amount=4800.0, period="yearly"
-        )
+        yearly = await budget_set(budget_pool, category="groceries", amount=4800.0, period="yearly")
 
         # Monthly budget is still active
         monthly_row = await budget_pool.fetchrow(
@@ -1204,17 +1196,13 @@ class TestBudgetStatus:
 
         # Transaction in the current month
         this_month = _now_mid_month()
-        await _insert_tx(
-            budget_pool, category="groceries", amount="100.00", posted_at=this_month
-        )
+        await _insert_tx(budget_pool, category="groceries", amount="100.00", posted_at=this_month)
 
         # Transaction in the prior month
         prior_month = (this_month.replace(day=1) - timedelta(days=1)).replace(
             day=1, hour=12, minute=0, second=0, microsecond=0
         )
-        await _insert_tx(
-            budget_pool, category="groceries", amount="999.00", posted_at=prior_month
-        )
+        await _insert_tx(budget_pool, category="groceries", amount="999.00", posted_at=prior_month)
 
         result = await budget_status(budget_pool)
         item = result["items"][0]

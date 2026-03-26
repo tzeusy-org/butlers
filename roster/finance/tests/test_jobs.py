@@ -787,3 +787,873 @@ async def test_monthly_spending_summary_notable_changes_disappeared_category(
 
         # "fitness" disappeared from last month — should be flagged as notable
         assert result["notable_changes"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Schema additions for insight scan tests
+# ---------------------------------------------------------------------------
+
+CREATE_BUDGETS_SQL = """
+CREATE TABLE IF NOT EXISTS finance.budgets (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    category         TEXT NOT NULL,
+    period           TEXT NOT NULL CHECK (period IN ('weekly', 'monthly', 'quarterly', 'yearly')),
+    amount           NUMERIC(14, 2) NOT NULL,
+    currency         CHAR(3) NOT NULL DEFAULT 'USD',
+    warn_threshold   NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
+    alert_threshold  NUMERIC(5, 4) NOT NULL DEFAULT 1.0000,
+    is_active        BOOLEAN NOT NULL DEFAULT true,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+CREATE_INSIGHT_TABLES_SQL = [
+    """
+    CREATE TABLE IF NOT EXISTS insight_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        verbosity TEXT NOT NULL DEFAULT 'minimal',
+        custom_budget INTEGER,
+        quiet_start INTEGER,
+        quiet_end INTEGER,
+        quiet_timezone TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS insight_candidates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        origin_butler TEXT NOT NULL,
+        priority INTEGER NOT NULL CHECK (priority >= 1 AND priority <= 100),
+        category TEXT NOT NULL,
+        dedup_key TEXT NOT NULL,
+        cooldown_days INTEGER,
+        expires_at TIMESTAMPTZ NOT NULL,
+        message TEXT NOT NULL,
+        channel TEXT,
+        metadata JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        status TEXT NOT NULL DEFAULT 'pending',
+        delivered_at TIMESTAMPTZ,
+        delivery_attempt_count INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS insight_cooldowns (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        dedup_key TEXT NOT NULL,
+        cooldown_until TIMESTAMPTZ NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'delivered',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS insight_engagement (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        insight_id UUID NOT NULL,
+        delivered_at TIMESTAMPTZ NOT NULL,
+        engaged BOOLEAN NOT NULL DEFAULT FALSE
+    )
+    """,
+]
+
+
+async def _setup_insight_schema(pool) -> None:
+    """Create finance schema + insight tables for insight-scan tests."""
+    await pool.execute(CREATE_FINANCE_SCHEMA)
+    await pool.execute(CREATE_BILLS_SQL)
+    await pool.execute(CREATE_SUBSCRIPTIONS_SQL)
+    await pool.execute(CREATE_TRANSACTIONS_SQL)
+    await pool.execute(CREATE_BUDGETS_SQL)
+    for ddl in CREATE_INSIGHT_TABLES_SQL:
+        await pool.execute(ddl)
+    # Seed insight_settings with default verbosity (not 'off')
+    await pool.execute(
+        "INSERT INTO insight_settings (id, verbosity) "
+        "VALUES (1, 'normal') ON CONFLICT (id) DO NOTHING"
+    )
+
+
+async def _insert_budget(
+    pool,
+    *,
+    category: str = "groceries",
+    period: str = "monthly",
+    amount: str = "500.00",
+    currency: str = "USD",
+    warn_threshold: str = "0.8000",
+    alert_threshold: str = "1.0000",
+    is_active: bool = True,
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO finance.budgets
+            (category, period, amount, currency, warn_threshold, alert_threshold, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+        category,
+        period,
+        amount,
+        currency,
+        warn_threshold,
+        alert_threshold,
+        is_active,
+    )
+
+
+async def _insert_subscription(
+    pool,
+    *,
+    service: str = "Adobe",
+    amount: str = "599.00",
+    currency: str = "USD",
+    frequency: str = "yearly",
+    next_renewal: date | None = None,
+    status: str = "active",
+) -> str:
+    if next_renewal is None:
+        next_renewal = _today() + timedelta(days=7)
+    row_id = await pool.fetchval(
+        """
+        INSERT INTO finance.subscriptions
+            (service, amount, currency, frequency, next_renewal, status)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+        """,
+        service,
+        amount,
+        currency,
+        frequency,
+        next_renewal,
+        status,
+    )
+    return str(row_id)
+
+
+async def _insert_bill_returning_id(
+    pool,
+    *,
+    payee: str = "Electric Company",
+    amount: str = "100.00",
+    currency: str = "USD",
+    due_date: date | None = None,
+    frequency: str = "monthly",
+    status: str = "pending",
+) -> str:
+    if due_date is None:
+        due_date = _today() + timedelta(days=2)
+    row_id = await pool.fetchval(
+        """
+        INSERT INTO finance.bills (payee, amount, currency, due_date, frequency, status)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+        """,
+        payee,
+        amount,
+        currency,
+        due_date,
+        frequency,
+        status,
+    )
+    return str(row_id)
+
+
+async def _count_candidates(pool) -> int:
+    return await pool.fetchval("SELECT COUNT(*) FROM insight_candidates")
+
+
+async def _fetch_candidates(pool) -> list[dict]:
+    rows = await pool.fetch(
+        "SELECT priority, category, dedup_key, message, cooldown_days, status "
+        "FROM insight_candidates ORDER BY created_at"
+    )
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_finance_insight_scan
+# ---------------------------------------------------------------------------
+
+
+async def test_insight_scan_empty_db_no_candidates(provisioned_postgres_pool):
+    """No-op: empty finance tables produce no insight candidates."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await run_finance_insight_scan(pool)
+
+        assert result["submitted"] == 0
+        assert result["accepted"] == 0
+        assert result["early_exit"] is False
+        assert await _count_candidates(pool) == 0
+
+
+async def test_insight_scan_bill_due_within_1_day_priority_92(provisioned_postgres_pool):
+    """Bill due tomorrow gets priority 92 (time-critical)."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_bill_returning_id(
+            pool, payee="Rent", amount="1200.00", due_date=_today() + timedelta(days=1)
+        )
+
+        result = await run_finance_insight_scan(pool)
+
+        assert result["submitted"] >= 1
+        assert result["accepted"] >= 1
+        candidates = await _fetch_candidates(pool)
+        bill_candidates = [c for c in candidates if c["category"] == "bill-due"]
+        assert len(bill_candidates) == 1
+        assert bill_candidates[0]["priority"] == 92
+
+
+async def test_insight_scan_bill_due_within_3_days_priority_75(provisioned_postgres_pool):
+    """Bill due in 3 days gets priority 75."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_bill_returning_id(
+            pool, payee="Internet", amount="89.00", due_date=_today() + timedelta(days=3)
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        bill_candidates = [c for c in candidates if c["category"] == "bill-due"]
+        assert len(bill_candidates) == 1
+        assert bill_candidates[0]["priority"] == 75
+
+
+async def test_insight_scan_bill_due_beyond_3_days_excluded(provisioned_postgres_pool):
+    """Bills due more than 3 days away do not generate insight candidates."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_bill_returning_id(
+            pool, payee="Insurance", amount="200.00", due_date=_today() + timedelta(days=5)
+        )
+
+        result = await run_finance_insight_scan(pool)
+
+        assert result["submitted"] == 0
+        assert await _count_candidates(pool) == 0
+
+
+async def test_insight_scan_bill_paid_excluded(provisioned_postgres_pool):
+    """Paid bills do not generate insight candidates."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_bill_returning_id(
+            pool,
+            payee="Water",
+            amount="50.00",
+            due_date=_today() + timedelta(days=1),
+            status="paid",
+        )
+
+        result = await run_finance_insight_scan(pool)
+
+        assert result["submitted"] == 0
+
+
+async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
+    """Bill insight dedup_key matches finance:bill-due:{bill_id}:{due_date}."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        due = _today() + timedelta(days=2)
+        bill_id = await _insert_bill_returning_id(pool, due_date=due)
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        bill_cands = [c for c in candidates if c["category"] == "bill-due"]
+        assert len(bill_cands) == 1
+        expected_key = f"finance:bill-due:{bill_id}:{due.isoformat()}"
+        assert bill_cands[0]["dedup_key"] == expected_key
+
+
+async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):
+    """Bill insight has cooldown_days=1."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_bill_returning_id(pool, due_date=_today() + timedelta(days=1))
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        bill_cands = [c for c in candidates if c["category"] == "bill-due"]
+        assert bill_cands[0]["cooldown_days"] == 1
+
+
+async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
+    """Budget at 90%+ utilisation gets priority 70."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        # Budget: $500 for groceries this month
+        await _insert_budget(pool, category="groceries", amount="500.00")
+
+        # Spend $460 (92%) this month
+        month_start = _today().replace(day=1)
+        tx_date = datetime(month_start.year, month_start.month, 15, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Whole Foods",
+            amount="460.00",
+            direction="debit",
+            category="groceries",
+            posted_at=tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
+        assert len(budget_cands) == 1
+        assert budget_cands[0]["priority"] == 70
+
+
+async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_pool):
+    """Budget at 80–90% utilisation gets priority 50."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_budget(pool, category="dining", amount="300.00")
+
+        month_start = _today().replace(day=1)
+        tx_date = datetime(month_start.year, month_start.month, 15, 12, 0, 0, tzinfo=UTC)
+        # Spend $255 (85%) this month
+        await _insert_transaction(
+            pool,
+            merchant="Restaurant",
+            amount="255.00",
+            direction="debit",
+            category="dining",
+            posted_at=tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
+        assert len(budget_cands) == 1
+        assert budget_cands[0]["priority"] == 50
+
+
+async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres_pool):
+    """Budget below 80% does not generate an insight candidate."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_budget(pool, category="transport", amount="200.00")
+
+        month_start = _today().replace(day=1)
+        tx_date = datetime(month_start.year, month_start.month, 15, 12, 0, 0, tzinfo=UTC)
+        # Spend $100 (50%) — below threshold
+        await _insert_transaction(
+            pool,
+            merchant="Uber",
+            amount="100.00",
+            direction="debit",
+            category="transport",
+            posted_at=tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
+        assert len(budget_cands) == 0
+
+
+async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
+    """Budget insight dedup_key matches finance:budget-threshold:{category}:{year-month}."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_budget(pool, category="subscriptions", amount="100.00")
+
+        month_start = _today().replace(day=1)
+        tx_date = datetime(month_start.year, month_start.month, 15, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Netflix",
+            amount="95.00",
+            direction="debit",
+            category="subscriptions",
+            posted_at=tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
+        year_month = _today().strftime("%Y-%m")
+        expected_key = f"finance:budget-threshold:subscriptions:{year_month}"
+        assert budget_cands[0]["dedup_key"] == expected_key
+
+
+async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
+    provisioned_postgres_pool,
+):
+    """Annual subscription renewing within 3 days gets priority 75."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(
+            pool, service="Adobe", frequency="yearly", next_renewal=_today() + timedelta(days=2)
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
+        assert len(sub_cands) == 1
+        assert sub_cands[0]["priority"] == 75
+
+
+async def test_insight_scan_subscription_renewal_within_14_days_priority_55(
+    provisioned_postgres_pool,
+):
+    """Annual subscription renewing in 4–14 days gets priority 55."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(
+            pool,
+            service="1Password",
+            frequency="yearly",
+            next_renewal=_today() + timedelta(days=10),
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
+        assert len(sub_cands) == 1
+        assert sub_cands[0]["priority"] == 55
+
+
+async def test_insight_scan_monthly_subscription_excluded(provisioned_postgres_pool):
+    """Monthly subscriptions do NOT generate insight candidates (only annual)."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(
+            pool,
+            service="Netflix",
+            frequency="monthly",
+            next_renewal=_today() + timedelta(days=3),
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
+        assert len(sub_cands) == 0
+
+
+async def test_insight_scan_subscription_beyond_14_days_excluded(provisioned_postgres_pool):
+    """Annual subscriptions renewing beyond 14 days are excluded."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(
+            pool, service="Dropbox", frequency="yearly", next_renewal=_today() + timedelta(days=20)
+        )
+
+        await run_finance_insight_scan(pool)
+
+        assert await _count_candidates(pool) == 0
+
+
+async def test_insight_scan_subscription_dedup_key_format(provisioned_postgres_pool):
+    """Subscription insight dedup_key matches finance:subscription-renewal:{id}:{date}."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        renewal_date = _today() + timedelta(days=5)
+        sub_id = await _insert_subscription(
+            pool, service="Backblaze", frequency="yearly", next_renewal=renewal_date
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
+        expected_key = f"finance:subscription-renewal:{sub_id}:{renewal_date.isoformat()}"
+        assert sub_cands[0]["dedup_key"] == expected_key
+
+
+async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
+    provisioned_postgres_pool,
+):
+    """Category spending >30% above 3-month average generates an insight."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        today = _today()
+        month_start = today.replace(day=1)
+
+        # Build 3 months of history: $100/month in groceries
+        for months_back in range(1, 4):
+            if month_start.month - months_back > 0:
+                hist_month = month_start.replace(month=month_start.month - months_back)
+            else:
+                hist_month = month_start.replace(
+                    year=month_start.year - 1, month=month_start.month - months_back + 12
+                )
+            tx_date = datetime(hist_month.year, hist_month.month, 15, 12, 0, 0, tzinfo=UTC)
+            await _insert_transaction(
+                pool,
+                merchant="Supermarket",
+                amount="100.00",
+                direction="debit",
+                category="groceries",
+                posted_at=tx_date,
+            )
+
+        # Current month: $220 (120% above average of $100 — more than 100%)
+        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Whole Foods",
+            amount="220.00",
+            direction="debit",
+            category="groceries",
+            posted_at=current_tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
+        assert len(anomaly_cands) == 1
+        # 120% above average (> 100%) → priority 80
+        assert anomaly_cands[0]["priority"] == 80
+
+
+async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_postgres_pool):
+    """Category 30–50% above average gets priority 50."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        today = _today()
+        month_start = today.replace(day=1)
+
+        for months_back in range(1, 4):
+            if month_start.month - months_back > 0:
+                hist_month = month_start.replace(month=month_start.month - months_back)
+            else:
+                hist_month = month_start.replace(
+                    year=month_start.year - 1, month=month_start.month - months_back + 12
+                )
+            tx_date = datetime(hist_month.year, hist_month.month, 15, 12, 0, 0, tzinfo=UTC)
+            await _insert_transaction(
+                pool,
+                merchant="Restaurant",
+                amount="100.00",
+                direction="debit",
+                category="dining",
+                posted_at=tx_date,
+            )
+
+        # 40% above average: $140
+        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Fancy Restaurant",
+            amount="140.00",
+            direction="debit",
+            category="dining",
+            posted_at=current_tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
+        assert len(anomaly_cands) == 1
+        assert anomaly_cands[0]["priority"] == 50
+
+
+async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_postgres_pool):
+    """Category 50–100% above average gets priority 65."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        today = _today()
+        month_start = today.replace(day=1)
+
+        for months_back in range(1, 4):
+            if month_start.month - months_back > 0:
+                hist_month = month_start.replace(month=month_start.month - months_back)
+            else:
+                hist_month = month_start.replace(
+                    year=month_start.year - 1, month=month_start.month - months_back + 12
+                )
+            tx_date = datetime(hist_month.year, hist_month.month, 15, 12, 0, 0, tzinfo=UTC)
+            await _insert_transaction(
+                pool,
+                merchant="Supermarket",
+                amount="100.00",
+                direction="debit",
+                category="entertainment",
+                posted_at=tx_date,
+            )
+
+        # 75% above average: $175
+        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Cinema",
+            amount="175.00",
+            direction="debit",
+            category="entertainment",
+            posted_at=current_tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
+        assert len(anomaly_cands) == 1
+        assert anomaly_cands[0]["priority"] == 65
+
+
+async def test_insight_scan_spending_anomaly_below_30pct_no_candidate(provisioned_postgres_pool):
+    """Category within 30% of average does NOT generate an insight."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        today = _today()
+        month_start = today.replace(day=1)
+
+        for months_back in range(1, 4):
+            if month_start.month - months_back > 0:
+                hist_month = month_start.replace(month=month_start.month - months_back)
+            else:
+                hist_month = month_start.replace(
+                    year=month_start.year - 1, month=month_start.month - months_back + 12
+                )
+            tx_date = datetime(hist_month.year, hist_month.month, 15, 12, 0, 0, tzinfo=UTC)
+            await _insert_transaction(
+                pool,
+                merchant="Grocery",
+                amount="100.00",
+                direction="debit",
+                category="groceries",
+                posted_at=tx_date,
+            )
+
+        # 20% above average — below threshold
+        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Grocery",
+            amount="120.00",
+            direction="debit",
+            category="groceries",
+            posted_at=current_tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
+        assert len(anomaly_cands) == 0
+
+
+async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
+    provisioned_postgres_pool,
+):
+    """Categories with fewer than 3 months of history are excluded from anomaly detection."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        today = _today()
+        month_start = today.replace(day=1)
+
+        # Only 2 months of history
+        for months_back in range(1, 3):
+            if month_start.month - months_back > 0:
+                hist_month = month_start.replace(month=month_start.month - months_back)
+            else:
+                hist_month = month_start.replace(
+                    year=month_start.year - 1, month=month_start.month - months_back + 12
+                )
+            tx_date = datetime(hist_month.year, hist_month.month, 15, 12, 0, 0, tzinfo=UTC)
+            await _insert_transaction(
+                pool,
+                merchant="NewMerchant",
+                amount="100.00",
+                direction="debit",
+                category="newcat",
+                posted_at=tx_date,
+            )
+
+        # Current month: $500 — would be anomalous if history were sufficient
+        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="NewMerchant",
+            amount="500.00",
+            direction="debit",
+            category="newcat",
+            posted_at=current_tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
+        assert len(anomaly_cands) == 0
+
+
+async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgres_pool):
+    """Anomaly insight dedup_key matches finance:spending-anomaly:{category}:{year-month}."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        today = _today()
+        month_start = today.replace(day=1)
+
+        for months_back in range(1, 4):
+            if month_start.month - months_back > 0:
+                hist_month = month_start.replace(month=month_start.month - months_back)
+            else:
+                hist_month = month_start.replace(
+                    year=month_start.year - 1, month=month_start.month - months_back + 12
+                )
+            tx_date = datetime(hist_month.year, hist_month.month, 15, 12, 0, 0, tzinfo=UTC)
+            await _insert_transaction(
+                pool,
+                merchant="Shop",
+                amount="100.00",
+                direction="debit",
+                category="shopping",
+                posted_at=tx_date,
+            )
+
+        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Shop",
+            amount="300.00",
+            direction="debit",
+            category="shopping",
+            posted_at=current_tx_date,
+        )
+
+        await run_finance_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
+        year_month = today.strftime("%Y-%m")
+        assert anomaly_cands[0]["dedup_key"] == f"finance:spending-anomaly:shopping:{year_month}"
+
+
+async def test_insight_scan_verbosity_off_early_exit(provisioned_postgres_pool):
+    """When verbosity=off, the first submission is filtered and no more are submitted."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        # Set verbosity to 'off'
+        await pool.execute("UPDATE insight_settings SET verbosity = 'off' WHERE id = 1")
+
+        # Add two bills due within 3 days
+        await _insert_bill_returning_id(pool, payee="Bill A", due_date=_today() + timedelta(days=1))
+        await _insert_bill_returning_id(pool, payee="Bill B", due_date=_today() + timedelta(days=2))
+
+        result = await run_finance_insight_scan(pool)
+
+        assert result["early_exit"] is True
+        assert result["filtered"] >= 1
+        # Only first candidate should have been submitted before early exit
+        assert result["submitted"] == 1
+
+
+async def test_insight_scan_result_has_expected_keys(provisioned_postgres_pool):
+    """Result dict contains all expected keys."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await run_finance_insight_scan(pool)
+
+        assert "submitted" in result
+        assert "accepted" in result
+        assert "filtered" in result
+        assert "errors" in result
+        assert "early_exit" in result
+
+
+async def test_insight_scan_multiple_categories_all_submitted(provisioned_postgres_pool):
+    """Multiple categories (bill + subscription) each get a candidate submitted."""
+    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        # A bill due tomorrow
+        await _insert_bill_returning_id(pool, payee="Rent", due_date=_today() + timedelta(days=1))
+        # An annual subscription renewing in 5 days
+        await _insert_subscription(
+            pool, service="Adobe", frequency="yearly", next_renewal=_today() + timedelta(days=5)
+        )
+
+        result = await run_finance_insight_scan(pool)
+
+        assert result["submitted"] == 2
+        assert result["accepted"] == 2
+        assert result["early_exit"] is False
