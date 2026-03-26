@@ -18,12 +18,10 @@ depends_on = None
 
 def upgrade() -> None:
     # -------------------------------------------------------------------------
-    # Extensions — the DB init script pre-installs these in public; this is
-    # a safety net for fresh environments.
+    # IMPORTANT: Extensions (vector, uuid-ossp, pg_trgm) must be pre-installed
+    # by a superuser before running migrations.  See the IMPORTANT comment in
+    # alembic/versions/core/core_001_foundation.py for the full list.
     # -------------------------------------------------------------------------
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
 
     # =========================================================================
     # 1. episodes

@@ -696,9 +696,17 @@ def _apply_runtime_acl() -> None:
 
 
 def upgrade() -> None:
-    # pgcrypto only — vector, uuid-ossp, and pg_trgm are installed by the
-    # memory module migration (which has CREATE EXTENSION privilege).
-    op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
+    # IMPORTANT: The following PostgreSQL extensions MUST be installed by a
+    # superuser BEFORE running migrations:
+    #
+    #   CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+    #   CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    #   CREATE EXTENSION IF NOT EXISTS "vector";      -- pgvector
+    #   CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    #
+    # These are NOT created here because the migration user typically lacks
+    # superuser privileges.  See scripts/init-db.sql or your DB provisioning
+    # playbook.
 
     _create_required_schemas()
     _create_ingestion_events()
