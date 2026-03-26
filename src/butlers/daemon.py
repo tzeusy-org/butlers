@@ -369,6 +369,27 @@ async def _run_switchboard_eligibility_sweep_job(
     return await run_eligibility_sweep_job(pool)
 
 
+async def _run_switchboard_insight_delivery_cycle_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the proactive insight delivery cycle for the Switchboard butler.
+
+    Orchestrates the full 10-step insight delivery pipeline:
+    quiet-hours check, expiry, cooldown filter, dedup, budget computation,
+    top-B selection, delivery, cooldown recording, engagement tracking,
+    and cleanup.
+
+    Passes ``notify_fn=None`` — delivery_cycle will skip the actual delivery
+    step and return ``skipped=True`` until the Switchboard notify path is
+    fully integrated. No candidates are consumed or marked delivered.
+    """
+    del job_args
+    from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+    return await delivery_cycle(pool, notify_fn=None)
+
+
 async def _run_memory_consolidation_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -669,6 +690,7 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     },
     "switchboard": {
         "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
+        "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
     },
 }

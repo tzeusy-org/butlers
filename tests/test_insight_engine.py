@@ -1375,3 +1375,455 @@ class TestCleanup:
         ids = {str(r["insight_id"]) for r in rows}
         assert old_id not in ids
         assert recent_id in ids
+
+
+# ===========================================================================
+# Category: Delivery attempt tracking and repeated-failure filtering [bu-a3wr]
+# ===========================================================================
+
+
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+@pytest.mark.integration
+class TestDeliveryAttemptTracking:
+    """delivery_cycle increments delivery_attempt_count on failure and filters after 3."""
+
+    async def test_failed_delivery_increments_attempt_count(self, insight_pool):
+        """When notify_fn returns error, delivery_attempt_count is incremented."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        # Ensure budget is available
+        await insight_pool.execute("UPDATE insight_settings SET verbosity = 'normal' WHERE id = 1")
+
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message, status)
+            VALUES ('health', 80, 'health', 'health:bp:user:2026', $1, 'Blood pressure alert',
+                    'pending')
+            """,
+            _future(),
+        )
+
+        async def failing_notify(message, metadata):
+            return {"status": "error", "error": "channel unavailable"}
+
+        result = await delivery_cycle(insight_pool, notify_fn=failing_notify)
+
+        # Candidate should NOT be delivered
+        assert result["delivered"] == []
+
+        row = await insight_pool.fetchrow(
+            "SELECT delivery_attempt_count, status FROM insight_candidates "
+            "WHERE dedup_key = 'health:bp:user:2026'"
+        )
+        assert row["delivery_attempt_count"] == 1
+        assert row["status"] == "pending"
+
+    async def test_candidate_filtered_after_three_failures(self, insight_pool):
+        """After 3 failed delivery attempts, candidate is marked filtered."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("UPDATE insight_settings SET verbosity = 'normal' WHERE id = 1")
+
+        # Pre-seed with 2 prior failures so next failure triggers filter
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message,
+                 status, delivery_attempt_count)
+            VALUES ('health', 80, 'health', 'health:bp:user:2026-retry', $1,
+                    'Blood pressure retry', 'pending', 2)
+            """,
+            _future(),
+        )
+
+        async def failing_notify(message, metadata):
+            return {"status": "error", "error": "channel unavailable"}
+
+        await delivery_cycle(insight_pool, notify_fn=failing_notify)
+
+        row = await insight_pool.fetchrow(
+            "SELECT delivery_attempt_count, status FROM insight_candidates "
+            "WHERE dedup_key = 'health:bp:user:2026-retry'"
+        )
+        assert row["delivery_attempt_count"] == 3
+        assert row["status"] == "filtered"
+
+    async def test_successful_delivery_does_not_increment_count(self, insight_pool):
+        """Successful delivery does not touch delivery_attempt_count."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("UPDATE insight_settings SET verbosity = 'minimal' WHERE id = 1")
+
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message, status)
+            VALUES ('health', 80, 'health', 'health:bp:user:2026-ok', $1,
+                    'Blood pressure ok', 'pending')
+            """,
+            _future(),
+        )
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        row = await insight_pool.fetchrow(
+            "SELECT delivery_attempt_count, status FROM insight_candidates "
+            "WHERE dedup_key = 'health:bp:user:2026-ok'"
+        )
+        assert row["delivery_attempt_count"] == 0
+        assert row["status"] == "delivered"
+
+    async def test_notify_fn_none_skips_delivery_without_marking_candidates(self, insight_pool):
+        """When notify_fn=None, delivery_cycle skips delivery; candidates stay pending.
+
+        Previously, a None notify_fn caused deliver_success to remain True
+        (since no notify was called to set it False), silently marking
+        candidates as delivered without sending anything.  The fix returns
+        early with skipped=True so no candidates are consumed.
+        """
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("UPDATE insight_settings SET verbosity = 'normal' WHERE id = 1")
+
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message, status)
+            VALUES ('health', 80, 'health', 'health:bp:none-fn:2026', $1,
+                    'Blood pressure check', 'pending')
+            """,
+            _future(),
+        )
+
+        result = await delivery_cycle(insight_pool, notify_fn=None)
+
+        assert result["skipped"] is True
+        assert result["delivered"] == []
+
+        row = await insight_pool.fetchrow(
+            "SELECT status, delivery_attempt_count FROM insight_candidates "
+            "WHERE dedup_key = 'health:bp:none-fn:2026'"
+        )
+        # Candidate must remain pending — not silently consumed
+        assert row["status"] == "pending"
+        assert row["delivery_attempt_count"] == 0
+
+    async def test_delivery_attempt_count_reset_on_success_after_prior_failures(self, insight_pool):
+        """Successful delivery resets delivery_attempt_count to 0.
+
+        Previously, a candidate that failed twice then succeeded on the
+        third attempt would retain count=2.  A subsequent failure would
+        push it to count=3 and trigger filtering even though only 1
+        consecutive failure had occurred.  The fix resets the counter on
+        every successful delivery.
+        """
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("UPDATE insight_settings SET verbosity = 'minimal' WHERE id = 1")
+
+        # Pre-seed with 2 prior failures (mimics fail-fail history)
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message,
+                 status, delivery_attempt_count)
+            VALUES ('health', 80, 'health', 'health:bp:reset-test:2026', $1,
+                    'Blood pressure reset', 'pending', 2)
+            """,
+            _future(),
+        )
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        row = await insight_pool.fetchrow(
+            "SELECT status, delivery_attempt_count FROM insight_candidates "
+            "WHERE dedup_key = 'health:bp:reset-test:2026'"
+        )
+        assert row["status"] == "delivered"
+        # Counter must be reset to 0, not left at 2
+        assert row["delivery_attempt_count"] == 0
+
+
+# ===========================================================================
+# Category: Auto-off on total disengagement [bu-a3wr]
+# ===========================================================================
+
+
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+@pytest.mark.integration
+class TestAutoOffTotalDisengagement:
+    """check_total_disengagement_auto_off triggers when engagement==0 for 14 days."""
+
+    async def _insert_daily_engagement(
+        self,
+        pool,
+        *,
+        num_days: int,
+        engaged: bool = False,
+        insights_per_day: int = 1,
+        reference_now: datetime | None = None,
+    ) -> None:
+        """Insert engagement rows for num_days complete past days.
+
+        Each row is anchored to midnight-based day boundaries so the data
+        falls reliably within the check_total_disengagement_auto_off window,
+        which uses midnight-anchored boundaries with an exclusive upper bound.
+
+        Days are placed at day -1, -2, ..., -num_days (yesterday and earlier),
+        never on today (which is excluded by the window's < today_midnight bound).
+        """
+        if reference_now is None:
+            reference_now = datetime.now(UTC)
+        # Anchor to today's midnight so offsets map to complete calendar days
+        today_midnight = reference_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        for day_offset in range(num_days):
+            # Place data at 01:00 on day -(num_days - day_offset), working
+            # from the earliest day forward. All days are in the past (>= day -num_days
+            # and <= day -1), safely below the exclusive window_end (today_midnight).
+            day_ts = today_midnight - timedelta(days=num_days - day_offset) + timedelta(hours=1)
+            for _ in range(insights_per_day):
+                insight_id = str(uuid.uuid4())
+                await pool.execute(
+                    """
+                    INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+                    VALUES ($1::uuid, $2, $3)
+                    """,
+                    insight_id,
+                    day_ts,
+                    engaged,
+                )
+
+    async def test_auto_off_triggered_when_zero_engagement_14_days(self, insight_pool):
+        """auto-off fires after 14 days of zero engagement with daily deliveries."""
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+            get_insight_settings,
+        )
+
+        now = datetime.now(UTC)
+        await self._insert_daily_engagement(
+            insight_pool, num_days=14, engaged=False, reference_now=now
+        )
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        triggered = await check_total_disengagement_auto_off(
+            insight_pool, now=now, notify_fn=notify_mock
+        )
+
+        assert triggered is True
+        settings = await get_insight_settings(insight_pool)
+        assert settings["verbosity"] == "off"
+        notify_mock.assert_called_once()
+        call_args = notify_mock.call_args[0]
+        assert "paused proactive insights" in call_args[0]
+
+    async def test_auto_off_not_triggered_with_partial_engagement(self, insight_pool):
+        """auto-off does not fire when at least one day had engagement."""
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+            get_insight_settings,
+        )
+
+        now = datetime.now(UTC)
+        # 13 days of zero engagement (fills days -14 through -2)
+        await self._insert_daily_engagement(
+            insight_pool, num_days=13, engaged=False, reference_now=now
+        )
+        # 1 day with engagement, placed yesterday (day -1 = inside the window)
+        # to ensure it falls within the midnight-anchored window boundary.
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        engaged_id = str(uuid.uuid4())
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, TRUE)
+            """,
+            engaged_id,
+            today_midnight - timedelta(hours=12),  # yesterday noon — in window
+        )
+
+        triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
+
+        assert triggered is False
+        settings = await get_insight_settings(insight_pool)
+        assert settings["verbosity"] != "off"
+
+    async def test_auto_off_not_triggered_with_fewer_than_14_days(self, insight_pool):
+        """auto-off does not fire when only 13 days of engagement history exist."""
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+            get_insight_settings,
+        )
+
+        now = datetime.now(UTC)
+        await self._insert_daily_engagement(
+            insight_pool, num_days=13, engaged=False, reference_now=now
+        )
+
+        triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
+
+        assert triggered is False
+        settings = await get_insight_settings(insight_pool)
+        assert settings["verbosity"] != "off"
+
+    async def test_auto_off_not_triggered_with_no_history(self, insight_pool):
+        """auto-off does not fire when there is no engagement history."""
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+        )
+
+        triggered = await check_total_disengagement_auto_off(insight_pool)
+
+        assert triggered is False
+
+    async def test_auto_off_notify_called_with_correct_message(self, insight_pool):
+        """Auto-off final notification uses the canonical message string."""
+        from butlers.tools.switchboard.insight.broker import (
+            _AUTO_OFF_MESSAGE,
+            check_total_disengagement_auto_off,
+        )
+
+        now = datetime.now(UTC)
+        await self._insert_daily_engagement(
+            insight_pool, num_days=14, engaged=False, reference_now=now
+        )
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        await check_total_disengagement_auto_off(insight_pool, now=now, notify_fn=notify_mock)
+
+        notify_mock.assert_called_once()
+        call_args = notify_mock.call_args[0]
+        assert call_args[0] == _AUTO_OFF_MESSAGE
+
+    async def test_auto_off_without_notify_fn_still_updates_verbosity(self, insight_pool):
+        """auto-off updates verbosity even when no notify_fn is provided."""
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+            get_insight_settings,
+        )
+
+        now = datetime.now(UTC)
+        await self._insert_daily_engagement(
+            insight_pool, num_days=14, engaged=False, reference_now=now
+        )
+
+        triggered = await check_total_disengagement_auto_off(insight_pool, now=now, notify_fn=None)
+
+        assert triggered is True
+        settings = await get_insight_settings(insight_pool)
+        assert settings["verbosity"] == "off"
+
+    async def test_auto_off_excludes_today_partial_day(self, insight_pool):
+        """Window boundary excludes today's partial day to prevent premature auto-off.
+
+        Previously the window used an inclusive end (delivered_at <= now), which
+        could produce 15 day buckets (days -14 through 0) instead of 14.  If today
+        had 0 engagement rows it could push the row count to 14+ and trigger
+        auto-off prematurely.  The fix uses an exclusive upper bound (< midnight
+        today) so exactly 14 complete day buckets are checked.
+        """
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+            get_insight_settings,
+        )
+
+        now = datetime.now(UTC)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Insert 14 days of zero engagement in complete past days (days -14 to -1)
+        await self._insert_daily_engagement(
+            insight_pool, num_days=14, engaged=False, reference_now=now
+        )
+
+        # Also insert a zero-engagement row for TODAY — this is the partial day
+        # that should be excluded from the window.
+        today_insight_id = str(uuid.uuid4())
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, FALSE)
+            """,
+            today_insight_id,
+            today_midnight + timedelta(hours=1),  # today at 01:00
+        )
+
+        # With the old inclusive boundary, today's row would be included,
+        # giving 15 buckets; with the new exclusive boundary it's excluded.
+        # Either way, auto-off should fire here because 14 complete days have
+        # zero engagement — the key assertion is that today's partial data
+        # does NOT block auto-off when 14 full days already qualify.
+        triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
+
+        assert triggered is True
+        settings = await get_insight_settings(insight_pool)
+        assert settings["verbosity"] == "off"
+
+    async def test_auto_off_not_triggered_when_only_15_days_span_including_today(
+        self, insight_pool
+    ):
+        """13 complete past days plus today's partial row do not trigger auto-off.
+
+        Regression guard: with an inclusive window (old behaviour), data spanning
+        days -13 through 0 could fill 14 buckets and trigger falsely.  The fix
+        uses an exclusive upper bound, so today's row is excluded and only 13
+        complete-day buckets remain, which is < 14 → no auto-off.
+        """
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+            get_insight_settings,
+        )
+
+        now = datetime.now(UTC)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # 13 complete past days of zero engagement (days -13 to -1)
+        await self._insert_daily_engagement(
+            insight_pool, num_days=13, engaged=False, reference_now=now
+        )
+
+        # Today's partial row — should be excluded by the new boundary
+        today_insight_id = str(uuid.uuid4())
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, FALSE)
+            """,
+            today_insight_id,
+            today_midnight + timedelta(hours=2),  # today at 02:00
+        )
+
+        triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
+
+        # Only 13 complete days visible in window (today excluded) → not triggered
+        assert triggered is False
+        settings = await get_insight_settings(insight_pool)
+        assert settings["verbosity"] != "off"
+
+
+# ===========================================================================
+# Category: Daemon job handler registration [bu-a3wr]
+# ===========================================================================
+
+
+class TestDaemonInsightDeliveryJobHandler:
+    """insight_delivery_cycle job is registered in the daemon's job registry."""
+
+    def test_insight_delivery_cycle_in_switchboard_handlers(self):
+        """_DETERMINISTIC_SCHEDULE_JOB_REGISTRY['switchboard'] contains insight_delivery_cycle."""
+        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+        switchboard_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
+        assert "insight_delivery_cycle" in switchboard_jobs
+
+    def test_insight_delivery_cycle_handler_is_callable(self):
+        """The insight_delivery_cycle handler is an async callable."""
+        import asyncio
+
+        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+        handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["switchboard"]["insight_delivery_cycle"]
+        assert callable(handler)
+        assert asyncio.iscoroutinefunction(handler)
