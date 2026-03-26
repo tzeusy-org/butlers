@@ -109,6 +109,10 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             engaged BOOLEAN NOT NULL DEFAULT FALSE
         )
     """)
+    await pool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_insight_engagement_delivered_engaged
+        ON insight_engagement (delivered_at, engaged)
+    """)
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +501,59 @@ async def record_engagement_rows(
         """,
         engagement_data,
     )
+
+
+async def check_and_update_engagement(
+    pool: asyncpg.Pool,
+    *,
+    window_minutes: int = 60,
+    now: datetime | None = None,
+) -> int:
+    """Mark engagement rows as engaged=TRUE for insights delivered within the window.
+
+    Called on each Switchboard ingress request: if the user sends any message
+    to any butler within 60 minutes of an insight's delivered_at, the insight
+    is considered engaged.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    window_minutes:
+        Engagement detection window in minutes (default: 60).
+    now:
+        Reference time (defaults to UTC now). Used in tests to control time.
+
+    Returns
+    -------
+    int
+        Number of engagement rows updated to engaged=TRUE.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    window_start = now - timedelta(minutes=window_minutes)
+
+    result = await pool.execute(
+        """
+        UPDATE insight_engagement
+        SET engaged = TRUE
+        WHERE engaged = FALSE
+          AND delivered_at >= $1
+          AND delivered_at <= $2
+        """,
+        window_start,
+        now,
+    )
+    # asyncpg returns "UPDATE N" string
+    count_str = result.split()[-1] if result else "0"
+    updated = int(count_str)
+    if updated > 0:
+        logger.debug(
+            "insight engagement: marked %d row(s) as engaged (window=%dmin)",
+            updated,
+            window_minutes,
+        )
+    return updated
 
 
 async def cleanup_old_rows(
