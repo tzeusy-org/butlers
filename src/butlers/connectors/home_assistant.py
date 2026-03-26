@@ -1,10 +1,19 @@
 """Home Assistant connector — WebSocket-first with REST polling fallback.
 
-STATUS: PARTIAL (task 8 — health, heartbeat, metrics)
-=======================================================
+STATUS: PARTIAL (tasks 3 + 8 — WebSocket client core, health, heartbeat, metrics)
+===================================================================================
 
-This module implements the health state derivation, heartbeat assembly, and
-HA-specific Prometheus metrics for the Home Assistant connector process.
+This module implements:
+- Task 3 (WebSocket client core): HAWebSocketClient with auth handshake, event
+  subscription, ping/pong keepalive, exponential backoff reconnection, and event
+  dispatch to the filter pipeline.
+- Task 8 (health, heartbeat, metrics): HAConnector health state derivation,
+  heartbeat assembly, and HA-specific Prometheus metrics.
+
+The connector bridges real-time HA events into the butler ecosystem via the
+Switchboard's canonical ingest path.  It maintains a persistent WebSocket
+connection to HA's WebSocket API and falls back to REST polling when the
+WebSocket is unavailable.
 
 The connector bridges real-time HA events into the butler ecosystem via the
 Switchboard's canonical ingest path.  It maintains a persistent WebSocket
@@ -44,9 +53,12 @@ Metrics exported (HA-specific, in addition to standard ConnectorMetrics):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import random
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
@@ -99,6 +111,595 @@ _DEFAULT_DOMAIN_ALLOWLIST = frozenset(
 
 # Health states per spec §8
 HealthState = Literal["healthy", "degraded", "error", "starting"]
+
+# ---------------------------------------------------------------------------
+# WebSocket event types subscribed by the connector (task 3.3)
+# ---------------------------------------------------------------------------
+
+_WS_EVENT_SUBSCRIPTIONS = (
+    "state_changed",
+    "automation_triggered",
+    "call_service",
+)
+
+# ---------------------------------------------------------------------------
+# HAWebSocketClient (tasks 3.1–3.6)
+# ---------------------------------------------------------------------------
+
+# Type alias for the event dispatch callback:
+#   async def dispatch(event_type: str, event: dict) -> None
+_EventDispatch = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
+
+
+class HAWebSocketClient:
+    """WebSocket client for the Home Assistant connector (tasks 3.1–3.6).
+
+    Implements:
+    - 3.1 Connector process lifecycle (start/stop)
+    - 3.2 WebSocket auth handshake (auth_required → auth → auth_ok/auth_invalid)
+    - 3.3 Event subscriptions: state_changed, automation_triggered, call_service
+    - 3.4 Ping/pong keepalive (configurable interval + timeout)
+    - 3.5 Exponential backoff reconnection (1s → cap, with jitter)
+    - 3.6 Event message parsing and dispatch to filter pipeline callback
+
+    The client is deliberately decoupled from the HAConnector health/metrics
+    layer: it exposes callbacks (``on_connected``, ``on_disconnected``) so the
+    HAConnector can update health state without tight coupling.
+
+    Usage::
+
+        async def handle_event(event_type: str, event: dict) -> None:
+            ...  # route to filter pipeline
+
+        client = HAWebSocketClient(
+            ha_base_url="http://ha.local:8123",
+            ha_access_token="super-secret-token",
+            dispatch=handle_event,
+            ping_interval_s=30,
+            pong_timeout_s=10,
+            reconnect_initial_s=1.0,
+            reconnect_max_s=60.0,
+            on_connected=connector.on_ws_connected,
+            on_disconnected=connector.on_ws_disconnected,
+        )
+        await client.run()  # blocks until stop() is called
+    """
+
+    def __init__(
+        self,
+        *,
+        ha_base_url: str,
+        ha_access_token: str,
+        dispatch: _EventDispatch,
+        ping_interval_s: int = _DEFAULT_WS_PING_INTERVAL_S,
+        pong_timeout_s: int = _DEFAULT_WS_PONG_TIMEOUT_S,
+        reconnect_initial_s: float = _DEFAULT_WS_RECONNECT_INITIAL_S,
+        reconnect_max_s: float = _DEFAULT_WS_RECONNECT_MAX_S,
+        reconnect_jitter: float = _DEFAULT_WS_RECONNECT_JITTER,
+        on_connected: Callable[[], None] | None = None,
+        on_disconnected: Callable[[], None] | None = None,
+        verify_ssl: bool = False,
+    ) -> None:
+        self._ha_base_url = ha_base_url.rstrip("/")
+        self._ha_access_token = ha_access_token
+        self._dispatch = dispatch
+        self._ping_interval_s = ping_interval_s
+        self._pong_timeout_s = pong_timeout_s
+        self._reconnect_initial_s = reconnect_initial_s
+        self._reconnect_max_s = reconnect_max_s
+        self._reconnect_jitter = reconnect_jitter
+        self._on_connected = on_connected
+        self._on_disconnected = on_disconnected
+        self._verify_ssl = verify_ssl
+
+        # Internal state
+        self._shutdown: bool = False
+        self._connected: bool = False
+        self._ws_connection: Any | None = None  # aiohttp.ClientWebSocketResponse
+        self._ws_session: Any | None = None  # aiohttp.ClientSession
+        self._ws_cmd_id: int = 0
+        self._ws_pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self._last_pong_time: float = 0.0
+
+        # Background tasks
+        self._loop_task: asyncio.Task[None] | None = None
+        self._ping_task: asyncio.Task[None] | None = None
+
+        self._stop_event: asyncio.Event | None = None
+
+    # ------------------------------------------------------------------
+    # WebSocket URL derivation
+    # ------------------------------------------------------------------
+
+    def _ws_url(self) -> str:
+        """Derive the WebSocket URL from the HA base HTTP URL.
+
+        Converts ``http://`` → ``ws://`` and ``https://`` → ``wss://``.
+
+        Returns:
+            HA WebSocket API endpoint URL.
+        """
+        base = self._ha_base_url
+        if base.startswith("https://"):
+            return base.replace("https://", "wss://", 1) + "/api/websocket"
+        return base.replace("http://", "ws://", 1) + "/api/websocket"
+
+    # ------------------------------------------------------------------
+    # Task 3.2 — Authentication handshake
+    # ------------------------------------------------------------------
+
+    async def _connect(self) -> None:
+        """Open WebSocket connection and complete the HA auth handshake (task 3.2).
+
+        HA WebSocket auth flow:
+        1. Server sends: ``{"type": "auth_required", "ha_version": "..."}``
+        2. Client sends: ``{"type": "auth", "access_token": "..."}``
+        3. Server replies: ``{"type": "auth_ok"}`` or ``{"type": "auth_invalid"}``
+
+        After auth_ok, sends supported_features with ``coalesce_messages=1``.
+
+        Raises:
+            RuntimeError: If the server returns ``auth_invalid`` or an
+                unexpected message type.
+        """
+        import aiohttp
+
+        ws_url = self._ws_url()
+        logger.debug("HAWebSocketClient: connecting to %s", ws_url)
+
+        if self._ws_session is None or self._ws_session.closed:
+            ssl_ctx: bool = self._verify_ssl
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+            self._ws_session = aiohttp.ClientSession(connector=connector)
+
+        self._ws_connection = await self._ws_session.ws_connect(
+            ws_url,
+            heartbeat=None,  # custom keepalive via ping/pong task
+        )
+
+        try:
+            # Step 1: expect auth_required
+            msg = await self._ws_connection.receive_json(timeout=10.0)
+            if msg.get("type") != "auth_required":
+                raise RuntimeError(
+                    f"HAWebSocketClient: expected auth_required, got: {msg.get('type')!r}"
+                )
+
+            # Step 2: send auth
+            await self._ws_connection.send_json(
+                {"type": "auth", "access_token": self._ha_access_token}
+            )
+
+            # Step 3: expect auth_ok or auth_invalid
+            msg = await self._ws_connection.receive_json(timeout=10.0)
+            msg_type = msg.get("type")
+            if msg_type == "auth_invalid":
+                raise RuntimeError(
+                    "HAWebSocketClient: authentication failed (auth_invalid). "
+                    "Check the HA_ACCESS_TOKEN or CredentialStore."
+                )
+            if msg_type != "auth_ok":
+                raise RuntimeError(f"HAWebSocketClient: unexpected auth response: {msg_type!r}")
+        except Exception:
+            await self._close_connection()
+            raise
+
+        logger.debug(
+            "HAWebSocketClient: authenticated (ha_version=%s)",
+            msg.get("ha_version", "unknown"),
+        )
+
+        # Send supported_features — enables coalesce_messages optimisation
+        self._ws_cmd_id += 1
+        await self._ws_connection.send_json(
+            {
+                "type": "supported_features",
+                "id": self._ws_cmd_id,
+                "features": {"coalesce_messages": 1},
+            }
+        )
+
+        self._connected = True
+        self._last_pong_time = asyncio.get_running_loop().time()
+        logger.info("HAWebSocketClient: WebSocket connected and authenticated.")
+
+    async def _close_connection(self) -> None:
+        """Close the current WebSocket connection gracefully."""
+        if self._ws_connection is not None and not self._ws_connection.closed:
+            try:
+                await self._ws_connection.close()
+            except Exception:
+                pass
+        self._ws_connection = None
+        self._connected = False
+
+    # ------------------------------------------------------------------
+    # Task 3.3 — Event subscription
+    # ------------------------------------------------------------------
+
+    async def _subscribe_events(self) -> None:
+        """Subscribe to HA event types defined in ``_WS_EVENT_SUBSCRIPTIONS`` (task 3.3).
+
+        Sends a ``subscribe_events`` WS command for each event type.
+        No-op when not connected.
+        """
+        if not self._connected:
+            return
+
+        for event_type in _WS_EVENT_SUBSCRIPTIONS:
+            try:
+                await self._ws_command(
+                    {"type": "subscribe_events", "event_type": event_type},
+                    timeout=5.0,
+                )
+                logger.debug("HAWebSocketClient: subscribed to %s", event_type)
+            except Exception as exc:
+                logger.warning("HAWebSocketClient: failed to subscribe to %s: %r", event_type, exc)
+
+    # ------------------------------------------------------------------
+    # Task 3.4 — Ping/pong keepalive
+    # ------------------------------------------------------------------
+
+    def _start_ping_task(self) -> None:
+        """Start the keepalive ping task as a background asyncio task (task 3.4)."""
+        if self._ping_task is not None and not self._ping_task.done():
+            return
+        self._ping_task = asyncio.create_task(self._ping_loop())
+
+    async def _ping_loop(self) -> None:
+        """Send keepalive pings and detect missed pongs (task 3.4).
+
+        Sends ``{"type": "ping"}`` every ``ping_interval_s`` seconds.  If no
+        pong arrives within ``pong_timeout_s`` seconds after a ping is sent,
+        the connection is treated as dead and the loop exits so the outer
+        reconnect loop can take over.
+        """
+        try:
+            while not self._shutdown:
+                await asyncio.sleep(self._ping_interval_s)
+                if self._shutdown:
+                    break
+                if not self._connected or self._ws_connection is None:
+                    break
+
+                ping_sent_at = asyncio.get_running_loop().time()
+                try:
+                    self._ws_cmd_id += 1
+                    await self._ws_connection.send_json({"type": "ping", "id": self._ws_cmd_id})
+                    logger.debug("HAWebSocketClient: ping sent (id=%d)", self._ws_cmd_id)
+                except Exception as exc:
+                    logger.warning("HAWebSocketClient: failed to send ping: %s", exc)
+                    break
+
+                # Wait for pong to arrive
+                await asyncio.sleep(self._pong_timeout_s)
+                if self._last_pong_time < ping_sent_at:
+                    logger.warning(
+                        "HAWebSocketClient: missed pong after %ds; treating connection as dead.",
+                        self._pong_timeout_s,
+                    )
+                    await self._close_connection()
+                    break
+
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning("HAWebSocketClient: ping loop error: %s", exc)
+
+        if not self._shutdown:
+            self._connected = False
+            if self._on_disconnected is not None:
+                self._on_disconnected()
+
+    # ------------------------------------------------------------------
+    # WebSocket message loop
+    # ------------------------------------------------------------------
+
+    def _start_message_loop(self) -> None:
+        """Start the WebSocket message dispatch loop as a background task."""
+        if self._loop_task is not None and not self._loop_task.done():
+            return
+        self._loop_task = asyncio.create_task(self._message_loop())
+
+    async def _message_loop(self) -> None:
+        """Read messages from the WebSocket and dispatch by type.
+
+        Dispatches (task 3.6):
+        - ``event``: parse and call the ``_dispatch`` callback
+        - ``result``: correlate with pending WS command futures
+        - ``pong``: update ``_last_pong_time``
+
+        On any connection error, triggers reconnect.
+        """
+        import aiohttp
+
+        try:
+            while not self._shutdown:
+                if self._ws_connection is None or self._ws_connection.closed:
+                    break
+
+                try:
+                    raw = await self._ws_connection.receive(timeout=5.0)
+                except TimeoutError:
+                    continue
+
+                if raw.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        msg: dict[str, Any] = json.loads(raw.data)
+                    except json.JSONDecodeError:
+                        logger.warning("HAWebSocketClient: invalid JSON: %r", raw.data[:200])
+                        continue
+                    if not isinstance(msg, dict):
+                        continue
+                    await self._dispatch_message(msg)
+
+                elif raw.type == aiohttp.WSMsgType.BINARY:
+                    try:
+                        msg = json.loads(raw.data)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        logger.warning("HAWebSocketClient: invalid binary message")
+                        continue
+                    if not isinstance(msg, dict):
+                        continue
+                    await self._dispatch_message(msg)
+
+                elif raw.type in (
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.ERROR,
+                    aiohttp.WSMsgType.CLOSED,
+                ):
+                    logger.warning("HAWebSocketClient: WebSocket closed/error (type=%s)", raw.type)
+                    break
+
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning("HAWebSocketClient: message loop error: %s", exc)
+
+        if not self._shutdown:
+            self._connected = False
+            if self._on_disconnected is not None:
+                self._on_disconnected()
+
+    # ------------------------------------------------------------------
+    # Task 3.6 — Message parsing and dispatch
+    # ------------------------------------------------------------------
+
+    async def _dispatch_message(self, msg: dict[str, Any]) -> None:
+        """Parse and dispatch a single WebSocket message (task 3.6).
+
+        Args:
+            msg: Parsed JSON message dict from HA WebSocket.
+        """
+        msg_type = msg.get("type")
+
+        if msg_type == "event":
+            event = msg.get("event", {})
+            event_type = event.get("event_type", "")
+            try:
+                await self._dispatch(event_type, event)
+            except Exception as exc:
+                logger.warning(
+                    "HAWebSocketClient: event dispatch error for %r: %s", event_type, exc
+                )
+
+        elif msg_type == "result":
+            self._handle_result(msg)
+
+        elif msg_type == "pong":
+            self._last_pong_time = asyncio.get_running_loop().time()
+            logger.debug("HAWebSocketClient: pong received")
+
+        else:
+            logger.debug("HAWebSocketClient: unhandled message type %r", msg_type)
+
+    def _handle_result(self, msg: dict[str, Any]) -> None:
+        """Correlate a WS result message with a pending command future."""
+        cmd_id = msg.get("id")
+        if cmd_id is None:
+            return
+        fut = self._ws_pending.pop(cmd_id, None)
+        if fut is None or fut.done():
+            return
+        if msg.get("success"):
+            fut.set_result(msg.get("result", {}))
+        else:
+            error = msg.get("error", {})
+            fut.set_exception(
+                RuntimeError(
+                    f"HAWebSocketClient: WS command {cmd_id} failed: "
+                    f"{error.get('code')!r} — {error.get('message')!r}"
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # WebSocket command helper
+    # ------------------------------------------------------------------
+
+    async def _ws_command(
+        self,
+        command: dict[str, Any],
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """Send a WebSocket command and await the correlated result.
+
+        Args:
+            command: Command dict (``type`` + payload). The ``id`` field
+                will be overwritten with an auto-incrementing value.
+            timeout: Seconds to wait before raising ``asyncio.TimeoutError``.
+
+        Returns:
+            The ``result`` payload from the HA response.
+
+        Raises:
+            RuntimeError: If WebSocket is not connected, or HA returns an error.
+            asyncio.TimeoutError: If response doesn't arrive within ``timeout``.
+        """
+        if self._ws_connection is None or not self._connected:
+            raise RuntimeError("HAWebSocketClient: not connected — cannot send command")
+
+        self._ws_cmd_id += 1
+        cmd_id = self._ws_cmd_id
+        command = dict(command)
+        command["id"] = cmd_id
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._ws_pending[cmd_id] = fut
+
+        try:
+            await self._ws_connection.send_json(command)
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except Exception:
+            self._ws_pending.pop(cmd_id, None)
+            raise
+
+    # ------------------------------------------------------------------
+    # Task 3.5 — Exponential backoff reconnection
+    # ------------------------------------------------------------------
+
+    async def _reconnect_loop(self) -> None:
+        """Attempt WebSocket reconnection with exponential backoff (task 3.5).
+
+        Backoff: starts at ``reconnect_initial_s``, doubles on each failure,
+        capped at ``reconnect_max_s``.  Jitter of ±(delay × jitter_fraction)
+        is added to avoid thundering herds.
+
+        On success: re-subscribes to events and restarts background tasks.
+        """
+        delay = self._reconnect_initial_s
+        attempt = 0
+
+        while not self._shutdown and not self._connected:
+            jitter = delay * self._reconnect_jitter * (2 * random.random() - 1)
+            sleep_time = max(0.1, delay + jitter)
+            logger.info(
+                "HAWebSocketClient: reconnect attempt %d in %.1fs",
+                attempt + 1,
+                sleep_time,
+            )
+            await asyncio.sleep(sleep_time)
+
+            if self._shutdown:
+                break
+
+            try:
+                await self._connect()
+            except Exception as exc:
+                logger.warning(
+                    "HAWebSocketClient: reconnect attempt %d failed: %s",
+                    attempt + 1,
+                    exc,
+                )
+                delay = min(delay * 2, self._reconnect_max_s)
+                attempt += 1
+                continue
+
+            # Reconnected — restart background tasks and re-subscribe
+            logger.info("HAWebSocketClient: reconnected after %d attempt(s)", attempt + 1)
+            self._start_message_loop()
+            self._start_ping_task()
+
+            try:
+                await self._subscribe_events()
+            except Exception as exc:
+                logger.warning(
+                    "HAWebSocketClient: error subscribing events after reconnect: %s", exc
+                )
+
+            if self._on_connected is not None:
+                self._on_connected()
+
+            break
+
+    # ------------------------------------------------------------------
+    # Task 3.1 — Process lifecycle: start / run / stop
+    # ------------------------------------------------------------------
+
+    async def run(self) -> None:
+        """Run the WebSocket client until ``stop()`` is called (task 3.1).
+
+        Connects, authenticates, subscribes to events, and starts background
+        tasks.  On connection failure, uses exponential backoff to retry.
+        Blocks until the stop event is set.
+        """
+        self._shutdown = False
+        self._stop_event = asyncio.Event()
+
+        # Initial connection attempt
+        try:
+            await self._connect()
+        except Exception as exc:
+            logger.warning("HAWebSocketClient: initial connect failed (%s); will retry.", exc)
+            if self._on_disconnected is not None:
+                self._on_disconnected()
+            # Start reconnect loop in background; don't block run()
+            asyncio.create_task(self._reconnect_loop())
+        else:
+            self._start_message_loop()
+            self._start_ping_task()
+            try:
+                await self._subscribe_events()
+            except Exception as exc:
+                logger.warning("HAWebSocketClient: event subscription error: %s", exc)
+            if self._on_connected is not None:
+                self._on_connected()
+
+        # Main supervision loop: detect disconnects and reconnect
+        try:
+            while not self._shutdown:
+                await asyncio.sleep(5.0)
+                if self._shutdown:
+                    break
+                if not self._connected:
+                    # Spawn reconnect loop if not already running
+                    if not any(
+                        t is not None and not t.done() for t in (self._loop_task, self._ping_task)
+                    ):
+                        asyncio.create_task(self._reconnect_loop())
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await self.stop()
+
+    async def stop(self) -> None:
+        """Gracefully stop the client (task 3.1).
+
+        Cancels background tasks, closes the WebSocket connection, and
+        closes the aiohttp session.
+        """
+        self._shutdown = True
+
+        # Cancel background tasks
+        for task in (self._loop_task, self._ping_task):
+            if task is not None and not task.done():
+                task.cancel()
+        pending = [t for t in (self._loop_task, self._ping_task) if t is not None]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._loop_task = None
+        self._ping_task = None
+
+        # Fail pending WS commands
+        for fut in self._ws_pending.values():
+            if not fut.done():
+                fut.cancel()
+        self._ws_pending.clear()
+
+        # Close connection and session
+        await self._close_connection()
+        if self._ws_session is not None:
+            try:
+                await self._ws_session.close()
+            except Exception:
+                pass
+            self._ws_session = None
+
+        logger.info("HAWebSocketClient: stopped.")
+
+        if self._stop_event is not None:
+            self._stop_event.set()
+
 
 # ---------------------------------------------------------------------------
 # HA-specific Prometheus metrics (task 8.3–8.5)
@@ -754,15 +1355,38 @@ async def _main() -> None:
         config.health_port,
     )
 
-    # TODO: implement WS event streaming, REST fallback, and filter pipeline
-    # (tasks 3–7 in openspec/changes/connector-home-assistant/tasks.md)
-    logger.warning(
-        "HAConnector: WebSocket event streaming not yet implemented. "
-        "Tasks 3–7 (connector core, REST fallback, filtering, envelope construction, "
-        "checkpoint) are pending implementation."
+    # ------------------------------------------------------------------
+    # Tasks 3.1–3.6: Wire up the WebSocket client
+    # ------------------------------------------------------------------
+
+    async def _null_dispatch(event_type: str, event: dict[str, Any]) -> None:
+        """No-op event dispatch placeholder.
+
+        In a full implementation (tasks 5–6), this would route events through
+        the three-layer filter pipeline and construct ingest.v1 envelopes.
+        Tasks 5–7 (REST fallback, filtering, envelope construction, checkpoint)
+        remain pending; this stub ensures the connector loop and health state
+        are exercised in the meantime.
+        """
+        logger.debug(
+            "HAConnector: event received (type=%r, not yet dispatched to pipeline)",
+            event_type,
+        )
+        connector.on_event_received(passed_all_filters=False)
+
+    ws_client = HAWebSocketClient(
+        ha_base_url=ha_base_url,
+        ha_access_token=ha_access_token,
+        dispatch=_null_dispatch,
+        ping_interval_s=config.ws_ping_interval_s,
+        pong_timeout_s=config.ws_pong_timeout_s,
+        reconnect_initial_s=_DEFAULT_WS_RECONNECT_INITIAL_S,
+        reconnect_max_s=_DEFAULT_WS_RECONNECT_MAX_S,
+        on_connected=connector.on_ws_connected,
+        on_disconnected=connector.on_ws_disconnected,
     )
 
-    # Keep running until interrupted
+    # Set up graceful shutdown via OS signals
     stop_event = asyncio.Event()
 
     def _handle_signal() -> None:
@@ -780,9 +1404,16 @@ async def _main() -> None:
     except Exception:
         pass
 
+    # Run the WS client; stop when a signal arrives
+    ws_task = asyncio.create_task(ws_client.run())
     await stop_event.wait()
 
     logger.info("HAConnector: shutting down")
+    ws_task.cancel()
+    try:
+        await ws_task
+    except (asyncio.CancelledError, Exception):
+        pass
     await connector.stop_heartbeat()
 
 
