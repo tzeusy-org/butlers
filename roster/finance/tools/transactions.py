@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -10,6 +11,8 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.finance._helpers import _log_activity, _row_to_dict
+
+logger = logging.getLogger(__name__)
 
 
 def _infer_direction(amount: Decimal | float | int) -> str:
@@ -288,3 +291,108 @@ async def list_transactions(
         "limit": limit,
         "offset": offset,
     }
+
+
+async def update_transaction(
+    pool: asyncpg.Pool,
+    transaction_id: str,
+    category: str | None = None,
+    merchant: str | None = None,
+    description: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update mutable fields on an existing transaction.
+
+    Only provided (non-None) fields are updated; omitted fields retain their
+    current values. When ``category`` is changed, ``merchant_mappings`` is
+    refreshed via ``learn_merchant_categories()`` so future suggestions reflect
+    the corrected mapping.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    transaction_id:
+        UUID string of the transaction to update.
+    category:
+        New category to assign. Triggers merchant mapping refresh when provided.
+    merchant:
+        Updated merchant name.
+    description:
+        Updated free-text description.
+    metadata:
+        Dict merged into (or replacing) the existing metadata JSONB field.
+
+    Returns
+    -------
+    dict
+        Updated TransactionRecord dict, or ``{"error": ..., "transaction_id": ...}``
+        when the transaction is not found.
+    """
+    sets: list[str] = ["updated_at = now()"]
+    params: list[Any] = []
+    idx = 1
+
+    if category is not None:
+        sets.append(f"category = ${idx}")
+        params.append(category)
+        idx += 1
+
+    if merchant is not None:
+        sets.append(f"merchant = ${idx}")
+        params.append(merchant)
+        idx += 1
+
+    if description is not None:
+        sets.append(f"description = ${idx}")
+        params.append(description)
+        idx += 1
+
+    if metadata is not None:
+        sets.append(f"metadata = ${idx}::jsonb")
+        params.append(json.dumps(metadata))
+        idx += 1
+
+    if len(sets) == 1:
+        # Nothing to update beyond the timestamp; just fetch and return current row.
+        row = await pool.fetchrow(
+            "SELECT * FROM transactions WHERE id = $1::uuid",
+            transaction_id,
+        )
+        if row is None:
+            return {"error": "transaction_not_found", "transaction_id": transaction_id}
+        return _row_to_dict(row)
+
+    params.append(transaction_id)
+    set_clause = ", ".join(sets)
+    row = await pool.fetchrow(
+        f"UPDATE transactions SET {set_clause} WHERE id = ${idx}::uuid RETURNING *",
+        *params,
+    )
+    if row is None:
+        return {"error": "transaction_not_found", "transaction_id": transaction_id}
+
+    await _log_activity(
+        pool,
+        "transaction_updated",
+        f"Updated transaction {transaction_id}",
+        entity_type="transaction",
+        entity_id=transaction_id,
+    )
+
+    # Category feedback loop: when category is changed, refresh merchant_mappings
+    # so future suggest_categories() calls reflect the corrected assignment.
+    if category is not None:
+        try:
+            from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+            await learn_merchant_categories(pool)
+        except Exception:
+            # Best-effort: do not fail the update if mapping refresh fails.
+            logger.warning(
+                "update_transaction: merchant mapping refresh failed for transaction %s",
+                transaction_id,
+                exc_info=True,
+            )
+
+    return _row_to_dict(row)

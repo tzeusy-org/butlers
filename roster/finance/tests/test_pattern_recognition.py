@@ -1261,3 +1261,545 @@ class TestPredictBills:
         preds = [p for p in result["predictions"] if p["payee"] == "Count Test"]
         if preds:
             assert preds[0]["occurrences"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Merchant categorization tests — learn_merchant_categories, suggest_categories,
+# recall_merchant_mappings (tasks 2.1–2.3)
+# ---------------------------------------------------------------------------
+
+# SQL for a minimal transactions table with a category column (reuse CREATE_TRANSACTIONS_SQL
+# defined at the top of this module).
+
+CREATE_MERCHANT_MAPPINGS_CLEAN_SQL = """
+CREATE TABLE IF NOT EXISTS merchant_mappings (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    merchant        TEXT NOT NULL UNIQUE,
+    category        TEXT NOT NULL,
+    confidence      NUMERIC(5, 4) NOT NULL DEFAULT 0.5,
+    sample_count    INT NOT NULL DEFAULT 1,
+    is_active       BOOLEAN NOT NULL DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+
+async def _insert_categorized_txn(
+    pool_arg,
+    merchant: str,
+    category: str,
+    *,
+    amount: str = "25.00",
+    currency: str = "USD",
+) -> None:
+    """Insert a debit transaction with an explicit category."""
+    await pool_arg.execute(
+        """
+        INSERT INTO transactions
+            (posted_at, merchant, amount, currency, direction, category)
+        VALUES (now(), $1, $2::numeric, $3, 'debit', $4)
+        """,
+        merchant,
+        Decimal(amount),
+        currency,
+        category,
+    )
+
+
+@pytest.fixture
+async def pool_merchant(provisioned_postgres_pool):
+    """Pool with transactions and (empty) merchant_mappings tables."""
+    async with provisioned_postgres_pool() as p:
+        await p.execute(CREATE_TRANSACTIONS_SQL)
+        await p.execute(CREATE_MERCHANT_MAPPINGS_CLEAN_SQL)
+        yield p
+
+
+class TestLearnMerchantCategories:
+    """Tests for learn_merchant_categories() — task 2.1."""
+
+    async def test_no_transactions_returns_zero_upserted(self, pool_merchant):
+        """Empty transaction table returns upserted=0."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        result = await learn_merchant_categories(pool_merchant)
+
+        assert result["upserted"] == 0
+        assert "as_of" in result
+
+    async def test_single_merchant_single_category(self, pool_merchant):
+        """Single merchant with one category is upserted into merchant_mappings."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        await _insert_categorized_txn(pool_merchant, "Whole Foods", "groceries")
+
+        result = await learn_merchant_categories(pool_merchant)
+
+        assert result["upserted"] == 1
+        row = await pool_merchant.fetchrow(
+            "SELECT category, sample_count FROM merchant_mappings WHERE merchant = $1",
+            "Whole Foods",
+        )
+        assert row is not None
+        assert row["category"] == "groceries"
+        assert row["sample_count"] == 1
+
+    async def test_dominant_category_wins(self, pool_merchant):
+        """When a merchant has multiple categories, the most frequent one is stored."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        # 3x dining, 1x entertainment — dining should win
+        for _ in range(3):
+            await _insert_categorized_txn(pool_merchant, "Chili's", "dining")
+        await _insert_categorized_txn(pool_merchant, "Chili's", "entertainment")
+
+        await learn_merchant_categories(pool_merchant)
+
+        row = await pool_merchant.fetchrow(
+            "SELECT category, sample_count FROM merchant_mappings WHERE merchant = $1",
+            "Chili's",
+        )
+        assert row is not None
+        assert row["category"] == "dining"
+        assert row["sample_count"] == 3
+
+    async def test_confidence_grows_with_sample_count(self, pool_merchant):
+        """Higher sample counts yield higher confidence scores (capped at 0.99)."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        for _ in range(10):
+            await _insert_categorized_txn(pool_merchant, "Amazon", "shopping")
+
+        await learn_merchant_categories(pool_merchant)
+
+        row = await pool_merchant.fetchrow(
+            "SELECT confidence FROM merchant_mappings WHERE merchant = $1",
+            "Amazon",
+        )
+        assert row is not None
+        # confidence = min(0.99, 0.5 + (10 - 1) * 0.05) = min(0.99, 0.95) = 0.95
+        assert float(row["confidence"]) == pytest.approx(0.95, abs=0.01)
+
+    async def test_confidence_capped_at_0_99(self, pool_merchant):
+        """Confidence is never greater than 0.99 regardless of sample count."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        for _ in range(30):
+            await _insert_categorized_txn(pool_merchant, "HighVolumeStore", "shopping")
+
+        await learn_merchant_categories(pool_merchant)
+
+        row = await pool_merchant.fetchrow(
+            "SELECT confidence FROM merchant_mappings WHERE merchant = $1",
+            "HighVolumeStore",
+        )
+        assert row is not None
+        assert float(row["confidence"]) <= 0.99
+
+    async def test_upsert_on_second_call_no_duplicates(self, pool_merchant):
+        """Calling learn_merchant_categories twice does not duplicate rows."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        await _insert_categorized_txn(pool_merchant, "Target", "shopping")
+        await learn_merchant_categories(pool_merchant)
+        await _insert_categorized_txn(pool_merchant, "Target", "shopping")
+        await learn_merchant_categories(pool_merchant)
+
+        count = await pool_merchant.fetchval(
+            "SELECT COUNT(*) FROM merchant_mappings WHERE merchant = $1",
+            "Target",
+        )
+        assert count == 1
+
+    async def test_multiple_merchants_upserted(self, pool_merchant):
+        """Multiple distinct merchants each get their own mapping row."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        pairs = [("Trader Joe's", "groceries"), ("Shell", "gas"), ("Lyft", "transport")]
+        for merchant, cat in pairs:
+            await _insert_categorized_txn(pool_merchant, merchant, cat)
+
+        result = await learn_merchant_categories(pool_merchant)
+
+        assert result["upserted"] == 3
+
+    async def test_transactions_without_category_excluded(self, pool_merchant):
+        """Transactions with NULL category are excluded from mappings."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        # Insert one with category=NULL directly
+        await pool_merchant.execute(
+            """
+            INSERT INTO transactions
+                (posted_at, merchant, amount, currency, direction, category)
+            VALUES (now(), 'NoCatStore', 10.00, 'USD', 'debit', NULL)
+            """,
+        )
+        await _insert_categorized_txn(pool_merchant, "CatStore", "groceries")
+
+        result = await learn_merchant_categories(pool_merchant)
+
+        # Only CatStore should appear; NoCatStore has no category
+        assert result["upserted"] == 1
+        row = await pool_merchant.fetchrow(
+            "SELECT merchant FROM merchant_mappings WHERE merchant = $1",
+            "NoCatStore",
+        )
+        assert row is None
+
+    async def test_creates_merchant_mappings_table_if_missing(self, provisioned_postgres_pool):
+        """learn_merchant_categories creates merchant_mappings if it doesn't exist."""
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        async with provisioned_postgres_pool() as p:
+            await p.execute(CREATE_TRANSACTIONS_SQL)
+            # Do NOT create merchant_mappings table
+
+            await _insert_categorized_txn(p, "AutoCreate Store", "electronics")
+            result = await learn_merchant_categories(p)
+
+            assert result["upserted"] == 1
+
+
+class TestSuggestCategories:
+    """Tests for suggest_categories() — task 2.2."""
+
+    async def test_returns_empty_when_no_mappings_table(self, provisioned_postgres_pool):
+        """Returns empty suggestions when merchant_mappings table does not exist."""
+        from butlers.tools.finance.pattern_recognition import suggest_categories
+
+        async with provisioned_postgres_pool() as p:
+            await p.execute(CREATE_TRANSACTIONS_SQL)
+            # No merchant_mappings table created
+
+            result = await suggest_categories(p, merchant="AnyMerchant")
+
+            assert result["suggestions"] == []
+            assert "as_of" in result
+
+    async def test_merchant_pattern_match(self, pool_merchant):
+        """ILIKE pattern lookup returns matching merchant suggestions."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            suggest_categories,
+        )
+
+        await _insert_categorized_txn(pool_merchant, "Netflix Inc", "subscriptions")
+        await _insert_categorized_txn(pool_merchant, "Hulu", "subscriptions")
+        await learn_merchant_categories(pool_merchant)
+
+        result = await suggest_categories(pool_merchant, merchant="Netflix")
+
+        assert len(result["suggestions"]) == 1
+        s = result["suggestions"][0]
+        assert s["merchant"] == "Netflix Inc"
+        assert s["category"] == "subscriptions"
+        assert 0.0 < s["confidence"] <= 1.0
+
+    async def test_no_match_returns_empty(self, pool_merchant):
+        """Merchant pattern that matches nothing returns empty suggestions."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            suggest_categories,
+        )
+
+        await _insert_categorized_txn(pool_merchant, "Spotify", "subscriptions")
+        await learn_merchant_categories(pool_merchant)
+
+        result = await suggest_categories(pool_merchant, merchant="NonExistentXYZ")
+
+        assert result["suggestions"] == []
+
+    async def test_transaction_ids_lookup(self, pool_merchant):
+        """transaction_ids parameter resolves merchant and returns suggestion."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            suggest_categories,
+        )
+
+        await _insert_categorized_txn(pool_merchant, "Uber Eats", "dining")
+        await learn_merchant_categories(pool_merchant)
+
+        # Insert a new uncategorized transaction for Uber Eats
+        txn_row = await pool_merchant.fetchrow(
+            """
+            INSERT INTO transactions
+                (posted_at, merchant, amount, currency, direction, category)
+            VALUES (now(), 'Uber Eats', 22.50, 'USD', 'debit', 'uncategorized')
+            RETURNING id::text
+            """
+        )
+        txn_id = txn_row["id"]
+
+        result = await suggest_categories(pool_merchant, transaction_ids=[txn_id])
+
+        suggestions = result["suggestions"]
+        assert len(suggestions) == 1
+        s = suggestions[0]
+        assert s["transaction_id"] == txn_id
+        assert s["merchant"] == "Uber Eats"
+        assert s["suggested_category"] == "dining"
+        assert 0.0 < s["confidence"] <= 1.0
+
+    async def test_confidence_scores_included(self, pool_merchant):
+        """Suggestions always include a numeric confidence score between 0 and 1."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            suggest_categories,
+        )
+
+        for _ in range(5):
+            await _insert_categorized_txn(pool_merchant, "Apple Store", "electronics")
+        await learn_merchant_categories(pool_merchant)
+
+        result = await suggest_categories(pool_merchant, merchant="Apple")
+
+        for s in result["suggestions"]:
+            assert 0.0 < s["confidence"] <= 1.0
+
+    async def test_inactive_mappings_excluded(self, pool_merchant):
+        """Inactive merchant mappings (is_active=false) are not returned."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            suggest_categories,
+        )
+
+        await _insert_categorized_txn(pool_merchant, "OldMerchant", "travel")
+        await learn_merchant_categories(pool_merchant)
+
+        # Deactivate the mapping
+        await pool_merchant.execute(
+            "UPDATE merchant_mappings SET is_active = false WHERE merchant = $1",
+            "OldMerchant",
+        )
+
+        result = await suggest_categories(pool_merchant, merchant="OldMerchant")
+
+        assert result["suggestions"] == []
+
+
+class TestRecallMerchantMappings:
+    """Tests for recall_merchant_mappings() — task 2.3."""
+
+    async def test_returns_empty_when_no_mappings_table(self, provisioned_postgres_pool):
+        """Returns empty mappings when merchant_mappings table does not exist."""
+        from butlers.tools.finance.pattern_recognition import recall_merchant_mappings
+
+        async with provisioned_postgres_pool() as p:
+            result = await recall_merchant_mappings(p)
+
+            assert result["mappings"] == []
+            assert "as_of" in result
+
+    async def test_returns_all_active_mappings(self, pool_merchant):
+        """No filters returns all active merchant mappings."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            recall_merchant_mappings,
+        )
+
+        for merchant, cat in [("Costco", "groceries"), ("Delta Airlines", "travel")]:
+            await _insert_categorized_txn(pool_merchant, merchant, cat)
+        await learn_merchant_categories(pool_merchant)
+
+        result = await recall_merchant_mappings(pool_merchant)
+
+        merchants = {m["merchant"] for m in result["mappings"]}
+        assert "Costco" in merchants
+        assert "Delta Airlines" in merchants
+
+    async def test_merchant_pattern_filter(self, pool_merchant):
+        """merchant_pattern filter applies ILIKE."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            recall_merchant_mappings,
+        )
+
+        await _insert_categorized_txn(pool_merchant, "Starbucks", "dining")
+        await _insert_categorized_txn(pool_merchant, "Walmart", "groceries")
+        await learn_merchant_categories(pool_merchant)
+
+        result = await recall_merchant_mappings(pool_merchant, merchant_pattern="Starbucks")
+
+        assert len(result["mappings"]) == 1
+        assert result["mappings"][0]["merchant"] == "Starbucks"
+
+    async def test_category_filter(self, pool_merchant):
+        """category filter returns only mappings matching that exact category."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            recall_merchant_mappings,
+        )
+
+        await _insert_categorized_txn(pool_merchant, "United Airlines", "travel")
+        await _insert_categorized_txn(pool_merchant, "Airbnb", "travel")
+        await _insert_categorized_txn(pool_merchant, "Safeway", "groceries")
+        await learn_merchant_categories(pool_merchant)
+
+        result = await recall_merchant_mappings(pool_merchant, category="travel")
+
+        merchants = {m["merchant"] for m in result["mappings"]}
+        assert "United Airlines" in merchants
+        assert "Airbnb" in merchants
+        assert "Safeway" not in merchants
+
+    async def test_combined_merchant_and_category_filter(self, pool_merchant):
+        """Combined merchant_pattern + category filter narrows results."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            recall_merchant_mappings,
+        )
+
+        await _insert_categorized_txn(pool_merchant, "Southwest Airlines", "travel")
+        await _insert_categorized_txn(pool_merchant, "Southwest Gas", "utilities")
+        await learn_merchant_categories(pool_merchant)
+
+        result = await recall_merchant_mappings(
+            pool_merchant, merchant_pattern="Southwest", category="travel"
+        )
+
+        assert len(result["mappings"]) == 1
+        assert result["mappings"][0]["merchant"] == "Southwest Airlines"
+
+    async def test_response_includes_confidence_and_sample_count(self, pool_merchant):
+        """Each mapping includes confidence and sample_count fields."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            recall_merchant_mappings,
+        )
+
+        for _ in range(4):
+            await _insert_categorized_txn(pool_merchant, "Kroger", "groceries")
+        await learn_merchant_categories(pool_merchant)
+
+        result = await recall_merchant_mappings(pool_merchant, merchant_pattern="Kroger")
+
+        assert len(result["mappings"]) == 1
+        m = result["mappings"][0]
+        assert "confidence" in m
+        assert "sample_count" in m
+        assert m["sample_count"] == 4
+        assert 0.0 < m["confidence"] <= 1.0
+
+    async def test_inactive_mappings_excluded(self, pool_merchant):
+        """Inactive mappings (is_active=false) are not returned."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            recall_merchant_mappings,
+        )
+
+        await _insert_categorized_txn(pool_merchant, "OldBrand", "electronics")
+        await learn_merchant_categories(pool_merchant)
+
+        await pool_merchant.execute(
+            "UPDATE merchant_mappings SET is_active = false WHERE merchant = $1",
+            "OldBrand",
+        )
+
+        result = await recall_merchant_mappings(pool_merchant, merchant_pattern="OldBrand")
+
+        assert result["mappings"] == []
+
+    async def test_results_ordered_by_confidence_desc(self, pool_merchant):
+        """Results are returned ordered by confidence DESC."""
+        from butlers.tools.finance.pattern_recognition import (
+            learn_merchant_categories,
+            recall_merchant_mappings,
+        )
+
+        # HighConf: 10 samples → high confidence; LowConf: 1 sample → low confidence
+        for _ in range(10):
+            await _insert_categorized_txn(pool_merchant, "HighConf", "shopping")
+        await _insert_categorized_txn(pool_merchant, "LowConf", "shopping")
+        await learn_merchant_categories(pool_merchant)
+
+        result = await recall_merchant_mappings(pool_merchant, category="shopping")
+
+        merchants_in_order = [m["merchant"] for m in result["mappings"]]
+        assert merchants_in_order.index("HighConf") < merchants_in_order.index("LowConf")
+
+
+class TestUpdateTransactionCategoryFeedback:
+    """Tests for update_transaction() category learning feedback loop — task 2.4."""
+
+    async def test_update_category_refreshes_merchant_mappings(self, pool_merchant):
+        """Updating a transaction's category triggers merchant mapping refresh."""
+        from butlers.tools.finance.pattern_recognition import recall_merchant_mappings
+        from butlers.tools.finance.transactions import update_transaction
+
+        # Insert a transaction and capture its ID
+        row = await pool_merchant.fetchrow(
+            """
+            INSERT INTO transactions
+                (posted_at, merchant, amount, currency, direction, category)
+            VALUES (now(), 'Whole Foods', 42.00, 'USD', 'debit', 'uncategorized')
+            RETURNING id::text
+            """
+        )
+        txn_id = row["id"]
+
+        # Update category — this should trigger learn_merchant_categories
+        result = await update_transaction(
+            pool_merchant, transaction_id=txn_id, category="groceries"
+        )
+
+        assert result.get("error") is None
+        assert result["category"] == "groceries"
+
+        # Mapping should now exist in merchant_mappings
+        mappings = await recall_merchant_mappings(pool_merchant, merchant_pattern="Whole Foods")
+        assert len(mappings["mappings"]) == 1
+        assert mappings["mappings"][0]["category"] == "groceries"
+
+    async def test_update_without_category_does_not_touch_mappings(self, pool_merchant):
+        """Updating description only does not alter merchant_mappings."""
+        from butlers.tools.finance.pattern_recognition import recall_merchant_mappings
+        from butlers.tools.finance.transactions import update_transaction
+
+        row = await pool_merchant.fetchrow(
+            """
+            INSERT INTO transactions
+                (posted_at, merchant, amount, currency, direction, category)
+            VALUES (now(), 'Target', 15.00, 'USD', 'debit', 'shopping')
+            RETURNING id::text
+            """
+        )
+        txn_id = row["id"]
+
+        await update_transaction(pool_merchant, transaction_id=txn_id, description="New desc")
+
+        mappings = await recall_merchant_mappings(pool_merchant, merchant_pattern="Target")
+        # No category update happened, so no mapping should exist (table was empty)
+        assert len(mappings["mappings"]) == 0
+
+    async def test_update_nonexistent_transaction(self, pool_merchant):
+        """Updating a non-existent transaction returns an error dict."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        result = await update_transaction(
+            pool_merchant,
+            transaction_id="00000000-0000-0000-0000-000000000000",
+            category="groceries",
+        )
+
+        assert result.get("error") == "transaction_not_found"
+
+    async def test_update_merchant_name(self, pool_merchant):
+        """Merchant name can be updated without affecting category mappings."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        row = await pool_merchant.fetchrow(
+            """
+            INSERT INTO transactions
+                (posted_at, merchant, amount, currency, direction, category)
+            VALUES (now(), 'Old Name', 20.00, 'USD', 'debit', 'dining')
+            RETURNING id::text
+            """
+        )
+        txn_id = row["id"]
+
+        result = await update_transaction(pool_merchant, transaction_id=txn_id, merchant="New Name")
+
+        assert result.get("error") is None
+        assert result["merchant"] == "New Name"
