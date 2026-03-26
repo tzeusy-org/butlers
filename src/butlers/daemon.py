@@ -2243,7 +2243,7 @@ class ButlerDaemon:
                 if extracted:
                     return extracted
 
-        if channel != "telegram" or intent != "send":
+        if channel != "telegram" or intent not in ("send", "insight"):
             return None
 
         pool = self.db.pool if self.db is not None else None

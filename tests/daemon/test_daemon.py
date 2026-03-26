@@ -2870,6 +2870,68 @@ class TestNotifyTool:
         assert "No bot <-> user telegram chat has been configured" in result["error"]
         mock_client.call_tool.assert_not_awaited()
 
+    async def test_notify_telegram_insight_uses_default_chat_id_from_contact_info(
+        self, butler_dir: Path
+    ) -> None:
+        """Telegram insight without recipient should fall back to owner chat ID. [bu-iuuc]
+
+        insight intent is functionally equivalent to send for delivery mechanics —
+        _resolve_default_notify_recipient must include insight in the owner-entity fallback.
+        """
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+
+        mock_call_result = MagicMock()
+        mock_call_result.is_error = False
+        mock_call_result.data = {"notification_id": "ins-001", "status": "sent"}
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=mock_call_result)
+        daemon.switchboard_client = mock_client
+
+        with patch(
+            "butlers.daemon.resolve_owner_entity_info",
+            new=AsyncMock(return_value="123456789"),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Your resting heart rate improved this week.",
+                intent="insight",
+            )
+
+        assert result["status"] == "ok"
+        call_args = mock_client.call_tool.await_args
+        payload = call_args.args[1]
+        assert payload["notify_request"]["delivery"]["recipient"] == "123456789"
+        assert payload["notify_request"]["delivery"]["intent"] == "insight"
+
+    async def test_notify_telegram_insight_errors_when_no_contact_info(
+        self, butler_dir: Path
+    ) -> None:
+        """Telegram insight without recipient should fail when contact_info is absent. [bu-iuuc]"""
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock()
+        daemon.switchboard_client = mock_client
+
+        with patch(
+            "butlers.daemon.resolve_owner_entity_info",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Your resting heart rate improved this week.",
+                intent="insight",
+            )
+
+        assert result["status"] == "error"
+        assert "No bot <-> user telegram chat has been configured" in result["error"]
+        mock_client.call_tool.assert_not_awaited()
+
     async def test_notify_switchboard_returns_error(self, butler_dir: Path) -> None:
         """notify should return error when Switchboard's deliver() returns error."""
         patches = _patch_infra()
