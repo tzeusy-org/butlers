@@ -85,13 +85,18 @@ def _severity_from_zscore(zscore: float) -> str:
 
 
 async def _has_deleted_at(pool: asyncpg.Pool) -> bool:
-    """Return True when ``finance.transactions`` has a ``deleted_at`` column."""
+    """Return True when ``finance.transactions`` has a ``deleted_at`` column.
+
+    Filters by ``current_schema()`` to avoid false positives when another
+    schema in the same PostgreSQL database also has a ``transactions`` table.
+    """
     return bool(
         await pool.fetchval(
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'transactions'
+                WHERE table_schema = current_schema()
+                  AND table_name = 'transactions'
                   AND column_name = 'deleted_at'
             )
             """
