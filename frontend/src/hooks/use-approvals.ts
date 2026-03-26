@@ -187,7 +187,8 @@ export function useConfirmAutonomySuggestion() {
   return useMutation({
     mutationFn: (suggestionId: string) => confirmAutonomySuggestion(suggestionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: approvalKeys.autonomySuggestions() });
+      // Invalidate by prefix to catch all autonomy-suggestions queries regardless of params.
+      queryClient.invalidateQueries({ queryKey: ["approvals", "autonomy-suggestions"] });
       queryClient.invalidateQueries({ queryKey: approvalKeys.rules() });
       queryClient.invalidateQueries({ queryKey: approvalKeys.metrics() });
     },
@@ -205,7 +206,8 @@ export function useDismissAutonomySuggestion() {
       request?: AutonomySuggestionDismissRequest;
     }) => dismissAutonomySuggestion(suggestionId, request),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: approvalKeys.autonomySuggestions() });
+      // Invalidate by prefix to catch all autonomy-suggestions queries regardless of params.
+      queryClient.invalidateQueries({ queryKey: ["approvals", "autonomy-suggestions"] });
     },
   });
 }

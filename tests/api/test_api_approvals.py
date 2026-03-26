@@ -1355,3 +1355,193 @@ async def test_dismiss_suggestion_already_decided(app):
         )
 
     assert response.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Happy-path tests: confirm and dismiss success paths
+# ---------------------------------------------------------------------------
+
+
+def _app_with_suggestion_db_and_write(
+    app,
+    *,
+    fetchrow_return=None,
+    updated_row=None,
+    has_table=True,
+):
+    """Mock DB for confirm/dismiss happy-path tests.
+
+    fetchrow_return: value returned for the initial SELECT (find suggestion).
+    updated_row: value returned for the UPDATE RETURNING (after mutation).
+    """
+    mock_conn = AsyncMock()
+
+    def fetchval_side_effect(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql:
+            return has_table
+        return None
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side_effect)
+    # First fetchrow → find the suggestion; second fetchrow → return updated row.
+    mock_conn.fetchrow = AsyncMock(side_effect=[fetchrow_return, updated_row])
+    mock_conn.execute = AsyncMock(return_value=None)
+
+    class MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *args):
+            pass
+
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value = MockAcquire()
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    if has_table:
+        mock_db.pool.return_value = mock_pool
+        mock_db.butler_names = ["general"]
+    else:
+        mock_db.pool.side_effect = KeyError("No pool")
+        mock_db.butler_names = []
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    return app, mock_conn
+
+
+@pytest.mark.asyncio
+async def test_confirm_suggestion_promotion_success(app):
+    """POST /api/approvals/suggestions/{id}/confirm creates a standing rule for promotion."""
+    from unittest.mock import patch
+
+    suggestion_id = uuid4()
+    rule_id = uuid4()
+    suggestion = _make_suggestion_record(
+        suggestion_id=suggestion_id,
+        suggestion_type="promotion",
+        status="pending",
+        tool_name="telegram_send_message",
+        representative_args={"chat_id": "12345"},
+    )
+    # After confirm, the suggestion status changes to 'confirmed' with resulting_rule_id set.
+    confirmed_suggestion = {
+        **suggestion,
+        "status": "confirmed",
+        "decided_at": _NOW,
+        "decided_by": "dashboard:rest-api",
+        "resulting_rule_id": rule_id,
+    }
+    app, _ = _app_with_suggestion_db_and_write(
+        app,
+        fetchrow_return=suggestion,
+        updated_row=confirmed_suggestion,
+    )
+
+    fake_rule = {
+        "id": rule_id,
+        "tool_name": "telegram_send_message",
+        "arg_constraints": {},
+        "description": "Auto-approve telegram_send_message when chat_id = '12345'",
+        "created_at": _NOW,
+        "active": True,
+        "use_count": 0,
+    }
+
+    with patch(
+        "butlers.api.routers.approvals.approvals_ops.create_approval_rule",
+        new=AsyncMock(return_value=fake_rule),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/approvals/suggestions/{suggestion_id}/confirm")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["status"] == "confirmed"
+    assert data["data"]["resulting_rule_id"] == str(rule_id)
+    assert data["data"]["tool_name"] == "telegram_send_message"
+
+
+@pytest.mark.asyncio
+async def test_confirm_suggestion_demotion_success(app):
+    """POST /api/approvals/suggestions/{id}/confirm revokes the rule for demotion."""
+    from unittest.mock import patch
+
+    suggestion_id = uuid4()
+    rule_id = uuid4()
+    suggestion = _make_suggestion_record(
+        suggestion_id=suggestion_id,
+        suggestion_type="demotion",
+        status="pending",
+        tool_name="telegram_send_message",
+        resulting_rule_id=rule_id,
+    )
+    confirmed_suggestion = {
+        **suggestion,
+        "status": "confirmed",
+        "decided_at": _NOW,
+        "decided_by": "dashboard:rest-api",
+    }
+    app, _ = _app_with_suggestion_db_and_write(
+        app,
+        fetchrow_return=suggestion,
+        updated_row=confirmed_suggestion,
+    )
+
+    fake_revoke_result = {
+        "id": rule_id,
+        "tool_name": "telegram_send_message",
+        "arg_constraints": {},
+        "description": "revoked",
+        "created_at": _NOW,
+        "active": False,
+        "use_count": 0,
+    }
+
+    with patch(
+        "butlers.api.routers.approvals.approvals_ops.revoke_approval_rule",
+        new=AsyncMock(return_value=fake_revoke_result),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/approvals/suggestions/{suggestion_id}/confirm")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["status"] == "confirmed"
+    assert data["data"]["suggestion_type"] == "demotion"
+
+
+@pytest.mark.asyncio
+async def test_dismiss_suggestion_success(app):
+    """POST /api/approvals/suggestions/{id}/dismiss sets dismissed status and cooldown."""
+    suggestion_id = uuid4()
+    suggestion = _make_suggestion_record(suggestion_id=suggestion_id, status="pending")
+    dismissed_suggestion = {
+        **suggestion,
+        "status": "dismissed",
+        "decided_at": _NOW,
+        "decided_by": "dashboard",
+        "cooldown_until": _NOW,
+        "dismissal_reason": "Not needed right now",
+    }
+    app, _ = _app_with_suggestion_db_and_write(
+        app,
+        fetchrow_return=suggestion,
+        updated_row=dismissed_suggestion,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/approvals/suggestions/{suggestion_id}/dismiss",
+            json={"reason": "Not needed right now", "cooldown_days": 7},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["status"] == "dismissed"
+    assert data["data"]["dismissal_reason"] == "Not needed right now"

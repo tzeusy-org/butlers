@@ -7,7 +7,6 @@ import { ActionDetailDialog } from "@/components/approvals/action-detail-dialog"
 import { ApprovalMetricsBar } from "@/components/approvals/approval-metrics";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner";
 import { HistoryTable } from "@/components/approvals/history-table";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";

@@ -1130,16 +1130,28 @@ def _row_to_autonomy_suggestion(row: dict) -> AutonomySuggestion:
     if isinstance(representative_args, str):
         import json as _json
 
-        representative_args = _json.loads(representative_args)
+        try:
+            representative_args = _json.loads(representative_args)
+        except _json.JSONDecodeError:
+            logger.warning(
+                "Failed to decode representative_args JSON for autonomy suggestion row; "
+                "falling back to empty dict. Raw value: %r",
+                representative_args,
+            )
+            representative_args = {}
 
-    scope_description = _generate_scope_description(row["tool_name"], representative_args)
+    # Redact sensitive fields before exposing them in the API response.
+    redacted_args = redact_tool_args(row["tool_name"], representative_args)
+
+    # Generate scope_description from the redacted view to avoid leaking secrets.
+    scope_description = _generate_scope_description(row["tool_name"], redacted_args)
 
     return AutonomySuggestion(
         id=str(row["id"]),
         suggestion_type=row.get("suggestion_type") or "promotion",
         pattern_fingerprint=row["pattern_fingerprint"],
         tool_name=row["tool_name"],
-        representative_args=representative_args,
+        representative_args=redacted_args,
         status=row["status"],
         approval_count_at_creation=row.get("approval_count_at_creation") or 0,
         scope_description=scope_description,
@@ -1278,25 +1290,38 @@ async def confirm_suggestion(
     if isinstance(representative_args, str):
         import json as _json
 
-        representative_args = _json.loads(representative_args)
+        try:
+            representative_args = _json.loads(representative_args)
+        except _json.JSONDecodeError:
+            logger.warning(
+                "Failed to decode representative_args JSON in confirm_suggestion; "
+                "falling back to empty dict. Raw value: %r",
+                representative_args,
+            )
+            representative_args = {}
 
     now = datetime.now(UTC)
-    actor = "dashboard"
+    actor = "dashboard:rest-api"
 
     async with target_pool.acquire() as conn:
         if row.get("suggestion_type") == "demotion":
-            # Revoke the referenced standing rule
-            rule_id = row.get("resulting_rule_id") or row.get("representative_args", {}).get(
-                "rule_id"
-            )
+            # Revoke the referenced standing rule via the operations layer so that
+            # the RULE_REVOKED audit event is recorded consistently.
+            # Use the already-parsed representative_args dict (not raw row value) to
+            # avoid AttributeError when the DB stores args as JSON text.
+            rule_id = row.get("resulting_rule_id") or representative_args.get("rule_id")
             if rule_id:
-                try:
-                    await conn.execute(
-                        "UPDATE approval_rules SET active = false WHERE id = $1",
-                        UUID(str(rule_id)),
+                revoke_result = await approvals_ops.revoke_approval_rule(
+                    conn,
+                    rule_id=str(rule_id),
+                    actor_id=actor,
+                )
+                if "error" in revoke_result:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to revoke approval rule for demotion suggestion: "
+                        f"{revoke_result['error']}",
                     )
-                except Exception:
-                    logger.warning("Failed to revoke rule for demotion suggestion", exc_info=True)
 
             updated = await conn.fetchrow(
                 f"UPDATE {_SUGGESTIONS_TABLE} "
@@ -1307,23 +1332,28 @@ async def confirm_suggestion(
                 parsed_id,
             )
         else:
-            # Promotion: create exact standing rule from representative_args
+            # Promotion: create exact standing rule from representative_args via the
+            # operations layer so that the RULE_CREATED audit event is recorded.
             arg_constraints = {
                 k: {"type": "exact", "value": v} for k, v in representative_args.items()
             }
             tool_name = row["tool_name"]
             scope_desc = _generate_scope_description(tool_name, representative_args)
 
-            rule_row = await conn.fetchrow(
-                "INSERT INTO approval_rules (id, tool_name, arg_constraints, description, "
-                "created_at, active, use_count) "
-                "VALUES (gen_random_uuid(), $1, $2, $3, $4, true, 0) RETURNING id",
-                tool_name,
-                json.dumps(arg_constraints),
-                scope_desc,
-                now,
+            create_result = await approvals_ops.create_approval_rule(
+                conn,
+                tool_name=tool_name,
+                arg_constraints=arg_constraints,
+                description=scope_desc,
+                actor_id=actor,
             )
-            new_rule_id = rule_row["id"] if rule_row else None
+            if "error" in create_result:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create approval rule from suggestion: "
+                    f"{create_result['error']}",
+                )
+            new_rule_id = create_result.get("id")
 
             updated = await conn.fetchrow(
                 f"UPDATE {_SUGGESTIONS_TABLE} "
