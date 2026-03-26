@@ -460,9 +460,21 @@ def upgrade() -> None:
 
     # -- predicate_registry indexes --
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_predicate_registry_name_trgm
-        ON predicate_registry
-        USING GIN (name gin_trgm_ops)
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_opclass oc
+                JOIN pg_am am ON am.oid = oc.opcmethod
+                WHERE am.amname = 'gin'
+                  AND oc.opcname = 'gin_trgm_ops'
+            ) THEN
+                EXECUTE
+                    'CREATE INDEX IF NOT EXISTS idx_predicate_registry_name_trgm '
+                    'ON predicate_registry USING GIN (name gin_trgm_ops)';
+            END IF;
+        END
+        $$;
     """)
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_predicate_registry_search_vector

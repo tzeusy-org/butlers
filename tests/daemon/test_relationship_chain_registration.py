@@ -18,16 +18,6 @@ RELATIONSHIP_MIGRATIONS_DIR = ROSTER_DIR / "relationship" / "migrations"
 
 EXPECTED_CHAIN = [
     ("001_relationship_tables.py", "rel_001", None),
-    ("rel_002a_enrich_interactions.py", "rel_002a", "rel_001"),
-    ("rel_002c_relationship_tables.py", "rel_002c", "rel_002a"),
-    ("rel_002d_relationship_types.py", "rel_002d", "rel_002c"),
-    ("rel_002e_stay_in_touch_cadence.py", "rel_002e", "rel_002d"),
-    ("rel_002f_tasks_table.py", "rel_002f", "rel_002e"),
-    ("rel_003_contacts_rework.py", "rel_003", "rel_002f"),
-    ("rel_004_notes_rework.py", "rel_004", "rel_003"),
-    ("rel_005_reminders_rework.py", "rel_005", "rel_004"),
-    ("rel_006_crm_schema_extensions.py", "rel_006", "rel_005"),
-    ("rel_007_calendar_projection_linkage.py", "rel_007", "rel_006"),
 ]
 
 
@@ -85,23 +75,11 @@ def test_relationship_chain_has_unique_revisions_and_is_linear() -> None:
 
     assert len(revisions) == len(set(revisions))
 
-    current = "rel_007"
+    current = "rel_001"
     path = [current]
     while chain_map.get(current) is not None:
         current = chain_map[current]
         path.append(current)
 
     path.reverse()
-    assert path == [
-        "rel_001",
-        "rel_002a",
-        "rel_002c",
-        "rel_002d",
-        "rel_002e",
-        "rel_002f",
-        "rel_003",
-        "rel_004",
-        "rel_005",
-        "rel_006",
-        "rel_007",
-    ]
+    assert path == ["rel_001"]

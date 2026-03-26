@@ -562,10 +562,10 @@ class TestInverseSupersession:
 # ---------------------------------------------------------------------------
 
 
-def _load_migration_025():
-    """Load and return the migration 025 module."""
-    mig = MEMORY_MODULE_PATH / "migrations" / "025_predicate_inverse_symmetric.py"
-    spec = importlib.util.spec_from_file_location("mig_025", mig)
+def _load_migration_002():
+    """Load and return the consolidated seed predicates migration module."""
+    mig = MEMORY_MODULE_PATH / "migrations" / "002_seed_predicates.py"
+    spec = importlib.util.spec_from_file_location("mig_002", mig)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -573,39 +573,38 @@ def _load_migration_025():
 
 
 class TestMigration025Structure:
-    """Validate that migration 025 has the correct structure."""
+    """Validate inverse/symmetric predicate migration data in consolidated mem_002."""
 
     def test_migration_file_exists(self) -> None:
-        mig = MEMORY_MODULE_PATH / "migrations" / "025_predicate_inverse_symmetric.py"
+        mig = MEMORY_MODULE_PATH / "migrations" / "002_seed_predicates.py"
         assert mig.exists(), f"Expected migration file at {mig}"
 
     def test_revision_identifiers(self) -> None:
-        mod = _load_migration_025()
-        assert mod.revision == "mem_025c"
-        assert mod.down_revision == "mem_025b"
+        mod = _load_migration_002()
+        assert mod.revision == "mem_002"
+        assert mod.down_revision == "mem_001"
 
     def test_upgrade_adds_inverse_of_column(self) -> None:
-        mod = _load_migration_025()
-        source = inspect.getsource(mod.upgrade)
+        mod = _load_migration_002()
+        source = inspect.getsource(mod._insert_predicate)
         assert "inverse_of" in source
         assert "is_symmetric" in source
 
     def test_seeds_symmetric_predicates(self) -> None:
-        """Module-level _SYMMETRIC_PREDICATES constant lists expected predicates."""
-        mod = _load_migration_025()
-        symmetric = mod._SYMMETRIC_PREDICATES
-        for p in ("sibling_of", "knows", "lives_with"):
-            assert p in symmetric, f"Expected {p!r} in _SYMMETRIC_PREDICATES"
+        """Upgrade source includes known symmetric predicates."""
+        source = inspect.getsource(_load_migration_002().upgrade)
+        for predicate in ("sibling_of", "knows", "lives_with"):
+            assert predicate in source
 
     def test_seeds_inverse_pairs(self) -> None:
-        """_INVERSE_PAIRS contains parent_of/child_of and manages/managed_by."""
-        mod = _load_migration_025()
-        pairs = mod._INVERSE_PAIRS
-        pair_names = {(fwd, inv) for fwd, inv, *_ in pairs}
-        assert ("parent_of", "child_of") in pair_names
-        assert ("manages", "managed_by") in pair_names
+        """Upgrade source includes parent/child and manages/managed_by inverse pairs."""
+        source = inspect.getsource(_load_migration_002().upgrade)
+        assert "parent_of" in source
+        assert "child_of" in source
+        assert "manages" in source
+        assert "managed_by" in source
 
     def test_has_upgrade_and_downgrade(self) -> None:
-        mod = _load_migration_025()
+        mod = _load_migration_002()
         assert callable(getattr(mod, "upgrade", None))
         assert callable(getattr(mod, "downgrade", None))

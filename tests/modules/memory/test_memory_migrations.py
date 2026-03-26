@@ -12,10 +12,10 @@ from ._test_helpers import MEMORY_MODULE_PATH
 pytestmark = pytest.mark.unit
 
 MIGRATIONS_DIR = MEMORY_MODULE_PATH / "migrations"
-BASELINE_FILE = MIGRATIONS_DIR / "001_memory_baseline.py"
+BASELINE_FILE = MIGRATIONS_DIR / "001_memory_schema.py"
 
 
-def _load_migration(filename: str = "001_memory_baseline.py"):
+def _load_migration(filename: str = "001_memory_schema.py"):
     """Load a migration module by filename."""
     filepath = MIGRATIONS_DIR / filename
     spec = importlib.util.spec_from_file_location(filename.removesuffix(".py"), filepath)
@@ -38,12 +38,7 @@ class TestMemoryBaselineMigration:
             for p in MIGRATIONS_DIR.iterdir()
             if p.suffix == ".py" and p.name != "__init__.py"
         )
-        assert "001_memory_baseline.py" in migration_files
-        assert "002_entities.py" in migration_files
-        assert "003_memory_events.py" in migration_files
-        assert "004_object_entity_id.py" in migration_files
-        assert "005_predicate_registry.py" in migration_files
-        assert "022_events_enrichment.py" in migration_files
+        assert migration_files == ["001_memory_schema.py", "002_seed_predicates.py"]
 
     def test_revision_identifiers(self) -> None:
         mod = _load_migration()
@@ -69,8 +64,8 @@ class TestMemoryBaselineMigration:
         required = (
             "consolidated BOOLEAN",
             "consolidation_status VARCHAR(20)",
-            "retry_count INTEGER",
-            "last_error TEXT",
+            "consolidation_attempts INTEGER",
+            "last_consolidation_error TEXT",
             "reference_count INTEGER",
             "last_referenced_at TIMESTAMPTZ",
         )
@@ -139,8 +134,9 @@ class TestMemoryBaselineMigration:
     def test_upgrade_enables_extensions(self) -> None:
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "CREATE EXTENSION IF NOT EXISTS vector" in source
-        assert 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"' in source
+        assert "Extensions (vector, uuid-ossp, pg_trgm) must be pre-installed" in source
+        assert "embedding vector(384)" in source
+        assert "search_vector tsvector" in source
 
     def test_downgrade_drops_tables(self) -> None:
         mod = _load_migration()

@@ -307,7 +307,7 @@ class TestTokenRefreshCycle:
 
         # First call is token refresh POST, second is GET /me
         http.post = AsyncMock(return_value=refresh_resp)
-        http.get = AsyncMock(return_value=me_resp)
+        http.request = AsyncMock(return_value=me_resp)
 
         client = SpotifyClient(credential_store=store, http_client=http)
         await client.open()
@@ -320,7 +320,7 @@ class TestTokenRefreshCycle:
         assert "token" in post_url
 
         # Verify the new access token was used for the API call
-        get_call_headers = http.get.call_args[1]["headers"]
+        get_call_headers = http.request.call_args[1]["headers"]
         assert get_call_headers["Authorization"] == f"Bearer {_NEW_ACCESS_TOKEN}"
 
         # Verify CredentialStore was updated with new tokens
@@ -346,7 +346,7 @@ class TestTokenRefreshCycle:
         me_resp = _make_httpx_response(200, {"id": "alice", "display_name": "Alice"})
 
         # Sequence: 401 → (refresh POST) → success
-        http.get = AsyncMock(
+        http.request = AsyncMock(
             side_effect=[
                 _make_httpx_response(401),  # First GET fails
                 me_resp,  # Retry after refresh succeeds
@@ -375,7 +375,7 @@ class TestTokenRefreshCycle:
         )
         http.post = AsyncMock(return_value=refresh_resp)
         # Both GET attempts return 401
-        http.get = AsyncMock(return_value=_make_httpx_response(401))
+        http.request = AsyncMock(return_value=_make_httpx_response(401))
 
         client = SpotifyClient(credential_store=store, http_client=http)
         await client.open()
@@ -927,7 +927,7 @@ class TestDashboardOAuthFlow:
         http.post = AsyncMock(return_value=refresh_resp)
         # GET /me must succeed to confirm token works
         me_resp = _make_httpx_response(200, {"id": "alice"})
-        http.get = AsyncMock(return_value=me_resp)
+        http.request = AsyncMock(return_value=me_resp)
 
         # Force proactive refresh by setting token as nearly expired
         near_expiry = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
@@ -959,7 +959,7 @@ class TestDashboardOAuthFlow:
                 },
             )
         )
-        http.get = AsyncMock(return_value=_make_httpx_response(200, {"id": "alice"}))
+        http.request = AsyncMock(return_value=_make_httpx_response(200, {"id": "alice"}))
 
         client = SpotifyClient(credential_store=store, http_client=http)
         await client.open()
@@ -983,7 +983,7 @@ class TestDashboardOAuthFlow:
                 400, {"error": "invalid_client", "error_description": "Invalid client_id"}
             )
         )
-        http.get = AsyncMock()
+        http.request = AsyncMock()
 
         client = SpotifyClient(credential_store=store, http_client=http)
         await client.open()
@@ -1019,7 +1019,7 @@ class TestDashboardOAuthFlow:
                 },
             )
         )
-        http.get = AsyncMock(return_value=_make_httpx_response(200, {"id": "alice"}))
+        http.request = AsyncMock(return_value=_make_httpx_response(200, {"id": "alice"}))
 
         client = SpotifyClient(credential_store=store, http_client=http)
         await client.open()
@@ -1043,7 +1043,7 @@ class TestDashboardOAuthFlow:
                 200, {"access_token": _NEW_ACCESS_TOKEN, "expires_in": 3600}
             )
         )
-        http.get = AsyncMock(return_value=_make_httpx_response(200, {"id": "alice"}))
+        http.request = AsyncMock(return_value=_make_httpx_response(200, {"id": "alice"}))
 
         client = SpotifyClient(credential_store=store, http_client=http)
         await client.open()
