@@ -30,9 +30,10 @@ This skill provides the complete classification and routing reference for the Sw
 
 - **finance**: Receipts, invoices, bills, subscriptions, transaction alerts, spending queries
 - **relationship**: Contacts, interactions, reminders, gifts, social events
-- **health**: Medications, measurements, conditions, symptoms, exercise, diet, nutrition
+- **health**: Medications, measurements, conditions, symptoms, exercise, diet, nutrition tracking, health metrics
 - **travel**: Flight bookings, hotel reservations, car rentals, trip itineraries, travel documents
 - **education**: Personalized tutoring, quizzes, spaced repetition, learning progress
+- **lifestyle**: Music, listening habits, playlists, entertainment (movies/TV/books/games/podcasts), food preferences, favorite restaurants, cuisines, recipes, hobbies, personal interests, leisure activities, daily routines
 - **general**: Last-resort fallback — only when no specialist butler matches
 
 **Note:** `messenger` is NOT a valid target for `route_to_butler`. For outbound delivery (sending emails or telegram messages), use the `notify` tool directly.
@@ -119,6 +120,30 @@ Route to health when the message involves:
 - "Log breakfast: oatmeal with berries"
 - "Track blood pressure 120/80"
 
+### Lifestyle Classification
+
+Route to lifestyle when the message involves:
+
+- **Music and listening**: listening to music, playlists, favorite artists/genres, music discovery, what's playing, Spotify activity, album/song mentions without health framing
+- **Entertainment consumption**: movies, TV shows, series, books, games, podcasts, "currently watching/reading/playing", recommendations, reviews, streaming content
+- **Food preferences and dining**: favorite foods, cuisine preferences, restaurant recommendations or visits, recipes, "I love / I hate [food]", dining experiences — but NOT calorie counting, macros, or nutrition tracking
+- **Hobbies and interests**: personal hobbies, leisure activities, crafts, sports (as leisure), collecting, creative pursuits — but NOT formal study or curriculum
+- **Daily routines and rhythms**: morning routines, evening wind-down, focus modes, recurring personal patterns — but NOT sleep metrics, step counts, or exercise reps
+- **Taste and preference capture**: "I like", "I love", "I prefer", "my favorite" when the subject is entertainment, food, or leisure
+
+**Disambiguation rules for lifestyle routing:**
+
+- "I like Thai food" — lifestyle (food preference), NOT health (no nutritional data)
+- "I ate salad for lunch" — health (meal logging with consumption, not preference) — only route to lifestyle too if explicit preference is stated
+- "I love cooking Thai food" — lifestyle (hobby/interest)
+- "Log my calories from dinner" — health (nutrition tracking), NOT lifestyle
+- "What's a good Italian restaurant near me?" — lifestyle (dining preference query)
+- "I'm trying to eat less sugar" — health (diet/health goal), NOT lifestyle
+- "I've been binge-watching Breaking Bad" — lifestyle (entertainment consumption)
+- "I want to learn guitar" — lifestyle if framed as hobby; education if framed as systematic learning ("teach me music theory")
+- "My morning routine includes meditation" — lifestyle (daily routine), NOT health unless health metrics are mentioned
+- "I run every morning" — health if tracking metrics (distance, pace); lifestyle if framing as routine/habit
+
 ### Outbound Delivery Classification
 
 Use the `notify` tool (NOT `route_to_butler`) when the message is an explicit request to **send** an email or telegram message to someone. Signals:
@@ -152,7 +177,12 @@ Do NOT route to general alongside specialist butlers. If any part of a multi-dom
 - **Education vs general (conversation continuity)**: When the prior message was a quiz question, technical explanation, or active lesson, treat the follow-up as education even if it lacks explicit learning framing.
 - **Education vs health**: Education should NOT capture health questions that are factual lookups without tutoring intent (e.g., "what does metformin do?" — health, not education; "teach me about diabetes" — education)
 - **Education vs calendar**: "review" without educational context (e.g., "review my calendar") MUST NOT route to education
-- **General as fallback only**: General MUST NOT be routed alongside any specialist butler. If finance, health, travel, education, or relationship is routed to, general is excluded. General only receives messages where zero specialists match.
+- **Education vs lifestyle**: Hobby framing ("I want to learn guitar as a hobby") → lifestyle. Systematic learning framing ("teach me music theory", "quiz me on chord progressions") → education.
+- **Lifestyle vs general**: Lifestyle wins tie-breaks when the message relates to taste, preferences, entertainment, or daily routines. General is only used when no specialist butler matches. Do NOT route to general for food preferences, entertainment, hobbies, or routine descriptions — these belong to lifestyle.
+- **Lifestyle vs health (food boundary)**: Food preferences, favorite cuisines, restaurant visits, and recipe interest → lifestyle. Calorie counting, macro tracking, explicit diet goals, meal logging for nutrition → health. A message can fanout to both when both signals are present (e.g., "I've been stress-eating Thai food all week" → lifestyle for food preference + health for stress eating pattern).
+- **Lifestyle vs health (routine boundary)**: Daily routines and habitual patterns → lifestyle. Exercise metrics, sleep duration, step counts, vitals → health.
+- **Lifestyle vs education (hobby boundary)**: Casual hobby mention or leisure interest → lifestyle. Explicit curriculum, quiz request, or "teach me" framing about a topic → education.
+- **General as fallback only**: General MUST NOT be routed alongside any specialist butler. If finance, health, travel, education, relationship, or lifestyle is routed to, general is excluded. General only receives messages where zero specialists match.
 - **Ambiguous commerce/relationship**: Defer to Switchboard confidence policy and fallback routing contract
 
 ---
@@ -207,6 +237,13 @@ Do NOT route to general alongside specialist butlers. If any part of a multi-dom
 | "Ate salad" | meal only | MEDIUM | health |
 | "Send email to X about Y" | "send"/"email" + recipient | HIGH | `notify` tool (NOT route_to_butler) |
 | "Text X on telegram" | "send"/"text"/"message" + telegram | HIGH | `notify` tool (NOT route_to_butler) |
+| Music/playlist mention | song, artist, album, playlist, listening | HIGH | lifestyle |
+| Entertainment consumption | movie, TV show, book, game, podcast + watching/reading/playing | HIGH | lifestyle |
+| Food preference | "I love / like / prefer [food/cuisine]", favorite restaurant | HIGH | lifestyle |
+| Hobby or interest | hobby, leisure activity, personal interest (no learning framing) | HIGH | lifestyle |
+| Daily routine description | morning routine, evening wind-down, habitual pattern | HIGH | lifestyle |
+| Lifestyle + health overlap | stress eating, mood-influenced listening, food + health metric | HIGH | lifestyle + health (fanout) |
+| "Log calories" / macro tracking | calorie count, macros, diet goal | HIGH | health |
 
 ---
 
@@ -428,6 +465,80 @@ Example: If history shows the butler asked "Should I send an email to X with bod
 
 ---
 
+### Example 17: Music preference (routes to lifestyle)
+
+**Input:** "I've been listening to a lot of Tame Impala lately"
+
+**Reasoning:** Music listening mention → lifestyle (no health or education signals).
+
+**Action:** Call `route_to_butler(butler="lifestyle", prompt="The user mentions they have been listening to a lot of Tame Impala lately. Store this as a listening pattern and artist preference.")`
+
+**Response:** "Routed to lifestyle butler for music preference tracking."
+
+---
+
+### Example 18: Food preference (routes to lifestyle, not health)
+
+**Input:** "I love Thai food — especially green curry"
+
+**Reasoning:** Food preference statement (no calorie/nutrition/meal-logging signals) → lifestyle.
+
+**Action:** Call `route_to_butler(butler="lifestyle", prompt="The user loves Thai food, especially green curry. Store this as a cuisine preference and food preference fact.")`
+
+**Response:** "Routed food preference to lifestyle butler — taste preference, not nutrition tracking."
+
+---
+
+### Example 19: Entertainment consumption (routes to lifestyle)
+
+**Input:** "Just finished watching The Bear — highly recommend it"
+
+**Reasoning:** TV show consumption and recommendation → lifestyle.
+
+**Action:** Call `route_to_butler(butler="lifestyle", prompt="The user just finished watching The Bear and recommends it. Store this as a watched show and entertainment preference.")`
+
+**Response:** "Routed to lifestyle butler for entertainment tracking."
+
+---
+
+### Example 20: Lifestyle + health fanout (stress eating)
+
+**Input:** "I've been stress-eating Thai food all week"
+
+**Reasoning:** Two distinct signals: Thai food preference (lifestyle) and stress eating pattern (health).
+
+**Action:**
+1. Call `route_to_butler(butler="lifestyle", prompt="The user has been eating a lot of Thai food this week. Store Thai food as a food preference.")`
+2. Call `route_to_butler(butler="health", prompt="The user mentions stress-eating this week. Note this stress eating pattern for health tracking.")`
+
+**Response:** "Routed Thai food preference to lifestyle butler and stress eating pattern to health butler."
+
+---
+
+### Example 21: Lifestyle vs general disambiguation (routes to lifestyle)
+
+**Input:** "My morning routine is: coffee, 20 mins reading, then work"
+
+**Reasoning:** Daily routine description → lifestyle wins over general (taste/preference/routine signal present).
+
+**Action:** Call `route_to_butler(butler="lifestyle", prompt="The user's morning routine: coffee, 20 minutes of reading, then work. Store this as a daily routine pattern.")`
+
+**Response:** "Routed morning routine to lifestyle butler — routine description belongs to lifestyle, not general."
+
+---
+
+### Example 22: Hobby vs education boundary (routes to lifestyle)
+
+**Input:** "I've been getting into photography lately"
+
+**Reasoning:** Hobby/interest framing (no "teach me", no quiz request, no curriculum) → lifestyle.
+
+**Action:** Call `route_to_butler(butler="lifestyle", prompt="The user has been getting into photography as a hobby. Store this as a hobby/interest fact.")`
+
+**Response:** "Routed to lifestyle butler — hobby interest without systematic learning framing."
+
+---
+
 ## Multi-Domain Decomposition
 
 ### Decomposition Decision Tree
@@ -500,6 +611,28 @@ Input: "My doctor recommended I start taking Metformin 500mg twice daily, call M
   {"butler": "health", "prompt": "Add new medication: Metformin 500mg, to be taken twice daily, as recommended by doctor"},
   {"butler": "relationship", "prompt": "Call Mom on Tuesday to tell her about the new Metformin prescription"},
   {"butler": "relationship", "prompt": "Set up a monthly recurring check-in with Dr. Chen, starting next month"}
+]
+```
+
+**Example D: Lifestyle + Health fanout (food + stress)**
+
+Input: "I've been stress-eating Thai food all week"
+
+```json
+[
+  {"butler": "lifestyle", "prompt": "The user has been eating a lot of Thai food this week. Store Thai food as a food preference."},
+  {"butler": "health", "prompt": "The user mentions stress-eating this week. Note this stress eating pattern for health tracking."}
+]
+```
+
+**Example E: Lifestyle + Relationship (multi-domain)**
+
+Input: "I went to a great new ramen place with Alice last night"
+
+```json
+[
+  {"butler": "lifestyle", "prompt": "The user visited a new ramen restaurant last night and enjoyed it. Store this as a food/dining preference."},
+  {"butler": "relationship", "prompt": "The user went out to dinner with Alice last night. Log this as a social interaction."}
 ]
 ```
 
