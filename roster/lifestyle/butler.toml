@@ -80,3 +80,10 @@ interval_minutes = 15
 full_sync_interval_days = 6
 
 [modules.spotify]
+
+# Google Drive module (optional — requires 'drive' scope on connected Google account).
+# Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true
+# [modules.google_drive]
+# account = ""              # Google account email (default: primary account)
+# max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
+# butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs

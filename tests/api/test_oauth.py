@@ -368,9 +368,18 @@ class TestOAuthGoogleStart:
         assert "directory.readonly" in location.lower()
 
     async def test_start_ignores_custom_scopes_from_env(self, app):
-        """GOOGLE_OAUTH_SCOPES env var does not override the fixed scope set."""
+        """GOOGLE_OAUTH_SCOPES env var does not override the fixed scope set.
+
+        The fixed scope set now includes drive.readonly and drive (task 15.1).
+        The env var may set an arbitrary scope, but the authorization URL always
+        reflects the static _DEFAULT_SCOPES — never the env var value alone.
+        """
         app = _make_app(app)
-        env = {**GOOGLE_ENV, "GOOGLE_OAUTH_SCOPES": "https://www.googleapis.com/auth/drive"}
+        # Set env var to an arbitrary scope that is NOT part of _DEFAULT_SCOPES.
+        env = {
+            **GOOGLE_ENV,
+            "GOOGLE_OAUTH_SCOPES": "https://www.googleapis.com/auth/youtube.readonly",
+        }
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -380,11 +389,15 @@ class TestOAuthGoogleStart:
                 resp = await client.get("/api/oauth/google/start")
 
         location = resp.headers["location"]
-        assert "drive" not in location
+        # Fixed scopes are always present — env var does not remove them.
         assert "gmail" in location.lower()
         assert "calendar" in location.lower()
         assert "contacts" in location.lower()
         assert "directory.readonly" in location.lower()
+        # Drive scopes are now part of the fixed set (task 15.1).
+        assert "drive" in location.lower()
+        # The env-var-only scope is NOT added (env var is ignored).
+        assert "youtube.readonly" not in location.lower()
 
 
 # ---------------------------------------------------------------------------
