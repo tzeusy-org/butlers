@@ -1277,6 +1277,9 @@ class TestChatBuffering:
         connector._chat_buffers["5555"].messages = [_make_mock_message(i, 5555) for i in range(5)]
         old_flush_ts = connector._chat_buffers["5555"].last_flush_ts
 
+        # Mock _submit_to_ingest to avoid hitting a real switchboard.
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+
         await connector._flush_chat_buffer("5555")
 
         buf = connector._chat_buffers["5555"]
@@ -1321,6 +1324,9 @@ class TestChatBuffering:
         )
         connector = TelegramUserClientConnector(config_low_cap)
 
+        # Mock _submit_to_ingest to avoid hitting a real switchboard.
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+
         flush_calls: list[str] = []
         original_flush = connector._flush_chat_buffer
 
@@ -1356,6 +1362,9 @@ class TestFlushScanner:
         """_scan_and_flush flushes a chat whose interval has elapsed."""
         connector = TelegramUserClientConnector(config)
 
+        # Mock _submit_to_ingest to avoid hitting a real switchboard.
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+
         # Pre-populate a buffer that is "overdue" (last_flush_ts in the past)
         buf = ChatBuffer()
         buf.messages = [_make_mock_message(1, chat_id=3333)]
@@ -1379,6 +1388,9 @@ class TestFlushScanner:
     ) -> None:
         """_scan_and_flush does not flush a chat that was recently flushed."""
         connector = TelegramUserClientConnector(config)
+
+        # Mock _submit_to_ingest to avoid hitting a real switchboard.
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
 
         buf = ChatBuffer()
         buf.messages = [_make_mock_message(1, chat_id=4444)]
@@ -1444,6 +1456,9 @@ class TestGracefulShutdownFlush:
     ) -> None:
         """_flush_all_buffers flushes every non-empty chat buffer."""
         connector = TelegramUserClientConnector(config)
+        # Mock _submit_to_ingest to avoid hitting a real switchboard.
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+
         for cid in ["100", "200", "300"]:
             buf = ChatBuffer()
             buf.messages = [_make_mock_message(1, chat_id=int(cid))]
@@ -1492,6 +1507,9 @@ class TestGracefulShutdownFlush:
     ) -> None:
         """stop() force-flushes all non-empty chat buffers before disconnecting."""
         connector = TelegramUserClientConnector(config)
+        # Mock _submit_to_ingest to avoid hitting a real switchboard.
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+
         buf = ChatBuffer()
         buf.messages = [_make_mock_message(1, chat_id=777)]
         connector._chat_buffers["777"] = buf
