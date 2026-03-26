@@ -64,7 +64,7 @@ def _make_credential_store(
 
 def _make_response(
     status_code: int,
-    json_data: dict[str, Any] | None = None,
+    json_data: Any = None,
     headers: dict[str, str] | None = None,
 ) -> MagicMock:
     """Build a mock httpx.Response."""
@@ -215,7 +215,7 @@ class TestGetMe:
     async def test_get_me_success(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
         result = await spotify_client.get_me()
         assert result["id"] == "spotify_user_123"
         assert result["display_name"] == "Test User"
@@ -223,23 +223,23 @@ class TestGetMe:
     async def test_get_me_calls_correct_endpoint(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
         await spotify_client.get_me()
-        call_args = http_client.get.call_args
-        assert "/me" in call_args[0][0]
+        call_args = http_client.request.call_args
+        assert "/me" in call_args[0][1]
 
     async def test_get_me_includes_bearer_header(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
         await spotify_client.get_me()
-        _, kwargs = http_client.get.call_args
+        _, kwargs = http_client.request.call_args
         assert kwargs["headers"]["Authorization"] == "Bearer test_access_token"
 
     async def test_get_me_raises_if_204(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(204))
+        http_client.request = AsyncMock(return_value=_make_response(204))
         with pytest.raises(SpotifyAPIError) as exc_info:
             await spotify_client.get_me()
         assert "204" in str(exc_info.value)
@@ -247,7 +247,7 @@ class TestGetMe:
     async def test_get_me_raises_on_server_error(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             return_value=_make_response(500, {"error": "internal server error"})
         )
         with pytest.raises(SpotifyAPIError) as exc_info:
@@ -264,7 +264,9 @@ class TestGetCurrentlyPlaying:
     async def test_returns_playing_data(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(200, _CURRENTLY_PLAYING_RESPONSE))
+        http_client.request = AsyncMock(
+            return_value=_make_response(200, _CURRENTLY_PLAYING_RESPONSE)
+        )
         result = await spotify_client.get_currently_playing()
         assert result is not None
         assert result["is_playing"] is True
@@ -274,7 +276,7 @@ class TestGetCurrentlyPlaying:
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
         """HTTP 204 means nothing is currently playing."""
-        http_client.get = AsyncMock(return_value=_make_response(204))
+        http_client.request = AsyncMock(return_value=_make_response(204))
         result = await spotify_client.get_currently_playing()
         assert result is None
 
@@ -282,7 +284,7 @@ class TestGetCurrentlyPlaying:
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
         """HTTP 200 with item=null (e.g., private session or ads) should return None."""
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             return_value=_make_response(200, {"is_playing": False, "item": None})
         )
         result = await spotify_client.get_currently_playing()
@@ -291,15 +293,15 @@ class TestGetCurrentlyPlaying:
     async def test_includes_additional_types_param(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(204))
+        http_client.request = AsyncMock(return_value=_make_response(204))
         await spotify_client.get_currently_playing()
-        _, kwargs = http_client.get.call_args
+        _, kwargs = http_client.request.call_args
         assert kwargs["params"]["additional_types"] == "track"
 
     async def test_raises_on_error_status(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             return_value=_make_response(503, {"error": "service unavailable"})
         )
         with pytest.raises(SpotifyAPIError) as exc_info:
@@ -316,7 +318,7 @@ class TestGetRecentlyPlayed:
     async def test_returns_items(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(200, _RECENTLY_PLAYED_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _RECENTLY_PLAYED_RESPONSE))
         result = await spotify_client.get_recently_played()
         assert len(result["items"]) == 1
         assert result["items"][0]["track"]["id"] == "track_xyz"
@@ -324,39 +326,39 @@ class TestGetRecentlyPlayed:
     async def test_sends_after_cursor(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(200, _RECENTLY_PLAYED_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _RECENTLY_PLAYED_RESPONSE))
         await spotify_client.get_recently_played(after=1700000000000)
-        _, kwargs = http_client.get.call_args
+        _, kwargs = http_client.request.call_args
         assert kwargs["params"]["after"] == 1700000000000
 
     async def test_omits_after_when_none(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(200, _RECENTLY_PLAYED_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _RECENTLY_PLAYED_RESPONSE))
         await spotify_client.get_recently_played(after=None)
-        _, kwargs = http_client.get.call_args
+        _, kwargs = http_client.request.call_args
         assert "after" not in kwargs["params"]
 
     async def test_sends_limit_param(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(200, _RECENTLY_PLAYED_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _RECENTLY_PLAYED_RESPONSE))
         await spotify_client.get_recently_played(limit=10)
-        _, kwargs = http_client.get.call_args
+        _, kwargs = http_client.request.call_args
         assert kwargs["params"]["limit"] == 10
 
     async def test_handles_204_gracefully(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
         """204 from recently-played returns empty result."""
-        http_client.get = AsyncMock(return_value=_make_response(204))
+        http_client.request = AsyncMock(return_value=_make_response(204))
         result = await spotify_client.get_recently_played()
         assert result["items"] == []
 
     async def test_raises_on_error_status(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(400, {"error": "bad request"}))
+        http_client.request = AsyncMock(return_value=_make_response(400, {"error": "bad request"}))
         with pytest.raises(SpotifyAPIError) as exc_info:
             await spotify_client.get_recently_played()
         assert exc_info.value.status_code == 400
@@ -376,7 +378,7 @@ class TestProactiveRefresh:
         client = SpotifyClient(credential_store=store, http_client=http_client)
         await client.open()
 
-        http_client.get = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
         await client.get_me()
 
         # store() should NOT have been called for token refresh
@@ -391,7 +393,7 @@ class TestProactiveRefresh:
 
         # First call goes to token endpoint, second call is the actual API call
         http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
-        http_client.get = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
 
         await client.get_me()
 
@@ -407,7 +409,7 @@ class TestProactiveRefresh:
         await client.open()
 
         http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
-        http_client.get = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
 
         await client.get_me()
         http_client.post.assert_awaited_once()
@@ -419,7 +421,7 @@ class TestProactiveRefresh:
         await client.open()
 
         http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
-        http_client.get = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
 
         await client.get_me()
 
@@ -435,7 +437,7 @@ class TestProactiveRefresh:
         await client.open()
 
         http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
-        http_client.get = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
+        http_client.request = AsyncMock(return_value=_make_response(200, _PROFILE_RESPONSE))
 
         await client.get_me()
 
@@ -455,7 +457,7 @@ class TestAutoRefreshOn401:
         """A 401 on the first call triggers a token refresh and one retry."""
         http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
         # First GET → 401, second GET → 200 (after refresh)
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             side_effect=[
                 _make_response(401),
                 _make_response(200, _PROFILE_RESPONSE),
@@ -465,7 +467,7 @@ class TestAutoRefreshOn401:
         result = await spotify_client.get_me()
 
         assert result["id"] == "spotify_user_123"
-        assert http_client.get.await_count == 2
+        assert http_client.request.await_count == 2
         http_client.post.assert_awaited_once()
 
     async def test_double_401_raises_auth_error(
@@ -473,7 +475,7 @@ class TestAutoRefreshOn401:
     ) -> None:
         """A 401 on both the first call and retry raises SpotifyAuthError."""
         http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             side_effect=[
                 _make_response(401),
                 _make_response(401),
@@ -488,7 +490,7 @@ class TestAutoRefreshOn401:
     ) -> None:
         """If token refresh itself returns an error, SpotifyAuthError is raised."""
         http_client.post = AsyncMock(return_value=_make_response(400, {"error": "invalid_grant"}))
-        http_client.get = AsyncMock(return_value=_make_response(401))
+        http_client.request = AsyncMock(return_value=_make_response(401))
 
         with pytest.raises(SpotifyAuthError) as exc_info:
             await spotify_client.get_me()
@@ -500,7 +502,7 @@ class TestAutoRefreshOn401:
         client = SpotifyClient(credential_store=store, http_client=http)
         await client.open()
 
-        http.get = AsyncMock(return_value=_make_response(401))
+        http.request = AsyncMock(return_value=_make_response(401))
 
         with pytest.raises(SpotifyAuthError) as exc_info:
             await client.get_me()
@@ -512,7 +514,7 @@ class TestAutoRefreshOn401:
         client = SpotifyClient(credential_store=store, http_client=http)
         await client.open()
 
-        http.get = AsyncMock(return_value=_make_response(401))
+        http.request = AsyncMock(return_value=_make_response(401))
 
         with pytest.raises(SpotifyAuthError) as exc_info:
             await client.get_me()
@@ -522,7 +524,7 @@ class TestAutoRefreshOn401:
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
         http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             side_effect=[
                 _make_response(401),
                 _make_response(200, _PROFILE_RESPONSE),
@@ -546,7 +548,7 @@ class TestAutoRefreshOn401:
             # refresh_token is intentionally absent
         }
         http_client.post = AsyncMock(return_value=_make_response(200, refresh_no_rotation))
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             side_effect=[
                 _make_response(401),
                 _make_response(200, _PROFILE_RESPONSE),
@@ -567,7 +569,9 @@ class TestRateLimitHandling:
     async def test_429_raises_rate_limit_error(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(429, headers={"Retry-After": "30"}))
+        http_client.request = AsyncMock(
+            return_value=_make_response(429, headers={"Retry-After": "30"})
+        )
 
         with pytest.raises(SpotifyRateLimitError) as exc_info:
             await spotify_client.get_me()
@@ -576,7 +580,7 @@ class TestRateLimitHandling:
     async def test_429_without_retry_after_uses_backoff(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(429))
+        http_client.request = AsyncMock(return_value=_make_response(429))
 
         with pytest.raises(SpotifyRateLimitError) as exc_info:
             await spotify_client.get_me()
@@ -586,7 +590,7 @@ class TestRateLimitHandling:
     async def test_retry_after_header_parsed_correctly(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             return_value=_make_response(429, headers={"Retry-After": "120"})
         )
 
@@ -597,7 +601,7 @@ class TestRateLimitHandling:
     async def test_invalid_retry_after_header_uses_backoff(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             return_value=_make_response(429, headers={"Retry-After": "not-a-number"})
         )
 
@@ -641,7 +645,7 @@ class TestErrorPropagation:
     async def test_spotify_api_error_has_status_code(
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
-        http_client.get = AsyncMock(return_value=_make_response(403, {"error": "forbidden"}))
+        http_client.request = AsyncMock(return_value=_make_response(403, {"error": "forbidden"}))
 
         with pytest.raises(SpotifyAPIError) as exc_info:
             await spotify_client.get_me()
@@ -652,7 +656,7 @@ class TestErrorPropagation:
     ) -> None:
         """Auth errors must guide the user to re-authorize."""
         http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
-        http_client.get = AsyncMock(
+        http_client.request = AsyncMock(
             side_effect=[
                 _make_response(401),
                 _make_response(401),
@@ -668,9 +672,991 @@ class TestErrorPropagation:
         self, spotify_client: SpotifyClient, http_client: AsyncMock
     ) -> None:
         """SpotifyClient should NOT internally sleep/retry on 429; caller decides."""
-        http_client.get = AsyncMock(return_value=_make_response(429, headers={"Retry-After": "5"}))
+        http_client.request = AsyncMock(
+            return_value=_make_response(429, headers={"Retry-After": "5"})
+        )
 
         with pytest.raises(SpotifyRateLimitError):
             await spotify_client.get_me()
         # Only one HTTP call — no internal retry loop
-        assert http_client.get.await_count == 1
+        assert http_client.request.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: _put / _post / _delete helpers (auth/retry/rate-limit parity)
+# ---------------------------------------------------------------------------
+
+
+class TestPutHelper:
+    async def test_put_success_200(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"snapshot_id": "abc"}
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client._put("/me/player/play")
+        assert result == body
+
+    async def test_put_success_204_returns_none(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client._put("/me/player/pause")
+        assert result is None
+
+    async def test_put_401_triggers_refresh_and_retry(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
+        http_client.request = AsyncMock(
+            side_effect=[
+                _make_response(401),
+                _make_response(204),
+            ]
+        )
+        result = await spotify_client._put("/me/player/play")
+        assert result is None
+        assert http_client.request.await_count == 2
+
+    async def test_put_double_401_raises_auth_error(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
+        http_client.request = AsyncMock(side_effect=[_make_response(401), _make_response(401)])
+        with pytest.raises(SpotifyAuthError):
+            await spotify_client._put("/me/player/play")
+
+    async def test_put_429_raises_rate_limit(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(
+            return_value=_make_response(429, headers={"Retry-After": "10"})
+        )
+        with pytest.raises(SpotifyRateLimitError) as exc_info:
+            await spotify_client._put("/me/player/play")
+        assert exc_info.value.retry_after_s == pytest.approx(10.0)
+
+    async def test_put_other_error_raises_api_error(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(403, {"error": "forbidden"}))
+        with pytest.raises(SpotifyAPIError) as exc_info:
+            await spotify_client._put("/me/player/play")
+        assert exc_info.value.status_code == 403
+
+    async def test_put_sends_json_body(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client._put("/me/player/play", json={"uris": ["spotify:track:abc"]})
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"] == {"uris": ["spotify:track:abc"]}
+
+    async def test_put_sends_params(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client._put("/me/player/volume", params={"volume_percent": 50})
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"] == {"volume_percent": 50}
+
+
+class TestPostHelper:
+    async def test_post_success_201(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"id": "new_playlist_id"}
+        http_client.request = AsyncMock(return_value=_make_response(201, body))
+        result = await spotify_client._post("/users/user123/playlists", json={"name": "My PL"})
+        assert result == body
+
+    async def test_post_success_204_returns_none(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client._post("/me/player/next")
+        assert result is None
+
+    async def test_post_401_triggers_refresh_and_retry(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        # API calls use http_client.request; token refresh uses http_client.post.
+        # Mock them independently: request raises 401 first, then succeeds.
+        http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
+        http_client.request = AsyncMock(side_effect=[_make_response(401), _make_response(204)])
+        result = await spotify_client._post("/me/player/next")
+        assert result is None
+        assert http_client.request.await_count == 2
+
+    async def test_post_429_raises_rate_limit(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(
+            return_value=_make_response(429, headers={"Retry-After": "5"})
+        )
+        with pytest.raises(SpotifyRateLimitError):
+            await spotify_client._post("/me/player/next")
+
+    async def test_post_other_error_raises_api_error(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(400, {"error": "bad_request"}))
+        with pytest.raises(SpotifyAPIError) as exc_info:
+            await spotify_client._post("/me/player/next")
+        assert exc_info.value.status_code == 400
+
+
+class TestDeleteHelper:
+    async def test_delete_success_200(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"snapshot_id": "snap123"}
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client._delete("/playlists/pl1/tracks", json={"tracks": []})
+        assert result == body
+
+    async def test_delete_success_204_returns_none(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client._delete("/me/tracks", json={"ids": ["track1"]})
+        assert result is None
+
+    async def test_delete_401_triggers_refresh_and_retry(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.post = AsyncMock(return_value=_make_response(200, _REFRESH_TOKEN_RESPONSE))
+        http_client.request = AsyncMock(side_effect=[_make_response(401), _make_response(204)])
+        result = await spotify_client._delete("/me/tracks", json={"ids": ["id1"]})
+        assert result is None
+        assert http_client.request.await_count == 2
+
+    async def test_delete_429_raises_rate_limit(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(
+            return_value=_make_response(429, headers={"Retry-After": "15"})
+        )
+        with pytest.raises(SpotifyRateLimitError) as exc_info:
+            await spotify_client._delete("/me/tracks")
+        assert exc_info.value.retry_after_s == pytest.approx(15.0)
+
+    async def test_delete_other_error_raises_api_error(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(403, {"error": "forbidden"}))
+        with pytest.raises(SpotifyAPIError) as exc_info:
+            await spotify_client._delete("/me/tracks")
+        assert exc_info.value.status_code == 403
+
+    async def test_delete_sends_json_body(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client._delete("/me/tracks", json={"ids": ["id1", "id2"]})
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"] == {"ids": ["id1", "id2"]}
+
+
+# ---------------------------------------------------------------------------
+# Tests: search
+# ---------------------------------------------------------------------------
+
+
+class TestSearch:
+    async def test_search_returns_results(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"tracks": {"items": [{"id": "t1", "name": "Song"}], "total": 1}}
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.search("radiohead")
+        assert "tracks" in result
+        assert result["tracks"]["items"][0]["id"] == "t1"
+
+    async def test_search_default_type_is_track(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {}))
+        await spotify_client.search("test")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["type"] == "track"
+
+    async def test_search_custom_types(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {}))
+        await spotify_client.search("test", types=["artist", "album"])
+        _, kwargs = http_client.request.call_args
+        assert "artist" in kwargs["params"]["type"]
+        assert "album" in kwargs["params"]["type"]
+
+    async def test_search_sends_query(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {}))
+        await spotify_client.search("kid cudi")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["q"] == "kid cudi"
+
+    async def test_search_includes_limit_and_offset(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {}))
+        await spotify_client.search("test", limit=5, offset=10)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["limit"] == 5
+        assert kwargs["params"]["offset"] == 10
+
+    async def test_search_includes_market(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {}))
+        await spotify_client.search("test", market="GB")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["market"] == "GB"
+
+    async def test_search_204_returns_empty_dict(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client.search("test")
+        assert result == {}
+
+    async def test_search_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {}))
+        await spotify_client.search("test")
+        call_url = http_client.request.call_args[0][1]
+        assert "/search" in call_url
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_playback_state
+# ---------------------------------------------------------------------------
+
+
+class TestGetPlaybackState:
+    async def test_returns_playback_state(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {
+            "is_playing": True,
+            "shuffle_state": False,
+            "repeat_state": "off",
+            "device": {"id": "dev1", "name": "My Speaker"},
+        }
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.get_playback_state()
+        assert result is not None
+        assert result["is_playing"] is True
+        assert result["device"]["id"] == "dev1"
+
+    async def test_returns_none_when_no_active_device(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client.get_playback_state()
+        assert result is None
+
+    async def test_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.get_playback_state()
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player" in call_url
+
+
+# ---------------------------------------------------------------------------
+# Tests: play
+# ---------------------------------------------------------------------------
+
+
+class TestPlay:
+    async def test_play_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.play()
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/play" in call_url
+
+    async def test_play_with_context_uri(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.play(context_uri="spotify:album:abc")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["context_uri"] == "spotify:album:abc"
+
+    async def test_play_with_uris(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.play(uris=["spotify:track:t1", "spotify:track:t2"])
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["uris"] == ["spotify:track:t1", "spotify:track:t2"]
+
+    async def test_play_with_device_id(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.play(device_id="device123")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["device_id"] == "device123"
+
+    async def test_play_with_position_ms(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.play(position_ms=30000)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["position_ms"] == 30000
+
+    async def test_play_no_body_when_no_params(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.play()
+        _, kwargs = http_client.request.call_args
+        assert kwargs.get("json") is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: pause
+# ---------------------------------------------------------------------------
+
+
+class TestPause:
+    async def test_pause_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.pause()
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/pause" in call_url
+
+    async def test_pause_with_device_id(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.pause(device_id="dev1")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["device_id"] == "dev1"
+
+    async def test_pause_no_params_when_no_device(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.pause()
+        _, kwargs = http_client.request.call_args
+        assert kwargs.get("params") is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: skip_to_next / skip_to_previous
+# ---------------------------------------------------------------------------
+
+
+class TestSkip:
+    async def test_skip_to_next_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.skip_to_next()
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/next" in call_url
+
+    async def test_skip_to_previous_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.skip_to_previous()
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/previous" in call_url
+
+    async def test_skip_to_next_with_device_id(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.skip_to_next(device_id="dev1")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["device_id"] == "dev1"
+
+    async def test_skip_to_previous_with_device_id(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.skip_to_previous(device_id="dev1")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["device_id"] == "dev1"
+
+
+# ---------------------------------------------------------------------------
+# Tests: seek_to_position
+# ---------------------------------------------------------------------------
+
+
+class TestSeekToPosition:
+    async def test_seek_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.seek_to_position(60000)
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/seek" in call_url
+
+    async def test_seek_sends_position_ms(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.seek_to_position(45000)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["position_ms"] == 45000
+
+    async def test_seek_with_device_id(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.seek_to_position(5000, device_id="devX")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["device_id"] == "devX"
+
+
+# ---------------------------------------------------------------------------
+# Tests: set_volume
+# ---------------------------------------------------------------------------
+
+
+class TestSetVolume:
+    async def test_set_volume_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_volume(75)
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/volume" in call_url
+
+    async def test_set_volume_sends_correct_param(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_volume(50)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["volume_percent"] == 50
+
+
+# ---------------------------------------------------------------------------
+# Tests: set_shuffle
+# ---------------------------------------------------------------------------
+
+
+class TestSetShuffle:
+    async def test_set_shuffle_on(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_shuffle(True)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["state"] == "true"
+
+    async def test_set_shuffle_off(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_shuffle(False)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["state"] == "false"
+
+    async def test_set_shuffle_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_shuffle(True)
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/shuffle" in call_url
+
+
+# ---------------------------------------------------------------------------
+# Tests: set_repeat
+# ---------------------------------------------------------------------------
+
+
+class TestSetRepeat:
+    async def test_set_repeat_track(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_repeat("track")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["state"] == "track"
+
+    async def test_set_repeat_context(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_repeat("context")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["state"] == "context"
+
+    async def test_set_repeat_off(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_repeat("off")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["state"] == "off"
+
+    async def test_set_repeat_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.set_repeat("off")
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/repeat" in call_url
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_queue / add_to_queue
+# ---------------------------------------------------------------------------
+
+
+class TestQueue:
+    async def test_get_queue_returns_data(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {
+            "currently_playing": {"id": "t1"},
+            "queue": [{"id": "t2"}, {"id": "t3"}],
+        }
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.get_queue()
+        assert len(result["queue"]) == 2
+        assert result["currently_playing"]["id"] == "t1"
+
+    async def test_get_queue_204_returns_empty(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client.get_queue()
+        assert result == {"currently_playing": None, "queue": []}
+
+    async def test_get_queue_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"queue": []}))
+        await spotify_client.get_queue()
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/queue" in call_url
+
+    async def test_add_to_queue_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.add_to_queue("spotify:track:abc")
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/player/queue" in call_url
+
+    async def test_add_to_queue_sends_uri(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.add_to_queue("spotify:track:abc123")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["uri"] == "spotify:track:abc123"
+
+    async def test_add_to_queue_with_device_id(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.add_to_queue("spotify:track:abc", device_id="dev1")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["device_id"] == "dev1"
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_top_items
+# ---------------------------------------------------------------------------
+
+
+class TestGetTopItems:
+    async def test_get_top_tracks(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"items": [{"id": "t1"}, {"id": "t2"}], "total": 2}
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.get_top_items("tracks")
+        assert len(result["items"]) == 2
+
+    async def test_get_top_artists_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"items": []}))
+        await spotify_client.get_top_items("artists")
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/top/artists" in call_url
+
+    async def test_get_top_items_time_range(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"items": []}))
+        await spotify_client.get_top_items("tracks", time_range="short_term")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["time_range"] == "short_term"
+
+    async def test_get_top_items_limit_offset(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"items": []}))
+        await spotify_client.get_top_items("tracks", limit=10, offset=5)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["limit"] == 10
+        assert kwargs["params"]["offset"] == 5
+
+    async def test_get_top_items_204_returns_empty(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client.get_top_items("tracks")
+        assert result["items"] == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_recommendations
+# ---------------------------------------------------------------------------
+
+
+class TestGetRecommendations:
+    async def test_returns_track_recommendations(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"tracks": [{"id": "r1"}, {"id": "r2"}], "seeds": []}
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.get_recommendations(seed_tracks=["t1", "t2"])
+        assert len(result["tracks"]) == 2
+
+    async def test_sends_seed_tracks(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"tracks": []}))
+        await spotify_client.get_recommendations(seed_tracks=["id1", "id2"])
+        _, kwargs = http_client.request.call_args
+        assert "id1" in kwargs["params"]["seed_tracks"]
+        assert "id2" in kwargs["params"]["seed_tracks"]
+
+    async def test_sends_seed_artists(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"tracks": []}))
+        await spotify_client.get_recommendations(seed_artists=["artist1"])
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["seed_artists"] == "artist1"
+
+    async def test_sends_seed_genres(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"tracks": []}))
+        await spotify_client.get_recommendations(seed_genres=["pop", "rock"])
+        _, kwargs = http_client.request.call_args
+        assert "pop" in kwargs["params"]["seed_genres"]
+
+    async def test_sends_audio_feature_kwargs(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"tracks": []}))
+        await spotify_client.get_recommendations(seed_tracks=["t1"], min_energy=0.5)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["min_energy"] == 0.5
+
+    async def test_gracefully_handles_403(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(403, {"error": "forbidden"}))
+        result = await spotify_client.get_recommendations(seed_tracks=["t1"])
+        assert result == {"tracks": []}
+
+    async def test_gracefully_handles_404(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(404, {"error": "not found"}))
+        result = await spotify_client.get_recommendations(seed_tracks=["t1"])
+        assert result == {"tracks": []}
+
+    async def test_raises_for_other_errors(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(500, {"error": "server error"}))
+        with pytest.raises(SpotifyAPIError) as exc_info:
+            await spotify_client.get_recommendations(seed_tracks=["t1"])
+        assert exc_info.value.status_code == 500
+
+    async def test_204_returns_empty_tracks(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client.get_recommendations(seed_tracks=["t1"])
+        assert result == {"tracks": []}
+
+
+# ---------------------------------------------------------------------------
+# Tests: playlists
+# ---------------------------------------------------------------------------
+
+
+class TestPlaylists:
+    async def test_get_user_playlists_returns_items(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"items": [{"id": "pl1", "name": "My Playlist"}], "total": 1}
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.get_user_playlists()
+        assert len(result["items"]) == 1
+
+    async def test_get_user_playlists_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"items": []}))
+        await spotify_client.get_user_playlists()
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/playlists" in call_url
+
+    async def test_get_user_playlists_204_returns_empty(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client.get_user_playlists()
+        assert result["items"] == []
+
+    async def test_get_playlist_by_id(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"id": "pl123", "name": "Cool Playlist", "tracks": {"items": []}}
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.get_playlist("pl123")
+        assert result["id"] == "pl123"
+
+    async def test_get_playlist_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"id": "pl123"}))
+        await spotify_client.get_playlist("pl123")
+        call_url = http_client.request.call_args[0][1]
+        assert "/playlists/pl123" in call_url
+
+    async def test_get_playlist_with_fields(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"id": "pl123"}))
+        await spotify_client.get_playlist("pl123", fields="name,tracks")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["fields"] == "name,tracks"
+
+    async def test_get_playlist_204_raises_api_error(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        with pytest.raises(SpotifyAPIError) as exc_info:
+            await spotify_client.get_playlist("pl123")
+        assert exc_info.value.status_code == 204
+
+    async def test_create_playlist_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"id": "new_pl", "name": "Test PL"}
+        http_client.request = AsyncMock(return_value=_make_response(201, body))
+        result = await spotify_client.create_playlist("user123", "Test PL")
+        assert result["id"] == "new_pl"
+        call_url = http_client.request.call_args[0][1]
+        assert "/users/user123/playlists" in call_url
+
+    async def test_create_playlist_sends_name(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(201, {"id": "p1"}))
+        await spotify_client.create_playlist("user1", "My Playlist")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["name"] == "My Playlist"
+
+    async def test_create_playlist_default_public_true(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(201, {"id": "p1"}))
+        await spotify_client.create_playlist("user1", "PL")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["public"] is True
+
+    async def test_create_playlist_private(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(201, {"id": "p1"}))
+        await spotify_client.create_playlist("user1", "Private PL", public=False)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["public"] is False
+
+    async def test_add_tracks_to_playlist(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"snapshot_id": "snap123"}
+        http_client.request = AsyncMock(return_value=_make_response(201, body))
+        result = await spotify_client.add_tracks_to_playlist(
+            "pl1", ["spotify:track:t1", "spotify:track:t2"]
+        )
+        assert result["snapshot_id"] == "snap123"
+
+    async def test_add_tracks_to_playlist_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(201, {"snapshot_id": "s1"}))
+        await spotify_client.add_tracks_to_playlist("pl1", ["spotify:track:t1"])
+        call_url = http_client.request.call_args[0][1]
+        assert "/playlists/pl1/tracks" in call_url
+
+    async def test_add_tracks_with_position(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(201, {"snapshot_id": "s1"}))
+        await spotify_client.add_tracks_to_playlist("pl1", ["spotify:track:t1"], position=3)
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["position"] == 3
+
+    async def test_remove_tracks_from_playlist(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {"snapshot_id": "snap456"}
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.remove_tracks_from_playlist("pl1", ["spotify:track:t1"])
+        assert result["snapshot_id"] == "snap456"
+
+    async def test_remove_tracks_from_playlist_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"snapshot_id": "s"}))
+        await spotify_client.remove_tracks_from_playlist("pl1", ["spotify:track:t1"])
+        call_url = http_client.request.call_args[0][1]
+        assert "/playlists/pl1/tracks" in call_url
+
+    async def test_remove_tracks_sends_correct_body(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"snapshot_id": "s"}))
+        await spotify_client.remove_tracks_from_playlist(
+            "pl1", ["spotify:track:t1", "spotify:track:t2"]
+        )
+        _, kwargs = http_client.request.call_args
+        tracks = kwargs["json"]["tracks"]
+        assert {"uri": "spotify:track:t1"} in tracks
+        assert {"uri": "spotify:track:t2"} in tracks
+
+    async def test_remove_tracks_with_snapshot_id(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"snapshot_id": "s"}))
+        await spotify_client.remove_tracks_from_playlist(
+            "pl1", ["spotify:track:t1"], snapshot_id="snap_old"
+        )
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["snapshot_id"] == "snap_old"
+
+
+# ---------------------------------------------------------------------------
+# Tests: saved tracks (library)
+# ---------------------------------------------------------------------------
+
+
+class TestSavedTracks:
+    async def test_get_saved_tracks_returns_items(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        body = {
+            "items": [{"track": {"id": "t1"}, "added_at": "2024-01-01T00:00:00Z"}],
+            "total": 1,
+        }
+        http_client.request = AsyncMock(return_value=_make_response(200, body))
+        result = await spotify_client.get_saved_tracks()
+        assert len(result["items"]) == 1
+
+    async def test_get_saved_tracks_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"items": []}))
+        await spotify_client.get_saved_tracks()
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/tracks" in call_url
+
+    async def test_get_saved_tracks_204_returns_empty(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client.get_saved_tracks()
+        assert result["items"] == []
+
+    async def test_get_saved_tracks_with_market(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, {"items": []}))
+        await spotify_client.get_saved_tracks(market="US")
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["market"] == "US"
+
+    async def test_save_tracks_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.save_tracks(["id1", "id2"])
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/tracks" in call_url
+
+    async def test_save_tracks_sends_ids(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.save_tracks(["id1", "id2"])
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["ids"] == ["id1", "id2"]
+
+    async def test_remove_saved_tracks_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.remove_saved_tracks(["id1"])
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/tracks" in call_url
+
+    async def test_remove_saved_tracks_sends_ids(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        await spotify_client.remove_saved_tracks(["id1", "id2"])
+        _, kwargs = http_client.request.call_args
+        assert kwargs["json"]["ids"] == ["id1", "id2"]
+
+    async def test_check_saved_tracks_returns_bools(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        # Spotify returns a JSON array like [true, false]
+        http_client.request = AsyncMock(return_value=_make_response(200, [True, False]))
+        result = await spotify_client.check_saved_tracks(["id1", "id2"])
+        assert result == [True, False]
+
+    async def test_check_saved_tracks_calls_correct_endpoint(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, [True]))
+        await spotify_client.check_saved_tracks(["id1"])
+        call_url = http_client.request.call_args[0][1]
+        assert "/me/tracks/contains" in call_url
+
+    async def test_check_saved_tracks_sends_ids_as_csv(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(200, [True, False]))
+        await spotify_client.check_saved_tracks(["id1", "id2"])
+        _, kwargs = http_client.request.call_args
+        assert kwargs["params"]["ids"] == "id1,id2"
+
+    async def test_check_saved_tracks_204_returns_false_list(
+        self, spotify_client: SpotifyClient, http_client: AsyncMock
+    ) -> None:
+        http_client.request = AsyncMock(return_value=_make_response(204))
+        result = await spotify_client.check_saved_tracks(["id1", "id2"])
+        assert result == [False, False]

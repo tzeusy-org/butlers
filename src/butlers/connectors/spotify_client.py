@@ -6,6 +6,29 @@ endpoints needed by the Spotify connector:
 - ``get_me()`` — Retrieve the authenticated user's Spotify profile.
 - ``get_currently_playing()`` — Poll the user's current playback state.
 - ``get_recently_played(after)`` — Fetch recently played tracks with cursor-based pagination.
+- ``search()`` — Search Spotify catalog.
+- ``get_playback_state()`` — Get full playback state (device, shuffle, repeat).
+- ``play()`` — Start/resume playback on a device.
+- ``pause()`` — Pause playback.
+- ``skip_to_next()`` — Skip to the next track.
+- ``skip_to_previous()`` — Skip to the previous track.
+- ``seek_to_position()`` — Seek to a position in the current track.
+- ``set_volume()`` — Set playback volume.
+- ``set_shuffle()`` — Toggle shuffle mode.
+- ``set_repeat()`` — Set repeat mode.
+- ``get_queue()`` — Get the user's playback queue.
+- ``add_to_queue()`` — Add an item to the playback queue.
+- ``get_top_items()`` — Retrieve the user's top artists or tracks.
+- ``get_recommendations()`` — Get track recommendations based on seeds.
+- ``get_user_playlists()`` — Get current user's playlists.
+- ``get_playlist()`` — Get a playlist by ID.
+- ``create_playlist()`` — Create a new playlist.
+- ``add_tracks_to_playlist()`` — Add tracks to a playlist.
+- ``remove_tracks_from_playlist()`` — Remove tracks from a playlist.
+- ``get_saved_tracks()`` — Get the user's liked/saved tracks.
+- ``save_tracks()`` — Save tracks to the user's library.
+- ``remove_saved_tracks()`` — Remove tracks from the user's library.
+- ``check_saved_tracks()`` — Check if tracks are saved.
 
 Auth model:
 - Bearer token resolved from ``CredentialStore`` at construction time.
@@ -326,13 +349,26 @@ class SpotifyClient:
     # Internal request helper
     # ------------------------------------------------------------------
 
-    async def _get(
+    @staticmethod
+    def _parse_retry_after(response: httpx.Response, *, attempt: int) -> float:
+        """Parse the ``Retry-After`` header or compute exponential backoff."""
+        header = response.headers.get("Retry-After")
+        if header is not None:
+            try:
+                return max(0.0, float(header))
+            except ValueError:
+                pass
+        return _jittered_backoff(attempt, initial=_BACKOFF_INITIAL_S, maximum=_BACKOFF_MAX_S)
+
+    async def _request(
         self,
+        method: str,
         path: str,
         *,
         params: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        """Perform an authenticated GET request against the Spotify Web API.
+        json: dict[str, Any] | None = None,
+    ) -> Any:
+        """Perform an authenticated HTTP request against the Spotify Web API.
 
         Handles:
         - Proactive token refresh before expiry window.
@@ -344,38 +380,45 @@ class SpotifyClient:
 
         Parameters
         ----------
+        method:
+            HTTP method (e.g. ``"GET"``, ``"PUT"``, ``"POST"``, ``"DELETE"``).
         path:
             API path (e.g. ``"/me/player/currently-playing"``).
         params:
             Optional query string parameters.
+        json:
+            Optional JSON body payload (ignored for GET requests).
 
         Returns
         -------
-        dict or None
-            Parsed JSON response, or ``None`` for empty-body responses.
+        Any
+            Parsed JSON response (dict or list), or ``None`` for empty-body responses.
         """
         assert self._http_client is not None, "HTTP client not initialized; call open() first"
 
         # Proactive refresh
         if self._token_needs_refresh():
-            logger.debug("Proactive token refresh triggered for path=%r", path)
+            logger.debug("Proactive token refresh triggered for %s path=%r", method.upper(), path)
             await self._refresh_access_token()
 
         url = f"{_SPOTIFY_API_BASE}{path}"
         for attempt in range(2):  # first attempt + one retry after 401
             headers = {"Authorization": f"Bearer {self._access_token}"}
-            response = await self._http_client.get(url, headers=headers, params=params)
+            response = await self._http_client.request(
+                method, url, headers=headers, params=params, json=json
+            )
 
-            if response.status_code == 200:
+            if response.status_code in (200, 201):
                 return response.json()  # type: ignore[no-any-return]
 
             if response.status_code == 204:
-                return None  # No content — valid for currently-playing when nothing is playing
+                return None  # No content — valid for many Spotify endpoints
 
             if response.status_code == 401:
                 if attempt == 0:
                     logger.info(
-                        "Received 401 from Spotify; refreshing token and retrying path=%r",
+                        "Received 401 from Spotify; refreshing token and retrying %s path=%r",
+                        method.upper(),
                         path,
                     )
                     await self._refresh_access_token()
@@ -398,16 +441,118 @@ class SpotifyClient:
         # Should be unreachable
         raise SpotifyAuthError("Unexpected auth loop exit")  # pragma: no cover
 
-    @staticmethod
-    def _parse_retry_after(response: httpx.Response, *, attempt: int) -> float:
-        """Parse the ``Retry-After`` header or compute exponential backoff."""
-        header = response.headers.get("Retry-After")
-        if header is not None:
-            try:
-                return max(0.0, float(header))
-            except ValueError:
-                pass
-        return _jittered_backoff(attempt, initial=_BACKOFF_INITIAL_S, maximum=_BACKOFF_MAX_S)
+    async def _get(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        """Perform an authenticated GET request against the Spotify Web API.
+
+        Thin wrapper around :meth:`_request` for GET calls.
+
+        Returns ``None`` for HTTP 204 (No Content — valid Spotify empty response).
+
+        Parameters
+        ----------
+        path:
+            API path (e.g. ``"/me/player/currently-playing"``).
+        params:
+            Optional query string parameters.
+
+        Returns
+        -------
+        Any
+            Parsed JSON response (dict or list), or ``None`` for empty-body responses.
+        """
+        return await self._request("GET", path, params=params)
+
+    async def _put(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> Any:
+        """Perform an authenticated PUT request against the Spotify Web API.
+
+        Thin wrapper around :meth:`_request` for PUT calls.
+
+        Returns ``None`` for HTTP 204 (No Content).
+
+        Parameters
+        ----------
+        path:
+            API path (e.g. ``"/me/player/play"``).
+        params:
+            Optional query string parameters.
+        json:
+            Optional JSON body payload.
+
+        Returns
+        -------
+        Any
+            Parsed JSON response, or ``None`` for empty-body responses.
+        """
+        return await self._request("PUT", path, params=params, json=json)
+
+    async def _post(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> Any:
+        """Perform an authenticated POST request against the Spotify Web API.
+
+        Thin wrapper around :meth:`_request` for POST calls.
+
+        Returns ``None`` for HTTP 204 (No Content).
+
+        Parameters
+        ----------
+        path:
+            API path (e.g. ``"/users/{user_id}/playlists"``).
+        params:
+            Optional query string parameters.
+        json:
+            Optional JSON body payload.
+
+        Returns
+        -------
+        Any
+            Parsed JSON response, or ``None`` for empty-body responses.
+        """
+        return await self._request("POST", path, params=params, json=json)
+
+    async def _delete(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> Any:
+        """Perform an authenticated DELETE request against the Spotify Web API.
+
+        Thin wrapper around :meth:`_request` for DELETE calls.
+
+        Returns ``None`` for HTTP 204 (No Content).
+
+        Parameters
+        ----------
+        path:
+            API path (e.g. ``"/playlists/{id}/tracks"``).
+        params:
+            Optional query string parameters.
+        json:
+            Optional JSON body payload.
+
+        Returns
+        -------
+        Any
+            Parsed JSON response, or ``None`` for empty-body responses.
+        """
+        return await self._request("DELETE", path, params=params, json=json)
 
     # ------------------------------------------------------------------
     # Public API methods
@@ -521,4 +666,794 @@ class SpotifyClient:
         if result is None:
             # 204 is not expected here, but handle gracefully.
             return {"items": [], "cursors": {}, "next": None}
+        return result
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    async def search(
+        self,
+        query: str,
+        *,
+        types: list[str] | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        """Search the Spotify catalog.
+
+        Parameters
+        ----------
+        query:
+            Search keywords (and optional field filters, e.g. ``"artist:radiohead"``).
+        types:
+            List of item types to search.  Defaults to ``["track"]``.
+            Supported values: ``"album"``, ``"artist"``, ``"playlist"``,
+            ``"track"``, ``"show"``, ``"episode"``, ``"audiobook"``.
+        limit:
+            Maximum number of results per type (1–50, default 20).
+        offset:
+            Offset for pagination (default 0).
+        market:
+            Optional ISO 3166-1 alpha-2 country code for market filtering.
+
+        Returns
+        -------
+        dict
+            Spotify search result object.  Keys depend on requested types
+            (e.g. ``"tracks"``, ``"artists"``), each containing a paging object.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        if types is None:
+            types = ["track"]
+        params: dict[str, Any] = {
+            "q": query,
+            "type": ",".join(types),
+            "limit": limit,
+            "offset": offset,
+        }
+        if market is not None:
+            params["market"] = market
+        result = await self._get("/search", params=params)
+        if result is None:
+            return {}
+        return result
+
+    # ------------------------------------------------------------------
+    # Playback state
+    # ------------------------------------------------------------------
+
+    async def get_playback_state(self) -> dict[str, Any] | None:
+        """Get information about the user's current playback state.
+
+        Returns the full playback context including the active device, shuffle
+        and repeat modes, and the current track.
+
+        Returns
+        -------
+        dict or None
+            Spotify playback state object, or ``None`` if there is no active
+            device (HTTP 204).
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        return await self._get("/me/player")
+
+    # ------------------------------------------------------------------
+    # Playback control
+    # ------------------------------------------------------------------
+
+    async def play(
+        self,
+        *,
+        device_id: str | None = None,
+        context_uri: str | None = None,
+        uris: list[str] | None = None,
+        offset: dict[str, Any] | None = None,
+        position_ms: int | None = None,
+    ) -> None:
+        """Start or resume playback on the user's active device.
+
+        Parameters
+        ----------
+        device_id:
+            Target Spotify device ID.  Uses currently active device if omitted.
+        context_uri:
+            Spotify URI for an album, artist, or playlist to play.
+        uris:
+            List of track/episode Spotify URIs to play.
+        offset:
+            Offset into the context (e.g. ``{"position": 5}`` or
+            ``{"uri": "spotify:track:..."}``.
+        position_ms:
+            Playback start position in milliseconds.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {}
+        if device_id is not None:
+            params["device_id"] = device_id
+
+        body: dict[str, Any] = {}
+        if context_uri is not None:
+            body["context_uri"] = context_uri
+        if uris is not None:
+            body["uris"] = uris
+        if offset is not None:
+            body["offset"] = offset
+        if position_ms is not None:
+            body["position_ms"] = position_ms
+
+        await self._put("/me/player/play", params=params or None, json=body or None)
+
+    async def pause(self, *, device_id: str | None = None) -> None:
+        """Pause playback on the user's active device.
+
+        Parameters
+        ----------
+        device_id:
+            Target device ID.  Uses currently active device if omitted.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] | None = None
+        if device_id is not None:
+            params = {"device_id": device_id}
+        await self._put("/me/player/pause", params=params)
+
+    async def skip_to_next(self, *, device_id: str | None = None) -> None:
+        """Skip to the next track in the queue.
+
+        Parameters
+        ----------
+        device_id:
+            Target device ID.  Uses currently active device if omitted.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] | None = None
+        if device_id is not None:
+            params = {"device_id": device_id}
+        await self._post("/me/player/next", params=params)
+
+    async def skip_to_previous(self, *, device_id: str | None = None) -> None:
+        """Skip to the previous track or restart the current track.
+
+        Parameters
+        ----------
+        device_id:
+            Target device ID.  Uses currently active device if omitted.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] | None = None
+        if device_id is not None:
+            params = {"device_id": device_id}
+        await self._post("/me/player/previous", params=params)
+
+    async def seek_to_position(self, position_ms: int, *, device_id: str | None = None) -> None:
+        """Seek to a position in the currently playing track.
+
+        Parameters
+        ----------
+        position_ms:
+            Position in milliseconds to seek to.
+        device_id:
+            Target device ID.  Uses currently active device if omitted.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {"position_ms": position_ms}
+        if device_id is not None:
+            params["device_id"] = device_id
+        await self._put("/me/player/seek", params=params)
+
+    async def set_volume(self, volume_percent: int, *, device_id: str | None = None) -> None:
+        """Set the volume for the user's active device.
+
+        Parameters
+        ----------
+        volume_percent:
+            Volume level (0–100).
+        device_id:
+            Target device ID.  Uses currently active device if omitted.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {"volume_percent": volume_percent}
+        if device_id is not None:
+            params["device_id"] = device_id
+        await self._put("/me/player/volume", params=params)
+
+    async def set_shuffle(self, state: bool, *, device_id: str | None = None) -> None:
+        """Toggle shuffle mode on the user's active device.
+
+        Parameters
+        ----------
+        state:
+            ``True`` to enable shuffle, ``False`` to disable.
+        device_id:
+            Target device ID.  Uses currently active device if omitted.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {"state": "true" if state else "false"}
+        if device_id is not None:
+            params["device_id"] = device_id
+        await self._put("/me/player/shuffle", params=params)
+
+    async def set_repeat(self, state: str, *, device_id: str | None = None) -> None:
+        """Set the repeat mode for playback.
+
+        Parameters
+        ----------
+        state:
+            One of ``"track"`` (repeat current track), ``"context"`` (repeat
+            the current context), or ``"off"`` (turn off repeat).
+        device_id:
+            Target device ID.  Uses currently active device if omitted.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {"state": state}
+        if device_id is not None:
+            params["device_id"] = device_id
+        await self._put("/me/player/repeat", params=params)
+
+    # ------------------------------------------------------------------
+    # Queue management
+    # ------------------------------------------------------------------
+
+    async def get_queue(self) -> dict[str, Any]:
+        """Get the list of objects that make up the user's queue.
+
+        Returns
+        -------
+        dict
+            Queue object with ``currently_playing`` and ``queue`` (list of
+            tracks/episodes) keys.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        result = await self._get("/me/player/queue")
+        if result is None:
+            return {"currently_playing": None, "queue": []}
+        return result
+
+    async def add_to_queue(self, uri: str, *, device_id: str | None = None) -> None:
+        """Add an item to the end of the user's playback queue.
+
+        Parameters
+        ----------
+        uri:
+            Spotify URI of the track or episode to add.
+        device_id:
+            Target device ID.  Uses currently active device if omitted.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {"uri": uri}
+        if device_id is not None:
+            params["device_id"] = device_id
+        await self._post("/me/player/queue", params=params)
+
+    # ------------------------------------------------------------------
+    # Top items and recommendations
+    # ------------------------------------------------------------------
+
+    async def get_top_items(
+        self,
+        item_type: str,
+        *,
+        time_range: str = "medium_term",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Get the user's top artists or tracks based on calculated affinity.
+
+        Parameters
+        ----------
+        item_type:
+            Either ``"artists"`` or ``"tracks"``.
+        time_range:
+            One of ``"short_term"`` (4 weeks), ``"medium_term"`` (6 months, default),
+            or ``"long_term"`` (all time).
+        limit:
+            Maximum number of items to return (1–50, default 20).
+        offset:
+            Offset for pagination (default 0).
+
+        Returns
+        -------
+        dict
+            Spotify paging object with ``items``, ``total``, ``limit``, ``offset``
+            and pagination cursors.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {
+            "time_range": time_range,
+            "limit": limit,
+            "offset": offset,
+        }
+        result = await self._get(f"/me/top/{item_type}", params=params)
+        if result is None:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+        return result
+
+    async def get_recommendations(
+        self,
+        *,
+        seed_artists: list[str] | None = None,
+        seed_genres: list[str] | None = None,
+        seed_tracks: list[str] | None = None,
+        limit: int = 20,
+        **audio_features: Any,
+    ) -> dict[str, Any]:
+        """Get track recommendations based on seeds and optional audio feature tuning.
+
+        At least one seed (artists, genres, or tracks) must be provided; the
+        combined total must not exceed 5 seed values.
+
+        This method gracefully handles 403/404 responses (e.g., the endpoint
+        is not available in the user's market or the user lacks the required
+        subscription) and returns an empty recommendations object instead of
+        raising.
+
+        Parameters
+        ----------
+        seed_artists:
+            List of Spotify artist IDs (up to 5 combined with other seeds).
+        seed_genres:
+            List of genre names available from the Recommendations API.
+        seed_tracks:
+            List of Spotify track IDs.
+        limit:
+            Number of recommended tracks to return (1–100, default 20).
+        **audio_features:
+            Optional audio feature constraints as keyword arguments, e.g.
+            ``min_energy=0.4``, ``target_valence=0.8``.  See the Spotify
+            Recommendations API docs for the full list of supported attributes.
+
+        Returns
+        -------
+        dict
+            Spotify recommendations object with a ``tracks`` list.  Returns
+            ``{"tracks": []}`` on 403/404.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes (not 403/404).
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if seed_artists:
+            params["seed_artists"] = ",".join(seed_artists)
+        if seed_genres:
+            params["seed_genres"] = ",".join(seed_genres)
+        if seed_tracks:
+            params["seed_tracks"] = ",".join(seed_tracks)
+        params.update(audio_features)
+
+        try:
+            result = await self._get("/recommendations", params=params)
+        except SpotifyAPIError as exc:
+            if exc.status_code in (403, 404):
+                logger.warning(
+                    "get_recommendations: gracefully handling HTTP %d — "
+                    "endpoint unavailable in this market or requires premium",
+                    exc.status_code,
+                )
+                return {"tracks": []}
+            raise
+        if result is None:
+            return {"tracks": []}
+        return result
+
+    # ------------------------------------------------------------------
+    # Playlists
+    # ------------------------------------------------------------------
+
+    async def get_user_playlists(self, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """Get a list of the current user's playlists.
+
+        Parameters
+        ----------
+        limit:
+            Maximum number of playlists to return (1–50, default 50).
+        offset:
+            Offset for pagination (default 0).
+
+        Returns
+        -------
+        dict
+            Spotify paging object with playlist summaries in ``items``.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        result = await self._get("/me/playlists", params=params)
+        if result is None:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+        return result
+
+    async def get_playlist(
+        self, playlist_id: str, *, fields: str | None = None, market: str | None = None
+    ) -> dict[str, Any]:
+        """Get a playlist by its Spotify ID.
+
+        Parameters
+        ----------
+        playlist_id:
+            Spotify playlist ID.
+        fields:
+            Optional comma-separated list of fields to include in the response
+            (e.g. ``"name,tracks.items(track(name,artists))"``.
+        market:
+            Optional ISO 3166-1 alpha-2 country code.
+
+        Returns
+        -------
+        dict
+            Spotify playlist object.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {}
+        if fields is not None:
+            params["fields"] = fields
+        if market is not None:
+            params["market"] = market
+        result = await self._get(f"/playlists/{playlist_id}", params=params or None)
+        if result is None:
+            raise SpotifyAPIError(204, f"GET /playlists/{playlist_id} returned 204 No Content")
+        return result
+
+    async def create_playlist(
+        self,
+        user_id: str,
+        name: str,
+        *,
+        public: bool = True,
+        collaborative: bool = False,
+        description: str = "",
+    ) -> dict[str, Any]:
+        """Create a new playlist for the specified user.
+
+        Parameters
+        ----------
+        user_id:
+            Spotify user ID who will own the playlist.
+        name:
+            Name of the new playlist.
+        public:
+            Whether the playlist is public (default ``True``).
+        collaborative:
+            Whether the playlist is collaborative (default ``False``).
+        description:
+            Playlist description (default empty).
+
+        Returns
+        -------
+        dict
+            Newly created Spotify playlist object.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        body: dict[str, Any] = {
+            "name": name,
+            "public": public,
+            "collaborative": collaborative,
+            "description": description,
+        }
+        result = await self._post(f"/users/{user_id}/playlists", json=body)
+        if result is None:
+            raise SpotifyAPIError(204, f"POST /users/{user_id}/playlists returned 204 No Content")
+        return result
+
+    async def add_tracks_to_playlist(
+        self,
+        playlist_id: str,
+        uris: list[str],
+        *,
+        position: int | None = None,
+    ) -> dict[str, Any]:
+        """Add one or more tracks/episodes to a playlist.
+
+        Parameters
+        ----------
+        playlist_id:
+            Spotify playlist ID.
+        uris:
+            List of Spotify track or episode URIs to add (max 100 per request).
+        position:
+            Zero-based position in the playlist at which to insert the tracks.
+            Appends to the end if omitted.
+
+        Returns
+        -------
+        dict
+            Object with a ``snapshot_id`` key representing the new playlist state.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        body: dict[str, Any] = {"uris": uris}
+        if position is not None:
+            body["position"] = position
+        result = await self._post(f"/playlists/{playlist_id}/tracks", json=body)
+        if result is None:
+            return {"snapshot_id": ""}
+        return result
+
+    async def remove_tracks_from_playlist(
+        self,
+        playlist_id: str,
+        uris: list[str],
+        *,
+        snapshot_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove one or more tracks from a playlist.
+
+        Parameters
+        ----------
+        playlist_id:
+            Spotify playlist ID.
+        uris:
+            List of Spotify track URIs to remove.
+        snapshot_id:
+            Optional playlist snapshot ID to guard against concurrent modifications.
+
+        Returns
+        -------
+        dict
+            Object with a ``snapshot_id`` key.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        body: dict[str, Any] = {"tracks": [{"uri": uri} for uri in uris]}
+        if snapshot_id is not None:
+            body["snapshot_id"] = snapshot_id
+        result = await self._delete(f"/playlists/{playlist_id}/tracks", json=body)
+        if result is None:
+            return {"snapshot_id": ""}
+        return result
+
+    # ------------------------------------------------------------------
+    # Saved tracks (library)
+    # ------------------------------------------------------------------
+
+    async def get_saved_tracks(
+        self, *, limit: int = 50, offset: int = 0, market: str | None = None
+    ) -> dict[str, Any]:
+        """Get a list of the tracks saved in the user's 'Liked Songs'.
+
+        Parameters
+        ----------
+        limit:
+            Maximum number of items to return (1–50, default 50).
+        offset:
+            Offset for pagination (default 0).
+        market:
+            Optional ISO 3166-1 alpha-2 country code.
+
+        Returns
+        -------
+        dict
+            Spotify paging object with saved track objects in ``items``.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if market is not None:
+            params["market"] = market
+        result = await self._get("/me/tracks", params=params)
+        if result is None:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+        return result
+
+    async def save_tracks(self, ids: list[str]) -> None:
+        """Save one or more tracks to the current user's library.
+
+        Parameters
+        ----------
+        ids:
+            List of Spotify track IDs to save (max 50 per request).
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        await self._put("/me/tracks", json={"ids": ids})
+
+    async def remove_saved_tracks(self, ids: list[str]) -> None:
+        """Remove one or more tracks from the current user's library.
+
+        Parameters
+        ----------
+        ids:
+            List of Spotify track IDs to remove (max 50 per request).
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        await self._delete("/me/tracks", json={"ids": ids})
+
+    async def check_saved_tracks(self, ids: list[str]) -> list[bool]:
+        """Check if one or more tracks are saved in the user's library.
+
+        Parameters
+        ----------
+        ids:
+            List of Spotify track IDs to check (max 50 per request).
+
+        Returns
+        -------
+        list of bool
+            Ordered list of booleans corresponding to each ID; ``True`` if the
+            track is saved.
+
+        Raises
+        ------
+        SpotifyAuthError
+            If authentication fails and cannot be refreshed.
+        SpotifyRateLimitError
+            If the API returns HTTP 429.
+        SpotifyAPIError
+            For other unexpected HTTP error status codes.
+        """
+        params: dict[str, Any] = {"ids": ",".join(ids)}
+        result = await self._get("/me/tracks/contains", params=params)
+        if result is None:
+            return [False] * len(ids)
+        # Spotify returns a JSON array (list[bool]), not a dict.
         return result
