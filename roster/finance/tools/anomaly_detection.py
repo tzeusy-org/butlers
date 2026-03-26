@@ -381,20 +381,6 @@ async def anomaly_scan(
         b["category"]: b["weekly_velocity"] for b in baseline_result["category_baselines"]
     }
 
-    # Fetch all merchants ever seen in the baseline window (for new-merchant detection).
-    known_merchants_rows = await pool.fetch(
-        f"""
-        SELECT DISTINCT merchant
-        FROM transactions
-        WHERE direction = 'debit'
-          AND posted_at >= $1
-          {deleted_filter}
-          AND merchant IS NOT NULL
-        """,
-        window_start,
-    )
-    known_merchants: set[str] = {row["merchant"] for row in known_merchants_rows}
-
     # Fetch recent transactions to scan.
     recent_rows = await pool.fetch(
         f"""
@@ -411,6 +397,24 @@ async def anomaly_scan(
 
     scanned = len(recent_rows)
     anomalies: list[dict[str, Any]] = []
+
+    # Pre-fetch first-seen date for every merchant in the baseline window to
+    # avoid an N+1 query inside the transaction loop (new-merchant detection).
+    first_seen_rows = await pool.fetch(
+        f"""
+        SELECT merchant, MIN(posted_at) AS first_seen
+        FROM transactions
+        WHERE direction = 'debit'
+          AND posted_at >= $1
+          {deleted_filter}
+          AND merchant IS NOT NULL
+        GROUP BY merchant
+        """,
+        window_start,
+    )
+    first_seen_by_merchant: dict[str, Any] = {
+        r["merchant"]: r["first_seen"] for r in first_seen_rows
+    }
 
     # --- Amount anomaly per transaction ---
     for row in recent_rows:
@@ -429,11 +433,7 @@ async def anomaly_scan(
                         "merchant": merchant,
                         "amount": str(Decimal(str(row["amount"])).quantize(Decimal("0.01"))),
                         "currency": row["currency"],
-                        "posted_at": (
-                            row["posted_at"].isoformat()
-                            if hasattr(row["posted_at"], "isoformat")
-                            else str(row["posted_at"])
-                        ),
+                        "posted_at": row["posted_at"].isoformat(),
                         "type": "amount_anomaly",
                         "severity": severity,
                         "explanation": (
@@ -445,39 +445,18 @@ async def anomaly_scan(
                 )
 
         # --- New merchant ---
-        elif merchant not in known_merchants or b is None:
-            # known_merchants includes this txn's merchant if it appeared in the
-            # window; "new" means it first appeared within the scan window itself.
-            # Re-check: if the merchant has no baseline entry (too few historical
-            # points) AND it appears for the first time in the scan window.
-            has_prior = await pool.fetchval(
-                f"""
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM transactions
-                    WHERE merchant = $1
-                      AND direction = 'debit'
-                      AND posted_at >= $2
-                      AND posted_at < $3
-                      {deleted_filter}
-                )
-                """,
-                merchant,
-                window_start,
-                scan_start,
-            )
-            if not has_prior:
+        elif b is None:
+            # Merchant has too few historical transactions for a baseline.
+            # Flag it as new if its first appearance falls within the scan window.
+            first_seen = first_seen_by_merchant.get(merchant)
+            if first_seen is not None and first_seen >= scan_start:
                 anomalies.append(
                     {
                         "transaction_id": row["id"],
                         "merchant": merchant,
                         "amount": str(Decimal(str(row["amount"])).quantize(Decimal("0.01"))),
                         "currency": row["currency"],
-                        "posted_at": (
-                            row["posted_at"].isoformat()
-                            if hasattr(row["posted_at"], "isoformat")
-                            else str(row["posted_at"])
-                        ),
+                        "posted_at": row["posted_at"].isoformat(),
                         "type": "new_merchant",
                         "severity": "low",
                         "explanation": (
@@ -623,16 +602,8 @@ async def detect_duplicates(
                 "merchant": row["merchant"],
                 "amount": str(Decimal(str(row["amount"])).quantize(Decimal("0.01"))),
                 "currency": row["currency"],
-                "posted_at": (
-                    row["posted_at"].isoformat()
-                    if hasattr(row["posted_at"], "isoformat")
-                    else str(row["posted_at"])
-                ),
-                "posted_date": (
-                    row["posted_at"].date()
-                    if hasattr(row["posted_at"], "date")
-                    else row["posted_at"]
-                ),
+                "posted_at": row["posted_at"].isoformat(),
+                "posted_date": row["posted_at"].date(),
             }
         )
 
@@ -653,11 +624,7 @@ async def detect_duplicates(
 
                 date1 = t1["posted_date"]
                 date2 = t2["posted_date"]
-                day_diff = (
-                    abs((date2 - date1).days)
-                    if hasattr(date2 - date1, "days")
-                    else abs(int((date2 - date1).total_seconds() / 86400))
-                )
+                day_diff = abs((date2 - date1).days)
 
                 if day_diff <= _DUPLICATE_DAY_WINDOW:
                     seen_pairs.add(pair_key)
