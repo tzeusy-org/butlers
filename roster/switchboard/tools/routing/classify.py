@@ -134,7 +134,18 @@ def _build_routing_guidance(butlers: list[dict[str, Any]]) -> str:
             "- For calendar/scheduling intents, prefer butlers that list calendar capability."
         )
 
-    if "health" in butler_names:
+    if "lifestyle" in butler_names:
+        lines.append(
+            "- Food preferences, favorite cuisines, restaurant visits, recipes, and\n"
+            "  entertainment (music, TV, books, games, podcasts), hobbies, and daily\n"
+            "  routines belong to the lifestyle butler."
+        )
+        if "health" in butler_names:
+            lines.append(
+                "- Nutrition tracking (calories, macros, diet goals), health metrics,\n"
+                "  and meal logging belong to the health butler, not lifestyle."
+            )
+    elif "health" in butler_names:
         lines.append(
             "- Food preferences, dietary habits, meal mentions, and anything\n"
             "  related to eating or nutrition belong to the health butler."
