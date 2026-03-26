@@ -230,9 +230,7 @@ services:
   connector-whatsapp-user:
     build:
       context: .
-      dockerfile: Dockerfile
-      args:
-        EXTRAS: whatsapp
+      dockerfile: Dockerfile.whatsapp
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/whatsapp_user", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.whatsapp_user_client"]
     command: []
     environment:
