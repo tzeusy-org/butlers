@@ -7,7 +7,7 @@ Butlers can passively ingest Spotify listening data via the existing connector, 
 - **New `spotify` module** (`src/butlers/modules/spotify.py`): Implements the `Module` base class, registers MCP tools for playlist management, playback control, library operations, and catalog search. Reuses the existing `SpotifyClient` (extended with write methods).
 - **Extended `SpotifyClient`**: Add PUT/POST/DELETE methods for playback control, playlist CRUD, library modification, and search. The existing GET-only client becomes a full read/write API surface.
 - **Expanded OAuth scopes**: The OAuth PKCE flow currently requests only `user-read-playback-state`, `user-read-recently-played`, `user-top-read`. Add write scopes: `playlist-modify-public`, `playlist-modify-private`, `playlist-read-private`, `playlist-read-collaborative`, `user-modify-playback-state`, `user-library-read`, `user-library-modify`. Existing tokens will need re-authorization to pick up new scopes.
-- **Module configuration in butler.toml**: Butlers that want Spotify tools add `[modules.spotify]` to their config. The module resolves credentials from `CredentialStore` (same `spotify` category as the connector).
+- **Module configuration in butler.toml**: The Lifestyle butler (primary home) enables `[modules.spotify]` in its config. Other butlers that want Spotify tools can also add it. The module resolves credentials from `CredentialStore` (same `spotify` category as the connector).
 - **Re-authorization UX**: Dashboard shows a "Re-authorize" prompt when connected tokens lack the required scopes.
 
 ## Capabilities

@@ -43,8 +43,8 @@
 
 ## 5. Butler Configuration
 
-- [ ] 5.1 Add `[modules.spotify]` section to the General butler's `butler.toml` (primary butler that benefits from Spotify tools)
-- [ ] 5.2 Document the module in the General butler's MANIFESTO.md or CLAUDE.md as appropriate
+- [ ] 5.1 Add `[modules.spotify]` section to the Lifestyle butler's `roster/lifestyle/butler.toml` (primary butler that owns music/entertainment domain)
+- [ ] 5.2 Document Spotify tools in the Lifestyle butler's CLAUDE.md tool inventory
 
 ## 6. Integration Testing
 

@@ -17,7 +17,7 @@ Guide for creating new butlers that integrate seamlessly with the Butlers framew
 ## Prerequisites
 
 Before creating a new butler, confirm:
-- The butler has a clear, distinct domain that doesn't overlap with existing butlers: general (catch-all), health (medical/nutrition), relationship (personal CRM), messenger (delivery plane), switchboard (router)
+- The butler has a clear, distinct domain that doesn't overlap with existing butlers: general (catch-all), health (medical/nutrition), relationship (personal CRM), finance (financial signals), education (learning), travel (trip planning), home (smart home), lifestyle (taste/entertainment/routines), messenger (delivery plane), switchboard (router)
 - The butler's purpose can't be served by extending an existing butler
 - The CLAUDE.md project instructions have been read and understood
 - Review `docs/roles/base_butler.md` for the full base butler contract (lifecycle, tool surface, module system, persistence, routing, observability). Note: section 10 still references per-butler databases; the actual codebase uses shared DB with per-butler schemas — follow the butler.toml patterns in this skill, not the base spec's isolation section.
