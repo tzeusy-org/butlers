@@ -18,11 +18,12 @@ depends_on = None
 
 def upgrade() -> None:
     # -------------------------------------------------------------------------
-    # Extensions (installed in public so all schemas share one namespace)
+    # Extensions — the DB init script pre-installs these in public; this is
+    # a safety net for fresh environments.
     # -------------------------------------------------------------------------
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
-    op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public')
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public")
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
 
     # =========================================================================
     # 1. episodes

@@ -696,20 +696,9 @@ def _apply_runtime_acl() -> None:
 
 
 def upgrade() -> None:
-    # Ensure required extensions are available.
-    # Use best-effort: try SCHEMA public first (requires superuser or
-    # CREATE privilege on public), fall back to unqualified CREATE.
-    for ext in ("pgcrypto", "uuid-ossp", "vector", "pg_trgm"):
-        op.execute(f"""
-            DO $$
-            BEGIN
-                EXECUTE 'CREATE EXTENSION IF NOT EXISTS "{ext}" SCHEMA public';
-            EXCEPTION
-                WHEN insufficient_privilege THEN
-                    EXECUTE 'CREATE EXTENSION IF NOT EXISTS "{ext}"';
-            END
-            $$;
-        """)
+    # pgcrypto only — vector, uuid-ossp, and pg_trgm are installed by the
+    # memory module migration (which has CREATE EXTENSION privilege).
+    op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
 
     _create_required_schemas()
     _create_ingestion_events()
