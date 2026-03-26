@@ -61,7 +61,9 @@ class StubModuleA(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -91,7 +93,9 @@ class StubModuleB(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -324,7 +328,9 @@ class TestInitModuleRuntimeStates:
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
 
         class FailingModuleA(StubModuleA):
-            async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+            async def on_startup(
+                self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+            ) -> None:
                 raise RuntimeError("startup exploded")
 
         registry = _make_registry(FailingModuleA)
@@ -376,7 +382,9 @@ class TestInitModuleRuntimeStates:
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
 
         class FailingModuleA(StubModuleA):
-            async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+            async def on_startup(
+                self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+            ) -> None:
                 raise RuntimeError("boom")
 
         registry = _make_registry(FailingModuleA)
@@ -446,7 +454,9 @@ class TestSelfHealing:
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
 
         class FailingModuleA(StubModuleA):
-            async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+            async def on_startup(
+                self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+            ) -> None:
                 raise RuntimeError("still broken")
 
         registry = _make_registry(FailingModuleA)
@@ -486,7 +496,9 @@ class TestGetModuleStates:
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
 
         class FailingModuleA(StubModuleA):
-            async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+            async def on_startup(
+                self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+            ) -> None:
                 raise RuntimeError("db connection refused")
 
         registry = _make_registry(FailingModuleA)
@@ -553,7 +565,9 @@ class TestSetModuleEnabled:
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
 
         class FailingModuleA(StubModuleA):
-            async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+            async def on_startup(
+                self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+            ) -> None:
                 raise RuntimeError("startup failed")
 
         registry = _make_registry(FailingModuleA)

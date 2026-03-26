@@ -153,7 +153,9 @@ class SelfHealingModule(Module):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Run recovery and cleanup before accepting dispatch calls.
 
         Transitions stale ``investigating`` rows to ``timeout``/``failed``

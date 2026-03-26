@@ -34,6 +34,7 @@ class FinanceModule(Module):
 
     def __init__(self) -> None:
         self._db: Any = None
+        self.blob_store: Any = None
 
     @property
     def name(self) -> str:
@@ -50,13 +51,21 @@ class FinanceModule(Module):
     def migration_revisions(self) -> str | None:
         return None  # finance tables already exist via separate migrations
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
-        """Store the Database reference for later pool access."""
+    async def on_startup(
+        self,
+        config: Any,
+        db: Any,
+        credential_store: Any = None,
+        blob_store: Any = None,
+    ) -> None:
+        """Store the Database reference and blob store for later pool/storage access."""
         self._db = db
+        self.blob_store = blob_store
 
     async def on_shutdown(self) -> None:
         """Clear state references."""
         self._db = None
+        self.blob_store = None
 
     def _get_pool(self):
         """Return the asyncpg pool, raising if not initialised."""

@@ -649,18 +649,20 @@ def register_tools(mcp: Any, module: Any) -> None:
 
         @mcp.tool()
         async def import_transactions(
-            file_path: str,
+            storage_ref: str,
             account_id: str | None = None,
             currency: str = "USD",
             column_map: str | None = None,
             dry_run: bool = False,
         ) -> dict[str, Any]:
-            """Import transactions from a bank CSV export file.
+            """Import transactions from a bank CSV export stored in blob storage.
 
             Automatically detects Chase, Amex, Capital One, and generic CSV formats.
             Normalizes dates, amounts, and merchant names before ingestion.
 
-            file_path: Path to the CSV file to import.
+            storage_ref: BlobStore reference to the CSV file (e.g. 's3://bucket/path/file.csv').
+              Upload the CSV first via the dashboard or attachment ingestion flow, then pass
+              the returned storage_ref here.
             account_id: Account to associate all imported transactions with.
             currency: ISO-4217 currency code for the import (default "USD").
             column_map: JSON string — optional column name overrides for custom CSV formats.
@@ -668,9 +670,18 @@ def register_tools(mcp: Any, module: Any) -> None:
 
             Returns: {total, imported, skipped, errors, import_batch_id, detected_format}
             """
+            if module.blob_store is None:
+                return {
+                    "error": "Blob storage is not configured. "
+                    "Set BLOB_S3_ENDPOINT_URL, BLOB_S3_BUCKET, BLOB_S3_ACCESS_KEY_ID, "
+                    "and BLOB_S3_SECRET_ACCESS_KEY in the dashboard secrets UI (/secrets) "
+                    "to enable CSV import from blob storage.",
+                    "status": "blob_store_not_configured",
+                }
             return await _data_import.import_transactions(
                 module._get_pool(),
-                file_path=file_path,
+                blob_store=module.blob_store,
+                storage_ref=storage_ref,
                 account_id=account_id,
                 currency=currency,
                 column_map=_parse_metadata(column_map),

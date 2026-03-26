@@ -56,7 +56,9 @@ class SwitchboardModule(Module):
     def migration_revisions(self) -> str | None:
         return None  # switchboard tables already exist via separate migrations
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Store the Database reference for later pool access."""
         self._db = db
 

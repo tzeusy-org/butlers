@@ -475,7 +475,9 @@ class ApprovalsModule(Module):
                 actor=_actor_from_access_token(get_access_token()),
             )
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Initialize config and store db reference."""
         self._config = (
             config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))

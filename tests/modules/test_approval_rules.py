@@ -758,7 +758,9 @@ class TestSuggestConstraints:
             def migration_revisions(self) -> str | None:
                 return None
 
-            async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+            async def on_startup(
+                self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+            ) -> None:
                 pass
 
             async def on_shutdown(self) -> None:

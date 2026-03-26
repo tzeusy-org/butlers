@@ -65,7 +65,9 @@ class HealthModule(Module):
         if calendar_mod is not None:
             self.set_calendar_module(calendar_mod)
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Store the Database reference for later pool access."""
         self._db = db
 

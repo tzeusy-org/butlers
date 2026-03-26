@@ -378,7 +378,9 @@ class MetricsModule(Module):
 
             return {"ok": True}
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Store config, derive butler name, and restore instrument cache.
 
         Derives ``_butler_name`` from ``db.schema`` (hyphens → underscores),
