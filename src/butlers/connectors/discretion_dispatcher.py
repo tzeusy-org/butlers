@@ -3,7 +3,7 @@
 Provides a lightweight, concurrent-limited wrapper around the RuntimeAdapter
 registry specifically for single-turn discretion inference.  Callers supply a
 prompt and optional system prompt; the dispatcher resolves the appropriate
-model from ``shared.model_catalog`` at the ``Complexity.DISCRETION`` tier,
+model from ``public.model_catalog`` at the ``Complexity.DISCRETION`` tier,
 lazily instantiates the matching adapter, and invokes it with no tools and
 a strict timeout.
 
@@ -54,7 +54,7 @@ class DiscretionDispatcher:
     ----------
     pool:
         An asyncpg connection pool used to resolve the discretion model from
-        ``shared.model_catalog``.
+        ``public.model_catalog``.
     butler_name:
         The butler identity name forwarded to ``resolve_model`` for
         per-butler overrides.  Defaults to ``"__discretion__"`` which
@@ -132,7 +132,7 @@ class DiscretionDispatcher:
         return adapter
 
     async def _resolve_provider_config(self, model_id: str) -> dict[str, dict] | None:
-        """Look up provider base URL from ``shared.provider_config``.
+        """Look up provider base URL from ``public.provider_config``.
 
         When *model_id* starts with ``ollama/``, queries the DB for the
         Ollama provider's base URL and returns the OpenCode-compatible
@@ -145,7 +145,7 @@ class DiscretionDispatcher:
 
         try:
             row = await self._pool.fetchrow(
-                "SELECT config FROM shared.provider_config "
+                "SELECT config FROM public.provider_config "
                 "WHERE provider_type = $1 AND enabled = true",
                 provider_type,
             )
@@ -172,7 +172,7 @@ class DiscretionDispatcher:
         """Invoke the discretion-tier model with *prompt* and return the response text.
 
         Resolution order:
-        1. Query ``shared.model_catalog`` for ``Complexity.DISCRETION``.
+        1. Query ``public.model_catalog`` for ``Complexity.DISCRETION``.
         2. Raise ``RuntimeError`` if no enabled catalog entry matches.
         3. Acquire the concurrency semaphore.
         4. Invoke the adapter with ``asyncio.wait_for`` enforcing ``timeout_s``.
@@ -193,7 +193,7 @@ class DiscretionDispatcher:
         Raises
         ------
         RuntimeError
-            If ``shared.model_catalog`` contains no enabled entry for the
+            If ``public.model_catalog`` contains no enabled entry for the
             ``discretion`` complexity tier.
         asyncio.TimeoutError
             If the adapter invocation exceeds ``timeout_s``.
@@ -201,7 +201,7 @@ class DiscretionDispatcher:
         catalog_result = await resolve_model(self._pool, self._butler_name, Complexity.DISCRETION)
         if catalog_result is None:
             raise RuntimeError(
-                "No discretion model configured in shared.model_catalog. "
+                "No discretion model configured in public.model_catalog. "
                 "Add an enabled entry with complexity_tier='discretion'."
             )
 
@@ -221,7 +221,7 @@ class DiscretionDispatcher:
             )
 
         # Resolve provider config for models using external providers
-        # (e.g. ollama/ prefix needs the base URL from shared.provider_config)
+        # (e.g. ollama/ prefix needs the base URL from public.provider_config)
         provider_config = await self._resolve_provider_config(model_id)
         adapter = self._get_or_create_adapter(runtime_type, provider_config)
 

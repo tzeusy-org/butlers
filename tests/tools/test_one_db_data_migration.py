@@ -321,7 +321,7 @@ def test_run_migrates_and_verifies_core_and_shared_tables(
     asyncio.run(_seed_shared_rows(source_shared, "public"))
 
     asyncio.run(_create_core_and_shared_tables(target_db, "general"))
-    asyncio.run(_create_shared_table(target_db, "shared"))
+    asyncio.run(_create_shared_table(target_db, "public"))
 
     report_path = tmp_path / "migration-report.json"
     env = os.environ.copy()
@@ -357,7 +357,7 @@ def test_run_migrates_and_verifies_core_and_shared_tables(
     assert asyncio.run(_count_rows(target_db, "general", "scheduled_tasks")) == 1
     assert asyncio.run(_count_rows(target_db, "general", "sessions")) == 1
     assert asyncio.run(_count_rows(target_db, "general", "route_inbox")) == 1
-    assert asyncio.run(_count_rows(target_db, "shared", "butler_secrets")) == 1
+    assert asyncio.run(_count_rows(target_db, "public", "butler_secrets")) == 1
 
 
 def test_verify_fails_loudly_on_mismatch(postgres_container, tmp_path: Path) -> None:

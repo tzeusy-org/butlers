@@ -2,18 +2,18 @@
 
 ## Purpose
 
-The memory discovery catalog defines the cross-butler searchable index of memory items via `shared.memory_catalog`, including the table schema, access grants, write-behind behavior on memory store operations, cross-butler search capabilities, and the exclusion of episodes from the catalog.
+The memory discovery catalog defines the cross-butler searchable index of memory items via `public.memory_catalog`, including the table schema, access grants, write-behind behavior on memory store operations, cross-butler search capabilities, and the exclusion of episodes from the catalog.
 
 ## Requirements
 
-### Requirement: Shared memory discovery catalog table
+### Requirement: Public memory discovery catalog table
 
-A `shared.memory_catalog` table SHALL provide a cross-butler searchable index of memory items. The catalog stores searchable summaries with provenance pointers back to the owning butler schema — it is a discovery index, NOT a canonical store. Canonical memory data remains in each butler's local schema.
+A `public.memory_catalog` table SHALL provide a cross-butler searchable index of memory items. The catalog stores searchable summaries with provenance pointers back to the owning butler schema — it is a discovery index, NOT a canonical store. Canonical memory data remains in each butler's local schema.
 
 #### Scenario: Memory catalog table schema
 
 - **WHEN** the shared discovery catalog migration runs
-- **THEN** a `shared.memory_catalog` table MUST be created with columns:
+- **THEN** a `public.memory_catalog` table MUST be created with columns:
   - `id` (UUID PK DEFAULT gen_random_uuid())
   - `tenant_id` (TEXT NOT NULL)
   - `source_schema` (TEXT NOT NULL) — the owning butler's schema name
@@ -25,8 +25,8 @@ A `shared.memory_catalog` table SHALL provide a cross-butler searchable index of
   - `search_text` (TEXT NOT NULL) — text for full-text search indexing
   - `embedding` (vector(384)) — semantic search vector
   - `search_vector` (tsvector) — PostgreSQL full-text search vector
-  - `entity_id` (UUID nullable, FK to shared.entities ON DELETE SET NULL)
-  - `object_entity_id` (UUID nullable, FK to shared.entities ON DELETE SET NULL)
+  - `entity_id` (UUID nullable, FK to public.entities ON DELETE SET NULL)
+  - `object_entity_id` (UUID nullable, FK to public.entities ON DELETE SET NULL)
   - `predicate` (TEXT nullable)
   - `scope` (TEXT nullable)
   - `valid_at` (TIMESTAMPTZ nullable)
@@ -49,19 +49,19 @@ A `shared.memory_catalog` table SHALL provide a cross-butler searchable index of
 
 ---
 
-### Requirement: Butler roles have narrow grants on shared.memory_catalog
+### Requirement: Butler roles have narrow grants on public.memory_catalog
 
-Butler database roles SHALL have `INSERT` and `UPDATE` grants on `shared.memory_catalog` only (not broader shared schema grants). This enables direct catalog writes without routing through Switchboard.
+Butler database roles SHALL have `INSERT` and `UPDATE` grants on `public.memory_catalog` only (not broader public schema grants). This enables direct catalog writes without routing through Switchboard.
 
 #### Scenario: Butler can insert catalog entries
 
 - **WHEN** a butler stores a new fact or rule
-- **THEN** the butler's database role MUST be able to INSERT a corresponding row into `shared.memory_catalog`
+- **THEN** the butler's database role MUST be able to INSERT a corresponding row into `public.memory_catalog`
 
 #### Scenario: Butler can update catalog entries
 
 - **WHEN** a butler's fact is superseded, expired, or retracted
-- **THEN** the butler's database role MUST be able to UPDATE the corresponding `shared.memory_catalog` row
+- **THEN** the butler's database role MUST be able to UPDATE the corresponding `public.memory_catalog` row
 
 #### Scenario: Butler cannot delete other butlers' catalog entries
 
@@ -71,26 +71,26 @@ Butler database roles SHALL have `INSERT` and `UPDATE` grants on `shared.memory_
 #### Scenario: All existing butler roles receive grants
 
 - **WHEN** the catalog migration runs
-- **THEN** all butler roles listed in the migration's role array MUST receive `GRANT INSERT, UPDATE ON shared.memory_catalog`
+- **THEN** all butler roles listed in the migration's role array MUST receive `GRANT INSERT, UPDATE ON public.memory_catalog`
 - **AND** the migration MUST follow the same pattern as `core_014` for butler role enumeration
 
 ---
 
 ### Requirement: Catalog write-behind on memory store
 
-When a fact or rule is stored or updated, the storage layer SHALL write a corresponding entry to `shared.memory_catalog`. Catalog writes are best-effort — a failure MUST NOT prevent the canonical memory from being stored.
+When a fact or rule is stored or updated, the storage layer SHALL write a corresponding entry to `public.memory_catalog`. Catalog writes are best-effort — a failure MUST NOT prevent the canonical memory from being stored.
 
 #### Scenario: Fact stored triggers catalog upsert
 
 - **WHEN** `store_fact` successfully inserts a new fact
-- **THEN** a catalog entry MUST be upserted (INSERT ... ON CONFLICT (source_schema, source_table, source_id) DO UPDATE) into `shared.memory_catalog` with the fact's searchable fields
+- **THEN** a catalog entry MUST be upserted (INSERT ... ON CONFLICT (source_schema, source_table, source_id) DO UPDATE) into `public.memory_catalog` with the fact's searchable fields
 - **AND** the `title` MUST be formatted as `"{subject} {predicate}"`
 - **AND** the `search_text` MUST be the same searchable text used for the fact's tsvector
 
 #### Scenario: Rule stored triggers catalog upsert
 
 - **WHEN** `store_rule` successfully inserts a new rule
-- **THEN** a catalog entry MUST be upserted into `shared.memory_catalog`
+- **THEN** a catalog entry MUST be upserted into `public.memory_catalog`
 - **AND** the `title` MUST be the first 100 characters of the rule's content
 - **AND** the `search_text` MUST be the rule's content
 
@@ -102,7 +102,7 @@ When a fact or rule is stored or updated, the storage layer SHALL write a corres
 
 #### Scenario: Catalog write failure does not block canonical store
 
-- **WHEN** the catalog INSERT/UPDATE fails (e.g., shared schema unavailable, permission error)
+- **WHEN** the catalog INSERT/UPDATE fails (e.g., public schema unavailable, permission error)
 - **THEN** the error MUST be logged as a warning
 - **AND** the canonical fact/rule in the butler's local schema MUST still be committed successfully
 - **AND** the catalog entry can be reconciled later by a background repair job
@@ -111,25 +111,25 @@ When a fact or rule is stored or updated, the storage layer SHALL write a corres
 
 ### Requirement: Cross-butler search via catalog
 
-A search function SHALL query `shared.memory_catalog` to discover memory items across all butlers. Results include provenance information for full retrieval from the owning butler's schema.
+A search function SHALL query `public.memory_catalog` to discover memory items across all butlers. Results include provenance information for full retrieval from the owning butler's schema.
 
 #### Scenario: Cross-butler semantic search
 
 - **WHEN** a cross-butler search is performed with a query embedding
-- **THEN** the search MUST query `shared.memory_catalog` using cosine similarity on the `embedding` column
+- **THEN** the search MUST query `public.memory_catalog` using cosine similarity on the `embedding` column
 - **AND** results MUST be filtered by `tenant_id`
 - **AND** each result MUST include `source_schema`, `source_table`, `source_id`, and `source_butler` for provenance
 
 #### Scenario: Cross-butler keyword search
 
 - **WHEN** a cross-butler search is performed with a text query
-- **THEN** the search MUST query `shared.memory_catalog` using `search_vector @@ plainto_tsquery`
+- **THEN** the search MUST query `public.memory_catalog` using `search_vector @@ plainto_tsquery`
 - **AND** results MUST be filtered by `tenant_id`
 
 #### Scenario: Cross-butler hybrid search
 
 - **WHEN** a cross-butler search is performed in hybrid mode
-- **THEN** both semantic and keyword search MUST be executed against `shared.memory_catalog`
+- **THEN** both semantic and keyword search MUST be executed against `public.memory_catalog`
 - **AND** results MUST be fused using Reciprocal Rank Fusion (same algorithm as butler-local search)
 
 #### Scenario: Sensitivity filtering
@@ -148,15 +148,15 @@ A search function SHALL query `shared.memory_catalog` to discover memory items a
 
 ### Requirement: Episodes are NOT indexed in the discovery catalog
 
-Episodes SHALL NOT be written to `shared.memory_catalog`. Only facts and rules — which represent consolidated, durable knowledge — are discoverable cross-butler.
+Episodes SHALL NOT be written to `public.memory_catalog`. Only facts and rules — which represent consolidated, durable knowledge — are discoverable cross-butler.
 
 #### Scenario: store_episode does not write to catalog
 
 - **WHEN** `store_episode` is called
-- **THEN** no row MUST be written to `shared.memory_catalog`
+- **THEN** no row MUST be written to `public.memory_catalog`
 
 #### Scenario: Catalog memory_type values
 
-- **WHEN** querying `shared.memory_catalog`
+- **WHEN** querying `public.memory_catalog`
 - **THEN** the `memory_type` column MUST contain only `'fact'` or `'rule'` values
 - **AND** `'episode'` MUST NOT appear

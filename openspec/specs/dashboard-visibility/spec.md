@@ -636,7 +636,7 @@ The ingestion timeline filter bar SHALL include a Status filter dropdown.
 - **AND** selecting a status SHALL pass `status=<value>` to the API query and reset pagination
 
 ### Requirement: Ingestion Timeline Unified Data Source
-The timeline table SHALL display events from both `shared.ingestion_events` and `connectors.filtered_events` in a single merged view.
+The timeline table SHALL display events from both `public.ingestion_events` and `connectors.filtered_events` in a single merged view.
 
 #### Scenario: Unified ordering
 - **WHEN** the timeline loads

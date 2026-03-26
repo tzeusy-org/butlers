@@ -71,10 +71,10 @@ async def _make_pool(postgres_container: Any) -> AsyncIterator[asyncpg.Pool]:
 
 async def _create_schema(pool: asyncpg.Pool) -> None:
     """Create the shared schema and model routing tables for testing."""
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
+    # public schema always exists; no need to create it.
 
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS shared.model_catalog (
+        CREATE TABLE IF NOT EXISTS public.model_catalog (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             alias           TEXT NOT NULL,
             runtime_type    TEXT NOT NULL,
@@ -92,11 +92,11 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
     """)
 
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS shared.butler_model_overrides (
+        CREATE TABLE IF NOT EXISTS public.butler_model_overrides (
             id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             butler_name      TEXT NOT NULL,
             catalog_entry_id UUID NOT NULL
-                REFERENCES shared.model_catalog(id) ON DELETE CASCADE,
+                REFERENCES public.model_catalog(id) ON DELETE CASCADE,
             enabled          BOOLEAN NOT NULL DEFAULT true,
             priority         INTEGER,
             complexity_tier  TEXT,
@@ -126,7 +126,7 @@ async def _insert_catalog_entry(
     extra_json = json.dumps(extra_args or [])
     row = await pool.fetchrow(
         """
-        INSERT INTO shared.model_catalog
+        INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
         RETURNING id
@@ -154,7 +154,7 @@ async def _insert_override(
     """Insert a butler override row."""
     await pool.execute(
         """
-        INSERT INTO shared.butler_model_overrides
+        INSERT INTO public.butler_model_overrides
             (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
         VALUES ($1, $2, $3, $4, $5)
         """,
@@ -367,7 +367,7 @@ async def test_resolve_tie_breaking_by_created_at(postgres_container: Any) -> No
     """Two entries with the same priority: earlier created_at wins."""
     async with _make_pool(postgres_container) as pool:
         await pool.execute("""
-            INSERT INTO shared.model_catalog
+            INSERT INTO public.model_catalog
                 (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
             VALUES
                 ('first',  'claude', 'model-first',  'medium', 10,
@@ -390,7 +390,7 @@ async def test_resolve_returns_extra_args(postgres_container: Any) -> None:
     """extra_args JSONB (list of CLI token strings) is returned correctly."""
     async with _make_pool(postgres_container) as pool:
         await pool.execute("""
-            INSERT INTO shared.model_catalog
+            INSERT INTO public.model_catalog
                 (alias, runtime_type, model_id, complexity_tier, priority, extra_args)
             VALUES
                 ('opus', 'claude', 'claude-opus-4', 'extra_high', 1,

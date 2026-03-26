@@ -127,21 +127,21 @@ async def _create_pool(db_name: str, schema: str) -> asyncpg.Pool:
 
 
 async def _owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner entity from shared.contacts -> shared.entities."""
+    """Resolve the owner entity from public.contacts -> public.entities."""
     row = await pool.fetchrow(
         """
         SELECT e.id
-        FROM shared.contacts c
-        JOIN shared.entities e ON c.entity_id = e.id
+        FROM public.contacts c
+        JOIN public.entities e ON c.entity_id = e.id
         WHERE c.roles @> '["owner"]'::jsonb
         LIMIT 1
         """
     )
     if row:
         return row["id"]
-    # Fallback: look directly in shared.entities for owner role.
+    # Fallback: look directly in public.entities for owner role.
     row = await pool.fetchrow(
-        "SELECT id FROM shared.entities WHERE roles @> ARRAY['owner'] LIMIT 1"
+        "SELECT id FROM public.entities WHERE roles @> ARRAY['owner'] LIMIT 1"
     )
     return row["id"] if row else None
 
@@ -151,8 +151,8 @@ async def _contact_entity_id(pool: asyncpg.Pool, contact_id: uuid.UUID) -> uuid.
     row = await pool.fetchrow(
         """
         SELECT e.id
-        FROM shared.contacts c
-        JOIN shared.entities e ON c.entity_id = e.id
+        FROM public.contacts c
+        JOIN public.entities e ON c.entity_id = e.id
         WHERE c.id = $1
         LIMIT 1
         """,

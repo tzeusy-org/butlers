@@ -13,7 +13,7 @@ A butler is a long-lived MCP server daemon backed by a dedicated PostgreSQL sche
 - **THEN** it is uniquely identified by a `name` string (e.g., `"general"`, `"health"`, `"switchboard"`)
 - **AND** it binds a FastMCP SSE server to its assigned port (e.g., 41101)
 - **AND** it operates within a single PostgreSQL database (`butlers`) in its own schema (e.g., `general`, `health`)
-- **AND** it also has access to the `shared` schema for cross-butler data (secrets, shared contacts, etc.)
+- **AND** it also has access to the `public` schema for cross-butler data (secrets, shared contacts, etc.)
 - **AND** its search_path is set to `[butler_schema, shared, public]` — preventing direct access to other butlers' schemas
 
 #### Scenario: Butler as MCP server
@@ -105,7 +105,7 @@ Modules are pluggable units that add domain-specific MCP tools and database tabl
 
 #### Scenario: Available modules
 - **WHEN** configuring a butler's `butler.toml`
-- **THEN** shared modules (in `src/butlers/modules/`) include: `calendar` (unified calendar view, Google Calendar integration), `contacts` (Google sync, shared schema, entity linkage), `memory` (episodes/facts/rules storage, hybrid search, embedding, consolidation), `telegram` (bot/user client tools), `email` (Gmail integration, IMAP/SMTP tools), `approvals` (gate wrapper, pending actions, standing rules)
+- **THEN** shared modules (in `src/butlers/modules/`) include: `calendar` (unified calendar view, Google Calendar integration), `contacts` (Google sync, public schema, entity linkage), `memory` (episodes/facts/rules storage, hybrid search, embedding, consolidation), `telegram` (bot/user client tools), `email` (Gmail integration, IMAP/SMTP tools), `approvals` (gate wrapper, pending actions, standing rules)
 - **AND** roster modules (in `roster/{butler-name}/modules/`) wire butler-specific tools as MCP tools — every butler that has domain tools in `roster/{butler-name}/tools/` must have a corresponding roster module package
 - **AND** each module has its own nested TOML configuration (e.g., `modules.calendar.provider`, `modules.telegram.bot.token_env`, `modules.memory.consolidation.interval_hours`)
 - **AND** roster modules typically need only an empty `[modules.{butler-name}]` section in `butler.toml`
@@ -149,19 +149,19 @@ Skills are structured behavioral guides (per agentskills.io spec) that are loade
 - **AND** the skill documents both the action path (when there is work to report) and the no-op path (when there is nothing to report)
 
 ### Requirement: Database Isolation Model
-All butlers share a single PostgreSQL database (`butlers`) with per-butler schema isolation. The `shared` schema provides cross-butler data access. Inter-butler communication is MCP-only through the Switchboard.
+All butlers share a single PostgreSQL database (`butlers`) with per-butler schema isolation. The `public` schema provides cross-butler data access. Inter-butler communication is MCP-only through the Switchboard.
 
 #### Scenario: Per-butler schema isolation
 - **WHEN** a butler connects to the database
-- **THEN** its asyncpg connection pool sets `server_settings = {"search_path": "{butler_schema},shared,public"}`
-- **AND** each butler can only see its own tables plus the `shared` schema tables
+- **THEN** its asyncpg connection pool sets `server_settings = {"search_path": "{butler_schema},public"}`
+- **AND** each butler can only see its own tables plus the `public` schema tables
 - **AND** no butler can directly read or write another butler's schema
 
-#### Scenario: Shared schema
+#### Scenario: Public schema
 - **WHEN** cross-butler data is needed
-- **THEN** it lives in the `shared` schema (e.g., shared secrets, shared contacts, credential store)
-- **AND** all butlers have read access to `shared` via their search_path
-- **AND** write access to `shared` tables is governed by the credential store and specific module migrations
+- **THEN** it lives in the `public` schema (e.g., shared secrets, shared contacts, credential store)
+- **AND** all butlers have read access to `public` via their search_path
+- **AND** write access to `public` tables is governed by the credential store and specific module migrations
 
 #### Scenario: Migration strategy
 - **WHEN** database migrations run during butler startup
@@ -171,7 +171,7 @@ All butlers share a single PostgreSQL database (`butlers`) with per-butler schem
 #### Scenario: Inter-butler data exchange
 - **WHEN** one butler needs data from another
 - **THEN** it communicates via MCP calls through the Switchboard routing plane — never by direct schema access
-- **AND** the `shared` schema is reserved for truly shared reference data, not for passing messages between butlers
+- **AND** the `public` schema is reserved for truly shared reference data, not for passing messages between butlers
 
 ### Requirement: Core vs Domain Butlers
 The roster contains two categories of butlers: core butlers that provide essential infrastructure services and must always be present, and domain butlers that provide specialist capabilities and can be added or removed.
@@ -263,7 +263,7 @@ The `butler.toml` file declares butler identity, runtime, database, modules, sch
 
 #### Scenario: Database configuration
 - **WHEN** `[butler.db]` specifies `name = "butlers"` and `schema = "{butler-name}"`
-- **THEN** the butler operates in a consolidated PostgreSQL database with per-butler schema isolation plus access to the `shared` schema
+- **THEN** the butler operates in a consolidated PostgreSQL database with per-butler schema isolation plus access to the `public` schema
 
 #### Scenario: Module declarations
 - **WHEN** `[modules.*]` sections are present

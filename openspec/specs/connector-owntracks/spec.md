@@ -199,7 +199,7 @@ Location events are automatically purged after a configurable retention period.
 #### Scenario: Retention purge schedule
 - **WHEN** the connector is running
 - **THEN** a background task runs every 6 hours to delete expired location events
-- **AND** the task deletes rows from `shared.ingestion_events` where `source_channel = 'owntracks'` AND `created_at < NOW() - INTERVAL '<retention_days> days'`
+- **AND** the task deletes rows from `public.ingestion_events` where `source_channel = 'owntracks'` AND `created_at < NOW() - INTERVAL '<retention_days> days'`
 
 #### Scenario: Default retention period
 - **WHEN** `OWNTRACKS_RETENTION_DAYS` is not set

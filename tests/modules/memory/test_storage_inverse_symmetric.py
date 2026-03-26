@@ -136,7 +136,7 @@ def _make_pool(
         conn.fetchval = AsyncMock(return_value=None)
 
         async def _fetchrow_temporal(sql, *args):
-            if "shared.entities" in sql:
+            if "public.entities" in sql:
                 _fetchrow_temporal._count += 1
                 return _entity_row if _fetchrow_temporal._count == 1 else _obj_entity_row
             elif "predicate_registry" in sql:
@@ -148,7 +148,7 @@ def _make_pool(
     else:
         # Property fact: multiple fetchrow calls in sequence.
         async def _fetchrow_dispatch(sql, *args):
-            if "shared.entities" in sql:
+            if "public.entities" in sql:
                 _fetchrow_dispatch._entity_call_count += 1
                 if _fetchrow_dispatch._entity_call_count == 1:
                     return _entity_row
@@ -459,7 +459,7 @@ class TestNoInverseForNonEdge:
         _obj_entity_row = {"id": object_entity_id, "entity_type": "person"}
 
         async def _fetchrow_dispatch(sql, *args):
-            if "shared.entities" in sql:
+            if "public.entities" in sql:
                 _fetchrow_dispatch._count += 1
                 return _entity_row if _fetchrow_dispatch._count == 1 else _obj_entity_row
             elif "predicate_registry" in sql:

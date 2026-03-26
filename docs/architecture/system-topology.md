@@ -21,7 +21,7 @@ Butlers is a personal AI agent framework where each butler is a long-running MCP
 | **Messenger** | 41104 | Delivery relay — Telegram bot, Telegram user-client, and email channel outputs. All external user-facing messages route through here. |
 | **Dashboard API** | 41200 | Web UI backend — monitoring, management, configuration, and butler control. |
 | **Frontend** | 41173 | Vite dev server (development only) — serves the React dashboard. |
-| **PostgreSQL** | 5432 | Shared database server — one database, per-butler schemas plus `shared`. |
+| **PostgreSQL** | 5432 | Shared database server — one database, per-butler schemas plus `public`. |
 
 OTLP HTTP traces are sent to an external Alloy instance on port 4318 (not exposed locally).
 
@@ -60,7 +60,7 @@ Switchboard (:41100)
 
 ### Database Access
 
-All butlers connect to the same PostgreSQL database. Schema isolation is enforced at the connection level — each butler's connection pool sets `search_path` to `<butler_schema>, shared, public`. Butlers never access each other's schemas directly; inter-butler data exchange happens exclusively through MCP tool calls.
+All butlers connect to the same PostgreSQL database. Schema isolation is enforced at the connection level — each butler's connection pool sets `search_path` to `<butler_schema>, public`. Butlers never access each other's schemas directly; inter-butler data exchange happens exclusively through MCP tool calls.
 
 ### Observability Pipeline
 

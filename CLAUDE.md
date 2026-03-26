@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Butlers is an AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state store, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself via a locked-down MCP config.
 
-**Tech stack:** Python 3.12+, FastMCP, Claude Agent SDK, PostgreSQL (JSONB-heavy; migrating to one DB with per-butler schemas + `shared`), Docker, asyncio
+**Tech stack:** Python 3.12+, FastMCP, Claude Agent SDK, PostgreSQL (JSONB-heavy; migrating to one DB with per-butler schemas + `public`), Docker, asyncio
 
 ## Commands
 
@@ -60,11 +60,11 @@ Every butler has **core components** (always present) and **modules** (opt-in pe
 
 ### Database Isolation
 
-Target-state isolation is schema-based in a single PostgreSQL database: each butler role can access only its own schema plus `shared`. Inter-butler communication remains MCP-only through the Switchboard.
+Target-state isolation is schema-based in a single PostgreSQL database: each butler role can access only its own schema plus `public`. Inter-butler communication remains MCP-only through the Switchboard.
 
-The `shared` schema contains cross-butler identity tables:
-- **`shared.contacts`** — canonical contact registry; one row per known person/actor. Includes a `roles` array (e.g. `['owner']`) and optional `entity_id` FK to the memory butler's entity graph.
-- **`shared.contact_info`** — per-channel identifiers linked to contacts (e.g. Telegram chat ID, email address). UNIQUE on `(type, value)`. `secured=true` marks credential entries.
+The `public` schema contains cross-butler identity tables:
+- **`public.contacts`** — canonical contact registry; one row per known person/actor. Includes a `roles` array (e.g. `['owner']`) and optional `entity_id` FK to the memory butler's entity graph.
+- **`public.contact_info`** — per-channel identifiers linked to contacts (e.g. Telegram chat ID, email address). UNIQUE on `(type, value)`. `secured=true` marks credential entries.
 
 These tables power identity resolution for all ingress routing (Switchboard reverse-lookup) and outbound targeting (`notify()` with `contact_id`). The owner contact is bootstrapped automatically on daemon startup.
 

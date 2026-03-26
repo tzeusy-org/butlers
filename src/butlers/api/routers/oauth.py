@@ -717,7 +717,7 @@ async def _update_account_refresh_token(
             # Update refresh token in entity_info.
             await conn.execute(
                 """
-                INSERT INTO shared.entity_info (entity_id, type, value, secured, is_primary)
+                INSERT INTO public.entity_info (entity_id, type, value, secured, is_primary)
                 VALUES ($1, 'google_oauth_refresh', $2, true, true)
                 ON CONFLICT (entity_id, type) DO UPDATE SET
                     value = EXCLUDED.value,
@@ -730,7 +730,7 @@ async def _update_account_refresh_token(
             if scope_list is not None:
                 await conn.execute(
                     """
-                    UPDATE shared.google_accounts
+                    UPDATE public.google_accounts
                     SET granted_scopes = $1::text[],
                         status = 'active',
                         last_token_refresh_at = now()
@@ -742,7 +742,7 @@ async def _update_account_refresh_token(
             else:
                 await conn.execute(
                     """
-                    UPDATE shared.google_accounts
+                    UPDATE public.google_accounts
                     SET status = 'active',
                         last_token_refresh_at = now()
                     WHERE entity_id = $1
@@ -1045,7 +1045,7 @@ async def get_google_account_status(
     async with shared_pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT value FROM shared.entity_info
+            SELECT value FROM public.entity_info
             WHERE entity_id = $1 AND type = 'google_oauth_refresh'
             LIMIT 1
             """,

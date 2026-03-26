@@ -3210,7 +3210,7 @@ class GmailAccountLoop:
 class GmailConnectorManager:
     """Top-level orchestrator for multi-account Gmail connector.
 
-    Discovers all active Google accounts with Gmail scopes from shared.google_accounts,
+    Discovers all active Google accounts with Gmail scopes from public.google_accounts,
     spawns independent GmailAccountLoop instances per account, and manages their lifecycle.
 
     Supports:
@@ -3260,7 +3260,7 @@ class GmailConnectorManager:
     async def _discover_qualifying_accounts(
         self,
     ) -> list[tuple[str | None, dict[str, Any] | None]]:
-        """Query shared.google_accounts for active accounts with Gmail scopes.
+        """Query public.google_accounts for active accounts with Gmail scopes.
 
         Returns list of (email, metadata_gmail) tuples where metadata_gmail is
         the parsed ``gmail`` subsection of the account's metadata JSONB column.
@@ -3272,7 +3272,7 @@ class GmailConnectorManager:
                 rows = await conn.fetch(
                     """
                     SELECT email, granted_scopes, metadata
-                    FROM shared.google_accounts
+                    FROM public.google_accounts
                     WHERE status = 'active'
                     ORDER BY is_primary DESC, connected_at ASC
                     """
@@ -3627,7 +3627,7 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
     local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers").strip() or "butlers"
     local_schema = os.environ.get("CONNECTOR_BUTLER_DB_SCHEMA")
     shared_db_name = shared_db_name_from_env()
-    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared")
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
 
     candidates: list[tuple[str, str, str | None]] = []
     for source_name, db_name, schema in [
@@ -3856,7 +3856,7 @@ async def _create_shared_db_pool() -> asyncpg.Pool:
 
     db_params = db_params_from_env()
     shared_db_name = shared_db_name_from_env()
-    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared")
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
 
     pool_kwargs: dict[str, Any] = {
         "host": db_params["host"],
@@ -3895,7 +3895,7 @@ async def _create_shared_db_pool() -> asyncpg.Pool:
 async def run_gmail_connector() -> None:
     """Run the multi-account Gmail connector manager (async entrypoint).
 
-    Discovers all active Google accounts with Gmail scopes from shared.google_accounts
+    Discovers all active Google accounts with Gmail scopes from public.google_accounts
     and manages independent ingestion loops per account. Identity is derived per-account
     from the email address (``gmail:user:<email>``).
     Runs in idle/degraded mode if no qualifying accounts are found at startup.
@@ -3962,7 +3962,7 @@ async def run_gmail_connector() -> None:
 def main() -> None:
     """CLI entrypoint for Gmail connector.
 
-    Discovers and manages all Gmail-scoped Google accounts from shared.google_accounts.
+    Discovers and manages all Gmail-scoped Google accounts from public.google_accounts.
     Identity is derived per-account from the email address.
     """
     asyncio.run(run_gmail_connector())

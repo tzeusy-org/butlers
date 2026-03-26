@@ -199,7 +199,7 @@ during butler daemon startup.
 | Variable | Default | Purpose |
 |---|---|---|
 | `BUTLER_SHARED_DB_NAME` | `butlers` | Shared credentials database name |
-| `BUTLER_SHARED_DB_SCHEMA` | `shared` | Shared credentials schema |
+| `BUTLER_SHARED_DB_SCHEMA` | `public` | Shared credentials schema |
 | `CONNECTOR_BUTLER_DB_NAME` | `butlers` | Per-connector butler DB for secret overrides |
 
 ---

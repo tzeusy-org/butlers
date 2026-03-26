@@ -74,7 +74,7 @@ minor gaps found during the audit.
 
 | Scenario | Status | Implementation |
 |----------|--------|----------------|
-| Limits entry structure — all columns present | COVERED | Migration creates `shared.token_limits` with all required columns. Source inspection tests in `tests/migrations/test_token_usage_ledger_migration.py`. |
+| Limits entry structure — all columns present | COVERED | Migration creates `public.token_limits` with all required columns. Source inspection tests in `tests/migrations/test_token_usage_ledger_migration.py`. |
 | Token counting unit — total tokens (`input_tokens + output_tokens`) | COVERED | `_QUOTA_CHECK_SQL` sums `input_tokens + output_tokens`. API CTE uses same formula. Tests verify total is summed correctly (e.g., `test_check_quota_within_both_limits` inserts 100+50=150 and asserts `usage_24h == 150`). |
 | No limits row means unlimited | COVERED | Fast path in `check_token_quota()`: `if limits_row is None: return _unlimited`. Test: `test_check_quota_no_limits_row_fast_path`. |
 | Cascade on catalog entry deletion | COVERED | `ON DELETE CASCADE` on `token_limits` FK. Migration test: `test_catalog_entry_id_fk_cascade` asserts exactly 2 cascade FK clauses. |
@@ -153,9 +153,9 @@ minor gaps found during the audit.
 
 | Decision | Implemented | Notes |
 |----------|-------------|-------|
-| D1: Dedicated ledger table | YES | `shared.token_usage_ledger` created in migration core_035 |
+| D1: Dedicated ledger table | YES | `public.token_usage_ledger` created in migration core_035 |
 | D2: Ledger schema optimized for time-windowed queries | YES | Partitioned table, composite index, monthly partitions |
-| D3: Limits stored in `token_limits` table | YES | `shared.token_limits` created in migration core_035 |
+| D3: Limits stored in `token_limits` table | YES | `public.token_limits` created in migration core_035 |
 | D4: `resolve_model()` returns 4-tuple | YES | Return type is `tuple[str, str, list[str], UUID]` |
 | D5: Pre-spawn quota check as separate function | YES | `check_token_quota()` in `model_routing.py` |
 | D6: Post-spawn ledger recording | YES | Spawner `finally` block + DiscretionDispatcher |

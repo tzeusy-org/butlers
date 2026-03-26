@@ -85,7 +85,7 @@ INTERVAL = int(os.environ.get("OAUTH_POLL_INTERVAL", "5"))
 
 
 def _check_token() -> bool:
-    """Return True if a Google OAuth refresh token exists in shared.entity_info."""
+    """Return True if a Google OAuth refresh token exists in public.entity_info."""
     import psycopg
 
     dsn = (
@@ -99,8 +99,8 @@ def _check_token() -> bool:
         with psycopg.connect(dsn, autocommit=True) as conn:
             row = conn.execute(
                 """
-                SELECT COUNT(*) FROM shared.entity_info ei
-                JOIN shared.entities e ON e.id = ei.entity_id
+                SELECT COUNT(*) FROM public.entity_info ei
+                JOIN public.entities e ON e.id = ei.entity_id
                 WHERE 'owner' = ANY(e.roles)
                   AND ei.type = 'google_oauth_refresh'
                   AND ei.value IS NOT NULL

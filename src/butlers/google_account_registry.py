@@ -2,9 +2,9 @@
 
 Provides the single source of truth for multi-account Google OAuth identities.
 Each Google account has:
-  - A row in ``shared.google_accounts`` (email, scopes, primary flag, status).
-  - A companion entity in ``shared.entities`` (roles=['google_account']) that
-    anchors the refresh token in ``shared.entity_info``.
+  - A row in ``public.google_accounts`` (email, scopes, primary flag, status).
+  - A companion entity in ``public.entities`` (roles=['google_account']) that
+    anchors the refresh token in ``public.entity_info``.
 
 Public API
 ----------
@@ -23,7 +23,7 @@ Environment variables
 
 Design notes
 ------------
-- ``shared.google_accounts.entity_id`` references a *companion* entity, not
+- ``public.google_accounts.entity_id`` references a *companion* entity, not
   the owner entity.  The companion entity is created automatically by
   :func:`create_google_account`.
 - The partial unique index ``ix_google_accounts_primary_singleton`` enforces
@@ -98,7 +98,7 @@ class GoogleAccount:
     id:
         UUID primary key of the google_accounts row.
     entity_id:
-        UUID of the companion entity in shared.entities.
+        UUID of the companion entity in public.entities.
     email:
         Authenticated Google email address.
     display_name:
@@ -148,7 +148,7 @@ class GoogleAccount:
 async def _count_active_accounts(conn: Any) -> int:
     """Return the number of active google_accounts rows."""
     row = await conn.fetchrow(
-        "SELECT COUNT(*) AS cnt FROM shared.google_accounts WHERE status = 'active'"
+        "SELECT COUNT(*) AS cnt FROM public.google_accounts WHERE status = 'active'"
     )
     return int(row["cnt"]) if row else 0
 
@@ -161,7 +161,7 @@ async def _create_companion_entity(conn: Any, email: str | None) -> uuid.UUID:
     canonical_name = f"google-account:{email}" if email else f"google-account:{uuid.uuid4()}"
     row = await conn.fetchrow(
         """
-        INSERT INTO shared.entities (tenant_id, canonical_name, entity_type, roles)
+        INSERT INTO public.entities (tenant_id, canonical_name, entity_type, roles)
         VALUES ('shared', $1, 'other', ARRAY['google_account'])
         ON CONFLICT (tenant_id, canonical_name, entity_type) DO UPDATE
             SET roles = ARRAY['google_account']
@@ -175,7 +175,7 @@ async def _create_companion_entity(conn: Any, email: str | None) -> uuid.UUID:
 async def _has_primary_account(conn: Any) -> bool:
     """Return True if any account currently has is_primary=true."""
     row = await conn.fetchrow(
-        "SELECT 1 FROM shared.google_accounts WHERE is_primary = true LIMIT 1"
+        "SELECT 1 FROM public.google_accounts WHERE is_primary = true LIMIT 1"
     )
     return row is not None
 
@@ -186,7 +186,7 @@ async def _get_oldest_active_account_id(
     """Return the id of the oldest active account (by connected_at), optionally excluding one id."""
     row = await conn.fetchrow(
         """
-        SELECT id FROM shared.google_accounts
+        SELECT id FROM public.google_accounts
         WHERE status = 'active' AND ($1::UUID IS NULL OR id != $1)
         ORDER BY connected_at ASC
         LIMIT 1
@@ -229,7 +229,7 @@ async def _get_refresh_token(conn: Any, entity_id: uuid.UUID) -> str | None:
     """Fetch the refresh token value from entity_info for the given entity."""
     row = await conn.fetchrow(
         """
-        SELECT value FROM shared.entity_info
+        SELECT value FROM public.entity_info
         WHERE entity_id = $1 AND type = 'google_oauth_refresh'
         LIMIT 1
         """,
@@ -253,11 +253,11 @@ async def create_google_account(
 ) -> GoogleAccount:
     """Register a new Google account after OAuth callback.
 
-    Creates a companion entity in shared.entities and inserts a row in
-    shared.google_accounts.  If no other accounts exist, the new account
+    Creates a companion entity in public.entities and inserts a row in
+    public.google_accounts.  If no other accounts exist, the new account
     is automatically set as primary.
 
-    If refresh_token is provided, it is stored in shared.entity_info on the
+    If refresh_token is provided, it is stored in public.entity_info on the
     companion entity (type='google_oauth_refresh', secured=true).
 
     Parameters
@@ -301,7 +301,7 @@ async def create_google_account(
             # Duplicate email check.
             if email:
                 existing = await conn.fetchrow(
-                    "SELECT id FROM shared.google_accounts WHERE email = $1",
+                    "SELECT id FROM public.google_accounts WHERE email = $1",
                     email,
                 )
                 if existing is not None:
@@ -318,7 +318,7 @@ async def create_google_account(
             # Insert google_accounts row.
             row = await conn.fetchrow(
                 """
-                INSERT INTO shared.google_accounts (
+                INSERT INTO public.google_accounts (
                     entity_id, email, display_name, is_primary, granted_scopes, status
                 )
                 VALUES ($1, $2, $3, $4, $5::text[], 'active')
@@ -337,7 +337,7 @@ async def create_google_account(
             if refresh_token:
                 await conn.execute(
                     """
-                    INSERT INTO shared.entity_info (entity_id, type, value, secured, is_primary)
+                    INSERT INTO public.entity_info (entity_id, type, value, secured, is_primary)
                     VALUES ($1, 'google_oauth_refresh', $2, true, true)
                     ON CONFLICT (entity_id, type) DO UPDATE SET
                         value = EXCLUDED.value,
@@ -373,7 +373,7 @@ async def list_google_accounts(pool: asyncpg.Pool) -> list[GoogleAccount]:
             """
             SELECT id, entity_id, email, display_name, is_primary,
                    granted_scopes, status, connected_at, last_token_refresh_at
-            FROM shared.google_accounts
+            FROM public.google_accounts
             ORDER BY is_primary DESC, connected_at ASC
             """
         )
@@ -415,7 +415,7 @@ async def get_google_account(
                 """
                 SELECT id, entity_id, email, display_name, is_primary,
                        granted_scopes, status, connected_at, last_token_refresh_at
-                FROM shared.google_accounts
+                FROM public.google_accounts
                 WHERE is_primary = true
                 LIMIT 1
                 """
@@ -443,7 +443,7 @@ async def get_google_account(
                 """
                 SELECT id, entity_id, email, display_name, is_primary,
                        granted_scopes, status, connected_at, last_token_refresh_at
-                FROM shared.google_accounts
+                FROM public.google_accounts
                 WHERE id = $1
                 LIMIT 1
                 """,
@@ -458,7 +458,7 @@ async def get_google_account(
             """
             SELECT id, entity_id, email, display_name, is_primary,
                    granted_scopes, status, connected_at, last_token_refresh_at
-            FROM shared.google_accounts
+            FROM public.google_accounts
             WHERE email = $1
             LIMIT 1
             """,
@@ -500,7 +500,7 @@ async def set_primary_account(
         async with conn.transaction():
             # Verify target exists.
             target = await conn.fetchrow(
-                "SELECT id FROM shared.google_accounts WHERE id = $1",
+                "SELECT id FROM public.google_accounts WHERE id = $1",
                 account_id,
             )
             if target is None:
@@ -508,13 +508,13 @@ async def set_primary_account(
 
             # Clear existing primary (any account that is currently primary).
             await conn.execute(
-                "UPDATE shared.google_accounts SET is_primary = false WHERE is_primary = true"
+                "UPDATE public.google_accounts SET is_primary = false WHERE is_primary = true"
             )
 
             # Set target as primary.
             row = await conn.fetchrow(
                 """
-                UPDATE shared.google_accounts
+                UPDATE public.google_accounts
                 SET is_primary = true
                 WHERE id = $1
                 RETURNING
@@ -566,7 +566,7 @@ async def disconnect_account(
         account_row = await conn.fetchrow(
             """
             SELECT id, entity_id, is_primary, status
-            FROM shared.google_accounts
+            FROM public.google_accounts
             WHERE id = $1
             """,
             account_id,
@@ -594,7 +594,7 @@ async def disconnect_account(
             if hard_delete:
                 # Hard delete: remove the companion entity (CASCADE handles the rest).
                 await conn.execute(
-                    "DELETE FROM shared.entities WHERE id = $1",
+                    "DELETE FROM public.entities WHERE id = $1",
                     entity_id,
                 )
                 logger.info("Google account hard-deleted: id=%s", account_id)
@@ -602,13 +602,13 @@ async def disconnect_account(
                 # Soft disconnect: delete entity_info token, mark status revoked.
                 await conn.execute(
                     """
-                    DELETE FROM shared.entity_info
+                    DELETE FROM public.entity_info
                     WHERE entity_id = $1 AND type = 'google_oauth_refresh'
                     """,
                     entity_id,
                 )
                 await conn.execute(
-                    "UPDATE shared.google_accounts SET status = 'revoked' WHERE id = $1",
+                    "UPDATE public.google_accounts SET status = 'revoked' WHERE id = $1",
                     account_id,
                 )
                 logger.info("Google account disconnected (revoked): id=%s", account_id)
@@ -623,7 +623,7 @@ async def disconnect_account(
 
                 if next_id is not None:
                     await conn.execute(
-                        "UPDATE shared.google_accounts SET is_primary = true WHERE id = $1",
+                        "UPDATE public.google_accounts SET is_primary = true WHERE id = $1",
                         next_id,
                     )
                     logger.info("Auto-promoted Google account to primary: id=%s", next_id)

@@ -55,14 +55,14 @@ class ResolvedContact:
     Attributes
     ----------
     contact_id:
-        UUID of the resolved contact in shared.contacts.
+        UUID of the resolved contact in public.contacts.
     name:
         Display name of the contact (may be ``None`` if not set).
     roles:
         List of roles assigned to the linked entity (e.g., ``['owner']``).
-        Sourced from ``shared.entities.roles`` via entity JOIN.
+        Sourced from ``public.entities.roles`` via entity JOIN.
     entity_id:
-        UUID of the linked entity in shared.entities, or ``None`` if not linked.
+        UUID of the linked entity in public.entities, or ``None`` if not linked.
     """
 
     contact_id: UUID
@@ -78,16 +78,16 @@ async def resolve_contact_by_channel(
 ) -> ResolvedContact | None:
     """Resolve a contact from a channel identifier.
 
-    Queries ``shared.contact_info JOIN shared.contacts LEFT JOIN shared.entities``
+    Queries ``public.contact_info JOIN public.contacts LEFT JOIN public.entities``
     to map a channel identifier to a known contact record.  Roles are read from
-    the linked entity (``shared.entities.roles``).  Returns ``None`` when no
+    the linked entity (``public.entities.roles``).  Returns ``None`` when no
     contact is found for the given (type, value) pair.
 
     Parameters
     ----------
     pool:
         asyncpg connection pool.  The executing role must have at minimum
-        ``SELECT`` on ``shared.contact_info`` and ``shared.contacts``.
+        ``SELECT`` on ``public.contact_info`` and ``public.contacts``.
     channel_type:
         The contact_info type field (e.g., ``"telegram"``, ``"email"``).
     channel_value:
@@ -102,10 +102,10 @@ async def resolve_contact_by_channel(
 
     Notes
     -----
-    - The UNIQUE constraint on ``(type, value)`` in ``shared.contact_info``
+    - The UNIQUE constraint on ``(type, value)`` in ``public.contact_info``
       (added by core_007 migration) guarantees at most one result.
     - ``entity_id`` is read from ``contacts.entity_id`` which references
-      ``shared.entities(id)``.  Roles are sourced from the entity, not the
+      ``public.entities(id)``.  Roles are sourced from the entity, not the
       contact.
     - This function is safe to call if the migration has not yet run —
       it returns ``None`` gracefully.
@@ -117,9 +117,9 @@ async def resolve_contact_by_channel(
                    c.name                        AS name,
                    COALESCE(e.roles, '{}')       AS roles,
                    c.entity_id                   AS entity_id
-            FROM   shared.contact_info ci
-            JOIN   shared.contacts c ON c.id = ci.contact_id
-            LEFT JOIN shared.entities e ON e.id = c.entity_id
+            FROM   public.contact_info ci
+            JOIN   public.contacts c ON c.id = ci.contact_id
+            LEFT JOIN public.entities e ON e.id = c.entity_id
             WHERE  ci.type = $1
               AND  ci.value = $2
             LIMIT  1
@@ -149,9 +149,9 @@ async def resolve_contact_by_channel(
                                c.name                        AS name,
                                COALESCE(e.roles, '{}')       AS roles,
                                c.entity_id                   AS entity_id
-                        FROM   shared.contact_info ci
-                        JOIN   shared.contacts c ON c.id = ci.contact_id
-                        LEFT JOIN shared.entities e ON e.id = c.entity_id
+                        FROM   public.contact_info ci
+                        JOIN   public.contacts c ON c.id = ci.contact_id
+                        LEFT JOIN public.entities e ON e.id = c.entity_id
                         WHERE  ci.type = 'phone'
                           AND  ci.value = $1
                         LIMIT  1
@@ -204,8 +204,8 @@ async def create_temp_contact(
 ) -> ResolvedContact | None:
     """Create a temporary contact and entity for an unknown sender.
 
-    Creates a ``shared.entities`` entry with ``metadata.unidentified = true``
-    and a ``shared.contacts`` entry linked to it (with
+    Creates a ``public.entities`` entry with ``metadata.unidentified = true``
+    and a ``public.contacts`` entry linked to it (with
     ``metadata.needs_disambiguation = true``), plus a ``contact_info`` entry.
     If a contact_info entry for (type, value) already exists (due to
     concurrent creation or a race), the existing contact is returned instead.
@@ -213,8 +213,8 @@ async def create_temp_contact(
     Parameters
     ----------
     pool:
-        asyncpg connection pool.  Role must have INSERT on shared.contacts
-        and shared.contact_info.
+        asyncpg connection pool.  Role must have INSERT on public.contacts
+        and public.contact_info.
     channel_type:
         Channel type (e.g., ``"telegram"``).
     channel_value:
@@ -240,9 +240,9 @@ async def create_temp_contact(
                            c.name                        AS name,
                            COALESCE(e.roles, '{}')       AS roles,
                            c.entity_id                   AS entity_id
-                    FROM   shared.contact_info ci
-                    JOIN   shared.contacts c ON c.id = ci.contact_id
-                    LEFT JOIN shared.entities e ON e.id = c.entity_id
+                    FROM   public.contact_info ci
+                    JOIN   public.contacts c ON c.id = ci.contact_id
+                    LEFT JOIN public.entities e ON e.id = c.entity_id
                     WHERE  ci.type = $1
                       AND  ci.value = $2
                     LIMIT  1
@@ -279,7 +279,7 @@ async def create_temp_contact(
                 }
                 entity_id: UUID = await conn.fetchval(
                     """
-                    INSERT INTO shared.entities
+                    INSERT INTO public.entities
                         (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
                     VALUES ('shared', $1, 'person', '{}', $2::jsonb, '{}')
                     RETURNING id
@@ -296,7 +296,7 @@ async def create_temp_contact(
                 }
                 contact_row: asyncpg.Record = await conn.fetchrow(
                     """
-                    INSERT INTO shared.contacts (name, entity_id, metadata)
+                    INSERT INTO public.contacts (name, entity_id, metadata)
                     VALUES ($1, $2, $3::jsonb)
                     RETURNING id, name, entity_id
                     """,
@@ -309,7 +309,7 @@ async def create_temp_contact(
                 # Link contact_info — use ON CONFLICT to survive races.
                 await conn.execute(
                     """
-                    INSERT INTO shared.contact_info (contact_id, type, value, is_primary)
+                    INSERT INTO public.contact_info (contact_id, type, value, is_primary)
                     VALUES ($1, $2, $3, true)
                     ON CONFLICT (type, value) DO NOTHING
                     """,

@@ -50,7 +50,7 @@ A web dashboard provides real-time monitoring and management. It consists of a F
 
 ## Storage
 
-Butlers share a single PostgreSQL database with per-butler schemas plus a `shared` schema for cross-butler data. The shared schema holds the identity tables (contacts, contact info, entities) that power sender recognition across all channels. Each butler's schema contains its state store, session log, scheduled tasks, and module-specific tables.
+Butlers share a single PostgreSQL database with per-butler schemas plus the `public` schema for cross-butler data. The public schema holds the identity tables (contacts, contact info, entities) that power sender recognition across all channels. Each butler's schema contains its state store, session log, scheduled tasks, and module-specific tables.
 
 Butler configurations themselves are git-based directories under a `roster/` folder, containing a `butler.toml` (identity, port, schedules, modules), a `CLAUDE.md` (system prompt / personality), skills directories, and other personality files.
 

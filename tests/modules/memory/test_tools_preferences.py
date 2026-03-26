@@ -100,7 +100,7 @@ class TestResolveOwner:
         assert result_name == OWNER_NAME
 
     async def test_falls_back_to_entities_roles(self, mock_pool: AsyncMock) -> None:
-        """Falls back to shared.entities when contacts query returns None."""
+        """Falls back to public.entities when contacts query returns None."""
         mock_pool.fetchrow = AsyncMock(
             side_effect=[None, {"id": OWNER_UUID, "canonical_name": OWNER_NAME}]
         )
@@ -124,7 +124,7 @@ class TestResolveOwner:
     async def test_primary_path_uses_entities_roles_not_contacts_roles(
         self, mock_pool: AsyncMock
     ) -> None:
-        """Primary path filters on e.roles (shared.entities), not c.roles (dropped in core_016)."""
+        """Primary path filters on e.roles (public.entities), not c.roles (dropped in core_016)."""
         mock_pool.fetchrow = AsyncMock(
             return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME}
         )

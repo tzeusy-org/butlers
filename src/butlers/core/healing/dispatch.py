@@ -804,7 +804,7 @@ async def dispatch_healing(
     Parameters
     ----------
     pool:
-        asyncpg connection pool for ``shared.healing_attempts`` and session
+        asyncpg connection pool for ``public.healing_attempts`` and session
         tracking queries.
     butler_name:
         Name of the butler whose session failed.
@@ -1191,7 +1191,7 @@ async def redispatch_pending_attempt(
     pool:
         asyncpg connection pool targeting the shared schema.
     attempt_row:
-        A ``HealingAttemptRow`` dict from ``shared.healing_attempts`` with
+        A ``HealingAttemptRow`` dict from ``public.healing_attempts`` with
         ``status == 'dispatch_pending'``.
     config:
         ``HealingConfig`` for the butler.

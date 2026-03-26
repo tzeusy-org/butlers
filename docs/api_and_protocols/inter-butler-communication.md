@@ -13,8 +13,8 @@ Butlers in the Butlers framework communicate exclusively via MCP (Model Context 
 Each butler operates within its own PostgreSQL schema. The database isolation model is schema-based within a single PostgreSQL instance:
 
 - **Per-butler schema:** Each butler (e.g., `switchboard`, `general`, `relationship`, `health`) has its own schema containing all butler-specific tables.
-- **Shared schema:** The `shared` schema contains cross-butler identity tables (`shared.contacts`, `shared.contact_info`, `shared.entities`, `shared.entity_info`, `shared.google_accounts`) and infrastructure tables (`shared.model_catalog`, `shared.token_limits`, `shared.token_usage_ledger`).
-- **No cross-schema queries:** A butler's DB connection is scoped to its own schema plus `shared`. It cannot see or write to another butler's tables.
+- **Shared schema:** The `public` schema contains cross-butler identity tables (`public.contacts`, `public.contact_info`, `public.entities`, `public.entity_info`, `public.google_accounts`) and infrastructure tables (`public.model_catalog`, `public.token_limits`, `public.token_usage_ledger`).
+- **No cross-schema queries:** A butler's DB connection is scoped to its own schema plus `public`. It cannot see or write to another butler's tables.
 
 ## Communication Flow
 
@@ -80,14 +80,14 @@ Outbound notifications (Telegram messages, email replies) use the `notify.v1` en
 3. The Switchboard routes to the **messenger** butler, which owns delivery execution.
 4. The messenger butler dispatches through the appropriate channel adapter.
 
-## The `shared` Schema Exception
+## The `public` Schema Exception
 
-The `shared` schema is the only cross-cutting data surface:
+The `public` schema is the only cross-cutting data surface:
 
-- **`shared.contacts`** -- Canonical contact registry (one row per known person/actor, with `roles` array and optional `entity_id` FK).
-- **`shared.contact_info`** -- Per-channel identifiers linked to contacts, with UNIQUE on `(type, value)`.
+- **`public.contacts`** -- Canonical contact registry (one row per known person/actor, with `roles` array and optional `entity_id` FK).
+- **`public.contact_info`** -- Per-channel identifiers linked to contacts, with UNIQUE on `(type, value)`.
 
-All butlers can read from `shared` for identity resolution. Writes are controlled by specific modules (primarily the contacts module in the relationship butler).
+All butlers can read from `public` for identity resolution. Writes are controlled by specific modules (primarily the contacts module in the relationship butler).
 
 ## Related Pages
 

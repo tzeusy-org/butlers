@@ -68,7 +68,7 @@ _PREDICATE_BILL = "bill"
 _TRANSACTION_PREDICATES = [_PREDICATE_TRANSACTION_DEBIT, _PREDICATE_TRANSACTION_CREDIT]
 
 # ---------------------------------------------------------------------------
-# Owner entity resolution (canonical: shared.entities WHERE 'owner' = ANY(roles))
+# Owner entity resolution (canonical: public.entities WHERE 'owner' = ANY(roles))
 # ---------------------------------------------------------------------------
 
 _embedding_engine: Any = None
@@ -85,19 +85,19 @@ def _get_embedding_engine() -> Any:
 
 
 async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner entity's id from shared.entities.
+    """Resolve the owner entity's id from public.entities.
 
-    Uses shared.entities WHERE 'owner' = ANY(roles).  Returns None gracefully
+    Uses public.entities WHERE 'owner' = ANY(roles).  Returns None gracefully
     when the table does not exist yet or when no owner entity is present.
     """
     try:
         row = await pool.fetchrow(
-            "SELECT id FROM shared.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+            "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
         )
         return row["id"] if row else None
     except asyncpg.PostgresError:
         logger.debug(
-            "_get_owner_entity_id: shared.entities query failed (table may not exist yet)",
+            "_get_owner_entity_id: public.entities query failed (table may not exist yet)",
             exc_info=True,
         )
         return None

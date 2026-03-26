@@ -31,7 +31,7 @@ The ingestion layer persists the raw payload and canonical context in PostgreSQL
 
 Before the routing LLM is invoked, the Switchboard resolves sender identity:
 
-1. **Reverse-lookup**: The sender identifier is matched against `shared.contacts` and `shared.contact_info` tables to find a known contact record.
+1. **Reverse-lookup**: The sender identifier is matched against `public.contacts` and `public.contact_info` tables to find a known contact record.
 2. **Known sender**: An identity preamble is built (e.g., `[Source: Owner, via telegram_bot]` or `[Source: John (contact_id: ..., entity_id: ...), via email]`).
 3. **Unknown sender**: A temporary contact is created with `metadata.needs_disambiguation = true`. The owner receives a one-time notification. An unknown-sender preamble is injected.
 

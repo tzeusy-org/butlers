@@ -5,11 +5,11 @@
 
 ## Summary
 
-Butlers uses a single PostgreSQL database with per-butler schemas and a shared schema for cross-butler identity tables. Each butler's database connection is scoped to its own schema plus `shared`, preventing cross-butler data access. Schema migrations use Alembic with a multi-chain branching model: core, module, and butler-specific chains are discovered automatically and executed independently at startup. A DB-first credential store provides layered secret resolution with environment variable fallback.
+Butlers uses a single PostgreSQL database with per-butler schemas and the public schema for cross-butler identity tables. Each butler's database connection is scoped to its own schema plus `public`, preventing cross-butler data access. Schema migrations use Alembic with a multi-chain branching model: core, module, and butler-specific chains are discovered automatically and executed independently at startup. A DB-first credential store provides layered secret resolution with environment variable fallback.
 
 ## Motivation
 
-Butler isolation is a foundational architectural constraint. Each butler operates as an independent MCP server (see RFC 0002) with its own state, sessions, and domain-specific tables. Schema-based isolation within a single PostgreSQL instance provides this boundary without the operational overhead of per-butler database servers. A shared schema is necessary for identity data that all butlers must read (see RFC 0004). The multi-chain migration model allows modules to own their schema evolution independently, avoiding a single migration bottleneck that would couple all modules together.
+Butler isolation is a foundational architectural constraint. Each butler operates as an independent MCP server (see RFC 0002) with its own state, sessions, and domain-specific tables. Schema-based isolation within a single PostgreSQL instance provides this boundary without the operational overhead of per-butler database servers. The public schema is necessary for identity data that all butlers must read (see RFC 0004). The multi-chain migration model allows modules to own their schema evolution independently, avoiding a single migration bottleneck that would couple all modules together.
 
 ## Design
 
@@ -18,7 +18,7 @@ Butler isolation is a foundational architectural constraint. Each butler operate
 ```
 PostgreSQL Database
   |
-  +-- shared schema
+  +-- public schema (cross-butler tables)
   |     +-- entities           (identity anchor)
   |     +-- contacts           (named contact -> entity link)
   |     +-- contact_info       (per-channel identifiers)
@@ -78,25 +78,25 @@ Module-specific tables are added by module migration chains (see below). Example
 - **Contacts module:** `contacts_sync` and related tables (2+ revisions).
 - **Mailbox module:** `mailbox` (1+ revision).
 
-### Shared Schema Identity Tables
+### Cross-Butler Identity Tables (in `public`)
 
-See RFC 0004 for the full identity schema. The shared schema is readable by all butler database roles. Writes are controlled by specific modules (primarily the contacts module in the relationship butler).
+See RFC 0004 for the full identity schema. The public schema is readable by all butler database roles. Writes are controlled by specific modules (primarily the contacts module in the relationship butler).
 
 Additional shared infrastructure tables:
 
-- **`shared.model_catalog`** -- LLM model definitions (provider, name, pricing, context window, capabilities).
-- **`shared.token_limits`** -- Per-butler token quotas (daily/monthly caps).
-- **`shared.token_usage_ledger`** -- Token consumption tracking for quota enforcement.
-- **`shared.google_accounts`** -- Google OAuth account registry for multi-account support.
+- **`public.model_catalog`** -- LLM model definitions (provider, name, pricing, context window, capabilities).
+- **`public.token_limits`** -- Per-butler token quotas (daily/monthly caps).
+- **`public.token_usage_ledger`** -- Token consumption tracking for quota enforcement.
+- **`public.google_accounts`** -- Google OAuth account registry for multi-account support.
 
 ### Database Connection Scoping
 
-Each butler's database connection sets `search_path` to `<butler_schema>, shared, public`. This ensures:
+Each butler's database connection sets `search_path` to `<butler_schema>, public`. This ensures:
 
 - Unqualified queries default to the butler's own schema.
-- `shared.` prefix is optional for identity table reads (but SHOULD be used explicitly for clarity).
+- schema prefix is optional for identity table reads (but SHOULD be used explicitly for clarity).
 - A butler CANNOT access another butler's schema.
-- A butler CANNOT write to `shared` tables unless explicitly authorized by the module that owns those tables.
+- A butler CANNOT write to `public` tables unless explicitly authorized by the module that owns those tables.
 
 ### Multi-Chain Alembic Migrations
 
@@ -193,7 +193,7 @@ CREATE TABLE butler_secrets (
 
 #### Entity-Based Credentials
 
-Identity-bound credentials (OAuth tokens, Telegram user-client sessions) are stored in `shared.entity_info` rather than `butler_secrets`. The `resolve_owner_entity_info(pool, info_type)` function queries the owner entity's entity_info entries.
+Identity-bound credentials (OAuth tokens, Telegram user-client sessions) are stored in `public.entity_info` rather than `butler_secrets`. The `resolve_owner_entity_info(pool, info_type)` function queries the owner entity's entity_info entries.
 
 #### CLI Auth Token Persistence
 
@@ -213,10 +213,10 @@ Butlers is a user-federated platform (each user owns their instance). This shape
 - **RFC 0001:** Database provisioning occurs at phase 6, core migrations at phase 7, module migrations at phase 8, credential store creation at phase 8b.
 - **RFC 0002:** Modules declare their migration chains via `migration_revisions()`.
 - **RFC 0003:** Switchboard-specific tables (`routing_log`, `triage_rules`, `ingestion_events`) live in the switchboard schema.
-- **RFC 0004:** All identity tables reside in the `shared` schema with the access model described there.
+- **RFC 0004:** All identity tables reside in the `public` schema with the access model described there.
 - **RFC 0007:** The dashboard reads from all butler schemas (via a privileged connection) to provide cross-butler views.
 - **RFC 0010:** Documents a sanctioned exception to schema isolation: a read-only SQL view (`general.v_briefing_contributions`) with migration-based cross-schema grants for daily briefing aggregation. Defines reuse criteria for future exceptions.
-- **RFC 0011:** Adds `shared.insight_candidates`, `shared.insight_cooldowns`, `shared.insight_engagement`, and `shared.insight_settings` tables to the shared schema for the proactive insight delivery pipeline.
+- **RFC 0011:** Adds `public.insight_candidates`, `public.insight_cooldowns`, `public.insight_engagement`, and `public.insight_settings` tables to the public schema for the proactive insight delivery pipeline.
 - **RFC 0012:** The finance butler uses dedicated typed-column tables (`finance.transactions` and eight supporting tables) instead of SPO facts for high-volume analytical queries, following the per-butler schema isolation model.
 
 ## Alternatives Considered

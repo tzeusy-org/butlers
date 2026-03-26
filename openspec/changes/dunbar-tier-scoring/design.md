@@ -121,7 +121,7 @@ One new MCP tool is added: `dunbar_tier_set(contact_id, tier)` for manual overri
 
 ### D8: Entity API gets Dunbar data via a shared scoring function with cross-schema read
 
-**Decision:** The memory router (`src/butlers/api/routers/memory.py`) already fans out to per-butler schemas to count facts. For Dunbar scoring, it will call the same `compute_dunbar_scores` function used by the relationship butler's MCP tools. This function takes a database pool and executes a single query joining `shared.contacts` to `relationship.facts` (interaction predicates). The memory router already has read access to all schemas via its admin pool.
+**Decision:** The memory router (`src/butlers/api/routers/memory.py`) already fans out to per-butler schemas to count facts. For Dunbar scoring, it will call the same `compute_dunbar_scores` function used by the relationship butler's MCP tools. This function takes a database pool and executes a single query joining `public.contacts` to `relationship.facts` (interaction predicates). The memory router already has read access to all schemas via its admin pool.
 
 **Rationale:** The memory router is a dashboard read path, not a butler. It already crosses schema boundaries for fact aggregation. Adding one more cross-schema read for interaction-based scoring is consistent with the existing pattern. No new endpoints or inter-butler MCP calls needed.
 

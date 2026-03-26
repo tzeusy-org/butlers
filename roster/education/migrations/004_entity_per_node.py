@@ -1,8 +1,8 @@
 """entity_per_node
 
 Add entity_id UUID FK column to education.mind_map_nodes referencing
-shared.entities(id), with index, and backfill existing nodes by creating
-a shared.entities row for each (canonical_name = '<MapTitle> > <NodeLabel>').
+public.entities(id), with index, and backfill existing nodes by creating
+a public.entities row for each (canonical_name = '<MapTitle> > <NodeLabel>').
 
 Revision ID: education_004
 Revises: education_003
@@ -22,11 +22,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1. Add nullable entity_id column with FK to shared.entities.
+    # 1. Add nullable entity_id column with FK to public.entities.
     op.execute("""
         ALTER TABLE education.mind_map_nodes
             ADD COLUMN IF NOT EXISTS entity_id UUID
-                REFERENCES shared.entities(id)
+                REFERENCES public.entities(id)
     """)
 
     # 2. Create index on the new column.
@@ -36,7 +36,7 @@ def upgrade() -> None:
     """)
 
     # 3. Backfill: for each node where entity_id IS NULL, create a
-    #    shared.entities row and update the node to point at it.
+    #    public.entities row and update the node to point at it.
     #    canonical_name = '<map_title> > <node_label>'
     #    entity_type    = 'other'
     #    tenant_id      = 'shared'
@@ -65,7 +65,7 @@ def upgrade() -> None:
 
                 -- Insert entity, ignore conflict on (tenant_id, canonical_name, entity_type)
                 -- among live (non-tombstoned) entities.
-                INSERT INTO shared.entities (
+                INSERT INTO public.entities (
                     tenant_id,
                     canonical_name,
                     entity_type,
@@ -81,7 +81,7 @@ def upgrade() -> None:
 
                 -- Fetch the entity id (handles both new and pre-existing rows).
                 SELECT id INTO v_entity_id
-                FROM shared.entities
+                FROM public.entities
                 WHERE tenant_id      = 'shared'
                   AND canonical_name = v_canonical_name
                   AND entity_type    = 'other'
@@ -103,7 +103,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Drop the index first, then the column.
-    # Orphaned shared.entities rows created during upgrade are intentionally left
+    # Orphaned public.entities rows created during upgrade are intentionally left
     # in place (the issue spec says "leaves orphaned entities").
     op.execute("DROP INDEX IF EXISTS education.idx_mmn_entity_id")
     op.execute("""

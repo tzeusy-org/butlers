@@ -89,7 +89,7 @@ into the registry.
 |---|---|---|
 | Home `ha_state` predicate migration | DONE | `roster/home/migrations/002_seed_ha_state_predicate.py` |
 | `ha_entity_snapshot` persistence → `ha_state` property fact with supersession | DONE | `roster/home/modules/__init__.py` — `_persist_entity_snapshot()` |
-| HA device entity lazy-create/lookup pattern | DONE | Inline UPSERT on `shared.entities (tenant_id, canonical_name, entity_type)` in `_persist_entity_snapshot()` |
+| HA device entity lazy-create/lookup pattern | DONE | Inline UPSERT on `public.entities (tenant_id, canonical_name, entity_type)` in `_persist_entity_snapshot()` |
 | Home butler tests updated | DONE | `tests/modules/test_module_home_assistant.py` |
 | Phase 4 backfill script | DONE | `src/butlers/scripts/backfill_facts.py::backfill_home()` |
 
@@ -142,10 +142,10 @@ Tables that do not exist are gracefully skipped with a warning log.
 
 | Domain | Implementation | Compliant |
 |---|---|---|
-| Finance | `_get_owner_entity_id(pool)` fetches `shared.entities WHERE 'owner' = ANY(roles)`. When resolved, `entity_id` is always passed to `store_fact()`. When owner entity is absent (new install), facts are stored with `entity_id=None` (graceful degradation, not a bare string). | YES |
-| Home | Inline UPSERT on `shared.entities` resolves/creates a device entity per HA entity ID. The returned UUID is always passed as `entity_id`. | YES |
+| Finance | `_get_owner_entity_id(pool)` fetches `public.entities WHERE 'owner' = ANY(roles)`. When resolved, `entity_id` is always passed to `store_fact()`. When owner entity is absent (new install), facts are stored with `entity_id=None` (graceful degradation, not a bare string). | YES |
+| Home | Inline UPSERT on `public.entities` resolves/creates a device entity per HA entity ID. The returned UUID is always passed as `entity_id`. | YES |
 | Health | Owner entity resolved at module startup and cached. All health facts carry owner `entity_id`. | YES |
-| Relationship | Contact entity resolved via `shared.contacts.entity_id` FK. If NULL, `memory_entity_create()` is called and `shared.contacts.entity_id` is backfilled. | YES |
+| Relationship | Contact entity resolved via `public.contacts.entity_id` FK. If NULL, `memory_entity_create()` is called and `public.contacts.entity_id` is backfilled. | YES |
 
 ### Predicate Registry Coverage
 

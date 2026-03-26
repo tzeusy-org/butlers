@@ -72,7 +72,7 @@ async def list_ingestion_events(
     | None = Query(
         None,
         description=(
-            "Filter by event status. 'ingested'/'failed' query shared.ingestion_events; "
+            "Filter by event status. 'ingested'/'failed' query public.ingestion_events; "
             "'filtered'/'error'/'replay_complete'/'replay_failed' query "
             "connectors.filtered_events; 'replay_pending' queries both tables. "
             "Omit for unified stream."
@@ -82,7 +82,7 @@ async def list_ingestion_events(
 ) -> PaginatedResponse[IngestionEventSummary]:
     """Return a paginated unified timeline of ingestion events, newest first.
 
-    Merges ``shared.ingestion_events`` (status=ingested, filter_reason=null) with
+    Merges ``public.ingestion_events`` (status=ingested, filter_reason=null) with
     ``connectors.filtered_events`` (status/filter_reason from their own columns).
     Supports optional filtering by ``source_channel`` and ``status``.
     """
@@ -191,7 +191,7 @@ async def replay_ingestion_event(
 ) -> dict:
     """Request replay of a failed or filtered event.
 
-    Checks ``shared.ingestion_events`` first (for routing-failed events with
+    Checks ``public.ingestion_events`` first (for routing-failed events with
     status ``'failed'``), then falls back to ``connectors.filtered_events``
     (for events with status ``filtered``, ``error``, or ``replay_failed``).
 

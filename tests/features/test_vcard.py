@@ -78,10 +78,10 @@ async def pool(postgres_container):
     await db.provision()
     p = await db.connect()
 
-    # Create shared schema and entities BEFORE contacts (contacts references shared.entities)
-    await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+    # Create shared schema and entities BEFORE contacts (contacts references public.entities)
+    # public schema always exists; no need to create it.
     await p.execute("""
-        CREATE TABLE IF NOT EXISTS shared.entities (
+        CREATE TABLE IF NOT EXISTS public.entities (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             tenant_id TEXT NOT NULL DEFAULT '',
             canonical_name VARCHAR NOT NULL DEFAULT '',
@@ -110,7 +110,7 @@ async def pool(postgres_container):
             gender TEXT,
             pronouns TEXT,
             avatar_url TEXT,
-            entity_id UUID REFERENCES shared.entities(id),
+            entity_id UUID REFERENCES public.entities(id),
             listed BOOLEAN DEFAULT true,
             metadata JSONB DEFAULT '{}',
             created_at TIMESTAMPTZ DEFAULT now(),
@@ -143,7 +143,7 @@ async def pool(postgres_container):
         )
     """)
     await p.execute("""
-        CREATE TABLE IF NOT EXISTS shared.contact_info (
+        CREATE TABLE IF NOT EXISTS public.contact_info (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             contact_id UUID NOT NULL,
             type TEXT NOT NULL,
@@ -256,8 +256,8 @@ async def pool(postgres_container):
             last_confirmed_at TIMESTAMPTZ,
             tags JSONB DEFAULT '[]'::jsonb,
             metadata JSONB DEFAULT '{}'::jsonb,
-            entity_id UUID REFERENCES shared.entities(id),
-            object_entity_id UUID REFERENCES shared.entities(id),
+            entity_id UUID REFERENCES public.entities(id),
+            object_entity_id UUID REFERENCES public.entities(id),
             valid_at TIMESTAMPTZ DEFAULT NULL,
             tenant_id TEXT NOT NULL DEFAULT 'owner',
             request_id TEXT,

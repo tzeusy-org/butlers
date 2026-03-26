@@ -170,7 +170,7 @@ async def pool(provisioned_postgres_pool):
         # Shared schema + entities (needed by store_fact for entity_id validation)
         await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS shared.entities (
+            CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 tenant_id TEXT NOT NULL DEFAULT '',
                 canonical_name VARCHAR NOT NULL DEFAULT '',
@@ -233,7 +233,7 @@ async def pool(provisioned_postgres_pool):
 async def _make_contact(pool, first_name: str) -> dict:
     # Create a linked entity first (required by fact_set → resolve_contact_entity_id)
     entity_row = await pool.fetchrow(
-        "INSERT INTO shared.entities (name) VALUES ($1) RETURNING id",
+        "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
         first_name,
     )
     row = await pool.fetchrow(

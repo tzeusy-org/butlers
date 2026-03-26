@@ -102,17 +102,17 @@ def _make_app(
     _fake_entity_id = uuid.uuid4()
 
     async def _fetchrow(_query: str, *args):
-        # _resolve_account_entity_id queries shared.google_accounts
-        if "shared.google_accounts" in _query:
+        # _resolve_account_entity_id queries public.google_accounts
+        if "public.google_accounts" in _query:
             row = MagicMock()
             row.__getitem__ = lambda self, k: _fake_entity_id if k == "entity_id" else None
             return row
-        if "shared.entities" in _query:
+        if "public.entities" in _query:
             owner_row = MagicMock()
             owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
             return owner_row
-        # _resolve_entity_refresh_token queries shared.entity_info (entity_id, type)
-        if "shared.entity_info" in _query:
+        # _resolve_entity_refresh_token queries public.entity_info (entity_id, type)
+        if "public.entity_info" in _query:
             type_key = args[1] if len(args) > 1 else (args[0] if args else None)
             value = contact_info.get(type_key) if type_key else None
             if not value:

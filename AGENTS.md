@@ -201,7 +201,7 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### One-DB runtime topology contract (butlers-1003.5)
 - `[butler.db]` is schema-aware: when `name = "butlers"`, `schema` is required (explicit target schema, no implicit fallback).
 - `Database` / `DatabaseManager` apply schema-scoped `search_path` (`<schema>,shared,public`; shared pool uses `shared,public`) for one-db pool resolution.
-- API startup (`init_db_manager`) treats one-db topology as canonical shared-credentials path (`db=butlers`, schema `shared`).
+- API startup (`init_db_manager`) treats one-db topology as canonical shared-credentials path (`db=butlers`, schema `public`).
 - Daemon migration URL generation includes libpq `options=-csearch_path=...` when a schema is configured so Alembic runs in the intended schema context.
 
 ### dev.sh Gmail OAuth rerun contract
@@ -210,13 +210,13 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - For pane logs, prefer wrapping the launched command with stdout/stderr tee capture (`_wrap_cmd_for_log`) instead of raw `tmux pipe-pane`, so log files contain process output rather than interactive shell prompt/control-sequence noise.
 
 ### dev.sh OAuth shared-store contract
-- `dev.sh` OAuth preflight (`_has_google_creds`) and Layer 2 gate (`_poll_db_for_refresh_token`) query `shared.contact_info` for the owner contact's `google_oauth_refresh` row (one-db mode, schema `shared` by default, overridable via `BUTLER_SHARED_DB_NAME`/`BUTLER_SHARED_DB_SCHEMA`).
+- `dev.sh` OAuth preflight (`_has_google_creds`) and Layer 2 gate (`_poll_db_for_refresh_token`) query `public.contact_info` for the owner contact's `google_oauth_refresh` row (one-db mode, schema `public` by default, overridable via `BUTLER_SHARED_DB_NAME`/`BUTLER_SHARED_DB_SCHEMA`).
 
 ### Google OAuth credential storage split
 - App credentials (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_SCOPES`) live in `butler_secrets` via `CredentialStore`.
-- Refresh token lives exclusively in `shared.contact_info` on the owner contact (type `google_oauth_refresh`, `secured=true`). No butler_secrets fallback exists.
+- Refresh token lives exclusively in `public.contact_info` on the owner contact (type `google_oauth_refresh`, `secured=true`). No butler_secrets fallback exists.
 - No runtime env-var fallback; all credential resolution is DB-only.
-- `dev.sh` gate and runtime code both read from `shared.contact_info` so shell gating and runtime behavior cannot drift.
+- `dev.sh` gate and runtime code both read from `public.contact_info` so shell gating and runtime behavior cannot drift.
 
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py
@@ -365,13 +365,13 @@ make test-qg
 ### Contacts-identity model contracts
 
 #### Owner contact bootstrap drift
-- Legacy `src/butlers/daemon.py::_ensure_owner_entity_and_contact` inserted `shared.contacts(name='Owner')` with `ON CONFLICT DO NOTHING`; after `core_016` dropped `ix_contacts_owner_singleton`, repeated startup could create duplicate `Owner` contacts.
-- Current startup contract is entity-only bootstrap (`_ensure_owner_entity`) with no automatic `shared.contacts` insert/delete side effects.
+- Legacy `src/butlers/daemon.py::_ensure_owner_entity_and_contact` inserted `public.contacts(name='Owner')` with `ON CONFLICT DO NOTHING`; after `core_016` dropped `ix_contacts_owner_singleton`, repeated startup could create duplicate `Owner` contacts.
+- Current startup contract is entity-only bootstrap (`_ensure_owner_entity`) with no automatic `public.contacts` insert/delete side effects.
 
 #### Identity schema (shared)
-- `shared.contacts` and `shared.contact_info` are the canonical identity store in PostgreSQL; all channel-to-person resolution goes through this shared schema.
-- `shared.contacts.roles` (text[]) encodes contact relationship: `owner` marks the single human operator. A partial unique index (`ix_contacts_owner_singleton`) enforces owner singleton.
-- `shared.contact_info` links channel identifiers to contacts: `(type, value)` UNIQUE constraint guarantees at most one contact per channel identifier.
+- `public.contacts` and `public.contact_info` are the canonical identity store in PostgreSQL; all channel-to-person resolution goes through the `public` schema.
+- `public.contacts.roles` (text[]) encodes contact relationship: `owner` marks the single human operator. A partial unique index (`ix_contacts_owner_singleton`) enforces owner singleton.
+- `public.contact_info` links channel identifiers to contacts: `(type, value)` UNIQUE constraint guarantees at most one contact per channel identifier.
 - `contact_info.secured = true` marks credential entries (e.g. `type='telegram_bot_token'`); secured entries are filtered from default read paths.
 
 #### Owner bootstrap
@@ -384,7 +384,7 @@ make test-qg
 - Switchboard identity injection pipeline lives in `roster/switchboard/tools/identity/inject.py`.
 
 #### notify() contact resolution
-- `notify()` supports three-tier recipient resolution: (1) `contact_id` UUID → `shared.contact_info WHERE contact_id=X AND type=channel` (primary preferred), (2) explicit `recipient` string (backwards-compatible), (3) owner contact's channel identifier (default/scheduled sends).
+- `notify()` supports three-tier recipient resolution: (1) `contact_id` UUID → `public.contact_info WHERE contact_id=X AND type=channel` (primary preferred), (2) explicit `recipient` string (backwards-compatible), (3) owner contact's channel identifier (default/scheduled sends).
 - `_resolve_contact_channel_identifier(contact_id, channel)` in `src/butlers/daemon.py` handles path (1).
 - `resolve_owner_contact_info(pool, info_type)` in `src/butlers/credential_store.py` handles path (3); returns `None` if no matching `contact_info` entry exists (no `butler_secrets` fallback).
 - `notify()` returns `{status: pending_missing_identifier, ...}` when `contact_id` is provided but no matching `contact_info` entry exists for the requested channel; owner is notified.
@@ -747,7 +747,7 @@ make test-qg
 - Runtime authentication is handled by CLI-level OAuth tokens (device-code flow via the dashboard `/settings` page), not API keys. The spawner only includes `PATH` plus declared `[butler.env]` vars and module credential vars in the runtime environment.
 
 ### One-DB multi-schema migration planning contract
-- `docs/operations/one-db-multi-schema-migration.md` is the authoritative plan for epic `butlers-1003`: target topology (`shared` + per-butler schemas), role/ACL model, phased cutover + rollback, parity/isolation gates, and child-issue decomposition.
+- `docs/operations/one-db-multi-schema-migration.md` is the authoritative plan for epic `butlers-1003`: target topology (cross-butler tables in `public` + per-butler schemas), role/ACL model, phased cutover + rollback, parity/isolation gates, and child-issue decomposition.
 - `docs/architecture/system-architecture.md` remains current-state for deployed topology and includes a transition note linking to the migration plan.
 - `scripts/one_db_data_migration.py` is the canonical `butlers-1003.4` data-move utility: use `plan` + `migrate --dry-run` for staged rehearsal, `run` for copy+parity, and `rollback --confirm-rollback ROLLBACK` to reset target tables after failed attempts; archive JSON reports from each phase.
 - `docs/operations/one-db-data-migration-runbook.md` is the executable command/checklist reference for staging dry-runs, parity signoff, and rollback validation.
@@ -768,7 +768,7 @@ make test-qg
 - Active compatibility hotspots to evaluate first for removal: `dev.sh::_has_google_creds`, `src/butlers/modules/calendar.py::_resolve_credentials` fallback path, `src/butlers/google_credentials.py` legacy asyncpg/table helpers, `roster/switchboard/tools/notification/deliver.py` legacy positional-arg shim, and `src/butlers/api/routers/butlers.py` legacy module-status list parsing.
 
 ### Gmail connector shared-schema credential lookup contract
-- `src/butlers/connectors/gmail.py::_resolve_gmail_credentials_from_db` must perform layered DB-first lookup across local (`CONNECTOR_BUTLER_DB_NAME` + optional `CONNECTOR_BUTLER_DB_SCHEMA`) and shared (`BUTLER_SHARED_DB_NAME` + `BUTLER_SHARED_DB_SCHEMA`, default `shared`) contexts.
+- `src/butlers/connectors/gmail.py::_resolve_gmail_credentials_from_db` must perform layered DB-first lookup across local (`CONNECTOR_BUTLER_DB_NAME` + optional `CONNECTOR_BUTLER_DB_SCHEMA`) and shared (`BUTLER_SHARED_DB_NAME` + `BUTLER_SHARED_DB_SCHEMA`, default `public`) contexts.
 - Each lookup pool must apply schema-scoped `server_settings={"search_path": ...}` (via `schema_search_path`) so `butler_secrets` resolves correctly in one-db/shared-schema topologies; otherwise DB-only startup cannot resolve credentials and will fail.
 - Regression coverage lives in `tests/test_gmail_connector.py::TestResolveGmailCredentialsFromDb::test_uses_shared_schema_fallback_with_schema_scoped_search_path`.
 
@@ -869,7 +869,7 @@ make test-qg
 - If `gt prime`/`gt mail check --inject` hang in this rig, check `gt dolt status` first; when the Dolt server is down, `gt` can wedge in auto-start retries, and an explicit `gt dolt start` restores normal command responsiveness.
 
 ### Health owner entity resolution contract
-- Post-`core_016`, owner-role resolution must not query `shared.contacts.roles`; that column is gone. Health meal logging and other owner lookups should resolve the owner via `shared.entities.roles` (or the shared owner-entity helper path) and degrade gracefully when no owner entity exists.
+- Post-`core_016`, owner-role resolution must not query `public.contacts.roles`; that column is gone. Health meal logging and other owner lookups should resolve the owner via `public.entities.roles` (or the shared owner-entity helper path) and degrade gracefully when no owner entity exists.
 
 ### Beads CLI sync drift
 - In this environment (`bd` v0.58.0), the CLI no longer exposes `bd sync`; persistence/inspection flows live under `bd vc` / `bd dolt`, while `bd export -o .beads/issues.jsonl` still flushes SQLite state to JSONL. Any repo docs that prescribe `bd sync` are stale against the installed tool.

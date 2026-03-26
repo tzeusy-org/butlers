@@ -215,15 +215,15 @@ These are auto-discovered at startup by `router_discovery.py` and mounted under
 
 ## 6. Identity Subsystem
 
-Cross-butler identity resolution lives in the `shared` PostgreSQL schema.
+Cross-butler identity resolution lives in the `public` PostgreSQL schema.
 
 | Table | Responsibility |
 |---|---|
-| `shared.entities` | Canonical entity registry. Each row represents a known person/actor with a `roles` array. |
-| `shared.contacts` | Contact records linked to entities. |
-| `shared.contact_info` | Per-channel identifiers (telegram_chat_id, email address, etc.). UNIQUE on `(type, value)`. |
-| `shared.model_catalog` | Global model catalog for dynamic model routing. |
-| `shared.butler_model_overrides` | Per-butler model selection overrides. |
+| `public.entities` | Canonical entity registry. Each row represents a known person/actor with a `roles` array. |
+| `public.contacts` | Contact records linked to entities. |
+| `public.contact_info` | Per-channel identifiers (telegram_chat_id, email address, etc.). UNIQUE on `(type, value)`. |
+| `public.model_catalog` | Global model catalog for dynamic model routing. |
+| `public.butler_model_overrides` | Per-butler model selection overrides. |
 
 Resolution flow: channel identifier -> `contact_info` -> `contacts` -> `entities` -> roles.
 

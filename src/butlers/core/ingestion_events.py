@@ -1,4 +1,4 @@
-"""Query functions for shared.ingestion_events — the canonical ingestion event registry.
+"""Query functions for public.ingestion_events — the canonical ingestion event registry.
 
 Each ingestion event is a first-class record of an accepted ingest envelope.
 The UUID7 primary key (``id``) matches the ``request_id`` returned to connectors
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Column definitions for the unified ingestion event SELECT lists
 #
-# The UNION ALL query in ingestion_events_list merges shared.ingestion_events
+# The UNION ALL query in ingestion_events_list merges public.ingestion_events
 # and connectors.filtered_events.  The two tables share some column names, use
 # different names for equivalent columns, and each has columns absent from the
 # other.  Rather than maintaining two hardcoded SELECT strings in parallel, we
@@ -40,12 +40,12 @@ logger = logging.getLogger(__name__)
 #
 # _UNION_COLUMN_SPEC entries: (output_alias, ingested_expr, filtered_expr)
 #   output_alias    — the result column name (shared by both UNION branches)
-#   ingested_expr   — expression used in the shared.ingestion_events SELECT;
+#   ingested_expr   — expression used in the public.ingestion_events SELECT;
 #                     a plain column name, a renamed column, or a SQL literal
 #   filtered_expr   — expression used in the connectors.filtered_events SELECT;
 #                     a plain column name (possibly renamed), or NULL::text
 #
-# Adding a new column to shared.ingestion_events only requires adding one entry
+# Adding a new column to public.ingestion_events only requires adding one entry
 # here; both SELECT lists are rebuilt automatically at import time.
 # ---------------------------------------------------------------------------
 
@@ -145,7 +145,7 @@ async def ingestion_event_get(
 ) -> dict[str, Any] | None:
     """Return a single ingestion event by its UUID, or None if not found.
 
-    Performs a unified lookup: checks ``shared.ingestion_events`` first (the
+    Performs a unified lookup: checks ``public.ingestion_events`` first (the
     common path for accepted/ingested events), then falls back to
     ``connectors.filtered_events`` so that filtered events are also retrievable
     by ID.  Both result shapes are normalised to the same dict structure,
@@ -153,7 +153,7 @@ async def ingestion_event_get(
 
     Args:
         pool: asyncpg connection pool that can resolve both
-            ``shared.ingestion_events`` and ``connectors.filtered_events``.
+            ``public.ingestion_events`` and ``connectors.filtered_events``.
         event_id: UUID of the ingestion event to fetch.
 
     Returns:
@@ -163,9 +163,9 @@ async def ingestion_event_get(
     if isinstance(event_id, str):
         event_id = UUID(event_id)
 
-    # 1. Try shared.ingestion_events first (happy path for accepted events).
+    # 1. Try public.ingestion_events first (happy path for accepted events).
     row = await pool.fetchrow(
-        f"SELECT {_INGESTED_COLS} FROM shared.ingestion_events WHERE id = $1",
+        f"SELECT {_INGESTED_COLS} FROM public.ingestion_events WHERE id = $1",
         event_id,
     )
     if row is not None:
@@ -190,7 +190,7 @@ async def ingestion_events_list(
 ) -> list[dict[str, Any]]:
     """Return a paginated list of ingestion events (unified stream), newest first.
 
-    Always UNION ALLs ``shared.ingestion_events`` and
+    Always UNION ALLs ``public.ingestion_events`` and
     ``connectors.filtered_events``, applying optional ``status`` and
     ``source_channel`` filters in the outer query.
     """
@@ -212,7 +212,7 @@ async def ingestion_events_list(
 
     sql = (
         f"SELECT * FROM ("
-        f"SELECT {_INGESTED_COLS} FROM shared.ingestion_events "
+        f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
         f"UNION ALL "
         f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
         f") AS combined"
@@ -248,7 +248,7 @@ async def ingestion_events_count(
 
     sql = (
         f"SELECT count(*) FROM ("
-        f"SELECT {_INGESTED_COLS} FROM shared.ingestion_events "
+        f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
         f"UNION ALL "
         f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
         f") AS combined"
@@ -269,7 +269,7 @@ async def ingestion_event_mark_failed(
     clobbering a replay-pending or already-failed state).
 
     Args:
-        pool: asyncpg connection pool with access to ``shared.ingestion_events``.
+        pool: asyncpg connection pool with access to ``public.ingestion_events``.
         event_id: UUID of the ingestion event (matches ``request_id``).
         error_detail: Human-readable description of the routing failure.
 
@@ -282,7 +282,7 @@ async def ingestion_event_mark_failed(
 
     result = await pool.execute(
         """
-        UPDATE shared.ingestion_events
+        UPDATE public.ingestion_events
         SET status = 'failed',
             error_detail = $2
         WHERE id = $1
@@ -301,7 +301,7 @@ async def ingestion_event_replay_request(
 ) -> dict[str, Any]:
     """Request replay of a failed or filtered event.
 
-    Checks ``shared.ingestion_events`` first (for routing-failed events), then
+    Checks ``public.ingestion_events`` first (for routing-failed events), then
     falls back to ``connectors.filtered_events`` (for connector-filtered events).
 
     For failed ingestion events, resets status to ``'ingested'`` so the
@@ -318,7 +318,7 @@ async def ingestion_event_replay_request(
 
     Args:
         pool: asyncpg connection pool that can resolve both
-            ``shared.ingestion_events`` and ``connectors.filtered_events``.
+            ``public.ingestion_events`` and ``connectors.filtered_events``.
         event_id: UUID of the event to replay.
 
     Returns:
@@ -331,10 +331,10 @@ async def ingestion_event_replay_request(
     if isinstance(event_id, str):
         event_id = UUID(event_id)
 
-    # 1. Try shared.ingestion_events first (routing-failed events).
+    # 1. Try public.ingestion_events first (routing-failed events).
     row = await pool.fetchrow(
         """
-        UPDATE shared.ingestion_events
+        UPDATE public.ingestion_events
         SET status = 'ingested', error_detail = NULL
         WHERE id = $1 AND status = 'failed'
         RETURNING id
@@ -366,7 +366,7 @@ async def ingestion_event_replay_request(
         return {"outcome": "ok", "id": str(row["id"]), "source": "filtered_events"}
 
     # 3. Check both tables for non-replayable status (e.g. replay_pending).
-    for table in ("shared.ingestion_events", "connectors.filtered_events"):
+    for table in ("public.ingestion_events", "connectors.filtered_events"):
         current_status = await pool.fetchval(
             f"SELECT status FROM {table} WHERE id = $1",
             event_id,

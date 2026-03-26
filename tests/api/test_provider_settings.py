@@ -39,7 +39,7 @@ def _make_provider_row(
     config: dict[str, Any] | None = None,
     enabled: bool = False,
 ) -> dict[str, Any]:
-    """Build a fake asyncpg record dict for shared.provider_config.
+    """Build a fake asyncpg record dict for public.provider_config.
 
     When ``config`` is None (the default), a sensible Ollama config is used.
     Pass an explicit ``{}`` for an empty config.

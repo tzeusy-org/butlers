@@ -262,7 +262,7 @@ class TestIngestionEventGet:
         await ingestion_event_get(pool, uuid.uuid4())
         assert pool.calls, "fetchrow should have been called"
         _, sql, _ = pool.calls[0]
-        assert "shared.ingestion_events" in sql
+        assert "public.ingestion_events" in sql
 
     async def test_passes_event_id_as_param(self) -> None:
         from butlers.core.ingestion_events import ingestion_event_get
@@ -340,7 +340,7 @@ class TestIngestionEventGet:
 
 class TestIngestionEventGetUnifiedLookup:
     """Covers the fallback to connectors.filtered_events when an event is not
-    found in shared.ingestion_events."""
+    found in public.ingestion_events."""
 
     async def test_returns_none_when_not_in_either_table(self) -> None:
         """Both fetchrow calls return None → result is None."""
@@ -352,7 +352,7 @@ class TestIngestionEventGetUnifiedLookup:
         assert result is None
 
     async def test_two_fetchrow_calls_on_miss(self) -> None:
-        """When shared.ingestion_events misses, filtered_events is also queried."""
+        """When public.ingestion_events misses, filtered_events is also queried."""
         from butlers.core.ingestion_events import ingestion_event_get
 
         pool = _FakePool(fetchrow_results=[None, None])
@@ -361,13 +361,13 @@ class TestIngestionEventGetUnifiedLookup:
         assert len(fetchrow_calls) == 2, "Expected two fetchrow calls for the unified lookup"
 
     async def test_first_fetchrow_targets_shared_ingestion_events(self) -> None:
-        """First lookup must query shared.ingestion_events."""
+        """First lookup must query public.ingestion_events."""
         from butlers.core.ingestion_events import ingestion_event_get
 
         pool = _FakePool(fetchrow_results=[None, None])
         await ingestion_event_get(pool, uuid.uuid4())
         fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
-        assert "shared.ingestion_events" in fetchrow_calls[0][1]
+        assert "public.ingestion_events" in fetchrow_calls[0][1]
 
     async def test_second_fetchrow_targets_connectors_filtered_events(self) -> None:
         """Fallback lookup must query connectors.filtered_events."""
@@ -379,7 +379,7 @@ class TestIngestionEventGetUnifiedLookup:
         assert "connectors.filtered_events" in fetchrow_calls[1][1]
 
     async def test_returns_filtered_event_when_found_in_filtered_events(self) -> None:
-        """When shared.ingestion_events misses but filtered_events has the row,
+        """When public.ingestion_events misses but filtered_events has the row,
         the filtered event is returned with its real status and filter_reason."""
         from butlers.core.ingestion_events import ingestion_event_get
 
@@ -441,7 +441,7 @@ class TestIngestionEventGetUnifiedLookup:
             assert field in result, f"Missing field in filtered event result: {field}"
 
     async def test_no_second_fetchrow_when_found_in_ingestion_events(self) -> None:
-        """When shared.ingestion_events returns a row, no fallback query is issued."""
+        """When public.ingestion_events returns a row, no fallback query is issued."""
         from butlers.core.ingestion_events import ingestion_event_get
 
         row = _make_event_record()
@@ -579,7 +579,7 @@ class TestIngestionEventsList:
         pool = _FakePool(fetch_results=[])
         await ingestion_events_list(pool)
         _, sql, _ = pool.calls[0]
-        assert "shared.ingestion_events" in sql
+        assert "public.ingestion_events" in sql
 
     async def test_id_is_string_in_results(self) -> None:
         from butlers.core.ingestion_events import ingestion_events_list
@@ -612,7 +612,7 @@ class TestIngestionEventsCount:
         assert result == 42
 
     async def test_no_status_queries_both_tables(self) -> None:
-        """Without a status filter both shared.ingestion_events and connectors.filtered_events
+        """Without a status filter both public.ingestion_events and connectors.filtered_events
         should be referenced in the SQL."""
         from butlers.core.ingestion_events import ingestion_events_count
 
@@ -620,7 +620,7 @@ class TestIngestionEventsCount:
         await ingestion_events_count(pool)
         assert pool.calls, "fetchval should have been called"
         _, sql, _ = pool.calls[0]
-        assert "shared.ingestion_events" in sql
+        assert "public.ingestion_events" in sql
         assert "connectors.filtered_events" in sql
 
     async def test_no_status_no_channel_passes_no_args(self) -> None:
@@ -647,7 +647,7 @@ class TestIngestionEventsCount:
         pool = _FakePool(fetchval_result=5)
         await ingestion_events_count(pool, status="ingested")
         _, sql, args = pool.calls[0]
-        assert "shared.ingestion_events" in sql
+        assert "public.ingestion_events" in sql
         assert "status" in sql
         assert "ingested" in args
 
@@ -657,7 +657,7 @@ class TestIngestionEventsCount:
         pool = _FakePool(fetchval_result=3)
         await ingestion_events_count(pool, status="ingested", source_channel="email")
         _, sql, args = pool.calls[0]
-        assert "shared.ingestion_events" in sql
+        assert "public.ingestion_events" in sql
         assert "source_channel" in sql
         assert args == ("ingested", "email")
 
@@ -669,7 +669,7 @@ class TestIngestionEventsCount:
         await ingestion_events_count(pool, status="filtered")
         _, sql, args = pool.calls[0]
         assert "connectors.filtered_events" in sql
-        assert "shared.ingestion_events" in sql
+        assert "public.ingestion_events" in sql
         assert "filtered" in args
 
     async def test_status_filtered_with_channel(self) -> None:
@@ -1091,7 +1091,7 @@ class TestIngestionEventReplayRequest:
         assert "RETURNING" in sql.upper()
 
     async def test_first_update_targets_ingestion_events(self) -> None:
-        """The first UPDATE must target shared.ingestion_events (routing-failed events)."""
+        """The first UPDATE must target public.ingestion_events (routing-failed events)."""
         from butlers.core.ingestion_events import ingestion_event_replay_request
 
         event_id = uuid.uuid4()
@@ -1099,7 +1099,7 @@ class TestIngestionEventReplayRequest:
         pool = _FakePool(fetchrow_result=returning_row)
         await ingestion_event_replay_request(pool, event_id)
         _, sql, _ = pool.calls[0]
-        assert "shared.ingestion_events" in sql
+        assert "public.ingestion_events" in sql
         assert "failed" in sql.lower()
 
     async def test_fallback_update_targets_filtered_events(self) -> None:
@@ -1144,7 +1144,7 @@ class TestIngestionEventReplayRequest:
         fetchval_calls = [c for c in pool.calls if c[0] == "fetchval"]
         assert len(fetchval_calls) == 2
         # First checks ingestion_events, then filtered_events
-        assert "shared.ingestion_events" in fetchval_calls[0][1]
+        assert "public.ingestion_events" in fetchval_calls[0][1]
         assert "connectors.filtered_events" in fetchval_calls[1][1]
 
     async def test_conflict_when_update_miss_and_row_exists(self) -> None:

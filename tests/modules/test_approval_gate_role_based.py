@@ -78,7 +78,7 @@ def _make_non_owner_contact() -> ResolvedContact:
 
 
 class RoleAwareMockPool:
-    """Extended MockPool that supports shared.contacts and contact_info lookups.
+    """Extended MockPool that supports public.contacts and contact_info lookups.
 
     Maps (channel_type, channel_value) -> ResolvedContact for testing role-based
     gating without a real database.
@@ -221,8 +221,8 @@ class RoleAwareMockPool:
             row = self.pending_actions.get(action_id)
             return dict(row) if row else None
 
-        # shared.contacts lookup by contact_id UUID (direct lookup)
-        if "shared.contacts" in query and "WHERE id" in query and args:
+        # public.contacts lookup by contact_id UUID (direct lookup)
+        if "public.contacts" in query and "WHERE id" in query and args:
             try:
                 lookup_id = UUID(str(args[0]))
             except (ValueError, AttributeError):
@@ -237,8 +237,8 @@ class RoleAwareMockPool:
                 "entity_id": contact.entity_id,
             }
 
-        # shared.contact_info JOIN shared.contacts lookup (channel-based)
-        if "shared.contact_info" in query and args and len(args) >= 2:
+        # public.contact_info JOIN public.contacts lookup (channel-based)
+        if "public.contact_info" in query and args and len(args) >= 2:
             channel_type = str(args[0])
             channel_value = str(args[1])
             contact = self._contact_info.get((channel_type, channel_value))

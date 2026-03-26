@@ -1675,7 +1675,7 @@ class _GoogleProvider(CalendarProvider):
                 try:
                     await _pool.execute(
                         """
-                        UPDATE shared.google_accounts
+                        UPDATE public.google_accounts
                         SET last_token_refresh_at = NOW()
                         WHERE email = $1
                         """,
@@ -4191,7 +4191,7 @@ class CalendarModule(Module):
         """Resolve Google OAuth credentials using canonical lookup sources.
 
         When ``config.account`` is set, credentials are resolved for that
-        specific Google account from ``shared.google_accounts`` and its
+        specific Google account from ``public.google_accounts`` and its
         companion entity_info.  Otherwise, falls back to the primary account
         (via owner entity_info) for backward compatibility.
 
@@ -4225,7 +4225,7 @@ class CalendarModule(Module):
 
             if pool is not None and account_email:
                 # Account-aware: resolve refresh token from the companion entity
-                # for the specific Google account row in shared.google_accounts.
+                # for the specific Google account row in public.google_accounts.
                 from butlers.google_account_registry import (
                     GoogleAccountNotFoundError,
                     get_google_account,
@@ -4257,7 +4257,7 @@ class CalendarModule(Module):
                 async with pool.acquire() as conn:
                     row = await conn.fetchrow(
                         """
-                        SELECT value FROM shared.entity_info
+                        SELECT value FROM public.entity_info
                         WHERE entity_id = $1 AND type = 'google_oauth_refresh'
                         LIMIT 1
                         """,

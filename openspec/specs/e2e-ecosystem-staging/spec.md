@@ -25,11 +25,11 @@ The ecosystem fixture SHALL execute in five sequential phases: Provision, Config
 - **THEN** the fixture reports which butler(s) failed to start and tears down all resources
 
 ### Requirement: PostgreSQL provisioning with migrations
-The Provision phase SHALL start a testcontainer PostgreSQL instance and run all Alembic migrations to create the full schema (per-butler schemas + `shared`).
+The Provision phase SHALL start a testcontainer PostgreSQL instance and run all Alembic migrations to create the full schema (per-butler schemas + `public`).
 
 #### Scenario: Fresh database provisioned
 - **WHEN** the ecosystem fixture starts
-- **THEN** a `pgvector/pgvector:pg17` testcontainer is started, all migrations run, and per-butler schemas plus `shared` schema are created
+- **THEN** a `pgvector/pgvector:pg17` testcontainer is started, all migrations run, and per-butler schemas plus `public` schema are created
 
 #### Scenario: Partitioned tables initialized
 - **WHEN** migrations complete

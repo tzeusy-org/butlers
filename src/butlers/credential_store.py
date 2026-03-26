@@ -510,14 +510,14 @@ async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:
 
 
 async def resolve_owner_entity_info(pool: asyncpg.Pool, info_type: str) -> str | None:
-    """Resolve a credential value from the owner entity's ``shared.entity_info``.
+    """Resolve a credential value from the owner entity's ``public.entity_info``.
 
-    Queries ``shared.entities`` for the owner entity (``'owner' = ANY(roles)``)
-    and returns the ``value`` from the matching ``shared.entity_info`` row for
+    Queries ``public.entities`` for the owner entity (``'owner' = ANY(roles)``)
+    and returns the ``value`` from the matching ``public.entity_info`` row for
     the given *info_type*.  Primary entries (``is_primary = true``) are preferred
     over non-primary entries.  Returns ``None`` when:
 
-    - ``shared.entities`` or ``shared.entity_info`` do not exist.
+    - ``public.entities`` or ``public.entity_info`` do not exist.
     - No owner entity is found.
     - No ``entity_info`` row exists for the given type on the owner entity.
 
@@ -543,8 +543,8 @@ async def resolve_owner_entity_info(pool: asyncpg.Pool, info_type: str) -> str |
             row = await conn.fetchrow(
                 """
                 SELECT ei.value
-                FROM shared.entity_info ei
-                JOIN shared.entities e ON e.id = ei.entity_id
+                FROM public.entity_info ei
+                JOIN public.entities e ON e.id = ei.entity_id
                 WHERE 'owner' = ANY(e.roles)
                   AND ei.type = $1
                 ORDER BY ei.is_primary DESC NULLS LAST, ei.created_at ASC
@@ -580,7 +580,7 @@ async def upsert_owner_entity_info(
     *,
     secured: bool = True,
 ) -> bool:
-    """Upsert a ``shared.entity_info`` row on the owner entity.
+    """Upsert a ``public.entity_info`` row on the owner entity.
 
     Finds the owner entity (``'owner' = ANY(e.roles)``), then inserts or
     updates the ``entity_info`` row for ``(entity_id, type)`` using the
@@ -608,7 +608,7 @@ async def upsert_owner_entity_info(
             owner = await conn.fetchrow(
                 """
                 SELECT e.id
-                FROM shared.entities e
+                FROM public.entities e
                 WHERE 'owner' = ANY(e.roles)
                 LIMIT 1
                 """,
@@ -619,7 +619,7 @@ async def upsert_owner_entity_info(
             entity_id = owner["id"]
             await conn.execute(
                 """
-                INSERT INTO shared.entity_info (entity_id, type, value, secured, is_primary)
+                INSERT INTO public.entity_info (entity_id, type, value, secured, is_primary)
                 VALUES ($1, $2, $3, $4, true)
                 ON CONFLICT (entity_id, type) DO UPDATE SET
                     value = EXCLUDED.value,
@@ -648,7 +648,7 @@ async def delete_owner_entity_info(
     pool: asyncpg.Pool,
     info_type: str,
 ) -> bool:
-    """Delete a ``shared.entity_info`` row from the owner entity.
+    """Delete a ``public.entity_info`` row from the owner entity.
 
     Parameters
     ----------
@@ -667,7 +667,7 @@ async def delete_owner_entity_info(
             owner = await conn.fetchrow(
                 """
                 SELECT e.id
-                FROM shared.entities e
+                FROM public.entities e
                 WHERE 'owner' = ANY(e.roles)
                 LIMIT 1
                 """,
@@ -676,7 +676,7 @@ async def delete_owner_entity_info(
                 logger.debug("delete_owner_entity_info: no owner entity found")
                 return False
             result = await conn.execute(
-                "DELETE FROM shared.entity_info WHERE entity_id = $1 AND type = $2",
+                "DELETE FROM public.entity_info WHERE entity_id = $1 AND type = $2",
                 owner["id"],
                 info_type,
             )

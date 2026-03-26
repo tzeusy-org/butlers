@@ -548,7 +548,7 @@ class TestDisconnectAccount:
             await disconnect_account(pool, _ACCOUNT_ID)
 
         execute_calls = [str(call[0][0]) for call in conn2.execute.call_args_list]
-        assert any("DELETE FROM shared.entity_info" in c for c in execute_calls)
+        assert any("DELETE FROM public.entity_info" in c for c in execute_calls)
 
     async def test_auto_promotes_oldest_when_was_primary(self) -> None:
         """After disconnecting the primary, oldest active account is auto-promoted."""
@@ -604,7 +604,7 @@ class TestDisconnectAccount:
             await disconnect_account(pool, _ACCOUNT_ID, hard_delete=True)
 
         execute_calls = [str(call[0][0]) for call in conn2.execute.call_args_list]
-        assert any("DELETE FROM shared.entities" in c for c in execute_calls)
+        assert any("DELETE FROM public.entities" in c for c in execute_calls)
 
     async def test_raises_not_found_for_missing_account(self) -> None:
         pool, _ = await self._make_disconnect_pool(account_exists=False)

@@ -12,7 +12,7 @@ class IngestionEventSummary(BaseModel):
     """Lightweight ingestion event representation for list views.
 
     Returned from the unified timeline endpoint which merges
-    ``shared.ingestion_events`` (status='ingested') with
+    ``public.ingestion_events`` (status='ingested') with
     ``connectors.filtered_events`` (status = filtered/error/replay_*).
     """
 

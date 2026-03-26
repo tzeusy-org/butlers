@@ -123,7 +123,7 @@ the feature's correctness or user experience.
 
 When writing new specs for undocumented features, describe the feature's purpose and
 observable behavior. Avoid prescribing internal architecture, class hierarchies, or
-database schemas unless they are load-bearing contracts (e.g., shared schema tables
+database schemas unless they are load-bearing contracts (e.g., public schema tables
 that other butlers depend on).
 
 ### Use Subagents Aggressively for Investigation
@@ -132,7 +132,7 @@ with `subagent_type=Explore` or `subagent_type=general-purpose`) for investigati
 work rather than trying to read everything in the main thread. Typical patterns:
 - One subagent per spec category to read and summarize requirements
 - One subagent per roster butler to inventory tools, skills, API routes, and modules
-- Dedicated subagents for cross-cutting concerns (shared schema, connectors, dashboard)
+- Dedicated subagents for cross-cutting concerns (public schema, connectors, dashboard)
 
 The main thread should orchestrate, merge results, and make decisions — not do the
 heavy file-reading itself.

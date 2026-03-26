@@ -419,7 +419,7 @@ All user-facing messages from the education butler MUST be delivered via the `no
 
 #### Scenario: Notify respects user's preferred channel if overridden
 
-- **WHEN** the owner contact's `shared.contact_info` has a `preferred_channel` override
+- **WHEN** the owner contact's `public.contact_info` has a `preferred_channel` override
 - **THEN** `notify()` uses that channel instead of the default Telegram
 
 ### Requirement: Flow Tool API — Start, Get, Advance, Abandon

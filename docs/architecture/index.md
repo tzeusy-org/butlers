@@ -7,7 +7,7 @@
 - [System Topology](system-topology.md) — service ports, inter-service communication, overall shape
 - [Butler Daemon](butler-daemon.md) — daemon internals, startup sequence, core components
 - [Routing](routing.md) — switchboard routing architecture, classification, fanout
-- [Database Design](database-design.md) — shared schema, per-butler schemas, JSONB patterns
+- [Database Design](database-design.md) — public schema, per-butler schemas, JSONB patterns
 - [Observability](observability.md) — OpenTelemetry, Grafana, Tempo, trace propagation
 - [Email Priority Queuing](email-priority-queuing.md) — email priority and queuing design
 - [Pre-Classification Triage](pre-classification-triage.md) — pre-classification triage design

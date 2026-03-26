@@ -57,7 +57,7 @@ def _make_conversation_row(
     total_output_tokens: int = 200,
     total_duration_ms: int = 1500,
 ) -> dict:
-    """Build a dict mimicking a shared.dashboard_conversations row."""
+    """Build a dict mimicking a public.dashboard_conversations row."""
     return {
         "id": conv_id or _CONV_ID,
         "butler_name": butler_name,
@@ -87,7 +87,7 @@ def _make_message_row(
     session_id=None,
     request_id=None,
 ) -> dict:
-    """Build a dict mimicking a shared.dashboard_messages row."""
+    """Build a dict mimicking a public.dashboard_messages row."""
     return {
         "id": msg_id or _MSG_ID,
         "conversation_id": conv_id or _CONV_ID,

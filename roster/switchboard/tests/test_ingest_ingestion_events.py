@@ -1,13 +1,13 @@
-"""Unit tests for shared.ingestion_events write inside ingest_v1 pipeline.
+"""Unit tests for public.ingestion_events write inside ingest_v1 pipeline.
 
 Verifies the invariants stated in bu-0b7.3:
 - Accepting a new envelope inserts into BOTH message_inbox AND
-  shared.ingestion_events in the same transaction.
+  public.ingestion_events in the same transaction.
 - Duplicate detection (either pre-lock or inside the advisory-lock
-  re-check) skips the shared.ingestion_events insert.
+  re-check) skips the public.ingestion_events insert.
 - The request_id returned in IngestAcceptedResponse equals the id
-  that would be written to shared.ingestion_events.
-- Fields written to shared.ingestion_events match the envelope.
+  that would be written to public.ingestion_events.
+- Fields written to public.ingestion_events match the envelope.
 
 Also verifies the ensure_partition outside-transaction invariant (bu-v8ip):
 - ensure_partition is called via pool.execute() (auto-commit / outside the
@@ -65,9 +65,9 @@ class _FakeConn:
         return [sql for sql, _ in self.execute_calls]
 
     def ingestion_events_args(self) -> tuple | None:
-        """Return the parameter tuple from the shared.ingestion_events INSERT, or None."""
+        """Return the parameter tuple from the public.ingestion_events INSERT, or None."""
         for sql, args in self.execute_calls:
-            if "shared.ingestion_events" in sql:
+            if "public.ingestion_events" in sql:
                 return args
         return None
 
@@ -75,7 +75,7 @@ class _FakeConn:
         return any("INSERT INTO message_inbox" in sql for sql, _ in self.execute_calls)
 
     def has_ingestion_events_insert(self) -> bool:
-        return any("shared.ingestion_events" in sql for sql, _ in self.execute_calls)
+        return any("public.ingestion_events" in sql for sql, _ in self.execute_calls)
 
 
 class _FakeTransaction:
@@ -209,7 +209,7 @@ def _email_envelope(
 
 
 class TestIngestionEventsWriteOnAccept:
-    """shared.ingestion_events is written atomically with message_inbox on accept."""
+    """public.ingestion_events is written atomically with message_inbox on accept."""
 
     async def test_new_ingest_writes_ingestion_events(self) -> None:
         pool = _FakePool()
@@ -223,7 +223,7 @@ class TestIngestionEventsWriteOnAccept:
         assert result.duplicate is False
         assert pool.conn.has_message_inbox_insert()
         assert pool.conn.has_ingestion_events_insert(), (
-            "shared.ingestion_events INSERT must be executed for a new ingest"
+            "public.ingestion_events INSERT must be executed for a new ingest"
         )
 
     async def test_ingestion_events_id_equals_request_id(self) -> None:
@@ -239,7 +239,7 @@ class TestIngestionEventsWriteOnAccept:
         # $1 is the id parameter
         inserted_id: UUID = args[0]
         assert inserted_id == result.request_id, (
-            "shared.ingestion_events.id must equal the returned request_id"
+            "public.ingestion_events.id must equal the returned request_id"
         )
 
     async def test_ingestion_events_source_channel(self) -> None:
@@ -418,7 +418,7 @@ class TestIngestionEventsWriteOnAccept:
         assert args[13] is None, "triage_target must be None for pass_through decision"
 
     async def test_both_inserts_share_same_received_at(self) -> None:
-        """message_inbox and shared.ingestion_events receive the same received_at."""
+        """message_inbox and public.ingestion_events receive the same received_at."""
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="666")
 
@@ -430,7 +430,7 @@ class TestIngestionEventsWriteOnAccept:
         for sql, args in pool.conn.execute_calls:
             if "INSERT INTO message_inbox" in sql:
                 inbox_received_at = args[1]  # $2
-            elif "shared.ingestion_events" in sql:
+            elif "public.ingestion_events" in sql:
                 events_received_at = args[1]  # $2
 
         assert inbox_received_at is not None
@@ -446,7 +446,7 @@ class TestIngestionEventsWriteOnAccept:
 
 
 class TestIngestionEventsSkippedOnDuplicate:
-    """shared.ingestion_events is NOT written for duplicate submissions."""
+    """public.ingestion_events is NOT written for duplicate submissions."""
 
     async def test_pre_lock_duplicate_skips_ingestion_events(self) -> None:
         """Pre-lock duplicate check (pool.fetchrow) exits early — no DB inserts at all."""
@@ -464,7 +464,7 @@ class TestIngestionEventsSkippedOnDuplicate:
             "message_inbox INSERT must NOT run for pre-lock duplicate"
         )
         assert not pool.conn.has_ingestion_events_insert(), (
-            "shared.ingestion_events INSERT must NOT run for pre-lock duplicate"
+            "public.ingestion_events INSERT must NOT run for pre-lock duplicate"
         )
 
     async def test_inside_lock_duplicate_skips_ingestion_events(self) -> None:
@@ -483,7 +483,7 @@ class TestIngestionEventsSkippedOnDuplicate:
             "message_inbox INSERT must NOT run when inside-lock duplicate detected"
         )
         assert not pool.conn.has_ingestion_events_insert(), (
-            "shared.ingestion_events INSERT must NOT run when inside-lock duplicate detected"
+            "public.ingestion_events INSERT must NOT run when inside-lock duplicate detected"
         )
 
     async def test_duplicate_returns_existing_request_id(self) -> None:
@@ -509,7 +509,7 @@ class TestEnsurePartitionOutsideTransaction:
     inside the advisory-lock transaction.
 
     Background (bu-v8ip): If ensure_partition runs inside a transaction and
-    that transaction rolls back (e.g. shared.ingestion_events missing, network
+    that transaction rolls back (e.g. public.ingestion_events missing, network
     error), the newly-created partition is also dropped, causing every
     subsequent insert to fail in a tight loop.
 

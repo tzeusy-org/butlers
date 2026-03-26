@@ -2,20 +2,20 @@
 
 ## Purpose
 
-The `shared.google_accounts` table stores metadata for each connected Google account. It provides account discovery, primary account management, companion entity creation for credential storage, scope tracking, and account lifecycle management (connect, disconnect, hard delete).
+The `public.google_accounts` table stores metadata for each connected Google account. It provides account discovery, primary account management, companion entity creation for credential storage, scope tracking, and account lifecycle management (connect, disconnect, hard delete).
 
 ## ADDED Requirements
 
 ### Requirement: Google Accounts Registry Table
 
-The `shared.google_accounts` table SHALL store metadata for each connected Google account. Each row represents one authenticated Google identity.
+The `public.google_accounts` table SHALL store metadata for each connected Google account. Each row represents one authenticated Google identity.
 
 #### Schema
 
 ```sql
-CREATE TABLE shared.google_accounts (
+CREATE TABLE public.google_accounts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    entity_id UUID NOT NULL REFERENCES shared.entities(id) ON DELETE CASCADE,
+    entity_id UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
     email VARCHAR UNIQUE,
     display_name VARCHAR,
     is_primary BOOLEAN NOT NULL DEFAULT false,
@@ -30,13 +30,13 @@ CREATE TABLE shared.google_accounts (
 
 Indexes:
 - `ix_google_accounts_email` on `(email)` — unique, supports lookup by email
-- Partial unique index: `CREATE UNIQUE INDEX ix_google_accounts_primary_singleton ON shared.google_accounts ((true)) WHERE is_primary = true` — enforces at most one primary account
+- Partial unique index: `CREATE UNIQUE INDEX ix_google_accounts_primary_singleton ON public.google_accounts ((true)) WHERE is_primary = true` — enforces at most one primary account
 
 #### Scenario: Create a new Google account record
 
 - **WHEN** a Google OAuth callback completes successfully with a new email address
-- **THEN** a new `shared.google_accounts` row SHALL be inserted with the authenticated email, display name, and granted scopes
-- **AND** a companion entity SHALL be created in `shared.entities` with `entity_type = 'other'` and `roles = ['google_account']`
+- **THEN** a new `public.google_accounts` row SHALL be inserted with the authenticated email, display name, and granted scopes
+- **AND** a companion entity SHALL be created in `public.entities` with `entity_type = 'other'` and `roles = ['google_account']`
 - **AND** the `entity_id` on the google_accounts row SHALL reference the companion entity
 
 #### Scenario: First account is automatically primary
@@ -53,23 +53,23 @@ Indexes:
 #### Scenario: Account lookup by email
 
 - **WHEN** a module resolves credentials with `account = "alice@gmail.com"`
-- **THEN** the lookup SHALL query `shared.google_accounts WHERE email = $1`
+- **THEN** the lookup SHALL query `public.google_accounts WHERE email = $1`
 - **AND** return the account's `entity_id` for credential resolution from `entity_info`
 
 #### Scenario: Account lookup by UUID
 
 - **WHEN** a module resolves credentials with `account = <uuid>`
-- **THEN** the lookup SHALL query `shared.google_accounts WHERE id = $1`
+- **THEN** the lookup SHALL query `public.google_accounts WHERE id = $1`
 
 #### Scenario: Default to primary account
 
 - **WHEN** a module resolves credentials with `account = None`
-- **THEN** the lookup SHALL query `shared.google_accounts WHERE is_primary = true`
+- **THEN** the lookup SHALL query `public.google_accounts WHERE is_primary = true`
 - **AND** if no primary account exists, resolution SHALL fail with `MissingGoogleCredentialsError`
 
 ### Requirement: Companion Entity for Account Credential Storage
 
-Each Google account row SHALL have a companion entity in `shared.entities` that anchors the account's refresh token in `shared.entity_info`.
+Each Google account row SHALL have a companion entity in `public.entities` that anchors the account's refresh token in `public.entity_info`.
 
 #### Scenario: Companion entity creation
 
@@ -86,7 +86,7 @@ Each Google account row SHALL have a companion entity in `shared.entities` that 
 #### Scenario: Refresh token stored on companion entity
 
 - **WHEN** a Google account's refresh token is persisted
-- **THEN** it SHALL be stored as `shared.entity_info(entity_id = <companion_entity_id>, type = 'google_oauth_refresh', secured = true)`
+- **THEN** it SHALL be stored as `public.entity_info(entity_id = <companion_entity_id>, type = 'google_oauth_refresh', secured = true)`
 - **AND** the `UNIQUE(entity_id, type)` constraint on `entity_info` SHALL naturally allow one token per account
 
 ### Requirement: Primary Account Management
@@ -136,7 +136,7 @@ Disconnecting an account SHALL revoke the token with Google and remove local cre
 #### Scenario: List all connected accounts
 
 - **WHEN** `list_google_accounts(pool)` is called
-- **THEN** all rows from `shared.google_accounts` SHALL be returned ordered by `is_primary DESC, connected_at ASC`
+- **THEN** all rows from `public.google_accounts` SHALL be returned ordered by `is_primary DESC, connected_at ASC`
 - **AND** each row SHALL include `id`, `email`, `display_name`, `is_primary`, `granted_scopes`, `status`, `connected_at`, `last_token_refresh_at`
 
 ### Requirement: Account Soft Limit

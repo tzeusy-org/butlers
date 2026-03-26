@@ -237,7 +237,7 @@ class TestResolveOrCreateEntity:
         assert was_created is True
         # Verify INSERT statement was called
         call_sql = mock_conn.fetchval.call_args[0][0]
-        assert "INSERT INTO shared.entities" in call_sql
+        assert "INSERT INTO public.entities" in call_sql
 
     async def test_resolves_existing_entity_on_unique_violation(self):
         """Returns (entity_id, False) when INSERT raises UniqueViolationError."""

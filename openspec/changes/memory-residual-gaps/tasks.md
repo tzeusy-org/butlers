@@ -31,9 +31,9 @@
 - [ ] 5.2 Add `embedding_versions` table creation to the same migration with seed row for `all-MiniLM-L6-v2`
 - [ ] 5.3 Verify migration chain integrity (down_revision = mem_020, revision = mem_021)
 
-## 6. Migration: shared.memory_catalog (mem_022)
+## 6. Migration: public.memory_catalog (mem_022)
 
-- [ ] 6.1 Create `022_shared_memory_catalog.py` migration with schema-qualified `shared.memory_catalog` DDL
+- [ ] 6.1 Create `022_shared_memory_catalog.py` migration with schema-qualified `public.memory_catalog` DDL
 - [ ] 6.2 Include unique constraint on `(source_schema, source_table, source_id)`
 - [ ] 6.3 Include GIN index on `search_vector`
 - [ ] 6.4 Use `IF NOT EXISTS` for idempotent creation

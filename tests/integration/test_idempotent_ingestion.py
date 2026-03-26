@@ -131,9 +131,9 @@ async def pool(postgres_container):
     """)
 
     # SPO facts infrastructure (needed by store_fact called from _log_activity)
-    await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+    # public schema always exists; no need to create it.
     await p.execute("""
-        CREATE TABLE IF NOT EXISTS shared.entities (
+        CREATE TABLE IF NOT EXISTS public.entities (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             tenant_id TEXT NOT NULL DEFAULT '',
             canonical_name VARCHAR NOT NULL DEFAULT '',
@@ -199,8 +199,8 @@ async def pool(postgres_container):
             last_confirmed_at TIMESTAMPTZ,
             tags JSONB DEFAULT '[]'::jsonb,
             metadata JSONB DEFAULT '{}'::jsonb,
-            entity_id UUID REFERENCES shared.entities(id),
-            object_entity_id UUID REFERENCES shared.entities(id),
+            entity_id UUID REFERENCES public.entities(id),
+            object_entity_id UUID REFERENCES public.entities(id),
             valid_at TIMESTAMPTZ DEFAULT NULL,
             tenant_id TEXT NOT NULL DEFAULT 'owner',
             request_id TEXT,

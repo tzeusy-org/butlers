@@ -47,7 +47,7 @@ This installs all Python dependencies, including dev/test extras, into a virtual
 docker compose up -d postgres
 ```
 
-This starts a PostgreSQL container on port 5432. Default credentials are `postgres`/`postgres`. The database is used by all butlers (one database, per-butler schemas plus a shared schema).
+This starts a PostgreSQL container on port 5432. Default credentials are `postgres`/`postgres`. The database is used by all butlers (one database, per-butler schemas plus the public schema).
 
 ### Step 3: Start Butler Daemons
 

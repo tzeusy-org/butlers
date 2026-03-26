@@ -71,7 +71,7 @@ Butler Butler Butler ---- each a persistent MCP server daemon
 LLM CLI instances -- ephemeral, locked-down, reason + act
 ```
 
-- Runtime topology: **one PostgreSQL database with per-butler schemas + `shared`**
+- Runtime topology: **one PostgreSQL database with per-butler schemas + `public`**
 - Inter-butler communication: **MCP tools through the Switchboard only**
 - Butler configs: **git-based directories** with personality (`CLAUDE.md`), manifestoes (`MANIFESTO.md`), skills, and config (`butler.toml`)
 

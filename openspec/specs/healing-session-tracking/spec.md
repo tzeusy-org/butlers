@@ -7,10 +7,10 @@ Database schema and query layer for tracking healing attempts. Links error finge
 ## ADDED Requirements
 
 ### Requirement: Healing Attempts Table
-The system SHALL maintain a `shared.healing_attempts` table tracking every healing investigation lifecycle.
+The system SHALL maintain a `public.healing_attempts` table tracking every healing investigation lifecycle.
 
 #### Scenario: Table schema
-- **WHEN** the migration creates `shared.healing_attempts`
+- **WHEN** the migration creates `public.healing_attempts`
 - **THEN** the table contains: `id` (UUID PK), `fingerprint` (TEXT NOT NULL), `butler_name` (TEXT NOT NULL), `status` (TEXT NOT NULL DEFAULT 'investigating'), `severity` (INTEGER NOT NULL), `exception_type` (TEXT NOT NULL), `call_site` (TEXT NOT NULL), `sanitized_msg` (TEXT), `branch_name` (TEXT), `worktree_path` (TEXT), `pr_url` (TEXT), `pr_number` (INTEGER), `session_ids` (UUID[] NOT NULL DEFAULT '{}'), `healing_session_id` (UUID), `created_at` (TIMESTAMPTZ NOT NULL DEFAULT now()), `updated_at` (TIMESTAMPTZ NOT NULL DEFAULT now()), `closed_at` (TIMESTAMPTZ), `error_detail` (TEXT)
 
 #### Scenario: Fingerprint index
@@ -37,7 +37,7 @@ The dispatcher's novelty check and attempt insertion MUST be atomic to prevent r
 
 #### Scenario: Insert-or-append pattern
 - **WHEN** `create_or_join_attempt(pool, fingerprint, ...)` is called
-- **THEN** it attempts `INSERT INTO shared.healing_attempts ... ON CONFLICT (fingerprint) WHERE status IN ('investigating', 'pr_open') DO UPDATE SET session_ids = array_append(session_ids, $session_id)`
+- **THEN** it attempts `INSERT INTO public.healing_attempts ... ON CONFLICT (fingerprint) WHERE status IN ('investigating', 'pr_open') DO UPDATE SET session_ids = array_append(session_ids, $session_id)`
 - **AND** it returns `(attempt_id, is_new)` where `is_new = True` if a new row was created, `False` if an existing row was joined
 
 ### Requirement: Healing Attempt State Machine

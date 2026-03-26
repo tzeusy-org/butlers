@@ -6,10 +6,10 @@ Defines the central coordination layer for proactive user-facing insights across
 ## ADDED Requirements
 
 ### Requirement: Insight Candidate Schema
-Every proactive insight produced by a butler SHALL be represented as a structured candidate row in the `shared.insight_candidates` table. Candidates are proposals, not deliveries — they compete for delivery slots during the delivery cycle. Butlers submit candidates via the Switchboard's `propose_insight_candidate()` MCP tool (see Insight Candidate Submission requirement below); they do not write to the table directly.
+Every proactive insight produced by a butler SHALL be represented as a structured candidate row in the `public.insight_candidates` table. Candidates are proposals, not deliveries — they compete for delivery slots during the delivery cycle. Butlers submit candidates via the Switchboard's `propose_insight_candidate()` MCP tool (see Insight Candidate Submission requirement below); they do not write to the table directly.
 
 #### Scenario: Candidate row structure
-- **WHEN** the Switchboard's insight broker inserts an insight candidate into `shared.insight_candidates`
+- **WHEN** the Switchboard's insight broker inserts an insight candidate into `public.insight_candidates`
 - **THEN** the row SHALL include: `id` (UUID, primary key), `origin_butler` (TEXT, generating butler name), `priority` (INTEGER, 1-100), `category` (TEXT, domain category), `dedup_key` (TEXT, semantic deduplication key), `cooldown_days` (INTEGER, optional override), `expires_at` (TIMESTAMPTZ, required), `message` (TEXT, human-readable), `channel` (TEXT, optional preferred delivery channel), `metadata` (JSONB, optional butler-specific data), `created_at` (TIMESTAMPTZ, auto-set), `status` (TEXT, default `'pending'`), `delivered_at` (TIMESTAMPTZ, NULL until delivered)
 
 #### Scenario: Valid status transitions
@@ -74,7 +74,7 @@ The system SHALL enforce a global daily delivery budget that caps the total numb
 - **AND** butler insight-scan jobs SHALL skip candidate generation entirely (early return)
 
 ### Requirement: Verbosity Presets
-The user SHALL be able to control insight delivery volume via named presets stored in `shared.insight_settings`. The system SHALL default to the most conservative preset.
+The user SHALL be able to control insight delivery volume via named presets stored in `public.insight_settings`. The system SHALL default to the most conservative preset.
 
 #### Scenario: Available presets
 - **WHEN** the user queries or sets their verbosity level
@@ -82,19 +82,19 @@ The user SHALL be able to control insight delivery volume via named presets stor
 - **AND** a custom integer budget (1-10) SHALL also be accepted
 
 #### Scenario: Default verbosity
-- **WHEN** no verbosity setting exists in `shared.insight_settings`
+- **WHEN** no verbosity setting exists in `public.insight_settings`
 - **THEN** the system SHALL default to `minimal` (budget 1)
 
 #### Scenario: Verbosity change via state tool
 - **WHEN** a butler runtime instance calls `state_set(key='insight_verbosity', value='normal')` or the user requests a verbosity change through any butler
-- **THEN** the setting SHALL be persisted in `shared.insight_settings` and take effect at the next delivery cycle
+- **THEN** the setting SHALL be persisted in `public.insight_settings` and take effect at the next delivery cycle
 
 ### Requirement: Cooldown Tracking
 After an insight is delivered or explicitly dismissed, the system SHALL prevent re-delivery of insights with the same `dedup_key` for a configurable cooldown period.
 
 #### Scenario: Cooldown after delivery
 - **WHEN** an insight with `dedup_key='birthday:uuid-123:2026'` is delivered
-- **THEN** a cooldown entry SHALL be recorded in `shared.insight_cooldowns` with `dedup_key`, `cooldown_until` = `now() + cooldown_days`, and `reason='delivered'`
+- **THEN** a cooldown entry SHALL be recorded in `public.insight_cooldowns` with `dedup_key`, `cooldown_until` = `now() + cooldown_days`, and `reason='delivered'`
 - **AND** any future candidate with the same `dedup_key` SHALL be filtered out during the delivery cycle until `cooldown_until` has passed
 
 #### Scenario: Default cooldown periods by priority range
@@ -115,7 +115,7 @@ The system SHALL track user engagement with delivered insights and automatically
 
 #### Scenario: Engagement detection
 - **WHEN** an insight is delivered
-- **THEN** the system SHALL record a row in `shared.insight_engagement` with `insight_id`, `delivered_at`, and `engaged` (BOOLEAN, default FALSE)
+- **THEN** the system SHALL record a row in `public.insight_engagement` with `insight_id`, `delivered_at`, and `engaged` (BOOLEAN, default FALSE)
 - **AND** if the user sends any message to any butler within 60 minutes of `delivered_at`, the `engaged` field SHALL be set to TRUE
 
 #### Scenario: Engagement rate computation
@@ -151,7 +151,7 @@ The user SHALL be able to configure quiet hours during which no insights are del
 
 #### Scenario: Quiet hours configuration
 - **WHEN** the user configures quiet hours
-- **THEN** the setting SHALL be stored in `shared.insight_settings` as `quiet_start` (INTEGER, hour 0-23), `quiet_end` (INTEGER, hour 0-23), and `quiet_timezone` (TEXT, IANA timezone)
+- **THEN** the setting SHALL be stored in `public.insight_settings` as `quiet_start` (INTEGER, hour 0-23), `quiet_end` (INTEGER, hour 0-23), and `quiet_timezone` (TEXT, IANA timezone)
 
 #### Scenario: Delivery suppression during quiet hours
 - **WHEN** the delivery cycle runs and the current time falls within the user's quiet hours (in the user's configured timezone)
@@ -165,11 +165,11 @@ The user SHALL be able to configure quiet hours during which no insights are del
 - **AND** candidates that exceed the budget remain pending for the next day (they do not get a "bonus" delivery slot)
 
 #### Scenario: No quiet hours configured
-- **WHEN** no quiet hours are configured in `shared.insight_settings`
+- **WHEN** no quiet hours are configured in `public.insight_settings`
 - **THEN** delivery SHALL proceed at the scheduled delivery cycle time without time-based suppression
 
 ### Requirement: Insight Candidate Submission via Switchboard MCP
-Butlers SHALL submit insight candidates exclusively through the Switchboard's `propose_insight_candidate()` MCP tool. Direct writes to `shared.insight_candidates` are prohibited (Rule 3: inter-butler communication is MCP-only through the Switchboard).
+Butlers SHALL submit insight candidates exclusively through the Switchboard's `propose_insight_candidate()` MCP tool. Direct writes to `public.insight_candidates` are prohibited (Rule 3: inter-butler communication is MCP-only through the Switchboard).
 
 #### Scenario: propose_insight_candidate tool signature
 - **WHEN** the insight broker module registers its MCP tools
@@ -177,7 +177,7 @@ Butlers SHALL submit insight candidates exclusively through the Switchboard's `p
 
 #### Scenario: Successful candidate submission
 - **WHEN** a butler calls `propose_insight_candidate()` with valid parameters
-- **THEN** the tool SHALL insert a row into `shared.insight_candidates` with `origin_butler` set to the calling butler's identity, `status='pending'`, and `created_at=now()`
+- **THEN** the tool SHALL insert a row into `public.insight_candidates` with `origin_butler` set to the calling butler's identity, `status='pending'`, and `created_at=now()`
 - **AND** it SHALL return `{"status": "accepted", "reason": "candidate queued for delivery cycle"}`
 
 #### Scenario: Verbosity off rejection
@@ -226,10 +226,10 @@ A shared Python dataclass SHALL be available for all butlers to construct well-f
 - **AND** this is a convenience validation — the Switchboard tool also validates server-side
 
 ### Requirement: Insight Settings Table
-User insight preferences SHALL be stored in a dedicated `shared.insight_settings` table with a single-row design (one settings record per installation).
+User insight preferences SHALL be stored in a dedicated `public.insight_settings` table with a single-row design (one settings record per installation).
 
 #### Scenario: Settings schema
-- **WHEN** the `shared.insight_settings` table is created
+- **WHEN** the `public.insight_settings` table is created
 - **THEN** it SHALL include: `id` (INTEGER, primary key, default 1), `verbosity` (TEXT, default `'minimal'`), `custom_budget` (INTEGER, nullable), `quiet_start` (INTEGER, nullable, hour 0-23), `quiet_end` (INTEGER, nullable, hour 0-23), `quiet_timezone` (TEXT, nullable, IANA timezone), `updated_at` (TIMESTAMPTZ, auto-updated)
 
 #### Scenario: Default row
@@ -241,12 +241,12 @@ The system SHALL periodically clean up old insight data to prevent unbounded tab
 
 #### Scenario: Candidate row cleanup
 - **WHEN** the delivery cycle runs its cleanup step
-- **THEN** it SHALL DELETE rows from `shared.insight_candidates` where `status` is NOT `'pending'` AND `created_at` is older than 30 days
+- **THEN** it SHALL DELETE rows from `public.insight_candidates` where `status` is NOT `'pending'` AND `created_at` is older than 30 days
 
 #### Scenario: Cooldown row cleanup
 - **WHEN** the delivery cycle runs its cleanup step
-- **THEN** it SHALL DELETE rows from `shared.insight_cooldowns` where `cooldown_until` is older than 30 days in the past
+- **THEN** it SHALL DELETE rows from `public.insight_cooldowns` where `cooldown_until` is older than 30 days in the past
 
 #### Scenario: Engagement row cleanup
 - **WHEN** the delivery cycle runs its cleanup step
-- **THEN** it SHALL DELETE rows from `shared.insight_engagement` where `delivered_at` is older than 30 days
+- **THEN** it SHALL DELETE rows from `public.insight_engagement` where `delivered_at` is older than 30 days

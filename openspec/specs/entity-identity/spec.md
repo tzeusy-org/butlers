@@ -1,13 +1,13 @@
 ## ADDED Requirements
 
-### Requirement: Entities table in shared schema
+### Requirement: Entities table in public schema
 
-The `entities` table SHALL reside in the `shared` PostgreSQL schema (`shared.entities`). All butler roles SHALL have `SELECT, INSERT, UPDATE, DELETE` grants on `shared.entities`. The table SHALL be accessible to all butlers through their `search_path` which includes `shared`.
+The `entities` table SHALL reside in the `public` PostgreSQL schema (`public.entities`). All butler roles SHALL have `SELECT, INSERT, UPDATE, DELETE` grants on `public.entities`. The table SHALL be accessible to all butlers through their `search_path` which includes `public`.
 
 #### Schema
 
 ```sql
-CREATE TABLE shared.entities (
+CREATE TABLE public.entities (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id TEXT NOT NULL,
     canonical_name VARCHAR NOT NULL,
@@ -17,50 +17,50 @@ CREATE TABLE shared.entities (
     roles TEXT[] NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT chk_shared_entities_entity_type CHECK (
+    CONSTRAINT chk_entities_entity_type CHECK (
         entity_type IN ('person', 'organization', 'place', 'other')
     ),
-    CONSTRAINT uq_shared_entities_tenant_canonical_type
+    CONSTRAINT uq_entities_tenant_canonical_type
         UNIQUE (tenant_id, canonical_name, entity_type)
 );
 ```
 
-**Implementation note (core_014):** The `shared.entities` table is created by `core_014_entities_to_shared.py`. It includes supporting indexes:
-- `idx_shared_entities_tenant_canonical` on `(tenant_id, canonical_name)`
-- `idx_shared_entities_aliases` using GIN on `aliases`
-- `idx_shared_entities_metadata` using GIN on `metadata`
+**Implementation note (core_014):** The `public.entities` table is created by `core_014_entities_to_shared.py`. It includes supporting indexes:
+- `idx_entities_tenant_canonical` on `(tenant_id, canonical_name)`
+- `idx_entities_aliases` using GIN on `aliases`
+- `idx_entities_metadata` using GIN on `metadata`
 
-**Implementation note (search_path):** The memory module tools (`entity_create`, `entity_get`, `entity_update`, `entity_merge`, `entity_resolve`) address the table as `entities` (unqualified), relying on the session's `search_path` which sets the butler's own schema first, then `shared`, then `public`. For memory butlers (which do not have their own `entities` table post-`core_014`), the unqualified name resolves to `shared.entities` via search_path. The `core_014` migration copies all butler-local entities data into `shared.entities` as part of the migration.
+**Implementation note (search_path):** The memory module tools (`entity_create`, `entity_get`, `entity_update`, `entity_merge`, `entity_resolve`) address the table as `entities` (unqualified), relying on the session's `search_path` which sets the butler's own schema first, then `public`. For memory butlers (which do not have their own `entities` table post-`core_014`), the unqualified name resolves to `public.entities` via search_path. The `core_014` migration copies all butler-local entities data into `public.entities` as part of the migration.
 
-**Grants:** `core_014` grants `SELECT, INSERT, UPDATE, DELETE` on `shared.entities` to: `butler_switchboard_rw`, `butler_general_rw`, `butler_health_rw`, `butler_relationship_rw`, `butler_messenger_rw`. Additional butler roles must be added to `_ALL_BUTLER_ROLES` in `core_014` (or a follow-up migration) as new butlers are created.
+**Grants:** `core_014` grants `SELECT, INSERT, UPDATE, DELETE` on `public.entities` to: `butler_switchboard_rw`, `butler_general_rw`, `butler_health_rw`, `butler_relationship_rw`, `butler_messenger_rw`. Additional butler roles must be added to `_ALL_BUTLER_ROLES` in `core_014` (or a follow-up migration) as new butlers are created.
 
 #### Scenario: Entities accessible from any butler schema
 
-- **WHEN** any butler daemon queries `SELECT * FROM shared.entities WHERE id = $1`
-- **THEN** the query MUST resolve to `shared.entities`
+- **WHEN** any butler daemon queries `SELECT * FROM public.entities WHERE id = $1`
+- **THEN** the query MUST resolve to `public.entities`
 - **AND** the result MUST include all columns including `roles`
 
 #### Scenario: General butler entities table unaffected
 
 - **WHEN** the general butler queries unqualified `entities`
 - **THEN** the query MUST resolve to `general.entities` (search_path ordering: general, shared, public)
-- **AND** the general butler's collection-item entities table MUST NOT be confused with `shared.entities`
+- **AND** the general butler's collection-item entities table MUST NOT be confused with `public.entities`
 
 ---
 
 ### Requirement: MCP entity tools default tenant_id to shared
 
-All MCP entity tools that accept a `tenant_id` parameter MUST default to `'shared'` when no `tenant_id` is provided by the caller. This ensures that runtime agents operating without explicit tenant context naturally create and resolve entities in the `shared` schema — the correct cross-butler entity namespace.
+All MCP entity tools that accept a `tenant_id` parameter MUST default to `'shared'` when no `tenant_id` is provided by the caller. This ensures that runtime agents operating without explicit tenant context naturally create and resolve entities in the `public` schema — the correct cross-butler entity namespace.
 
 Affected tools: `entity_create`, `entity_resolve`, `entity_get`, `entity_update`, `entity_merge`, `entity_neighbors`.
 
-**Rationale:** Before this requirement, `entity_resolve` defaulted to `'default'` (which no longer exists as a tenant after the `shared.entities` migration) and `entity_create` required `tenant_id` as a positional argument, causing agents to either omit it (error) or guess the wrong value. All runtime agents should operate in the `'shared'` tenant unless explicitly instructed otherwise.
+**Rationale:** Before this requirement, `entity_resolve` defaulted to `'default'` (which no longer exists as a tenant after the `public.entities` migration) and `entity_create` required `tenant_id` as a positional argument, causing agents to either omit it (error) or guess the wrong value. All runtime agents should operate in the `'shared'` tenant unless explicitly instructed otherwise.
 
 #### Scenario: entity_create with no tenant_id uses shared
 
 - **WHEN** a runtime agent calls `entity_create(canonical_name='Alice', entity_type='person')` without providing `tenant_id`
 - **THEN** the entity MUST be created with `tenant_id = 'shared'`
-- **AND** the entity MUST be stored in `shared.entities`
+- **AND** the entity MUST be stored in `public.entities`
 
 #### Scenario: entity_resolve with no tenant_id searches shared
 
@@ -80,9 +80,9 @@ Affected tools: `entity_create`, `entity_resolve`, `entity_get`, `entity_update`
 
 Entity operations that look up by UUID (`entity_get`, `entity_update`, `entity_merge`) MUST NOT include a `tenant_id` filter in the WHERE clause. Entity UUIDs are globally unique primary keys — the `tenant_id` constraint is unnecessary for UUID lookups and causes failures when entities exist in a different tenant than expected (e.g., entities created with `tenant_id='owner'` before the default was unified to `'shared'`).
 
-The `tenant_id` parameter is retained in function signatures for backward compatibility and for use in audit events, but MUST NOT be used to filter UUID-based SELECT or UPDATE queries on `shared.entities`.
+The `tenant_id` parameter is retained in function signatures for backward compatibility and for use in audit events, but MUST NOT be used to filter UUID-based SELECT or UPDATE queries on `public.entities`.
 
-**Rationale:** Migration `mem_013` moved legacy `owner`-tenant entities to `shared`, but new entities could still be created in the wrong tenant if an LLM runtime passed `tenant_id='owner'` (reading the value from `request_context` descriptions). Removing the tenant filter from UUID lookups ensures that `entity_merge` and `entity_get` work regardless of which tenant the entity resides in.
+**Rationale:** Migration `mem_013` moved legacy `owner`-tenant entities to `public`, but new entities could still be created in the wrong tenant if an LLM runtime passed `tenant_id='owner'` (reading the value from `request_context` descriptions). Removing the tenant filter from UUID lookups ensures that `entity_merge` and `entity_get` work regardless of which tenant the entity resides in.
 
 **Note:** `entity_resolve` (name-based lookup) and `entity_create` still use `tenant_id` for scoping, as name uniqueness is per-tenant.
 
@@ -105,9 +105,9 @@ The `tenant_id` parameter is retained in function signatures for backward compat
 
 The canonical data model hierarchy is **Entity → Contact → Contact Details**.
 
-- **Entity** (`shared.entities`) is the top-level identity anchor. Facts, relationships, and knowledge graph edges attach to entities. Every known person, organization, or place is an entity.
-- **Contact** (`shared.contacts`) is a child of entity. A CRM record with name fields, linked to exactly one entity via `entity_id`. Created when reachable contact details (phone, email, address) are known.
-- **Contact Details** (`shared.contact_info`, addresses, etc.) attach to contacts.
+- **Entity** (`public.entities`) is the top-level identity anchor. Facts, relationships, and knowledge graph edges attach to entities. Every known person, organization, or place is an entity.
+- **Contact** (`public.contacts`) is a child of entity. A CRM record with name fields, linked to exactly one entity via `entity_id`. Created when reachable contact details (phone, email, address) are known.
+- **Contact Details** (`public.contact_info`, addresses, etc.) attach to contacts.
 
 An entity may exist without a contact (e.g., a person known from memory/conversation but no contact details). A contact MUST NOT exist without an entity. Facts MUST always be anchored to an entity via `entity_id`.
 
@@ -129,7 +129,7 @@ The relationship butler exposes entity tools (`entity_resolve`, `entity_get`, `e
 
 ### Requirement: Roles column on entities
 
-The `shared.entities` table SHALL have a `roles TEXT[] NOT NULL DEFAULT '{}'` column. Each element in the array represents an identity role. The initial supported role value is `'owner'`. This column is the authoritative source of truth for identity roles, replacing `contacts.roles`.
+The `public.entities` table SHALL have a `roles TEXT[] NOT NULL DEFAULT '{}'` column. Each element in the array represents an identity role. The initial supported role value is `'owner'`. This column is the authoritative source of truth for identity roles, replacing `contacts.roles`.
 
 **Implementation note:** `contacts.roles` is kept for backward compatibility during the transition period. A follow-up `core_015` migration will drop `contacts.roles`. Until then, `contacts.roles` is populated on bootstrap for contacts that lack an entity link (fallback path).
 
@@ -145,18 +145,18 @@ The `shared.entities` table SHALL have a `roles TEXT[] NOT NULL DEFAULT '{}'` co
 
 #### Scenario: Query entities by role
 
-- **WHEN** a system component queries `SELECT * FROM shared.entities WHERE 'owner' = ANY(roles)`
+- **WHEN** a system component queries `SELECT * FROM public.entities WHERE 'owner' = ANY(roles)`
 - **THEN** the query MUST return exactly the entities that have `'owner'` in their roles array
 
 ---
 
 ### Requirement: Owner entity singleton
 
-There SHALL be at most one entity with `'owner'` in `roles` across the entire `shared.entities` table. This is enforced by a partial unique index:
+There SHALL be at most one entity with `'owner'` in `roles` across the entire `public.entities` table. This is enforced by a partial unique index:
 
 ```sql
 CREATE UNIQUE INDEX ix_entities_owner_singleton
-ON shared.entities ((true))
+ON public.entities ((true))
 WHERE 'owner' = ANY(roles);
 ```
 
@@ -174,26 +174,26 @@ WHERE 'owner' = ANY(roles);
 
 When any butler daemon starts, it SHALL create the owner entity before the owner contact:
 
-1. Check whether `shared.entities` exists and has a `roles` column; if so, insert into `shared.entities` with `tenant_id='shared'`, `canonical_name='Owner'`, `entity_type='person'`, `roles=['owner']`. Use `ON CONFLICT (tenant_id, canonical_name, entity_type) DO NOTHING` for idempotency. If the INSERT returns no row (conflict), SELECT the existing entity id.
-2. Insert into `shared.contacts` with `name='Owner'`, `roles=['owner']`, `entity_id` pointing to the owner entity (if entity was created/found). Use `ON CONFLICT DO NOTHING` against `ix_contacts_owner_singleton`.
+1. Check whether `public.entities` exists and has a `roles` column; if so, insert into `public.entities` with `tenant_id='shared'`, `canonical_name='Owner'`, `entity_type='person'`, `roles=['owner']`. Use `ON CONFLICT (tenant_id, canonical_name, entity_type) DO NOTHING` for idempotency. If the INSERT returns no row (conflict), SELECT the existing entity id.
+2. Insert into `public.contacts` with `name='Owner'`, `roles=['owner']`, `entity_id` pointing to the owner entity (if entity was created/found). Use `ON CONFLICT DO NOTHING` against `ix_contacts_owner_singleton`.
 
 **Implementation note:** `_ensure_owner_entity_and_contact()` in `src/butlers/daemon.py` implements this. It guards each step with existence checks (`to_regclass`, `information_schema.columns`) so the function is a no-op when tables or the `roles` column have not yet been migrated in. The `contacts.roles` column is also populated on the contact row (backward compat until `core_015`).
 
 #### Scenario: Fresh bootstrap creates entity then contact
 
-- **WHEN** a butler daemon starts with empty `shared.entities` and `shared.contacts`
-- **THEN** it MUST first create the owner entity in `shared.entities`
+- **WHEN** a butler daemon starts with empty `public.entities` and `public.contacts`
+- **THEN** it MUST first create the owner entity in `public.entities`
 - **AND** then create the owner contact linked via `entity_id`
 
 #### Scenario: Graceful fallback when entities table missing
 
-- **WHEN** a butler daemon starts and `shared.entities` does not yet exist
+- **WHEN** a butler daemon starts and `public.entities` does not yet exist
 - **THEN** the daemon MUST still create the owner contact (without entity link)
 - **AND** must NOT fail or raise
 
 #### Scenario: Graceful fallback when roles column missing on entities
 
-- **WHEN** `shared.entities` exists but lacks the `roles` column (pre-`core_014`)
+- **WHEN** `public.entities` exists but lacks the `roles` column (pre-`core_014`)
 - **THEN** the daemon MUST skip the entity INSERT and fall back to contact-only bootstrap
 - **AND** must NOT fail or raise
 
@@ -205,24 +205,24 @@ All code that needs to determine a contact's roles MUST query through the entity
 
 ```sql
 SELECT COALESCE(e.roles, '{}') AS roles
-FROM shared.contacts c
-LEFT JOIN shared.entities e ON e.id = c.entity_id
+FROM public.contacts c
+LEFT JOIN public.entities e ON e.id = c.entity_id
 ```
 
 Direct reads of `contacts.roles` are deprecated. The `contacts.roles` column will be dropped in a follow-up migration (`core_015`).
 
-**Implementation note:** `resolve_contact_by_channel()` and `create_temp_contact()` in `src/butlers/identity.py` both use this JOIN pattern. `resolve_owner_contact_info()` and `upsert_owner_contact_info()` in `src/butlers/credential_store.py` use `JOIN shared.entities e ON e.id = c.entity_id WHERE 'owner' = ANY(e.roles)`.
+**Implementation note:** `resolve_contact_by_channel()` and `create_temp_contact()` in `src/butlers/identity.py` both use this JOIN pattern. `resolve_owner_contact_info()` and `upsert_owner_contact_info()` in `src/butlers/credential_store.py` use `JOIN public.entities e ON e.id = c.entity_id WHERE 'owner' = ANY(e.roles)`.
 
 #### Scenario: resolve_contact_by_channel reads roles from entity
 
 - **WHEN** `resolve_contact_by_channel('telegram', '12345')` is called
-- **THEN** the query MUST include `LEFT JOIN shared.entities e ON e.id = c.entity_id`
+- **THEN** the query MUST include `LEFT JOIN public.entities e ON e.id = c.entity_id`
 - **AND** roles MUST be read as `COALESCE(e.roles, '{}')`
 
 #### Scenario: Owner credential resolution joins through entity
 
 - **WHEN** `resolve_owner_contact_info(pool, 'telegram')` is called
-- **THEN** the query MUST find the owner via `JOIN shared.entities e ON e.id = c.entity_id WHERE 'owner' = ANY(e.roles)`
+- **THEN** the query MUST find the owner via `JOIN public.entities e ON e.id = c.entity_id WHERE 'owner' = ANY(e.roles)`
 
 ---
 
@@ -259,15 +259,15 @@ The `roles` field on entities MUST NOT be writable by runtime MCP tool callers. 
 #### Scenario: Dashboard API can update entity roles
 
 - **WHEN** `PATCH /api/contacts/{id}` with `{"roles": ["owner"]}` is called
-- **THEN** the API MUST update `shared.entities.roles` via the contact's `entity_id`
+- **THEN** the API MUST update `public.entities.roles` via the contact's `entity_id`
 
-**Implementation note:** `roster/relationship/api/router.py::patch_contact()` handles this. When `request.roles` is provided and the contact has an `entity_id`, it executes `UPDATE shared.entities SET roles = $1 WHERE id = $2`. If the contact has no `entity_id`, the roles update is silently skipped.
+**Implementation note:** `roster/relationship/api/router.py::patch_contact()` handles this. When `request.roles` is provided and the contact has an `entity_id`, it executes `UPDATE public.entities SET roles = $1 WHERE id = $2`. If the contact has no `entity_id`, the roles update is silently skipped.
 
 ---
 
 ### Requirement: MCP entity tools default tenant_id to 'shared'
 
-All memory module MCP entity tools (`entity_create`, `entity_get`, `entity_update`, `entity_resolve`, `entity_neighbors`, `entity_merge`) SHALL default `tenant_id` to `'shared'`. The `shared` schema is the single source of truth for identity entities. Per-butler tenant isolation is a target-state requirement (see module-memory spec, "Tenant-bounded isolation"); until fully implemented, `'shared'` is the only valid `tenant_id` for identity entities.
+All memory module MCP entity tools (`entity_create`, `entity_get`, `entity_update`, `entity_resolve`, `entity_neighbors`, `entity_merge`) SHALL default `tenant_id` to `'shared'`. The `public` schema is the single source of truth for identity entities. Per-butler tenant isolation is a target-state requirement (see module-memory spec, "Tenant-bounded isolation"); until fully implemented, `'shared'` is the only valid `tenant_id` for identity entities.
 
 **Implementation note:** All six entity MCP tool wrappers in `src/butlers/modules/memory/__init__.py` use `tenant_id: str = "shared"` as the default parameter value. The underlying Python functions in `entities.py` accept any `tenant_id` (for internal use such as daemon bootstrap), but the MCP surface always defaults to `'shared'`.
 
@@ -291,25 +291,25 @@ All memory module MCP entity tools (`entity_create`, `entity_get`, `entity_updat
 
 ---
 
-### Requirement: Facts FK points to shared.entities
+### Requirement: Facts FK points to public.entities
 
-The `facts.entity_id` foreign key MUST reference `shared.entities(id)` (not a butler-local entities table). The migration MUST drop the old search-path-resolved FK from `mem_002` and create a new explicit FK:
+The `facts.entity_id` foreign key MUST reference `public.entities(id)` (not a butler-local entities table). The migration MUST drop the old search-path-resolved FK from `mem_002` and create a new explicit FK:
 
 ```sql
 ALTER TABLE {schema}.facts
     ADD CONSTRAINT facts_entity_id_shared_fkey
-    FOREIGN KEY (entity_id) REFERENCES shared.entities(id)
+    FOREIGN KEY (entity_id) REFERENCES public.entities(id)
     ON DELETE RESTRICT;
 ```
 
 **Implementation note:** `core_014` performs this for the following butler schemas: `general`, `health`, `messenger`, `relationship`, `switchboard`. The migration drops the old `facts_entity_id_fkey` (if it exists) and creates `facts_entity_id_shared_fkey` using `NOT VALID` + `VALIDATE CONSTRAINT` to avoid locking under heavy load.
 
-`core_014` also re-creates the FK from `shared.contacts.entity_id` to `shared.entities(id)` as `contacts_entity_id_shared_fkey` (ON DELETE SET NULL), replacing the old `contacts_entity_id_fkey`.
+`core_014` also re-creates the FK from `public.contacts.entity_id` to `public.entities(id)` as `contacts_entity_id_shared_fkey` (ON DELETE SET NULL), replacing the old `contacts_entity_id_fkey`.
 
-#### Scenario: Fact references entity in shared schema
+#### Scenario: Fact references entity in public schema
 
 - **WHEN** a fact has `entity_id = <uuid>`
-- **THEN** that UUID MUST exist in `shared.entities`
+- **THEN** that UUID MUST exist in `public.entities`
 - **AND** attempting to delete the entity while facts reference it MUST fail (ON DELETE RESTRICT)
 
 ---
@@ -323,7 +323,7 @@ Facts SHALL operate in two modes determined by the presence of `object_entity_id
 
 Both modes use the same `facts` table row structure. The `object_entity_id` column is nullable — existing facts with `object_entity_id = NULL` remain valid property facts with no migration required.
 
-**Implementation note:** The `object_entity_id` column is added by a memory module migration (see module-memory spec). It is a nullable UUID FK to `shared.entities(id)` with `ON DELETE RESTRICT`.
+**Implementation note:** The `object_entity_id` column is added by a memory module migration (see module-memory spec). It is a nullable UUID FK to `public.entities(id)` with `ON DELETE RESTRICT`.
 
 #### Scenario: Property fact has no object entity
 
@@ -422,21 +422,21 @@ An `entity_neighbors` tool SHALL provide multi-hop graph traversal starting from
 
 ### Requirement: Entity info table for per-entity properties and credentials
 
-The `shared.entity_info` table SHALL store typed key-value properties for entities, including credentials consumed by backend modules. Each `(entity_id, type)` pair is unique. Entries with `secured = true` are masked in API responses.
+The `public.entity_info` table SHALL store typed key-value properties for entities, including credentials consumed by backend modules. Each `(entity_id, type)` pair is unique. Entries with `secured = true` are masked in API responses.
 
 #### Schema
 
 ```sql
-CREATE TABLE shared.entity_info (
+CREATE TABLE public.entity_info (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    entity_id UUID NOT NULL REFERENCES shared.entities(id) ON DELETE CASCADE,
+    entity_id UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
     type VARCHAR NOT NULL,
     value TEXT NOT NULL,
     label VARCHAR,
     is_primary BOOLEAN DEFAULT false,
     secured BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT now(),
-    CONSTRAINT uq_shared_entity_info_entity_type UNIQUE (entity_id, type)
+    CONSTRAINT uq_entity_info_entity_type UNIQUE (entity_id, type)
 );
 ```
 
@@ -472,7 +472,7 @@ Entities with `'google_account'` in their `roles` array SHALL be treated as comp
 
 ### Requirement: Entity info supports multiple Google accounts
 
-The `shared.entity_info` table's `UNIQUE(entity_id, type)` constraint SHALL naturally support multiple `google_oauth_refresh` rows — one per Google account companion entity. No constraint change is needed.
+The `public.entity_info` table's `UNIQUE(entity_id, type)` constraint SHALL naturally support multiple `google_oauth_refresh` rows — one per Google account companion entity. No constraint change is needed.
 
 #### Scenario: Two accounts with independent refresh tokens
 
@@ -556,7 +556,7 @@ The frontend `ENTITY_INFO_TYPES` array and the backend module credential lookups
 
 Entities with `metadata->>'unidentified' = 'true'` SHALL be treated as **transitory entities** — pending user approval for promotion to confirmed entities. This convention is the canonical mechanism for surfacing auto-discovered entities in the dashboard for review.
 
-Transitory entities are full `shared.entities` rows — they have a valid UUID, can be referenced by `entity_id` in facts and contacts, and participate in entity resolution and graph traversal. The only distinction is the metadata flag, which controls dashboard presentation (shown in the "Unidentified Entities" section with a visual badge).
+Transitory entities are full `public.entities` rows — they have a valid UUID, can be referenced by `entity_id` in facts and contacts, and participate in entity resolution and graph traversal. The only distinction is the metadata flag, which controls dashboard presentation (shown in the "Unidentified Entities" section with a visual badge).
 
 #### Scenario: Transitory entity created by contacts system
 

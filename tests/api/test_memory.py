@@ -890,7 +890,7 @@ def _make_entity_detail_row(
 class TestListEntities:
     async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination."""
-        # list_entities queries shared.entities; pool.fetchval for count, pool.fetch
+        # list_entities queries public.entities; pool.fetchval for count, pool.fetch
         # for rows, then fans out to memory pools for fact counts.
         _app_with_mock_db(app, fetchval_result=0)
         async with httpx.AsyncClient(
@@ -921,7 +921,7 @@ class TestListEntities:
     async def test_entities_with_any_tenant_id_are_returned(self, app):
         """Entities with tenant_id='owner' (or any other value) must now be visible.
 
-        The query no longer filters by tenant_id so all entities in shared.entities
+        The query no longer filters by tenant_id so all entities in public.entities
         are returned regardless of their tenant_id value.
         """
         owner_entity = _make_entity_list_row(id="ent-owner", canonical_name="Owner Person")
@@ -962,7 +962,7 @@ class TestListEntities:
 
         Unlike facts/rules/episodes (which fan out across pools and gracefully
         return empty results), list_entities requires at least one pool to reach
-        shared.entities.  _any_pool() raises HTTPException(503) if none exist.
+        public.entities.  _any_pool() raises HTTPException(503) if none exist.
         """
         _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
@@ -1775,7 +1775,7 @@ class TestGetEntityUnidentified:
         # The fetchrow call (entity SELECT) must reference the unidentified column
         for call in pool.fetchrow.call_args_list:
             sql = call.args[0] if call.args else ""
-            if "shared.entities" in sql:
+            if "public.entities" in sql:
                 assert "unidentified" in sql, (
                     f"get_entity SQL must select the unidentified column: {sql!r}"
                 )
@@ -1846,7 +1846,7 @@ class TestUpdateEntityMetadata:
         # Verify the SQL uses the JSONB merge operator (||)
         for call in pool.fetchrow.call_args_list:
             sql = call.args[0] if call.args else ""
-            if "UPDATE shared.entities" in sql:
+            if "UPDATE public.entities" in sql:
                 assert "||" in sql, f"PATCH metadata should use JSONB merge (||), got: {sql!r}"
 
     async def test_metadata_patch_filters_system_keys(self, app):

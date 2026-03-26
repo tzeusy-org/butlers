@@ -282,7 +282,7 @@ async def _upsert_catalog(
     sensitivity: str | None = None,
     object_entity_id: uuid.UUID | None = None,
 ) -> None:
-    """Upsert a row into shared.memory_catalog (best-effort, fire-and-forget).
+    """Upsert a row into public.memory_catalog (best-effort, fire-and-forget).
 
     On any error the exception is caught and logged as a warning so that
     catalog write failure NEVER blocks the canonical memory write.
@@ -293,7 +293,7 @@ async def _upsert_catalog(
     the call remains backward-compatible before that migration is applied.
     """
     sql = f"""
-        INSERT INTO shared.memory_catalog (
+        INSERT INTO public.memory_catalog (
             source_schema, source_table, source_id,
             source_butler, tenant_id, entity_id,
             summary, embedding, search_vector, memory_type,
@@ -645,7 +645,7 @@ async def store_fact(
         sensitivity: Data sensitivity classification (default 'normal').
             Use 'pii' for personally-identifiable information, etc.
         enable_shared_catalog: When True, write a summary row to
-            ``shared.memory_catalog`` after the canonical fact is stored.
+            ``public.memory_catalog`` after the canonical fact is stored.
             Catalog write failure is logged as a warning and does NOT block
             the canonical write.  Defaults to False.
         source_schema: The butler schema name used as ``source_schema`` in the
@@ -702,7 +702,7 @@ async def store_fact(
             _subject_entity_type: str | None = None
             if entity_id is not None:
                 _entity_row = await conn.fetchrow(
-                    "SELECT id, entity_type FROM shared.entities WHERE id = $1",
+                    "SELECT id, entity_type FROM public.entities WHERE id = $1",
                     entity_id,
                 )
                 if _entity_row is None:
@@ -724,7 +724,7 @@ async def store_fact(
                         "entity_id and object_entity_id must differ"
                     )
                 _obj_entity_row = await conn.fetchrow(
-                    "SELECT id, entity_type FROM shared.entities WHERE id = $1",
+                    "SELECT id, entity_type FROM public.entities WHERE id = $1",
                     object_entity_id,
                 )
                 if _obj_entity_row is None:
@@ -1148,7 +1148,7 @@ async def store_fact(
                 )
 
     # -------------------------------------------------------------------------
-    # Write-behind to shared.memory_catalog (best-effort, non-blocking).
+    # Write-behind to public.memory_catalog (best-effort, non-blocking).
     # The canonical fact is already committed above.  Any failure here is
     # logged as a warning and does NOT raise — catalog is eventually consistent.
     # -------------------------------------------------------------------------
@@ -1241,7 +1241,7 @@ async def store_rule(
         sensitivity: Data sensitivity classification (default 'normal').
             Use 'pii' for personally-identifiable information, etc.
         enable_shared_catalog: When True, write a summary row to
-            ``shared.memory_catalog`` after the canonical rule is stored.
+            ``public.memory_catalog`` after the canonical rule is stored.
             Catalog write failure is logged as a warning and does NOT block
             the canonical write.  Defaults to False.
         source_schema: The butler schema name used as ``source_schema`` in the
@@ -1289,7 +1289,7 @@ async def store_rule(
     )
 
     # -------------------------------------------------------------------------
-    # Write-behind to shared.memory_catalog (best-effort, non-blocking).
+    # Write-behind to public.memory_catalog (best-effort, non-blocking).
     # -------------------------------------------------------------------------
     if enable_shared_catalog and source_schema:
         try:

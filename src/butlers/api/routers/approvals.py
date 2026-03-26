@@ -171,7 +171,7 @@ async def _resolve_target_contact(
 ) -> TargetContact | None:
     """Resolve target_contact from contact_id in action tool_args.
 
-    Looks up shared.contacts when tool_args contains a non-empty 'contact_id' key.
+    Looks up public.contacts when tool_args contains a non-empty 'contact_id' key.
     Returns None if not found, pool unavailable, or contact_id is not present.
     """
     contact_id_raw = action.tool_args.get("contact_id")
@@ -185,14 +185,14 @@ async def _resolve_target_contact(
     except (ValueError, AttributeError):
         return None
 
-    # Find a pool that has shared.contacts (try all butlers)
+    # Find a pool that has public.contacts (try all butlers)
     for butler_name in db_mgr.butler_names:
         try:
             pool = db_mgr.pool(butler_name)
             row = await pool.fetchrow(
                 """
                 SELECT id, name, COALESCE(roles, '{}') AS roles
-                FROM shared.contacts
+                FROM public.contacts
                 WHERE id = $1
                 """,
                 contact_uuid,

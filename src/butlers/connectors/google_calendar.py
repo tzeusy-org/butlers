@@ -5,7 +5,7 @@ Switchboard using the events.list API with syncToken checkpointing. It follows
 the same multi-account architecture as the Gmail connector.
 
 Key behaviors:
-- Multi-account support via shared.google_accounts (calendar scope discovery)
+- Multi-account support via public.google_accounts (calendar scope discovery)
 - Per-account asyncio poll loops with error isolation
 - Incremental sync via events.list(syncToken=...) with 410-Gone fallback to full sync
 - Cursor persistence via cursor_store (switchboard.connector_registry)
@@ -1769,7 +1769,7 @@ class CalendarConnectorManager:
     """Top-level orchestrator for the multi-account Google Calendar connector.
 
     Discovers all active Google accounts with calendar scopes from
-    shared.google_accounts, spawns independent CalendarAccountLoop instances
+    public.google_accounts, spawns independent CalendarAccountLoop instances
     per account, and manages their lifecycle.
 
     Supports:
@@ -1815,7 +1815,7 @@ class CalendarConnectorManager:
     async def _discover_qualifying_accounts(
         self,
     ) -> list[tuple[str | None, dict[str, Any] | None]]:
-        """Query shared.google_accounts for active accounts with calendar scope.
+        """Query public.google_accounts for active accounts with calendar scope.
 
         Returns list of (email, metadata_calendar) tuples where metadata_calendar
         is the parsed ``calendar`` subsection of the account's metadata JSONB column.
@@ -1826,7 +1826,7 @@ class CalendarConnectorManager:
                 rows = await conn.fetch(
                     """
                     SELECT email, granted_scopes, metadata
-                    FROM shared.google_accounts
+                    FROM public.google_accounts
                     WHERE status = 'active'
                     ORDER BY is_primary DESC, connected_at ASC
                     """

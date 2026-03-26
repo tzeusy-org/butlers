@@ -22,7 +22,7 @@
 ## 4. Auto-Registration of Novel Predicates
 
 - [x] 4.1 Add auto-registration logic in `storage.py::store_fact()` — after successful INSERT, if predicate was not in registry, execute `INSERT INTO predicate_registry ... ON CONFLICT DO NOTHING` with inferred flags
-- [x] 4.2 Look up entity_type from `shared.entities` for `expected_subject_type` inference (entity_id is already validated, reuse the connection)
+- [x] 4.2 Look up entity_type from `public.entities` for `expected_subject_type` inference (entity_id is already validated, reuse the connection)
 - [x] 4.3 Write unit tests: auto-registration after novel write, inferred `is_edge` and `is_temporal` flags, concurrent safety (ON CONFLICT DO NOTHING), registered predicates are NOT re-inserted
 
 ## 5. Structured Error Responses
@@ -82,7 +82,7 @@
 
 ## 12. Domain/Range Type Validation (bu-rpvc)
 
-- [x] 12.1 Extend entity existence check in `store_fact()` to also fetch `entity_type`: `SELECT id, entity_type FROM shared.entities WHERE id = $1`
+- [x] 12.1 Extend entity existence check in `store_fact()` to also fetch `entity_type`: `SELECT id, entity_type FROM public.entities WHERE id = $1`
 - [x] 12.2 After registry lookup, compare actual entity types against `expected_subject_type` and `expected_object_type`; if mismatch, append to `warnings` list
 - [x] 12.3 Propagate `warnings` through write response: `{"id": ..., "warnings": [...]}`
 - [x] 12.4 Write tests: subject type mismatch warns, object type mismatch warns, NULL expected types skip check, matching types produce no warning

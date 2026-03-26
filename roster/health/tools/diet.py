@@ -29,20 +29,20 @@ def _get_embedding_engine() -> Any:
 
 
 async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner entity's id from shared.entities.
+    """Resolve the owner entity's id from public.entities.
 
     Uses the canonical post-core_016 path: ``'owner' = ANY(roles)`` on
-    ``shared.entities``.  Returns ``None`` gracefully when the table does not
+    ``public.entities``.  Returns ``None`` gracefully when the table does not
     exist yet (pre-migration databases) or when no owner entity is present.
     """
     try:
         row = await pool.fetchrow(
-            "SELECT id FROM shared.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+            "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
         )
         return row["id"] if row else None
     except asyncpg.PostgresError:
         logger.debug(
-            "_get_owner_entity_id: shared.entities query failed (table may not exist yet)",
+            "_get_owner_entity_id: public.entities query failed (table may not exist yet)",
             exc_info=True,
         )
         return None

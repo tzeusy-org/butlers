@@ -32,7 +32,7 @@ Butler-level `[butler.env].required` and `[butler.env].optional` variables are c
 
 ### Phase 5: Provision Database
 
-The `Database` class connects to the PostgreSQL `postgres` maintenance database and creates the butler's target database if it doesn't exist. For the target-state one-db/multi-schema topology, a single database named `butlers` is shared by all butler instances; each butler operates within its own schema, with `shared` and `public` included in the search path.
+The `Database` class connects to the PostgreSQL `postgres` maintenance database and creates the butler's target database if it doesn't exist. For the target-state one-db/multi-schema topology, a single database named `butlers` is shared by all butler instances; each butler operates within its own schema, with `public` included in the search path.
 
 ### Phase 6: Run Core Migrations
 

@@ -195,7 +195,7 @@ class TestEntityIdValidation:
         entity_calls = [
             c
             for c in conn.fetchrow.call_args_list
-            if "shared.entities" in (c.args[0] if c.args else "")
+            if "public.entities" in (c.args[0] if c.args else "")
         ]
         assert len(entity_calls) == 0
 
@@ -663,11 +663,11 @@ class TestObjectEntityIdValidation:
             object_entity_id=obj_eid,
         )
 
-        # Both entity validation calls use fetchrow targeting shared.entities.
+        # Both entity validation calls use fetchrow targeting public.entities.
         entity_calls = [
             c
             for c in conn.fetchrow.call_args_list
-            if "shared.entities" in (c.args[0] if c.args else "")
+            if "public.entities" in (c.args[0] if c.args else "")
         ]
         assert len(entity_calls) == 2
         assert entity_calls[0].args[1] == eid

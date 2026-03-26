@@ -181,7 +181,7 @@ async def contact_resolve(
         # Multiple exact matches -- ambiguous, need disambiguation
         candidates = _build_candidates(exact_rows, base_score=90)
 
-        # Integrate with entity_resolve (uses pool for shared.entities access)
+        # Integrate with entity_resolve (uses pool for public.entities access)
         entity_pool = memory_pool or pool
         candidates = await _resolve_via_entity_resolve(
             pool,
@@ -270,7 +270,7 @@ async def contact_resolve(
     candidates = _score_partial_matches(partial_rows, name, name_parts)
 
     if len(candidates) >= 2:
-        # Integrate with entity_resolve (uses pool for shared.entities access)
+        # Integrate with entity_resolve (uses pool for public.entities access)
         entity_pool = memory_pool or pool
         candidates = await _resolve_via_entity_resolve(
             pool,

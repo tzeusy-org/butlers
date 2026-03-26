@@ -56,7 +56,7 @@ A layered `CredentialStore` is created with access to the database pool, enablin
 
 ### Step 8d: Bootstrap Owner Entity
 
-An idempotent operation ensures the owner entity exists in `shared.entities`. This is the identity anchor for the system's user.
+An idempotent operation ensures the owner entity exists in `public.entities`. This is the identity anchor for the system's user.
 
 ### Step 9: Module on_startup
 

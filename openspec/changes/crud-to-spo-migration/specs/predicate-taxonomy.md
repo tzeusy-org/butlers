@@ -18,8 +18,8 @@ All predicates defined here MUST be seeded into the `predicate_registry` table a
 
 | Data type | `entity_id` source | `subject` field value |
 |---|---|---|
-| Self-data (health, finance) | Owner entity: `SELECT entity_id FROM shared.contacts WHERE roles @> '["owner"]' LIMIT 1` | Owner name (e.g. "Alice") or `"owner"` |
-| Contact-data (relationship) | `shared.contacts.entity_id` FK for the contact; if NULL, call `memory_entity_create()` and backfill | Contact's canonical name |
+| Self-data (health, finance) | Owner entity: `SELECT entity_id FROM public.contacts WHERE roles @> '["owner"]' LIMIT 1` | Owner name (e.g. "Alice") or `"owner"` |
+| Contact-data (relationship) | `public.contacts.entity_id` FK for the contact; if NULL, call `memory_entity_create()` and backfill | Contact's canonical name |
 | HA device (home) | Entity looked up by `canonical_name = ha_entity_id`; create with `entity_type='other'` if not found | HA entity ID string (e.g. "sensor.bedroom_temp") |
 | Unresolved actors (any domain) | `memory_entity_create(entity_type='other', name=<best_available_string>, metadata={"unidentified": true, "source": "fact_storage", "source_butler": "<butler>", "source_scope": "<scope>"})` | Best available name string |
 | Unknown organization/place from ingestion | `memory_entity_resolve` first; if empty, `memory_entity_create(entity_type='organization'\|'place', name=<name>, metadata={"unidentified": true, "source": "fact_storage", "source_butler": "<butler>", "source_scope": "<scope>"})` | Canonical name string (e.g. "Nutrition Kitchen SG") |
@@ -28,17 +28,17 @@ All predicates defined here MUST be seeded into the `predicate_registry` table a
 
 The owner entity MUST be resolved at daemon startup via:
 ```sql
-SELECT entity_id FROM shared.contacts WHERE roles @> '["owner"]' LIMIT 1
+SELECT entity_id FROM public.contacts WHERE roles @> '["owner"]' LIMIT 1
 ```
 
-This UUID is cached in the butler's in-memory state and reused for all self-data facts. If the owner contact has no `entity_id`, the butler MUST call `memory_entity_create()` and update `shared.contacts.entity_id` before processing any domain facts.
+This UUID is cached in the butler's in-memory state and reused for all self-data facts. If the owner contact has no `entity_id`, the butler MUST call `memory_entity_create()` and update `public.contacts.entity_id` before processing any domain facts.
 
 ### 1.4 Contact Entity Resolution for Relationship Data
 
 For each relationship fact, the resolution pipeline is:
-1. Resolve `contact_id` → `shared.contacts`
-2. Read `shared.contacts.entity_id`; if non-NULL, use it
-3. If NULL: call `memory_entity_create(entity_type='person', name=contact.name, metadata={"unidentified": true, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` → get `entity_uuid`; UPDATE `shared.contacts SET entity_id = entity_uuid WHERE id = contact_id`
+1. Resolve `contact_id` → `public.contacts`
+2. Read `public.contacts.entity_id`; if non-NULL, use it
+3. If NULL: call `memory_entity_create(entity_type='person', name=contact.name, metadata={"unidentified": true, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` → get `entity_uuid`; UPDATE `public.contacts SET entity_id = entity_uuid WHERE id = contact_id`
 4. Use `entity_uuid` as `entity_id` for the fact
 
 ### 1.5 HA Device Entity Resolution

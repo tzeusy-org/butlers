@@ -314,7 +314,7 @@ Review prompts are delivered to the user via the `notify()` core tool, targeting
 #### Scenario: Delivery channel defaults to the owner contact's preferred channel
 
 - **WHEN** the review prompt is constructed
-- **THEN** the session resolves the user's preferred channel from `shared.contact_info` for the owner contact
+- **THEN** the session resolves the user's preferred channel from `public.contact_info` for the owner contact
 - **AND** if no explicit preference is set, `channel="telegram"` is used as the default
 
 #### Scenario: Batch review session notify includes count of pending nodes

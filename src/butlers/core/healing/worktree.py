@@ -157,7 +157,7 @@ async def _healing_attempts_for_branches(
 ) -> dict[str, dict]:
     """Return a mapping of branch_name -> healing_attempt row for the given branches.
 
-    Queries ``shared.healing_attempts`` for all rows whose ``branch_name`` is
+    Queries ``public.healing_attempts`` for all rows whose ``branch_name`` is
     in the provided list.
     """
     if not branch_names:
@@ -165,7 +165,7 @@ async def _healing_attempts_for_branches(
     rows = await pool.fetch(
         """
         SELECT branch_name, status, closed_at, updated_at, healing_session_id
-        FROM shared.healing_attempts
+        FROM public.healing_attempts
         WHERE branch_name = ANY($1::text[])
         """,
         branch_names,
@@ -384,7 +384,7 @@ async def reap_stale_worktrees(
     repo_root:
         Absolute path to the repository root.
     pool:
-        asyncpg connection pool for ``shared.healing_attempts`` queries.
+        asyncpg connection pool for ``public.healing_attempts`` queries.
 
     Returns
     -------

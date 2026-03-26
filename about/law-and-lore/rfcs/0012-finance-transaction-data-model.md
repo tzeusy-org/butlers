@@ -5,11 +5,11 @@
 
 ## Summary
 
-The finance butler stores transactions in a dedicated `finance.transactions` table with typed columns, B-tree indexes, and tiered deduplication -- not in the SPO fact layer. The SPO fact layer (`shared.facts`) receives a fire-and-forget mirror write for memory/recall compatibility but is never the primary query target for financial analytics. Eight supporting tables (`accounts`, `categories`, `merchant_mappings`, `recurring_groups`, `import_batches`, `balance_snapshots`, `budgets`, `transaction_corrections`) and a materialized `spending_summaries` view provide the infrastructure for intelligence features. A 4-phase migration path transitions from SPO-primary to dedicated-table-primary storage without data loss.
+The finance butler stores transactions in a dedicated `finance.transactions` table with typed columns, B-tree indexes, and tiered deduplication -- not in the SPO fact layer. The SPO fact layer (`public.facts`) receives a fire-and-forget mirror write for memory/recall compatibility but is never the primary query target for financial analytics. Eight supporting tables (`accounts`, `categories`, `merchant_mappings`, `recurring_groups`, `import_batches`, `balance_snapshots`, `budgets`, `transaction_corrections`) and a materialized `spending_summaries` view provide the infrastructure for intelligence features. A 4-phase migration path transitions from SPO-primary to dedicated-table-primary storage without data loss.
 
 ## Motivation
 
-The finance butler currently stores transactional data in two parallel systems: a dedicated `finance.transactions` table (migration `finance_001`) with typed columns and proper indexes, and the SPO fact layer (`shared.facts`) where all financial fields are packed into a JSONB `metadata` column. The `CRUD-to-SPO` migration routed intelligence tools to query the fact layer, sidelining the dedicated table.
+The finance butler currently stores transactional data in two parallel systems: a dedicated `finance.transactions` table (migration `finance_001`) with typed columns and proper indexes, and the SPO fact layer (`public.facts`) where all financial fields are packed into a JSONB `metadata` column. The `CRUD-to-SPO` migration routed intelligence tools to query the fact layer, sidelining the dedicated table.
 
 This creates a fundamental scaling problem. The intelligence features -- anomaly detection, trend analysis, budget enforcement, forecasting -- require SQL aggregations with window functions (`STDDEV`, `PERCENTILE_CONT`, `LAG`), range scans, per-merchant/per-category grouping, and month-over-month comparisons across full transaction history. Running these over JSONB metadata extraction (`(metadata->>'amount')::numeric`) defeats B-tree indexing, forces sequential scans with casts on every row, and breaks `NUMERIC` type safety.
 
@@ -43,7 +43,7 @@ GROUP BY 1;
 
 ### Schema Topology
 
-All tables reside in the `finance` schema, following RFC 0006's per-butler schema isolation model. No changes to the `shared` schema.
+All tables reside in the `finance` schema, following RFC 0006's per-butler schema isolation model. No changes to the `public` schema.
 
 ```
 finance schema
@@ -478,14 +478,14 @@ No `DELETE FROM finance.transactions` statement exists anywhere in the codebase.
 The dedicated table is the primary store. The SPO fact layer is a secondary mirror for memory/recall compatibility.
 
 **During Phase 3 (dual-write):**
-- `record_transaction` writes to `finance.transactions` first, then fires a background task to mirror to `shared.facts` with `predicate='transaction_{direction}'`, `valid_at=posted_at`, `entity_id=owner_entity_id`, `scope='finance'`, and metadata containing all transaction fields.
+- `record_transaction` writes to `finance.transactions` first, then fires a background task to mirror to `public.facts` with `predicate='transaction_{direction}'`, `valid_at=posted_at`, `entity_id=owner_entity_id`, `scope='finance'`, and metadata containing all transaction fields.
 - Mirror write is fire-and-forget. If it fails, the error is logged but the dedicated table write is not rolled back.
 - Intelligence tools query `finance.transactions` exclusively.
-- Memory tools (`memory_recall`, `memory_search`) continue querying `shared.facts`.
+- Memory tools (`memory_recall`, `memory_search`) continue querying `public.facts`.
 
 **After Phase 4 (deprecation):**
 - SPO mirror writes stop.
-- Existing facts remain in `shared.facts` read-only for historical recall.
+- Existing facts remain in `public.facts` read-only for historical recall.
 - SPO-based transaction tool functions are removed from the MCP surface.
 
 ### Dividing Line: Dedicated Table vs. SPO Facts
@@ -542,7 +542,7 @@ SELECT
     f.metadata->>'source_message_id',
     'bulk',
     f.metadata
-FROM shared.facts f
+FROM public.facts f
 WHERE f.predicate IN ('transaction_debit', 'transaction_credit')
   AND f.validity = 'active'
   AND f.scope = 'finance'
@@ -558,11 +558,11 @@ Rows that fail JSONB extraction or casting are logged and skipped (not hard erro
 
 #### Phase 3: Dual-Write Transition
 
-Both stores receive writes. `record_transaction` writes to `finance.transactions` (primary) then mirrors to `shared.facts` (fire-and-forget). Intelligence tools query the dedicated table exclusively. Memory tools continue reading facts. If the SPO mirror write fails, the error is logged but the primary write is not rolled back.
+Both stores receive writes. `record_transaction` writes to `finance.transactions` (primary) then mirrors to `public.facts` (fire-and-forget). Intelligence tools query the dedicated table exclusively. Memory tools continue reading facts. If the SPO mirror write fails, the error is logged but the primary write is not rolled back.
 
 #### Phase 4: Deprecate SPO Transaction Writes
 
-Remove the SPO mirror write from `record_transaction`. Existing facts remain read-only in `shared.facts`. Remove `record_transaction_fact`, `list_transaction_facts`, and other SPO-based transaction tools from the MCP surface.
+Remove the SPO mirror write from `record_transaction`. Existing facts remain read-only in `public.facts`. Remove `record_transaction_fact`, `list_transaction_facts`, and other SPO-based transaction tools from the MCP surface.
 
 **Timeline:** Phases 1-2 execute in a single migration. Phase 3 runs for 1-2 weeks for validation. Phase 4 is a cleanup task after validation.
 
@@ -576,9 +576,9 @@ Remove the SPO mirror write from `record_transaction`. Existing facts remain rea
 
 ## Integration
 
-- **RFC 0006:** All tables reside in the `finance` schema, following per-butler schema isolation. The database connection's `search_path` includes `finance` and `shared`. Migration `finance_002` is a butler-specific chain at `roster/finance/migrations/versions/` with `down_revision = "finance_001"`.
+- **RFC 0006:** All tables reside in the `finance` schema, following per-butler schema isolation. The database connection's `search_path` includes `finance` and `public`. Migration `finance_002` is a butler-specific chain at `roster/finance/migrations/versions/` with `down_revision = "finance_001"`.
 - **RFC 0002:** The finance module declares migration chain `"finance"` via `migration_revisions()`. New CRUD tools (`update_transaction`, `delete_transaction`, `merge_duplicates`, `split_transaction`, `bulk_recategorize`, `import_transactions`) are registered in the finance module's `register_tools()` method.
-- **RFC 0004:** The SPO mirror write uses `entity_id = owner_entity_id` from the shared identity tables. No changes to shared schema structure.
+- **RFC 0004:** The SPO mirror write uses `entity_id = owner_entity_id` from the shared identity tables. No changes to public schema structure.
 - **RFC 0007:** Dashboard queries can read from `finance.spending_summaries` for pre-aggregated data. The `transaction_corrections` table provides audit history for the dashboard's transaction detail view.
 
 ## Alternatives Considered

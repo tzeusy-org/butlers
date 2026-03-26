@@ -9,7 +9,7 @@ Use this skill when creating or modifying a butler's database schema — adding 
 
 ## Hard Constraints
 
-- **Shared database, per-butler schemas.** All butlers share a single PostgreSQL database named `butlers`. Each butler gets its own schema (`general`, `health`, `messenger`, etc.) plus read access to the `shared` schema. Inter-butler data exchange happens only via MCP tools through the Switchboard.
+- **Shared database, per-butler schemas.** All butlers share a single PostgreSQL database named `butlers`. Each butler gets its own schema (`general`, `health`, `messenger`, etc.) plus read access to the `public` schema. Inter-butler data exchange happens only via MCP tools through the Switchboard.
 - **Five core tables in every butler schema.** See the Core Tables section below. All five are created by `core_001_target_state_baseline.py` and replicated into each butler's schema via `search_path`.
 - **Migrations via Alembic only.** No raw DDL in application code. No "just run this SQL."
 - **Raw SQL via `op.execute()`.** Migrations use raw SQL strings, not SQLAlchemy ORM operations. There are no SQLAlchemy models (`target_metadata=None`).
@@ -21,7 +21,7 @@ Use this skill when creating or modifying a butler's database schema — adding 
 
 ```
 PostgreSQL database: "butlers"
-├── shared          # Core tables + calendar projection tables (read-only for butlers)
+├── public          # Extensions + cross-butler tables (identity, model catalog, etc.)
 ├── general         # General butler's domain tables
 ├── health          # Health butler's domain tables
 ├── messenger       # Messenger butler's domain tables
@@ -32,10 +32,10 @@ PostgreSQL database: "butlers"
 
 Each butler's runtime connection sets:
 ```sql
-SET search_path TO <own_schema>, shared, public
+SET search_path TO <own_schema>, public
 ```
 
-This means a butler's tools can query `state`, `sessions`, etc. without schema-qualifying — those tables exist in the butler's own schema. Tables in `shared` (like `calendar_sources`) are also visible without qualification.
+This means a butler's tools can query `state`, `sessions`, etc. without schema-qualifying — those tables exist in the butler's own schema. Tables in `public` (like `calendar_sources`) are also visible without qualification.
 
 ### Runtime Roles & ACL
 
@@ -190,9 +190,9 @@ CREATE INDEX ix_butler_secrets_category ON butler_secrets (category);
 
 ---
 
-## Shared Schema Tables
+## Cross-Butler Tables (in `public`)
 
-Tables in the `shared` schema are readable by all butlers but writable only by core migrations. These are created by `core_005` and later core migrations.
+Tables in the `public` schema are readable by all butlers but writable only by core migrations. These are created by `core_005` and later core migrations.
 
 ### Calendar Projection Tables
 
@@ -581,14 +581,14 @@ When the daemon runs migrations for a butler, `alembic/env.py` sets the target s
 # In env.py run_migrations_online():
 if target_schema is not None:
     connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {own_schema}")
-    connection.exec_driver_sql(f"SET search_path TO {own_schema}, {shared_schema}, public")
+    connection.exec_driver_sql(f"SET search_path TO {own_schema}, public")
 ```
 
 This means:
-- Core tables (`state`, `sessions`, etc.) are created **in the butler's own schema**, not in `shared`
+- Core tables (`state`, `sessions`, etc.) are created **in the butler's own schema**, not in `public`
 - Butler-specific tables are also created in the butler's own schema
 - Each butler has its own copy of core tables (no cross-butler contamination)
-- The `shared` schema contains only tables explicitly created there by core migrations (calendar projections, etc.)
+- The `public` schema contains only tables explicitly created there by core migrations (calendar projections, etc.)
 
 ### Adding a New Butler to Core ACL
 

@@ -1,9 +1,9 @@
 """Tests for _ensure_owner_entity() owner bootstrap logic.
 
 Verifies:
-- First startup creates owner entity in shared.entities.
+- First startup creates owner entity in public.entities.
 - Subsequent startups are no-ops (idempotent via ON CONFLICT).
-- If shared.entities does not exist, skips entity creation.
+- If public.entities does not exist, skips entity creation.
 - Exceptions from the pool are caught and logged (non-fatal).
 """
 
@@ -31,11 +31,11 @@ def _make_pool(
     owner_select_after_insert: uuid.UUID | None = None,
     entity_select_returns: uuid.UUID | None = None,
 ) -> tuple[MagicMock, AsyncMock]:
-    """Build a mock asyncpg pool that simulates shared.entities state."""
+    """Build a mock asyncpg pool that simulates public.entities state."""
     conn = AsyncMock()
 
     # Build the sequence of fetchval returns:
-    # 1. to_regclass('shared.entities') IS NOT NULL
+    # 1. to_regclass('public.entities') IS NOT NULL
     # 2. (if entities exist) information_schema check for roles on entities
     # 3. (if roles on entities) SELECT owner entity by role
     # 4. (if no owner by role) INSERT RETURNING id (entity)
@@ -70,7 +70,7 @@ def _make_pool(
 
 class TestEnsureOwnerEntityCreation:
     async def test_creates_entity(self) -> None:
-        """First startup creates entity in shared.entities."""
+        """First startup creates entity in public.entities."""
         pool, conn = _make_pool()
 
         await _ensure_owner_entity(pool)
@@ -78,7 +78,7 @@ class TestEnsureOwnerEntityCreation:
         # Entity INSERT should have been called with ['owner'] role
         for call in conn.fetchval.call_args_list:
             sql = call[0][0] if call[0] else ""
-            if "INSERT INTO shared.entities" in sql:
+            if "INSERT INTO public.entities" in sql:
                 assert any("owner" in str(arg) for arg in call[0])
                 break
         else:
@@ -97,7 +97,7 @@ class TestEnsureOwnerEntityCreation:
         select_found = False
         for call in conn.fetchval.call_args_list:
             sql = call[0][0] if call[0] else ""
-            if "SELECT id FROM shared.entities" in sql:
+            if "SELECT id FROM public.entities" in sql:
                 select_found = True
                 break
         assert select_found, "Entity SELECT fallback not found"
@@ -110,31 +110,31 @@ class TestEnsureOwnerEntityCreation:
 
         for call in conn.fetchval.call_args_list:
             sql = call[0][0] if call[0] else ""
-            assert "INSERT INTO shared.entities" not in sql
+            assert "INSERT INTO public.entities" not in sql
 
     async def test_no_contact_insert(self) -> None:
-        """No INSERT INTO shared.contacts is issued."""
+        """No INSERT INTO public.contacts is issued."""
         pool, conn = _make_pool()
 
         await _ensure_owner_entity(pool)
 
         for call in conn.fetchval.call_args_list:
             sql = call[0][0] if call[0] else ""
-            assert "INSERT INTO shared.contacts" not in sql
+            assert "INSERT INTO public.contacts" not in sql
         # conn.execute should not be called at all (no contact insert)
         conn.execute.assert_not_awaited()
 
 
 class TestEnsureOwnerEntityFallback:
     async def test_skips_entity_without_entities_table(self) -> None:
-        """When shared.entities doesn't exist, entity creation is skipped."""
+        """When public.entities doesn't exist, entity creation is skipped."""
         pool, conn = _make_pool(entities_table_exists=False)
 
         await _ensure_owner_entity(pool)
 
         for call in conn.fetchval.call_args_list:
             sql = call[0][0] if call[0] else ""
-            assert "INSERT INTO shared.entities" not in sql
+            assert "INSERT INTO public.entities" not in sql
 
     async def test_skips_entity_without_roles_column(self) -> None:
         """When entities.roles column doesn't exist, entity creation is skipped."""
@@ -144,7 +144,7 @@ class TestEnsureOwnerEntityFallback:
 
         for call in conn.fetchval.call_args_list:
             sql = call[0][0] if call[0] else ""
-            assert "INSERT INTO shared.entities" not in sql
+            assert "INSERT INTO public.entities" not in sql
 
 
 class TestEnsureOwnerEntityErrorHandling:
@@ -175,7 +175,7 @@ class TestEnsureOwnerEntityErrorHandling:
 
         async def failing_on_insert(sql, *args):
             nonlocal call_count
-            if "INSERT INTO shared.entities" in sql:
+            if "INSERT INTO public.entities" in sql:
                 raise Exception("constraint violation")
             idx = call_count
             call_count += 1
@@ -207,7 +207,7 @@ class TestConcurrentStartupSafety:
             original_fetchval = conn.fetchval
 
             async def capturing_fetchval(sql, *args, _orig=original_fetchval):
-                if "INSERT INTO shared.entities" in sql:
+                if "INSERT INTO public.entities" in sql:
                     insert_calls.append((sql, args))
                 return await _orig(sql, *args)
 

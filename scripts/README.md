@@ -156,7 +156,7 @@ Destructive reset and validation workflow for migration rewrite rollout (`butler
 
 - Explicit destructive reset steps with confirmation guard (`RESET`)
 - Reset scope options:
-  - `managed-schemas` (drop/recreate `shared` + butler schemas)
+  - `managed-schemas` (drop/recreate `public` cross-butler tables + butler schemas)
   - `database` (drop/recreate full target DB)
 - Replays rewritten baseline migrations per schema (`core_001`, `mem_001`)
 - SQL-based schema/table/revision matrix validation with JSON artifacts

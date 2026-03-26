@@ -127,7 +127,7 @@ class SelfHealingModule(Module):
         return []
 
     def migration_revisions(self) -> str | None:
-        return None  # Schema owned by core migration (shared.healing_attempts)
+        return None  # Schema owned by core migration (public.healing_attempts)
 
     # ------------------------------------------------------------------
     # Sensitivity metadata

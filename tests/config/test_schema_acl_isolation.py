@@ -121,10 +121,10 @@ def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
                     text(f"CREATE TABLE {schema}.acl_probe (id INT PRIMARY KEY, note TEXT)")
                 )
             conn.execute(
-                text("CREATE TABLE shared.acl_probe_shared (id INT PRIMARY KEY, note TEXT)")
+                text("CREATE TABLE public.acl_probe_shared (id INT PRIMARY KEY, note TEXT)")
             )
             conn.execute(
-                text("INSERT INTO shared.acl_probe_shared (id, note) VALUES (1, 'shared-ok')")
+                text("INSERT INTO public.acl_probe_shared (id, note) VALUES (1, 'shared-ok')")
             )
     finally:
         setup_engine.dispose()
@@ -146,7 +146,7 @@ def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
         shared_note = _execute_as_role(
             db_url,
             runtime_role,
-            "SELECT note FROM shared.acl_probe_shared WHERE id = 1",
+            "SELECT note FROM public.acl_probe_shared WHERE id = 1",
             scalar=True,
         )
         assert shared_note == "shared-ok"
@@ -155,7 +155,7 @@ def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
             _execute_as_role(
                 db_url,
                 runtime_role,
-                "INSERT INTO shared.acl_probe_shared (id, note) VALUES (2, 'blocked')",
+                "INSERT INTO public.acl_probe_shared (id, note) VALUES (2, 'blocked')",
             )
 
         blocked_schema = next(schema for schema in _BUTLER_SCHEMAS if schema != owned_schema)

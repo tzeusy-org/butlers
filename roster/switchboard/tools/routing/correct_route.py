@@ -5,7 +5,7 @@ It allows callers to re-dispatch a previously ingested message to the correct
 butler when the original routing was wrong (misroute correction).
 
 Key behaviors:
-- Looks up the original ingestion event by ``request_id`` from ``shared.ingestion_events``
+- Looks up the original ingestion event by ``request_id`` from ``public.ingestion_events``
 - Validates that the event is within the 1-month retention window
 - Calls ``route()`` to dispatch to the correct butler, preserving original context
   and embedding a ``correction_id`` in the routing args
@@ -15,7 +15,7 @@ Key behaviors:
 Design notes:
 - The 1-month retention window matches the ``message_inbox`` partition scheme,
   which means ingestion events older than 1 month may no longer have a live
-  ``message_inbox`` row even if the ``shared.ingestion_events`` entry exists.
+  ``message_inbox`` row even if the ``public.ingestion_events`` entry exists.
 - On expiry the original raw_payload is no longer accessible, so re-dispatch is
   refused with an informative error rather than attempting a partial re-dispatch.
 - The ``correction_id`` is a caller-supplied UUID that the misroute handler
@@ -93,7 +93,7 @@ async def correct_route(
     if isinstance(correcting_session_id, str):
         correcting_session_id = UUID(correcting_session_id)
 
-    # 1. Look up the original ingestion event from shared.ingestion_events
+    # 1. Look up the original ingestion event from public.ingestion_events
     event_row = await pool.fetchrow(
         """
         SELECT
@@ -110,7 +110,7 @@ async def correct_route(
             policy_tier,
             triage_decision,
             triage_target
-        FROM shared.ingestion_events
+        FROM public.ingestion_events
         WHERE id = $1
         """,
         request_id,

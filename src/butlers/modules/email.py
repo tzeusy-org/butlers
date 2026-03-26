@@ -179,7 +179,7 @@ class EmailModule(Module):
         """Initialize email config and resolve credentials.
 
         User-scope credentials (USER_EMAIL_ADDRESS, USER_EMAIL_PASSWORD) are
-        resolved exclusively from the owner entity's ``shared.entity_info``
+        resolved exclusively from the owner entity's ``public.entity_info``
         entries (types ``email`` and ``email_password``).  Bot-scope credentials
         are resolved via :class:`~butlers.credential_store.CredentialStore`.
 

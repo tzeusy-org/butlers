@@ -2360,7 +2360,7 @@ class TestResolveGmailCredentialsFromDb:
         monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butlers")
         monkeypatch.setenv("CONNECTOR_BUTLER_DB_SCHEMA", "general")
         monkeypatch.setenv("BUTLER_SHARED_DB_NAME", "butlers")
-        monkeypatch.setenv("BUTLER_SHARED_DB_SCHEMA", "shared")
+        monkeypatch.setenv("BUTLER_SHARED_DB_SCHEMA", "public")
 
         local_conn = AsyncMock()
         local_conn.fetchrow.return_value = None
@@ -2401,9 +2401,9 @@ class TestResolveGmailCredentialsFromDb:
             server_settings = kwargs.get("server_settings") or {}
             search_path = server_settings.get("search_path")
             search_paths.append(search_path)
-            if search_path == "general,shared,public":
+            if search_path == "general,public":
                 return local_pool
-            if search_path == "shared,public":
+            if search_path == "public":
                 return shared_pool
             raise AssertionError(f"Unexpected search_path: {search_path!r}")
 
@@ -2423,7 +2423,7 @@ class TestResolveGmailCredentialsFromDb:
             result = await _resolve_gmail_credentials_from_db()
         assert result is not None
         assert result["client_id"] == "db-client-id"
-        assert search_paths == ["general,shared,public", "shared,public"]
+        assert search_paths == ["general,public", "public"]
 
 
 class TestGmailConnectorConfigCredentialInjection:

@@ -73,7 +73,7 @@ Credentials are resolved from the DB-backed credential store (`butler_secrets`),
 
 - **WHEN** on_startup is called with a Google provider entry with `account = "work@gmail.com"`
 - **THEN** `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` are resolved from `butler_secrets`
-- **AND** the refresh token is resolved from `shared.entity_info` on the companion entity for the `work@gmail.com` Google account
+- **AND** the refresh token is resolved from `public.entity_info` on the companion entity for the `work@gmail.com` Google account
 - **AND** if the account is not connected or credentials are missing, a `RuntimeError` is raised directing the user to the dashboard OAuth flow for that account
 
 #### Scenario: Credentials resolved for primary account (default)
@@ -133,7 +133,7 @@ The `TelegramContactsProvider` implements the `ContactsProvider` interface to fe
 #### Scenario: Telegram credential resolution
 
 - **WHEN** the Telegram provider initializes
-- **THEN** it resolves `telegram_api_id`, `telegram_api_hash`, and `telegram_user_session` from the owner contact's `shared.contact_info` entries (secured credentials)
+- **THEN** it resolves `telegram_api_id`, `telegram_api_hash`, and `telegram_user_session` from the owner contact's `public.contact_info` entries (secured credentials)
 - **AND** if any credential is missing, a `RuntimeError` is raised directing the user to configure Telegram user-client credentials
 
 #### Scenario: Telegram full sync
@@ -251,7 +251,7 @@ Sync state is persisted via `ContactsSyncStateStore` with fields: `sync_cursor`,
 
 - **WHEN** a canonical contact has no existing match
 - **THEN** a new CRM contact is created in the `contacts` table
-- **AND** `contact_info` rows are created for emails, phones, urls, usernames (in `shared.contact_info`)
+- **AND** `contact_info` rows are created for emails, phones, urls, usernames (in `public.contact_info`)
 - **AND** `addresses` rows are created for postal addresses
 - **AND** `important_dates` rows are created for birthdays and anniversaries
 - **AND** `labels` + `contact_labels` rows are created for group memberships
@@ -282,8 +282,8 @@ Sync state is persisted via `ContactsSyncStateStore` with fields: `sync_cursor`,
 - **WHEN** a canonical contact is resolved
 - **THEN** the following strategies are tried in order:
   1. Source link match (`provider + account_id + external_contact_id` in `contacts_source_links`)
-  2. Primary email exact match in `shared.contact_info` (type='email')
-  3. Phone exact/e164 match in `shared.contact_info` (type='phone')
+  2. Primary email exact match in `public.contact_info` (type='email')
+  3. Phone exact/e164 match in `public.contact_info` (type='phone')
   4. Conservative name match (ILIKE against `name`, `first_name || last_name`, `nickname`)
 - **AND** ambiguous name matches (multiple candidates) skip auto-merge and return `ambiguous_name` strategy
 
@@ -312,14 +312,14 @@ The module registers 4 operational/sync control tools.
 - **THEN** an immediate sync trigger is signaled to the runtime
 - **AND** per-contact scoping is noted as not yet supported at the engine level
 
-### Requirement: Shared Schema Tables
+### Requirement: Public Schema Tables
 
-The backfill writes to `shared.contact_info` for cross-butler contact data, while module-owned tables (`contacts_source_links`) live in the hosting butler's schema.
+The backfill writes to `public.contact_info` for cross-butler contact data, while module-owned tables (`contacts_source_links`) live in the hosting butler's schema.
 
-#### Scenario: Contact info in shared schema
+#### Scenario: Contact info in public schema
 
 - **WHEN** email, phone, website, or other contact info is upserted
-- **THEN** rows are written to `shared.contact_info` with `contact_id`, `type`, `value`, `label`, `is_primary`
+- **THEN** rows are written to `public.contact_info` with `contact_id`, `type`, `value`, `label`, `is_primary`
 - **AND** existing duplicates (same contact_id + type + lower(value)) are not re-inserted
 
 ### Requirement: Cross-Provider Contact Backfill
@@ -329,7 +329,7 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 #### Scenario: Telegram contact matches existing Google contact by phone
 
 - **WHEN** a Telegram contact has phone number `+1-555-0100`
-- **AND** a Google-sourced CRM contact already exists with the same phone in `shared.contact_info`
+- **AND** a Google-sourced CRM contact already exists with the same phone in `public.contact_info`
 - **THEN** the backfill engine resolves them as the same contact via phone match (strategy 3 in resolution order)
 - **AND** Telegram-specific `contact_info` entries (`telegram_username`, `telegram_user_id`, `telegram_chat_id`) are added alongside the existing Google-sourced entries
 - **AND** the `contacts_source_links` table records a second provenance row with `provider = "telegram"`

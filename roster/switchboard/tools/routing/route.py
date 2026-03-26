@@ -533,7 +533,7 @@ async def _log_routing(
     source_channel:
         Source channel (e.g. 'email', 'telegram'). Enables thread-affinity index.
     contact_id:
-        Resolved contact UUID for the sender (from shared.contacts). Nullable.
+        Resolved contact UUID for the sender (from public.contacts). Nullable.
     entity_id:
         Linked memory entity UUID for the sender. Nullable.
     sender_roles:

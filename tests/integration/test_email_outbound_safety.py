@@ -124,7 +124,7 @@ class _MockPool:
             row = self.pending_actions.get(action_id)
             return dict(row) if row else None
 
-        if "shared.contact_info" in query and args and len(args) >= 2:
+        if "public.contact_info" in query and args and len(args) >= 2:
             contact = self._contact_info.get((str(args[0]), str(args[1])))
             if contact is None:
                 return None
@@ -134,7 +134,7 @@ class _MockPool:
                 "roles": contact.roles,
                 "entity_id": contact.entity_id,
             }
-        if "shared.contacts" in query and "WHERE id" in query and args:
+        if "public.contacts" in query and "WHERE id" in query and args:
             try:
                 cid = uuid.UUID(str(args[0]))
             except (ValueError, AttributeError):
@@ -341,7 +341,7 @@ def _mock_switchboard_client() -> Any:
 
 @pytest.mark.asyncio
 class TestNotifyRecipientValidation:
-    """notify(channel='email') MUST validate recipients against shared.contact_info."""
+    """notify(channel='email') MUST validate recipients against public.contact_info."""
 
     async def test_hallucinated_email_is_parked(self, butler_dir: Path) -> None:
         """Simulates: LLM hallucinates jo@reallylesson.com → MUST be rejected."""
@@ -370,7 +370,7 @@ class TestNotifyRecipientValidation:
         daemon.switchboard_client.call_tool.assert_not_awaited()
 
     async def test_unknown_email_is_parked(self, butler_dir: Path) -> None:
-        """Any email not in shared.contact_info MUST be parked."""
+        """Any email not in public.contact_info MUST be parked."""
         daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
         assert notify_fn is not None
 
@@ -777,7 +777,7 @@ class TestIncidentReplay:
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        # jo@reallylesson.com is NOT in shared.contact_info
+        # jo@reallylesson.com is NOT in public.contact_info
         with patch(
             "butlers.identity.resolve_contact_by_channel",
             new=AsyncMock(return_value=None),

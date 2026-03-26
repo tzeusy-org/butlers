@@ -73,7 +73,7 @@ The Education Butler does not deliver video content, connect to external learnin
 
 **Spaced Repetition.** After learning a concept, the SM-2 algorithm schedules reviews at optimal intervals. The daily nudge at 17:00 checks for pending reviews and sends one actionable summary if any are due.
 
-**Entity-Backed Concepts.** Every mind map node is backed by a `shared.entities` entity, enabling memory deduplication. Facts about learning outcomes and struggles are stored with `entity_id` links to the canonical concept entity.
+**Entity-Backed Concepts.** Every mind map node is backed by a `public.entities` entity, enabling memory deduplication. Facts about learning outcomes and struggles are stored with `entity_id` links to the canonical concept entity.
 
 ## Interaction Patterns
 

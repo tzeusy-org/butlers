@@ -8,7 +8,7 @@
 
 ![OAuth Device-Code Flow](./oauth-flow.svg)
 
-Butlers integrates with Google services (Calendar, Contacts, Gmail) via OAuth 2.0. The OAuth flow is bootstrapped through the dashboard UI and credentials are stored in a split model: app credentials in `butler_secrets`, refresh tokens in `shared.entity_info` on companion entities. Multi-account Google support is fully implemented.
+Butlers integrates with Google services (Calendar, Contacts, Gmail) via OAuth 2.0. The OAuth flow is bootstrapped through the dashboard UI and credentials are stored in a split model: app credentials in `butler_secrets`, refresh tokens in `public.entity_info` on companion entities. Multi-account Google support is fully implemented.
 
 ## Credential Storage Split
 
@@ -24,12 +24,12 @@ Google OAuth credentials are stored in two locations:
 
 These are shared across all Google accounts and stored via the `CredentialStore`.
 
-### Refresh Tokens (in `shared.entity_info`)
+### Refresh Tokens (in `public.entity_info`)
 
-Each Google account has a **companion entity** in `shared.entities` with `roles = ['google_account']`. The refresh token is stored as an `entity_info` row:
+Each Google account has a **companion entity** in `public.entities` with `roles = ['google_account']`. The refresh token is stored as an `entity_info` row:
 
 ```
-shared.entity_info:
+public.entity_info:
   entity_id = <companion_entity_uuid>
   type = "google_oauth_refresh"
   value = "1//0abc..."
@@ -41,12 +41,12 @@ This per-entity storage enables multi-account Google support -- each account has
 
 ## Google Account Registry
 
-The `shared.google_accounts` table tracks connected Google accounts:
+The `public.google_accounts` table tracks connected Google accounts:
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID | Account primary key |
-| `entity_id` | UUID (FK) | Companion entity in `shared.entities` |
+| `entity_id` | UUID (FK) | Companion entity in `public.entities` |
 | `email` | TEXT | Google email address |
 | `display_name` | TEXT | Google profile display name |
 | `is_primary` | BOOLEAN | Whether this is the active primary account |
@@ -76,8 +76,8 @@ The dashboard provides a web-based OAuth bootstrap:
 3. User authorizes in the browser and Google redirects back with an authorization code.
 4. The callback endpoint exchanges the code for tokens.
 5. App credentials (client_id, client_secret) are stored in `butler_secrets` via the shared credential store.
-6. The refresh token is stored in `shared.entity_info` on the companion entity.
-7. A `shared.google_accounts` row is created (or updated) with the granted scopes.
+6. The refresh token is stored in `public.entity_info` on the companion entity.
+7. A `public.google_accounts` row is created (or updated) with the granted scopes.
 
 ### Scope Grants
 
@@ -104,7 +104,7 @@ creds = await resolve_google_credentials(
 
 Resolution:
 1. App credentials from `butler_secrets` via `CredentialStore.load()`.
-2. Refresh token from `shared.entity_info` via the companion entity lookup.
+2. Refresh token from `public.entity_info` via the companion entity lookup.
 3. Account selector: `None` = primary account, `str` = email, `UUID` = account ID.
 
 `MissingGoogleCredentialsError` is raised if credentials are incomplete, with a safe-to-log message naming missing fields (never values).

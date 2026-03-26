@@ -11,7 +11,7 @@ Endpoints:
 - GET  /api/healing/circuit-breaker           — circuit breaker status
 - POST /api/healing/circuit-breaker/reset     — reset circuit breaker
 
-All reads/writes query ``shared.healing_attempts`` via the shared credential pool.
+All reads/writes query ``public.healing_attempts`` via the shared credential pool.
 Retry rejection (HTTP 409) is enforced for non-terminal attempts.
 
 Dispatch hook
@@ -205,11 +205,11 @@ async def _count_attempts(pool, status_filter: str | None) -> int:
     """Return the total count of healing attempts, optionally filtered by status."""
     if status_filter is not None:
         result: int = await pool.fetchval(
-            "SELECT COUNT(*) FROM shared.healing_attempts WHERE status = $1",
+            "SELECT COUNT(*) FROM public.healing_attempts WHERE status = $1",
             status_filter,
         )
     else:
-        result = await pool.fetchval("SELECT COUNT(*) FROM shared.healing_attempts")
+        result = await pool.fetchval("SELECT COUNT(*) FROM public.healing_attempts")
     return int(result)
 
 
@@ -234,7 +234,7 @@ async def _compute_breaker_state(pool, threshold: int) -> tuple[bool, int, datet
         row = await pool.fetchrow(
             """
             SELECT closed_at
-            FROM shared.healing_attempts
+            FROM public.healing_attempts
             WHERE status = ANY($1::text[])
             ORDER BY closed_at DESC
             LIMIT 1
@@ -389,7 +389,7 @@ async def retry_healing_attempt(
     try:
         new_row = await pool.fetchrow(
             """
-            INSERT INTO shared.healing_attempts (
+            INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
                 exception_type, call_site, sanitized_msg, session_ids
             )
@@ -527,7 +527,7 @@ async def reset_circuit_breaker(
     try:
         await pool.execute(
             """
-            INSERT INTO shared.healing_attempts (
+            INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
                 exception_type, call_site, session_ids, closed_at
             )

@@ -1,7 +1,7 @@
 # Google Calendar Connector
 
 ## Purpose
-The Google Calendar connector ingests calendar event changes (created, updated, deleted) and synthesizes "event starting soon" notifications, keeping butlers current with the user's schedule in near real-time. It runs as a standalone process, polls Google Calendar via incremental sync (`events.list` with `syncToken`), normalizes events into `ingest.v1` envelopes, and submits them to the Switchboard. The connector supports multi-account operation via `shared.google_accounts` (same pattern as the Gmail connector) and reuses existing Google OAuth infrastructure.
+The Google Calendar connector ingests calendar event changes (created, updated, deleted) and synthesizes "event starting soon" notifications, keeping butlers current with the user's schedule in near real-time. It runs as a standalone process, polls Google Calendar via incremental sync (`events.list` with `syncToken`), normalizes events into `ingest.v1` envelopes, and submits them to the Switchboard. The connector supports multi-account operation via `public.google_accounts` (same pattern as the Gmail connector) and reuses existing Google OAuth infrastructure.
 
 ## ADDED Requirements
 
@@ -10,7 +10,7 @@ The Google Calendar connector runs as a single process that discovers and manage
 
 #### Scenario: Multi-account discovery at startup
 - **WHEN** the Google Calendar connector starts
-- **THEN** it SHALL query `shared.google_accounts` for all rows with `status = 'active'` and `calendar` in `granted_scopes`
+- **THEN** it SHALL query `public.google_accounts` for all rows with `status = 'active'` and `calendar` in `granted_scopes`
 - **AND** for each qualifying account, it SHALL resolve credentials (`client_id`, `client_secret` from `butler_secrets`; `refresh_token` from the account's companion entity in `entity_info`)
 - **AND** it SHALL spawn an independent poll loop per account
 - **AND** startup SHALL succeed even if some accounts fail credential resolution (degraded mode — failed accounts are logged and skipped)
@@ -189,7 +189,7 @@ The connector SHALL support discovering new or removed accounts without a full p
 
 #### Scenario: Periodic re-scan
 - **WHEN** the connector is running
-- **THEN** it SHALL re-query `shared.google_accounts` at a configurable interval (`GCAL_ACCOUNT_RESCAN_INTERVAL_S`, default 300)
+- **THEN** it SHALL re-query `public.google_accounts` at a configurable interval (`GCAL_ACCOUNT_RESCAN_INTERVAL_S`, default 300)
 - **AND** newly active accounts with calendar scope SHALL have loops spawned
 - **AND** accounts that are no longer active SHALL have their loops gracefully stopped
 

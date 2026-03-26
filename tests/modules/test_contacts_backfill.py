@@ -64,10 +64,10 @@ async def crm_pool(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
-        # Create shared schema and shared.contact_info (moved from per-butler schema)
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # Create shared schema and public.contact_info (moved from per-butler schema)
+        # public schema always exists; no need to create it.
         await pool.execute("""
-            CREATE TABLE IF NOT EXISTS shared.contact_info (
+            CREATE TABLE IF NOT EXISTS public.contact_info (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 contact_id UUID NOT NULL,
                 type VARCHAR NOT NULL,
@@ -79,7 +79,7 @@ async def crm_pool(provisioned_postgres_pool):
         """)
         await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_shared_contact_info_type_value
-                ON shared.contact_info (type, value)
+                ON public.contact_info (type, value)
         """)
         await pool.execute("""
             CREATE TABLE IF NOT EXISTS addresses (
@@ -317,7 +317,7 @@ class TestContactBackfillResolver:
         local_id = await _insert_local_contact(crm_pool, name="Bob Jones")
         # Add email to contact_info
         await crm_pool.execute(
-            "INSERT INTO shared.contact_info (contact_id, type, value) VALUES ($1, 'email', $2)",
+            "INSERT INTO public.contact_info (contact_id, type, value) VALUES ($1, 'email', $2)",
             local_id,
             "bob@example.com",
         )
@@ -340,7 +340,7 @@ class TestContactBackfillResolver:
     async def test_resolve_via_phone_match(self, crm_pool) -> None:
         local_id = await _insert_local_contact(crm_pool, name="Carol White")
         await crm_pool.execute(
-            "INSERT INTO shared.contact_info (contact_id, type, value) VALUES ($1, 'phone', $2)",
+            "INSERT INTO public.contact_info (contact_id, type, value) VALUES ($1, 'phone', $2)",
             local_id,
             "+15551234567",
         )
@@ -510,7 +510,7 @@ class TestContactBackfillWriter:
         )
         await writer.upsert_contact_info(local_id, contact)
         rows = await crm_pool.fetch(
-            "SELECT * FROM shared.contact_info WHERE contact_id = $1 ORDER BY is_primary DESC",
+            "SELECT * FROM public.contact_info WHERE contact_id = $1 ORDER BY is_primary DESC",
             local_id,
         )
         assert len(rows) == 2
@@ -532,7 +532,7 @@ class TestContactBackfillWriter:
         await writer.upsert_contact_info(local_id, contact)
         await writer.upsert_contact_info(local_id, contact)  # Second call
         rows = await crm_pool.fetch(
-            "SELECT * FROM shared.contact_info WHERE contact_id = $1 AND type = 'email'",
+            "SELECT * FROM public.contact_info WHERE contact_id = $1 AND type = 'email'",
             local_id,
         )
         assert len(rows) == 1
@@ -713,7 +713,7 @@ class TestContactBackfillEngine:
 
         # Verify contact_info
         info_rows = await crm_pool.fetch(
-            "SELECT type, value FROM shared.contact_info WHERE contact_id = $1 ORDER BY type",
+            "SELECT type, value FROM public.contact_info WHERE contact_id = $1 ORDER BY type",
             local_id,
         )
         types_values = {(r["type"], r["value"].lower()) for r in info_rows}
@@ -766,7 +766,7 @@ class TestContactBackfillEngine:
         # Create an existing contact with email
         local_id = await _insert_local_contact(crm_pool, name="Bob Existing", first_name="Bob")
         await crm_pool.execute(
-            "INSERT INTO shared.contact_info (contact_id, type, value) VALUES ($1, 'email', $2)",
+            "INSERT INTO public.contact_info (contact_id, type, value) VALUES ($1, 'email', $2)",
             local_id,
             "bob@existing.com",
         )
@@ -791,7 +791,7 @@ class TestContactBackfillEngine:
 
         # Email not duplicated
         email_rows = await crm_pool.fetch(
-            "SELECT id FROM shared.contact_info WHERE contact_id = $1 AND type = 'email'", local_id
+            "SELECT id FROM public.contact_info WHERE contact_id = $1 AND type = 'email'", local_id
         )
         assert len(email_rows) == 1
 
@@ -965,7 +965,7 @@ class TestContactBackfillEngine:
         await engine(contact)
 
         rows = await crm_pool.fetch(
-            "SELECT type, value FROM shared.contact_info WHERE value IN ($1, $2)",
+            "SELECT type, value FROM public.contact_info WHERE value IN ($1, $2)",
             "https://example.com/profile",
             "alice_handle",
         )
@@ -1017,8 +1017,8 @@ async def crm_pool_with_identity(provisioned_postgres_pool):
 
     Extends crm_pool with:
     - roles TEXT[] NOT NULL DEFAULT '{}' on contacts
-    - secured BOOLEAN NOT NULL DEFAULT false on shared.contact_info
-    - UNIQUE(type, value) constraint on shared.contact_info
+    - secured BOOLEAN NOT NULL DEFAULT false on public.contact_info
+    - UNIQUE(type, value) constraint on public.contact_info
     """
     async with provisioned_postgres_pool() as pool:
         await pool.execute("""
@@ -1039,9 +1039,9 @@ async def crm_pool_with_identity(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # public schema always exists; no need to create it.
         await pool.execute("""
-            CREATE TABLE IF NOT EXISTS shared.contact_info (
+            CREATE TABLE IF NOT EXISTS public.contact_info (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 contact_id UUID NOT NULL,
                 type VARCHAR NOT NULL,
@@ -1158,7 +1158,7 @@ async def _insert_contact_with_roles(
 
 
 # ---------------------------------------------------------------------------
-# Task 9.1: Sync does not overwrite roles on shared.contacts
+# Task 9.1: Sync does not overwrite roles on public.contacts
 # ---------------------------------------------------------------------------
 
 
@@ -1264,7 +1264,7 @@ class TestSyncSecuredGuard:
         # Insert a secured contact_info row
         await pool.execute(
             """
-            INSERT INTO shared.contact_info (contact_id, type, value, is_primary, secured)
+            INSERT INTO public.contact_info (contact_id, type, value, is_primary, secured)
             VALUES ($1, 'email', 'secure@example.com', true, true)
             """,
             local_id,
@@ -1285,7 +1285,7 @@ class TestSyncSecuredGuard:
         await writer.upsert_contact_info(local_id, contact)
 
         row = await pool.fetchrow(
-            "SELECT secured, is_primary FROM shared.contact_info WHERE contact_id = $1",
+            "SELECT secured, is_primary FROM public.contact_info WHERE contact_id = $1",
             local_id,
         )
         # secured must still be True — sync never modifies it
@@ -1313,7 +1313,7 @@ class TestSyncSecuredGuard:
         await writer.upsert_contact_info(local_id, contact)
 
         row = await pool.fetchrow(
-            "SELECT secured FROM shared.contact_info WHERE contact_id = $1",
+            "SELECT secured FROM public.contact_info WHERE contact_id = $1",
             local_id,
         )
         # sync never sets secured=true — must remain false (default)
@@ -1337,7 +1337,7 @@ class TestSyncUniqueConstraintGuard:
         contact_a_id = await _insert_local_contact(pool, name="Contact A")
         await pool.execute(
             """
-            INSERT INTO shared.contact_info (contact_id, type, value, is_primary)
+            INSERT INTO public.contact_info (contact_id, type, value, is_primary)
             VALUES ($1, 'email', 'shared@example.com', true)
             """,
             contact_a_id,
@@ -1361,7 +1361,7 @@ class TestSyncUniqueConstraintGuard:
 
         # The email row must still belong to contact A only
         rows = await pool.fetch(
-            "SELECT contact_id FROM shared.contact_info WHERE type = 'email' AND value = $1",
+            "SELECT contact_id FROM public.contact_info WHERE type = 'email' AND value = $1",
             "shared@example.com",
         )
         assert len(rows) == 1
@@ -1377,7 +1377,7 @@ class TestSyncUniqueConstraintGuard:
         contact_a_id = await _insert_local_contact(pool, name="Existing Owner A")
         await pool.execute(
             """
-            INSERT INTO shared.contact_info (contact_id, type, value, is_primary)
+            INSERT INTO public.contact_info (contact_id, type, value, is_primary)
             VALUES ($1, 'email', 'collision@example.com', true)
             """,
             contact_a_id,

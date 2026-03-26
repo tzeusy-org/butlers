@@ -13,7 +13,7 @@ The module is responsible for:
 - **Persisting memory artifacts** (episodes, facts, rules) with provenance in the hosting butler's database.
 - **Low-latency retrieval** for runtime context injection via semantic, keyword, and hybrid search.
 - **Lifecycle maintenance** including consolidation (episodes into facts/rules), confidence decay, fading, expiry, and cleanup.
-- **Entity resolution** -- mapping ambiguous name strings to stable identity anchors in the `shared.entities` table.
+- **Entity resolution** -- mapping ambiguous name strings to stable identity anchors in the `public.entities` table.
 
 Source: `src/butlers/modules/memory/__init__.py` and `src/butlers/modules/memory/tools/`.
 
@@ -35,7 +35,7 @@ importance = 0.3
 recency = 0.2
 confidence = 0.1
 
-# Optional: write summaries to shared.memory_catalog
+# Optional: write summaries to public.memory_catalog
 enable_shared_catalog = false
 ```
 
@@ -149,7 +149,7 @@ The module owns tables in the hosting butler's schema (Alembic branch: `memory`)
 - `embedding_versions` -- model/version tracking
 - `predicate_registry` -- predicate vocabulary with enforcement flags
 
-Entity identity tables live in the `shared` schema: `shared.entities`.
+Entity identity tables live in the `public` schema: `public.entities`.
 
 ## Dependencies
 

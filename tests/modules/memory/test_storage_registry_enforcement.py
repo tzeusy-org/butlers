@@ -106,7 +106,7 @@ def _make_pool(*, registry_row=None, entity_exists=True, obj_entity_exists=True)
     # dispatches based on the SQL query so tests with a fixed registry_row
     # still work correctly without needing explicit side_effect lists.
     async def _fetchrow_dispatch(sql, *args):
-        if "shared.entities" in sql:
+        if "public.entities" in sql:
             # Determine which entity is being checked from the arg (UUID).
             # Entity validation always precedes object entity validation.
             # We track call count to distinguish first vs second call.

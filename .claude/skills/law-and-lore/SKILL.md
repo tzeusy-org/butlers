@@ -28,7 +28,7 @@ The `about/law-and-lore/` directory is the HOW pillar of the Butlers knowledge a
 | 0001 | `about/law-and-lore/rfcs/0001-daemon-lifecycle-and-triggers.md` | EXISTS | Multi-phase startup, dual trigger sources (external MCP + internal cron), spawner concurrency model, session lifecycle, request context propagation |
 | 0002 | `about/law-and-lore/rfcs/0002-mcp-tool-surface-and-modules.md` | EXISTS | FastMCP SSE server, core tool catalog, module ABC and topological resolution, tool call logging proxy, skills infrastructure, ephemeral MCP config generation |
 | 0003 | `about/law-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md` | EXISTS | ingest.v1 envelope format, pre-classification triage, thread affinity, LLM classification fallback, route.execute dispatch, route inbox crash recovery, email priority queuing |
-| 0004 | `about/law-and-lore/rfcs/0004-identity-and-contact-resolution.md` | EXISTS | Three-table shared schema (contacts, contact_info, entities), resolve_contact_by_channel() contract, unknown sender handling, identity preamble format, tenant model |
+| 0004 | `about/law-and-lore/rfcs/0004-identity-and-contact-resolution.md` | EXISTS | Three-table identity schema (contacts, contact_info, entities) in `public`, resolve_contact_by_channel() contract, unknown sender handling, identity preamble format, tenant model |
 | 0005 | `about/law-and-lore/rfcs/0005-observability-and-telemetry.md` | EXISTS | OTel setup, OTLP export pipeline, trace propagation across process boundaries, tool_span instrumentation, metrics catalog, cardinality discipline |
 | 0006 | `about/law-and-lore/rfcs/0006-database-schema-and-isolation.md` | EXISTS | Single-PG multi-schema model, shared identity tables, per-butler schema contents, multi-chain Alembic migrations, credential store design |
 | 0007 | `about/law-and-lore/rfcs/0007-dashboard-and-api-surface.md` | EXISTS | FastAPI + Vite architecture, auto-discovered butler routes, route map, backend API contract, tab structures, data access patterns, command palette |
@@ -44,7 +44,7 @@ The most load-bearing design decisions defined by these RFCs:
 - **ingest.v1 envelope** (RFC 0003): The canonical format for all external events entering the system. Connectors produce it, Switchboard consumes it.
 - **Thread affinity** (RFC 0003): Replies to an existing thread route to the same butler that handled the original message, bypassing classification.
 - **resolve_contact_by_channel()** (RFC 0004): The single entry point for identity resolution. Maps (channel_type, channel_value) to a contact record.
-- **Per-butler schemas with shared identity** (RFC 0006): Each butler gets its own PostgreSQL schema. The `shared` schema holds contacts, contact_info. Schema isolation is the security boundary.
+- **Per-butler schemas with shared identity** (RFC 0006): Each butler gets its own PostgreSQL schema. The `public` schema holds contacts, contact_info. Schema isolation is the security boundary.
 - **Auto-discovered dashboard routes** (RFC 0007): Butler API routes in `roster/*/api/router.py` are discovered and mounted automatically.
 
 ## When to Load

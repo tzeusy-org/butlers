@@ -7,7 +7,7 @@ Provides ``router`` at ``/api/settings/providers``:
 - ``PUT    /api/settings/providers/{provider_type}``              — update provider config
 - ``DELETE /api/settings/providers/{provider_type}``              — remove provider
 - ``POST   /api/settings/providers/{provider_type}/test-connectivity`` — probe base URL
-All operations target ``shared.provider_config`` via the shared credential pool.
+All operations target ``public.provider_config`` via the shared credential pool.
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ async def list_providers(
     rows = await pool.fetch(
         """
         SELECT provider_type, display_name, config, enabled
-        FROM shared.provider_config
+        FROM public.provider_config
         ORDER BY provider_type ASC
         """
     )
@@ -166,7 +166,7 @@ async def create_provider(
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO shared.provider_config
+            INSERT INTO public.provider_config
                 (provider_type, display_name, config, enabled)
             VALUES ($1, $2, $3::jsonb, $4)
             RETURNING provider_type, display_name, config, enabled
@@ -226,7 +226,7 @@ async def update_provider(
     params.append(provider_type)
 
     sql = (
-        f"UPDATE shared.provider_config SET {', '.join(set_parts)} "
+        f"UPDATE public.provider_config SET {', '.join(set_parts)} "
         f"WHERE provider_type = ${idx} "
         "RETURNING provider_type, display_name, config, enabled"
     )
@@ -259,7 +259,7 @@ async def delete_provider(
     """Remove a provider configuration by provider_type."""
     pool = _shared_pool(db)
     result = await pool.execute(
-        "DELETE FROM shared.provider_config WHERE provider_type = $1",
+        "DELETE FROM public.provider_config WHERE provider_type = $1",
         provider_type,
     )
     deleted = int(result.split()[-1]) if result else 0
@@ -294,7 +294,7 @@ async def test_connectivity(
     """
     pool = _shared_pool(db)
     row = await pool.fetchrow(
-        "SELECT config FROM shared.provider_config WHERE provider_type = $1",
+        "SELECT config FROM public.provider_config WHERE provider_type = $1",
         provider_type,
     )
     if row is None:

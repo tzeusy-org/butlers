@@ -91,10 +91,10 @@ async def _make_pool(postgres_container: Any) -> AsyncIterator[asyncpg.Pool]:
 
 async def _create_schema(pool: asyncpg.Pool) -> None:
     """Create the shared schema and model routing tables with discretion tier."""
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
+    # public schema always exists; no need to create it.
 
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS shared.model_catalog (
+        CREATE TABLE IF NOT EXISTS public.model_catalog (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             alias           TEXT NOT NULL,
             runtime_type    TEXT NOT NULL,
@@ -112,11 +112,11 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
     """)
 
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS shared.butler_model_overrides (
+        CREATE TABLE IF NOT EXISTS public.butler_model_overrides (
             id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             butler_name      TEXT NOT NULL,
             catalog_entry_id UUID NOT NULL
-                REFERENCES shared.model_catalog(id) ON DELETE CASCADE,
+                REFERENCES public.model_catalog(id) ON DELETE CASCADE,
             enabled          BOOLEAN NOT NULL DEFAULT true,
             priority         INTEGER,
             complexity_tier  TEXT,
@@ -145,7 +145,7 @@ async def test_resolve_discretion_tier(postgres_container: Any) -> None:
 
         await pool.execute(
             """
-            INSERT INTO shared.model_catalog
+            INSERT INTO public.model_catalog
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
@@ -179,7 +179,7 @@ async def test_resolve_discretion_string_tier(postgres_container: Any) -> None:
 
         await pool.execute(
             """
-            INSERT INTO shared.model_catalog
+            INSERT INTO public.model_catalog
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
@@ -209,7 +209,7 @@ async def test_discretion_tier_does_not_match_medium(postgres_container: Any) ->
 
         await pool.execute(
             """
-            INSERT INTO shared.model_catalog
+            INSERT INTO public.model_catalog
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
@@ -236,7 +236,7 @@ async def test_override_remap_to_discretion_tier(postgres_container: Any) -> Non
 
         row = await pool.fetchrow(
             """
-            INSERT INTO shared.model_catalog
+            INSERT INTO public.model_catalog
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             RETURNING id
@@ -253,7 +253,7 @@ async def test_override_remap_to_discretion_tier(postgres_container: Any) -> Non
 
         await pool.execute(
             """
-            INSERT INTO shared.butler_model_overrides
+            INSERT INTO public.butler_model_overrides
                 (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
             VALUES ($1, $2, $3, $4, $5)
             """,

@@ -57,7 +57,7 @@ Metrics track queue depth at both levels (`butlers.spawner.queued_triggers` and 
 
 The spawner resolves the model dynamically via the catalog:
 
-1. Query `shared.model_catalog` with optional `shared.butler_model_overrides` for the butler's name and the requested complexity tier.
+1. Query `public.model_catalog` with optional `public.butler_model_overrides` for the butler's name and the requested complexity tier.
 2. If the catalog returns a result: use that model's `runtime_type`, `model_id`, and `extra_args`. Check token quota before proceeding.
 3. If the catalog returns nothing: fall back to the TOML-configured `runtime.model`.
 
@@ -89,7 +89,7 @@ During the session, tool calls executed on the MCP server are captured in a thre
 
 ### 8. Session Completion
 
-The session row is updated with the output, merged tool calls, duration, token usage, cost, success status, and error (if any). Token usage is also recorded to the `shared.token_usage_ledger` for quota tracking and reported to OpenTelemetry metrics.
+The session row is updated with the output, merged tool calls, duration, token usage, cost, success status, and error (if any). Token usage is also recorded to the `public.token_usage_ledger` for quota tracking and reported to OpenTelemetry metrics.
 
 ### 9. Memory Episode Storage
 
@@ -101,7 +101,7 @@ The spawner can be wired to a self-healing module via `wire_healing_module()`. W
 
 ## Adapter Pool
 
-The spawner maintains a cache of `RuntimeAdapter` instances keyed by `runtime_type`. The TOML-configured adapter is seeded at construction. When the model catalog resolves a different runtime type, a new adapter is lazily instantiated via the adapter registry (`get_adapter()`). Provider-specific configuration (e.g., Ollama base URL from `shared.provider_config`) is forwarded to adapters that accept it.
+The spawner maintains a cache of `RuntimeAdapter` instances keyed by `runtime_type`. The TOML-configured adapter is seeded at construction. When the model catalog resolves a different runtime type, a new adapter is lazily instantiated via the adapter registry (`get_adapter()`). Provider-specific configuration (e.g., Ollama base URL from `public.provider_config`) is forwarded to adapters that accept it.
 
 ## Related Pages
 

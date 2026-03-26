@@ -8,11 +8,11 @@
 
 The Contacts module serves two deeply related purposes:
 
-1. **Identity model** -- `shared.contacts` and `shared.contact_info` are the canonical identity store for every person or system actor interacting with the butler system. All channels (Telegram, Email, etc.) resolve to a contact record before any routing or delivery decision is made.
+1. **Identity model** -- `public.contacts` and `public.contact_info` are the canonical identity store for every person or system actor interacting with the butler system. All channels (Telegram, Email, etc.) resolve to a contact record before any routing or delivery decision is made.
 
 2. **Address-book sync** -- A multi-provider sync engine that imports contacts from external sources (Google Contacts, Telegram) into the canonical contact model and backfills the Relationship Butler's CRM schema.
 
-These are intentionally unified: the sync module enriches the same `shared.contacts` records that the identity resolution path reads at runtime.
+These are intentionally unified: the sync module enriches the same `public.contacts` records that the identity resolution path reads at runtime.
 
 Source: `src/butlers/modules/contacts/__init__.py`, `src/butlers/modules/contacts/sync.py`, `src/butlers/modules/contacts/backfill.py`.
 
@@ -50,7 +50,7 @@ Exactly one of `provider` (single) or `providers` (multi) must be specified. Mul
 
 ### Credentials
 
-- **Google**: OAuth credentials from the shared credential store (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`), refresh token from `shared.entity_info`.
+- **Google**: OAuth credentials from the shared credential store (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`), refresh token from `public.entity_info`.
 - **Telegram**: API ID, API hash, and user session string resolved from owner `entity_info` entries.
 
 ## Tools Provided
@@ -78,7 +78,7 @@ Implemented by `resolve_contact_by_channel()` in `src/butlers/identity.py`. Retu
 
 ### Owner Bootstrap
 
-On every daemon startup, `_ensure_owner_contact()` idempotently creates the owner contact in `shared.contacts` with `roles = ['owner']`. The owner singleton is enforced by a partial unique index.
+On every daemon startup, `_ensure_owner_contact()` idempotently creates the owner contact in `public.contacts` with `roles = ['owner']`. The owner singleton is enforced by a partial unique index.
 
 ### Temporary Contacts
 
@@ -86,7 +86,7 @@ When Switchboard receives a message from an unknown sender, it creates a tempora
 
 ### Contact-Based notify()
 
-When a butler calls `notify(contact_id=..., channel=...)`, the daemon resolves the channel identifier from `shared.contact_info`, using `is_primary` ordering.
+When a butler calls `notify(contact_id=..., channel=...)`, the daemon resolves the channel identifier from `public.contact_info`, using `is_primary` ordering.
 
 ## Sync Engine
 
@@ -94,13 +94,13 @@ The provider-agnostic sync engine follows this pattern:
 
 1. **Full sync**: Fetches all contacts from the provider (paginated). Used on first run or when the sync cursor expires.
 2. **Incremental sync**: Uses provider-specific delta cursors/tokens to fetch only changes since last sync.
-3. **Backfill**: Upserted contacts are mapped to local `shared.contacts` and `shared.contact_info` rows via the `ContactBackfillEngine`.
+3. **Backfill**: Upserted contacts are mapped to local `public.contacts` and `public.contact_info` rows via the `ContactBackfillEngine`.
 
 Google sync tokens expire after approximately 7 days. The module schedules forced full refreshes every 6 days as a safety margin. On `EXPIRED_SYNC_TOKEN`, the module drops the cursor and runs a full sync immediately.
 
 ### Telegram Post-Sync Enrichment
 
-After each Telegram sync cycle, `_enrich_telegram_chat_ids()` resolves private chat IDs from Telegram dialogs and upserts `telegram_chat_id` entries in `shared.contact_info` for matched contacts.
+After each Telegram sync cycle, `_enrich_telegram_chat_ids()` resolves private chat IDs from Telegram dialogs and upserts `telegram_chat_id` entries in `public.contact_info` for matched contacts.
 
 ## Database Tables
 
@@ -110,10 +110,10 @@ The module owns tables in the hosting butler's schema (Alembic branch: `contacts
 - `contacts_sync_state` -- sync cursors, timestamps, errors per provider/account
 - `contacts_source_links` -- mapping of external contact IDs to local contact IDs with etags
 
-The shared identity tables live in the `shared` schema (owned by core migrations):
+The shared identity tables live in the `public` schema (owned by core migrations):
 
-- `shared.contacts` -- canonical contact registry
-- `shared.contact_info` -- per-channel identifiers (UNIQUE on `(type, value)`)
+- `public.contacts` -- canonical contact registry
+- `public.contact_info` -- per-channel identifiers (UNIQUE on `(type, value)`)
 
 ## Rollout Configuration
 

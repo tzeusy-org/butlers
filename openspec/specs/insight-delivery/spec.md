@@ -50,7 +50,7 @@ The delivery pipeline SHALL track whether the user engaged with delivered insigh
 
 #### Scenario: Engagement row creation
 - **WHEN** an insight (standalone or digest) is delivered
-- **THEN** one engagement tracking row SHALL be created per delivered candidate in `shared.insight_engagement` with `insight_id`, `delivered_at`, and `engaged=FALSE`
+- **THEN** one engagement tracking row SHALL be created per delivered candidate in `public.insight_engagement` with `insight_id`, `delivered_at`, and `engaged=FALSE`
 
 #### Scenario: Engagement detection window
 - **WHEN** the user sends any message to any butler (via any ingress channel) within 60 minutes of the insight's `delivered_at`
@@ -58,7 +58,7 @@ The delivery pipeline SHALL track whether the user engaged with delivered insigh
 
 #### Scenario: Engagement detection mechanism
 - **WHEN** the Switchboard processes an ingress request
-- **THEN** it SHALL check `shared.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes
+- **THEN** it SHALL check `public.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes
 - **AND** if any exist, it SHALL update them to `engaged=TRUE`
 - **AND** this check SHALL be lightweight (indexed query) and SHALL NOT delay ingress processing
 

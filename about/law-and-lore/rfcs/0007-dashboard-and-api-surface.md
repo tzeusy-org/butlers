@@ -211,7 +211,7 @@ All routes render inside a common shell with:
 - **RFC 0001:** The dashboard backend reads session data from butler schemas to provide the sessions and timeline views.
 - **RFC 0002:** MCP debug tab allows listing and calling tools on any butler's MCP server.
 - **RFC 0003:** Switchboard-specific tabs expose routing log and butler registry. Connector views show ingestion statistics.
-- **RFC 0004:** Contact management views operate on `shared` schema identity tables.
+- **RFC 0004:** Contact management views operate on `public` schema identity tables.
 - **RFC 0005:** Traces page provides distributed trace index and span waterfall visualization.
 - **RFC 0006:** Dashboard uses a privileged database connection that can read all butler schemas for cross-butler views.
 

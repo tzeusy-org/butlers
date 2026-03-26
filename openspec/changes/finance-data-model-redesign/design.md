@@ -1,6 +1,6 @@
 ## Context
 
-The Finance butler currently operates with dual storage: a dedicated `finance.transactions` table (created by migration `finance_001`) with typed columns and B-tree indexes, and the SPO fact layer (`shared.facts`) where transaction data is packed into JSONB `metadata`. The CRUD-to-SPO migration (`openspec/changes/crud-to-spo-migration/`) routed all transaction tools through the fact layer, sidelining the dedicated table.
+The Finance butler currently operates with dual storage: a dedicated `finance.transactions` table (created by migration `finance_001`) with typed columns and B-tree indexes, and the SPO fact layer (`public.facts`) where transaction data is packed into JSONB `metadata`. The CRUD-to-SPO migration (`openspec/changes/crud-to-spo-migration/`) routed all transaction tools through the fact layer, sidelining the dedicated table.
 
 The finance-intelligence change (`openspec/changes/finance-intelligence/`) plans analytics features (anomaly detection, trend analysis, budget enforcement, forecasting) that require SQL aggregations with window functions (`STDDEV`, `PERCENTILE_CONT`, `LAG`), range scans, and per-merchant/per-category grouping. Running these over JSONB metadata extraction (`metadata->>'amount')::numeric`) defeats indexing and forces sequential scans at scale.
 
@@ -22,7 +22,7 @@ Current state of `finance.transactions` (from `finance_001`): `id`, `account_id`
 - Multi-currency normalization or exchange rate conversion
 - Table partitioning (defer until query latency measurably degrades at 200k+ rows)
 - Real-time streaming analytics or trigger-based aggregation
-- Changes to the SPO fact layer schema or `shared.facts` table structure
+- Changes to the SPO fact layer schema or `public.facts` table structure
 - Double-entry accounting or formal bookkeeping compliance
 - Changes to the subscription or bill tables (they remain as-is)
 
@@ -34,7 +34,7 @@ All intelligence and CRUD queries target `finance.transactions`. The SPO fact la
 
 **Rationale**: The dedicated table has typed columns with B-tree indexes that support range queries, aggregations, and window functions. The SPO table requires JSONB extraction and casting at query time, which defeats indexing. Expression indexes on JSONB are a partial mitigation but do not provide type safety, require multiple indexes per extracted field, and add contention to a shared table used by all butlers.
 
-**Alternative considered**: Add expression indexes to `shared.facts` for `metadata->>'amount'`, `metadata->>'merchant'`, `metadata->>'category'`. Rejected because: (a) no type safety -- malformed values corrupt the index, (b) 7+ expression indexes needed on a shared table, (c) every query still pays JSONB extraction cost, (d) `shared.facts` serves all butlers so heavy analytical queries affect non-finance consumers.
+**Alternative considered**: Add expression indexes to `public.facts` for `metadata->>'amount'`, `metadata->>'merchant'`, `metadata->>'category'`. Rejected because: (a) no type safety -- malformed values corrupt the index, (b) 7+ expression indexes needed on a shared table, (c) every query still pays JSONB extraction cost, (d) `public.facts` serves all butlers so heavy analytical queries affect non-finance consumers.
 
 ### 2. Merchant mappings as a dedicated lookup table, not SPO facts
 
@@ -90,7 +90,7 @@ The `category_source` column tracks how a transaction was categorized (`auto`, `
 
 ## Risks / Trade-offs
 
-- **[Dual-write consistency]** During Phase 3, writes go to both `finance.transactions` and `shared.facts`. If one write succeeds and the other fails, the stores diverge. Mitigation: the dedicated table is the source of truth; SPO writes are fire-and-forget. If SPO write fails, log the error but do not roll back the dedicated table write. The backfill query can always re-sync from dedicated to SPO.
+- **[Dual-write consistency]** During Phase 3, writes go to both `finance.transactions` and `public.facts`. If one write succeeds and the other fails, the stores diverge. Mitigation: the dedicated table is the source of truth; SPO writes are fire-and-forget. If SPO write fails, log the error but do not roll back the dedicated table write. The backfill query can always re-sync from dedicated to SPO.
 
 - **[Backfill data quality]** SPO facts may contain malformed JSONB metadata (amounts as non-numeric strings, missing required fields). Mitigation: the backfill query uses `COALESCE` and defensive casts. Rows that fail casting are logged and skipped, not treated as hard errors. A post-backfill report shows skipped row count and reasons.
 

@@ -82,7 +82,7 @@ async def test_add_butler_schema_sets_search_path(
         database="butlers",
         min_size=1,
         max_size=3,
-        server_settings={"search_path": "general,shared,public"},
+        server_settings={"search_path": "general,public"},
     )
 
 
@@ -279,7 +279,7 @@ async def test_set_credential_shared_pool_with_schema(
     shared_pool = _make_mock_pool("shared")
     mock_create.return_value = shared_pool
 
-    await mgr.set_credential_shared_pool("butlers", db_schema="shared")
+    await mgr.set_credential_shared_pool("butlers", db_schema="public")
 
     assert mgr.credential_shared_pool() is shared_pool
     mock_create.assert_called_once_with(
@@ -290,7 +290,7 @@ async def test_set_credential_shared_pool_with_schema(
         database="butlers",
         min_size=1,
         max_size=3,
-        server_settings={"search_path": "shared,public"},
+        server_settings={"search_path": "public"},
     )
 
 

@@ -152,10 +152,10 @@ async def _make_pool(postgres_container: Any) -> AsyncIterator[asyncpg.Pool]:
 
 async def _create_schema(pool: asyncpg.Pool) -> None:
     """Create shared schema with model catalog, limits, and ledger tables."""
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
+    # public schema always exists; no need to create it.
 
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS shared.model_catalog (
+        CREATE TABLE IF NOT EXISTS public.model_catalog (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             alias           TEXT NOT NULL,
             runtime_type    TEXT NOT NULL,
@@ -173,10 +173,10 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
     """)
 
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS shared.token_limits (
+        CREATE TABLE IF NOT EXISTS public.token_limits (
             id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             catalog_entry_id UUID NOT NULL UNIQUE
-                REFERENCES shared.model_catalog(id) ON DELETE CASCADE,
+                REFERENCES public.model_catalog(id) ON DELETE CASCADE,
             limit_24h        BIGINT,
             limit_30d        BIGINT,
             reset_24h_at     TIMESTAMPTZ,
@@ -188,10 +188,10 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
 
     # Non-partitioned ledger for test simplicity (no pg_partman in CI)
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS shared.token_usage_ledger (
+        CREATE TABLE IF NOT EXISTS public.token_usage_ledger (
             id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             catalog_entry_id UUID NOT NULL
-                REFERENCES shared.model_catalog(id) ON DELETE CASCADE,
+                REFERENCES public.model_catalog(id) ON DELETE CASCADE,
             butler_name      TEXT NOT NULL,
             session_id       UUID,
             input_tokens     INTEGER NOT NULL DEFAULT 0,
@@ -202,7 +202,7 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
 
     await pool.execute("""
         CREATE INDEX IF NOT EXISTS idx_ledger_entry_time
-            ON shared.token_usage_ledger (catalog_entry_id, recorded_at)
+            ON public.token_usage_ledger (catalog_entry_id, recorded_at)
     """)
 
 
@@ -212,7 +212,7 @@ async def _insert_catalog_entry(
     """Insert a minimal catalog entry and return its UUID."""
     row = await pool.fetchrow(
         """
-        INSERT INTO shared.model_catalog
+        INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, complexity_tier, enabled, priority)
         VALUES ($1, 'claude', 'test-model', 'medium', $2, 0)
         RETURNING id
@@ -235,7 +235,7 @@ async def _insert_limits(
     """Insert a token_limits row for the given catalog entry."""
     await pool.execute(
         """
-        INSERT INTO shared.token_limits
+        INSERT INTO public.token_limits
             (catalog_entry_id, limit_24h, limit_30d, reset_24h_at, reset_30d_at)
         VALUES ($1, $2, $3, $4, $5)
         """,
@@ -262,7 +262,7 @@ async def _insert_ledger_row(
         recorded_at = datetime.now(UTC)
     await pool.execute(
         """
-        INSERT INTO shared.token_usage_ledger
+        INSERT INTO public.token_usage_ledger
             (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens, recorded_at)
         VALUES ($1, $2, $3, $4, $5, $6)
         """,
@@ -585,7 +585,7 @@ async def test_record_token_usage_inserts_row(postgres_container: Any) -> None:
         row = await pool.fetchrow(
             """
             SELECT catalog_entry_id, butler_name, session_id, input_tokens, output_tokens
-            FROM shared.token_usage_ledger
+            FROM public.token_usage_ledger
             WHERE catalog_entry_id = $1
             """,
             entry_id,
@@ -616,7 +616,7 @@ async def test_record_token_usage_null_session_id(postgres_container: Any) -> No
         )
 
         row = await pool.fetchrow(
-            "SELECT session_id, butler_name FROM shared.token_usage_ledger"
+            "SELECT session_id, butler_name FROM public.token_usage_ledger"
             " WHERE catalog_entry_id = $1",
             entry_id,
         )
@@ -694,20 +694,20 @@ async def test_delete_and_recreate_resets_usage_history(postgres_container: Any)
 
         # Delete the first entry (CASCADE removes ledger rows and limits)
         await pool.execute(
-            "DELETE FROM shared.model_catalog WHERE id = $1",
+            "DELETE FROM public.model_catalog WHERE id = $1",
             entry1_id,
         )
 
         # Verify ledger rows are gone (CASCADE worked)
         ledger_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM shared.token_usage_ledger WHERE catalog_entry_id = $1",
+            "SELECT COUNT(*) FROM public.token_usage_ledger WHERE catalog_entry_id = $1",
             entry1_id,
         )
         assert ledger_count == 0
 
         # Verify limits row is gone (CASCADE worked)
         limits_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM shared.token_limits WHERE catalog_entry_id = $1",
+            "SELECT COUNT(*) FROM public.token_limits WHERE catalog_entry_id = $1",
             entry1_id,
         )
         assert limits_count == 0

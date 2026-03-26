@@ -60,7 +60,7 @@ The travel butler uses a travel-centric memory taxonomy with loyalty and prefere
 - **THEN** it uses subjects like airline names, hotel chains, or "user"; predicates like `preferred_airline`, `preferred_seat`, `passport_expiry`, `frequent_flyer`, `known_airport`; permanence `stable` for passport info and loyalty numbers, `standard` for current trip context, `volatile` for real-time flight status
 
 ### Requirement: Travel Insight Scan Job
-The travel butler's `insight-scan` job SHALL evaluate travel domain data and produce insight candidates covering pre-trip preparation, document expiry warnings, and cross-domain coordination hints. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool — the butler does not write to `shared.insight_candidates` directly.
+The travel butler's `insight-scan` job SHALL evaluate travel domain data and produce insight candidates covering pre-trip preparation, document expiry warnings, and cross-domain coordination hints. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool — the butler does not write to `public.insight_candidates` directly.
 
 #### Scenario: Insight-scan job handler registration
 - **WHEN** the travel butler starts
@@ -94,7 +94,7 @@ The travel butler's `insight-scan` job SHALL evaluate travel domain data and pro
 
 #### Scenario: Medication prep for travel insights
 - **WHEN** the insight-scan job evaluates upcoming trips
-- **AND** the user has active medications tracked by the health butler (queryable via `shared` schema or known from memory facts)
+- **AND** the user has active medications tracked by the health butler (queryable vithe `public` schema or known from memory facts)
 - **THEN** it SHALL generate candidates reminding the user to ensure adequate medication supply for the trip duration
 - **AND** priority SHALL be 75 for trips within 7 days, 55 for trips within 14 days
 - **AND** the `dedup_key` SHALL be `travel:medication-prep:{trip-id}`

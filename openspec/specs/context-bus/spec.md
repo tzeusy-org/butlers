@@ -1,16 +1,16 @@
 # Situational Context Bus
 
 ## Purpose
-Provides shared situational awareness across butlers via a `shared.user_context` table. Butlers read and write context signals (traveling, sleeping, meeting, etc.) with TTL-based expiry, confidence scoring, and per-signal write permissions.
+Provides shared situational awareness across butlers via a `public.user_context` table. Butlers read and write context signals (traveling, sleeping, meeting, etc.) with TTL-based expiry, confidence scoring, and per-signal write permissions.
 
 ## ADDED Requirements
 
 ### Requirement: User Context Table Schema
-The system SHALL maintain a `shared.user_context` table in the shared PostgreSQL schema with the following columns: `id` (UUID PK), `signal_type` (TEXT NOT NULL), `value` (TEXT, nullable), `set_by_butler` (TEXT NOT NULL), `set_at` (TIMESTAMPTZ NOT NULL, default now()), `expires_at` (TIMESTAMPTZ NOT NULL), `confidence` (REAL NOT NULL, default 1.0, range 0.0-1.0), `metadata` (JSONB, nullable), and `superseded_at` (TIMESTAMPTZ, nullable). A UNIQUE constraint on `(signal_type, set_by_butler)` SHALL ensure each butler maintains at most one active signal per type. A partial index on `signal_type` WHERE `superseded_at IS NULL AND expires_at > now()` SHALL optimize active-signal queries.
+The system SHALL maintain a `public.user_context` table in the shared PostgreSQL schema with the following columns: `id` (UUID PK), `signal_type` (TEXT NOT NULL), `value` (TEXT, nullable), `set_by_butler` (TEXT NOT NULL), `set_at` (TIMESTAMPTZ NOT NULL, default now()), `expires_at` (TIMESTAMPTZ NOT NULL), `confidence` (REAL NOT NULL, default 1.0, range 0.0-1.0), `metadata` (JSONB, nullable), and `superseded_at` (TIMESTAMPTZ, nullable). A UNIQUE constraint on `(signal_type, set_by_butler)` SHALL ensure each butler maintains at most one active signal per type. A partial index on `signal_type` WHERE `superseded_at IS NULL AND expires_at > now()` SHALL optimize active-signal queries.
 
 #### Scenario: Table exists after migration
 - **WHEN** the core-chain Alembic migration runs
-- **THEN** the `shared.user_context` table exists with all specified columns and constraints
+- **THEN** the `public.user_context` table exists with all specified columns and constraints
 
 #### Scenario: Unique constraint prevents duplicate signals
 - **WHEN** a butler inserts a signal with a `(signal_type, set_by_butler)` pair that already exists

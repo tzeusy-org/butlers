@@ -40,13 +40,13 @@ Until the topology documents are written, these are the major architectural boun
 - **Butlers** (9 daemons): switchboard, general, health, education, finance, relationship, travel, home, messenger -- each a persistent async daemon with its own MCP server
 - **Connectors** (standalone processes): gmail, telegram-bot, telegram-user-client, discord, heartbeat, live-listener -- bridge external transports to the ingestion pipeline
 - **Dashboard** (FastAPI + Vite): single web process serving API and frontend
-- **PostgreSQL** (single instance): shared database with per-butler schemas + `shared` schema
+- **PostgreSQL** (single instance): shared database with per-butler schemas + `public` schema
 
 ### Schema Boundaries
 
 - Each butler owns its own PostgreSQL schema (e.g., `health`, `relationship`, `finance`)
-- The `shared` schema holds cross-butler identity tables (`contacts`, `contact_info`)
-- Schema search_path: `<butler_schema>, shared, public`
+- The `public` schema holds cross-butler identity tables (`contacts`, `contact_info`)
+- Schema search_path: `<butler_schema>, public`
 - Butlers MUST NOT access each other's schemas
 
 ### Communication Boundaries

@@ -8,15 +8,15 @@
 
 ![Owner Identity Bootstrap](./owner-identity-bootstrap.svg)
 
-When Butlers starts for the first time, it seeds an **Owner contact** in the `shared.contacts` table with the `owner` role on its linked entity. This contact has no channel identifiers initially -- the user must configure their identity through the dashboard so butlers can recognize them across channels (Telegram, email) and prevent duplicate contacts during sync.
+When Butlers starts for the first time, it seeds an **Owner contact** in the `public.contacts` table with the `owner` role on its linked entity. This contact has no channel identifiers initially -- the user must configure their identity through the dashboard so butlers can recognize them across channels (Telegram, email) and prevent duplicate contacts during sync.
 
 ## Bootstrap Flow
 
 On first startup, the daemon:
 
-1. Checks `shared.entities` for an entity with `'owner' = ANY(roles)`.
-2. If none exists, creates an owner entity in `shared.entities` with `roles = ['owner']`.
-3. Creates a corresponding `shared.contacts` row linked via `entity_id`.
+1. Checks `public.entities` for an entity with `'owner' = ANY(roles)`.
+2. If none exists, creates an owner entity in `public.entities` with `roles = ['owner']`.
+3. Creates a corresponding `public.contacts` row linked via `entity_id`.
 4. The owner contact starts with no `contact_info` entries.
 
 This ensures exactly one owner entity exists across the system. Subsequent butler startups detect the existing owner and skip creation.
@@ -35,7 +35,7 @@ Navigate to the owner contact's detail page in the dashboard (linked from the se
 
 For butlers that act on your behalf (sending emails, connecting to Telegram as your user account):
 
-- **Email password** -- App password for SMTP/IMAP access. Stored as `secured=true` in `shared.entity_info`.
+- **Email password** -- App password for SMTP/IMAP access. Stored as `secured=true` in `public.entity_info`.
 - **Telegram API ID** -- From [my.telegram.org](https://my.telegram.org). Required for user-client (MTProto) connections.
 - **Telegram API hash** -- From [my.telegram.org](https://my.telegram.org). Paired with the API ID.
 - **Telegram user session** -- MTProto session string for the Telegram user-client connector.
@@ -70,13 +70,13 @@ api_hash = await resolve_owner_entity_info(pool, "telegram_api_hash")
 session = await resolve_owner_entity_info(pool, "telegram_user_session")
 ```
 
-The function queries `shared.entities` for the owner, then fetches the matching `entity_info` row, preferring primary entries.
+The function queries `public.entities` for the owner, then fetches the matching `entity_info` row, preferring primary entries.
 
 ## Security Model
 
 Since Butlers is a user-federated platform (each user owns their instance), the security model is straightforward:
 
-- Credentials are stored in PostgreSQL in the `shared.entity_info` table.
+- Credentials are stored in PostgreSQL in the `public.entity_info` table.
 - The user controls the database directly.
 - API-level masking prevents accidental exposure in dashboard responses.
 - No encryption at rest (the user owns the infrastructure).
@@ -84,14 +84,14 @@ Since Butlers is a user-federated platform (each user owns their instance), the 
 ## Entity Structure
 
 ```
-shared.entities
+public.entities
 ├── id: UUID
 ├── canonical_name: "Owner"
 ├── entity_type: "person"
 ├── roles: ["owner"]
 └── tenant_id: "shared"
 
-shared.entity_info (for the owner entity)
+public.entity_info (for the owner entity)
 ├── (entity_id, "email") -> "user@example.com"
 ├── (entity_id, "telegram") -> "@username"
 ├── (entity_id, "telegram_chat_id") -> "123456789"

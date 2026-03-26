@@ -49,10 +49,10 @@ pytestmark = [
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with the tables needed by correct_route."""
     async with provisioned_postgres_pool() as p:
-        # shared schema + shared.ingestion_events (from core_019 + core_032)
+        # shared schema + public.ingestion_events (from core_019 + core_032)
         await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS shared.ingestion_events (
+            CREATE TABLE IF NOT EXISTS public.ingestion_events (
                 id                       UUID PRIMARY KEY,
                 received_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
                 source_channel           TEXT NOT NULL,
@@ -171,12 +171,12 @@ async def _seed_ingestion_event(
     source_channel: str = "telegram_bot",
     triage_target: str | None = "assistant",
 ) -> None:
-    """Insert a minimal shared.ingestion_events row for testing."""
+    """Insert a minimal public.ingestion_events row for testing."""
     if received_at is None:
         received_at = datetime.now(UTC)
     await pool.execute(
         """
-        INSERT INTO shared.ingestion_events (
+        INSERT INTO public.ingestion_events (
             id, received_at, source_channel, source_provider,
             source_endpoint_identity, source_sender_identity,
             external_event_id, dedupe_key, dedupe_strategy,

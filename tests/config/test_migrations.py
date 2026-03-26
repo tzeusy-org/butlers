@@ -18,7 +18,7 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
-REQUIRED_SCHEMAS = ("shared", "general", "health", "messenger", "relationship", "switchboard")
+REQUIRED_SCHEMAS = ("general", "health", "messenger", "relationship", "switchboard")
 CORE_HEAD_REVISION = "core_040"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
@@ -472,8 +472,8 @@ def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
     try:
         with engine.connect() as conn:
             conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
-            # core_014+ expects the shared schema (normally created by core_001).
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS shared"))
+            # core_014+ public schema always exists.
+            # public schema always exists; no need to create it.
             conn.execute(
                 text(
                     """
@@ -702,7 +702,7 @@ def test_upgrade_to_core_head_creates_required_schemas(postgres_container):
 
 
 def test_core_acl_runtime_role_isolation(postgres_container):
-    """Core ACL migration enforces own-schema + shared access with cross-schema denial."""
+    """Core ACL migration enforces own-schema + public access with cross-schema denial."""
     from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
@@ -721,9 +721,9 @@ def test_core_acl_runtime_role_isolation(postgres_container):
                 text("CREATE TABLE health.acl_health_existing (id INT PRIMARY KEY, note TEXT)")
             )
             conn.execute(
-                text("CREATE TABLE shared.acl_shared_existing (id SERIAL PRIMARY KEY, note TEXT)")
+                text("CREATE TABLE public.acl_shared_existing (id SERIAL PRIMARY KEY, note TEXT)")
             )
-            conn.execute(text("INSERT INTO shared.acl_shared_existing (note) VALUES ('seed')"))
+            conn.execute(text("INSERT INTO public.acl_shared_existing (note) VALUES ('seed')"))
 
             # Validate default privilege behavior for future objects created by owner.
             conn.execute(
@@ -734,9 +734,9 @@ def test_core_acl_runtime_role_isolation(postgres_container):
             )
             conn.execute(text("INSERT INTO health.acl_health_future (id, note) VALUES (1, 'h1')"))
             conn.execute(
-                text("CREATE TABLE shared.acl_shared_future (id INT PRIMARY KEY, note TEXT)")
+                text("CREATE TABLE public.acl_shared_future (id INT PRIMARY KEY, note TEXT)")
             )
-            conn.execute(text("INSERT INTO shared.acl_shared_future (id, note) VALUES (1, 's1')"))
+            conn.execute(text("INSERT INTO public.acl_shared_future (id, note) VALUES (1, 's1')"))
     finally:
         setup_engine.dispose()
 
@@ -765,11 +765,11 @@ def test_core_acl_runtime_role_isolation(postgres_container):
         "INSERT INTO general.acl_general_future (id, note) VALUES (2, 'future-ok')",
     )
 
-    # Shared schema is intentionally read-only for runtime roles.
+    # Public schema is intentionally read-only for runtime roles.
     shared_note = _execute_as_role(
         db_url,
         general_role,
-        "SELECT note FROM shared.acl_shared_existing ORDER BY id LIMIT 1",
+        "SELECT note FROM public.acl_shared_existing ORDER BY id LIMIT 1",
         scalar=True,
     )
     assert shared_note == "seed"
@@ -777,7 +777,7 @@ def test_core_acl_runtime_role_isolation(postgres_container):
     shared_future_note = _execute_as_role(
         db_url,
         general_role,
-        "SELECT note FROM shared.acl_shared_future WHERE id = 1",
+        "SELECT note FROM public.acl_shared_future WHERE id = 1",
         scalar=True,
     )
     assert shared_future_note == "s1"
@@ -786,7 +786,7 @@ def test_core_acl_runtime_role_isolation(postgres_container):
         _execute_as_role(
             db_url,
             general_role,
-            "INSERT INTO shared.acl_shared_existing (note) VALUES ('blocked')",
+            "INSERT INTO public.acl_shared_existing (note) VALUES ('blocked')",
         )
 
     # Cross-butler schema access must be denied.

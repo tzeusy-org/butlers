@@ -392,7 +392,7 @@ async def init_db_manager(
                 configured_shared_db_name,
                 canonical_db_name,
             )
-        shared_db_schema = "shared"
+        shared_db_schema = "public"
 
     try:
         shared_db = Database.from_env(shared_db_name)

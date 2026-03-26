@@ -10,7 +10,7 @@ The Google Drive connector runs as a single process that discovers and manages a
 
 #### Scenario: Multi-account discovery at startup
 - **WHEN** the Google Drive connector starts
-- **THEN** it SHALL query `shared.google_accounts` for all rows with `status = 'active'` and `drive.readonly` or `drive` in `granted_scopes`
+- **THEN** it SHALL query `public.google_accounts` for all rows with `status = 'active'` and `drive.readonly` or `drive` in `granted_scopes`
 - **AND** for each qualifying account, it SHALL resolve credentials (`client_id`, `client_secret` from `butler_secrets`; `refresh_token` from the account's companion entity in `entity_info`)
 - **AND** it SHALL spawn an independent poll loop per account
 - **AND** startup SHALL succeed even if some accounts fail credential resolution (degraded mode — failed accounts are logged and skipped)
@@ -173,7 +173,7 @@ The connector SHALL support discovering new or removed accounts without a full p
 
 #### Scenario: Periodic re-scan
 - **WHEN** the connector is running
-- **THEN** it SHALL re-query `shared.google_accounts` at a configurable interval (`GDRIVE_ACCOUNT_RESCAN_INTERVAL_S`, default 300)
+- **THEN** it SHALL re-query `public.google_accounts` at a configurable interval (`GDRIVE_ACCOUNT_RESCAN_INTERVAL_S`, default 300)
 - **AND** newly active accounts with Drive scopes SHALL have loops spawned
 - **AND** accounts that are no longer active (revoked, deleted) SHALL have their loops gracefully stopped
 

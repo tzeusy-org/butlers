@@ -8,11 +8,11 @@ Provides the persistence layer, data model, and API endpoints for per-butler con
 
 ### Requirement: Conversation Data Model
 
-The `shared.dashboard_conversations` table stores conversation thread metadata. Each conversation belongs to exactly one butler and progresses through a defined lifecycle.
+The `public.dashboard_conversations` table stores conversation thread metadata. Each conversation belongs to exactly one butler and progresses through a defined lifecycle.
 
 #### Scenario: Conversation table schema
 
-- **WHEN** the migration creates the `shared.dashboard_conversations` table
+- **WHEN** the migration creates the `public.dashboard_conversations` table
 - **THEN** the table SHALL contain the following columns:
   - `id` (UUID7, primary key) — time-ordered unique identifier
   - `butler_name` (TEXT, NOT NULL) — the butler this conversation belongs to
@@ -33,14 +33,14 @@ The `shared.dashboard_conversations` table stores conversation thread metadata. 
 
 ### Requirement: Message Data Model
 
-The `shared.dashboard_messages` table stores individual messages within a conversation, including both user inputs and assistant responses with full attribution.
+The `public.dashboard_messages` table stores individual messages within a conversation, including both user inputs and assistant responses with full attribution.
 
 #### Scenario: Message table schema
 
-- **WHEN** the migration creates the `shared.dashboard_messages` table
+- **WHEN** the migration creates the `public.dashboard_messages` table
 - **THEN** the table SHALL contain the following columns:
   - `id` (UUID7, primary key) — time-ordered unique identifier
-  - `conversation_id` (UUID, NOT NULL, FK to `shared.dashboard_conversations.id` ON DELETE CASCADE) — parent conversation
+  - `conversation_id` (UUID, NOT NULL, FK to `public.dashboard_conversations.id` ON DELETE CASCADE) — parent conversation
   - `role` (TEXT, NOT NULL) — one of `user`, `assistant`
   - `content` (TEXT, NOT NULL) — message text (markdown for assistant responses)
   - `created_at` (TIMESTAMPTZ, NOT NULL, default `now()`) — when the message was created
@@ -85,8 +85,8 @@ Starting a new conversation creates a conversation record and sends the first us
 #### Scenario: Create conversation with first message
 
 - **WHEN** `POST /api/butlers/{name}/conversations` is called with `{ "message": "Hello butler" }`
-- **THEN** a new conversation row is inserted in `shared.dashboard_conversations` with `butler_name = {name}`, `status = 'active'`, and a default title
-- **AND** a user message row is inserted in `shared.dashboard_messages`
+- **THEN** a new conversation row is inserted in `public.dashboard_conversations` with `butler_name = {name}`, `status = 'active'`, and a default title
+- **AND** a user message row is inserted in `public.dashboard_messages`
 - **AND** the message is submitted to the Switchboard as an `ingest.v1` envelope with `source.channel = "dashboard"`, `source.provider = "internal"`, `source.endpoint_identity = "dashboard:web:{conversation_id}"`
 - **AND** the response is streamed back via SSE on the same request (see SSE Streaming requirement)
 - **AND** the response includes the `conversation_id` in the initial SSE event
@@ -103,7 +103,7 @@ Sending a follow-up message in an existing conversation preserves the thread con
 #### Scenario: Send follow-up message
 
 - **WHEN** `POST /api/butlers/{name}/conversations/{conversation_id}/messages` is called with `{ "message": "Follow up question" }`
-- **THEN** a user message row is inserted in `shared.dashboard_messages`
+- **THEN** a user message row is inserted in `public.dashboard_messages`
 - **AND** the message is submitted to the Switchboard as an `ingest.v1` envelope with the same `endpoint_identity` as the original conversation and `event.external_thread_id = {conversation_id}`
 - **AND** the envelope's `payload.normalized_text` includes prior conversation context (last N messages as summarized context, configurable, default last 5 exchange pairs)
 - **AND** the response is streamed back via SSE

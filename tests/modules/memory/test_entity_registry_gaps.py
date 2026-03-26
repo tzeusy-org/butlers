@@ -573,7 +573,7 @@ class TestEntityMergeGaps:
         tombstone_calls = [
             c
             for c in execute_calls
-            if "UPDATE shared.entities SET metadata" in c[0][0] and ENTITY_UUID in c[0]
+            if "UPDATE public.entities SET metadata" in c[0][0] and ENTITY_UUID in c[0]
         ]
         assert len(tombstone_calls) == 1
         tombstone_meta = json.loads(tombstone_calls[0][0][1])
@@ -581,7 +581,7 @@ class TestEntityMergeGaps:
         assert tombstone_meta["custom_key"] == "custom_value"  # preserved
 
     async def test_merge_with_no_source_aliases_emits_no_alias_update(self) -> None:
-        """When both source and target have no aliases, the UPDATE shared.entities SET aliases
+        """When both source and target have no aliases, the UPDATE public.entities SET aliases
         is still issued (with an empty list), ensuring updated_at is refreshed."""
         pool, conn = _make_merge_pool(src_aliases=[], tgt_aliases=[])
 
@@ -589,7 +589,7 @@ class TestEntityMergeGaps:
 
         execute_calls = conn.execute.call_args_list
         alias_update_calls = [
-            c for c in execute_calls if "UPDATE shared.entities SET aliases" in c[0][0]
+            c for c in execute_calls if "UPDATE public.entities SET aliases" in c[0][0]
         ]
         # Should have exactly one alias update for the target entity
         assert len(alias_update_calls) == 1

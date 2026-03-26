@@ -23,7 +23,7 @@ The `Complexity` enum defines six tiers that drive model selection:
 
 ## The Model Catalog
 
-The `shared.model_catalog` table is the global registry of available models. Each entry has:
+The `public.model_catalog` table is the global registry of available models. Each entry has:
 
 - **`id`** --- UUID primary key (referenced by quota and usage tables)
 - **`runtime_type`** --- the adapter to use (`"claude"`, `"codex"`, `"gemini"`, `"opencode"`)
@@ -36,13 +36,13 @@ The `shared.model_catalog` table is the global registry of available models. Eac
 
 ## Per-Butler Overrides
 
-The `shared.butler_model_overrides` table allows per-butler customization without duplicating catalog entries. An override row references a catalog entry and can remap `enabled`, `priority`, and `complexity_tier`. Overrides use `COALESCE` semantics: when an override field is NULL, the catalog value is used.
+The `public.butler_model_overrides` table allows per-butler customization without duplicating catalog entries. An override row references a catalog entry and can remap `enabled`, `priority`, and `complexity_tier`. Overrides use `COALESCE` semantics: when an override field is NULL, the catalog value is used.
 
 ## Resolution Algorithm
 
 `resolve_model(pool, butler_name, complexity_tier)` executes a single SQL query:
 
-1. LEFT JOIN `shared.model_catalog` with `shared.butler_model_overrides` on the butler name and catalog entry ID.
+1. LEFT JOIN `public.model_catalog` with `public.butler_model_overrides` on the butler name and catalog entry ID.
 2. Compute effective values via COALESCE for enabled, priority, and complexity_tier.
 3. Filter: effective `enabled = true` AND effective `complexity_tier = $tier`.
 4. Order by effective `priority DESC`, then `created_at ASC` (stable tie-break).
@@ -60,7 +60,7 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 ### Token Usage Recording
 
-`record_token_usage()` writes to `shared.token_usage_ledger` after each session completes. This is best-effort: errors are logged and never propagate to the caller.
+`record_token_usage()` writes to `public.token_usage_ledger` after each session completes. This is best-effort: errors are logged and never propagate to the caller.
 
 ## Resolution Flow in the Spawner
 

@@ -9,7 +9,7 @@ Preference predicates SHALL use the naming format `preferences:<domain>_<name>` 
 - **WHEN** a preference is stored via `set_preference`
 - **THEN** the fact's `predicate` field MUST match the pattern `preferences:<domain>_<name>` where `<domain>` is a recognized butler domain and `<name>` is a non-empty snake_case identifier
 - **AND** the `subject` field MUST be the owner's canonical name (human-readable label)
-- **AND** the `entity_id` MUST be the owner entity UUID resolved from `shared.contacts WHERE roles @> '["owner"]'`
+- **AND** the `entity_id` MUST be the owner entity UUID resolved from `public.contacts WHERE roles @> '["owner"]'`
 
 #### Scenario: Preference fact uses domain-aligned scope
 
@@ -103,7 +103,7 @@ The memory module SHALL expose a `set_preference` MCP tool that stores a user pr
 
 #### Scenario: Owner entity resolution failure
 
-- **WHEN** `set_preference` is called but no owner contact with an `entity_id` exists in `shared.contacts`
+- **WHEN** `set_preference` is called but no owner contact with an `entity_id` exists in `public.contacts`
 - **THEN** the tool MUST return an error with a message indicating the owner entity could not be resolved and suggesting running butler startup or creating the owner contact
 
 #### Scenario: Optional metadata

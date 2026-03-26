@@ -126,7 +126,7 @@ The health butler stores meal observations using the memory module's meal-specif
 - **AND** `nutrition_summary` MUST aggregate nutrition metadata across multiple meal facts in a date range by sum of calories and macros; it MAY use direct SQL for this aggregation since it requires date-bounded GROUP BY queries that `memory_search`/`memory_recall` do not support
 
 ### Requirement: Health Insight Scan Job
-The health butler's `insight-scan` job SHALL evaluate health domain data and produce insight candidates covering measurement gaps, medication refill timing, symptom trend alerts, and health streaks. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool — the butler does not write to `shared.insight_candidates` directly.
+The health butler's `insight-scan` job SHALL evaluate health domain data and produce insight candidates covering measurement gaps, medication refill timing, symptom trend alerts, and health streaks. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool — the butler does not write to `public.insight_candidates` directly.
 
 #### Scenario: Insight-scan job handler registration
 - **WHEN** the health butler starts

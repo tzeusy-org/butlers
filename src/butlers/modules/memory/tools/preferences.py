@@ -29,7 +29,7 @@ PREFERENCE_GENERAL_SCOPE = "global"
 
 
 async def _resolve_owner(pool: Pool) -> tuple[uuid.UUID, str]:
-    """Resolve the owner entity from shared.contacts / shared.entities.
+    """Resolve the owner entity from public.contacts / public.entities.
 
     Returns:
         Tuple of (entity_id, canonical_name).
@@ -38,12 +38,12 @@ async def _resolve_owner(pool: Pool) -> tuple[uuid.UUID, str]:
         ValueError: When no owner entity can be resolved.
     """
     # Primary path: contacts table with entity_id FK.
-    # Note: shared.contacts.roles was dropped in core_016; roles are on shared.entities.
+    # Note: public.contacts.roles was dropped in core_016; roles are on public.entities.
     row = await pool.fetchrow(
         """
         SELECT e.id, e.canonical_name
-        FROM shared.contacts c
-        JOIN shared.entities e ON c.entity_id = e.id
+        FROM public.contacts c
+        JOIN public.entities e ON c.entity_id = e.id
         WHERE 'owner' = ANY(e.roles)
           AND c.entity_id IS NOT NULL
         LIMIT 1
@@ -56,7 +56,7 @@ async def _resolve_owner(pool: Pool) -> tuple[uuid.UUID, str]:
     row = await pool.fetchrow(
         """
         SELECT id, canonical_name
-        FROM shared.entities
+        FROM public.entities
         WHERE 'owner' = ANY(roles)
         LIMIT 1
         """

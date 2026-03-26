@@ -1,7 +1,7 @@
 """Tests for DiscretionDispatcher — semaphore-gated adapter dispatcher.
 
 Covers:
-- Model resolution from shared.model_catalog (mock pool)
+- Model resolution from public.model_catalog (mock pool)
 - RuntimeError on missing catalog entry
 - Semaphore concurrency limit
 - Timeout enforcement via asyncio.wait_for

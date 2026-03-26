@@ -42,10 +42,10 @@ pytestmark_integration = [
 # DB setup helpers (shared schema for integration tests)
 # ---------------------------------------------------------------------------
 
-_CREATE_SHARED_SCHEMA = "CREATE SCHEMA IF NOT EXISTS shared"
+_CREATE_SHARED_SCHEMA = "SELECT 1"  # public schema always exists
 
 _CREATE_HEALING_ATTEMPTS_TABLE = """
-CREATE TABLE IF NOT EXISTS shared.healing_attempts (
+CREATE TABLE IF NOT EXISTS public.healing_attempts (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     fingerprint     TEXT NOT NULL,
     butler_name     TEXT NOT NULL,
@@ -66,11 +66,11 @@ CREATE TABLE IF NOT EXISTS shared.healing_attempts (
     error_detail    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_healing_fingerprint
-    ON shared.healing_attempts(fingerprint);
+    ON public.healing_attempts(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_healing_status
-    ON shared.healing_attempts(status);
+    ON public.healing_attempts(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_healing_active_fingerprint
-    ON shared.healing_attempts(fingerprint)
+    ON public.healing_attempts(fingerprint)
     WHERE status IN ('dispatch_pending', 'investigating', 'pr_open');
 """
 
@@ -92,7 +92,7 @@ def _unique_db_name() -> str:
 
 @pytest.fixture(scope="module")
 async def healing_pool(postgres_container):  # type: ignore[no-untyped-def]
-    """Fresh isolated database with shared.healing_attempts for each test module."""
+    """Fresh isolated database with public.healing_attempts for each test module."""
     db_name = _unique_db_name()
 
     admin_conn = await asyncpg.connect(
@@ -1041,7 +1041,7 @@ class TestRecoverStaleAttemptsIntegration:
         healing_session_id = uuid.uuid4()
         await healing_pool.execute(
             """
-            UPDATE shared.healing_attempts
+            UPDATE public.healing_attempts
             SET healing_session_id = $2,
                 updated_at = now() - INTERVAL '35 minutes'
             WHERE id = $1
@@ -1078,7 +1078,7 @@ class TestRecoverStaleAttemptsIntegration:
         # Age the row: no healing_session_id, created_at older than 5 minutes
         await healing_pool.execute(
             """
-            UPDATE shared.healing_attempts
+            UPDATE public.healing_attempts
             SET healing_session_id = NULL,
                 created_at = now() - INTERVAL '10 minutes',
                 updated_at = now() - INTERVAL '10 minutes'
@@ -1114,7 +1114,7 @@ class TestRecoverStaleAttemptsIntegration:
 
         # Touch updated_at to now (should not be recovered)
         await healing_pool.execute(
-            "UPDATE shared.healing_attempts SET updated_at = now() WHERE id = $1",
+            "UPDATE public.healing_attempts SET updated_at = now() WHERE id = $1",
             attempt_id,
         )
 
@@ -1155,7 +1155,7 @@ class TestRecoverStaleAttemptsIntegration:
         # Insert a fresh dispatch_pending row directly
         attempt_id = await healing_pool.fetchval(
             """
-            INSERT INTO shared.healing_attempts (
+            INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
                 exception_type, call_site, session_ids
             )
@@ -1179,7 +1179,7 @@ class TestRecoverStaleAttemptsIntegration:
         assert str(attempt_id) in pending_ids
 
         # Cleanup
-        await healing_pool.execute("DELETE FROM shared.healing_attempts WHERE id = $1", attempt_id)
+        await healing_pool.execute("DELETE FROM public.healing_attempts WHERE id = $1", attempt_id)
 
     async def test_dispatch_pending_past_timeout_failed(self, healing_pool: asyncpg.Pool) -> None:
         """dispatch_pending rows older than the timeout are transitioned to failed."""
@@ -1192,7 +1192,7 @@ class TestRecoverStaleAttemptsIntegration:
         # Insert an old dispatch_pending row
         attempt_id = await healing_pool.fetchval(
             """
-            INSERT INTO shared.healing_attempts (
+            INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
                 exception_type, call_site, session_ids,
                 created_at, updated_at

@@ -53,8 +53,8 @@ async def pin_model(
 ) -> str:
     """Pin a model for all specified butlers by inserting catalog overrides.
 
-    Inserts a ``shared.model_catalog`` entry for ``model_name`` (idempotent via
-    ON CONFLICT) and upserts a ``shared.butler_model_overrides`` row for every
+    Inserts a ``public.model_catalog`` entry for ``model_name`` (idempotent via
+    ON CONFLICT) and upserts a ``public.butler_model_overrides`` row for every
     butler in ``butler_names`` with ``priority=999`` and
     ``source='e2e-benchmark'``.
 
@@ -89,7 +89,7 @@ async def pin_model(
     The ``source='e2e-benchmark'`` tag on override rows allows manual cleanup
     after a crash:
 
-        DELETE FROM shared.butler_model_overrides
+        DELETE FROM public.butler_model_overrides
         WHERE source = 'e2e-benchmark';
     """
     alias = f"e2e-benchmark-{model_name}"
@@ -97,7 +97,7 @@ async def pin_model(
     # Insert (or return existing) catalog entry for this model.
     catalog_id = await pool.fetchval(
         """
-        INSERT INTO shared.model_catalog
+        INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
         VALUES ($1, $2, $3, '[]'::jsonb, $4, true, $5)
         ON CONFLICT (alias) DO UPDATE
@@ -125,7 +125,7 @@ async def pin_model(
     for butler_name in butler_names:
         await pool.execute(
             """
-            INSERT INTO shared.butler_model_overrides
+            INSERT INTO public.butler_model_overrides
                 (butler_name, catalog_entry_id, enabled, priority, source)
             VALUES ($1, $2, true, $3, $4)
             ON CONFLICT (butler_name, catalog_entry_id) DO UPDATE
@@ -151,9 +151,9 @@ async def pin_model(
 async def unpin_model(pool: asyncpg.Pool) -> int:
     """Remove all benchmark override rows and the associated catalog entry.
 
-    Deletes every row in ``shared.butler_model_overrides`` where
+    Deletes every row in ``public.butler_model_overrides`` where
     ``source='e2e-benchmark'`` and ``priority=999``.  Also removes the
-    corresponding ``shared.model_catalog`` entries whose alias starts with
+    corresponding ``public.model_catalog`` entries whose alias starts with
     ``"e2e-benchmark-"``.
 
     Returns
@@ -170,7 +170,7 @@ async def unpin_model(pool: asyncpg.Pool) -> int:
     deleted = await pool.fetchval(
         """
         WITH deleted AS (
-            DELETE FROM shared.butler_model_overrides
+            DELETE FROM public.butler_model_overrides
             WHERE source = $1
               AND priority = $2
             RETURNING id
@@ -184,7 +184,7 @@ async def unpin_model(pool: asyncpg.Pool) -> int:
     # Now remove orphaned benchmark catalog entries.
     await pool.execute(
         """
-        DELETE FROM shared.model_catalog
+        DELETE FROM public.model_catalog
         WHERE alias LIKE 'e2e-benchmark-%'
           AND priority = $1
         """,
@@ -366,7 +366,7 @@ async def run_benchmark(
     If a crash occurs mid-run, the ``try/finally`` block ensures the override
     rows are removed.  Any remaining rows can be found by:
 
-        SELECT * FROM shared.butler_model_overrides WHERE source = 'e2e-benchmark';
+        SELECT * FROM public.butler_model_overrides WHERE source = 'e2e-benchmark';
     """
     results = BenchmarkResult()
 

@@ -62,7 +62,7 @@ sequenceDiagram
 
 2. **Switchboard identity resolution**: Before routing, the Switchboard
    resolves the sender's channel identifier (e.g., telegram_chat_id) against
-   `shared.contact_info` to inject identity context (contact_id, roles,
+   `public.contact_info` to inject identity context (contact_id, roles,
    entity_id). Owner messages get elevated trust.
 
 3. **Switchboard -> Target Butler**: The `route.v1` envelope is validated by
@@ -154,9 +154,9 @@ Maps a raw channel identifier to a known contact with roles.
 
 ```mermaid
 graph LR
-    A["Channel ID<br/>(type=telegram_chat_id, value=-12345)"] -->|"UNIQUE lookup"| B["shared.contact_info"]
-    B -->|"FK contact_id"| C["shared.contacts"]
-    C -->|"FK entity_id"| D["shared.entities"]
+    A["Channel ID<br/>(type=telegram_chat_id, value=-12345)"] -->|"UNIQUE lookup"| B["public.contact_info"]
+    B -->|"FK contact_id"| C["public.contacts"]
+    C -->|"FK entity_id"| D["public.entities"]
     D -->|"roles array"| E["['owner'] / ['family'] / ..."]
 ```
 
@@ -244,6 +244,6 @@ Source: `src/butlers/core/healing/`
 | Ingestion | Connector poll/webhook | route_inbox INSERT | ingest.v1 -> route.v1 (MCP) | Yes (durable buffer + route_inbox) |
 | Scheduled | Scheduler tick | Session log INSERT | Internal (asyncio) | Yes (schedule DB) |
 | Response | LLM session notify() | External API call | MCP -> module-specific | No (fire-and-forget) |
-| Identity | Channel identifier | Resolved contact | SQL (shared schema) | N/A (read-only) |
+| Identity | Channel identifier | Resolved contact | SQL (public schema) | N/A (read-only) |
 | Memory | Session observation | Tiered storage | SQL + pgvector | Yes |
 | Heartbeat | Connector loop | Registry update | MCP | No (ephemeral liveness) |

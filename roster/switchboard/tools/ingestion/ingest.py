@@ -773,7 +773,7 @@ async def ingest_v1(
     # PostgreSQL allows DDL inside a transaction, but a transaction rollback
     # also drops any tables created within it.  If ensure_partition is called
     # inside the advisory-lock transaction and the transaction rolls back (e.g.
-    # shared.ingestion_events missing, network error, unique violation), the
+    # public.ingestion_events missing, network error, unique violation), the
     # newly created partition is dropped and subsequent inserts keep failing in
     # a tight loop until the problem is resolved.
     #
@@ -897,7 +897,7 @@ async def ingest_v1(
                 # accepted ingest; downstream sessions reference it via FK.
                 await conn.execute(
                     """
-                    INSERT INTO shared.ingestion_events (
+                    INSERT INTO public.ingestion_events (
                         id,
                         received_at,
                         source_channel,

@@ -53,19 +53,19 @@ This plan closes those gaps while preserving the repo’s architectural intent.
 ## Current-state observations that matter for implementation
 
 ### Good foundations already present
-- Runtime topology targets **one PostgreSQL database with per-butler schemas plus `shared`**.
-- Runtime search path is schema-scoped as `own_schema,shared,public`.
+- Runtime topology targets **one PostgreSQL database with per-butler schemas plus `public`**.
+- Runtime search path is schema-scoped as `own_schema,public`.
 - The memory module already exposes a broad MCP surface and has working storage/search/consolidation code.
 - The target-state memory spec is unusually detailed and can serve as the main behavioral contract.
 
 ### Important drifts to fix first
 1. **Entity storage location mismatch**
    - `mem_002` creates an unqualified `entities` table.
-   - `tools/entities.py` reads/writes `shared.entities`.
-   - `storage.py` validates `entity_id` / `object_entity_id` against `shared.entities`.
+   - `tools/entities.py` reads/writes `public.entities`.
+   - `storage.py` validates `entity_id` / `object_entity_id` against `public.entities`.
    - `tools/entities.py` expects a `roles` column that `mem_002` does not create.
 
-   Decision: **`shared.entities` becomes authoritative**. Do not keep multiple canonical entity tables.
+   Decision: **`public.entities` becomes authoritative**. Do not keep multiple canonical entity tables.
 
 2. **Tenant / request lineage missing from core memory tables and tools**
    - The target spec requires tenant-bounded reads/writes and optional `request_context`.
@@ -107,7 +107,7 @@ The end-state memory system should provide:
    - `episodes`, `facts`, `rules`, `memory_links`, `memory_events`, and supporting tables.
 
 2. **Shared identity plane**
-   - `shared.entities` is authoritative and safe to reference from local facts.
+   - `public.entities` is authoritative and safe to reference from local facts.
 
 3. **Tenant-aware and request-aware reads/writes**
    - every durable memory row can be traced to a tenant and optionally a request.
@@ -141,11 +141,11 @@ The end-state memory system should provide:
 Each butler owns its own memory rows in its own schema.
 
 ### 2) Entities are shared
-Use `shared.entities` as the single authoritative entity registry.
+Use `public.entities` as the single authoritative entity registry.
 Facts in local schemas reference shared entity IDs.
 
 ### 3) Shared search is discovery-only
-If implemented, `shared.memory_catalog` contains summarized, searchable cards that point back to canonical memory rows.
+If implemented, `public.memory_catalog` contains summarized, searchable cards that point back to canonical memory rows.
 It does **not** become the source of truth.
 
 ### 4) Request context is a first-class internal primitive
@@ -180,7 +180,7 @@ Preferred end state:
 
 local schema tables: direct RW by owning butler
 
-shared tables (shared.entities, optional shared.memory_catalog): narrow, explicit write surfaces only
+shared tables (public.entities, optional public.memory_catalog): narrow, explicit write surfaces only
 
 Target architecture
 Data-plane split
@@ -203,21 +203,21 @@ embedding_versions
 
 Shared schema
 
-shared.entities
+public.entities
 
-shared.entity_info / related shared identity tables already present in repo
+public.entity_info / related shared identity tables already present in repo
 
-optional shared.memory_catalog
+optional public.memory_catalog
 
 Core features to implement
 Feature 1: authoritative shared entity registry
 Requirements
 
-shared.entities is authoritative.
+public.entities is authoritative.
 
-facts.entity_id and facts.object_entity_id reference shared.entities(id).
+facts.entity_id and facts.object_entity_id reference public.entities(id).
 
-entity tools read/write shared.entities only.
+entity tools read/write public.entities only.
 
 support roles TEXT[] because current entity tools already expect it.
 
@@ -225,7 +225,7 @@ keep tombstoning via metadata (e.g. merged_into) until/unless a dedicated tombst
 
 Why this is first
 
-The live code already assumes shared.entities; the migration history does not fully match that assumption.
+The live code already assumes public.entities; the migration history does not fully match that assumption.
 Fixing this early removes a core integrity risk.
 
 Feature 2: tenant-aware and request-aware memory rows
@@ -253,7 +253,7 @@ memory_events
 
 rule_applications
 
-optional shared.memory_catalog
+optional public.memory_catalog
 
 Desired behavior
 
@@ -462,7 +462,7 @@ Enable cross-domain discovery without violating schema isolation or creating a s
 
 Behavior
 
-each butler can publish searchable summary rows to shared.memory_catalog
+each butler can publish searchable summary rows to public.memory_catalog
 
 catalog rows contain only summary text and provenance pointers
 
@@ -528,9 +528,9 @@ tenant_id
 
 request_id
 
-entity_id (FK to shared.entities)
+entity_id (FK to public.entities)
 
-object_entity_id (FK to shared.entities)
+object_entity_id (FK to public.entities)
 
 subject
 
@@ -688,7 +688,7 @@ is_active
 created_at
 
 Shared schema tables
-shared.entities (authoritative)
+public.entities (authoritative)
 
 Required columns:
 
@@ -710,7 +710,7 @@ created_at
 
 updated_at
 
-optional shared.memory_catalog
+optional public.memory_catalog
 
 Suggested columns:
 
@@ -767,27 +767,27 @@ Use new corrective migrations. Do not rewrite old migrations in place during the
 mem_013_shared_entities_alignment.py
 Goals
 
-create/repair shared.entities
+create/repair public.entities
 
 add missing roles column if absent
 
-backfill/migrate any local entities rows into shared.entities
+backfill/migrate any local entities rows into public.entities
 
-repair fact foreign keys to point at shared.entities
+repair fact foreign keys to point at public.entities
 
 optionally replace local entities tables with compatibility views or drop them after backfill
 
 Notes
 
-This migration is mandatory because the live code already assumes shared.entities.
+This migration is mandatory because the live code already assumes public.entities.
 
 Backfill strategy
 
-ensure shared.entities exists
+ensure public.entities exists
 
 ensure required columns exist, including roles
 
-copy local entities rows into shared.entities
+copy local entities rows into public.entities
 
 remap any fact/entity references if IDs must change
 
@@ -1037,7 +1037,7 @@ support idempotency and duplicate suppression where needed
 src/butlers/modules/memory/tools/entities.py
 Implement
 
-align fully to authoritative shared.entities
+align fully to authoritative public.entities
 
 add tests around roles, merge/tombstone behavior, and tenant scoping
 
@@ -1054,7 +1054,7 @@ narrow grants on approved shared tables, or
 
 security-definer functions with EXECUTE granted to runtime roles
 
-Do not broadly grant RW over the entire shared schema.
+Do not broadly grant RW over the entire public schema.
 
 Retrieval and context design details
 Composite score inputs
@@ -1136,7 +1136,7 @@ This is only for after the local memory core is correct.
 
 Publishing model
 
-Each butler may publish a search card to shared.memory_catalog containing:
+Each butler may publish a search card to public.memory_catalog containing:
 
 summary text
 
@@ -1171,7 +1171,7 @@ fresh install applies full chain successfully
 
 upgrade from current live schema succeeds
 
-shared.entities alignment works even if a local entities table exists
+public.entities alignment works even if a local entities table exists
 
 tenant columns are backfilled correctly
 
@@ -1219,7 +1219,7 @@ fact/rule outputs keep source episode provenance
 
 Must-have entity tests
 
-entity creation/update hits shared.entities
+entity creation/update hits public.entities
 
 roles round-trip correctly
 
@@ -1284,7 +1284,7 @@ Acceptance criteria
 
 The project is complete when all of the following are true:
 
-shared.entities is the sole authoritative entity table used by live memory code.
+public.entities is the sole authoritative entity table used by live memory code.
 
 All durable memory writes stamp tenant_id and support request_id.
 

@@ -83,7 +83,7 @@ The default 5-minute polling interval is conservative because: (a) Drive file ch
 
 ### D6: Multi-account follows established Gmail connector pattern
 
-**Decision:** The connector discovers accounts from `shared.google_accounts` where `status = 'active'` and `drive` or `drive.readonly` is in `granted_scopes`. It spawns an independent poll loop per account. The module resolves credentials for the configured account (or primary if not specified).
+**Decision:** The connector discovers accounts from `public.google_accounts` where `status = 'active'` and `drive` or `drive.readonly` is in `granted_scopes`. It spawns an independent poll loop per account. The module resolves credentials for the configured account (or primary if not specified).
 
 **Rationale:** Identical to the Gmail connector's multi-account pattern (D8 in multi-account-google change). Reuses `GDriveAccountLoop` pattern per-account with independent cursors, error isolation, and dynamic discovery.
 

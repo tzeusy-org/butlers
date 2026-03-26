@@ -15,7 +15,7 @@ plan has been implemented through mem_001–mem_020. This document captures the
 
 These items from the original plan are now landed and working:
 
-- **Shared entity registry**: core_014 + mem_006 align everything to `shared.entities`.
+- **Shared entity registry**: core_014 + mem_006 align everything to `public.entities`.
 - **Tenant/request lineage columns**: mem_014 adds `tenant_id`, `request_id`,
   `retention_class`, `sensitivity` to episodes/facts/rules.
 - **Retrieval scoring**: `search.py` uses `effective_confidence` with decayed
@@ -100,11 +100,11 @@ path.
 
 ---
 
-### 5. `shared.memory_catalog` has no migration
+### 5. `public.memory_catalog` has no migration
 
 **Location**: `storage.py:188-223`, `search.py:789-858`
 
-Runtime code references `shared.memory_catalog` for upserts (store_fact,
+Runtime code references `public.memory_catalog` for upserts (store_fact,
 store_rule write-behind) and searches (semantic + full-text). The module config
 gates catalog writes behind a flag noting "only enable after core_023". But no
 migration exists to create the table.
@@ -112,8 +112,8 @@ migration exists to create the table.
 The code handles this gracefully (best-effort, fire-and-forget writes), so it
 won't crash. But catalog searches will fail if the table doesn't exist.
 
-**Fix**: Create a core migration (or memory migration with `shared.` qualified
-DDL) that creates `shared.memory_catalog` with the columns referenced in
+**Fix**: Create a core migration (or memory migration with `public.` qualified
+DDL) that creates `public.memory_catalog` with the columns referenced in
 `_upsert_catalog()`.
 
 **Priority**: Low — feature-flagged and discovery-only. But should exist before
@@ -186,7 +186,7 @@ to be incorrect or already resolved:
 - **"migrations stop at mem_012"**: False. Migration chain goes to mem_020.
 - **"core chain stops at core_022, but code references core_023/024"**: Core
   migrations are managed outside this repo; the memory module's own chain is
-  complete. `shared.memory_catalog` is the only unresolved shared-schema table.
+  complete. `public.memory_catalog` is the only unresolved shared-schema table.
 - **"fresh schema would be incompatible"**: mem_014 adds tenant_id/request_id
   with backfill defaults. A fresh install applying the full chain gets all
   columns. The INSERT paths include these columns.
@@ -205,5 +205,5 @@ to be incorrect or already resolved:
 2. **#2 + #4** (consolidation tenant grouping + events tenant_id) — complete
    multi-tenant consolidation correctness.
 3. **#6** (migration integration tests) — prevents future drift.
-4. **#5** (shared.memory_catalog migration) — unblocks catalog feature flag.
+4. **#5** (public.memory_catalog migration) — unblocks catalog feature flag.
 5. **#7 + #8** (events enrichment + embedding_versions) — polish.

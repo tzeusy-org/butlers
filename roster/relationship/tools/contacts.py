@@ -219,7 +219,7 @@ async def contact_create(
 
     ``memory_pool`` is accepted for backward compatibility with callers that
     supply a separate pool for the memory schema; when omitted, ``pool`` is
-    used directly (shared.entities is accessible from any pool in the same DB).
+    used directly (public.entities is accessible from any pool in the same DB).
     """
     if (first_name is None and last_name is None) and name:
         first_name, last_name = _split_name(name)

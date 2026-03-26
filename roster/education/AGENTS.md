@@ -241,7 +241,7 @@ engage interactive response mode.
 
 ### Entity Resolution for Education Concepts
 
-Every mind map node has an `entity_id` field backed by `shared.entities`. This entity uniquely
+Every mind map node has an `entity_id` field backed by `public.entities`. This entity uniquely
 identifies the concept across the butler system and enables memory deduplication — facts stored
 with `entity_id` are linked to the canonical entity rather than relying on free-text subject
 matching.

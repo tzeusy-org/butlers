@@ -3164,7 +3164,7 @@ class TestSnapshotPersistence:
         import uuid
 
         pool = AsyncMock()
-        # fetchval returns a UUID (the resolved shared.entities row id)
+        # fetchval returns a UUID (the resolved public.entities row id)
         pool.fetchval = AsyncMock(return_value=uuid.uuid4())
         db = MagicMock()
         db.pool = pool
@@ -3345,7 +3345,7 @@ class TestSnapshotPersistence:
     async def test_persist_snapshot_resolves_shared_entity(
         self, ha_module: HomeAssistantModule
     ) -> None:
-        """_persist_entity_snapshot UPSERTs a shared.entities row for each HA entity."""
+        """_persist_entity_snapshot UPSERTs a public.entities row for each HA entity."""
         mock_db = self._make_mock_db()
         ha_module._db = mock_db
         ha_module._entity_cache = {
@@ -3361,7 +3361,7 @@ class TestSnapshotPersistence:
         # fetchval was called to resolve the shared entity
         mock_db.pool.fetchval.assert_awaited_once()
         sql_arg = mock_db.pool.fetchval.call_args.args[0]
-        assert "shared.entities" in sql_arg
+        assert "public.entities" in sql_arg
         assert "ON CONFLICT" in sql_arg
 
 

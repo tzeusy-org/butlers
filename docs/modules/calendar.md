@@ -47,7 +47,7 @@ window_days = 30
 Google Calendar uses OAuth2 refresh-token exchange. Credentials are resolved via the shared credential store:
 
 - `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` from `butler_secrets`.
-- Refresh token from `shared.entity_info` on the owner entity (or the specific Google account entry in `shared.google_accounts`).
+- Refresh token from `public.entity_info` on the owner entity (or the specific Google account entry in `public.google_accounts`).
 
 When `calendar_id` is not explicitly configured, the module auto-discovers or creates a shared "Butlers" subcalendar.
 

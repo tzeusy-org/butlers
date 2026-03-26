@@ -22,7 +22,7 @@ Replay is modeled as a status transition on `connectors.filtered_events`, not a 
 #### Scenario: Successful replay
 - **WHEN** a replay submission to `ingest_v1` succeeds (including duplicate=true responses)
 - **THEN** the event's status SHALL be updated to `replay_complete` and `replay_completed_at` SHALL be set
-- **AND** the event SHALL now appear in `shared.ingestion_events` as a normal ingested event (unless deduplicated)
+- **AND** the event SHALL now appear in `public.ingestion_events` as a normal ingested event (unless deduplicated)
 
 #### Scenario: Failed replay
 - **WHEN** a replay submission to `ingest_v1` raises an exception
@@ -32,7 +32,7 @@ Replay is modeled as a status transition on `connectors.filtered_events`, not a 
 
 #### Scenario: Deduplication safety for filtered events
 - **WHEN** a filtered event is replayed
-- **THEN** no prior dedupe record exists in `shared.ingestion_events` (because the message was never submitted to `ingest_v1`)
+- **THEN** no prior dedupe record exists in `public.ingestion_events` (because the message was never submitted to `ingest_v1`)
 - **AND** `ingest_v1` SHALL accept it as a new event and create a normal `ingestion_events` row
 
 #### Scenario: Deduplication safety for error events

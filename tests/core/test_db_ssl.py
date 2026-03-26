@@ -74,13 +74,13 @@ async def test_connect_sets_search_path_when_schema_is_configured(
     assert out is pool
     assert mock_create_pool.await_args is not None
     assert mock_create_pool.await_args.kwargs["server_settings"] == {
-        "search_path": "general,shared,public"
+        "search_path": "general,public"
     }
 
 
-def test_schema_search_path_for_shared_schema() -> None:
-    """Shared schema omits duplicate entries in search_path."""
-    assert schema_search_path("shared") == "shared,public"
+def test_schema_search_path_for_public_schema() -> None:
+    """Public schema omits duplicate entries in search_path."""
+    assert schema_search_path("public") == "public"
 
 
 @patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)

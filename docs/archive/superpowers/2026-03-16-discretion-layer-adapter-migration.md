@@ -7,7 +7,7 @@
 
 **Goal:** Replace the discretion layer's direct Ollama HTTP calls with the project's RuntimeAdapter interface, backed by the model catalog, so discretion model selection is managed through the same Settings UI and resolution path as butler sessions.
 
-**Architecture:** The `DiscretionEvaluator` currently calls Ollama directly via `httpx`. We introduce a `DiscretionDispatcher` that mirrors the spawner's pattern — own semaphore, own adapter pool, resolves models from `shared.model_catalog` using a new `discretion` complexity tier. Connectors inject the dispatcher into evaluators instead of a `DiscretionConfig`. The `_call_llm` function and `DiscretionConfig` env var machinery are removed.
+**Architecture:** The `DiscretionEvaluator` currently calls Ollama directly via `httpx`. We introduce a `DiscretionDispatcher` that mirrors the spawner's pattern — own semaphore, own adapter pool, resolves models from `public.model_catalog` using a new `discretion` complexity tier. Connectors inject the dispatcher into evaluators instead of a `DiscretionConfig`. The `_call_llm` function and `DiscretionConfig` env var machinery are removed.
 
 **Tech Stack:** Python 3.12, asyncpg, RuntimeAdapter ABC, asyncio.Semaphore, Alembic, FastAPI/Pydantic (settings API), pytest
 
@@ -125,22 +125,22 @@ _OLD_TIERS = "('trivial', 'medium', 'high', 'extra_high')"
 def upgrade() -> None:
     # model_catalog: drop old, add new
     op.execute(
-        "ALTER TABLE shared.model_catalog"
+        "ALTER TABLE public.model_catalog"
         " DROP CONSTRAINT IF EXISTS chk_model_catalog_complexity_tier"
     )
     op.execute(
-        "ALTER TABLE shared.model_catalog"
+        "ALTER TABLE public.model_catalog"
         " ADD CONSTRAINT chk_model_catalog_complexity_tier"
         f" CHECK (complexity_tier IN {_NEW_TIERS})"
     )
 
     # butler_model_overrides: drop old, add new
     op.execute(
-        "ALTER TABLE shared.butler_model_overrides"
+        "ALTER TABLE public.butler_model_overrides"
         " DROP CONSTRAINT IF EXISTS chk_butler_model_overrides_complexity_tier"
     )
     op.execute(
-        "ALTER TABLE shared.butler_model_overrides"
+        "ALTER TABLE public.butler_model_overrides"
         " ADD CONSTRAINT chk_butler_model_overrides_complexity_tier"
         f" CHECK (complexity_tier IS NULL OR complexity_tier IN {_NEW_TIERS})"
     )
@@ -149,21 +149,21 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Restore original constraints (will fail if 'discretion' rows exist)
     op.execute(
-        "ALTER TABLE shared.model_catalog"
+        "ALTER TABLE public.model_catalog"
         " DROP CONSTRAINT IF EXISTS chk_model_catalog_complexity_tier"
     )
     op.execute(
-        "ALTER TABLE shared.model_catalog"
+        "ALTER TABLE public.model_catalog"
         " ADD CONSTRAINT chk_model_catalog_complexity_tier"
         f" CHECK (complexity_tier IN {_OLD_TIERS})"
     )
 
     op.execute(
-        "ALTER TABLE shared.butler_model_overrides"
+        "ALTER TABLE public.butler_model_overrides"
         " DROP CONSTRAINT IF EXISTS chk_butler_model_overrides_complexity_tier"
     )
     op.execute(
-        "ALTER TABLE shared.butler_model_overrides"
+        "ALTER TABLE public.butler_model_overrides"
         " ADD CONSTRAINT chk_butler_model_overrides_complexity_tier"
         f" CHECK (complexity_tier IS NULL OR complexity_tier IN {_OLD_TIERS})"
     )
@@ -404,7 +404,7 @@ Create `src/butlers/connectors/discretion_dispatcher.py`:
 
 Mirrors the Spawner's pattern but dedicated to discretion:
 - Own asyncio.Semaphore (default 4 concurrent calls)
-- Resolves model from shared.model_catalog using the 'discretion' tier
+- Resolves model from public.model_catalog using the 'discretion' tier
 - Lazy adapter instantiation via the RuntimeAdapter registry
 - Simple call() interface: prompt + system_prompt → raw text
 
@@ -491,7 +491,7 @@ class DiscretionDispatcher:
         )
         if catalog_result is None:
             raise RuntimeError(
-                "No model configured for discretion tier in shared.model_catalog. "
+                "No model configured for discretion tier in public.model_catalog. "
                 "Add an entry with complexity_tier='discretion' via the Settings UI."
             )
 
@@ -872,7 +872,7 @@ git commit -m "fix: post-migration lint and test fixes"
 
 | Before | After |
 |--------|-------|
-| `DiscretionConfig` reads env vars for URL/model | Model resolved from `shared.model_catalog` (discretion tier) |
+| `DiscretionConfig` reads env vars for URL/model | Model resolved from `public.model_catalog` (discretion tier) |
 | `_call_llm` does raw `httpx.post` to Ollama | `DiscretionDispatcher.call()` goes through `RuntimeAdapter.invoke()` |
 | No concurrency control on discretion calls | `asyncio.Semaphore(4)` in dispatcher |
 | Model changes require env var updates + restart | Model changes via Settings UI, immediate effect |

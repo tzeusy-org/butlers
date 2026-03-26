@@ -915,7 +915,7 @@ def _make_app_with_contact_resolution(
     - information_schema.tables check (returns True for has_approvals_tables)
     - COUNT query (returns len(action_rows))
     - SELECT * FROM pending_actions (returns action_rows)
-    - shared.contacts lookup for contact_id in tool_args (returns contact_row)
+    - public.contacts lookup for contact_id in tool_args (returns contact_row)
     """
     action_count = len(action_rows)
 
@@ -930,7 +930,7 @@ def _make_app_with_contact_resolution(
 
     async def mock_fetchrow(*args, **kwargs):
         sql = args[0] if args else ""
-        if "shared.contacts" in sql:
+        if "public.contacts" in sql:
             return contact_row
         return None
 

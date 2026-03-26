@@ -1,7 +1,7 @@
 """Data access layer for dashboard conversation and message persistence.
 
-Provides CRUD functions over ``shared.dashboard_conversations`` and
-``shared.dashboard_messages``.  All functions accept an asyncpg Pool and
+Provides CRUD functions over ``public.dashboard_conversations`` and
+``public.dashboard_messages``.  All functions accept an asyncpg Pool and
 return plain dicts so callers can construct Pydantic models as needed.
 
 UUID7 generation follows the pattern in the Switchboard ingest module.
@@ -83,7 +83,7 @@ async def conversation_create(
 
     await pool.execute(
         """
-        INSERT INTO shared.dashboard_conversations
+        INSERT INTO public.dashboard_conversations
             (id, butler_name, title, status, created_at, updated_at,
              message_count, total_input_tokens, total_output_tokens, total_duration_ms)
         VALUES ($1, $2, $3, 'active', $4, $4, 0, 0, 0, 0)
@@ -119,7 +119,7 @@ async def conversation_get(
         """
         SELECT id, butler_name, title, status, created_at, updated_at,
                message_count, total_input_tokens, total_output_tokens, total_duration_ms
-        FROM shared.dashboard_conversations
+        FROM public.dashboard_conversations
         WHERE id = $1 AND butler_name = $2
         """,
         conversation_id,
@@ -149,7 +149,7 @@ async def conversation_list(
 
     total: int = (
         await pool.fetchval(
-            f"SELECT COUNT(*) FROM shared.dashboard_conversations WHERE {where}",
+            f"SELECT COUNT(*) FROM public.dashboard_conversations WHERE {where}",
             *args,
         )
         or 0
@@ -159,7 +159,7 @@ async def conversation_list(
         f"""
         SELECT id, butler_name, title, status, created_at, updated_at,
                message_count, total_input_tokens, total_output_tokens, total_duration_ms
-        FROM shared.dashboard_conversations
+        FROM public.dashboard_conversations
         WHERE {where}
         ORDER BY updated_at DESC
         OFFSET ${len(args) + 1} LIMIT ${len(args) + 2}
@@ -202,7 +202,7 @@ async def conversation_update(
 
     row = await pool.fetchrow(
         f"""
-        UPDATE shared.dashboard_conversations
+        UPDATE public.dashboard_conversations
         SET {", ".join(set_clauses)}
         WHERE id = ${idx} AND butler_name = ${idx + 1}
         RETURNING id, butler_name, title, status, created_at, updated_at,
@@ -222,7 +222,7 @@ async def conversation_unarchive_if_needed(
     """Reactivate an archived conversation before processing a new message."""
     await pool.execute(
         """
-        UPDATE shared.dashboard_conversations
+        UPDATE public.dashboard_conversations
         SET status = 'active', updated_at = now()
         WHERE id = $1 AND butler_name = $2 AND status = 'archived'
         """,
@@ -248,7 +248,7 @@ async def conversation_update_aggregates(
     """
     await pool.execute(
         """
-        UPDATE shared.dashboard_conversations
+        UPDATE public.dashboard_conversations
         SET message_count = message_count + 1,
             total_input_tokens = total_input_tokens + $3,
             total_output_tokens = total_output_tokens + $4,
@@ -291,8 +291,8 @@ async def conversation_search(
                 c.message_count, c.total_input_tokens, c.total_output_tokens, c.total_duration_ms,
                 substring(m.content, 1, 200) AS snippet,
                 m.created_at AS msg_created_at
-            FROM shared.dashboard_conversations c
-            JOIN shared.dashboard_messages m ON m.conversation_id = c.id
+            FROM public.dashboard_conversations c
+            JOIN public.dashboard_messages m ON m.conversation_id = c.id
             WHERE c.butler_name = $1
               AND m.content ILIKE $2
             ORDER BY c.id, m.created_at DESC
@@ -310,8 +310,8 @@ async def conversation_search(
         await pool.fetchval(
             """
         SELECT COUNT(DISTINCT c.id)
-        FROM shared.dashboard_conversations c
-        JOIN shared.dashboard_messages m ON m.conversation_id = c.id
+        FROM public.dashboard_conversations c
+        JOIN public.dashboard_messages m ON m.conversation_id = c.id
         WHERE c.butler_name = $1
           AND m.content ILIKE $2
         """,
@@ -345,7 +345,7 @@ async def conversation_summary(
             COALESCE(SUM(total_input_tokens), 0) AS total_input_tokens,
             COALESCE(SUM(total_output_tokens), 0) AS total_output_tokens,
             COALESCE(SUM(total_duration_ms), 0) AS total_duration_ms
-        FROM shared.dashboard_conversations
+        FROM public.dashboard_conversations
         WHERE butler_name = $1
         """,
         butler_name,
@@ -391,7 +391,7 @@ async def message_create(
 
     await pool.execute(
         """
-        INSERT INTO shared.dashboard_messages
+        INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
              duration_ms, tool_calls, error, request_id)
@@ -442,7 +442,7 @@ async def message_list(
     """
     total: int = (
         await pool.fetchval(
-            "SELECT COUNT(*) FROM shared.dashboard_messages WHERE conversation_id = $1",
+            "SELECT COUNT(*) FROM public.dashboard_messages WHERE conversation_id = $1",
             conversation_id,
         )
         or 0
@@ -453,7 +453,7 @@ async def message_list(
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
                duration_ms, tool_calls, error, request_id
-        FROM shared.dashboard_messages
+        FROM public.dashboard_messages
         WHERE conversation_id = $1
         ORDER BY created_at ASC
         OFFSET $2 LIMIT $3
@@ -490,7 +490,7 @@ async def conversation_message_count_increment(
     """
     await pool.execute(
         """
-        UPDATE shared.dashboard_conversations
+        UPDATE public.dashboard_conversations
         SET message_count = message_count + 1, updated_at = now()
         WHERE id = $1 AND butler_name = $2
         """,

@@ -35,7 +35,7 @@ graph TB
 
     subgraph DB["PostgreSQL"]
         Schema["Per-butler schema"]
-        Shared["shared schema"]
+        Shared["public schema (cross-butler tables)"]
     end
 
     C -- "ingest.v1 / MCP SSE" --> Ingest

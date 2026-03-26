@@ -1,6 +1,6 @@
 """Entity resolution helper for relationship butler SPO fact writes.
 
-Resolves a contact_id to its entity_id in shared.entities via the shared.contacts
+Resolves a contact_id to its entity_id in public.entities via the public.contacts
 entity_id FK.  Every contact MUST have a linked entity; a None return indicates
 a data integrity issue that should be investigated.
 """

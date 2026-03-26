@@ -1,4 +1,4 @@
-"""CRUD and gate query layer for shared.healing_attempts.
+"""CRUD and gate query layer for public.healing_attempts.
 
 This module provides the data backbone for the self-healing dispatcher:
 
@@ -12,7 +12,7 @@ This module provides the data backbone for the self-healing dispatcher:
 All public functions accept an asyncpg Pool so callers can use any pool
 (per-butler pool or shared pool depending on deployment).
 
-Schema reference (shared.healing_attempts):
+Schema reference (public.healing_attempts):
     id              UUID PK
     fingerprint     TEXT NOT NULL
     butler_name     TEXT NOT NULL
@@ -184,7 +184,7 @@ async def create_or_join_attempt(
     # alternative is to use a CTE with an explicit flag column.
     sql = """
         WITH inserted AS (
-            INSERT INTO shared.healing_attempts (
+            INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
                 exception_type, call_site, sanitized_msg, session_ids
             )
@@ -193,9 +193,9 @@ async def create_or_join_attempt(
             WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
             DO UPDATE
                 SET session_ids = CASE
-                    WHEN $7::uuid = ANY(shared.healing_attempts.session_ids)
-                        THEN shared.healing_attempts.session_ids
-                    ELSE array_append(shared.healing_attempts.session_ids, $7::uuid)
+                    WHEN $7::uuid = ANY(public.healing_attempts.session_ids)
+                        THEN public.healing_attempts.session_ids
+                    ELSE array_append(public.healing_attempts.session_ids, $7::uuid)
                 END,
                 updated_at = now()
             RETURNING
@@ -309,7 +309,7 @@ async def update_attempt_status(
 
     # Fetch the current status to validate the transition.
     current_row = await pool.fetchrow(
-        "SELECT status FROM shared.healing_attempts WHERE id = $1",
+        "SELECT status FROM public.healing_attempts WHERE id = $1",
         attempt_id,
     )
     if current_row is None:
@@ -344,7 +344,7 @@ async def update_attempt_status(
     # attempt in the meantime, the UPDATE will affect 0 rows and we return False.
     updated = await pool.fetchval(
         """
-        UPDATE shared.healing_attempts
+        UPDATE public.healing_attempts
         SET
             status              = $2,
             updated_at          = now(),
@@ -411,7 +411,7 @@ async def get_active_attempt(
     row = await pool.fetchrow(
         """
         SELECT *
-        FROM shared.healing_attempts
+        FROM public.healing_attempts
         WHERE fingerprint = $1
           AND status IN ('dispatch_pending', 'investigating', 'pr_open')
         LIMIT 1
@@ -448,7 +448,7 @@ async def get_recent_attempt(
     row = await pool.fetchrow(
         """
         SELECT *
-        FROM shared.healing_attempts
+        FROM public.healing_attempts
         WHERE fingerprint = $1
           AND status = ANY($2::text[])
           AND closed_at >= now() - ($3 * INTERVAL '1 minute')
@@ -480,7 +480,7 @@ async def count_active_attempts(pool: asyncpg.Pool) -> int:
     result: int = await pool.fetchval(
         """
         SELECT COUNT(*)
-        FROM shared.healing_attempts
+        FROM public.healing_attempts
         WHERE status = 'investigating'
         """
     )
@@ -512,7 +512,7 @@ async def get_recent_terminal_statuses(
     rows = await pool.fetch(
         """
         SELECT status
-        FROM shared.healing_attempts
+        FROM public.healing_attempts
         WHERE status = ANY($1::text[])
         ORDER BY closed_at DESC
         LIMIT $2
@@ -555,7 +555,7 @@ async def list_attempts(
         rows = await pool.fetch(
             """
             SELECT *
-            FROM shared.healing_attempts
+            FROM public.healing_attempts
             WHERE status = $1
               AND butler_name = $2
             ORDER BY created_at DESC
@@ -570,7 +570,7 @@ async def list_attempts(
         rows = await pool.fetch(
             """
             SELECT *
-            FROM shared.healing_attempts
+            FROM public.healing_attempts
             WHERE status = $1
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
@@ -583,7 +583,7 @@ async def list_attempts(
         rows = await pool.fetch(
             """
             SELECT *
-            FROM shared.healing_attempts
+            FROM public.healing_attempts
             WHERE butler_name = $1
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
@@ -596,7 +596,7 @@ async def list_attempts(
         rows = await pool.fetch(
             """
             SELECT *
-            FROM shared.healing_attempts
+            FROM public.healing_attempts
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
             """,
@@ -661,7 +661,7 @@ async def recover_stale_attempts(
     timeout_count: int = await pool.fetchval(
         """
         WITH recovered AS (
-            UPDATE shared.healing_attempts
+            UPDATE public.healing_attempts
             SET
                 status       = 'timeout',
                 updated_at   = now(),
@@ -681,7 +681,7 @@ async def recover_stale_attempts(
     failed_count: int = await pool.fetchval(
         """
         WITH recovered AS (
-            UPDATE shared.healing_attempts
+            UPDATE public.healing_attempts
             SET
                 status       = 'failed',
                 updated_at   = now(),
@@ -700,7 +700,7 @@ async def recover_stale_attempts(
     dp_failed_count: int = await pool.fetchval(
         """
         WITH recovered AS (
-            UPDATE shared.healing_attempts
+            UPDATE public.healing_attempts
             SET
                 status       = 'failed',
                 updated_at   = now(),
@@ -719,7 +719,7 @@ async def recover_stale_attempts(
     pending_rows_raw = await pool.fetch(
         """
         SELECT *
-        FROM shared.healing_attempts
+        FROM public.healing_attempts
         WHERE status = 'dispatch_pending'
           AND created_at >= now() - ($1 * INTERVAL '1 minute')
         ORDER BY created_at ASC
@@ -769,7 +769,7 @@ async def get_attempt(
     HealingAttemptRow or None
     """
     row = await pool.fetchrow(
-        "SELECT * FROM shared.healing_attempts WHERE id = $1",
+        "SELECT * FROM public.healing_attempts WHERE id = $1",
         attempt_id,
     )
     return _decode_row(row) if row is not None else None

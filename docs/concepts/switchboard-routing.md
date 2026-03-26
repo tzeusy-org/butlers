@@ -54,7 +54,7 @@ When fanout occurs (a message routes to multiple butlers), all sub-requests shar
 
 ### Step 3: Identity Resolution
 
-Before routing, the Switchboard resolves the sender's identity by querying `shared.contact_info` and `shared.contacts`. The `resolve_contact_by_channel()` function performs a reverse lookup: given a channel type (e.g., `"telegram"`) and value (e.g., a chat ID), it returns a `ResolvedContact` with the contact ID, display name, roles (sourced from the linked entity), and entity ID.
+Before routing, the Switchboard resolves the sender's identity by querying `public.contact_info` and `public.contacts`. The `resolve_contact_by_channel()` function performs a reverse lookup: given a channel type (e.g., `"telegram"`) and value (e.g., a chat ID), it returns a `ResolvedContact` with the contact ID, display name, roles (sourced from the linked entity), and entity ID.
 
 If the sender is known, an identity preamble is built and prepended to the routed message. For the owner, this looks like:
 
@@ -68,7 +68,7 @@ For a known non-owner contact:
 [Source: Chloe (contact_id: <uuid>, entity_id: <uuid>), via telegram]
 ```
 
-If the sender is unknown, a temporary contact and entity are created in the shared schema (marked with `needs_disambiguation` and `unidentified` metadata), and the preamble indicates pending disambiguation:
+If the sender is unknown, a temporary contact and entity are created in the public schema (marked with `needs_disambiguation` and `unidentified` metadata), and the preamble indicates pending disambiguation:
 
 ```
 [Source: Unknown sender (contact_id: <uuid>, entity_id: <uuid>), via telegram -- pending disambiguation]

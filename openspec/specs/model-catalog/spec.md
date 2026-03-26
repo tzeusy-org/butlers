@@ -7,7 +7,7 @@ The model catalog is the canonical registry of available model configurations fo
 ## ADDED Requirements
 
 ### Requirement: Model Catalog Schema
-The system SHALL maintain a `shared.model_catalog` table as the canonical registry of available model configurations. Each entry defines a named model alias, its runtime adapter type, the actual model identifier, optional extra CLI arguments, a complexity tier assignment, an enabled flag, and a priority for tie-breaking.
+The system SHALL maintain a `public.model_catalog` table as the canonical registry of available model configurations. Each entry defines a named model alias, its runtime adapter type, the actual model identifier, optional extra CLI arguments, a complexity tier assignment, an enabled flag, and a priority for tie-breaking.
 
 #### Scenario: Catalog entry structure
 - **WHEN** a model catalog entry is created
@@ -44,7 +44,7 @@ A model alias is a named configuration combining a base model with optional extr
 - **THEN** the spawner passes `model_id` as the model parameter with no additional args from the catalog
 
 ### Requirement: Butler Model Overrides Schema
-The system SHALL maintain a `shared.butler_model_overrides` table for per-butler customization layered on top of the global catalog. Overrides are sparse — most butlers use global defaults.
+The system SHALL maintain a `public.butler_model_overrides` table for per-butler customization layered on top of the global catalog. Overrides are sparse — most butlers use global defaults.
 
 #### Scenario: Override entry structure
 - **WHEN** a butler model override is created
@@ -96,7 +96,7 @@ The system SHALL provide a `resolve_model(butler_name, complexity_tier)` functio
 #### Scenario: Return type includes catalog_entry_id
 - **WHEN** `resolve_model()` returns a match
 - **THEN** the return type is `tuple[str, str, list[str], UUID]` — `(runtime_type, model_id, extra_args, catalog_entry_id)`
-- **AND** `catalog_entry_id` is the UUID primary key of the matched `shared.model_catalog` row
+- **AND** `catalog_entry_id` is the UUID primary key of the matched `public.model_catalog` row
 
 ### Requirement: Seed Data Migration
 The system SHALL seed the model catalog with sensible defaults on first migration, covering known runtime adapters and common alias patterns.

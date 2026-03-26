@@ -1787,7 +1787,7 @@ class TelegramUserClientConnector:
 async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
     """Resolve Telegram user-client credentials from owner entity_info.
 
-    Credentials are resolved exclusively from ``shared.entity_info`` entries
+    Credentials are resolved exclusively from ``public.entity_info`` entries
     on the owner entity (types ``telegram_api_id``, ``telegram_api_hash``,
     ``telegram_user_session``).
 

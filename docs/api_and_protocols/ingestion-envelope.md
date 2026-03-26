@@ -69,7 +69,7 @@ Endpoint identity is auto-resolved from the source API at connector startup: Tel
 |-------|----------|-------------|
 | `identity` | Yes | Provider-native sender identifier (Telegram user ID, email address) |
 
-The Switchboard resolves this against `shared.contact_info` to build a structured identity preamble for the routed message.
+The Switchboard resolves this against `public.contact_info` to build a structured identity preamble for the routed message.
 
 ### `payload` Block
 

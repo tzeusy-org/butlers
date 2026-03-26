@@ -4,7 +4,7 @@ Revision ID: gen_003
 Revises: gen_002
 Create Date: 2026-03-06 00:00:00.000000
 
-Resolves naming collision with shared.entities (identity entities table).
+Resolves naming collision with public.entities (identity entities table).
 """
 
 from __future__ import annotations

@@ -93,7 +93,7 @@ The `request_context` parameter follows the `NotifyRequestContextInput` TypedDic
 - **THEN** the tool returns a validation error
 
 ### Requirement: Default Recipient Resolution
-The `notify` tool accepts `contact_id` (UUID) and `recipient` (string) as optional parameters for specifying the target. Resolution priority SHALL be: (1) if `contact_id` is provided, resolve the target's channel identifier from `shared.contact_info`; (2) if `recipient` string is provided, use it as-is; (3) if neither is provided, resolve the owner contact's channel identifier from `shared.contact_info`.
+The `notify` tool accepts `contact_id` (UUID) and `recipient` (string) as optional parameters for specifying the target. Resolution priority SHALL be: (1) if `contact_id` is provided, resolve the target's channel identifier from `public.contact_info`; (2) if `recipient` string is provided, use it as-is; (3) if neither is provided, resolve the owner contact's channel identifier from `public.contact_info`.
 
 #### Scenario: Contact-based recipient resolution
 - **WHEN** a runtime instance calls `notify(channel='telegram', message='Your dental appointment is tomorrow', contact_id='abc-123')`

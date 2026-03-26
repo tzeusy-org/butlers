@@ -149,7 +149,7 @@ class MemoryModuleConfig(BaseModel):
 
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
 
-    # Feature flag: write summary entries to shared.memory_catalog on every
+    # Feature flag: write summary entries to public.memory_catalog on every
     # fact/rule store.  Defaults to False for backward compatibility.
     # Set to True only after the core_023 migration has been applied.
     enable_shared_catalog: bool = False
@@ -1110,7 +1110,7 @@ class MemoryModule(Module):
         ) -> list[dict[str, Any]]:
             """Search the shared memory catalog for cross-butler memory discovery.
 
-            Queries ``shared.memory_catalog`` — a discovery index aggregating
+            Queries ``public.memory_catalog`` — a discovery index aggregating
             summary entries from all butler schemas.  Returns provenance pointers
             (source_schema, source_table, source_id) so the full canonical memory
             can be retrieved from the owning butler.
@@ -1188,7 +1188,7 @@ class MemoryModule(Module):
             - ``permanence='stable'`` (decay_rate=0.002, near-permanent)
             - ``importance=8.0`` (ranks above standard facts in Profile Facts)
             - ``retention_class='operational'``
-            - Owner entity auto-resolved from ``shared.contacts``
+            - Owner entity auto-resolved from ``public.contacts``
             - Scope derived from the predicate domain segment
               (``preferences:travel_*`` → scope ``travel``,
                ``preferences:general_*`` → scope ``global``)
@@ -1226,7 +1226,7 @@ class MemoryModule(Module):
                         "Ensure the predicate starts with 'preferences:' and uses the format "
                         "'preferences:<domain>_<name>'. "
                         "If the owner entity error occurs, run butler startup or verify the "
-                        "owner contact exists in shared.contacts."
+                        "owner contact exists in public.contacts."
                     ),
                 }
 

@@ -60,7 +60,7 @@ Default approval expiry is 48 hours.
 
 **Delivery Ownership Invariant.** User-channel side effects must have exactly one execution owner: Messenger. Non-messenger butlers must not expose direct outbound delivery tools and must request delivery through `notify.v1`.
 
-**Target Resolution.** For `send` intent: resolve recipient from `contact_id` (via `shared.contact_info`), explicit `delivery.recipient`, or fall back to the owner contact's channel identifier. For `reply` intent: destination derives from request context lineage.
+**Target Resolution.** For `send` intent: resolve recipient from `contact_id` (via `public.contact_info`), explicit `delivery.recipient`, or fall back to the owner contact's channel identifier. For `reply` intent: destination derives from request context lineage.
 
 **Identity Presentation.** Outbound content includes user-visible origin identity. Email subjects include a `[origin_butler]` token. Non-subject channels prefix messages with the origin butler name.
 

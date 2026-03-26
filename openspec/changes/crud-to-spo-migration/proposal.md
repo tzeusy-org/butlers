@@ -7,7 +7,7 @@ The memory module's bitemporal SPO facts table — introduced in bu-axm — solv
 ## What Changes
 
 - **Predicate taxonomy** — 40+ new predicates seeded into `predicate_registry` across four domains (health, relationship, finance, home). Each predicate defines `is_temporal`, `expected_subject_type`, and a metadata schema convention.
-- **Entity resolution contract** — all domain facts MUST be anchored to a resolved `entity_id`. The owner entity (from `shared.contacts WHERE roles @> '["owner"]'`) anchors all self-data. Contact entities anchor relationship data. Anonymous placeholder entities anchor unresolved actors. The string `"user"` is never acceptable as a bare subject.
+- **Entity resolution contract** — all domain facts MUST be anchored to a resolved `entity_id`. The owner entity (from `public.contacts WHERE roles @> '["owner"]'`) anchors all self-data. Contact entities anchor relationship data. Anonymous placeholder entities anchor unresolved actors. The string `"user"` is never acceptable as a bare subject.
 - **Wrapper tool pattern** — each migrated MCP tool is rewritten to call `store_fact` / `memory_search` / `memory_recall` internally. The external tool signature and response shape are preserved for backward compatibility.
 - **Aggregation query patterns** — tools like `nutrition_summary`, `spending_summary`, and `trend_report` switch from SQL aggregation on dedicated tables to JSONB extraction on `facts`. GIN and partial predicate indexes support these queries.
 - **Data backfill** — idempotent migration scripts backfill existing rows from deprecated tables into facts.

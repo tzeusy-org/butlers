@@ -40,7 +40,7 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 
 ### Credential Resolution
 
-- **User scope**: Resolved exclusively from the owner entity's `shared.entity_info` entries (types `email` and `email_password`). No environment variable fallback.
+- **User scope**: Resolved exclusively from the owner entity's `public.entity_info` entries (types `email` and `email_password`). No environment variable fallback.
 - **Bot scope**: Resolved via `CredentialStore` (DB-first with env fallback).
 
 All credentials are pre-resolved at startup and cached in memory so synchronous IMAP/SMTP helpers can use them without async overhead.

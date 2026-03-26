@@ -5,7 +5,7 @@
 
 ## Summary
 
-Butlers maintains a shared identity registry spanning three tables in the `shared` PostgreSQL schema: `entities`, `contacts`, and `contact_info`. The `resolve_contact_by_channel()` function performs a 3-table JOIN to map external channel identifiers to canonical contact records with role information. Unknown senders receive temporary identity records with disambiguation metadata. An identity preamble is prepended to every routed message, providing downstream butlers with structured sender context for personalized responses, access control, and entity-linked memory.
+Butlers maintains a shared identity registry spanning three tables in the `public` PostgreSQL schema: `entities`, `contacts`, and `contact_info`. The `resolve_contact_by_channel()` function performs a 3-table JOIN to map external channel identifiers to canonical contact records with role information. Unknown senders receive temporary identity records with disambiguation metadata. An identity preamble is prepended to every routed message, providing downstream butlers with structured sender context for personalized responses, access control, and entity-linked memory.
 
 ## Motivation
 
@@ -15,9 +15,9 @@ Every external message entering the system arrives with a provider-native sender
 
 ### Schema Structure
 
-All identity tables reside in the `shared` PostgreSQL schema, readable by all butler database roles.
+All identity tables reside in the `public` PostgreSQL schema, readable by all butler database roles.
 
-#### shared.entities
+#### public.entities
 
 The anchor table for identity. Each row represents a known person or actor.
 
@@ -31,7 +31,7 @@ The anchor table for identity. Each row represents a known person or actor.
 | `aliases` | TEXT[] | Alternative names |
 | `metadata` | JSONB | Extensible; temporary entities carry `{"unidentified": true}` |
 
-#### shared.contacts
+#### public.contacts
 
 Links a named contact record to an entity.
 
@@ -39,17 +39,17 @@ Links a named contact record to an entity.
 |--------|------|-------------|
 | `id` | UUID | Primary key |
 | `name` | TEXT | Display name |
-| `entity_id` | UUID (FK) | Links to `shared.entities` |
+| `entity_id` | UUID (FK) | Links to `public.entities` |
 | `roles` | TEXT[] | Legacy roles array (roles are now primarily sourced from the entity) |
 | `metadata` | JSONB | Extensible; temporary contacts carry `{"needs_disambiguation": true}` |
 
-#### shared.contact_info
+#### public.contact_info
 
 Per-channel identifiers linked to contacts.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `contact_id` | UUID (FK) | Links to `shared.contacts` |
+| `contact_id` | UUID (FK) | Links to `public.contacts` |
 | `type` | TEXT | Channel type: `"telegram"`, `"email"`, `"discord"`, etc. |
 | `value` | TEXT | Channel-specific identifier (chat ID, email address, etc.) |
 | `is_primary` | BOOLEAN | Whether this is the primary contact method for the channel |
@@ -57,13 +57,13 @@ Per-channel identifiers linked to contacts.
 
 A `UNIQUE` constraint on `(type, value)` guarantees at most one contact per channel identifier.
 
-#### shared.entity_info
+#### public.entity_info
 
 Extended identity-bound data linked to entities. Used for credentials that belong to a specific identity (see RFC 0006 for credential store details).
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `entity_id` | UUID (FK) | Links to `shared.entities` |
+| `entity_id` | UUID (FK) | Links to `public.entities` |
 | `info_type` | TEXT | Type identifier (e.g., `"google_oauth_refresh"`, `"telegram_api_id"`) |
 | `value` | TEXT | The stored value |
 | `is_primary` | BOOLEAN | Preferred entry when multiple exist |
@@ -74,9 +74,9 @@ The core identity operation in `src/butlers/identity.py`. Given a channel type a
 
 ```sql
 SELECT c.id, c.name, COALESCE(e.roles, '{}'), c.entity_id
-FROM shared.contact_info ci
-JOIN shared.contacts c ON c.id = ci.contact_id
-LEFT JOIN shared.entities e ON e.id = c.entity_id
+FROM public.contact_info ci
+JOIN public.contacts c ON c.id = ci.contact_id
+LEFT JOIN public.entities e ON e.id = c.entity_id
 WHERE ci.type = $1 AND ci.value = $2
 ```
 
@@ -97,9 +97,9 @@ class ResolvedContact:
 
 When `resolve_contact_by_channel()` returns no match, the system creates a temporary identity via `create_temp_contact()`:
 
-1. Creates a `shared.entities` row with `metadata = {"unidentified": true}`, `entity_type = "person"`.
-2. Creates a `shared.contacts` row linked to the entity with `metadata = {"needs_disambiguation": true}`.
-3. Creates a `shared.contact_info` row for the channel identifier, using `ON CONFLICT DO NOTHING` for race safety when concurrent requests arrive from the same unknown sender.
+1. Creates a `public.entities` row with `metadata = {"unidentified": true}`, `entity_type = "person"`.
+2. Creates a `public.contacts` row linked to the entity with `metadata = {"needs_disambiguation": true}`.
+3. Creates a `public.contact_info` row for the channel identifier, using `ON CONFLICT DO NOTHING` for race safety when concurrent requests arrive from the same unknown sender.
 4. Returns a `ResolvedContact` with empty roles.
 
 Temporary entities and contacts are distinguishable from permanent ones by their metadata flags. They are intended to be merged or promoted by operator action via the dashboard.
@@ -130,7 +130,7 @@ The owner entity is bootstrapped automatically on daemon startup. It carries the
 
 ### Tenant Model
 
-All identity tables use `tenant_id = "shared"` as the default. This unified tenant model means all butlers in a deployment share a single identity namespace. The `shared` schema is readable by all butler database roles, while each butler's own schema is private (see RFC 0006).
+All identity tables use `tenant_id = "shared"` as the default. This unified tenant model means all butlers in a deployment share a single identity namespace. The `public` schema is readable by all butler database roles, while each butler's own schema is private (see RFC 0006).
 
 ### Usage Points
 
@@ -147,7 +147,7 @@ Identity resolution is invoked at:
 
 - **RFC 0003:** The Switchboard resolves sender identity during ingestion and prepends the identity preamble to routed messages.
 - **RFC 0005:** Identity resolution failures are logged but do not create OTel error spans; the system degrades gracefully to unknown-sender handling.
-- **RFC 0006:** Identity tables live in the `shared` schema, readable by all butlers. Writes are primarily controlled by the contacts module in the relationship butler.
+- **RFC 0006:** Identity tables live in the `public` schema, readable by all butlers. Writes are primarily controlled by the contacts module in the relationship butler.
 - **RFC 0007:** The dashboard exposes contact management, entity detail views, and unknown-sender disambiguation workflows.
 
 ## Alternatives Considered

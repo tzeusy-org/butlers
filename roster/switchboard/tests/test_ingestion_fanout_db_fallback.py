@@ -3,7 +3,7 @@
 The /ingestion/fanout endpoint derives the connector × butler fanout matrix
 from Prometheus when available.  When Prometheus is not configured or returns
 an error, it falls back to a DB query that fans out across butler sessions
-tables and joins against shared.ingestion_events.
+tables and joins against public.ingestion_events.
 
 This approach correctly handles all triage decisions — including pass_through
 messages where triage_target is NULL — because it uses the butler whose
@@ -16,7 +16,7 @@ These tests verify:
 - DB fallback produces empty results when no sessions exist.
 - DB fallback exception is caught and returns empty data (not 500).
 - The SQL query used by _ingestion_fanout_from_db joins sessions with
-  shared.ingestion_events and groups by connector + butler.
+  public.ingestion_events and groups by connector + butler.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ async def test_db_fallback_used_when_no_prometheus_url():
     await mod.get_ingestion_fanout(period="24h", db=db)
 
     assert len(db._fan_out_calls) == 1, "fan_out must be called for DB fallback"
-    assert "shared.ingestion_events" in db._fan_out_calls[0]
+    assert "public.ingestion_events" in db._fan_out_calls[0]
     assert "sessions" in db._fan_out_calls[0]
 
 

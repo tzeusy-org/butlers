@@ -348,16 +348,16 @@ class _GateTestPool:
         self.approval_events: list[dict[str, Any]] = []
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
-        # shared.contact_info JOIN shared.contacts — channel-based lookup
-        if "shared.contact_info" in query and len(args) >= 2:
+        # public.contact_info JOIN public.contacts — channel-based lookup
+        if "public.contact_info" in query and len(args) >= 2:
             key = (str(args[0]), str(args[1]))
             return self._contacts.get(key)
         # pending_actions by ID
         if "pending_actions" in query and args:
             row = self.pending_actions.get(args[0])
             return dict(row) if row else None
-        # shared.contacts by UUID
-        if "shared.contacts" in query:
+        # public.contacts by UUID
+        if "public.contacts" in query:
             return None
         return None
 

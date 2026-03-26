@@ -54,12 +54,12 @@ The relationship butler uses a person-centric memory taxonomy.
 - **THEN** it uses the person's human-readable name as subject (with entity_id as anchor); predicates like `relationship_to_user`, `birthday`, `preference`, `current_interest`, `workplace`, `lives_in`; permanence `permanent` for identity facts, `stable` for workplace/location, `standard` for interests, `volatile` for temporary states
 
 ### Requirement: CRUD-to-SPO migration — relationship domain (bu-ddb.3)
-The relationship butler migrates 9 dedicated CRUD tables to temporal SPO facts. All facts use `scope='relationship'` and `entity_id = contact_entity_id` (resolved from `shared.contacts.entity_id` for each contact). Full predicate taxonomy and metadata schemas are in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
+The relationship butler migrates 9 dedicated CRUD tables to temporal SPO facts. All facts use `scope='relationship'` and `entity_id = contact_entity_id` (resolved from `public.contacts.entity_id` for each contact). Full predicate taxonomy and metadata schemas are in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
 
 #### Scenario: Contact entity resolution before fact storage
 - **WHEN** any relationship CRUD-migrated tool stores a fact for a contact
-- **THEN** the tool MUST resolve `contact_id → shared.contacts.entity_id`
-- **AND** if `shared.contacts.entity_id` is NULL, it MUST call `memory_entity_create(entity_type='person', name=contact.name)` and update `shared.contacts.entity_id`
+- **THEN** the tool MUST resolve `contact_id → public.contacts.entity_id`
+- **AND** if `public.contacts.entity_id` is NULL, it MUST call `memory_entity_create(entity_type='person', name=contact.name)` and update `public.contacts.entity_id`
 - **AND** the resolved `entity_id` MUST be used as `entity_id` for the fact; the contact's canonical name MUST be used as `subject`
 
 #### Scenario: Interaction tools as temporal fact wrappers
@@ -91,7 +91,7 @@ The relationship butler migrates 9 dedicated CRUD tables to temporal SPO facts. 
 - **AND** `feed_get` MUST query all temporal facts (`interaction_%`, `life_event`, `contact_note`, `activity`) for a contact entity ordered by `valid_at DESC`
 
 ### Requirement: Relationship Insight Scan Job
-The relationship butler's `insight-scan` job SHALL evaluate relationship domain data and produce insight candidates covering upcoming dates, stale contacts, pending gifts, and interaction milestones. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool — the butler does not write to `shared.insight_candidates` directly.
+The relationship butler's `insight-scan` job SHALL evaluate relationship domain data and produce insight candidates covering upcoming dates, stale contacts, pending gifts, and interaction milestones. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool — the butler does not write to `public.insight_candidates` directly.
 
 #### Scenario: Insight-scan job handler registration
 - **WHEN** the relationship butler starts

@@ -74,7 +74,7 @@ The new `docs/` taxonomy has 17 top-level categories organized by how a contribu
 | `modules/` | Pluggable capability units | Module system overview, then per-module: purpose, config, tools provided, DB tables, dependencies | Connector transport details, dashboard UI details | `docs/modules/memory.md`, `docs/modules/calendar.md`, `docs/modules/contacts.md`, `docs/modules/approval.md`, `docs/modules/knowledge_base/` |
 | `connectors/` | External transport adapters | Connector architecture overview, per-connector: setup, config, ingestion flow, cursor management, heartbeat | Switchboard routing logic (that's architecture), module internals | `docs/connectors/interface.md`, `docs/connectors/telegram_bot.md`, `docs/connectors/telegram_user_client.md`, `docs/connectors/gmail.md`, `docs/connectors/heartbeat.md`, `docs/connectors/statistics.md` |
 | `frontend/` | Dashboard UI | Purpose, information architecture, feature inventory, data access patterns, backend API contract | Backend implementation, module internals | `docs/frontend/*.md` (largely intact — already well-structured) |
-| `data_and_storage/` | Database, migrations, blob storage | PostgreSQL topology, shared schema, per-butler schemas, Alembic migration patterns, module migration conventions, blob storage, state store internals | Module-specific table details (those go in modules/) | *New content* + extracts from architecture docs |
+| `data_and_storage/` | Database, migrations, blob storage | PostgreSQL topology, public schema, per-butler schemas, Alembic migration patterns, module migration conventions, blob storage, state store internals | Module-specific table details (those go in modules/) | *New content* + extracts from architecture docs |
 | `identity_and_secrets/` | Who you are and how credentials work | Owner identity setup, contact system, credential store, OAuth flows (Google, CLI runtimes), env var management, secured contact_info, dashboard secrets management | Per-connector auth details (link to connectors/) | *New content* (extract from README + `docs/connectors/` credential sections) |
 | `api_and_protocols/` | MCP, ingestion, dashboard API surface | MCP tool registration patterns, ingestion envelope format (ingest.v1), dashboard REST API overview, SSE events, inter-butler communication model | Full API schema docs (those belong in code/OpenAPI) | `docs/connectors/interface.md` (protocol sections), `docs/switchboard/` docs |
 | `operations/` | Running Butlers in production | Docker deployment, docker-compose topology, Grafana/Tempo setup, environment variables, health monitoring, scaling notes, troubleshooting, log management, backup/restore | First-time dev setup (that's getting_started/), module development | *New content* (extract from README + docker-compose + Grafana configs) |
@@ -160,7 +160,7 @@ How to confirm this page is still accurate (e.g., "Run `butlers list` and verify
 | Concepts | Butler lifecycle (init → running → trigger → spawn → session → idle) |
 | Concepts | Module vs connector relationship |
 | Concepts | Trigger flow (external request → switchboard → routing → butler → response) |
-| Architecture | Database schema topology (shared schema + per-butler schemas) |
+| Architecture | Database schema topology (public schema + per-butler schemas) |
 | Architecture | Daemon startup sequence (12-step boot) |
 | Architecture | MCP tool registration flow |
 | Runtime | Spawner execution flow (lock → session → config gen → SDK invoke → parse → log) |

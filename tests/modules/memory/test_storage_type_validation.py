@@ -617,13 +617,13 @@ class TestEntityTypeFetchedInSameQuery:
             entity_id=entity_id,
         )
 
-        # Verify the first fetchrow call queries shared.entities with entity_type
+        # Verify the first fetchrow call queries public.entities with entity_type
         entity_calls = [
             c
             for c in conn.fetchrow.call_args_list
-            if "shared.entities" in (c.args[0] if c.args else "")
+            if "public.entities" in (c.args[0] if c.args else "")
         ]
-        assert entity_calls, "Expected a fetchrow call targeting shared.entities"
+        assert entity_calls, "Expected a fetchrow call targeting public.entities"
         entity_sql = entity_calls[0].args[0]
         assert "entity_type" in entity_sql, (
             "Entity existence check must fetch entity_type in the same query"
@@ -670,7 +670,7 @@ class TestEntityTypeFetchedInSameQuery:
         entity_calls = [
             c
             for c in conn.fetchrow.call_args_list
-            if "shared.entities" in (c.args[0] if c.args else "")
+            if "public.entities" in (c.args[0] if c.args else "")
         ]
         assert len(entity_calls) == 2, "Expected two entity existence fetchrow calls"
         for call in entity_calls:

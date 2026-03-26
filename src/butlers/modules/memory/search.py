@@ -786,7 +786,7 @@ async def _catalog_semantic_search(
     memory_type: str | None,
     limit: int,
 ) -> list[dict]:
-    """Semantic search on shared.memory_catalog via pgvector."""
+    """Semantic search on public.memory_catalog via pgvector."""
     embedding_str = str(query_embedding)
     params: list = [embedding_str, tenant_id]
     conditions = ["tenant_id = $2"]
@@ -799,7 +799,7 @@ async def _catalog_semantic_search(
     where = "WHERE " + " AND ".join(conditions)
     sql = f"""
         SELECT *, 1 - (embedding <=> $1) AS similarity
-        FROM shared.memory_catalog
+        FROM public.memory_catalog
         {where}
         ORDER BY embedding <=> $1
         LIMIT ${limit_idx}
@@ -816,7 +816,7 @@ async def _catalog_keyword_search(
     memory_type: str | None,
     limit: int,
 ) -> list[dict]:
-    """Full-text search on shared.memory_catalog via tsvector."""
+    """Full-text search on public.memory_catalog via tsvector."""
     cleaned_query = preprocess_search_query(query_text)
     if not cleaned_query:
         return []
@@ -836,7 +836,7 @@ async def _catalog_keyword_search(
         SELECT *,
                ts_rank(search_vector,
                        plainto_tsquery('{_CATALOG_TS_CONFIG}', $1)) AS rank
-        FROM shared.memory_catalog
+        FROM public.memory_catalog
         {where}
         ORDER BY rank DESC
         LIMIT ${limit_idx}
@@ -855,7 +855,7 @@ async def search_catalog(
     limit: int = 10,
     mode: str = "hybrid",
 ) -> list[dict]:
-    """Search ``shared.memory_catalog`` for cross-butler memory discovery.
+    """Search ``public.memory_catalog`` for cross-butler memory discovery.
 
     Reads from the shared catalog table which aggregates summary entries from
     all butler schemas.  Returns provenance pointers (source_schema,

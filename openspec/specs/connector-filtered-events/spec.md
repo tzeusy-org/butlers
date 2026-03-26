@@ -12,7 +12,7 @@ The `connectors` Postgres schema is a dedicated namespace for connector-owned pe
 - **WHEN** the butler database is initialized
 - **THEN** the `connectors` schema SHALL exist
 - **AND** connector processes SHALL have USAGE and CREATE privileges on the `connectors` schema
-- **AND** connector processes SHALL have SELECT privileges on the `shared` schema
+- **AND** connector processes SHALL have SELECT privileges on the `public` schema
 
 ### Requirement: Filtered Events Table
 The `connectors.filtered_events` table persists every message a connector observes but does not submit to the Switchboard. One row per filtered or errored message, with full payload for replay.

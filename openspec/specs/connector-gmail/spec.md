@@ -10,7 +10,7 @@ The Gmail connector runs as a single process that discovers and manages all conn
 
 #### Scenario: Multi-account discovery at startup
 - **WHEN** the Gmail connector starts
-- **THEN** it SHALL query `shared.google_accounts` for all rows with `status = 'active'` and `gmail.modify` or `gmail.readonly` in `granted_scopes`
+- **THEN** it SHALL query `public.google_accounts` for all rows with `status = 'active'` and `gmail.modify` or `gmail.readonly` in `granted_scopes`
 - **AND** for each qualifying account, it SHALL resolve credentials (`client_id`, `client_secret` from `butler_secrets`; `refresh_token` from the account's companion entity in `entity_info`)
 - **AND** it SHALL spawn an independent watch/poll loop per account
 - **AND** startup SHALL succeed even if some accounts fail credential resolution (degraded mode — failed accounts are logged and skipped)
@@ -365,7 +365,7 @@ The connector SHALL support discovering new or removed accounts without a full p
 
 #### Scenario: Periodic re-scan
 - **WHEN** the connector is running
-- **THEN** it SHALL re-query `shared.google_accounts` at a configurable interval (`GMAIL_ACCOUNT_RESCAN_INTERVAL_S`, default 300)
+- **THEN** it SHALL re-query `public.google_accounts` at a configurable interval (`GMAIL_ACCOUNT_RESCAN_INTERVAL_S`, default 300)
 - **AND** newly active accounts with Gmail scopes SHALL have loops spawned
 - **AND** accounts that are no longer active (revoked, deleted) SHALL have their loops gracefully stopped
 
@@ -385,7 +385,7 @@ Multiple Gmail connector processes can still run concurrently for horizontal sca
 
 #### Scenario: Per-account isolation across processes
 - **WHEN** multiple Gmail connector processes run
-- **THEN** each process discovers its own set of accounts from `shared.google_accounts`
+- **THEN** each process discovers its own set of accounts from `public.google_accounts`
 - **AND** if two processes discover the same account, they share the same endpoint identity and cursor — explicit coordination/lease ownership is required to avoid duplicate processing
 
 #### Scenario: Uniqueness boundary

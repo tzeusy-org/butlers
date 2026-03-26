@@ -31,15 +31,15 @@ The system SHALL compute a decay score for each contact by summing exponentially
 ---
 
 ### Requirement: Scoring eligibility — entity-contact linkage
-Dunbar scoring SHALL only apply to person-entities that have a linked contact record in `shared.contacts`.
+Dunbar scoring SHALL only apply to person-entities that have a linked contact record in `public.contacts`.
 
 #### Scenario: Person-entity with linked contact is scored
-- **WHEN** a person-entity has a non-NULL `shared.contacts.entity_id` linking it to a contact record
+- **WHEN** a person-entity has a non-NULL `public.contacts.entity_id` linking it to a contact record
 - **THEN** the entity MUST be included in Dunbar tier computation
 - **AND** interactions MUST be resolved via `subject='contact:{contact_id}'` where `contact_id` is the linked contact's ID
 
 #### Scenario: Person-entity without linked contact is unscored
-- **WHEN** a person-entity has no linked contact record in `shared.contacts`
+- **WHEN** a person-entity has no linked contact record in `public.contacts`
 - **THEN** the entity MUST have `dunbar_tier: null` and `dunbar_score: null`
 - **AND** the entity MUST be excluded from rank-based tier assignment
 

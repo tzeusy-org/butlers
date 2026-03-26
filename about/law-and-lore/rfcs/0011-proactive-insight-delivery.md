@@ -19,7 +19,7 @@ The insight delivery protocol solves this by centralizing delivery authority in 
 
 ### Three-Phase Pipeline
 
-The insight pipeline separates concerns into three phases with a staging table (`shared.insight_candidates`) as the serialization boundary between generation and delivery.
+The insight pipeline separates concerns into three phases with a staging table (`public.insight_candidates`) as the serialization boundary between generation and delivery.
 
 ```
 Phase 1: Generation                Phase 2: Brokering              Phase 3: Delivery
@@ -49,7 +49,7 @@ Phase 1: Generation                Phase 2: Brokering              Phase 3: Deli
 
 **Phase 1 — Generation.** Each butler's `insight-scan` scheduled task runs at its natural cadence (daily, staggered by butler). The job evaluates domain data and calls the Switchboard's `propose_insight_candidate()` MCP tool for each candidate. Butlers use the existing `dispatch_mode='job'` with `job_name='insight-scan'` — no changes to `core-scheduler` are required. If the tool returns `{"status": "filtered"}`, the butler skips remaining candidate generation (early exit on verbosity `off`).
 
-**Phase 2 — Brokering.** The `propose_insight_candidate()` tool on the Switchboard validates the candidate (priority range, dedup key format, non-empty message, future expiry), checks the global verbosity setting, and inserts a row into `shared.insight_candidates`. The `insight-delivery-cycle` scheduled task runs once daily (default 8:00 UTC) and orchestrates: expiry, cooldown filtering, deduplication, adaptive budget computation, top-B selection, delivery, cooldown recording, engagement tracking, and cleanup.
+**Phase 2 — Brokering.** The `propose_insight_candidate()` tool on the Switchboard validates the candidate (priority range, dedup key format, non-empty message, future expiry), checks the global verbosity setting, and inserts a row into `public.insight_candidates`. The `insight-delivery-cycle` scheduled task runs once daily (default 8:00 UTC) and orchestrates: expiry, cooldown filtering, deduplication, adaptive budget computation, top-B selection, delivery, cooldown recording, engagement tracking, and cleanup.
 
 **Phase 3 — Delivery.** Winners are delivered via `notify(intent='insight')` through the existing Switchboard-to-Messenger pipeline. Budget > 1 produces a single digest message; budget = 1 produces a standalone message. The Messenger treats `intent='insight'` as functionally equivalent to `intent='send'` for delivery mechanics, with optional visual differentiation.
 
@@ -92,10 +92,10 @@ On successful validation, the tool inserts a row with `origin_butler` set to the
 
 ### `insight.v1` Candidate Schema
 
-The `shared.insight_candidates` table is the staging area between generation and delivery.
+The `public.insight_candidates` table is the staging area between generation and delivery.
 
 ```sql
-CREATE TABLE shared.insight_candidates (
+CREATE TABLE public.insight_candidates (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     origin_butler   TEXT NOT NULL,
     priority        INTEGER NOT NULL CHECK (priority >= 1 AND priority <= 100),
@@ -113,15 +113,15 @@ CREATE TABLE shared.insight_candidates (
 );
 
 CREATE INDEX idx_insight_candidates_delivery
-    ON shared.insight_candidates (status, expires_at)
+    ON public.insight_candidates (status, expires_at)
     WHERE status = 'pending';
 
 CREATE INDEX idx_insight_candidates_dedup
-    ON shared.insight_candidates (dedup_key)
+    ON public.insight_candidates (dedup_key)
     WHERE status = 'pending';
 
 CREATE INDEX idx_insight_candidates_origin
-    ON shared.insight_candidates (origin_butler);
+    ON public.insight_candidates (origin_butler);
 ```
 
 **Field contracts:**
@@ -176,15 +176,15 @@ The first two segments (or three for 4-segment keys) use lowercase alphanumeric 
 
 The `insight-delivery-cycle` job runs as a daily scheduled task on the Switchboard (default cron: `0 8 * * *`). It executes the following steps in strict order:
 
-**Step 1 — Quiet hours check.** Read `shared.insight_settings`. Convert current time to the user's configured timezone. If the current time falls within `[quiet_start, quiet_end)`, skip the entire cycle. Candidates remain `pending` for the next non-quiet cycle.
+**Step 1 — Quiet hours check.** Read `public.insight_settings`. Convert current time to the user's configured timezone. If the current time falls within `[quiet_start, quiet_end)`, skip the entire cycle. Candidates remain `pending` for the next non-quiet cycle.
 
 **Step 2 — Expire old candidates.** Mark all candidates with `status='pending'` and `expires_at < now()` as `status='expired'`.
 
-**Step 3 — Cooldown filtering.** Exclude candidates whose `dedup_key` has an active cooldown in `shared.insight_cooldowns` (where `cooldown_until > now()`). Filtered candidates remain `pending` — they are not marked as filtered, because the cooldown may expire before the candidate does.
+**Step 3 — Cooldown filtering.** Exclude candidates whose `dedup_key` has an active cooldown in `public.insight_cooldowns` (where `cooldown_until > now()`). Filtered candidates remain `pending` — they are not marked as filtered, because the cooldown may expire before the candidate does.
 
 **Step 4 — Deduplication.** Within each `dedup_key` group among remaining candidates, retain only the highest-priority candidate. Break ties by `created_at` ascending. Mark losers as `status='filtered'`.
 
-**Step 5 — Compute effective budget.** Read the user's verbosity preset from `shared.insight_settings`. Map preset to base budget (`off`=0, `minimal`=1, `normal`=3, `verbose`=5, or a custom integer 1-10). Apply adaptive reduction based on the 14-day engagement rate (see Adaptive Delivery below). If effective budget is 0 (verbosity `off`), mark all remaining pending candidates as `status='filtered'` and return.
+**Step 5 — Compute effective budget.** Read the user's verbosity preset from `public.insight_settings`. Map preset to base budget (`off`=0, `minimal`=1, `normal`=3, `verbose`=5, or a custom integer 1-10). Apply adaptive reduction based on the 14-day engagement rate (see Adaptive Delivery below). If effective budget is 0 (verbosity `off`), mark all remaining pending candidates as `status='filtered'` and return.
 
 **Step 6 — Check already-delivered today.** Count candidates with `delivered_at` within the current calendar day (in the user's configured timezone, or UTC if none configured). Subtract from the effective budget to get the remaining delivery slots. If zero, return without delivery.
 
@@ -192,18 +192,18 @@ The `insight-delivery-cycle` job runs as a daily scheduled task on the Switchboa
 
 **Step 8 — Deliver.** If B > 1, compose a digest message and deliver via a single `notify(intent='insight')` call. If B = 1, deliver the single candidate as a standalone message with butler-origin prefix. On `notify` failure, the candidate's status remains `pending` and is retried next cycle. After 3 consecutive delivery failures for the same candidate, mark it `status='filtered'` with failure metadata.
 
-**Step 9 — Record cooldowns.** For each delivered candidate, insert a row into `shared.insight_cooldowns` with `cooldown_until = now() + cooldown_days`. If the candidate did not specify `cooldown_days`, use the default for its priority range (see Cooldown Tracking below).
+**Step 9 — Record cooldowns.** For each delivered candidate, insert a row into `public.insight_cooldowns` with `cooldown_until = now() + cooldown_days`. If the candidate did not specify `cooldown_days`, use the default for its priority range (see Cooldown Tracking below).
 
-**Step 10 — Record engagement tracking.** For each delivered candidate, insert a row into `shared.insight_engagement` with `delivered_at` and `engaged=FALSE`.
+**Step 10 — Record engagement tracking.** For each delivered candidate, insert a row into `public.insight_engagement` with `delivered_at` and `engaged=FALSE`.
 
-**Step 11 — Cleanup.** Delete non-pending candidates from `shared.insight_candidates` where `created_at` is older than 30 days. Delete cooldown entries from `shared.insight_cooldowns` where `cooldown_until` is older than 30 days in the past. Delete engagement entries from `shared.insight_engagement` where `delivered_at` is older than 30 days.
+**Step 11 — Cleanup.** Delete non-pending candidates from `public.insight_candidates` where `created_at` is older than 30 days. Delete cooldown entries from `public.insight_cooldowns` where `cooldown_until` is older than 30 days in the past. Delete engagement entries from `public.insight_engagement` where `delivered_at` is older than 30 days.
 
 ### Verbosity Presets and Budget
 
-User preferences are stored in `shared.insight_settings` (single-row table):
+User preferences are stored in `public.insight_settings` (single-row table):
 
 ```sql
-CREATE TABLE shared.insight_settings (
+CREATE TABLE public.insight_settings (
     id              INTEGER PRIMARY KEY DEFAULT 1,
     verbosity       TEXT NOT NULL DEFAULT 'minimal',
     custom_budget   INTEGER CHECK (custom_budget >= 1 AND custom_budget <= 10),
@@ -214,7 +214,7 @@ CREATE TABLE shared.insight_settings (
 );
 
 -- Seed the default row on migration
-INSERT INTO shared.insight_settings (id, verbosity) VALUES (1, 'minimal');
+INSERT INTO public.insight_settings (id, verbosity) VALUES (1, 'minimal');
 ```
 
 **Preset mapping:**
@@ -236,7 +236,7 @@ When verbosity is `off`, the `propose_insight_candidate()` tool returns `filtere
 After delivery, the system prevents re-delivery of insights with the same `dedup_key` for a configurable period.
 
 ```sql
-CREATE TABLE shared.insight_cooldowns (
+CREATE TABLE public.insight_cooldowns (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     dedup_key       TEXT NOT NULL,
     cooldown_until  TIMESTAMPTZ NOT NULL,
@@ -245,7 +245,7 @@ CREATE TABLE shared.insight_cooldowns (
 );
 
 CREATE INDEX idx_insight_cooldowns_active
-    ON shared.insight_cooldowns (dedup_key, cooldown_until)
+    ON public.insight_cooldowns (dedup_key, cooldown_until)
     WHERE cooldown_until > now();
 ```
 
@@ -268,18 +268,18 @@ The system tracks engagement and automatically reduces delivery frequency when t
 **Engagement tracking table:**
 
 ```sql
-CREATE TABLE shared.insight_engagement (
+CREATE TABLE public.insight_engagement (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    insight_id      UUID NOT NULL REFERENCES shared.insight_candidates(id),
+    insight_id      UUID NOT NULL REFERENCES public.insight_candidates(id),
     delivered_at    TIMESTAMPTZ NOT NULL,
     engaged         BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX idx_insight_engagement_window
-    ON shared.insight_engagement (delivered_at, engaged);
+    ON public.insight_engagement (delivered_at, engaged);
 ```
 
-**Engagement detection:** When the Switchboard processes any ingress request (a user message arriving on any channel), it checks `shared.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes. Matching rows are updated to `engaged=TRUE`. This check is a lightweight indexed query and does not delay ingress processing.
+**Engagement detection:** When the Switchboard processes any ingress request (a user message arriving on any channel), it checks `public.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes. Matching rows are updated to `engaged=TRUE`. This check is a lightweight indexed query and does not delay ingress processing.
 
 **Engagement rate computation:** The delivery cycle computes the engagement rate as a rolling 14-day window:
 
@@ -300,7 +300,7 @@ If no insights were delivered in the last 14 days, the engagement rate is treate
 
 **Auto-off on total disengagement:** When the engagement rate is 0.0 for 14 consecutive days (with at least 1 insight delivered per day during that period), the system:
 
-1. Sets `verbosity` to `off` in `shared.insight_settings`.
+1. Sets `verbosity` to `off` in `public.insight_settings`.
 2. Delivers a final notification via direct `notify(intent='send')` (not through the insight pipeline): "I've paused proactive insights since you haven't found them useful. You can re-enable them anytime."
 
 **No automatic increase:** If the user's engagement rate improves after a budget reduction, the effective budget does not automatically increase. The user must explicitly change their verbosity setting to restore the original budget. This prevents the system from oscillating between "reducing because ignored" and "increasing because engaged."
@@ -327,7 +327,7 @@ Both formats are delivered via `notify(intent='insight')`. The `metadata` field 
 
 ### Quiet Hours
 
-The user can configure quiet hours as `(quiet_start, quiet_end, quiet_timezone)` in `shared.insight_settings`. During quiet hours, the delivery cycle is skipped entirely. Candidates accumulate but are NOT burst-delivered after quiet hours end — the daily budget still applies at the next non-quiet cycle.
+The user can configure quiet hours as `(quiet_start, quiet_end, quiet_timezone)` in `public.insight_settings`. During quiet hours, the delivery cycle is skipped entirely. Candidates accumulate but are NOT burst-delivered after quiet hours end — the daily budget still applies at the next non-quiet cycle.
 
 If no quiet hours are configured, delivery proceeds at the scheduled time without time-based suppression.
 
@@ -348,7 +348,7 @@ The `notify` contract (RFC 0002, core tool) is extended with a fourth delivery i
 
 The following guarantees are structural — enforced by the broker's architecture, not by advisory guidelines that individual butlers could ignore.
 
-1. **Single entry point.** Candidates enter only through `propose_insight_candidate()`. Direct writes to `shared.insight_candidates` are prohibited by Rule 3 (inter-butler communication is MCP-only through the Switchboard). The broker is the sole writer.
+1. **Single entry point.** Candidates enter only through `propose_insight_candidate()`. Direct writes to `public.insight_candidates` are prohibited by Rule 3 (inter-butler communication is MCP-only through the Switchboard). The broker is the sole writer.
 
 2. **Global budget cap.** The delivery cycle enforces a hard ceiling on daily deliveries. No butler can exceed or circumvent this limit because butlers do not deliver insights — the broker does.
 
@@ -366,7 +366,7 @@ The following guarantees are structural — enforced by the broker's architectur
 
 Engagement detection is a side effect of the Switchboard's existing ingress processing path:
 
-1. When the Switchboard accepts an ingress request (any user message on any channel), it queries `shared.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes.
+1. When the Switchboard accepts an ingress request (any user message on any channel), it queries `public.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes.
 2. Matching rows are updated to `engaged=TRUE`.
 3. This query uses the `idx_insight_engagement_window` index and is bounded to a narrow time window (at most 60 minutes of rows). It does not scan the full table.
 4. The engagement check does not delay or block ingress processing. It runs as a lightweight post-acceptance side effect.
@@ -378,7 +378,7 @@ The engagement signal is intentionally rough — "any message within 60 minutes"
 - **RFC 0001:** Butler insight-scan tasks use the existing `dispatch_mode='job'` scheduler infrastructure. No changes to the daemon lifecycle are required.
 - **RFC 0002:** `propose_insight_candidate` is registered as a module tool on the Switchboard via the `Module.register_tools()` interface. The `notify` core tool is extended with `intent='insight'`. The insight broker implements the `Module` abstract base class.
 - **RFC 0003:** Candidate submission flows through the Switchboard as an MCP tool call, consistent with the Switchboard's role as the single coordination point. The broker module runs within the Switchboard daemon alongside routing infrastructure.
-- **RFC 0006:** `shared.insight_candidates`, `shared.insight_cooldowns`, `shared.insight_engagement`, and `shared.insight_settings` are created in the `shared` schema via an Alembic migration, following the existing shared-schema pattern. All butlers can read these tables via their `search_path`; only the Switchboard's broker module writes to them.
+- **RFC 0006:** `public.insight_candidates`, `public.insight_cooldowns`, `public.insight_engagement`, and `public.insight_settings` are created in the `public` schema via an Alembic migration, following the existing shared-schema pattern. All butlers can read these tables via their `search_path`; only the Switchboard's broker module writes to them.
 - **RFC 0009:** The delivery cycle MAY check the situational context bus for `dnd` or `sleeping` signals as an additional suppression layer, complementing quiet hours. This integration is optional and deferred to a follow-up.
 
 ## Alternatives Considered
@@ -389,7 +389,7 @@ The engagement signal is intentionally rough — "any message within 60 minutes"
 
 **LLM-based re-ranking of candidates.** Rejected — butler-local priority assignment is sufficient because each butler has domain expertise to judge urgency. The broker's job is cross-domain arbitration via budget, not second-guessing priorities. Simple integer comparison is transparent and debuggable. Deferred to a follow-up if engagement data reveals systematic priority mis-calibration.
 
-**Direct DB writes to shared.insight_candidates.** Rejected — this violates Rule 3 (inter-butler communication must go through the Switchboard), bypasses centralized validation, and prevents write serialization. Routing through the MCP tool ensures every candidate submission is validated, logged, and auditable.
+**Direct DB writes to public.insight_candidates.** Rejected — this violates Rule 3 (inter-butler communication must go through the Switchboard), bypasses centralized validation, and prevents write serialization. Routing through the MCP tool ensures every candidate submission is validated, logged, and auditable.
 
 **Per-butler delivery budgets in addition to the global budget.** Rejected for initial implementation — adds complexity without clear benefit. A pathological case where one butler dominates every cycle because its domain consistently produces higher-priority candidates may actually reflect genuine priority. Monitor engagement data per origin butler before adding per-butler caps.
 

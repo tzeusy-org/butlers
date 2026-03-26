@@ -5,7 +5,7 @@
 
 ## Summary
 
-A shared awareness layer enabling butlers to read and write the user's current situational context (traveling, sleeping, sick, in a meeting, focused, etc.) via a `shared.user_context` table. Context signals have TTLs and expire automatically. Any butler can read the context table; only specific butlers are authorized to write specific signal types. Context checks are lightweight SQL queries performed before action, not a push/subscription model.
+A shared awareness layer enabling butlers to read and write the user's current situational context (traveling, sleeping, sick, in a meeting, focused, etc.) via a `public.user_context` table. Context signals have TTLs and expire automatically. Any butler can read the context table; only specific butlers are authorized to write specific signal types. Context checks are lightweight SQL queries performed before action, not a push/subscription model.
 
 ## Motivation
 
@@ -22,10 +22,10 @@ A shared context bus lets each butler check the user's current situation before 
 
 ## Design
 
-### shared.user_context Table
+### public.user_context Table
 
 ```sql
-CREATE TABLE shared.user_context (
+CREATE TABLE public.user_context (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     signal_type     TEXT NOT NULL,         -- enum value from signal vocabulary
     value           TEXT,                  -- optional qualifier (e.g., "Paris" for traveling, "dentist" for appointment)
@@ -39,7 +39,7 @@ CREATE TABLE shared.user_context (
 );
 
 CREATE INDEX idx_user_context_active
-    ON shared.user_context (signal_type)
+    ON public.user_context (signal_type)
     WHERE superseded_at IS NULL AND expires_at > now();
 ```
 
@@ -95,7 +95,7 @@ class ContextSignal(str, Enum):
 
 ### Read/Write Permissions
 
-**Read:** All butlers can read the full `shared.user_context` table. Context is shared awareness by definition.
+**Read:** All butlers can read the full `public.user_context` table. Context is shared awareness by definition.
 
 **Write:** Only specific butlers may write specific signal types. This prevents conflicting assertions (e.g., the Finance butler should not be asserting the user is exercising).
 
@@ -145,7 +145,7 @@ If a butler omits a TTL, the default is applied. If a butler requests a TTL exce
 
 ### Context Query API
 
-Butlers check context via two lightweight functions, both performing simple SQL queries against the shared schema.
+Butlers check context via two lightweight functions, both performing simple SQL queries against the public schema.
 
 #### get_active_context()
 
@@ -157,7 +157,7 @@ async def get_active_context(pool: asyncpg.Pool) -> list[ContextEntry]:
     rows = await pool.fetch("""
         SELECT signal_type, value, set_by_butler, set_at, expires_at,
                confidence, metadata
-        FROM shared.user_context
+        FROM public.user_context
         WHERE superseded_at IS NULL AND expires_at > now()
         ORDER BY confidence DESC, set_at DESC
     """)
@@ -177,7 +177,7 @@ async def is_user_in_context(
     """Check if the user is currently in a specific context."""
     row = await pool.fetchval("""
         SELECT EXISTS(
-            SELECT 1 FROM shared.user_context
+            SELECT 1 FROM public.user_context
             WHERE signal_type = $1
               AND superseded_at IS NULL
               AND expires_at > now()
@@ -205,7 +205,7 @@ async def set_context(
     _check_write_permission(butler_name, signal_type)
     expires_at = _clamp_ttl(signal_type, expires_at)
     await pool.execute("""
-        INSERT INTO shared.user_context
+        INSERT INTO public.user_context
             (signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata)
         VALUES ($1, $2, $3, now(), $4, $5, $6)
         ON CONFLICT (signal_type, set_by_butler) DO UPDATE SET
@@ -231,7 +231,7 @@ async def clear_context(
 ) -> None:
     """Explicitly clear a context signal set by this butler."""
     await pool.execute("""
-        UPDATE shared.user_context
+        UPDATE public.user_context
         SET superseded_at = now()
         WHERE signal_type = $1
           AND set_by_butler = $2
@@ -270,16 +270,16 @@ If butlers disagree (health says sleeping, general says not sleeping via clearin
 
 ### Migration
 
-The `shared.user_context` table is created by a shared-schema migration in `alembic/versions/core/`:
+The `public.user_context` table is created by a shared-schema migration in `alembic/versions/core/`:
 
 ```python
-"""add user_context table to shared schema"""
+"""add user_context table to public schema"""
 revision = "core_XXX"
 down_revision = "<previous_core_revision>"
 
 def upgrade() -> None:
     op.execute("""
-        CREATE TABLE IF NOT EXISTS shared.user_context (
+        CREATE TABLE IF NOT EXISTS public.user_context (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             signal_type     TEXT NOT NULL,
             value           TEXT,
@@ -294,12 +294,12 @@ def upgrade() -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_user_context_active
-            ON shared.user_context (signal_type)
+            ON public.user_context (signal_type)
             WHERE superseded_at IS NULL AND expires_at > now();
     """)
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS shared.user_context CASCADE")
+    op.execute("DROP TABLE IF EXISTS public.user_context CASCADE")
 ```
 
 ## Integration
@@ -307,7 +307,7 @@ def downgrade() -> None:
 - **RFC 0001:** Context query functions are initialized at daemon startup (phase 8b, alongside credential store). No background tasks are required for the pull-based model.
 - **RFC 0002:** Butlers MAY expose MCP tools for setting and querying context. A `check_context` tool gives LLM sessions direct access to situational awareness.
 - **RFC 0004:** Context preamble complements the identity preamble. Both are prepended to routed messages when available.
-- **RFC 0006:** The `shared.user_context` table follows the existing shared schema pattern. All butlers read it via their `search_path`. Write access is enforced at the application level, not the database level, consistent with the current shared schema access model.
+- **RFC 0006:** The `public.user_context` table follows the existing public schema pattern. All butlers read it via their `search_path`. Write access is enforced at the application level, not the database level, consistent with the current public schema access model.
 - **RFC 0007:** The dashboard can expose a context timeline view showing active and historical signals.
 
 ## Alternatives Considered

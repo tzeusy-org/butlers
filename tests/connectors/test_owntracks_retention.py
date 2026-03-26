@@ -215,7 +215,7 @@ class TestOwnTracksRetentionPurgeOnce:
         assert "received_at" in executed_sql
 
     async def test_purge_once_targets_shared_ingestion_events(self) -> None:
-        """purge_once() SQL targets shared.ingestion_events."""
+        """purge_once() SQL targets public.ingestion_events."""
         pool, conn = _make_pool("DELETE 0")
         config = OwnTracksRetentionConfig(retention_days=30)
         retention = OwnTracksRetention(config, pool)
@@ -223,7 +223,7 @@ class TestOwnTracksRetentionPurgeOnce:
         await retention.purge_once()
 
         executed_sql: str = conn.execute.call_args[0][0]
-        assert "shared.ingestion_events" in executed_sql
+        assert "public.ingestion_events" in executed_sql
 
     async def test_purge_once_propagates_db_errors(self) -> None:
         """purge_once() re-raises database exceptions."""

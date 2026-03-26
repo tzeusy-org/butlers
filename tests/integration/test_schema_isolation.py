@@ -1,7 +1,7 @@
 """Integration tests for per-butler schema isolation.
 
 Proves that the one-db/multi-schema topology enforces write isolation between
-butler schemas while keeping the shared schema visible from both paths.
+butler schemas while keeping the public schema visible from both paths.
 
 The search_path logic under test lives in ``butlers.db.schema_search_path``.
 """
@@ -65,7 +65,7 @@ async def _make_schema_pool(
 
 @pytest.fixture(scope="module")
 async def isolated_db(postgres_container):
-    """Create a fresh database with butler_alpha, butler_beta, and shared schemas.
+    """Create a fresh database with butler_alpha and butler_beta schemas.
 
     Yields the database name; teardown closes the admin connection.
     """
@@ -90,7 +90,7 @@ async def isolated_db(postgres_container):
     try:
         await admin_pool.execute("CREATE SCHEMA IF NOT EXISTS butler_alpha")
         await admin_pool.execute("CREATE SCHEMA IF NOT EXISTS butler_beta")
-        await admin_pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # public schema always exists; no need to create it.
 
         # Per-butler private table (same name in both schemas — tests that writes
         # to one schema are not visible through the other schema's search_path).
@@ -102,14 +102,14 @@ async def isolated_db(postgres_container):
                 )
             """)
 
-        # Shared table — must be visible from both butler search paths.
+        # Public table — must be visible from both butler search paths.
         await admin_pool.execute("""
-            CREATE TABLE shared.global_contacts (
+            CREATE TABLE public.global_contacts (
                 id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL
             )
         """)
-        await admin_pool.execute("INSERT INTO shared.global_contacts (name) VALUES ($1)", "Alice")
+        await admin_pool.execute("INSERT INTO public.global_contacts (name) VALUES ($1)", "Alice")
     finally:
         await admin_pool.close()
 
@@ -168,23 +168,23 @@ class TestSchemaIsolation:
             "butler_alpha should not see rows inserted via butler_beta's search path"
         )
 
-    async def test_shared_schema_visible_from_alpha(self, alpha_pool):
-        """The shared schema's global_contacts table must be queryable from butler_alpha's path."""
+    async def test_public_schema_visible_from_alpha(self, alpha_pool):
+        """The public schema's global_contacts table must be queryable from butler_alpha's path."""
         row = await alpha_pool.fetchrow("SELECT name FROM global_contacts WHERE name = 'Alice'")
-        assert row is not None, "butler_alpha should be able to read from shared.global_contacts"
+        assert row is not None, "butler_alpha should be able to read from public.global_contacts"
 
-    async def test_shared_schema_visible_from_beta(self, beta_pool):
-        """The shared schema's global_contacts table must be queryable from butler_beta's path."""
+    async def test_public_schema_visible_from_beta(self, beta_pool):
+        """The public schema's global_contacts table must be queryable from butler_beta's path."""
         row = await beta_pool.fetchrow("SELECT name FROM global_contacts WHERE name = 'Alice'")
-        assert row is not None, "butler_beta should be able to read from shared.global_contacts"
+        assert row is not None, "butler_beta should be able to read from public.global_contacts"
 
-    async def test_shared_write_visible_from_both_schemas(self, alpha_pool, beta_pool):
-        """A row written to shared via alpha's path must be readable via beta's path."""
+    async def test_public_write_visible_from_both_schemas(self, alpha_pool, beta_pool):
+        """A row written to public via alpha's path must be readable via beta's path."""
         await alpha_pool.execute("INSERT INTO global_contacts (name) VALUES ($1)", "Bob")
 
         beta_names = await beta_pool.fetch("SELECT name FROM global_contacts WHERE name = 'Bob'")
         assert len(beta_names) == 1, (
-            "A row written to shared via butler_alpha must be visible via butler_beta"
+            "A row written to public via butler_alpha must be visible via butler_beta"
         )
 
     async def test_schema_search_path_builder(self):
@@ -192,16 +192,16 @@ class TestSchemaIsolation:
         from butlers.db import schema_search_path
 
         path = schema_search_path("my_butler")
-        assert path == "my_butler,shared,public"
+        assert path == "my_butler,public"
 
-    async def test_schema_search_path_deduplicates_shared(self):
-        """schema_search_path() deduplicates if schema name is 'shared'."""
+    async def test_schema_search_path_deduplicates_public(self):
+        """schema_search_path() deduplicates if schema name is 'public'."""
         from butlers.db import schema_search_path
 
-        path = schema_search_path("shared")
-        # 'shared' should appear only once; no duplicate in the path
+        path = schema_search_path("public")
+        # 'public' should appear only once; no duplicate in the path
         parts = path.split(",")
-        assert parts.count("shared") == 1
+        assert parts.count("public") == 1
 
     async def test_schema_search_path_none_returns_none(self):
         """schema_search_path() returns None for None or blank schema."""

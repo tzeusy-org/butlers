@@ -60,7 +60,7 @@ def _memory_pools(db: DatabaseManager) -> list[tuple[str, object]]:
 def _any_pool(db: DatabaseManager) -> object:
     """Return any available pool for querying shared schema tables.
 
-    Since shared.entities is accessible from every butler's pool, we just
+    Since public.entities is accessible from every butler's pool, we just
     need one working connection.  Raises HTTPException(503) if none available.
     """
     for name in _memory_pool_names(db):
@@ -130,7 +130,7 @@ async def _resolve_entity_names(db: DatabaseManager, facts: list[Fact]) -> list[
         return facts
     pool = _any_pool(db)
     rows = await pool.fetch(
-        "SELECT id, canonical_name FROM shared.entities WHERE id = ANY($1)",
+        "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1)",
         [_uuid.UUID(eid) for eid in entity_ids],
     )
     name_map = {str(r["id"]): r["canonical_name"] for r in rows}
@@ -749,7 +749,7 @@ async def list_entities(
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[EntitySummary]:
-    """List entities from shared.entities with optional search and type filter.
+    """List entities from public.entities with optional search and type filter.
 
     Sort order: person-entities first (by role priority, then Dunbar score
     descending), followed by non-person entities (alphabetical).  Search
@@ -795,7 +795,7 @@ async def list_entities(
 
     total = (
         await pool.fetchval(
-            f"SELECT count(*) FROM shared.entities e{where}",
+            f"SELECT count(*) FROM public.entities e{where}",
             *args,
         )
         or 0
@@ -806,14 +806,14 @@ async def list_entities(
     rows = await pool.fetch(
         f"SELECT e.id, e.canonical_name, e.entity_type, e.aliases,"
         f" e.created_at, e.updated_at,"
-        f" (SELECT c.id FROM shared.contacts c"
+        f" (SELECT c.id FROM public.contacts c"
         f"  WHERE c.entity_id = e.id LIMIT 1"
         f" ) AS linked_contact_id,"
         f" e.roles AS linked_contact_roles,"
         f" COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified,"
         f" e.metadata->>'source_butler' AS source_butler,"
         f" e.metadata->>'source_scope' AS source_scope"
-        f" FROM shared.entities e{where}",
+        f" FROM public.entities e{where}",
         *args,
     )
 
@@ -897,14 +897,14 @@ async def get_entity(
         " e.aliases, e.metadata,"
         " e.created_at, e.updated_at,"
         " COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified,"
-        " (SELECT c.id FROM shared.contacts c"
+        " (SELECT c.id FROM public.contacts c"
         "  WHERE c.entity_id = e.id LIMIT 1"
         " ) AS linked_contact_id,"
-        " (SELECT c.name FROM shared.contacts c"
+        " (SELECT c.name FROM public.contacts c"
         "  WHERE c.entity_id = e.id LIMIT 1"
         " ) AS linked_contact_name,"
         " e.roles AS linked_contact_roles"
-        " FROM shared.entities e"
+        " FROM public.entities e"
         " WHERE e.id = $1",
         eid,
     )
@@ -948,7 +948,7 @@ async def get_entity(
     try:
         info_rows = await pool.fetch(
             "SELECT id, type, value, label, is_primary, secured"
-            " FROM shared.entity_info"
+            " FROM public.entity_info"
             " WHERE entity_id = $1"
             " ORDER BY type",
             eid,
@@ -1061,7 +1061,7 @@ async def update_entity(
     sets.append("updated_at = now()")
 
     row = await pool.fetchrow(
-        f"UPDATE shared.entities SET {', '.join(sets)}"
+        f"UPDATE public.entities SET {', '.join(sets)}"
         f" WHERE id = $1"
         f" RETURNING id, canonical_name, entity_type, aliases, roles,"
         f" metadata, created_at, updated_at",
@@ -1114,17 +1114,17 @@ async def set_linked_contact(
     cid = _uuid.UUID(body.contact_id)
 
     # Verify entity exists
-    entity = await pool.fetchval("SELECT id FROM shared.entities WHERE id = $1", eid)
+    entity = await pool.fetchval("SELECT id FROM public.entities WHERE id = $1", eid)
     if entity is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Verify contact exists
-    contact = await pool.fetchval("SELECT id FROM shared.contacts WHERE id = $1", cid)
+    contact = await pool.fetchval("SELECT id FROM public.contacts WHERE id = $1", cid)
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found")
 
     await pool.execute(
-        "UPDATE shared.contacts SET entity_id = $1, updated_at = now() WHERE id = $2",
+        "UPDATE public.contacts SET entity_id = $1, updated_at = now() WHERE id = $2",
         eid,
         cid,
     )
@@ -1205,7 +1205,7 @@ async def merge_entity(
     # which would bypass the deletion restriction on owner entities.
     # Merging INTO the owner (as target) is allowed since the target survives.
     row = await pool.fetchrow(
-        "SELECT roles FROM shared.entities WHERE id = $1",
+        "SELECT roles FROM public.entities WHERE id = $1",
         _uuid.UUID(source_id),
     )
     if row and "owner" in (list(row["roles"]) if row["roles"] else []):
@@ -1230,7 +1230,7 @@ async def merge_entity(
 
     # Re-link contacts from source entity to target entity
     await pool.execute(
-        "UPDATE shared.contacts SET entity_id = $1, updated_at = now() WHERE entity_id = $2",
+        "UPDATE public.contacts SET entity_id = $1, updated_at = now() WHERE entity_id = $2",
         _uuid.UUID(target_id),
         _uuid.UUID(source_id),
     )
@@ -1265,7 +1265,7 @@ async def delete_entity(
     eid = _uuid.UUID(entity_id)
 
     row = await pool.fetchrow(
-        "SELECT id, roles FROM shared.entities WHERE id = $1",
+        "SELECT id, roles FROM public.entities WHERE id = $1",
         eid,
     )
     if row is None:
@@ -1303,7 +1303,7 @@ async def delete_entity(
 
     deleted_at = datetime.now(UTC).isoformat()
     await pool.execute(
-        "UPDATE shared.entities"
+        "UPDATE public.entities"
         " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,"
         " updated_at = now()"
         " WHERE id = $1",
@@ -1313,7 +1313,7 @@ async def delete_entity(
 
     # Unlink any contacts referencing this entity
     await pool.execute(
-        "UPDATE shared.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
+        "UPDATE public.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
         eid,
     )
 
@@ -1335,7 +1335,7 @@ async def unlink_contact(
     eid = _uuid.UUID(entity_id)
 
     await pool.execute(
-        "UPDATE shared.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
+        "UPDATE public.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
         eid,
     )
 
@@ -1364,7 +1364,7 @@ async def promote_entity(
     # Atomically promote: only update if the entity is currently unidentified.
     # A single conditional UPDATE avoids the TOCTOU race between SELECT and UPDATE.
     updated_row = await pool.fetchrow(
-        "UPDATE shared.entities"
+        "UPDATE public.entities"
         " SET metadata = metadata - 'unidentified',"
         " updated_at = now()"
         " WHERE id = $1 AND (metadata->>'unidentified')::boolean IS TRUE"
@@ -1375,7 +1375,7 @@ async def promote_entity(
 
     if updated_row is None:
         # No rows updated — either the entity doesn't exist or it isn't unidentified.
-        exists = await pool.fetchval("SELECT 1 FROM shared.entities WHERE id = $1", eid)
+        exists = await pool.fetchval("SELECT 1 FROM public.entities WHERE id = $1", eid)
         if not exists:
             raise HTTPException(status_code=404, detail="Entity not found")
         raise HTTPException(status_code=409, detail="Entity is not unidentified")

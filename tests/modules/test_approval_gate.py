@@ -186,13 +186,13 @@ class MockPool:
             action_id = args[0]
             row = self.pending_actions.get(action_id)
             return dict(row) if row else None
-        # shared.contact_info JOIN shared.contacts lookup (channel-based)
-        if "shared.contact_info" in query and args and len(args) >= 2:
+        # public.contact_info JOIN public.contacts lookup (channel-based)
+        if "public.contact_info" in query and args and len(args) >= 2:
             channel_type = str(args[0])
             channel_value = str(args[1])
             return self._contact_info.get((channel_type, channel_value))
-        # shared.contacts lookup by contact_id UUID (direct lookup)
-        if "shared.contacts" in query and "WHERE id" in query:
+        # public.contacts lookup by contact_id UUID (direct lookup)
+        if "public.contacts" in query and "WHERE id" in query:
             return None
         return None
 

@@ -8,7 +8,7 @@ The Education butler (port 41107) is a personalized tutor with spaced repetition
 
 ### Requirement: Education Butler Identity and Runtime
 
-The education butler SHALL be configured with the correct port, description, complexity requirements, and concurrency settings matching the designed identity. The model catalog (`shared.model_catalog` + `shared.butler_model_overrides`) is the authoritative source for model selection; `butler.toml` contains only seed/fallback values.
+The education butler SHALL be configured with the correct port, description, complexity requirements, and concurrency settings matching the designed identity. The model catalog (`public.model_catalog` + `public.butler_model_overrides`) is the authoritative source for model selection; `butler.toml` contains only seed/fallback values.
 
 #### Scenario: Identity and port
 
@@ -44,9 +44,9 @@ The education butler SHALL use the consolidated `butlers` PostgreSQL database wi
 #### Scenario: Schema isolation enforced at query time
 
 - **WHEN** the education butler executes SQL queries
-- **THEN** the effective search path MUST be `education, shared, public`
+- **THEN** the effective search path MUST be `education, public`
 - **AND** education-specific tables (mind_maps, mind_map_nodes, mind_map_edges, quiz_responses, analytics_snapshots) MUST reside in the `education` schema
-- **AND** shared identity tables (contacts, contact_info) MUST reside in the `shared` schema
+- **AND** shared identity tables (contacts, contact_info) MUST reside in the `public` schema
 
 #### Scenario: Alembic migration file exists for the education schema
 

@@ -49,17 +49,17 @@ The `CredentialStore` class provides async CRUD operations on the `butler_secret
 - **THEN** the `butler_secrets` table and `ix_butler_secrets_category` index are created
 
 ### Requirement: Google OAuth Credential Lifecycle
-Google credentials are split across two stores: app credentials (client_id, client_secret, scope) in `butler_secrets` under the `google` category, and the refresh token in `shared.entity_info` on the account's companion entity (resolved via `shared.google_accounts`). The `GoogleCredentials` Pydantic model validates non-empty fields. Secret values (client_secret, refresh_token) are redacted in `__repr__` and `__str__`.
+Google credentials are split across two stores: app credentials (client_id, client_secret, scope) in `butler_secrets` under the `google` category, and the refresh token in `public.entity_info` on the account's companion entity (resolved via `public.google_accounts`). The `GoogleCredentials` Pydantic model validates non-empty fields. Secret values (client_secret, refresh_token) are redacted in `__repr__` and `__str__`.
 
 #### Scenario: Store full Google credentials
 - **WHEN** `store_google_credentials(store, client_id, client_secret, refresh_token, scope, account=<email_or_id>)` is called
 - **THEN** app credentials are upserted in `butler_secrets` with keys `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_SCOPES`
 - **AND** the `account` parameter is resolved to a `google_accounts` row and its companion `entity_id`
-- **AND** the refresh token is upserted in `shared.entity_info` on the companion entity
+- **AND** the refresh token is upserted in `public.entity_info` on the companion entity
 
 #### Scenario: Store credentials with account=None (primary)
 - **WHEN** `store_google_credentials(store, ..., account=None)` is called
-- **THEN** the primary account is resolved from `shared.google_accounts WHERE is_primary = true`
+- **THEN** the primary account is resolved from `public.google_accounts WHERE is_primary = true`
 - **AND** credentials are stored against the primary account's companion entity
 
 #### Scenario: Load Google credentials with account selector

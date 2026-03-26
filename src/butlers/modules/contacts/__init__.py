@@ -788,7 +788,7 @@ class ContactsModule(Module):
         """Resolve Google OAuth credentials from DB-backed credential store.
 
         When *account* is provided, credentials are resolved for that specific
-        Google account from ``shared.google_accounts`` and its companion
+        Google account from ``public.google_accounts`` and its companion
         entity_info.  Otherwise, the primary account (via owner entity_info) is
         used for backward compatibility.
 
@@ -824,7 +824,7 @@ class ContactsModule(Module):
 
         if pool is not None and account:
             # Account-aware: resolve refresh token from the companion entity
-            # for the specific Google account row in shared.google_accounts.
+            # for the specific Google account row in public.google_accounts.
             from butlers.google_account_registry import (
                 GoogleAccountNotFoundError,
                 get_google_account,
@@ -855,7 +855,7 @@ class ContactsModule(Module):
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
                     """
-                    SELECT value FROM shared.entity_info
+                    SELECT value FROM public.entity_info
                     WHERE entity_id = $1 AND type = 'google_oauth_refresh'
                     LIMIT 1
                     """,
@@ -906,7 +906,7 @@ class ContactsModule(Module):
         """Create and validate a TelegramContactsProvider from owner entity_info.
 
         Resolves telegram_api_id, telegram_api_hash, and telegram_user_session
-        from the owner entity's shared.entity_info entries.
+        from the owner entity's public.entity_info entries.
         """
         if pool is None:
             raise RuntimeError(
@@ -958,7 +958,7 @@ async def _enrich_telegram_chat_ids(provider: TelegramContactsProvider, pool: An
     """Post-sync enrichment: resolve private chat IDs and write to contact_info.
 
     Calls provider.enrich_chat_ids() to get {user_id: chat_id} mapping from
-    Telegram dialogs, then upserts telegram_chat_id entries in shared.contact_info
+    Telegram dialogs, then upserts telegram_chat_id entries in public.contact_info
     for each contact matched via contacts_source_links.
     """
     try:
@@ -987,10 +987,10 @@ async def _enrich_telegram_chat_ids(provider: TelegramContactsProvider, pool: An
         local_contact_id = row["local_contact_id"]
         chat_id_str = str(chat_id)
 
-        # Upsert telegram_chat_id in shared.contact_info
+        # Upsert telegram_chat_id in public.contact_info
         await pool.execute(
             """
-            INSERT INTO shared.contact_info (contact_id, type, value, label, is_primary)
+            INSERT INTO public.contact_info (contact_id, type, value, label, is_primary)
             VALUES ($1, 'telegram_chat_id', $2, NULL, false)
             ON CONFLICT DO NOTHING
             """,

@@ -8,7 +8,7 @@ The memory module's original improvement plan (memory_improvements.md) has been 
 - **Fix consolidation tenant grouping**: The consolidation runner groups episodes by `butler` only, not `(tenant_id, butler)`, mixing tenants in multi-tenant deployments.
 - **Fix consolidation executor tenant propagation**: `execute_consolidation()` calls `store_fact()`/`store_rule()` without `tenant_id`/`request_id`, so consolidation-derived knowledge loses its tenant lineage.
 - **Fix memory_events tenant_id in consolidation paths**: Both success and failure event inserts from consolidation omit `tenant_id`.
-- **Add `shared.memory_catalog` migration**: Runtime code references this table for discovery writes and searches, but no migration creates it.
+- **Add `public.memory_catalog` migration**: Runtime code references this table for discovery writes and searches, but no migration creates it.
 - **Add migration integration tests**: Current migration tests only inspect source code — they don't apply migrations to a real PostgreSQL schema, so code-vs-schema drift is invisible to CI.
 - **Add memory_events enrichment columns**: `request_id`, `memory_type`, `memory_id`, `actor_butler` were planned but never added.
 - **Add `embedding_versions` table**: Planned for tracking embedding model changes; not yet created.
@@ -17,7 +17,7 @@ The memory module's original improvement plan (memory_improvements.md) has been 
 
 ### New Capabilities
 
-- `memory-catalog-schema`: Migration creating `shared.memory_catalog` table to back the existing runtime catalog code.
+- `memory-catalog-schema`: Migration creating `public.memory_catalog` table to back the existing runtime catalog code.
 - `memory-migration-integration-tests`: Real-DB migration tests that apply the full mem chain and verify schema correctness.
 - `memory-events-enrichment`: Enriched audit columns on `memory_events` and the `embedding_versions` tracking table.
 
@@ -28,6 +28,6 @@ The memory module's original improvement plan (memory_improvements.md) has been 
 ## Impact
 
 - **Code**: `storage.py` (episode INSERT), `consolidation.py` (grouping logic, event inserts), `consolidation_executor.py` (signature + store calls)
-- **Migrations**: New mem_021 (events enrichment + embedding_versions), new core/memory migration for `shared.memory_catalog`
+- **Migrations**: New mem_021 (events enrichment + embedding_versions), new core/memory migration for `public.memory_catalog`
 - **Tests**: New migration integration test suite using `fresh_migration_db` fixture; updated consolidation tests for tenant safety
 - **APIs/MCP tools**: No surface changes — all fixes are internal correctness

@@ -12,9 +12,9 @@ The Butlers knowledge graph uses **entities as the universal identity anchor**. 
 
 The knowledge base is not a standalone module. It is the data model that the Memory module reads and writes, and that other modules (Contacts, Health, Finance, Relationship) attach to via foreign keys.
 
-## Core: shared.entities
+## Core: public.entities
 
-The `shared.entities` table is the single source of identity across all butlers. Every person, organization, place, or device in the system is an entity.
+The `public.entities` table is the single source of identity across all butlers. Every person, organization, place, or device in the system is an entity.
 
 | Column | Type | Purpose |
 |--------|------|---------|
@@ -120,14 +120,14 @@ Overlays are domain-specific data models that attach to entities via foreign key
 
 ### Contacts Overlay (CRM)
 
-`shared.contacts` is linked via `contacts.entity_id -> entities.id`:
+`public.contacts` is linked via `contacts.entity_id -> entities.id`:
 
-- `shared.contacts` -- name variants, company, job_title, metadata.
-- `shared.contact_info` -- multi-channel identifiers: email, phone, telegram, etc.
+- `public.contacts` -- name variants, company, job_title, metadata.
+- `public.contact_info` -- multi-channel identifiers: email, phone, telegram, etc.
 
 ### Credentials Overlay
 
-`shared.entity_info` stores credentials and identifiers per entity, with `secured = true` for masked values and `is_primary` for preferred identifiers.
+`public.entity_info` stores credentials and identifiers per entity, with `secured = true` for masked values and `is_primary` for preferred identifiers.
 
 ### Health/Finance Overlays
 
@@ -137,10 +137,10 @@ Health and finance data attaches to the owner entity. All measurements, conditio
 
 | Schema | Visibility | Purpose |
 |--------|-----------|---------|
-| `shared` | All butlers (read); selective write | Entities, contacts, contact_info, entity_info |
+| `public` | All butlers (read); selective write | Entities, contacts, contact_info, entity_info |
 | Per-butler | Butler-specific | Facts, episodes, rules, domain tables |
 
-Inter-butler communication is MCP-only through the Switchboard. The shared schema provides identity resolution without violating butler isolation.
+Inter-butler communication is MCP-only through the Switchboard. The public schema provides identity resolution without violating butler isolation.
 
 ## Key Design Principles
 

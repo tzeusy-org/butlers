@@ -141,7 +141,7 @@ def _contact_info_row(
     secured=False,
     parent_id=None,
 ):
-    """Create a mock shared.contact_info row dict."""
+    """Create a mock public.contact_info row dict."""
     return {
         "id": info_id or uuid4(),
         "type": ci_type,
@@ -380,7 +380,7 @@ def test_patch_contact_updates_roles(app):
     # Verify execute was called to update entity roles
     mock_pool.execute.assert_awaited_once()
     call_sql = mock_pool.execute.await_args.args[0]
-    assert "shared.entities" in call_sql
+    assert "public.entities" in call_sql
     assert "roles" in call_sql
 
 
@@ -820,7 +820,7 @@ def test_merge_contact_deduplicates_contact_info(app):
     calls = mock_pool.execute.await_args_list
     # First call: dedup delete — remove source rows that exist on target
     dedup_sql = calls[0].args[0]
-    assert "DELETE FROM shared.contact_info" in dedup_sql
+    assert "DELETE FROM public.contact_info" in dedup_sql
     assert calls[0].args[1] == source_id
     assert calls[0].args[2] == target_id
     # Second call: delete source contact

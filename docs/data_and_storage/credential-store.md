@@ -80,7 +80,7 @@ deleted = await store.delete("old_secret_key")
 
 ## Entity-Based Credentials
 
-Some credentials are stored in `shared.entity_info` rather than `butler_secrets`. This applies to identity-bound credentials that belong to a specific entity (person or service account):
+Some credentials are stored in `public.entity_info` rather than `butler_secrets`. This applies to identity-bound credentials that belong to a specific entity (person or service account):
 
 - **`google_oauth_refresh`** -- OAuth refresh tokens stored on Google account companion entities.
 - **`telegram_api_id`**, **`telegram_api_hash`**, **`telegram_user_session`** -- Telegram user-client credentials on the owner entity.
@@ -91,7 +91,7 @@ The `resolve_owner_entity_info(pool, info_type)` function provides a dedicated l
 value = await resolve_owner_entity_info(pool, "telegram_api_id")
 ```
 
-This queries `shared.entities` for the owner entity (`'owner' = ANY(roles)`) and returns the matching `shared.entity_info` value. Primary entries (`is_primary = true`) are preferred.
+This queries `public.entities` for the owner entity (`'owner' = ANY(roles)`) and returns the matching `public.entity_info` value. Primary entries (`is_primary = true`) are preferred.
 
 ## CLI Auth Token Persistence
 

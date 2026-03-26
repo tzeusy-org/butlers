@@ -157,7 +157,7 @@ class WeightTier:
 class ContactWeightResolver:
     """Resolve sender identity to a discretion weight via ``shared`` tables.
 
-    Queries ``shared.contact_info → shared.contacts → shared.entities`` and
+    Queries ``public.contact_info → public.contacts → public.entities`` and
     maps the entity's roles to a :class:`WeightTier` value.  Results are
     cached in-memory with a configurable TTL.
 
@@ -202,9 +202,9 @@ class ContactWeightResolver:
             row = await self._pool.fetchrow(
                 """
                 SELECT COALESCE(e.roles, '{}') AS roles
-                FROM   shared.contact_info ci
-                JOIN   shared.contacts c  ON c.id = ci.contact_id
-                LEFT JOIN shared.entities e ON e.id = c.entity_id
+                FROM   public.contact_info ci
+                JOIN   public.contacts c  ON c.id = ci.contact_id
+                LEFT JOIN public.entities e ON e.id = c.entity_id
                 WHERE  ci.type = $1
                   AND  ci.value = $2
                 LIMIT  1

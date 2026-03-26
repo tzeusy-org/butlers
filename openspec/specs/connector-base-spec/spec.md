@@ -18,7 +18,7 @@ A connector is a long-running process (separate from any butler daemon) that bri
 - **WHEN** a connector runs
 - **THEN** it is a separate OS process from any butler daemon (not an in-daemon module)
 - **AND** it communicates with the Switchboard exclusively via MCP tool calls over SSE
-- **AND** it has direct database access to the `connectors` schema (for filtered event persistence and replay queue) and read access to the `shared` schema (for credential and contact resolution)
+- **AND** it has direct database access to the `connectors` schema (for filtered event persistence and replay queue) and read access to the `public` schema (for credential and contact resolution)
 
 #### Scenario: At-least-once delivery guarantee
 - **WHEN** a connector submits events
@@ -160,18 +160,18 @@ The Switchboard computes a stable deduplication key for each ingest submission u
 #### Scenario: Advisory lock serialization
 - **WHEN** the Switchboard processes an ingest submission
 - **THEN** it acquires `pg_advisory_xact_lock(hashtext(dedupe_key))` within a transaction
-- **AND** inside the lock: re-checks for an existing record with the same dedupe key, and either returns the existing `request_id` with `duplicate=true` or inserts a new row into both `message_inbox` and `shared.ingestion_events` atomically within the same transaction
+- **AND** inside the lock: re-checks for an existing record with the same dedupe key, and either returns the existing `request_id` with `duplicate=true` or inserts a new row into both `message_inbox` and `public.ingestion_events` atomically within the same transaction
 
 #### Scenario: Ingest accepted response
 - **WHEN** the Switchboard accepts an ingest submission
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
 
 ### Requirement: Request Context Assignment
-The Switchboard builds an immutable request context from each accepted ingest envelope. This context travels with the message through classification, routing, and butler processing. The `request_id` is the UUID7 primary key of the corresponding `shared.ingestion_events` row.
+The Switchboard builds an immutable request context from each accepted ingest envelope. This context travels with the message through classification, routing, and butler processing. The `request_id` is the UUID7 primary key of the corresponding `public.ingestion_events` row.
 
 #### Scenario: Request context fields
 - **WHEN** a message is accepted for processing
-- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `shared.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `external_thread_id`), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
+- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `external_thread_id`), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
 - **AND** if triage was evaluated: `triage_decision`, `triage_target`, `triage_rule_id`, `triage_rule_type`
 - **AND** the `request_id` is passed through to the spawned butler session as both `session.request_id` and `session.ingestion_event_id`
 
@@ -431,7 +431,7 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 
 #### Scenario: Discretion model resolution via catalog
 - **WHEN** a discretion evaluation requires an LLM call
-- **THEN** the `DiscretionDispatcher` resolves the model from `shared.model_catalog` using `complexity_tier='discretion'`
+- **THEN** the `DiscretionDispatcher` resolves the model from `public.model_catalog` using `complexity_tier='discretion'`
 - **AND** the resolved `(runtime_type, model_id, extra_args)` tuple is passed to the appropriate `RuntimeAdapter` via the standard adapter registry
 - **AND** the default seed entry is `discretion-qwen3.5-9b` (runtime_type=`opencode`, model_id=`ollama/qwen3.5:9b`) — a local Ollama model accessed via the OpenCode adapter
 - **AND** operators can change the discretion model at any time via the Settings UI at `/butlers/settings` without code changes or restarts
@@ -454,7 +454,7 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 The discretion layer supports sender-relationship weighting that controls bypass and fail behaviour.
 
 #### Scenario: Weight tiers
-- **WHEN** a sender's identity is resolved via `shared.contact_info → shared.contacts → shared.entities`
+- **WHEN** a sender's identity is resolved via `public.contact_info → public.contacts → public.entities`
 - **THEN** the weight is determined by the entity's roles: `owner` → 1.0, `family` or `close-friends` → 0.9, known contact (any role) → 0.7, unknown sender (no contact match) → 0.3
 
 #### Scenario: Weight bypass

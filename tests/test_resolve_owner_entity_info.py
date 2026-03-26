@@ -5,7 +5,7 @@ Verifies:
 - Primary entry is preferred over non-primary entries.
 - Unknown type returns None.
 - Missing owner entity returns None.
-- Missing tables (shared.entities / shared.entity_info) return None gracefully.
+- Missing tables (public.entities / public.entity_info) return None gracefully.
 - Unique constraint violations (duplicate type values) are handled gracefully.
 """
 
@@ -85,8 +85,8 @@ class TestResolveOwnerContactInfoSuccess:
 
         query = conn.fetchrow.await_args.args[0]
         assert "owner" in query
-        assert "shared.entity_info" in query
-        assert "shared.entities" in query
+        assert "public.entity_info" in query
+        assert "public.entities" in query
         assert "e.roles" in query
 
     async def test_orders_primary_first(self) -> None:
@@ -149,7 +149,7 @@ class TestResolveOwnerContactInfoNoneReturned:
 
 class TestResolveOwnerContactInfoMissingTable:
     async def test_returns_none_on_undefined_table_error(self) -> None:
-        """Returns None (does not raise) when shared.entity_info is missing."""
+        """Returns None (does not raise) when public.entity_info is missing."""
 
         class UndefinedTableError(Exception):
             pass
@@ -162,7 +162,7 @@ class TestResolveOwnerContactInfoMissingTable:
 
     async def test_returns_none_when_table_message_in_error(self) -> None:
         """Returns None when error message contains 'does not exist'."""
-        pool, _conn = _make_pool(raises=Exception("relation shared.entity_info does not exist"))
+        pool, _conn = _make_pool(raises=Exception("relation public.entity_info does not exist"))
 
         result = await resolve_owner_entity_info(pool, "telegram")
 
@@ -178,7 +178,7 @@ class TestResolveOwnerContactInfoMissingTable:
     async def test_reraises_not_null_constraint_violation(self) -> None:
         """NOT NULL constraint errors are re-raised (not swallowed as 'missing table')."""
         err = Exception(
-            'null value in column "entity_id" of relation "shared.entity_info" '
+            'null value in column "entity_id" of relation "public.entity_info" '
             "violates not-null constraint"
         )
         pool, _conn = _make_pool(raises=err)
@@ -217,7 +217,7 @@ class TestResolveOwnerContactInfoLogging:
         """A debug-level message is emitted when the table is absent."""
         import logging
 
-        pool, _conn = _make_pool(raises=Exception("relation shared.entity_info does not exist"))
+        pool, _conn = _make_pool(raises=Exception("relation public.entity_info does not exist"))
 
         with caplog.at_level(logging.DEBUG, logger="butlers.credential_store"):
             await resolve_owner_entity_info(pool, "telegram")

@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Token Usage Ledger Schema
-The system SHALL maintain a `shared.token_usage_ledger` table as an append-only record of token consumption per catalog entry. The table is range-partitioned on `recorded_at` with monthly partitions managed by pg_partman (90-day retention).
+The system SHALL maintain a `public.token_usage_ledger` table as an append-only record of token consumption per catalog entry. The table is range-partitioned on `recorded_at` with monthly partitions managed by pg_partman (90-day retention).
 
 #### Scenario: Ledger entry structure
 - **WHEN** a token usage record is written to the ledger
@@ -27,7 +27,7 @@ The system SHALL maintain a `shared.token_usage_ledger` table as an append-only 
 - **AND** the migration does NOT fail — partitioning works without pg_partman, only automated maintenance is missing
 
 #### Scenario: Cascade on catalog entry deletion
-- **WHEN** a catalog entry is deleted from `shared.model_catalog`
+- **WHEN** a catalog entry is deleted from `public.model_catalog`
 - **THEN** all corresponding ledger rows are deleted via `ON DELETE CASCADE`
 
 #### Scenario: Delete and recreate resets usage history
@@ -41,7 +41,7 @@ The system SHALL maintain a `shared.token_usage_ledger` table as an append-only 
 - **AND** `butler_name` is the dispatcher's butler name (defaults to `"__discretion__"`)
 
 ### Requirement: Token Limits Schema
-The system SHALL maintain a `shared.token_limits` table storing per-catalog-entry rolling-window token budgets. Catalog entries without a row in this table are unlimited.
+The system SHALL maintain a `public.token_limits` table storing per-catalog-entry rolling-window token budgets. Catalog entries without a row in this table are unlimited.
 
 #### Scenario: Limits entry structure
 - **WHEN** a token limit is configured for a catalog entry
@@ -52,12 +52,12 @@ The system SHALL maintain a `shared.token_limits` table storing per-catalog-entr
 - **THEN** the unit is total tokens (`input_tokens + output_tokens`) for both the limit value and the usage aggregation
 
 #### Scenario: No limits row means unlimited
-- **WHEN** a catalog entry has no corresponding row in `shared.token_limits`
+- **WHEN** a catalog entry has no corresponding row in `public.token_limits`
 - **THEN** the entry has no token budget enforcement
 - **AND** usage is still recorded to the ledger (for visibility)
 
 #### Scenario: Cascade on catalog entry deletion
-- **WHEN** a catalog entry is deleted from `shared.model_catalog`
+- **WHEN** a catalog entry is deleted from `public.model_catalog`
 - **THEN** the corresponding limits row is deleted via `ON DELETE CASCADE`
 
 #### Scenario: Disabled entry with limits re-enabled via override
@@ -139,7 +139,7 @@ The system SHALL record token usage to the ledger whenever an adapter reports to
 #### Scenario: Spawner records usage after successful session
 - **WHEN** a spawner session completes successfully and the adapter reports `input_tokens` and `output_tokens`
 - **AND** `catalog_entry_id` is available (model was resolved from the catalog)
-- **THEN** a row is inserted into `shared.token_usage_ledger` with the session's `catalog_entry_id`, `butler_name`, `session_id`, `input_tokens`, and `output_tokens`
+- **THEN** a row is inserted into `public.token_usage_ledger` with the session's `catalog_entry_id`, `butler_name`, `session_id`, `input_tokens`, and `output_tokens`
 
 #### Scenario: Spawner records usage after failed session
 - **WHEN** a spawner session fails (runtime error, timeout, model returns unhelpful response) but the adapter DID report `input_tokens` and `output_tokens` before or during the failure

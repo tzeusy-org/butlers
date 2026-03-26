@@ -560,7 +560,7 @@ async def _ensure_message_inbox_partition(
         )
         try:
             # Set search_path to switchboard schema
-            await conn.execute("SET search_path TO switchboard, shared, public")
+            await conn.execute("SET search_path TO switchboard, public")
 
             # Check if the ensure_partition function exists (it's created by sw_008 migration)
             fn_exists = await conn.fetchval(

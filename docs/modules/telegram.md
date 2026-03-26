@@ -33,7 +33,7 @@ token_env = "BUTLER_TELEGRAM_TOKEN"
 
 ### Credential Resolution
 
-- **User scope**: Token resolved from owner entity's `shared.entity_info` (type `telegram_bot_token`).
+- **User scope**: Token resolved from owner entity's `public.entity_info` (type `telegram_bot_token`).
 - **Bot scope**: Token resolved via `CredentialStore` (DB-first with env fallback).
 
 ### Webhook Setup

@@ -173,7 +173,7 @@ class HomeAssistantModule(Module):
     """Home Assistant module providing smart-home MCP tools.
 
     Credentials (long-lived access token) are resolved from the owner
-    contact's ``shared.contact_info`` (type ``'home_assistant_token'``)
+    contact's ``public.contact_info`` (type ``'home_assistant_token'``)
     at startup.  The token is never written to logs in full — only the
     first 8 characters appear in debug output.
 
@@ -274,7 +274,7 @@ class HomeAssistantModule(Module):
         ------
         RuntimeError
             When the Home Assistant token cannot be resolved from
-            ``shared.contact_info`` (the owner contact must have a
+            ``public.contact_info`` (the owner contact must have a
             ``home_assistant_token`` contact_info entry).
         """
         import httpx
@@ -1925,12 +1925,12 @@ class HomeAssistantModule(Module):
         """Persist the current entity cache as SPO facts in the memory subsystem.
 
         Each HA entity is stored as a property fact with predicate ``ha_state``,
-        anchored to a ``shared.entities`` row of type ``other``.  Each snapshot
+        anchored to a ``public.entities`` row of type ``other``.  Each snapshot
         cycle supersedes the previous fact for the same entity so the facts table
         always contains exactly one active ``ha_state`` fact per HA entity.
 
         Entity resolution (create-or-reuse) is handled inline via an UPSERT on
-        ``shared.entities (tenant_id, canonical_name, entity_type)`` so no
+        ``public.entities (tenant_id, canonical_name, entity_type)`` so no
         external helper is needed.
 
         Silently skips when no DB pool is available or the entity cache is empty.
@@ -1975,7 +1975,7 @@ class HomeAssistantModule(Module):
                 #    entity_type = 'other' (HA entities are devices, not people/places)
                 entity_uuid = await pool.fetchval(
                     """
-                    INSERT INTO shared.entities
+                    INSERT INTO public.entities
                         (tenant_id, canonical_name, entity_type, metadata)
                     VALUES ($1, $2, 'other', $3::jsonb)
                     ON CONFLICT (tenant_id, canonical_name, entity_type) DO UPDATE

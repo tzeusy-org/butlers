@@ -1533,7 +1533,7 @@ async def _ingestion_fanout_from_db(
     """Compute the fanout matrix from the DB when Prometheus is unavailable.
 
     Fans out to every butler's sessions table and joins each session's
-    ingestion_event_id (UUID FK to shared.ingestion_events, set since
+    ingestion_event_id (UUID FK to public.ingestion_events, set since
     migration core_020) to derive:
       connector_type (= source_provider), endpoint_identity, target_butler,
       and message_count.
@@ -1546,7 +1546,7 @@ async def _ingestion_fanout_from_db(
     Returns a list of FanoutRow-compatible dicts.
     """
     # Each butler schema has shared in its search_path, so the join against
-    # shared.ingestion_events works from any butler pool.
+    # public.ingestion_events works from any butler pool.
     #
     # We join on sessions.ingestion_event_id (UUID FK, indexed, set for all
     # connector-sourced sessions since core_020) rather than casting the TEXT
@@ -1559,7 +1559,7 @@ async def _ingestion_fanout_from_db(
             ie.source_endpoint_identity                      AS endpoint_identity,
             COUNT(*)                                         AS message_count
         FROM sessions s
-        JOIN shared.ingestion_events ie
+        JOIN public.ingestion_events ie
           ON ie.id = s.ingestion_event_id
         WHERE ie.received_at >= NOW() - ($1 * INTERVAL '1 hour')
         GROUP BY
@@ -1610,7 +1610,7 @@ async def get_ingestion_fanout(
     Primary source: Prometheus (``switchboard_routed_messages_total`` metric).
     DB fallback: when ``PROMETHEUS_URL`` is not set or Prometheus returns an
     error, the matrix is computed from sessions fan-out joined against
-    ``shared.ingestion_events``.  This correctly handles all triage decisions,
+    ``public.ingestion_events``.  This correctly handles all triage decisions,
     including pass_through messages where ``triage_target`` is NULL.
 
     Prometheus metric name expected (primary):

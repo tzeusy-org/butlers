@@ -16,7 +16,7 @@
 - [x] 2.8 Write `docs/concepts/modules-and-connectors.md` — what modules are vs what connectors are, how they relate, when to use each. Generate relationship diagram.
 - [x] 2.9 Write `docs/concepts/switchboard-routing.md` — how messages enter the system and get routed. Generate trigger flow diagram.
 - [x] 2.10 Write `docs/concepts/trigger-flow.md` — external MCP call vs scheduler trigger, request context, session creation
-- [x] 2.11 Write `docs/concepts/identity-model.md` — owner, contacts, contact_info, tenant model, shared schema
+- [x] 2.11 Write `docs/concepts/identity-model.md` — owner, contacts, contact_info, tenant model, public schema
 - [x] 2.12 Write `docs/concepts/mcp-model.md` — what MCP is in the Butlers context, how tools are registered, how Claude interacts
 
 ## 3. Migrate and Rewrite Architecture Docs
@@ -24,7 +24,7 @@
 - [x] 3.1 Rewrite `docs/roles/base_butler.md` → `docs/architecture/butler-daemon.md` — reframe as architecture doc covering daemon internals, startup sequence, core components. Generate startup sequence diagram.
 - [x] 3.2 Split `docs/roles/switchboard_butler.md` → `docs/architecture/routing.md` (routing architecture) + `docs/butlers/switchboard.md` (butler profile). Generate switchboard routing flow diagram.
 - [x] 3.3 Write `docs/architecture/system-topology.md` — overall system topology, service ports, inter-service communication. Generate topology diagram.
-- [x] 3.4 Write `docs/architecture/database-design.md` — shared schema, per-butler schemas, JSONB patterns, multi-schema isolation. Generate database schema topology diagram.
+- [x] 3.4 Write `docs/architecture/database-design.md` — public schema, per-butler schemas, JSONB patterns, multi-schema isolation. Generate database schema topology diagram.
 - [x] 3.5 Move `docs/switchboard/email_priority_queuing.md` → `docs/architecture/email-priority-queuing.md`, apply page template
 - [x] 3.6 Move `docs/switchboard/pre_classification_triage.md` → `docs/architecture/pre-classification-triage.md`, apply page template
 - [x] 3.7 Move `docs/switchboard/thread_affinity_routing.md` → `docs/architecture/thread-affinity-routing.md`, apply page template
@@ -83,7 +83,7 @@
 
 ## 9. Write Data, Storage, and Identity Docs
 
-- [x] 9.1 Write `docs/data_and_storage/schema-topology.md` — shared schema vs per-butler schemas, PostgreSQL setup, JSONB patterns. Generate schema topology diagram.
+- [x] 9.1 Write `docs/data_and_storage/schema-topology.md` — public schema vs per-butler schemas, PostgreSQL setup, JSONB patterns. Generate schema topology diagram.
 - [x] 9.2 Write `docs/data_and_storage/migration-patterns.md` — Alembic conventions, module migration branching, migration ordering
 - [x] 9.3 Write `docs/data_and_storage/state-store.md` — KV JSONB state store design, usage patterns
 - [x] 9.4 Write `docs/data_and_storage/blob-storage.md` — blob/attachment storage

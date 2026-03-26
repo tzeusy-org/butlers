@@ -51,7 +51,7 @@ async def _fetch_profile_facts(
     sql = """
         SELECT f.*
         FROM facts f
-        JOIN shared.entities e ON f.entity_id = e.id
+        JOIN public.entities e ON f.entity_id = e.id
         WHERE f.tenant_id = $1
           AND f.validity = 'active'
           AND 'owner' = ANY(e.roles)
@@ -62,7 +62,7 @@ async def _fetch_profile_facts(
         rows = await pool.fetch(sql, tenant_id, limit)
         return [dict(r) for r in rows]
     except Exception:
-        logger.debug("Profile facts query failed (likely missing shared.entities)", exc_info=True)
+        logger.debug("Profile facts query failed (likely missing public.entities)", exc_info=True)
         return []
 
 

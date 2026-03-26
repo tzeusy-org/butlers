@@ -138,7 +138,7 @@ class TestUpgradeSQL:
         assert "SET SCHEMA shared" in source
 
     def test_adds_roles_column(self) -> None:
-        """Upgrade adds roles TEXT[] NOT NULL DEFAULT '{}' to shared.contacts."""
+        """Upgrade adds roles TEXT[] NOT NULL DEFAULT '{}' to public.contacts."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
         assert "roles" in source
@@ -147,7 +147,7 @@ class TestUpgradeSQL:
         assert "DEFAULT '{}'" in source
 
     def test_adds_secured_column_to_contact_info(self) -> None:
-        """Upgrade adds secured BOOLEAN NOT NULL DEFAULT false to shared.contact_info."""
+        """Upgrade adds secured BOOLEAN NOT NULL DEFAULT false to public.contact_info."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
         assert "secured" in source
@@ -161,30 +161,30 @@ class TestUpgradeSQL:
         assert "DROP INDEX IF EXISTS shared.idx_shared_contact_info_type_value" in source
 
     def test_adds_unique_constraint_on_type_value(self) -> None:
-        """Upgrade adds UNIQUE(type, value) constraint on shared.contact_info."""
+        """Upgrade adds UNIQUE(type, value) constraint on public.contact_info."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
         assert "uq_shared_contact_info_type_value" in source
         assert "UNIQUE (type, value)" in source
 
     def test_adds_fk_contact_info_to_contacts(self) -> None:
-        """Upgrade adds FK shared.contact_info(contact_id) -> shared.contacts(id)."""
+        """Upgrade adds FK public.contact_info(contact_id) -> public.contacts(id)."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
         assert "shared_contact_info_contact_id_fkey" in source
-        assert "REFERENCES shared.contacts(id)" in source
+        assert "REFERENCES public.contacts(id)" in source
         assert "ON DELETE CASCADE" in source
 
     def test_recreates_relationship_fks(self) -> None:
-        """Upgrade re-creates FK constraints referencing shared.contacts."""
+        """Upgrade re-creates FK constraints referencing public.contacts."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "REFERENCES shared.contacts(id)" in source
+        assert "REFERENCES public.contacts(id)" in source
         # FK re-creation loop uses _REL_CONTACT_FKS entries
         assert "ON DELETE" in source
 
     def test_grants_to_all_butler_roles(self) -> None:
-        """Upgrade calls grant helpers for all butler roles on shared.contacts."""
+        """Upgrade calls grant helpers for all butler roles on public.contacts."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
         # The GRANT loop references _ALL_BUTLER_ROLES; check the constant itself
@@ -192,11 +192,11 @@ class TestUpgradeSQL:
         assert "_ALL_BUTLER_ROLES" in source
         # Upgrade calls the grant helper functions
         assert "_grant_if_table_exists" in source or "GRANT" in source
-        assert "shared.contacts" in source
+        assert "public.contacts" in source
         # The helper functions themselves contain GRANT SQL
         helper_source = inspect.getsource(mod._grant_if_table_exists)
         assert "GRANT" in helper_source
-        assert "shared.contacts" in helper_source or "table_fqn" in helper_source
+        assert "public.contacts" in helper_source or "table_fqn" in helper_source
 
     def test_creates_owner_singleton_index(self) -> None:
         """Upgrade creates partial unique index ix_contacts_owner_singleton."""
@@ -212,8 +212,8 @@ class TestUpgradeSQL:
         """Upgrade uses fully-qualified schema.table identifiers."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "shared.contacts" in source
-        assert "shared.contact_info" in source
+        assert "public.contacts" in source
+        assert "public.contact_info" in source
         assert "relationship." in source
 
 
@@ -260,22 +260,22 @@ class TestDowngradeSQL:
         assert "CREATE INDEX" in source
 
     def test_drops_secured_column(self) -> None:
-        """Downgrade drops the secured column from shared.contact_info."""
+        """Downgrade drops the secured column from public.contact_info."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
         assert "secured" in source
         assert "DROP COLUMN" in source
 
     def test_drops_roles_column(self) -> None:
-        """Downgrade drops the roles column from shared.contacts."""
+        """Downgrade drops the roles column from public.contacts."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
         assert "roles" in source
         assert "DROP COLUMN" in source
 
     def test_moves_contacts_back_to_relationship(self) -> None:
-        """Downgrade moves shared.contacts back to relationship schema."""
+        """Downgrade moves public.contacts back to relationship schema."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
-        assert "shared.contacts" in source
+        assert "public.contacts" in source
         assert "SET SCHEMA relationship" in source

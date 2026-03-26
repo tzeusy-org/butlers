@@ -273,7 +273,7 @@ async def memory_store_rule(
         sensitivity: Data sensitivity classification (default 'normal').
             Use 'pii' for personally-identifiable information, etc.
         enable_shared_catalog: When True, write a catalog entry to
-            ``shared.memory_catalog`` after the rule is stored.
+            ``public.memory_catalog`` after the rule is stored.
         source_schema: Butler schema name for the catalog row (e.g. 'health').
     """
     tenant_id, request_id = _extract_request_context(request_context)

@@ -31,7 +31,7 @@ The project has reached a functional alpha state with substantial implementation
 ### Modules (Implemented)
 - **Approvals:** Gate wrapper, pending actions, standing rules, risk tiers, redaction, audit events.
 - **Calendar:** Unified view, scheduled task projection, RRULE events, CRUD tools.
-- **Contacts:** Google sync, shared schema, contact_info, entity linkage.
+- **Contacts:** Google sync, public schema, contact_info, entity linkage.
 - **Email:** Gmail integration, inbox search, send/reply tools.
 - **Mailbox:** Message storage, ingestion tracking.
 - **Memory:** Tiered storage (episodes/facts/rules), hybrid search, embedding, consolidation, entity graph.

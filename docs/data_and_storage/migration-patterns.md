@@ -20,9 +20,9 @@ The core chain manages shared infrastructure tables used by all butlers:
 - `scheduled_tasks` -- Cron scheduler
 - `sessions` -- Session log
 - `butler_secrets` -- Credential store
-- `shared.contacts`, `shared.contact_info` -- Identity tables
-- `shared.entities`, `shared.entity_info` -- Entity graph
-- `shared.google_accounts` -- Google OAuth registry
+- `public.contacts`, `public.contact_info` -- Identity tables
+- `public.entities`, `public.entity_info` -- Entity graph
+- `public.google_accounts` -- Google OAuth registry
 - `ingestion_events` -- Switchboard ingestion log
 - `model_catalog` -- LLM model definitions
 

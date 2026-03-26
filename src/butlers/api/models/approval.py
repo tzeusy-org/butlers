@@ -15,7 +15,7 @@ class TargetContact(BaseModel):
     """Compact contact object resolved from a contact_id in action constraints.
 
     Included in ApprovalAction when ``tool_args`` contains a ``contact_id`` that
-    resolves to a known contact in shared.contacts.
+    resolves to a known contact in public.contacts.
     """
 
     id: str

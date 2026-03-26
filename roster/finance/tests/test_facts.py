@@ -34,7 +34,7 @@ pytestmark = [
 
 _DDL_SHARED_SCHEMA = "CREATE SCHEMA IF NOT EXISTS shared"
 _DDL_SHARED_ENTITIES = """
-CREATE TABLE IF NOT EXISTS shared.entities (
+CREATE TABLE IF NOT EXISTS public.entities (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id       TEXT NOT NULL DEFAULT '',
     canonical_name  VARCHAR NOT NULL DEFAULT '',
@@ -88,8 +88,8 @@ CREATE TABLE IF NOT EXISTS facts (
     last_confirmed_at   TIMESTAMPTZ,
     tags                JSONB DEFAULT '[]'::jsonb,
     metadata            JSONB DEFAULT '{}'::jsonb,
-    entity_id           UUID REFERENCES shared.entities(id),
-    object_entity_id    UUID REFERENCES shared.entities(id),
+    entity_id           UUID REFERENCES public.entities(id),
+    object_entity_id    UUID REFERENCES public.entities(id),
     valid_at            TIMESTAMPTZ DEFAULT NULL,
     tenant_id           TEXT NOT NULL DEFAULT 'owner',
     request_id          TEXT,
@@ -149,9 +149,9 @@ async def pool(provisioned_postgres_pool):
 
 @pytest.fixture
 async def pool_with_owner(pool):
-    """Pool pre-seeded with an owner entity in shared.entities."""
+    """Pool pre-seeded with an owner entity in public.entities."""
     await pool.execute(
-        "INSERT INTO shared.entities (name, roles) VALUES ($1, $2)",
+        "INSERT INTO public.entities (name, roles) VALUES ($1, $2)",
         "Owner",
         ["owner"],
     )

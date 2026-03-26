@@ -26,7 +26,7 @@ def test_build_db_url_includes_search_path_options_for_schema(tmp_path):
 
     assert (
         url == "postgresql://alice:secret@db.internal:5432/butlers"
-        "?options=-csearch_path%3Dgeneral%2Cshared%2Cpublic"
+        "?options=-csearch_path%3Dgeneral%2Cpublic"
     )
 
 
@@ -63,4 +63,4 @@ def test_build_db_url_encodes_credentials_and_db_name(tmp_path):
     assert url.startswith(
         "postgresql://alice%2Bops:s%20ec%2Fre%3At%40%23@db.internal:5432/butlers%20prod"
     )
-    assert url.endswith("?options=-csearch_path%3Dgeneral%2Cshared%2Cpublic")
+    assert url.endswith("?options=-csearch_path%3Dgeneral%2Cpublic")

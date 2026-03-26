@@ -62,7 +62,7 @@ Each module section is validated against the module's `config_schema` Pydantic m
 
 ### Module Credentials
 
-Modules can declare environment variables they need via `credentials_env` fields in their config schema. These are validated during startup step 8b after the database pool is available, so the `CredentialStore` can resolve credentials from the database first with environment variable fallback. Bot-scope credentials that are missing cause the module to fail. User-scope credentials are resolved from the owner's contact info in the shared schema, not from environment variables.
+Modules can declare environment variables they need via `credentials_env` fields in their config schema. These are validated during startup step 8b after the database pool is available, so the `CredentialStore` can resolve credentials from the database first with environment variable fallback. Bot-scope credentials that are missing cause the module to fail. User-scope credentials are resolved from the owner's contact info in the public schema, not from environment variables.
 
 ### Key Properties of Modules
 

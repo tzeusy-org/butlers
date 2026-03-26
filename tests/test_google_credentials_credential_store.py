@@ -970,7 +970,7 @@ class TestResolveGoogleAccountEntity:
 
     async def test_returns_none_when_table_missing(self) -> None:
         pool = _make_acquire_pool(
-            fetchrow_side_effect=Exception('relation "shared.google_accounts" does not exist')
+            fetchrow_side_effect=Exception('relation "public.google_accounts" does not exist')
         )
 
         result = await resolve_google_account_entity(pool)
@@ -985,7 +985,7 @@ class TestResolveGoogleAccountEntity:
 class TestListGoogleAccountEntities:
     async def test_returns_empty_list_when_table_missing(self) -> None:
         pool = _make_acquire_pool(
-            fetch_side_effect=Exception('relation "shared.google_accounts" does not exist')
+            fetch_side_effect=Exception('relation "public.google_accounts" does not exist')
         )
 
         result = await list_google_account_entities(pool)

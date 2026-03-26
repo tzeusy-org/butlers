@@ -250,13 +250,13 @@ async def list_contacts(
             c.last_name,
             c.nickname,
             (
-                SELECT ci.value FROM shared.contact_info ci
+                SELECT ci.value FROM public.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.id
                 LIMIT 1
             ) AS email,
             (
-                SELECT ci.value FROM shared.contact_info ci
+                SELECT ci.value FROM public.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'phone'
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.id
                 LIMIT 1
@@ -451,7 +451,7 @@ async def list_pending_contacts(
             COALESCE(e.roles, '{}') AS roles,
             c.entity_id
         FROM contacts c
-        LEFT JOIN shared.entities e ON e.id = c.entity_id
+        LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE c.archived_at IS NULL
           AND (c.metadata->>'needs_disambiguation')::boolean = true
         ORDER BY c.created_at DESC
@@ -465,7 +465,7 @@ async def list_pending_contacts(
         ci_rows = await pool.fetch(
             """
             SELECT id, type, value, is_primary, secured, parent_id
-            FROM shared.contact_info
+            FROM public.contact_info
             WHERE contact_id = $1
             ORDER BY is_primary DESC NULLS LAST, type, id
             """,
@@ -584,7 +584,7 @@ async def _suggest_entities(
     contact_id = contact_row.get("id")
     if contact_id is not None:
         info_rows = await rel_pool.fetch(
-            "SELECT type, value FROM shared.contact_info WHERE contact_id = $1",
+            "SELECT type, value FROM public.contact_info WHERE contact_id = $1",
             contact_id,
         )
         for info in info_rows:
@@ -679,10 +679,10 @@ async def list_unlinked_contacts(
     rows = await pool.fetch(
         f"""
         SELECT c.id, c.name AS full_name, c.first_name, c.last_name, c.company,
-               (SELECT ci.value FROM shared.contact_info ci
+               (SELECT ci.value FROM public.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
                   AND ci.is_primary = true LIMIT 1) AS email,
-               (SELECT ci.value FROM shared.contact_info ci
+               (SELECT ci.value FROM public.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'phone'
                   AND ci.is_primary = true LIMIT 1) AS phone
         FROM contacts c
@@ -929,13 +929,13 @@ async def get_contact(
             c.entity_id,
             c.preferred_channel,
             (
-                SELECT ci.value FROM shared.contact_info ci
+                SELECT ci.value FROM public.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.id
                 LIMIT 1
             ) AS email,
             (
-                SELECT ci.value FROM shared.contact_info ci
+                SELECT ci.value FROM public.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'phone'
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.id
                 LIMIT 1
@@ -945,7 +945,7 @@ async def get_contact(
                 WHERE i.contact_id = c.id
             ) AS last_interaction_at
         FROM contacts c
-        LEFT JOIN shared.entities e ON e.id = c.entity_id
+        LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE c.id = $1 AND c.archived_at IS NULL
         """,
         contact_id,
@@ -1010,7 +1010,7 @@ async def get_contact(
     ci_rows = await pool.fetch(
         """
         SELECT id, type, value, is_primary, secured, parent_id
-        FROM shared.contact_info
+        FROM public.contact_info
         WHERE contact_id = $1
         ORDER BY is_primary DESC NULLS LAST, type, id
         """,
@@ -1083,7 +1083,7 @@ async def reveal_contact_secret(
     row = await pool.fetchrow(
         """
         SELECT id, type, value, secured
-        FROM shared.contact_info
+        FROM public.contact_info
         WHERE id = $1 AND contact_id = $2
         """,
         info_id,
@@ -1208,7 +1208,7 @@ async def patch_contact(
         )
         if entity_row and entity_row["entity_id"] is not None:
             await pool.execute(
-                "UPDATE shared.entities SET roles = $1, updated_at = now() WHERE id = $2",
+                "UPDATE public.entities SET roles = $1, updated_at = now() WHERE id = $2",
                 request.roles,
                 entity_row["entity_id"],
             )
@@ -1229,7 +1229,7 @@ async def delete_contact(
 ) -> None:
     """Hard-delete a contact and all its associated contact_info.
 
-    CASCADE on shared.contact_info FK handles info cleanup.
+    CASCADE on public.contact_info FK handles info cleanup.
     Source links in contacts_source_links are also removed so a
     future sync can re-create the contact from scratch if needed.
     """
@@ -1393,15 +1393,15 @@ async def merge_contact(
 
     # Move contact_info from source to target.
     # First delete source rows whose (type, value) already exist on the target to
-    # avoid producing duplicates (shared.contact_info has no unique constraint on
+    # avoid producing duplicates (public.contact_info has no unique constraint on
     # (contact_id, type, value), so a plain UPDATE would silently create them).
     await pool.execute(
         """
-        DELETE FROM shared.contact_info
+        DELETE FROM public.contact_info
         WHERE contact_id = $1
           AND (type, value) IN (
               SELECT type, value
-              FROM shared.contact_info
+              FROM public.contact_info
               WHERE contact_id = $2
           )
         """,
@@ -1410,7 +1410,7 @@ async def merge_contact(
     )
     moved_result = await pool.fetch(
         """
-        UPDATE shared.contact_info
+        UPDATE public.contact_info
         SET contact_id = $1
         WHERE contact_id = $2
         RETURNING id
@@ -1481,7 +1481,7 @@ async def get_owner_setup_status(
     owner_row = await pool.fetchrow(
         """
         SELECT id, canonical_name
-        FROM shared.entities
+        FROM public.entities
         WHERE 'owner' = ANY(COALESCE(roles, '{}'))
         LIMIT 1
         """,
@@ -1503,7 +1503,7 @@ async def get_owner_setup_status(
     rows = await pool.fetch(
         """
         SELECT ei.type
-        FROM shared.entity_info ei
+        FROM public.entity_info ei
         WHERE ei.entity_id = $1
           AND ei.type IN ('telegram', 'telegram_chat_id', 'email')
         """,
@@ -1550,7 +1550,7 @@ async def create_contact_info(
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO shared.contact_info
+            INSERT INTO public.contact_info
                 (contact_id, type, value, is_primary, secured, parent_id)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, contact_id, type, value, is_primary, secured, parent_id
@@ -1594,14 +1594,14 @@ async def delete_contact_info(
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "SELECT id FROM shared.contact_info WHERE id = $1 AND contact_id = $2",
+        "SELECT id FROM public.contact_info WHERE id = $1 AND contact_id = $2",
         info_id,
         contact_id,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Contact info entry not found")
 
-    await pool.execute("DELETE FROM shared.contact_info WHERE id = $1", info_id)
+    await pool.execute("DELETE FROM public.contact_info WHERE id = $1", info_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1623,7 +1623,7 @@ async def patch_contact_info(
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "SELECT id FROM shared.contact_info WHERE id = $1 AND contact_id = $2",
+        "SELECT id FROM public.contact_info WHERE id = $1 AND contact_id = $2",
         info_id,
         contact_id,
     )
@@ -1653,20 +1653,20 @@ async def patch_contact_info(
         set_clause = ", ".join(updates)
         args.append(info_id)
         await pool.execute(
-            f"UPDATE shared.contact_info SET {set_clause} WHERE id = ${idx}",
+            f"UPDATE public.contact_info SET {set_clause} WHERE id = ${idx}",
             *args,
         )
 
     # When toggling is_primary=true, clear siblings of same type (top-level only)
     if request.is_primary is True:
         entry = await pool.fetchrow(
-            "SELECT contact_id, type FROM shared.contact_info WHERE id = $1",
+            "SELECT contact_id, type FROM public.contact_info WHERE id = $1",
             info_id,
         )
         if entry is not None:
             await pool.execute(
                 """
-                UPDATE shared.contact_info SET is_primary = false
+                UPDATE public.contact_info SET is_primary = false
                 WHERE contact_id = $1 AND type = $2 AND parent_id IS NULL AND id != $3
                 """,
                 entry["contact_id"],
@@ -1676,7 +1676,7 @@ async def patch_contact_info(
 
     updated = await pool.fetchrow(
         "SELECT id, type, value, is_primary, secured, parent_id"
-        " FROM shared.contact_info WHERE id = $1",
+        " FROM public.contact_info WHERE id = $1",
         info_id,
     )
     return ContactInfoEntry(
@@ -2068,7 +2068,7 @@ async def get_entity(
         """
         SELECT id, canonical_name, entity_type, aliases, roles,
                metadata, created_at, updated_at
-        FROM shared.entities
+        FROM public.entities
         WHERE id = $1
           AND (metadata->>'merged_into') IS NULL
         """,
@@ -2080,7 +2080,7 @@ async def get_entity(
     info_rows = await pool.fetch(
         """
         SELECT id, type, value, label, is_primary, secured
-        FROM shared.entity_info
+        FROM public.entity_info
         WHERE entity_id = $1
         ORDER BY type
         """,
@@ -2137,7 +2137,7 @@ async def create_entity_info(
     # Verify entity exists and is not tombstoned
     existing = await pool.fetchrow(
         """
-        SELECT id FROM shared.entities
+        SELECT id FROM public.entities
         WHERE id = $1 AND (metadata->>'merged_into') IS NULL
         """,
         entity_id,
@@ -2148,7 +2148,7 @@ async def create_entity_info(
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO shared.entity_info
+            INSERT INTO public.entity_info
                 (entity_id, type, value, label, is_primary, secured)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, entity_id, type, value, label, is_primary, secured
@@ -2198,7 +2198,7 @@ async def patch_entity_info(
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "SELECT id FROM shared.entity_info WHERE id = $1 AND entity_id = $2",
+        "SELECT id FROM public.entity_info WHERE id = $1 AND entity_id = $2",
         info_id,
         entity_id,
     )
@@ -2234,7 +2234,7 @@ async def patch_entity_info(
         args.append(info_id)
         try:
             await pool.execute(
-                f"UPDATE shared.entity_info SET {set_clause} WHERE id = ${idx}",
+                f"UPDATE public.entity_info SET {set_clause} WHERE id = ${idx}",
                 *args,
             )
         except asyncpg.UniqueViolationError:
@@ -2244,7 +2244,7 @@ async def patch_entity_info(
             )
 
     updated = await pool.fetchrow(
-        "SELECT id, type, value, label, is_primary, secured FROM shared.entity_info WHERE id = $1",
+        "SELECT id, type, value, label, is_primary, secured FROM public.entity_info WHERE id = $1",
         info_id,
     )
     return EntityInfoEntry(
@@ -2272,14 +2272,14 @@ async def delete_entity_info(
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "SELECT id FROM shared.entity_info WHERE id = $1 AND entity_id = $2",
+        "SELECT id FROM public.entity_info WHERE id = $1 AND entity_id = $2",
         info_id,
         entity_id,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Entity info entry not found")
 
-    await pool.execute("DELETE FROM shared.entity_info WHERE id = $1", info_id)
+    await pool.execute("DELETE FROM public.entity_info WHERE id = $1", info_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2303,7 +2303,7 @@ async def reveal_entity_secret(
     row = await pool.fetchrow(
         """
         SELECT id, type, value, secured
-        FROM shared.entity_info
+        FROM public.entity_info
         WHERE id = $1 AND entity_id = $2
         """,
         info_id,
@@ -2356,7 +2356,7 @@ async def get_dunbar_ranking(
         pool.fetch(
             """
             SELECT e.id, e.canonical_name
-            FROM shared.entities e
+            FROM public.entities e
             WHERE e.id = ANY($1::uuid[])
             """,
             entity_ids,

@@ -7,7 +7,7 @@ A dedicated `self_healing` complexity tier in the Model Catalog, ensuring healin
 ## ADDED Requirements
 
 ### Requirement: Self-Healing Complexity Tier
-The `Complexity` enum and the `complexity_tier` CHECK constraint on `shared.model_catalog` SHALL include `self_healing` as a valid tier value.
+The `Complexity` enum and the `complexity_tier` CHECK constraint on `public.model_catalog` SHALL include `self_healing` as a valid tier value.
 
 #### Scenario: Enum includes self_healing
 - **WHEN** the `Complexity` enum is used

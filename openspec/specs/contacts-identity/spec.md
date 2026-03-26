@@ -1,13 +1,13 @@
 ## ADDED Requirements
 
-### Requirement: Contacts table in shared schema
+### Requirement: Contacts table in public schema
 
-The `contacts` table SHALL reside in the `shared` PostgreSQL schema. All butler roles SHALL have `SELECT, INSERT, UPDATE, DELETE` grants on `shared.contacts`. The table SHALL be accessible via unqualified name `contacts` through every butler's `search_path` (which includes `shared`).
+The `contacts` table SHALL reside in the `public` PostgreSQL schema. All butler roles SHALL have `SELECT, INSERT, UPDATE, DELETE` grants on `public.contacts`. The table SHALL be accessible via unqualified name `contacts` through every butler's `search_path` (which includes `public`).
 
 #### Scenario: Contacts accessible from any butler schema
 
 - **WHEN** any butler daemon queries `SELECT * FROM contacts WHERE id = $1`
-- **THEN** the query MUST resolve to `shared.contacts` via `search_path`
+- **THEN** the query MUST resolve to `public.contacts` via `search_path`
 - **AND** the result MUST include all columns defined on the contacts table
 
 #### Scenario: Schema migration from relationship to shared
@@ -15,18 +15,18 @@ The `contacts` table SHALL reside in the `shared` PostgreSQL schema. All butler 
 - **WHEN** the Alembic migration runs on a database where `contacts` exists in the `relationship` schema
 - **THEN** the migration MUST execute `ALTER TABLE relationship.contacts SET SCHEMA shared`
 - **AND** all existing data, indexes, and sequences MUST be preserved
-- **AND** all foreign key constraints from relationship-schema tables (relationships, interactions, notes, important_dates, gifts, loans, groups, contact_labels, quick_facts, addresses, life_events, tasks, activity_feed, reminders) MUST be re-created to reference `shared.contacts(id)`
+- **AND** all foreign key constraints from relationship-schema tables (relationships, interactions, notes, important_dates, gifts, loans, groups, contact_labels, quick_facts, addresses, life_events, tasks, activity_feed, reminders) MUST be re-created to reference `public.contacts(id)`
 
 ---
 
 ### Requirement: Roles sourced from entity (not contacts)
 
-Identity roles (e.g., `'owner'`) are stored on `shared.entities.roles`, NOT on `shared.contacts.roles`. The `contacts.roles` column is retained during the transition period but is no longer the source of truth. All role lookups MUST JOIN through `shared.entities` via `contacts.entity_id`. See the `entity-identity` spec for the authoritative roles definition.
+Identity roles (e.g., `'owner'`) are stored on `public.entities.roles`, NOT on `public.contacts.roles`. The `contacts.roles` column is retained during the transition period but is no longer the source of truth. All role lookups MUST JOIN through `public.entities` via `contacts.entity_id`. See the `entity-identity` spec for the authoritative roles definition.
 
 #### Scenario: Contact roles resolved via entity JOIN
 
 - **WHEN** a system component needs to determine a contact's roles
-- **THEN** it MUST query `COALESCE(e.roles, '{}')` via `LEFT JOIN shared.entities e ON e.id = c.entity_id`
+- **THEN** it MUST query `COALESCE(e.roles, '{}')` via `LEFT JOIN public.entities e ON e.id = c.entity_id`
 - **AND** MUST NOT read roles directly from `c.roles`
 
 ---
@@ -43,7 +43,7 @@ Entity roles SHALL only be modifiable through the dashboard API (authenticated H
 #### Scenario: Dashboard API updates roles
 
 - **WHEN** `PATCH /api/contacts/{id}` is called with `{"roles": ["owner", "family"]}` from an authenticated dashboard session
-- **THEN** the linked entity's `roles` column MUST be updated to `['owner', 'family']` via `UPDATE shared.entities SET roles = $1 WHERE id = $2`
+- **THEN** the linked entity's `roles` column MUST be updated to `['owner', 'family']` via `UPDATE public.entities SET roles = $1 WHERE id = $2`
 - **AND** the response MUST include the updated roles
 
 ---
@@ -51,21 +51,21 @@ Entity roles SHALL only be modifiable through the dashboard API (authenticated H
 ### Requirement: Owner entity and contact bootstrap on first startup
 
 When any butler daemon starts, it SHALL follow entity-first bootstrap:
-1. Create an owner entity in `shared.entities` with `roles=['owner']`, `tenant_id='shared'`, `entity_type='person'` (if `shared.entities` exists).
-2. Create an owner contact in `shared.contacts` linked to the entity via `entity_id`.
+1. Create an owner entity in `public.entities` with `roles=['owner']`, `tenant_id='shared'`, `entity_type='person'` (if `public.entities` exists).
+2. Create an owner contact in `public.contacts` linked to the entity via `entity_id`.
 
 The operation MUST be idempotent across concurrent butler startups. See the `entity-identity` spec for the authoritative entity bootstrap definition.
 
 #### Scenario: First butler starts with empty tables
 
-- **WHEN** the first butler daemon starts and both `shared.entities` and `shared.contacts` contain no rows
-- **THEN** the daemon MUST create an entity with `roles = ['owner']` in `shared.entities`
+- **WHEN** the first butler daemon starts and both `public.entities` and `public.contacts` contain no rows
+- **THEN** the daemon MUST create an entity with `roles = ['owner']` in `public.entities`
 - **AND** MUST create a contact with `name = 'Owner'` linked to the entity via `entity_id`
 - **AND** the contact MUST have no `contact_info` entries
 
 #### Scenario: Entities table not ready
 
-- **WHEN** a butler daemon starts and `shared.entities` does not yet exist
+- **WHEN** a butler daemon starts and `public.entities` does not yet exist
 - **THEN** the daemon MUST defer contact creation until the entities table is available
 - **AND** subsequent startup attempts MUST retry entity-first bootstrap
 
@@ -84,7 +84,7 @@ The operation MUST be idempotent across concurrent butler startups. See the `ent
 
 ### Requirement: Contacts must always link to an entity
 
-The data model hierarchy is **Entity → Contact → Contact Details**. Every contact in `shared.contacts` MUST have a non-NULL `entity_id` referencing `shared.entities`. There are no valid code paths that create contacts without entity links.
+The data model hierarchy is **Entity → Contact → Contact Details**. Every contact in `public.contacts` MUST have a non-NULL `entity_id` referencing `public.entities`. There are no valid code paths that create contacts without entity links.
 
 - `contact_create()` resolves or creates an entity BEFORE inserting the contact row, including `entity_id` in the INSERT.
 - Google Contacts backfill (`ContactBackfillWriter.create_contact`) resolves or creates an entity before INSERT.
@@ -103,9 +103,9 @@ Entities may be flagged as `metadata.unidentified = true` when created for unkno
 #### Scenario: Google Contacts backfill links entity
 
 - **WHEN** `ContactBackfillWriter.create_contact()` syncs a new contact from Google
-- **THEN** it MUST attempt to create an entity in `shared.entities` before the contact INSERT
+- **THEN** it MUST attempt to create an entity in `public.entities` before the contact INSERT
 - **AND** if entity creation succeeds, `entity_id` MUST be included in the INSERT
-- **AND** if entity creation fails (e.g., `shared.entities` not available), the contact MAY be created without `entity_id` (graceful degradation for pre-migration schemas)
+- **AND** if entity creation fails (e.g., `public.entities` not available), the contact MAY be created without `entity_id` (graceful degradation for pre-migration schemas)
 
 #### Scenario: Unidentified entity for unknown sender
 
@@ -117,7 +117,7 @@ Entities may be flagged as `metadata.unidentified = true` when created for unkno
 
 ### Requirement: Contact info uniqueness constraint
 
-The `shared.contact_info` table SHALL have a `UNIQUE(type, value)` constraint. Each channel identifier (e.g., a Telegram chat ID, an email address) MUST map to exactly one contact. The existing non-unique index `idx_shared_contact_info_type_value` SHALL be replaced by this unique constraint.
+The `public.contact_info` table SHALL have a `UNIQUE(type, value)` constraint. Each channel identifier (e.g., a Telegram chat ID, an email address) MUST map to exactly one contact. The existing non-unique index `idx_contact_info_type_value` SHALL be replaced by this unique constraint.
 
 #### Scenario: Insert duplicate channel identifier
 
@@ -135,23 +135,23 @@ The `shared.contact_info` table SHALL have a `UNIQUE(type, value)` constraint. E
 
 ### Requirement: Foreign key from contact_info to contacts
 
-The `shared.contact_info` table SHALL have a foreign key constraint `contact_info(contact_id) REFERENCES shared.contacts(id) ON DELETE CASCADE`. This replaces the previous application-layer referential integrity that was necessary when the tables were in different schemas.
+The `public.contact_info` table SHALL have a foreign key constraint `contact_info(contact_id) REFERENCES public.contacts(id) ON DELETE CASCADE`. This replaces the previous application-layer referential integrity that was necessary when the tables were in different schemas.
 
 #### Scenario: Delete a contact cascades to contact_info
 
-- **WHEN** a contact is deleted from `shared.contacts`
-- **THEN** all `shared.contact_info` rows with that `contact_id` MUST be automatically deleted
+- **WHEN** a contact is deleted from `public.contacts`
+- **THEN** all `public.contact_info` rows with that `contact_id` MUST be automatically deleted
 
 #### Scenario: Insert contact_info with invalid contact_id
 
-- **WHEN** a `contact_info` row is inserted with a `contact_id` that does not exist in `shared.contacts`
+- **WHEN** a `contact_info` row is inserted with a `contact_id` that does not exist in `public.contacts`
 - **THEN** the insert MUST fail with a foreign key violation
 
 ---
 
 ### Requirement: Reverse-lookup from channel identifier to contact
 
-The system SHALL provide a `resolve_contact_by_channel(type, value)` function that returns the contact and their role-set for a given channel identifier. The function MUST query `shared.contact_info JOIN shared.contacts LEFT JOIN shared.entities` to resolve roles from the entity.
+The system SHALL provide a `resolve_contact_by_channel(type, value)` function that returns the contact and their role-set for a given channel identifier. The function MUST query `public.contact_info JOIN public.contacts LEFT JOIN public.entities` to resolve roles from the entity.
 
 #### Scenario: Known channel identifier resolves to contact
 
@@ -175,7 +175,7 @@ The system SHALL provide a `resolve_contact_by_channel(type, value)` function th
 
 ### Requirement: Secured contact info entries
 
-The `shared.contact_info` table SHALL have a `secured BOOLEAN NOT NULL DEFAULT false` column. Entries with `secured = true` contain sensitive credentials (passwords, tokens, API keys) that MUST be masked in dashboard API responses.
+The `public.contact_info` table SHALL have a `secured BOOLEAN NOT NULL DEFAULT false` column. Entries with `secured = true` contain sensitive credentials (passwords, tokens, API keys) that MUST be masked in dashboard API responses.
 
 #### Scenario: Secured entry masked in API response
 
@@ -194,14 +194,14 @@ The `shared.contact_info` table SHALL have a `secured BOOLEAN NOT NULL DEFAULT f
 
 #### Scenario: MCP tools can read secured values
 
-- **WHEN** a butler daemon queries `shared.contact_info` for credential resolution
+- **WHEN** a butler daemon queries `public.contact_info` for credential resolution
 - **THEN** the query MUST return the actual `value` regardless of the `secured` flag (no masking at the DB layer)
 
 ---
 
 ### Requirement: Owner credential migration from secrets to contact_info
 
-Owner channel identifiers and credentials currently stored in `butler_secrets` SHALL be migrated to `shared.contact_info` entries linked to the owner contact. The migration SHALL map secret keys to contact_info types as follows:
+Owner channel identifiers and credentials currently stored in `butler_secrets` SHALL be migrated to `public.contact_info` entries linked to the owner contact. The migration SHALL map secret keys to contact_info types as follows:
 
 | Secret key | contact_info type | secured |
 |---|---|---|
@@ -234,7 +234,7 @@ Owner channel identifiers and credentials currently stored in `butler_secrets` S
 
 ### Requirement: Telegram-specific contact_info types
 
-The `shared.contact_info` table supports Telegram-specific channel identifiers alongside existing types (email, phone, telegram). These types enable identity resolution for contacts sourced from both the Telegram user-client connector (message routing) and the Contacts module's TelegramContactsProvider (address book sync).
+The `public.contact_info` table supports Telegram-specific channel identifiers alongside existing types (email, phone, telegram). These types enable identity resolution for contacts sourced from both the Telegram user-client connector (message routing) and the Contacts module's TelegramContactsProvider (address book sync).
 
 | contact_info type | Description | Example value | Stable? |
 |---|---|---|---|
@@ -287,7 +287,7 @@ When contacts arrive from multiple providers (e.g., Google Contacts and Telegram
 
 #### Scenario: Google and Telegram contact merge by phone number
 
-- **WHEN** a Google-sourced contact "Alice Smith" has phone `+15550100` in `shared.contact_info`
+- **WHEN** a Google-sourced contact "Alice Smith" has phone `+15550100` in `public.contact_info`
 - **AND** a Telegram contact "Alice" has the same phone number `+15550100`
 - **THEN** the resolver matches them via phone strategy (step 3)
 - **AND** the Telegram sync adds `telegram_user_id`, `telegram_username`, and `telegram_chat_id` entries to the existing contact's `contact_info`
@@ -312,7 +312,7 @@ When contacts arrive from multiple providers (e.g., Google Contacts and Telegram
 #### Scenario: Email-based cross-provider match
 
 - **WHEN** a future provider (e.g., Apple Contacts) provides a contact with email `alice@example.com`
-- **AND** an existing CRM contact (from Google) has the same email in `shared.contact_info`
+- **AND** an existing CRM contact (from Google) has the same email in `public.contact_info`
 - **THEN** the resolver matches them via email strategy (step 2)
 - **AND** provider-specific contact_info entries are added alongside existing entries
 

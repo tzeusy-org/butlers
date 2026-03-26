@@ -1078,20 +1078,20 @@ class _ToolCallLoggingMCP:
 async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
     """Bootstrap the owner entity (idempotent).
 
-    1. Create owner entity in shared.entities with roles=['owner'] (if table exists).
+    1. Create owner entity in public.entities with roles=['owner'] (if table exists).
 
     Safe to call if:
-    - shared.entities does not yet exist (skips silently)
+    - public.entities does not yet exist (skips silently)
     - owner entity already exists (ON CONFLICT DO NOTHING)
     - migration has not yet run (graceful no-op)
     """
     try:
         async with pool.acquire() as conn:
             # ------------------------------------------------------------------
-            # Phase 1: Ensure owner entity in shared.entities
+            # Phase 1: Ensure owner entity in public.entities
             # ------------------------------------------------------------------
             entities_table_exists = await conn.fetchval(
-                "SELECT to_regclass('shared.entities') IS NOT NULL"
+                "SELECT to_regclass('public.entities') IS NOT NULL"
             )
 
             if entities_table_exists:
@@ -1108,7 +1108,7 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
                 if roles_on_entities:
                     owner_entity_id = await conn.fetchval(
                         """
-                        SELECT id FROM shared.entities
+                        SELECT id FROM public.entities
                         WHERE 'owner' = ANY(roles)
                         LIMIT 1
                         """
@@ -1118,7 +1118,7 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
 
                     owner_entity_id = await conn.fetchval(
                         """
-                        INSERT INTO shared.entities
+                        INSERT INTO public.entities
                             (tenant_id, canonical_name, entity_type, roles)
                         VALUES ('shared', 'Owner', 'person', $1)
                         ON CONFLICT DO NOTHING
@@ -1129,7 +1129,7 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
                     if owner_entity_id is None:
                         owner_entity_id = await conn.fetchval(
                             """
-                            SELECT id FROM shared.entities
+                            SELECT id FROM public.entities
                             WHERE 'owner' = ANY(roles)
                             LIMIT 1
                             """
@@ -1137,7 +1137,7 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
                     if owner_entity_id is None:
                         await conn.fetchval(
                             """
-                            SELECT id FROM shared.entities
+                            SELECT id FROM public.entities
                             WHERE tenant_id = 'shared'
                               AND canonical_name = 'Owner'
                               AND entity_type = 'person'
@@ -1573,7 +1573,7 @@ class ButlerDaemon:
             logger.debug("CLI auth token restoration skipped", exc_info=True)
 
         # 8d. Bootstrap owner entity (idempotent; non-fatal).
-        #     Ensures owner entity exists in shared.entities.
+        #     Ensures owner entity exists in public.entities.
         await _ensure_owner_entity(pool)
 
         # 9. Call module on_startup (non-fatal per-module)
@@ -2177,7 +2177,7 @@ class ButlerDaemon:
         1. Explicit ``recipient`` string → use as-is.
         2. ``request_context.source_endpoint_identity`` for matching channel
            → extract identifier (e.g. ``telegram:12345`` → ``12345``).
-        3. Owner entity lookup via ``shared.entity_info`` (Telegram send only).
+        3. Owner entity lookup via ``public.entity_info`` (Telegram send only).
         """
         resolved_recipient = recipient.strip() if isinstance(recipient, str) else None
         if resolved_recipient:
@@ -2216,14 +2216,14 @@ class ButlerDaemon:
     ) -> str | None:
         """Resolve the channel identifier for a specific contact_id and channel type.
 
-        Queries ``shared.contact_info`` for rows matching the given ``contact_id``
+        Queries ``public.contact_info`` for rows matching the given ``contact_id``
         and the delivery-appropriate type (e.g. ``telegram_chat_id`` for telegram),
         preferring the primary entry (``is_primary=true``).
 
         Returns the identifier value on success, ``None`` if:
         - No DB pool is available.
         - No ``contact_info`` row exists for the given contact_id and channel.
-        - The ``shared.contact_info`` table does not exist.
+        - The ``public.contact_info`` table does not exist.
         """
         info_type = self._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
         pool = self.db.pool if self.db is not None else None
@@ -2234,7 +2234,7 @@ class ButlerDaemon:
                 row = await conn.fetchrow(
                     """
                     SELECT ci.value
-                    FROM shared.contact_info ci
+                    FROM public.contact_info ci
                     WHERE ci.contact_id = $1
                       AND ci.type = $2
                     ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
@@ -4416,7 +4416,7 @@ class ButlerDaemon:
                 Field(
                     description=(
                         "Optional contact UUID. When provided, the channel identifier is resolved "
-                        "from shared.contact_info (primary entry preferred). If no matching "
+                        "from public.contact_info (primary entry preferred). If no matching "
                         "contact_info entry exists, the notification is parked as a "
                         "pending_action and {status: pending_missing_identifier} is returned."
                     )
@@ -4431,7 +4431,7 @@ class ButlerDaemon:
 
             Optional fields:
             - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
-            - `contact_id` (UUID): resolve recipient from shared.contact_info; primary entry
+            - `contact_id` (UUID): resolve recipient from public.contact_info; primary entry
               preferred. If no matching entry exists the notification is parked as a pending_action
               and `{"status": "pending_missing_identifier"}` is returned.
             - `subject` (string)
@@ -4443,7 +4443,7 @@ class ButlerDaemon:
               Pass an object value, not a quoted placeholder string.
 
             Recipient resolution priority:
-            1. `contact_id` provided → look up channel identifier from shared.contact_info
+            1. `contact_id` provided → look up channel identifier from public.contact_info
             2. `recipient` string provided → use as-is
             3. Neither → resolve owner entity's channel identifier (default)
 
@@ -4539,7 +4539,7 @@ class ButlerDaemon:
                 }
 
             # Resolution priority:
-            # (1) contact_id → query shared.contact_info WHERE contact_id = X AND type = channel
+            # (1) contact_id → query public.contact_info WHERE contact_id = X AND type = channel
             # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
             # (3) neither → resolve owner entity's channel identifier (default path)
             if contact_id is not None:
@@ -4563,7 +4563,7 @@ class ButlerDaemon:
                         agent_summary = (
                             f"notify() could not deliver a {channel!r} notification: "
                             f"contact {contact_id} has no {info_type!r} identifier in "
-                            f"shared.contact_info. The message was: {message!r}. "
+                            f"public.contact_info. The message was: {message!r}. "
                             f"To resolve, add a {info_type!r} contact_info entry for this "
                             f"contact and re-trigger the notification."
                         )
@@ -5519,7 +5519,7 @@ class ButlerDaemon:
         shared_db_schema: str | None = None
         if schema_topology:
             shared_db_name = self.config.db_name
-            shared_db_schema = "shared"
+            shared_db_schema = "public"
             if (
                 os.environ.get("BUTLER_SHARED_DB_NAME") is not None
                 and configured_shared_db_name != shared_db_name

@@ -319,7 +319,7 @@ class TestNotifyContactIdResolution:
         assert delivery["recipient"] == "123456789"
 
     async def test_resolve_contact_channel_identifier_queries_db(self, butler_dir: Path) -> None:
-        """_resolve_contact_channel_identifier should query shared.contact_info."""
+        """_resolve_contact_channel_identifier should query public.contact_info."""
         patches = _patch_infra()
 
         mock_pool = AsyncMock()
@@ -364,7 +364,7 @@ class TestNotifyContactIdResolution:
         mock_conn.fetchrow.assert_awaited_once()
         call_args = mock_conn.fetchrow.await_args
         query = call_args.args[0]
-        assert "shared.contact_info" in query
+        assert "public.contact_info" in query
         assert "ci.contact_id" in query
         assert "ci.type" in query
         assert "is_primary" in query
@@ -498,7 +498,7 @@ class TestNotifyContactIdResolution:
 
         # Use the string-based check: "does not exist"
         mock_conn.fetchrow = AsyncMock(
-            side_effect=Exception("relation shared.contact_info does not exist")
+            side_effect=Exception("relation public.contact_info does not exist")
         )
 
         @asynccontextmanager
@@ -990,7 +990,7 @@ class TestNotifyEmailRecipientValidation:
     """Validate that unknown email recipients are rejected to prevent hallucinated sends."""
 
     async def test_unknown_email_recipient_parked_as_pending(self, butler_dir: Path) -> None:
-        """An email recipient not in shared.contact_info should be parked."""
+        """An email recipient not in public.contact_info should be parked."""
         patches = _patch_infra()
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         assert notify_fn is not None
@@ -1015,7 +1015,7 @@ class TestNotifyEmailRecipientValidation:
         mock_client.call_tool.assert_not_awaited()
 
     async def test_known_email_recipient_allowed(self, butler_dir: Path) -> None:
-        """An email recipient found in shared.contact_info should be delivered."""
+        """An email recipient found in public.contact_info should be delivered."""
         patches = _patch_infra()
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         assert notify_fn is not None

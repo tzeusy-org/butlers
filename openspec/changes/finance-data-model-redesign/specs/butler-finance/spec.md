@@ -30,7 +30,7 @@ The finance butler migrates transaction tools to use the dedicated `finance.tran
 - **THEN** it SHALL first check for an existing duplicate using the tiered dedup key hierarchy on `finance.transactions`
 - **AND** if a duplicate is found, the existing transaction ID SHALL be returned (idempotent dedup)
 - **AND** if no duplicate is found, it SHALL INSERT into `finance.transactions` with all applicable columns
-- **AND** it SHALL fire a background task to mirror the write to `shared.facts` with `predicate='transaction_{direction}'`, `valid_at=posted_at`, `entity_id=owner_entity_id`, `scope='finance'`, and metadata containing all transaction fields
+- **AND** it SHALL fire a background task to mirror the write to `public.facts` with `predicate='transaction_{direction}'`, `valid_at=posted_at`, `entity_id=owner_entity_id`, `scope='finance'`, and metadata containing all transaction fields
 - **AND** the SPO mirror write SHALL be fire-and-forget (failure does not roll back the primary insert)
 - **AND** `list_transactions` SHALL query `finance.transactions WHERE deleted_at IS NULL` ordered by `posted_at DESC`
 

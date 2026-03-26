@@ -6,7 +6,7 @@ Switchboard's message ingestion path **before** the LLM routing decision.
 For each incoming message:
 
 1. Call ``resolve_contact_by_channel(pool, channel_type, channel_value)`` to
-   look up the sender in ``shared.contact_info JOIN shared.contacts``.
+   look up the sender in ``public.contact_info JOIN public.contacts``.
 2. If unknown: create a temporary contact with ``needs_disambiguation=true``
    and notify the owner (exactly once per new unknown sender).
 3. Build the identity preamble and inject it at the top of the routed prompt.
@@ -102,7 +102,7 @@ async def resolve_and_inject_identity(
     ----------
     pool:
         asyncpg pool for the Switchboard schema.  Must have at minimum SELECT
-        on ``shared.contact_info`` and ``shared.contacts``, and INSERT on both
+        on ``public.contact_info`` and ``public.contacts``, and INSERT on both
         (for unknown sender creation).
     channel_type:
         Source channel type (e.g. ``"telegram"``, ``"email"``).
@@ -130,7 +130,7 @@ async def resolve_and_inject_identity(
     if not channel_value:
         return IdentityResolutionResult()
 
-    # Step 1: Attempt to resolve from shared.contact_info JOIN shared.contacts.
+    # Step 1: Attempt to resolve from public.contact_info JOIN public.contacts.
     resolved: ResolvedContact | None = await resolve_contact_by_channel(
         pool, channel_type, channel_value
     )

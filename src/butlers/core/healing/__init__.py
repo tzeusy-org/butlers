@@ -2,7 +2,7 @@
 
 Provides deterministic error fingerprinting, severity scoring, dual-input
 support (raw exception objects or structured string fields), the CRUD and gate
-query layer for shared.healing_attempts, git worktree lifecycle management,
+query layer for public.healing_attempts, git worktree lifecycle management,
 and the 10-gate dispatch engine.
 """
 

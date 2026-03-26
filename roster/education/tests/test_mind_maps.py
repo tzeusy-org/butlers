@@ -302,8 +302,8 @@ def _make_node_create_pool(
     Call order:
       1. fetchrow → INSERT node RETURNING id
       2. fetchrow → SELECT title FROM education.mind_maps
-      3. execute  → INSERT INTO shared.entities … ON CONFLICT DO NOTHING
-      4. fetchval → SELECT id FROM shared.entities
+      3. execute  → INSERT INTO public.entities … ON CONFLICT DO NOTHING
+      4. fetchval → SELECT id FROM public.entities
       5. execute  → UPDATE education.mind_map_nodes SET entity_id
     """
     return _make_pool(
@@ -362,7 +362,7 @@ class TestMindMapNodeCreate:
         entity_id = str(uuid.uuid4())
         pool = _make_node_create_pool(node_id, map_id, entity_id, map_title="Python Basics")
         await mind_map_node_create(pool, mind_map_id=map_id, label="Variables")
-        # The INSERT into shared.entities should use canonical_name "Python Basics > Variables"
+        # The INSERT into public.entities should use canonical_name "Python Basics > Variables"
         entity_insert_call = pool.execute.call_args_list[0]
         assert "Python Basics > Variables" in str(entity_insert_call)
 
@@ -374,7 +374,7 @@ class TestMindMapNodeCreate:
         entity_id = str(uuid.uuid4())
         pool = _make_node_create_pool(node_id, map_id, entity_id)
         await mind_map_node_create(pool, mind_map_id=map_id, label="Loops")
-        # Verify ON CONFLICT DO NOTHING in the shared.entities INSERT
+        # Verify ON CONFLICT DO NOTHING in the public.entities INSERT
         entity_insert_sql = pool.execute.call_args_list[0].args[0]
         assert "ON CONFLICT DO NOTHING" in entity_insert_sql.upper()
 

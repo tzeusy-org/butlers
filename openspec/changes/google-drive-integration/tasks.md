@@ -55,9 +55,9 @@
 
 ## 8. Google Drive Connector — Core Implementation
 
-- [ ] 8.1 Create `src/butlers/connectors/google_drive.py` with `GDriveConnectorManager` class: account discovery from `shared.google_accounts`, poll loop lifecycle dict keyed by email.
+- [ ] 8.1 Create `src/butlers/connectors/google_drive.py` with `GDriveConnectorManager` class: account discovery from `public.google_accounts`, poll loop lifecycle dict keyed by email.
 - [ ] 8.2 Create `GDriveAccountLoop` class: encapsulates per-account state (credentials, pageToken cursor, metadata cache, source filter evaluator), runs as independent asyncio task.
-- [ ] 8.3 Implement account discovery at startup: query `shared.google_accounts WHERE status = 'active'` filtered to accounts with `drive.readonly` or `drive` in `granted_scopes`. Spawn loop per qualifying account.
+- [ ] 8.3 Implement account discovery at startup: query `public.google_accounts WHERE status = 'active'` filtered to accounts with `drive.readonly` or `drive` in `granted_scopes`. Spawn loop per qualifying account.
 - [ ] 8.4 Implement per-account credential resolution via `resolve_google_credentials(store, account=<email>)` with auto-resolved `endpoint_identity = "google_drive:user:<email>"`.
 - [ ] 8.5 Implement per-account error isolation: loop-level try/except with independent backoff/retry.
 

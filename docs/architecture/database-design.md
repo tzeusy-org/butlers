@@ -8,46 +8,46 @@
 
 ![Database Schema Topology](./database-schema.svg)
 
-Butlers uses a single PostgreSQL database with per-butler schema isolation. Each butler operates within its own schema, with access to a `shared` schema for cross-butler data (contacts, model catalog, credentials) and the `public` schema as a fallback. This design provides strong data boundaries between butlers while allowing shared identity and configuration data through a controlled surface.
+Butlers uses a single PostgreSQL database with per-butler schema isolation. Each butler operates within its own schema, with access to the `public` schema for cross-butler data (contacts, model catalog, credentials) and the `public` schema as a fallback. This design provides strong data boundaries between butlers while allowing shared identity and configuration data through a controlled surface.
 
 ## Schema Isolation Model
 
 ### Per-Butler Schemas
 
-Each butler gets its own PostgreSQL schema (e.g., `switchboard`, `general`, `relationship`, `health`, `messenger`). The `Database` class in `src/butlers/db.py` configures the connection pool's `search_path` to `<butler_schema>, shared, public` at connection time:
+Each butler gets its own PostgreSQL schema (e.g., `switchboard`, `general`, `relationship`, `health`, `messenger`). The `Database` class in `src/butlers/db.py` configures the connection pool's `search_path` to `<butler_schema>, public` at connection time:
 
 ```python
 def schema_search_path(schema: str | None) -> str | None:
     search_path: list[str] = []
-    for part in (normalized, "shared", "public"):
+    for part in (normalized, "public"):
         if part not in search_path:
             search_path.append(part)
     return ",".join(search_path)
 ```
 
-This means unqualified table references in SQL queries resolve first to the butler's own schema, then to `shared`, then to `public`. Butler code never needs to qualify table names with schema prefixes for its own tables or shared tables.
+This means unqualified table references in SQL queries resolve first to the butler's own schema, then to `public`, then to `public`. Butler code never needs to qualify table names with schema prefixes for its own tables or shared tables.
 
-### Shared Schema
+### Cross-Butler Tables (in `public`)
 
-The `shared` schema contains cross-butler data that must be accessible to all butlers:
+The `public` schema contains cross-butler data that must be accessible to all butlers:
 
-**`shared.contacts`** — The canonical contact registry. One row per known person/actor. Includes a `roles` array (e.g., `['owner']`) and optional `entity_id` foreign key to the memory butler's entity graph. Bootstraps with an "Owner" contact on first startup.
+**`public.contacts`** — The canonical contact registry. One row per known person/actor. Includes a `roles` array (e.g., `['owner']`) and optional `entity_id` foreign key to the memory butler's entity graph. Bootstraps with an "Owner" contact on first startup.
 
-**`shared.contact_info`** — Per-channel identifiers linked to contacts (e.g., Telegram chat ID, email address). UNIQUE on `(type, value)`. Entries with `secured=true` hold credential data (email passwords, API keys) and are masked in API list responses.
+**`public.contact_info`** — Per-channel identifiers linked to contacts (e.g., Telegram chat ID, email address). UNIQUE on `(type, value)`. Entries with `secured=true` hold credential data (email passwords, API keys) and are masked in API list responses.
 
-**`shared.model_catalog`** — The model catalog for dynamic model routing. Contains runtime types, model IDs, complexity tiers, priority rankings, and extra CLI arguments.
+**`public.model_catalog`** — The model catalog for dynamic model routing. Contains runtime types, model IDs, complexity tiers, priority rankings, and extra CLI arguments.
 
-**`shared.butler_model_overrides`** — Per-butler overrides for model catalog entries. Allows individual butlers to remap enabled state, priority, and complexity tier without duplicating catalog rows.
+**`public.butler_model_overrides`** — Per-butler overrides for model catalog entries. Allows individual butlers to remap enabled state, priority, and complexity tier without duplicating catalog rows.
 
-**`shared.token_limits`** — Token budget configuration per model catalog entry, with 24-hour and 30-day rolling windows.
+**`public.token_limits`** — Token budget configuration per model catalog entry, with 24-hour and 30-day rolling windows.
 
-**`shared.token_usage_ledger`** — Token usage records for quota enforcement. Best-effort writes that never block session execution.
+**`public.token_usage_ledger`** — Token usage records for quota enforcement. Best-effort writes that never block session execution.
 
-**`shared.provider_config`** — Provider-specific configuration (e.g., Ollama base URL) for runtime adapters.
+**`public.provider_config`** — Provider-specific configuration (e.g., Ollama base URL) for runtime adapters.
 
 ### Isolation Invariants
 
-- Each butler can only access its own schema plus `shared`
+- Each butler can only access its own schema plus `public`
 - Direct cross-butler schema access is prohibited
 - Inter-butler communication happens exclusively via MCP tool calls through the Switchboard
 - Cross-butler foreign keys are never created

@@ -61,7 +61,7 @@ def schema_search_path(schema: str | None) -> str | None:
     if normalized is None:
         return None
     search_path: list[str] = []
-    for part in (normalized, "shared", "public"):
+    for part in (normalized, "public"):
         if part not in search_path:
             search_path.append(part)
     return ",".join(search_path)

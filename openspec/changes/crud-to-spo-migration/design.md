@@ -27,13 +27,13 @@ The memory module's `facts` table (bu-axm) supports `entity_id`, `valid_at`, `me
 
 **Rationale:**
 - Bare string subjects prevent cross-butler entity resolution and graph traversal
-- The owner entity UUID is available at daemon startup via `shared.contacts WHERE roles @> '["owner"]'`
-- Contact entities are available via `shared.contacts.entity_id` FK
+- The owner entity UUID is available at daemon startup via `public.contacts WHERE roles @> '["owner"]'`
+- Contact entities are available via `public.contacts.entity_id` FK
 - Unresolved actors get an anonymous placeholder entity via `memory_entity_create()`
 
 **Resolution cascade:**
 1. Self-data (health, finance): use owner entity_id bootstrapped at startup
-2. Contact-data (relationship): resolve `contact_id → shared.contacts → entity_id`; if `entity_id` is NULL, trigger `memory_entity_create()` and backfill `shared.contacts.entity_id`
+2. Contact-data (relationship): resolve `contact_id → public.contacts → entity_id`; if `entity_id` is NULL, trigger `memory_entity_create()` and backfill `public.contacts.entity_id`
 3. HA device data (home): resolve or create a named entity per HA entity ID (entity_type = 'other', metadata.entity_class = 'ha_device')
 4. Unresolved actors in any domain: `memory_entity_create()` with `entity_type='other'`, name = best available string, metadata noting provenance
 

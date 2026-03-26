@@ -147,7 +147,7 @@ separation has been violated.
 ## Why Single PostgreSQL with Schema Isolation
 
 All butlers share a single PostgreSQL database. Each butler gets its own schema.
-A `shared` schema holds cross-butler identity tables (contacts, contact info)
+The `public` schema holds cross-butler identity tables (contacts, contact info)
 and shared coordination tables (situational context signals, insight candidates,
 insight delivery settings).
 
@@ -166,8 +166,8 @@ insight delivery settings).
   normal operations. The schema boundary is the guardrail.
 - Migrations are scoped to the butler that owns the schema. Adding a table to
   the health butler does not touch the finance butler's schema.
-- The `shared` schema is the explicit, controlled surface for cross-butler
-  data. If it is not in `shared`, it is private. Shared tables include
+- The `public` schema is the explicit, controlled surface for cross-butler
+  data. If it is not in `public`, it is private. Shared tables include
   identity data (contacts, contact info), situational context signals
   (RFC 0009), and insight delivery infrastructure (RFC 0011).
 
@@ -202,7 +202,7 @@ justification.
 Two cross-cutting pipelines augment the core loop without modifying it:
 
 - **Situational context** (RFC 0009): A pull-based shared awareness layer
-  (`shared.user_context`) where butlers write TTL-bounded signals about the
+  (`public.user_context`) where butlers write TTL-bounded signals about the
   user's state and read them before acting. Context checking is opt-in --- it
   does not change the core loop, but enriches step 5 for butlers that use it.
 - **Proactive insight delivery** (RFC 0011): A three-phase pipeline where

@@ -16,7 +16,7 @@ Key behaviors:
 - ingest.v1 envelope normalization with privacy-conservative metadata tier default
 - Timestamp-based checkpoint via cursor_store keyed by ("owntracks", endpoint_identity)
 - Idempotency key: owntracks:<endpoint_identity>:<tst>:<type>[:<event>]
-- Scheduled data retention purge (every 6 hours, DELETE from shared.ingestion_events)
+- Scheduled data retention purge (every 6 hours, DELETE from public.ingestion_events)
 - Heartbeat protocol with connector_type="owntracks" and event counters (6.1)
 - Prometheus metrics including connector_owntracks_events_received_total (6.2)
 - Health endpoint returning state/uptime/last_event_at/events_today (6.3)
@@ -476,7 +476,7 @@ class OwnTracksRetentionConfig:
 
     Attributes:
         retention_days: Number of days to retain location events. Rows older than
-            this threshold are deleted from shared.ingestion_events on each purge cycle.
+            this threshold are deleted from public.ingestion_events on each purge cycle.
             Must be an integer >= ``MIN_RETENTION_DAYS`` (1).
     """
 
@@ -539,7 +539,7 @@ class OwnTracksRetentionConfig:
 # ---------------------------------------------------------------------------
 
 _PURGE_SQL = """\
-DELETE FROM shared.ingestion_events
+DELETE FROM public.ingestion_events
 WHERE source_channel = 'owntracks'
   AND received_at < NOW() - $1 * INTERVAL '1 day'
 """
@@ -554,7 +554,7 @@ class OwnTracksRetention:
     """Background data retention task for the OwnTracks connector.
 
     Runs a purge cycle every ``RETENTION_PURGE_INTERVAL_S`` seconds (6 hours)
-    that deletes expired rows from ``shared.ingestion_events`` where
+    that deletes expired rows from ``public.ingestion_events`` where
     ``source_channel = 'owntracks'`` and ``received_at`` is older than the
     configured retention period.
 
@@ -643,7 +643,7 @@ class OwnTracksRetention:
     async def purge_once(self) -> int:
         """Execute a single purge cycle immediately.
 
-        Deletes rows from ``shared.ingestion_events`` where
+        Deletes rows from ``public.ingestion_events`` where
         ``source_channel = 'owntracks'`` and ``received_at`` is older than the
         configured retention period.
 
@@ -1714,7 +1714,7 @@ async def run_owntracks_connector() -> None:
 
     db_params = db_params_from_env()
     shared_db_name = shared_db_name_from_env()
-    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared")
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
     # Create DB pool for credentials and policy rules
     db_pool: asyncpg.Pool | None = None
     try:

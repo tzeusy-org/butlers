@@ -159,7 +159,7 @@ class ContactBackfillResolver:
         normalized = email_value.strip().lower()
         row = await self._pool.fetchrow(
             """
-            SELECT ci.contact_id FROM shared.contact_info ci
+            SELECT ci.contact_id FROM public.contact_info ci
             WHERE ci.type = 'email'
               AND lower(ci.value) = $1
             LIMIT 1
@@ -174,7 +174,7 @@ class ContactBackfillResolver:
         normalized = phone_value.strip()
         row = await self._pool.fetchrow(
             """
-            SELECT ci.contact_id FROM shared.contact_info ci
+            SELECT ci.contact_id FROM public.contact_info ci
             WHERE ci.type = 'phone'
               AND (ci.value = $1 OR ci.value = $2)
             LIMIT 1
@@ -353,7 +353,7 @@ class ContactBackfillWriter:
         ]
         try:
             row = await self._pool.fetchrow(
-                "INSERT INTO shared.entities (tenant_id, canonical_name, entity_type, "
+                "INSERT INTO public.entities (tenant_id, canonical_name, entity_type, "
                 "aliases, metadata, roles) VALUES ('relationship', $1, $2, $3, "
                 "'{}'::jsonb, '{}') RETURNING id",
                 canonical,
@@ -363,7 +363,7 @@ class ContactBackfillWriter:
             return row["id"] if row else None
         except asyncpg.UniqueViolationError:
             row = await self._pool.fetchrow(
-                "SELECT id FROM shared.entities WHERE tenant_id = 'relationship' "
+                "SELECT id FROM public.entities WHERE tenant_id = 'relationship' "
                 "AND LOWER(canonical_name) = LOWER($1) AND entity_type = $2 "
                 "AND (metadata->>'merged_into') IS NULL LIMIT 1",
                 canonical,
@@ -505,7 +505,7 @@ class ContactBackfillWriter:
           Sync must never flip the secured flag; only privileged identity-layer
           operations may set it.
         - INSERT uses ``ON CONFLICT DO NOTHING`` so that the UNIQUE(type, value)
-          constraint on shared.contact_info never raises; when a (type, value)
+          constraint on public.contact_info never raises; when a (type, value)
           pair already exists for another contact we silently skip insertion.
         """
         # Build the full set of contact_info entries to sync
@@ -540,7 +540,7 @@ class ContactBackfillWriter:
             # NOTE: Only is_primary is updated on existing rows; secured is never modified.
             existing = await self._pool.fetchrow(
                 """
-                SELECT id, is_primary FROM shared.contact_info
+                SELECT id, is_primary FROM public.contact_info
                 WHERE contact_id = $1 AND type = $2 AND lower(value) = lower($3)
                 """,
                 local_id,
@@ -552,14 +552,14 @@ class ContactBackfillWriter:
                 if primary and not existing["is_primary"]:
                     await self._pool.execute(
                         """
-                        UPDATE shared.contact_info SET is_primary = false
+                        UPDATE public.contact_info SET is_primary = false
                         WHERE contact_id = $1 AND type = $2
                         """,
                         local_id,
                         type_,
                     )
                     await self._pool.execute(
-                        "UPDATE shared.contact_info SET is_primary = true WHERE id = $1",
+                        "UPDATE public.contact_info SET is_primary = true WHERE id = $1",
                         existing["id"],
                     )
                 continue
@@ -569,7 +569,7 @@ class ContactBackfillWriter:
             if primary:
                 await self._pool.execute(
                     """
-                    UPDATE shared.contact_info SET is_primary = false
+                    UPDATE public.contact_info SET is_primary = false
                     WHERE contact_id = $1 AND type = $2
                     """,
                     local_id,
@@ -582,7 +582,7 @@ class ContactBackfillWriter:
             #    linked to a *different* contact, we skip insertion silently.
             await self._pool.execute(
                 """
-                INSERT INTO shared.contact_info (contact_id, type, value, label, is_primary)
+                INSERT INTO public.contact_info (contact_id, type, value, label, is_primary)
                 VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT DO NOTHING
                 """,

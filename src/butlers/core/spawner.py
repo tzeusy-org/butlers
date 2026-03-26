@@ -491,7 +491,7 @@ async def resolve_provider_config(
     """Build an OpenCode-compatible provider config for the given model.
 
     When *model_id* starts with ``ollama/``, queries
-    ``shared.provider_config`` for the Ollama provider's configured base
+    ``public.provider_config`` for the Ollama provider's configured base
     URL and returns a config dict that OpenCode can consume, including the
     ``npm`` adapter package, ``/v1``-suffixed base URL, and explicit model
     registration.  See https://docs.ollama.com/integrations/opencode
@@ -508,7 +508,7 @@ async def resolve_provider_config(
 
     try:
         row = await pool.fetchrow(
-            "SELECT config FROM shared.provider_config WHERE provider_type = $1 AND enabled = true",
+            "SELECT config FROM public.provider_config WHERE provider_type = $1 AND enabled = true",
             provider_type,
         )
     except Exception:
@@ -641,7 +641,7 @@ class Spawner:
     async def _resolve_provider_config(
         self, model_id: str | None
     ) -> dict[str, dict[str, Any]] | None:
-        """Look up provider base URL from ``shared.provider_config``.
+        """Look up provider base URL from ``public.provider_config``.
 
         Delegates to the module-level :func:`resolve_provider_config`.
         """

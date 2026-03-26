@@ -47,7 +47,7 @@ def _make_catalog_row(
     enabled: bool = True,
     priority: int = 0,
 ) -> dict[str, Any]:
-    """Build a fake asyncpg record dict for shared.model_catalog."""
+    """Build a fake asyncpg record dict for public.model_catalog."""
     return {
         "id": entry_id or uuid.uuid4(),
         "alias": alias,
@@ -70,7 +70,7 @@ def _make_override_row(
     priority: int | None = None,
     complexity_tier: str | None = None,
 ) -> dict[str, Any]:
-    """Build a fake asyncpg record dict for shared.butler_model_overrides."""
+    """Build a fake asyncpg record dict for public.butler_model_overrides."""
     return {
         "id": override_id or uuid.uuid4(),
         "butler_name": butler_name,

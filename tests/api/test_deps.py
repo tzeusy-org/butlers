@@ -383,7 +383,7 @@ class TestInitDbManager:
         mgr.add_butler.assert_any_await(
             "switchboard", db_name="butlers", db_schema="switchboard", modules=frozenset()
         )
-        mgr.set_credential_shared_pool.assert_awaited_once_with("butlers", db_schema="shared")
+        mgr.set_credential_shared_pool.assert_awaited_once_with("butlers", db_schema="public")
 
 
 # ---------------------------------------------------------------------------

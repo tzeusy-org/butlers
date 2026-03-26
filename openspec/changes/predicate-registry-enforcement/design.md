@@ -130,7 +130,7 @@ Single-row PK lookup on a small table (~100 rows). **Mitigation:** Measured over
 
 **Why soft, not hard?** Following Wikidata's philosophy: constraints are guidance for editors, not enforcement gates. Hard-blocking on type mismatch would prevent legitimate edge cases (e.g., an organization acting as a parent entity in a corporate hierarchy — `parent_of(OrgA, OrgB)` is valid even though `expected_subject_type = 'person'`). Warnings teach the LLM without blocking creative usage.
 
-**Implementation:** The entity existence check in `store_fact()` already queries `shared.entities`. Extend it to `SELECT id, entity_type FROM shared.entities WHERE id = $1` (fetching `entity_type` in the same query, no additional round-trip). Compare against the registry's expectations. If mismatch, append to a `warnings` list that propagates through the response.
+**Implementation:** The entity existence check in `store_fact()` already queries `public.entities`. Extend it to `SELECT id, entity_type FROM public.entities WHERE id = $1` (fetching `entity_type` in the same query, no additional round-trip). Compare against the registry's expectations. If mismatch, append to a `warnings` list that propagates through the response.
 
 ### D8: Example payloads in predicate registry via example_json
 

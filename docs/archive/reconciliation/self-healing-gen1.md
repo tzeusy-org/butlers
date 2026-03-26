@@ -483,7 +483,7 @@ parse commit messages to detect "unfixable". See DI-4.
 
 ### Req: Healing Attempts Table
 **Status: IMPLEMENTED**
-- `shared.healing_attempts` created in `core_035_self_healing_tier_and_attempts.py`.
+- `public.healing_attempts` created in `core_035_self_healing_tier_and_attempts.py`.
 - All columns match spec schema: id, fingerprint, butler_name, status, severity, exception_type,
   call_site, sanitized_msg, branch_name, worktree_path, pr_url, pr_number, session_ids, healing_session_id,
   created_at, updated_at, closed_at, error_detail.
@@ -675,7 +675,7 @@ and metadata. The current implementation is a stub that satisfies the HTTP contr
 | 8 | PR creation: `gh pr create` with structured template | IMPLEMENTED — `_create_pr()` |
 | 9 | Self-healing model tier: `Complexity.SELF_HEALING` | IMPLEMENTED |
 | 10 | Healing attempt state machine | IMPLEMENTED — `_VALID_TRANSITIONS` in tracking.py |
-| 11 | Database schema: `shared.healing_attempts` | IMPLEMENTED — core_035 migration |
+| 11 | Database schema: `public.healing_attempts` | IMPLEMENTED — core_035 migration |
 | 12 | Timeout watchdog | IMPLEMENTED — `_timeout_watchdog()` |
 | 13 | Daemon restart recovery | IMPLEMENTED — `recover_stale_attempts()` |
 | 14 | PR creation flow: push → anonymize → validate → create | IMPLEMENTED |

@@ -257,7 +257,7 @@ class TelegramContactsProvider(ContactsProvider):
         {user_id: chat_id} for contacts that have private chats.
 
         This should be called after sync to populate telegram_chat_id entries
-        in shared.contact_info.
+        in public.contact_info.
         """
         client = await self._ensure_client()
         user_to_chat: dict[int, int] = {}

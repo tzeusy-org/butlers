@@ -104,7 +104,7 @@ def _make_pool(profile_rows=None, episode_rows=None) -> AsyncMock:
 
     async def fake_fetch(sql, *args, **kwargs):
         call_count["n"] += 1
-        if "shared.entities" in sql or "entity_id" in sql:
+        if "public.entities" in sql or "entity_id" in sql:
             return profile_rows
         if "episodes" in sql:
             return episode_rows

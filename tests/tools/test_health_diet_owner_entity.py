@@ -1,7 +1,7 @@
 """Regression tests for _get_owner_entity_id() in health/tools/diet.py.
 
 Verifies the post-core_016 owner-entity resolution path:
-- queries shared.entities.roles (not shared.contacts.roles)
+- queries public.entities.roles (not public.contacts.roles)
 - returns None gracefully when the table does not exist (pre-migration)
 - returns None gracefully when no owner entity is present
 - meal_log succeeds in all three cases (with entity_id, None, and DB-error fallback)
@@ -60,20 +60,20 @@ class TestGetOwnerEntityId:
     """Unit tests for the owner-entity lookup function."""
 
     async def test_queries_shared_entities_not_contacts(self) -> None:
-        """Must query shared.entities, not shared.contacts.roles."""
+        """Must query public.entities, not public.contacts.roles."""
         owner_id = uuid.uuid4()
         pool = _make_pool(fetchrow_result=_make_entity_row(owner_id))
 
         result = await _get_owner_entity_id(pool)
 
         assert result == owner_id
-        # Verify the SQL sent to fetchrow targets shared.entities
+        # Verify the SQL sent to fetchrow targets public.entities
         call_args = pool.fetchrow.call_args
         sql: str = call_args.args[0]
-        assert "shared.entities" in sql, "Must query shared.entities"
+        assert "public.entities" in sql, "Must query public.entities"
         assert "'owner' = ANY(roles)" in sql, "Must use roles column on entities"
-        # Must NOT reference shared.contacts
-        assert "shared.contacts" not in sql, "Must not query shared.contacts"
+        # Must NOT reference public.contacts
+        assert "public.contacts" not in sql, "Must not query public.contacts"
 
     async def test_returns_entity_id_when_owner_exists(self) -> None:
         """Returns the UUID of the owner entity when found."""
@@ -93,10 +93,10 @@ class TestGetOwnerEntityId:
         assert result is None
 
     async def test_returns_none_when_table_missing(self) -> None:
-        """Returns None gracefully when shared.entities does not exist (pre-migration DB)."""
+        """Returns None gracefully when public.entities does not exist (pre-migration DB)."""
         pool = _make_pool(
             fetchrow_side_effect=asyncpg.exceptions.UndefinedTableError(
-                'relation "shared.entities" does not exist'
+                'relation "public.entities" does not exist'
             )
         )
 
@@ -199,11 +199,11 @@ class TestMealLogOwnerEntityFallback:
         assert _call_kwargs.get("entity_id") is None
 
     async def test_meal_log_succeeds_when_entities_table_missing(self) -> None:
-        """meal_log works on pre-migration databases where shared.entities doesn't exist."""
+        """meal_log works on pre-migration databases where public.entities doesn't exist."""
         fact_id = uuid.uuid4()
         pool = _make_full_pool(
             fetchrow_side_effect=asyncpg.exceptions.UndefinedTableError(
-                'relation "shared.entities" does not exist'
+                'relation "public.entities" does not exist'
             )
         )
 

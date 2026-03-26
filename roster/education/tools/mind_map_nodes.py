@@ -107,7 +107,7 @@ async def mind_map_node_create(
     # We then SELECT the canonical live row to get the ID in all cases.
     await pool.execute(
         """
-        INSERT INTO shared.entities
+        INSERT INTO public.entities
             (tenant_id, canonical_name, entity_type, aliases, metadata)
         VALUES ('shared', $1, 'other', '{}', $2::jsonb)
         ON CONFLICT DO NOTHING
@@ -119,7 +119,7 @@ async def mind_map_node_create(
     entity_id: str = str(
         await pool.fetchval(
             """
-            SELECT id FROM shared.entities
+            SELECT id FROM public.entities
             WHERE tenant_id = 'shared'
               AND canonical_name = $1
               AND entity_type = 'other'

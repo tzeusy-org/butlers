@@ -99,9 +99,9 @@ class TestUpsertOwnerEntityInfo:
         conn.execute.assert_not_awaited()
 
     async def test_returns_false_when_table_missing(self) -> None:
-        """Upsert returns False when shared.entities table doesn't exist."""
+        """Upsert returns False when public.entities table doesn't exist."""
         UndefinedTableError = type("UndefinedTableError", (Exception,), {})
-        exc = UndefinedTableError('relation "shared.entities" does not exist')
+        exc = UndefinedTableError('relation "public.entities" does not exist')
         pool, _ = _make_pool(raises=exc)
         result = await upsert_owner_entity_info(pool, "google_oauth_refresh", "token")
         assert result is False
@@ -156,7 +156,7 @@ class TestDeleteOwnerEntityInfo:
     async def test_returns_false_when_table_missing(self) -> None:
         """Delete returns False when tables don't exist."""
         UndefinedTableError = type("UndefinedTableError", (Exception,), {})
-        exc = UndefinedTableError('relation "shared.entities" does not exist')
+        exc = UndefinedTableError('relation "public.entities" does not exist')
         pool, _ = _make_pool(raises=exc)
         result = await delete_owner_entity_info(pool, "google_oauth_refresh")
         assert result is False

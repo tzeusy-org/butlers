@@ -106,10 +106,10 @@ class TestStoreFACTCatalog:
         )
         # pool.execute is called for the canonical INSERT only (inside the transaction).
         # Verify _upsert_catalog was NOT called separately by checking pool.execute
-        # was not called with shared.memory_catalog.
+        # was not called with public.memory_catalog.
         for call in pool.execute.call_args_list:
             sql_arg = call.args[0] if call.args else ""
-            assert "shared.memory_catalog" not in sql_arg
+            assert "public.memory_catalog" not in sql_arg
 
     async def test_catalog_skipped_when_no_source_schema(self, mock_pool, embedding_engine):
         """When source_schema is not provided, catalog write is skipped."""
@@ -125,7 +125,7 @@ class TestStoreFACTCatalog:
         )
         for call in pool.execute.call_args_list:
             sql_arg = call.args[0] if call.args else ""
-            assert "shared.memory_catalog" not in sql_arg
+            assert "public.memory_catalog" not in sql_arg
 
     async def test_catalog_written_when_enabled(self, mock_pool, embedding_engine):
         """When enable_shared_catalog=True and source_schema provided, catalog upsert runs."""
@@ -139,11 +139,11 @@ class TestStoreFACTCatalog:
             enable_shared_catalog=True,
             source_schema="health",
         )
-        # At least one pool.execute call should reference shared.memory_catalog
+        # At least one pool.execute call should reference public.memory_catalog
         catalog_calls = [
             call
             for call in pool.execute.call_args_list
-            if call.args and "shared.memory_catalog" in call.args[0]
+            if call.args and "public.memory_catalog" in call.args[0]
         ]
         assert len(catalog_calls) == 1, "Expected exactly one catalog upsert"
 
@@ -152,7 +152,7 @@ class TestStoreFACTCatalog:
         pool, _conn = mock_pool
 
         async def _execute_side_effect(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 raise RuntimeError("Simulated catalog failure")
             return None
 
@@ -177,7 +177,7 @@ class TestStoreFACTCatalog:
         pool, _conn = mock_pool
 
         async def _execute_side_effect(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 raise RuntimeError("Simulated catalog failure")
             return None
 
@@ -204,7 +204,7 @@ class TestStoreFACTCatalog:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -248,7 +248,7 @@ class TestStoreRuleCatalog:
         )
         for call in pool.execute.call_args_list:
             sql_arg = call.args[0] if call.args else ""
-            assert "shared.memory_catalog" not in sql_arg
+            assert "public.memory_catalog" not in sql_arg
 
     async def test_catalog_written_when_enabled(self, mock_pool, embedding_engine):
         pool, _conn = mock_pool
@@ -262,7 +262,7 @@ class TestStoreRuleCatalog:
         catalog_calls = [
             call
             for call in pool.execute.call_args_list
-            if call.args and "shared.memory_catalog" in call.args[0]
+            if call.args and "public.memory_catalog" in call.args[0]
         ]
         assert len(catalog_calls) == 1
 
@@ -270,7 +270,7 @@ class TestStoreRuleCatalog:
         pool, _conn = mock_pool
 
         async def _execute_side_effect(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 raise RuntimeError("Simulated catalog failure")
             return None
 
@@ -291,7 +291,7 @@ class TestStoreRuleCatalog:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -325,7 +325,7 @@ class TestFactCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -338,7 +338,7 @@ class TestFactCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -369,7 +369,7 @@ class TestFactCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -394,7 +394,7 @@ class TestFactCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -420,7 +420,7 @@ class TestFactCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -446,7 +446,7 @@ class TestFactCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -474,7 +474,7 @@ class TestFactCatalogEnrichmentFields:
         obj_entity_id = uuid.uuid4()
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -523,7 +523,7 @@ class TestRuleCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -549,7 +549,7 @@ class TestRuleCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -574,7 +574,7 @@ class TestRuleCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -598,7 +598,7 @@ class TestRuleCatalogEnrichmentFields:
         captured: list[tuple] = []
 
         async def _capture_execute(sql, *args, **kwargs):
-            if "shared.memory_catalog" in sql:
+            if "public.memory_catalog" in sql:
                 captured.append((sql, args))
             return None
 
@@ -635,9 +635,9 @@ class TestSearchCatalog:
         results = await search_catalog(pool, "health tips", embedding_engine, mode="semantic")
         assert results == []
         assert pool.fetch.call_count == 1
-        # Verify the query includes shared.memory_catalog
+        # Verify the query includes public.memory_catalog
         sql_called = pool.fetch.call_args.args[0]
-        assert "shared.memory_catalog" in sql_called
+        assert "public.memory_catalog" in sql_called
         assert "embedding <=>" in sql_called
 
     async def test_keyword_mode_calls_pool_fetch(self, mock_pool, embedding_engine):
@@ -647,7 +647,7 @@ class TestSearchCatalog:
         assert results == []
         assert pool.fetch.call_count == 1
         sql_called = pool.fetch.call_args.args[0]
-        assert "shared.memory_catalog" in sql_called
+        assert "public.memory_catalog" in sql_called
         assert "search_vector" in sql_called
 
     async def test_hybrid_mode_calls_pool_fetch_twice(self, mock_pool, embedding_engine):

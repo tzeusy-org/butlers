@@ -124,14 +124,14 @@ The system SHALL provide a `mind_map_node_create(pool, mind_map_id, label, descr
 
 ### Requirement: Entity-per-node anchoring
 
-Every mind map node SHALL have a corresponding `shared.entities` entry so that memory facts about the concept can be anchored to a stable entity rather than relying on free-text `subject` strings. The entity is auto-created during node creation and linked via `education.mind_map_nodes.entity_id`.
+Every mind map node SHALL have a corresponding `public.entities` entry so that memory facts about the concept can be anchored to a stable entity rather than relying on free-text `subject` strings. The entity is auto-created during node creation and linked via `education.mind_map_nodes.entity_id`.
 
-The `entity_id` column on `mind_map_nodes` SHALL be a nullable UUID foreign key referencing `shared.entities(id)`. It is nullable to allow backward compatibility with existing nodes that predate this feature; a migration SHALL backfill existing nodes.
+The `entity_id` column on `mind_map_nodes` SHALL be a nullable UUID foreign key referencing `public.entities(id)`. It is nullable to allow backward compatibility with existing nodes that predate this feature; a migration SHALL backfill existing nodes.
 
 #### Scenario: Node creation auto-creates a shared entity
 
 - **WHEN** `mind_map_node_create(pool, <map_id>, "List Comprehensions")` is called on a mind map titled "Python"
-- **THEN** a new row MUST exist in `shared.entities` with `canonical_name = 'Python > List Comprehensions'`, `entity_type = 'other'`, and `tenant_id = 'shared'`
+- **THEN** a new row MUST exist in `public.entities` with `canonical_name = 'Python > List Comprehensions'`, `entity_type = 'other'`, and `tenant_id = 'shared'`
 - **AND** the entity's `metadata` MUST include `{"source_butler": "education", "source_scope": "education"}`
 - **AND** the entity MUST NOT have `metadata.unidentified = true` (it is curriculum-derived, not transitory)
 - **AND** the created node's `entity_id` column MUST reference the new entity's UUID
@@ -143,14 +143,14 @@ The `entity_id` column on `mind_map_nodes` SHALL be a nullable UUID foreign key 
 
 #### Scenario: Duplicate entity resolution on node creation
 
-- **WHEN** `mind_map_node_create(pool, <map_id>, "Recursion")` is called and a `shared.entities` row with `canonical_name = '<map_title> > Recursion'` and `entity_type = 'other'` already exists (e.g., from a previously abandoned mind map)
+- **WHEN** `mind_map_node_create(pool, <map_id>, "Recursion")` is called and a `public.entities` row with `canonical_name = '<map_title> > Recursion'` and `entity_type = 'other'` already exists (e.g., from a previously abandoned mind map)
 - **THEN** the function MUST resolve the existing entity instead of failing
 - **AND** the created node's `entity_id` MUST reference the pre-existing entity
 
 #### Scenario: Entity survives node deletion
 
 - **WHEN** a mind map node with an `entity_id` is deleted (via CASCADE from mind map deletion)
-- **THEN** the corresponding `shared.entities` row MUST NOT be deleted
+- **THEN** the corresponding `public.entities` row MUST NOT be deleted
 - **AND** any facts anchored to that entity via `facts.entity_id` MUST remain intact
 
 #### Scenario: Entity_id is included in all node read operations

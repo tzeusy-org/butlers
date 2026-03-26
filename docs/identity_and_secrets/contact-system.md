@@ -10,7 +10,7 @@ The contact system provides a canonical registry of people and their channel ide
 
 ## Data Model
 
-### `shared.contacts`
+### `public.contacts`
 
 The canonical contact table. One row per known person or actor.
 
@@ -18,10 +18,10 @@ The canonical contact table. One row per known person or actor.
 |--------|------|-------------|
 | `id` | UUID | Primary key |
 | `name` | TEXT | Display name |
-| `entity_id` | UUID (FK) | Links to `shared.entities` for roles and metadata |
+| `entity_id` | UUID (FK) | Links to `public.entities` for roles and metadata |
 | `metadata` | JSONB | Extensible metadata (e.g., `needs_disambiguation`) |
 
-### `shared.contact_info`
+### `public.contact_info`
 
 Per-channel identifiers linked to contacts.
 
@@ -36,7 +36,7 @@ Per-channel identifiers linked to contacts.
 
 UNIQUE constraint on `(type, value)` ensures no two contacts claim the same identifier.
 
-### `shared.entities`
+### `public.entities`
 
 Entity graph nodes that contacts link to. Entities carry roles (e.g., `['owner']`, `['google_account']`) and can have attached `entity_info` key-value pairs.
 
@@ -52,9 +52,9 @@ This performs a JOIN across three tables:
 
 ```sql
 SELECT c.id, c.name, COALESCE(e.roles, '{}'), c.entity_id
-FROM shared.contact_info ci
-JOIN shared.contacts c ON c.id = ci.contact_id
-LEFT JOIN shared.entities e ON e.id = c.entity_id
+FROM public.contact_info ci
+JOIN public.contacts c ON c.id = ci.contact_id
+LEFT JOIN public.entities e ON e.id = c.entity_id
 WHERE ci.type = $1 AND ci.value = $2
 ```
 
@@ -71,9 +71,9 @@ The Switchboard builds a structured identity preamble for each routed message:
 ### Temporary Contacts
 
 When an unknown sender is detected, `create_temp_contact()` creates:
-1. A `shared.entities` entry with `metadata.unidentified = true`.
-2. A `shared.contacts` entry with `metadata.needs_disambiguation = true`.
-3. A `shared.contact_info` entry linking the channel identifier.
+1. A `public.entities` entry with `metadata.unidentified = true`.
+2. A `public.contacts` entry with `metadata.needs_disambiguation = true`.
+3. A `public.contact_info` entry linking the channel identifier.
 
 This ensures every message has an anchored identity, even if disambiguation happens later.
 

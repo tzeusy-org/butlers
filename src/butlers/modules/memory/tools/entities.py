@@ -86,7 +86,7 @@ async def entity_create(
     metadata_json = json.dumps(metadata or {})
 
     insert_sql = """
-        INSERT INTO shared.entities
+        INSERT INTO public.entities
             (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
         VALUES ($1, $2, $3, $4, $5::jsonb, $6)
         RETURNING id
@@ -104,7 +104,7 @@ async def entity_create(
         # Rename the tombstone to free the slot, then retry the insert.
         renamed = await pool.fetchval(
             """
-            UPDATE shared.entities
+            UPDATE public.entities
             SET canonical_name = canonical_name || ' [merged:' || id::text || ']',
                 updated_at = now()
             WHERE tenant_id = $1
@@ -149,7 +149,7 @@ async def entity_get(
         """
         SELECT id, tenant_id, canonical_name, entity_type, aliases, metadata,
                roles, created_at, updated_at
-        FROM shared.entities
+        FROM public.entities
         WHERE id = $1
         """,
         uuid.UUID(entity_id),
@@ -190,7 +190,7 @@ async def entity_update(
     eid = uuid.UUID(entity_id)
 
     current = await pool.fetchrow(
-        "SELECT id, metadata FROM shared.entities WHERE id = $1",
+        "SELECT id, metadata FROM public.entities WHERE id = $1",
         eid,
     )
     if current is None:
@@ -222,7 +222,7 @@ async def entity_update(
 
     row = await pool.fetchrow(
         f"""
-        UPDATE shared.entities
+        UPDATE public.entities
         SET {", ".join(set_clauses)}
         WHERE id = ${where_id_idx}
         RETURNING id, tenant_id, canonical_name, entity_type, aliases, metadata,
@@ -319,7 +319,7 @@ async def entity_resolve(
         role_tier = f"""
             -- Tier 0: role-based match (case-insensitive against roles array)
             SELECT id, canonical_name, entity_type, aliases, 0 AS tier, 'role' AS match_type
-            FROM shared.entities
+            FROM public.entities
             WHERE tenant_id = $1
               AND LOWER($2) = ANY(SELECT LOWER(r) FROM UNNEST(roles) AS r)
               AND (metadata->>'merged_into') IS NULL
@@ -337,7 +337,7 @@ async def entity_resolve(
             {role_tier}
             -- Tier 1: exact canonical_name match (case-insensitive)
             SELECT id, canonical_name, entity_type, aliases, 1 AS tier, 'exact' AS match_type
-            FROM shared.entities
+            FROM public.entities
             WHERE tenant_id = $1
               AND LOWER(canonical_name) = $2
               AND (metadata->>'merged_into') IS NULL
@@ -349,7 +349,7 @@ async def entity_resolve(
 
             -- Tier 2: exact alias match (case-insensitive)
             SELECT id, canonical_name, entity_type, aliases, 2 AS tier, 'alias' AS match_type
-            FROM shared.entities
+            FROM public.entities
             WHERE tenant_id = $1
               AND $2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
               AND (metadata->>'merged_into') IS NULL
@@ -361,7 +361,7 @@ async def entity_resolve(
 
             -- Tier 3: prefix/substring match on canonical_name and aliases
             SELECT id, canonical_name, entity_type, aliases, 3 AS tier, 'prefix' AS match_type
-            FROM shared.entities
+            FROM public.entities
             WHERE tenant_id = $1
               AND (
                   LOWER(canonical_name) LIKE ($2 || '%')
@@ -504,7 +504,7 @@ async def _fetch_fuzzy_candidates(
         rows = await pool.fetch(
             f"""
             SELECT id, canonical_name, entity_type, aliases
-            FROM shared.entities
+            FROM public.entities
             WHERE tenant_id = $1
               AND (
                   similarity(canonical_name, $2) > 0.3
@@ -642,7 +642,7 @@ async def entity_neighbors(
 
     # Validate entity existence.
     exists = await pool.fetchval(
-        "SELECT 1 FROM shared.entities WHERE id = $1 AND tenant_id = $2",
+        "SELECT 1 FROM public.entities WHERE id = $1 AND tenant_id = $2",
         eid,
         tenant_id,
     )
@@ -742,7 +742,7 @@ async def entity_neighbors(
         n.depth,
         n.path
     FROM neighbors n
-    JOIN shared.entities e ON e.id = n.neighbor_id AND e.tenant_id = $2
+    JOIN public.entities e ON e.id = n.neighbor_id AND e.tenant_id = $2
     WHERE NOT ('google_account' = ANY(e.roles))
     ORDER BY n.depth, e.canonical_name
     """
@@ -953,7 +953,7 @@ async def entity_merge(
         async with conn.transaction():
             src_row = await conn.fetchrow(
                 "SELECT id, canonical_name, aliases, metadata, roles "
-                "FROM shared.entities WHERE id = $1 FOR UPDATE",
+                "FROM public.entities WHERE id = $1 FOR UPDATE",
                 src_uuid,
             )
             if src_row is None:
@@ -961,7 +961,7 @@ async def entity_merge(
 
             tgt_row = await conn.fetchrow(
                 "SELECT id, canonical_name, aliases, metadata, roles "
-                "FROM shared.entities WHERE id = $1 FOR UPDATE",
+                "FROM public.entities WHERE id = $1 FOR UPDATE",
                 tgt_uuid,
             )
             if tgt_row is None:
@@ -1007,7 +1007,7 @@ async def entity_merge(
             merged_metadata = {**src_metadata_clean, **tgt_metadata}
 
             await conn.execute(
-                "UPDATE shared.entities SET aliases = $1, metadata = $2::jsonb, roles = $3, "
+                "UPDATE public.entities SET aliases = $1, metadata = $2::jsonb, roles = $3, "
                 "updated_at = now() WHERE id = $4",
                 new_aliases,
                 json.dumps(merged_metadata),
@@ -1018,7 +1018,7 @@ async def entity_merge(
             # Tombstone source
             src_metadata_tombstoned = {**src_metadata, "merged_into": target_entity_id}
             await conn.execute(
-                "UPDATE shared.entities SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
+                "UPDATE public.entities SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
                 json.dumps(src_metadata_tombstoned),
                 src_uuid,
             )

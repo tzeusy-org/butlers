@@ -95,7 +95,7 @@ def _make_pool_with_profile(profile_rows: list[dict]) -> AsyncMock:
     profile_dicts = [dict(r) for r in profile_rows]
 
     async def fake_fetch(sql: str, *args: Any, **kwargs: Any) -> list[dict]:
-        if "shared.entities" in sql or "entity_id" in sql:
+        if "public.entities" in sql or "entity_id" in sql:
             return profile_dicts
         if "episodes" in sql:
             return []

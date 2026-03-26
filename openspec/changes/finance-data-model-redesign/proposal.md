@@ -1,6 +1,6 @@
 ## Why
 
-The Finance butler stores transactions in two parallel systems: a dedicated `finance.transactions` table (migration `finance_001`) and the SPO fact layer (`shared.facts` with `predicate IN ('transaction_debit', 'transaction_credit')`). The upcoming finance-intelligence change commits to running all analytics (anomaly detection, trend analysis, budget enforcement, forecasting) as SQL aggregations over `shared.facts`, extracting amounts, merchants, and categories from JSONB `metadata` at query time. This defeats B-tree indexing, forces sequential scans with `::numeric` casts on every row, and will not scale at 50k+ transactions. The dedicated table already exists with proper typed columns and indexes but is sidelined. This change promotes it to the primary store and extends it with the columns and supporting tables the intelligence features require. It is a prerequisite for the finance-intelligence change.
+The Finance butler stores transactions in two parallel systems: a dedicated `finance.transactions` table (migration `finance_001`) and the SPO fact layer (`public.facts` with `predicate IN ('transaction_debit', 'transaction_credit')`). The upcoming finance-intelligence change commits to running all analytics (anomaly detection, trend analysis, budget enforcement, forecasting) as SQL aggregations over `public.facts`, extracting amounts, merchants, and categories from JSONB `metadata` at query time. This defeats B-tree indexing, forces sequential scans with `::numeric` casts on every row, and will not scale at 50k+ transactions. The dedicated table already exists with proper typed columns and indexes but is sidelined. This change promotes it to the primary store and extends it with the columns and supporting tables the intelligence features require. It is a prerequisite for the finance-intelligence change.
 
 ## What Changes
 
@@ -13,7 +13,7 @@ The Finance butler stores transactions in two parallel systems: a dedicated `fin
 - **Four-phase migration path**: schema enhance (non-breaking) -> backfill from SPO facts -> dual-write transition -> deprecate SPO transaction writes.
 - **Soft delete only** -- financial data is never hard-deleted; `deleted_at IS NOT NULL` marks retired records.
 - **Audit trail** -- `transaction_corrections` table records every field change with old/new values, reason, and source.
-- **BREAKING**: Intelligence queries (`spending_summary`, `list_transactions`, anomaly detection, trends, budgets) will read from `finance.transactions` instead of `shared.facts`. During dual-write (Phase 3), both stores are kept in sync. After Phase 4, SPO transaction writes stop.
+- **BREAKING**: Intelligence queries (`spending_summary`, `list_transactions`, anomaly detection, trends, budgets) will read from `finance.transactions` instead of `public.facts`. During dual-write (Phase 3), both stores are kept in sync. After Phase 4, SPO transaction writes stop.
 
 ## Capabilities
 
@@ -24,12 +24,12 @@ The Finance butler stores transactions in two parallel systems: a dedicated `fin
 - `finance-crud-operations`: CRUD operations on the dedicated table -- create (single + bulk with dedup), read (filtered + aggregated), update (with audit trail and optimistic locking), soft-delete, merge duplicates, split transactions, bulk recategorize.
 
 ### Modified Capabilities
-- `butler-finance`: Transaction tools (`record_transaction`, `list_transactions`, `spending_summary`, `bulk_record_transactions`) change their primary data source from `shared.facts` to `finance.transactions`. Deduplication strategy shifts from SPO-layer metadata matching to the tiered UNIQUE index approach on the dedicated table. The CRUD-to-SPO scenario requirements are superseded for transaction data (SPO becomes secondary mirror).
+- `butler-finance`: Transaction tools (`record_transaction`, `list_transactions`, `spending_summary`, `bulk_record_transactions`) change their primary data source from `public.facts` to `finance.transactions`. Deduplication strategy shifts from SPO-layer metadata matching to the tiered UNIQUE index approach on the dedicated table. The CRUD-to-SPO scenario requirements are superseded for transaction data (SPO becomes secondary mirror).
 
 ## Impact
 
-- **Database**: New Alembic migration `finance_002` in `roster/finance/migrations/versions/` adding columns, tables, indexes, and materialized view. All within `finance` schema. No changes to `shared` schema.
-- **Tools**: `record_transaction`, `list_transactions`, `spending_summary`, `bulk_record_transactions` change their query target from `shared.facts` to `finance.transactions`. New internal functions for dedup, merchant mapping lookup, correction recording, and materialized view refresh.
+- **Database**: New Alembic migration `finance_002` in `roster/finance/migrations/versions/` adding columns, tables, indexes, and materialized view. All within `finance` schema. No changes to `public` schema.
+- **Tools**: `record_transaction`, `list_transactions`, `spending_summary`, `bulk_record_transactions` change their query target from `public.facts` to `finance.transactions`. New internal functions for dedup, merchant mapping lookup, correction recording, and materialized view refresh.
 - **Migration data**: One-time backfill of existing SPO transaction facts into the dedicated table with dedup-safe INSERT. Existing SPO facts are preserved read-only.
 - **Dependencies**: No new external dependencies. This change is a prerequisite for `finance-intelligence` -- the intelligence tools need typed columns, B-tree indexes, and the supporting tables (budgets, merchant_mappings, recurring_groups, etc.) that this change provides.
 - **Backward compatibility**: During dual-write (Phase 3), both stores are kept in sync. Memory/recall tools continue reading SPO facts. After Phase 4, the SPO transaction write path is removed but existing facts remain for historical recall.

@@ -9,9 +9,9 @@
 The Finance butler currently stores all transactional data in two parallel systems:
 
 1. **Dedicated `finance.transactions` table** (migration `finance_001`) -- relational schema with typed columns, indexes on `posted_at`, `merchant`, `category`, `account_id`, and a dedup partial index on `source_message_id`.
-2. **SPO fact layer** (`shared.facts` table via `facts.py`) -- bitemporal facts with `predicate IN ('transaction_debit', 'transaction_credit')`, where all financial fields are packed into a JSONB `metadata` column.
+2. **SPO fact layer** (`public.facts` table via `facts.py`) -- bitemporal facts with `predicate IN ('transaction_debit', 'transaction_credit')`, where all financial fields are packed into a JSONB `metadata` column.
 
-The design document for the finance-intelligence OpenSpec change (`openspec/changes/finance-intelligence/design.md`) explicitly commits to Decision #1: "All intelligence tools query the existing transaction facts table with SQL window functions." This means all new analytics -- anomaly detection, trend analysis, budget enforcement, forecasting -- will run as SQL aggregations over the `shared.facts` table, extracting values from JSONB metadata.
+The design document for the finance-intelligence OpenSpec change (`openspec/changes/finance-intelligence/design.md`) explicitly commits to Decision #1: "All intelligence tools query the existing transaction facts table with SQL window functions." This means all new analytics -- anomaly detection, trend analysis, budget enforcement, forecasting -- will run as SQL aggregations over the `public.facts` table, extracting values from JSONB metadata.
 
 This approach has fundamental scaling and query-performance problems for high-volume transactional data (10k+ transactions/year, 50k+ historical). The intelligence spec requires:
 
@@ -49,16 +49,16 @@ Steps 2-3 defeat indexing entirely. The partial B-tree index on `(predicate, val
 | Dedicated tables | `finance.accounts` | `finance` schema | Bank account registry | Active |
 | Dedicated tables | `finance.subscriptions` | `finance` schema | Subscription tracking | Active |
 | Dedicated tables | `finance.bills` | `finance` schema | Bill obligations | Active |
-| SPO facts | `shared.facts` | `shared` schema | Bitemporal fact store | **Primary store for intelligence tools** |
+| SPO facts | `public.facts` | `public` schema | Bitemporal fact store | **Primary store for intelligence tools** |
 
 ### The Duplication Problem
 
-The finance butler currently writes to **both** systems. `record_transaction` writes to `finance.transactions`, while `record_transaction_fact` writes to `shared.facts`. The `__init__.py` exports both, and `AGENTS.md` instructs the runtime to use the fact-layer tools. The dedicated `finance.transactions` table has proper typed columns and indexes but is sidelined in favor of the fact layer.
+The finance butler currently writes to **both** systems. `record_transaction` writes to `finance.transactions`, while `record_transaction_fact` writes to `public.facts`. The `__init__.py` exports both, and `AGENTS.md` instructs the runtime to use the fact-layer tools. The dedicated `finance.transactions` table has proper typed columns and indexes but is sidelined in favor of the fact layer.
 
 ### Current Facts Table Schema (Relevant Columns)
 
 ```sql
--- From shared.facts (memory module baseline + bitemporal migration)
+-- From public.facts (memory module baseline + bitemporal migration)
 CREATE TABLE facts (
     id              UUID PRIMARY KEY,
     subject         TEXT NOT NULL,          -- e.g., 'owner'
@@ -960,7 +960,7 @@ SELECT
     f.metadata->>'source_message_id',
     'bulk',
     f.metadata
-FROM shared.facts f
+FROM public.facts f
 WHERE f.predicate IN ('transaction_debit', 'transaction_credit')
   AND f.validity = 'active'
   AND f.scope = 'finance'
@@ -976,15 +976,15 @@ WHERE f.predicate IN ('transaction_debit', 'transaction_credit')
 
 During the transition period, both stores receive writes:
 
-1. `record_transaction` writes to `finance.transactions` (primary) and fires a background task to mirror to `shared.facts` (for memory/recall compatibility).
+1. `record_transaction` writes to `finance.transactions` (primary) and fires a background task to mirror to `public.facts` (for memory/recall compatibility).
 2. Intelligence tools (`anomaly_scan`, `spending_trends`, `budget_status`, etc.) query `finance.transactions` exclusively.
-3. Memory tools (`memory_recall`, `memory_search`) continue to query `shared.facts` for financial context in LLM conversations.
+3. Memory tools (`memory_recall`, `memory_search`) continue to query `public.facts` for financial context in LLM conversations.
 
 ### Phase 4: Deprecate SPO Transaction Writes
 
 Once the intelligence features are stable and all queries use the dedicated table:
 
-1. Stop writing transaction data to `shared.facts`.
+1. Stop writing transaction data to `public.facts`.
 2. Keep existing facts in place (read-only, for historical memory/recall).
 3. Remove the fact-layer transaction tools from the MCP surface.
 

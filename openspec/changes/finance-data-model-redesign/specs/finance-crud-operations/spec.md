@@ -18,7 +18,7 @@ Creating a single transaction SHALL check for duplicates, apply merchant mapping
 
 #### Scenario: Post-insert SPO mirror write
 - **WHEN** a transaction is successfully inserted into `finance.transactions`
-- **THEN** a background task SHALL mirror the transaction to `shared.facts` with the appropriate predicate (`'transaction_debit'` or `'transaction_credit'`)
+- **THEN** a background task SHALL mirror the transaction to `public.facts` with the appropriate predicate (`'transaction_debit'` or `'transaction_credit'`)
 - **AND** the mirror write SHALL be fire-and-forget (failure does not roll back the primary insert)
 
 ### Requirement: Bulk transaction import with batch tracking

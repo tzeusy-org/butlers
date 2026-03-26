@@ -12,7 +12,7 @@ Resolution strategy
 -------------------
 For a given ``butler_name`` and ``complexity_tier``:
 
-1. Join ``shared.model_catalog mc`` with ``shared.butler_model_overrides bmo``
+1. Join ``public.model_catalog mc`` with ``public.butler_model_overrides bmo``
    on ``bmo.butler_name = $butler_name AND bmo.catalog_entry_id = mc.id``.
 2. Effective enabled:  ``COALESCE(bmo.enabled, mc.enabled)``
 3. Effective priority: ``COALESCE(bmo.priority, mc.priority)``
@@ -82,8 +82,8 @@ SELECT
     mc.model_id,
     mc.extra_args,
     mc.id
-FROM shared.model_catalog mc
-LEFT JOIN shared.butler_model_overrides bmo
+FROM public.model_catalog mc
+LEFT JOIN public.butler_model_overrides bmo
     ON bmo.catalog_entry_id = mc.id
     AND bmo.butler_name = $1
 WHERE
@@ -104,7 +104,7 @@ WITH limits AS (
         limit_30d,
         COALESCE(reset_24h_at, '-infinity'::timestamptz) AS reset_24h_at,
         COALESCE(reset_30d_at, '-infinity'::timestamptz) AS reset_30d_at
-    FROM shared.token_limits
+    FROM public.token_limits
     WHERE catalog_entry_id = $1
 ),
 usage AS (
@@ -119,7 +119,7 @@ usage AS (
                 (SELECT reset_30d_at FROM limits),
                 now() - interval '30 days'
             )), 0) AS used_30d
-    FROM shared.token_usage_ledger
+    FROM public.token_usage_ledger
     WHERE catalog_entry_id = $1
       AND recorded_at > GREATEST(
           LEAST(
@@ -135,11 +135,11 @@ FROM usage u, limits l
 
 # Check whether a limits row exists for the given catalog entry (fast path).
 _LIMITS_EXISTS_SQL = """
-SELECT 1 FROM shared.token_limits WHERE catalog_entry_id = $1 LIMIT 1
+SELECT 1 FROM public.token_limits WHERE catalog_entry_id = $1 LIMIT 1
 """
 
 _LEDGER_INSERT_SQL = """
-INSERT INTO shared.token_usage_ledger
+INSERT INTO public.token_usage_ledger
     (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens)
 VALUES ($1, $2, $3, $4, $5)
 """
@@ -152,7 +152,7 @@ async def resolve_model(
 ) -> tuple[str, str, list[str], uuid.UUID] | None:
     """Resolve the best model for a butler and complexity tier.
 
-    Queries ``shared.model_catalog`` with an optional ``shared.butler_model_overrides``
+    Queries ``public.model_catalog`` with an optional ``public.butler_model_overrides``
     LEFT JOIN.  Per-butler overrides can remap enabled state, priority, and
     complexity tier without duplicating the catalog row.
 
@@ -209,7 +209,7 @@ async def check_token_quota(
     Uses a CTE-based single round-trip query that computes both 24h and 30d
     window usages, respecting independent reset markers.
 
-    Fast path: if no ``shared.token_limits`` row exists for the entry, returns
+    Fast path: if no ``public.token_limits`` row exists for the entry, returns
     ``QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)``
     without querying the ledger.
 
@@ -222,7 +222,7 @@ async def check_token_quota(
     pool:
         asyncpg connection pool.
     catalog_entry_id:
-        UUID of the ``shared.model_catalog`` row to check.
+        UUID of the ``public.model_catalog`` row to check.
 
     Returns
     -------
@@ -285,7 +285,7 @@ async def record_token_usage(
     input_tokens: int,
     output_tokens: int,
 ) -> None:
-    """Record token usage to ``shared.token_usage_ledger``.
+    """Record token usage to ``public.token_usage_ledger``.
 
     Best-effort: errors are logged as warnings and never propagate to the caller.
     A ledger write failure must never block a session result from being returned.
@@ -295,7 +295,7 @@ async def record_token_usage(
     pool:
         asyncpg connection pool.
     catalog_entry_id:
-        UUID of the resolved ``shared.model_catalog`` row.
+        UUID of the resolved ``public.model_catalog`` row.
     butler_name:
         Name of the butler that spawned the session (or ``"__discretion__"`` for
         discretion dispatcher calls).

@@ -6,13 +6,13 @@
 
 ## Overview
 
-Butlers maintains a shared identity registry in the `shared` PostgreSQL schema. This registry maps external channel identifiers (Telegram chat IDs, email addresses, Discord handles) to canonical contact records, which in turn link to entity records carrying roles. The identity model powers sender recognition during Switchboard ingestion, owner-aware routing, approval gate role checks, and outbound recipient resolution via `notify()`.
+Butlers maintains a shared identity registry in the `public` PostgreSQL schema. This registry maps external channel identifiers (Telegram chat IDs, email addresses, Discord handles) to canonical contact records, which in turn link to entity records carrying roles. The identity model powers sender recognition during Switchboard ingestion, owner-aware routing, approval gate role checks, and outbound recipient resolution via `notify()`.
 
 ## Schema Structure
 
-The identity model spans three tables in the `shared` schema:
+The identity model spans three tables in the `public` schema:
 
-### shared.entities
+### public.entities
 
 The entity table is the anchor for identity. Each row represents a known person or actor. Key fields:
 
@@ -24,21 +24,21 @@ The entity table is the anchor for identity. Each row represents a known person 
 - **`aliases`** (TEXT[]) --- alternative names
 - **`metadata`** (JSONB) --- extensible metadata; temporary entities carry `{"unidentified": true}`
 
-### shared.contacts
+### public.contacts
 
 The contacts table links a named contact to an entity. Key fields:
 
 - **`id`** (UUID) --- primary key
 - **`name`** --- display name
-- **`entity_id`** (UUID, FK to `shared.entities`) --- the linked entity
+- **`entity_id`** (UUID, FK to `public.entities`) --- the linked entity
 - **`roles`** (TEXT[]) --- legacy roles array (roles are now primarily sourced from the entity)
 - **`metadata`** (JSONB) --- extensible; temporary contacts carry `{"needs_disambiguation": true}`
 
-### shared.contact_info
+### public.contact_info
 
 The contact_info table stores per-channel identifiers linked to contacts. Key fields:
 
-- **`contact_id`** (UUID, FK to `shared.contacts`) --- the owning contact
+- **`contact_id`** (UUID, FK to `public.contacts`) --- the owning contact
 - **`type`** (TEXT) --- channel type (e.g., `"telegram"`, `"email"`, `"discord"`)
 - **`value`** (TEXT) --- the channel-specific identifier (e.g., a Telegram chat ID, an email address)
 - **`is_primary`** (BOOLEAN) --- whether this is the primary contact method for the channel
@@ -52,9 +52,9 @@ The core identity operation is `resolve_contact_by_channel()` in `src/butlers/id
 
 ```sql
 SELECT c.id, c.name, COALESCE(e.roles, '{}'), c.entity_id
-FROM shared.contact_info ci
-JOIN shared.contacts c ON c.id = ci.contact_id
-LEFT JOIN shared.entities e ON e.id = c.entity_id
+FROM public.contact_info ci
+JOIN public.contacts c ON c.id = ci.contact_id
+LEFT JOIN public.entities e ON e.id = c.entity_id
 WHERE ci.type = $1 AND ci.value = $2
 ```
 
@@ -74,9 +74,9 @@ The owner contact is the system administrator. It is bootstrapped automatically 
 
 When identity resolution returns no match for a sender, the system creates a temporary contact and entity via `create_temp_contact()`. This function:
 
-1. Creates a `shared.entities` row with `metadata.unidentified = true` and `entity_type = "person"`.
-2. Creates a `shared.contacts` row linked to the entity with `metadata.needs_disambiguation = true`.
-3. Creates a `shared.contact_info` row for the channel identifier (using `ON CONFLICT DO NOTHING` for race safety).
+1. Creates a `public.entities` row with `metadata.unidentified = true` and `entity_type = "person"`.
+2. Creates a `public.contacts` row linked to the entity with `metadata.needs_disambiguation = true`.
+3. Creates a `public.contact_info` row for the channel identifier (using `ON CONFLICT DO NOTHING` for race safety).
 4. Returns a `ResolvedContact` with empty roles.
 
 The identity preamble for unknown senders includes `-- pending disambiguation`, signaling to the receiving butler that the sender identity is provisional.
@@ -93,7 +93,7 @@ This preamble gives domain butlers the sender context they need for personalized
 
 ## Tenant Model
 
-All identity tables use `tenant_id = "shared"` as the default tenant. This unified tenant model means all butlers in a deployment share a single identity namespace. The `shared` schema is readable by all butler database roles, while each butler's own schema is private.
+All identity tables use `tenant_id = "shared"` as the default tenant. This unified tenant model means all butlers in a deployment share a single identity namespace. The `public` schema is readable by all butler database roles, while each butler's own schema is private.
 
 ## Usage Points
 

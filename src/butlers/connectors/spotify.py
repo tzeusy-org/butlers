@@ -1611,7 +1611,7 @@ async def run_spotify_connector() -> None:
 
     db_params = db_params_from_env()
     shared_db_name = shared_db_name_from_env()
-    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared")
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
     local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers").strip() or "butlers"
 
     # Create DB pool for credentials and policy rules

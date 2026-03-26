@@ -171,11 +171,11 @@ async def _resolve_target_contact(
     """Resolve the target contact for an outbound tool call.
 
     Uses :func:`_extract_channel_identity` to determine the channel type and
-    value, then queries ``shared.contact_info`` via
+    value, then queries ``public.contact_info`` via
     :func:`resolve_contact_by_channel`.
 
     For ``contact_id`` extractions (explicit contact reference), queries
-    ``shared.contacts`` directly by UUID.
+    ``public.contacts`` directly by UUID.
 
     Parameters
     ----------
@@ -196,11 +196,11 @@ async def _resolve_target_contact(
     channel_type, channel_value = identity
 
     if channel_type == "contact_id":
-        # Direct UUID lookup on shared.contacts
+        # Direct UUID lookup on public.contacts
         try:
             row = await pool.fetchrow(
                 "SELECT id AS contact_id, name, roles, entity_id "
-                "FROM shared.contacts WHERE id = $1::uuid",
+                "FROM public.contacts WHERE id = $1::uuid",
                 channel_value,
             )
         except Exception:  # noqa: BLE001

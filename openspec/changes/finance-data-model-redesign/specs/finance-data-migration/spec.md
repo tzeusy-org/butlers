@@ -16,7 +16,7 @@ The migration from SPO fact storage to dedicated table storage SHALL follow four
 
 #### Scenario: Phase 2 -- Backfill from SPO facts
 - **WHEN** Phase 1 is complete
-- **THEN** a backfill query SHALL insert existing transaction facts from `shared.facts` into `finance.transactions`
+- **THEN** a backfill query SHALL insert existing transaction facts from `public.facts` into `finance.transactions`
 - **AND** it SHALL filter facts by `predicate IN ('transaction_debit', 'transaction_credit')`, `validity = 'active'`, and `scope = 'finance'`
 - **AND** it SHALL extract `merchant`, `amount`, `currency`, `direction`, `category`, `description`, `payment_method`, `account_id`, `source_message_id` from JSONB metadata
 - **AND** it SHALL use `COALESCE` for optional fields and defensive casts for numeric/uuid fields
@@ -27,15 +27,15 @@ The migration from SPO fact storage to dedicated table storage SHALL follow four
 #### Scenario: Phase 3 -- Dual-write transition
 - **WHEN** Phase 2 is complete and the backfilled data is validated
 - **THEN** `record_transaction` SHALL write to `finance.transactions` as the primary store
-- **AND** it SHALL fire a background task to mirror the write to `shared.facts` for memory/recall compatibility
+- **AND** it SHALL fire a background task to mirror the write to `public.facts` for memory/recall compatibility
 - **AND** intelligence tools SHALL query `finance.transactions` exclusively
-- **AND** memory tools (`memory_recall`, `memory_search`) SHALL continue to query `shared.facts` for financial context
+- **AND** memory tools (`memory_recall`, `memory_search`) SHALL continue to query `public.facts` for financial context
 - **AND** if the SPO mirror write fails, the error SHALL be logged but the dedicated table write SHALL NOT be rolled back
 
 #### Scenario: Phase 4 -- Deprecate SPO transaction writes
 - **WHEN** Phase 3 has run for a validation period and intelligence features are stable
 - **THEN** the SPO mirror write in `record_transaction` SHALL be removed
-- **AND** existing facts in `shared.facts` SHALL remain in place (read-only) for historical memory/recall
+- **AND** existing facts in `public.facts` SHALL remain in place (read-only) for historical memory/recall
 - **AND** SPO-based transaction tool functions (`record_transaction_fact`, `list_transaction_facts`) SHALL be removed from the MCP tool surface
 
 ### Requirement: Migration Alembic structure

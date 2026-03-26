@@ -308,7 +308,7 @@ async def dunbar_pool(provisioned_postgres_pool):
         # shared schema + entities
         await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS shared.entities (
+            CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 tenant_id TEXT NOT NULL DEFAULT '',
                 canonical_name VARCHAR NOT NULL DEFAULT '',
@@ -402,7 +402,7 @@ async def _make_contact(
     entity_id = None
     if with_entity:
         entity_row = await pool.fetchrow(
-            "INSERT INTO shared.entities (name) VALUES ($1) RETURNING id",
+            "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
             name,
         )
         entity_id = entity_row["id"]
@@ -882,7 +882,7 @@ def test_dunbar_layers_structure():
 
 
 # ===========================================================================
-# Pool fixture (simpler schema, no shared.entities) — for new-function tests
+# Pool fixture (simpler schema, no public.entities) — for new-function tests
 # ===========================================================================
 
 _LAMBDA_NEW = math.log(2) / 30.0

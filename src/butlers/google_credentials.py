@@ -8,9 +8,9 @@ consumed by both the Gmail connector and the Calendar module.
 - ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``,
   ``GOOGLE_OAUTH_SCOPES`` → ``butler_secrets`` table via
   :class:`~butlers.credential_store.CredentialStore` (app config).
-- Refresh token → ``shared.entity_info`` on the Google account's companion entity
+- Refresh token → ``public.entity_info`` on the Google account's companion entity
   (type ``google_oauth_refresh``, ``secured=true``), resolved via
-  ``shared.google_accounts``.
+  ``public.google_accounts``.
 
 Secret material (client_secret, refresh_token) is never logged in plaintext.
 
@@ -172,7 +172,7 @@ async def resolve_google_account_entity(
     *,
     email: str | None = None,
 ) -> uuid.UUID | None:
-    """Resolve a Google account's companion entity_id from shared.google_accounts.
+    """Resolve a Google account's companion entity_id from public.google_accounts.
 
     Parameters
     ----------
@@ -192,7 +192,7 @@ async def resolve_google_account_entity(
             if email is None:
                 row = await conn.fetchrow(
                     """
-                    SELECT entity_id FROM shared.google_accounts
+                    SELECT entity_id FROM public.google_accounts
                     WHERE is_primary = true
                     LIMIT 1
                     """
@@ -200,7 +200,7 @@ async def resolve_google_account_entity(
             else:
                 row = await conn.fetchrow(
                     """
-                    SELECT entity_id FROM shared.google_accounts
+                    SELECT entity_id FROM public.google_accounts
                     WHERE email = $1
                     LIMIT 1
                     """,
@@ -239,7 +239,7 @@ async def list_google_account_entities(
             rows = await conn.fetch(
                 """
                 SELECT id, email, entity_id, is_primary
-                FROM shared.google_accounts
+                FROM public.google_accounts
                 ORDER BY is_primary DESC, connected_at ASC
                 """
             )
@@ -274,7 +274,7 @@ async def _resolve_entity_refresh_token(pool: asyncpg.Pool, entity_id: uuid.UUID
         async with _pool_acquire(pool) as conn:
             row = await conn.fetchrow(
                 """
-                SELECT value FROM shared.entity_info
+                SELECT value FROM public.entity_info
                 WHERE entity_id = $1 AND type = $2
                 LIMIT 1
                 """,
@@ -298,7 +298,7 @@ async def _upsert_entity_refresh_token(
     async with _pool_acquire(pool) as conn:
         await conn.execute(
             """
-            INSERT INTO shared.entity_info (entity_id, type, value, secured, is_primary)
+            INSERT INTO public.entity_info (entity_id, type, value, secured, is_primary)
             VALUES ($1, $2, $3, true, true)
             ON CONFLICT (entity_id, type) DO UPDATE SET
                 value = EXCLUDED.value,
@@ -314,7 +314,7 @@ async def _delete_entity_refresh_token(pool: asyncpg.Pool, entity_id: uuid.UUID)
     """Delete the refresh token entity_info row for the given companion entity."""
     async with _pool_acquire(pool) as conn:
         result = await conn.execute(
-            "DELETE FROM shared.entity_info WHERE entity_id = $1 AND type = $2",
+            "DELETE FROM public.entity_info WHERE entity_id = $1 AND type = $2",
             entity_id,
             CONTACT_INFO_REFRESH_TOKEN,
         )
@@ -340,7 +340,7 @@ async def store_google_credentials(
 
     App credentials (client_id, client_secret, scopes) are stored in
     ``butler_secrets`` via *store*.  The refresh token is stored in
-    ``shared.entity_info`` on the Google account's companion entity via *pool*.
+    ``public.entity_info`` on the Google account's companion entity via *pool*.
 
     Secret material (client_secret, refresh_token) is never logged.
 
@@ -395,7 +395,7 @@ async def store_google_credentials(
             is_sensitive=False,
         )
 
-    # Refresh token → shared.entity_info on the companion entity
+    # Refresh token → public.entity_info on the companion entity
     if pool is not None:
         entity_id = await _resolve_account_entity_id(pool, account)
         if entity_id is not None:
@@ -423,7 +423,7 @@ async def load_google_credentials(
     """Load Google OAuth credentials.
 
     App credentials are read from ``butler_secrets`` via *store*.  The refresh
-    token is read from ``shared.entity_info`` on the account's companion entity
+    token is read from ``public.entity_info`` on the account's companion entity
     via *pool*.
 
     Returns ``None`` if the required credentials (client_id, client_secret,
@@ -627,11 +627,11 @@ async def delete_google_credentials(
         # Delete ALL refresh tokens across all companion entities (bulk DELETE).
         if pool is not None:
             async with _pool_acquire(pool) as conn:
-                rows = await conn.fetch("SELECT entity_id FROM shared.google_accounts")
+                rows = await conn.fetch("SELECT entity_id FROM public.google_accounts")
                 entity_ids = [row["entity_id"] for row in rows]
                 if entity_ids:
                     delete_result = await conn.execute(
-                        "DELETE FROM shared.entity_info WHERE entity_id = ANY($1) AND type = $2",
+                        "DELETE FROM public.entity_info WHERE entity_id = ANY($1) AND type = $2",
                         entity_ids,
                         CONTACT_INFO_REFRESH_TOKEN,
                     )
@@ -639,7 +639,7 @@ async def delete_google_credentials(
                     deleted_count = int(delete_result.split()[-1]) if delete_result else 0
                     results.append(deleted_count > 0)
                 # Update all accounts to revoked.
-                await conn.execute("UPDATE shared.google_accounts SET status = 'revoked'")
+                await conn.execute("UPDATE public.google_accounts SET status = 'revoked'")
     else:
         # Only delete the refresh token for the specified (or primary) account.
         if pool is not None:
@@ -666,7 +666,7 @@ async def _mark_account_revoked(pool: asyncpg.Pool, entity_id: uuid.UUID) -> Non
     """Set the google_accounts row status to 'revoked' for the given companion entity."""
     async with _pool_acquire(pool) as conn:
         await conn.execute(
-            "UPDATE shared.google_accounts SET status = 'revoked' WHERE entity_id = $1",
+            "UPDATE public.google_accounts SET status = 'revoked' WHERE entity_id = $1",
             entity_id,
         )
 
@@ -687,7 +687,7 @@ async def resolve_google_credentials(
 
     Resolution:
     1. App credentials from ``butler_secrets``.
-    2. Refresh token from ``shared.entity_info`` on the account's companion entity.
+    2. Refresh token from ``public.entity_info`` on the account's companion entity.
 
     Parameters
     ----------
@@ -760,11 +760,11 @@ async def _resolve_account_entity_id(
         async with _pool_acquire(pool) as conn:
             if account is None:
                 row = await conn.fetchrow(
-                    "SELECT entity_id FROM shared.google_accounts WHERE is_primary = true LIMIT 1"
+                    "SELECT entity_id FROM public.google_accounts WHERE is_primary = true LIMIT 1"
                 )
             elif isinstance(account, uuid.UUID):
                 row = await conn.fetchrow(
-                    "SELECT entity_id FROM shared.google_accounts WHERE id = $1 LIMIT 1",
+                    "SELECT entity_id FROM public.google_accounts WHERE id = $1 LIMIT 1",
                     account,
                 )
             else:
@@ -772,12 +772,12 @@ async def _resolve_account_entity_id(
                 try:
                     account_uuid = uuid.UUID(str(account))
                     row = await conn.fetchrow(
-                        "SELECT entity_id FROM shared.google_accounts WHERE id = $1 LIMIT 1",
+                        "SELECT entity_id FROM public.google_accounts WHERE id = $1 LIMIT 1",
                         account_uuid,
                     )
                 except ValueError:
                     row = await conn.fetchrow(
-                        "SELECT entity_id FROM shared.google_accounts WHERE email = $1 LIMIT 1",
+                        "SELECT entity_id FROM public.google_accounts WHERE email = $1 LIMIT 1",
                         str(account),
                     )
         return row["entity_id"] if row else None

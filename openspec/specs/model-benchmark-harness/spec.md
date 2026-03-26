@@ -6,7 +6,7 @@ Defines the model pinning, configurable model list, sequential iteration, and du
 ## Requirements
 
 ### Requirement: Model pinning via catalog overrides
-The harness SHALL pin a single model for all butlers (including switchboard) by inserting a catalog entry into `shared.model_catalog` and upserting `shared.butler_model_overrides` for every butler with `priority=999`.
+The harness SHALL pin a single model for all butlers (including switchboard) by inserting a catalog entry into `public.model_catalog` and upserting `public.butler_model_overrides` for every butler with `priority=999`.
 
 #### Scenario: Model pinned for benchmark run
 - **WHEN** a benchmark run starts with model `claude-sonnet-4-5-20250514`

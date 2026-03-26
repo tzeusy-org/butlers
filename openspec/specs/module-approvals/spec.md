@@ -312,7 +312,7 @@ The approval gate operates at two layers. Both MUST enforce gating independently
 #### Scenario: route.execute enforces approval gate for email delivery
 
 - **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="email"`
-- **THEN** it MUST resolve the target contact by email address via `shared.contacts`
+- **THEN** it MUST resolve the target contact by email address via `public.contacts`
 - **AND** if the target contact is NOT an owner, it MUST check standing approval rules
 - **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
 - **AND** if the target is an owner, delivery proceeds without rule check
@@ -320,7 +320,7 @@ The approval gate operates at two layers. Both MUST enforce gating independently
 #### Scenario: route.execute enforces approval gate for telegram delivery
 
 - **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="telegram"` and `intent` of `"send"` or `"reply"`
-- **THEN** it MUST resolve the target contact by telegram chat ID via `shared.contacts`
+- **THEN** it MUST resolve the target contact by telegram chat ID via `public.contacts`
 - **AND** if the target contact is NOT an owner, it MUST check standing approval rules
 - **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
 - **AND** if the target is an owner, delivery proceeds without rule check

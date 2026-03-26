@@ -39,7 +39,7 @@ async def contact_info_add(
     if is_primary:
         await pool.execute(
             """
-            UPDATE shared.contact_info SET is_primary = false
+            UPDATE public.contact_info SET is_primary = false
             WHERE contact_id = $1 AND type = $2 AND is_primary = true
             """,
             contact_id,
@@ -48,7 +48,7 @@ async def contact_info_add(
 
     row = await pool.fetchrow(
         """
-        INSERT INTO shared.contact_info (contact_id, type, value, label, is_primary)
+        INSERT INTO public.contact_info (contact_id, type, value, label, is_primary)
         VALUES ($1, $2, $3, $4, $5)
         RETURNING *
         """,
@@ -75,7 +75,7 @@ async def contact_info_list(
     if type is not None:
         rows = await pool.fetch(
             """
-            SELECT * FROM shared.contact_info
+            SELECT * FROM public.contact_info
             WHERE contact_id = $1 AND type = $2
             ORDER BY is_primary DESC, created_at
             """,
@@ -85,7 +85,7 @@ async def contact_info_list(
     else:
         rows = await pool.fetch(
             """
-            SELECT * FROM shared.contact_info
+            SELECT * FROM public.contact_info
             WHERE contact_id = $1
             ORDER BY type, is_primary DESC, created_at
             """,
@@ -100,7 +100,7 @@ async def contact_info_remove(
 ) -> None:
     """Remove a piece of contact information by its ID."""
     row = await pool.fetchrow(
-        "SELECT * FROM shared.contact_info WHERE id = $1",
+        "SELECT * FROM public.contact_info WHERE id = $1",
         contact_info_id,
     )
     if row is None:
@@ -109,7 +109,7 @@ async def contact_info_remove(
             "Use contact_info_list(contact_id=...) to list contact info entries."
         )
 
-    await pool.execute("DELETE FROM shared.contact_info WHERE id = $1", contact_info_id)
+    await pool.execute("DELETE FROM public.contact_info WHERE id = $1", contact_info_id)
     await _log_activity(
         pool,
         row["contact_id"],
@@ -134,7 +134,7 @@ async def contact_search_by_info(
             """
             SELECT DISTINCT c.*, ci.type AS matched_type, ci.value AS matched_value
             FROM contacts c
-            JOIN shared.contact_info ci ON c.id = ci.contact_id
+            JOIN public.contact_info ci ON c.id = ci.contact_id
             WHERE ci.type = $1
               AND ci.value ILIKE '%' || $2 || '%'
               AND c.listed = true
@@ -148,7 +148,7 @@ async def contact_search_by_info(
             """
             SELECT DISTINCT c.*, ci.type AS matched_type, ci.value AS matched_value
             FROM contacts c
-            JOIN shared.contact_info ci ON c.id = ci.contact_id
+            JOIN public.contact_info ci ON c.id = ci.contact_id
             WHERE ci.value ILIKE '%' || $1 || '%'
               AND c.listed = true
             ORDER BY c.first_name, c.last_name, c.nickname

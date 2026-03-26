@@ -53,7 +53,7 @@
 
 ## 6. SPO Mirror and Backward Compatibility
 
-- [ ] 6.1 Implement fire-and-forget SPO mirror write in `record_transaction()` -- write to `shared.facts` with `predicate='transaction_{direction}'` after primary insert succeeds
+- [ ] 6.1 Implement fire-and-forget SPO mirror write in `record_transaction()` -- write to `public.facts` with `predicate='transaction_{direction}'` after primary insert succeeds
 - [ ] 6.2 Ensure `bulk_record_transactions()` routes through the new `record_transaction()` for per-row dedup and mirror
 - [ ] 6.3 Verify `spending_summary` response shape matches the current SPO-based implementation (backward compatibility)
 - [ ] 6.4 Write tests for SPO mirror: verify fact is created, verify primary insert is not rolled back on mirror failure

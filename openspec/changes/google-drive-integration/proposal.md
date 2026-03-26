@@ -4,7 +4,7 @@ Users manage significant parts of their digital life through Google Drive — pe
 
 ## What Changes
 
-- **Google Drive connector**: A new standalone connector process that watches the user's Drive via the `changes.list` API (polling with `pageToken` checkpoint). It ingests file metadata events (created, modified, trashed, renamed, moved, shared) as `ingest.v1` envelopes. It does NOT download file contents — only metadata (filenames, modified times, folder structure, MIME types, sharing status). Multi-account support via `shared.google_accounts`. Source channel: `google_drive`, provider: `google_drive`.
+- **Google Drive connector**: A new standalone connector process that watches the user's Drive via the `changes.list` API (polling with `pageToken` checkpoint). It ingests file metadata events (created, modified, trashed, renamed, moved, shared) as `ingest.v1` envelopes. It does NOT download file contents — only metadata (filenames, modified times, folder structure, MIME types, sharing status). Multi-account support via `public.google_accounts`. Source channel: `google_drive`, provider: `google_drive`.
 - **Google Drive module**: A new butler module (`google_drive`) that provides MCP tools for reading, writing, searching, and organizing files in Google Drive. Auto-creates a `butlers/` folder in the user's Drive for centralized butler output, with per-butler subfolders (`butlers/{butler_name}/`). Butlers can also read/write to arbitrary Drive locations.
 - **Ingest envelope extensions**: New `SourceChannel` value `google_drive` and `SourceProvider` value `google_drive` for the `ingest.v1` envelope schema, plus a valid channel-provider pairing.
 - **Scope tracking**: Google Drive requires the `drive` scope (or `drive.file` for limited access). Connected accounts must have this scope granted for the connector and module to operate.
@@ -24,7 +24,7 @@ Users manage significant parts of their digital life through Google Drive — pe
 
 - **Database**: New migration for `module-google-drive` tables (drive file metadata cache, butler folder registry). Connector uses existing `connectors` schema for filtered events and cursor store.
 - **Ingest envelope**: `SourceChannel` and `SourceProvider` enums extended with `google_drive`. Channel-provider validation updated.
-- **Google OAuth**: Requires `drive` scope in `granted_scopes` on `shared.google_accounts`. Reuses existing OAuth flow — no new OAuth endpoints needed, just scope addition during re-authorization.
+- **Google OAuth**: Requires `drive` scope in `granted_scopes` on `public.google_accounts`. Reuses existing OAuth flow — no new OAuth endpoints needed, just scope addition during re-authorization.
 - **Connector deployment**: New container/process for the Google Drive connector alongside existing Gmail/Telegram connectors.
 - **butler.toml**: New `[modules.google_drive]` config section with optional `account` field (email string, defaults to primary Google account).
 - **Docker/Compose**: New service definition for the Google Drive connector process.

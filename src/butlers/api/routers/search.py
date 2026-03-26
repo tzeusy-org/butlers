@@ -94,8 +94,8 @@ async def search(
     """Search across butler databases and shared schema.
 
     Searches:
-    - **entities** — canonical name and aliases in ``shared.entities``
-    - **contacts** — name, email, and phone in ``shared.contacts`` / ``shared.contact_info``
+    - **entities** — canonical name and aliases in ``public.entities``
+    - **contacts** — name, email, and phone in ``public.contacts`` / ``public.contact_info``
     - **sessions** — prompt and result columns across all butler databases
     - **state** — key and value columns across all butler databases
 
@@ -115,7 +115,7 @@ async def search(
         pool = _any_pool(db)
         entity_rows = await pool.fetch(
             "SELECT e.id, e.canonical_name, e.entity_type, e.aliases"
-            " FROM shared.entities e"
+            " FROM public.entities e"
             " WHERE (e.metadata->>'merged_into') IS NULL"
             "   AND (e.metadata->>'deleted_at') IS NULL"
             "   AND ("
@@ -153,16 +153,16 @@ async def search(
         pool = _any_pool(db)
         contact_rows = await pool.fetch(
             "SELECT DISTINCT ON (c.id) c.id, c.name,"
-            "  (SELECT ci.value FROM shared.contact_info ci"
+            "  (SELECT ci.value FROM public.contact_info ci"
             "   WHERE ci.contact_id = c.id AND ci.type = 'email'"
             "     AND NOT ci.secured"
             "   ORDER BY ci.is_primary DESC LIMIT 1) AS email,"
-            "  (SELECT ci.value FROM shared.contact_info ci"
+            "  (SELECT ci.value FROM public.contact_info ci"
             "   WHERE ci.contact_id = c.id AND ci.type = 'phone'"
             "     AND NOT ci.secured"
             "   ORDER BY ci.is_primary DESC LIMIT 1) AS phone"
-            " FROM shared.contacts c"
-            " LEFT JOIN shared.contact_info ci"
+            " FROM public.contacts c"
+            " LEFT JOIN public.contact_info ci"
             "   ON ci.contact_id = c.id AND NOT ci.secured"
             " WHERE c.archived_at IS NULL"
             "   AND (c.name ILIKE $1 OR ci.value ILIKE $1)"

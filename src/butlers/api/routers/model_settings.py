@@ -6,7 +6,7 @@ Provides:
 - ``butler_model_router`` — per-butler override endpoints at
   ``/api/butlers/{name}/model-overrides`` and ``/api/butlers/{name}/resolve-model``
 
-All reads query ``shared.model_catalog`` and ``shared.butler_model_overrides``
+All reads query ``public.model_catalog`` and ``public.butler_model_overrides``
 directly via the shared credential pool.  Writes mutate those tables directly
 (the catalog is managed via the API, not via butler MCP tools).
 """
@@ -306,9 +306,9 @@ async def list_catalog_entries(
                         COALESCE(tl.reset_30d_at, '-infinity'::timestamptz),
                         now() - interval '30 days'
                     )), 0) AS usage_30d
-            FROM shared.model_catalog mc
-            LEFT JOIN shared.token_limits tl ON tl.catalog_entry_id = mc.id
-            LEFT JOIN shared.token_usage_ledger tul ON tul.catalog_entry_id = mc.id
+            FROM public.model_catalog mc
+            LEFT JOIN public.token_limits tl ON tl.catalog_entry_id = mc.id
+            LEFT JOIN public.token_usage_ledger tul ON tul.catalog_entry_id = mc.id
                 AND tul.recorded_at > now() - interval '30 days'
             GROUP BY mc.id, tl.reset_24h_at, tl.reset_30d_at
         )
@@ -319,9 +319,9 @@ async def list_catalog_entries(
             COALESCE(ua.usage_30d, 0) AS usage_30d,
             tl.limit_24h,
             tl.limit_30d
-        FROM shared.model_catalog mc
+        FROM public.model_catalog mc
         LEFT JOIN usage_agg ua ON ua.catalog_entry_id = mc.id
-        LEFT JOIN shared.token_limits tl ON tl.catalog_entry_id = mc.id
+        LEFT JOIN public.token_limits tl ON tl.catalog_entry_id = mc.id
         ORDER BY
             CASE mc.complexity_tier
                 WHEN 'trivial'     THEN 1
@@ -356,7 +356,7 @@ async def create_catalog_entry(
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO shared.model_catalog
+            INSERT INTO public.model_catalog
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             RETURNING id, alias, runtime_type, model_id, extra_args,
@@ -424,7 +424,7 @@ async def update_catalog_entry(
     params.append(entry_id)
 
     sql = (
-        f"UPDATE shared.model_catalog SET {', '.join(set_parts)} "
+        f"UPDATE public.model_catalog SET {', '.join(set_parts)} "
         f"WHERE id = ${idx} "
         "RETURNING id, alias, runtime_type, model_id, extra_args, "
         "complexity_tier, enabled, priority"
@@ -460,7 +460,7 @@ async def delete_catalog_entry(
     """Delete a catalog entry by ID. Cascades to butler_model_overrides."""
     pool = _shared_pool(db)
     result = await pool.execute(
-        "DELETE FROM shared.model_catalog WHERE id = $1",
+        "DELETE FROM public.model_catalog WHERE id = $1",
         entry_id,
     )
     # asyncpg returns "DELETE N" where N is the row count
@@ -491,7 +491,7 @@ async def upsert_token_limits(
 
     # Verify the catalog entry exists
     exists = await pool.fetchval(
-        "SELECT 1 FROM shared.model_catalog WHERE id = $1",
+        "SELECT 1 FROM public.model_catalog WHERE id = $1",
         entry_id,
     )
     if not exists:
@@ -500,7 +500,7 @@ async def upsert_token_limits(
     # If both limits are null, delete the row
     if body.limit_24h is None and body.limit_30d is None:
         await pool.execute(
-            "DELETE FROM shared.token_limits WHERE catalog_entry_id = $1",
+            "DELETE FROM public.token_limits WHERE catalog_entry_id = $1",
             entry_id,
         )
         return ApiResponse[TokenLimitsResponse](
@@ -515,7 +515,7 @@ async def upsert_token_limits(
     # Upsert the limits row
     await pool.execute(
         """
-        INSERT INTO shared.token_limits (catalog_entry_id, limit_24h, limit_30d)
+        INSERT INTO public.token_limits (catalog_entry_id, limit_24h, limit_30d)
         VALUES ($1, $2, $3)
         ON CONFLICT (catalog_entry_id) DO UPDATE
             SET limit_24h  = EXCLUDED.limit_24h,
@@ -557,7 +557,7 @@ async def reset_token_usage(
 
     # Verify the catalog entry exists
     exists = await pool.fetchval(
-        "SELECT 1 FROM shared.model_catalog WHERE id = $1",
+        "SELECT 1 FROM public.model_catalog WHERE id = $1",
         entry_id,
     )
     if not exists:
@@ -565,7 +565,7 @@ async def reset_token_usage(
 
     if body.window == "24h":
         sql = """
-            INSERT INTO shared.token_limits (catalog_entry_id, reset_24h_at)
+            INSERT INTO public.token_limits (catalog_entry_id, reset_24h_at)
             VALUES ($1, now())
             ON CONFLICT (catalog_entry_id) DO UPDATE
                 SET reset_24h_at = now(),
@@ -573,7 +573,7 @@ async def reset_token_usage(
         """
     elif body.window == "30d":
         sql = """
-            INSERT INTO shared.token_limits (catalog_entry_id, reset_30d_at)
+            INSERT INTO public.token_limits (catalog_entry_id, reset_30d_at)
             VALUES ($1, now())
             ON CONFLICT (catalog_entry_id) DO UPDATE
                 SET reset_30d_at = now(),
@@ -581,7 +581,7 @@ async def reset_token_usage(
         """
     else:  # "both"
         sql = """
-            INSERT INTO shared.token_limits (catalog_entry_id, reset_24h_at, reset_30d_at)
+            INSERT INTO public.token_limits (catalog_entry_id, reset_24h_at, reset_30d_at)
             VALUES ($1, now(), now())
             ON CONFLICT (catalog_entry_id) DO UPDATE
                 SET reset_24h_at = now(),
@@ -615,7 +615,7 @@ async def get_token_usage(
 
     # Verify the catalog entry exists
     exists = await pool.fetchval(
-        "SELECT 1 FROM shared.model_catalog WHERE id = $1",
+        "SELECT 1 FROM public.model_catalog WHERE id = $1",
         entry_id,
     )
     if not exists:
@@ -631,7 +631,7 @@ async def get_token_usage(
                 reset_30d_at,
                 COALESCE(reset_24h_at, '-infinity'::timestamptz) AS eff_reset_24h,
                 COALESCE(reset_30d_at, '-infinity'::timestamptz) AS eff_reset_30d
-            FROM shared.token_limits
+            FROM public.token_limits
             WHERE catalog_entry_id = $1
         ),
         usage AS (
@@ -646,7 +646,7 @@ async def get_token_usage(
                         (SELECT eff_reset_30d FROM limits),
                         now() - interval '30 days'
                     )), 0) AS usage_30d
-            FROM shared.token_usage_ledger
+            FROM public.token_usage_ledger
             WHERE catalog_entry_id = $1
               AND recorded_at > now() - interval '30 days'
         )
@@ -711,8 +711,8 @@ async def list_butler_model_overrides(
         """
         SELECT bmo.id, bmo.butler_name, bmo.catalog_entry_id,
                mc.alias, bmo.enabled, bmo.priority, bmo.complexity_tier
-        FROM shared.butler_model_overrides bmo
-        JOIN shared.model_catalog mc ON mc.id = bmo.catalog_entry_id
+        FROM public.butler_model_overrides bmo
+        JOIN public.model_catalog mc ON mc.id = bmo.catalog_entry_id
         WHERE bmo.butler_name = $1
         ORDER BY mc.alias ASC
         """,
@@ -756,7 +756,7 @@ async def upsert_butler_model_overrides(
             for item in body:
                 row = await conn.fetchrow(
                     """
-                    INSERT INTO shared.butler_model_overrides
+                    INSERT INTO public.butler_model_overrides
                         (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
                     VALUES ($1, $2, $3, $4, $5)
                     ON CONFLICT (butler_name, catalog_entry_id) DO UPDATE
@@ -781,8 +781,8 @@ async def upsert_butler_model_overrides(
         """
         SELECT bmo.id, bmo.butler_name, bmo.catalog_entry_id,
                mc.alias, bmo.enabled, bmo.priority, bmo.complexity_tier
-        FROM shared.butler_model_overrides bmo
-        JOIN shared.model_catalog mc ON mc.id = bmo.catalog_entry_id
+        FROM public.butler_model_overrides bmo
+        JOIN public.model_catalog mc ON mc.id = bmo.catalog_entry_id
         WHERE bmo.id = ANY($1::uuid[])
         ORDER BY mc.alias ASC
         """,
@@ -808,7 +808,7 @@ async def delete_butler_model_override(
     """Remove a single butler model override by ID."""
     pool = _shared_pool(db)
     result = await pool.execute(
-        "DELETE FROM shared.butler_model_overrides WHERE id = $1 AND butler_name = $2",
+        "DELETE FROM public.butler_model_overrides WHERE id = $1 AND butler_name = $2",
         override_id,
         name,
     )
@@ -854,8 +854,8 @@ async def resolve_model_preview(
             mc.runtime_type,
             mc.model_id,
             mc.extra_args
-        FROM shared.model_catalog mc
-        LEFT JOIN shared.butler_model_overrides bmo
+        FROM public.model_catalog mc
+        LEFT JOIN public.butler_model_overrides bmo
             ON bmo.catalog_entry_id = mc.id
             AND bmo.butler_name = $1
         WHERE
@@ -894,7 +894,7 @@ async def resolve_model_preview(
                     limit_30d,
                     COALESCE(reset_24h_at, '-infinity'::timestamptz) AS eff_reset_24h,
                     COALESCE(reset_30d_at, '-infinity'::timestamptz) AS eff_reset_30d
-                FROM shared.token_limits
+                FROM public.token_limits
                 WHERE catalog_entry_id = $1
             ),
             usage AS (
@@ -909,7 +909,7 @@ async def resolve_model_preview(
                             (SELECT eff_reset_30d FROM limits),
                             now() - interval '30 days'
                         )), 0) AS usage_30d
-                FROM shared.token_usage_ledger
+                FROM public.token_usage_ledger
                 WHERE catalog_entry_id = $1
                   AND recorded_at > now() - interval '30 days'
             )
@@ -978,7 +978,7 @@ async def test_catalog_entry(
     row = await pool.fetchrow(
         """
         SELECT runtime_type, model_id, extra_args
-        FROM shared.model_catalog
+        FROM public.model_catalog
         WHERE id = $1
         """,
         entry_id,
