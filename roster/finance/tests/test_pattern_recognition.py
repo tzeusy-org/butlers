@@ -677,3 +677,587 @@ class TestDetectRecurringSubscriptionCrossReference:
         pattern_names = {p["merchant"] for p in result["patterns"]}
         assert "FewCharges" not in pattern_names
         assert "ManyCharges" in pattern_names
+
+
+# ---------------------------------------------------------------------------
+# Additional fixtures for predict_bills tests (bills/merchant_mappings tables)
+# ---------------------------------------------------------------------------
+
+CREATE_BILLS_SQL = """
+CREATE TABLE IF NOT EXISTS bills (
+    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payee                  TEXT NOT NULL,
+    amount                 NUMERIC(14, 2) NOT NULL,
+    currency               CHAR(3) NOT NULL,
+    due_date               DATE NOT NULL,
+    frequency              TEXT NOT NULL CHECK (frequency IN (
+                               'one_time', 'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
+                           )),
+    status                 TEXT NOT NULL CHECK (status IN ('pending', 'paid', 'overdue')),
+    payment_method         TEXT,
+    account_id             UUID,
+    source_message_id      TEXT,
+    statement_period_start DATE,
+    statement_period_end   DATE,
+    paid_at                TIMESTAMPTZ,
+    metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+CREATE_MERCHANT_MAPPINGS_SQL = """
+CREATE TABLE IF NOT EXISTS merchant_mappings (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    raw_pattern         TEXT NOT NULL,
+    normalized_merchant TEXT NOT NULL,
+    category            TEXT NOT NULL,
+    confidence          FLOAT NOT NULL DEFAULT 0.5,
+    learned_from_count  INT NOT NULL DEFAULT 0,
+    source              TEXT NOT NULL DEFAULT 'learn',
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_merchant_mappings_pattern_active UNIQUE (raw_pattern)
+)
+"""
+
+CREATE_RECURRING_GROUPS_SQL = """
+CREATE TABLE IF NOT EXISTS recurring_groups (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    merchant             TEXT NOT NULL UNIQUE,
+    estimated_frequency  TEXT CHECK (estimated_frequency IS NULL OR estimated_frequency IN (
+                             'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
+                         )),
+    avg_amount           NUMERIC(14, 2) NOT NULL,
+    currency             CHAR(3) DEFAULT 'USD',
+    last_seen_date       DATE,
+    next_expected_date   DATE,
+    is_active            BOOLEAN NOT NULL DEFAULT true,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+
+def _dt(d: date) -> datetime:
+    """Convert a date to a timezone-aware datetime at midnight UTC."""
+    return datetime.combine(d, datetime.min.time()).replace(tzinfo=UTC)
+
+
+async def _insert_txn(
+    pool_arg,
+    merchant: str,
+    amount: float,
+    posted_date: date,
+    currency: str = "USD",
+    direction: str = "debit",
+    category: str = "bills",
+) -> None:
+    """Helper to insert a transaction row (predict_bills tests)."""
+    await pool_arg.execute(
+        """
+        INSERT INTO transactions
+            (posted_at, merchant, amount, currency, direction, category)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        _dt(posted_date),
+        merchant,
+        Decimal(str(amount)),
+        currency,
+        direction,
+        category,
+    )
+
+
+@pytest.fixture
+async def pool_full(provisioned_postgres_pool):
+    """Pool with all finance tables (for predict_bills tests)."""
+    async with provisioned_postgres_pool() as p:
+        await p.execute(CREATE_TRANSACTIONS_SQL)
+        await p.execute(CREATE_BILLS_SQL)
+        await p.execute(CREATE_SUBSCRIPTIONS_SQL)
+        await p.execute(CREATE_MERCHANT_MAPPINGS_SQL)
+        await p.execute(CREATE_RECURRING_GROUPS_SQL)
+        yield p
+
+
+@pytest.fixture
+async def pool_no_bills(provisioned_postgres_pool):
+    """Pool with transactions only — no bills/subscriptions tables."""
+    async with provisioned_postgres_pool() as p:
+        await p.execute(CREATE_TRANSACTIONS_SQL)
+        yield p
+
+
+# ---------------------------------------------------------------------------
+# Internal helper unit tests (pure Python — no DB)
+# ---------------------------------------------------------------------------
+
+
+class TestInternalHelpers:
+    """Tests for pure-Python helpers in pattern_recognition."""
+
+    def test_median_interval_days_empty(self):
+        """Empty list returns None."""
+        from butlers.tools.finance.pattern_recognition import _median_interval_days
+
+        assert _median_interval_days([]) is None
+
+    def test_median_interval_days_single(self):
+        """Single date returns None (no interval)."""
+        from butlers.tools.finance.pattern_recognition import _median_interval_days
+
+        assert _median_interval_days([date(2026, 1, 1)]) is None
+
+    def test_median_interval_days_two(self):
+        """Two dates: interval = gap in days."""
+        from butlers.tools.finance.pattern_recognition import _median_interval_days
+
+        d1 = date(2026, 1, 1)
+        d2 = date(2026, 2, 1)
+        assert _median_interval_days([d1, d2]) == 31.0
+
+    def test_median_interval_days_three_monthly(self):
+        """Three monthly dates: median interval ~ 30 days."""
+        from butlers.tools.finance.pattern_recognition import _median_interval_days
+
+        dates = [date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1)]
+        result = _median_interval_days(dates)
+        assert result is not None
+        assert 28 <= result <= 32
+
+    def test_median_interval_days_unsorted_input(self):
+        """Unsorted dates are sorted before computing intervals."""
+        from butlers.tools.finance.pattern_recognition import _median_interval_days
+
+        dates = [date(2026, 3, 1), date(2026, 1, 1), date(2026, 2, 1)]
+        result = _median_interval_days(dates)
+        assert result is not None
+        assert 28 <= result <= 32
+
+    def test_median_amount_odd(self):
+        """Median of odd-length list is middle element."""
+        from butlers.tools.finance.pattern_recognition import _median_amount
+
+        amounts = [Decimal("10"), Decimal("20"), Decimal("30")]
+        assert _median_amount(amounts) == Decimal("20")
+
+    def test_median_amount_even(self):
+        """Median of even-length list is average of two middle elements."""
+        from butlers.tools.finance.pattern_recognition import _median_amount
+
+        amounts = [Decimal("10"), Decimal("20"), Decimal("30"), Decimal("40")]
+        assert _median_amount(amounts) == Decimal("25")
+
+    def test_amount_variance_single(self):
+        """Single amount: variance is 0.0."""
+        from butlers.tools.finance.pattern_recognition import _amount_variance_fraction
+
+        assert _amount_variance_fraction([Decimal("100")]) == 0.0
+
+    def test_amount_variance_identical(self):
+        """Identical amounts: variance is 0.0."""
+        from butlers.tools.finance.pattern_recognition import _amount_variance_fraction
+
+        amounts = [Decimal("50"), Decimal("50"), Decimal("50")]
+        assert _amount_variance_fraction(amounts) == 0.0
+
+    def test_amount_variance_large_spread(self):
+        """Large spread: variance > threshold."""
+        from butlers.tools.finance.pattern_recognition import _amount_variance_fraction
+
+        amounts = [Decimal("10"), Decimal("50"), Decimal("90")]
+        result = _amount_variance_fraction(amounts)
+        assert result > 0.10
+
+
+# ---------------------------------------------------------------------------
+# predict_bills tests
+# ---------------------------------------------------------------------------
+
+
+class TestPredictBills:
+    """Tests for predict_bills() — accuracy and edge cases."""
+
+    async def test_empty_transactions_returns_insufficient_data(self, pool_full):
+        """No transactions returns insufficient_data status."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        result = await predict_bills(pool=pool_full, days_ahead=30)
+        assert result["status"] == "insufficient_data"
+        assert result["predictions"] == []
+        assert result["window_days"] == 30
+
+    async def test_fewer_than_three_payments_excluded(self, pool_full):
+        """Payees with < 3 payments are not predicted."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        await _insert_txn(pool_full, "Gas Company", 80.0, today - timedelta(days=60))
+        await _insert_txn(pool_full, "Gas Company", 80.0, today - timedelta(days=30))
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        assert result["status"] == "insufficient_data"
+        assert result["predictions"] == []
+
+    async def test_three_monthly_payments_predict_next(self, pool_full):
+        """3 monthly payments predict next date within horizon."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        await _insert_txn(pool_full, "Electric Co", 95.0, today - timedelta(days=90))
+        await _insert_txn(pool_full, "Electric Co", 95.0, today - timedelta(days=60))
+        await _insert_txn(pool_full, "Electric Co", 95.0, today - timedelta(days=30))
+
+        result = await predict_bills(pool=pool_full, days_ahead=45)
+        assert result["status"] == "ok"
+        preds = [p for p in result["predictions"] if p["payee"] == "Electric Co"]
+        assert len(preds) == 1
+        pred = preds[0]
+        # predicted = (today-30) + 30 = today
+        predicted = date.fromisoformat(pred["predicted_date"])
+        assert predicted == today
+        assert pred["is_tracked"] is False
+        assert pred["amount_drift"] is False
+
+    async def test_prediction_outside_horizon_excluded(self, pool_full):
+        """Prediction beyond days_ahead is not included."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        await _insert_txn(pool_full, "Water Utility", 50.0, today - timedelta(days=90))
+        await _insert_txn(pool_full, "Water Utility", 50.0, today - timedelta(days=60))
+        await _insert_txn(pool_full, "Water Utility", 50.0, today - timedelta(days=30))
+
+        await _insert_txn(pool_full, "Cable TV", 60.0, today - timedelta(days=70))
+        await _insert_txn(pool_full, "Cable TV", 60.0, today - timedelta(days=40))
+        await _insert_txn(pool_full, "Cable TV", 60.0, today - timedelta(days=10))
+
+        result_5 = await predict_bills(pool=pool_full, days_ahead=5)
+        cable_preds_5 = [p for p in result_5["predictions"] if p["payee"] == "Cable TV"]
+        assert cable_preds_5 == []
+
+        result_30 = await predict_bills(pool=pool_full, days_ahead=30)
+        cable_preds_30 = [p for p in result_30["predictions"] if p["payee"] == "Cable TV"]
+        assert len(cable_preds_30) == 1
+
+    async def test_irregular_amounts_excluded(self, pool_full):
+        """Payees with >10% amount variance are excluded."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        await _insert_txn(pool_full, "Irregular Biller", 10.0, today - timedelta(days=90))
+        await _insert_txn(pool_full, "Irregular Biller", 50.0, today - timedelta(days=60))
+        await _insert_txn(pool_full, "Irregular Biller", 200.0, today - timedelta(days=30))
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        biller_preds = [p for p in result["predictions"] if p["payee"] == "Irregular Biller"]
+        assert biller_preds == []
+
+    async def test_is_tracked_true_when_bill_exists(self, pool_full):
+        """is_tracked=True when a pending bills row matches the payee."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        payee = "Rent Corp"
+        for i in range(3, 0, -1):
+            await _insert_txn(pool_full, payee, 1800.0, today - timedelta(days=30 * i))
+
+        await pool_full.execute(
+            """
+            INSERT INTO bills (payee, amount, currency, due_date, frequency, status)
+            VALUES ($1, $2, 'USD', $3, 'monthly', 'pending')
+            """,
+            payee,
+            Decimal("1800.00"),
+            today + timedelta(days=1),
+        )
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == payee]
+        assert len(preds) == 1
+        assert preds[0]["is_tracked"] is True
+
+    async def test_is_tracked_true_when_subscription_exists(self, pool_full):
+        """is_tracked=True when an active subscription matches the payee."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        payee = "Netflix"
+        for i in range(3, 0, -1):
+            await _insert_txn(pool_full, payee, 15.49, today - timedelta(days=30 * i))
+
+        await pool_full.execute(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ($1, $2, 'USD', 'monthly', $3, 'active')
+            """,
+            payee,
+            Decimal("15.49"),
+            today + timedelta(days=15),
+        )
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == payee]
+        assert len(preds) == 1
+        assert preds[0]["is_tracked"] is True
+
+    async def test_is_tracked_false_when_no_match(self, pool_full):
+        """is_tracked=False when no bills or subscriptions match."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for i in range(3, 0, -1):
+            await _insert_txn(pool_full, "Untracked Biller", 40.0, today - timedelta(days=30 * i))
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == "Untracked Biller"]
+        assert len(preds) == 1
+        assert preds[0]["is_tracked"] is False
+
+    async def test_amount_drift_true_when_diverges_over_10pct(self, pool_full):
+        """amount_drift=True when predicted amount differs >10% from tracked bill."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        payee = "Phone Plan"
+        for i in range(3, 0, -1):
+            await _insert_txn(pool_full, payee, 50.0, today - timedelta(days=30 * i))
+
+        await pool_full.execute(
+            """
+            INSERT INTO bills (payee, amount, currency, due_date, frequency, status)
+            VALUES ($1, $2, 'USD', $3, 'monthly', 'pending')
+            """,
+            payee,
+            Decimal("70.00"),
+            today + timedelta(days=5),
+        )
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == payee]
+        assert len(preds) == 1
+        assert preds[0]["is_tracked"] is True
+        assert preds[0]["amount_drift"] is True
+
+    async def test_amount_drift_false_within_10pct(self, pool_full):
+        """amount_drift=False when predicted and tracked amounts are within 10%."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        payee = "Internet ISP"
+        for i in range(3, 0, -1):
+            await _insert_txn(pool_full, payee, 100.0, today - timedelta(days=30 * i))
+
+        await pool_full.execute(
+            """
+            INSERT INTO bills (payee, amount, currency, due_date, frequency, status)
+            VALUES ($1, $2, 'USD', $3, 'monthly', 'pending')
+            """,
+            payee,
+            Decimal("105.00"),
+            today + timedelta(days=5),
+        )
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == payee]
+        assert len(preds) == 1
+        assert preds[0]["is_tracked"] is True
+        assert preds[0]["amount_drift"] is False
+
+    async def test_credit_transactions_excluded(self, pool_full):
+        """Credit direction transactions are ignored."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for i in range(3, 0, -1):
+            await _insert_txn(
+                pool_full,
+                "Refund Merchant",
+                50.0,
+                today - timedelta(days=30 * i),
+                direction="credit",
+            )
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == "Refund Merchant"]
+        assert preds == []
+
+    async def test_predictions_sorted_by_date(self, pool_full):
+        """Predictions are sorted by predicted_date ascending."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for i in range(3, 0, -1):
+            offset = 60 + 30 * (3 - i)
+            await _insert_txn(pool_full, "Biller A", 80.0, today - timedelta(days=offset))
+        for i in range(3, 0, -1):
+            offset = 35 + 30 * (3 - i)
+            await _insert_txn(pool_full, "Biller B", 90.0, today - timedelta(days=offset))
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        dates = [p["predicted_date"] for p in result["predictions"]]
+        assert dates == sorted(dates)
+
+    async def test_response_includes_as_of_and_window_days(self, pool_full):
+        """Response always includes as_of timestamp and window_days."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        result = await predict_bills(pool=pool_full, days_ahead=14)
+        assert "as_of" in result
+        assert result["window_days"] == 14
+        datetime.fromisoformat(result["as_of"])
+
+    async def test_prediction_contains_all_expected_fields(self, pool_full):
+        """Each prediction dict includes all required fields."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for i in range(3, 0, -1):
+            await _insert_txn(pool_full, "Full Fields", 120.0, today - timedelta(days=30 * i))
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == "Full Fields"]
+        assert len(preds) == 1
+        pred = preds[0]
+        required_keys = {
+            "payee",
+            "predicted_date",
+            "predicted_amount",
+            "currency",
+            "median_interval_days",
+            "occurrences",
+            "last_payment_date",
+            "is_tracked",
+            "amount_drift",
+        }
+        assert required_keys.issubset(set(pred.keys()))
+
+    async def test_six_monthly_payments_high_accuracy(self, pool_full):
+        """6 monthly payments produce accurate prediction."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for i in range(6, 0, -1):
+            await _insert_txn(pool_full, "Regular Bill", 75.0, today - timedelta(days=30 * i))
+
+        result = await predict_bills(pool=pool_full, days_ahead=45)
+        preds = [p for p in result["predictions"] if p["payee"] == "Regular Bill"]
+        assert len(preds) == 1
+        predicted = date.fromisoformat(preds[0]["predicted_date"])
+        # Expected exactly today: last_payment=(today-30), median_interval=30, predicted=today.
+        assert predicted == today
+
+    async def test_no_bills_table_graceful(self, pool_no_bills):
+        """predict_bills gracefully handles missing bills/subscriptions tables."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for i in range(3, 0, -1):
+            await _insert_txn(
+                pool_no_bills, "Graceful Biller", 60.0, today - timedelta(days=30 * i)
+            )
+
+        result = await predict_bills(pool=pool_no_bills, days_ahead=60)
+        assert result["status"] in ("ok", "insufficient_data")
+        preds = [p for p in result["predictions"] if p["payee"] == "Graceful Biller"]
+        if preds:
+            assert preds[0]["is_tracked"] is False
+            assert preds[0]["amount_drift"] is False
+
+    async def test_paid_bill_not_counted_as_tracked(self, pool_full):
+        """A paid bill does not count toward is_tracked."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        payee = "Paid Bill Payee"
+        for i in range(3, 0, -1):
+            await _insert_txn(pool_full, payee, 200.0, today - timedelta(days=30 * i))
+
+        await pool_full.execute(
+            """
+            INSERT INTO bills (payee, amount, currency, due_date, frequency, status)
+            VALUES ($1, $2, 'USD', $3, 'monthly', 'paid')
+            """,
+            payee,
+            Decimal("200.00"),
+            today - timedelta(days=5),
+        )
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == payee]
+        if preds:
+            assert preds[0]["is_tracked"] is False
+
+    async def test_cancelled_subscription_not_tracked(self, pool_full):
+        """A cancelled subscription does not count toward is_tracked."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        payee = "Cancelled Sub"
+        for i in range(3, 0, -1):
+            await _insert_txn(pool_full, payee, 10.0, today - timedelta(days=30 * i))
+
+        await pool_full.execute(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ($1, $2, 'USD', 'monthly', $3, 'cancelled')
+            """,
+            payee,
+            Decimal("10.00"),
+            today + timedelta(days=15),
+        )
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == payee]
+        if preds:
+            assert preds[0]["is_tracked"] is False
+
+    async def test_multiple_payees(self, pool_full):
+        """Multiple qualifying payees all appear in predictions."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for payee, amount in [("Multi A", 40.0), ("Multi B", 60.0), ("Multi C", 80.0)]:
+            for i in range(3, 0, -1):
+                await _insert_txn(pool_full, payee, amount, today - timedelta(days=30 * i))
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        payees = {p["payee"] for p in result["predictions"]}
+        assert {"Multi A", "Multi B", "Multi C"}.issubset(payees)
+
+    async def test_default_days_ahead_is_30(self, pool_full):
+        """Default days_ahead is 30."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        result = await predict_bills(pool=pool_full)
+        assert result["window_days"] == 30
+
+    async def test_currency_preserved_in_prediction(self, pool_full):
+        """Currency is preserved from transactions in prediction output."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for i in range(3, 0, -1):
+            await _insert_txn(
+                pool_full, "EUR Biller", 50.0, today - timedelta(days=30 * i), currency="EUR"
+            )
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == "EUR Biller"]
+        if preds:
+            assert preds[0]["currency"] == "EUR"
+
+    async def test_occurrences_count_correct(self, pool_full):
+        """Prediction occurrences count matches actual transaction count."""
+        from butlers.tools.finance.pattern_recognition import predict_bills
+
+        today = date.today()
+        for i in range(5, 0, -1):
+            await _insert_txn(pool_full, "Count Test", 100.0, today - timedelta(days=30 * i))
+
+        result = await predict_bills(pool=pool_full, days_ahead=60)
+        preds = [p for p in result["predictions"] if p["payee"] == "Count Test"]
+        if preds:
+            assert preds[0]["occurrences"] == 5

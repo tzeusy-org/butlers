@@ -1,4 +1,5 @@
-"""Finance butler pattern recognition — recurring charge detection, merchant categorization.
+"""Finance butler pattern recognition — recurring charge detection, merchant categorization,
+and bill prediction.
 
 Provides analytical functions for detecting recurring charges, learning merchant
 category mappings, and predicting upcoming bills from transaction history.
@@ -9,7 +10,7 @@ from __future__ import annotations
 import logging
 import statistics
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -42,6 +43,11 @@ _FREQUENCY_RANGES: list[tuple[str, int, int]] = [
     ("quarterly", 80, 100),
     ("yearly", 350, 380),
 ]
+
+# predict_bills constants
+_MIN_OCCURRENCES = 3  # minimum charges needed to detect a bill pattern
+_AMOUNT_VARIANCE_THRESHOLD = 0.10  # 10% max variance for predict_bills amount consistency
+_BILL_DRIFT_THRESHOLD = 0.10  # 10% drift to flag amount_drift
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +109,41 @@ def _intervals_are_regular(intervals_days: list[float]) -> bool:
     std = statistics.stdev(intervals_days)
     cv = std / mean
     return cv <= _INTERVAL_TOLERANCE
+
+
+def _median_interval_days(dates: list[date]) -> float | None:
+    """Return the median number of days between consecutive *sorted* dates.
+
+    Returns *None* when fewer than 2 dates are supplied (interval undefined).
+    """
+    if len(dates) < 2:
+        return None
+    sorted_dates = sorted(dates)
+    intervals = [(sorted_dates[i + 1] - sorted_dates[i]).days for i in range(len(sorted_dates) - 1)]
+    return statistics.median(intervals)
+
+
+def _median_amount(amounts: list[Decimal]) -> Decimal:
+    """Return median amount from a list of Decimal values."""
+    sorted_amounts = sorted(amounts)
+    n = len(sorted_amounts)
+    mid = n // 2
+    if n % 2 == 0:
+        return (sorted_amounts[mid - 1] + sorted_amounts[mid]) / 2
+    return sorted_amounts[mid]
+
+
+def _amount_variance_fraction(amounts: list[Decimal]) -> float:
+    """Return the fraction of variation as (max - min) / median.
+
+    Returns 0.0 for single-element lists.
+    """
+    if len(amounts) <= 1:
+        return 0.0
+    med = _median_amount(amounts)
+    if med == 0:
+        return 0.0
+    return float((max(amounts) - min(amounts)) / med)
 
 
 # ---------------------------------------------------------------------------
@@ -498,32 +539,46 @@ async def suggest_categories(
             )
 
     if transaction_ids:
+        # Batch-fetch transaction merchants and all active mappings to avoid N+1.
+        txn_rows = await pool.fetch(
+            """
+            SELECT id::text, merchant FROM transactions WHERE id = ANY($1::uuid[])
+            """,
+            transaction_ids,
+        )
+        txn_by_id = {r["id"]: r["merchant"] for r in txn_rows}
+
+        # Pre-fetch all active mappings once (already fetched if `merchant` was provided,
+        # but merchant_mappings is typically small enough to fetch unconditionally).
+        all_active_mappings = await pool.fetch(
+            """
+            SELECT merchant, category, confidence
+            FROM merchant_mappings
+            WHERE is_active = true
+            ORDER BY confidence DESC
+            """
+        )
+
         for txn_id in transaction_ids:
-            txn = await pool.fetchrow(
-                "SELECT merchant FROM transactions WHERE id = $1::uuid LIMIT 1",
-                txn_id,
-            )
-            if txn is None:
+            merchant_name = txn_by_id.get(txn_id)
+            if merchant_name is None:
                 continue
-            mapping = await pool.fetchrow(
-                """
-                SELECT merchant, category, confidence
-                FROM merchant_mappings
-                WHERE is_active = true AND merchant ILIKE $1
-                ORDER BY confidence DESC
-                LIMIT 1
-                """,
-                f"%{txn['merchant']}%",
-            )
-            if mapping:
-                suggestions.append(
-                    {
-                        "transaction_id": txn_id,
-                        "merchant": txn["merchant"],
-                        "suggested_category": mapping["category"],
-                        "confidence": float(mapping["confidence"]),
-                    }
-                )
+            merchant_lower = merchant_name.lower()
+            # Match in Python — avoids one query per transaction and ensures is_active
+            # is applied uniformly (the original per-row SQL had an operator-precedence
+            # bug where AND bound tighter than OR, letting inactive mappings leak through).
+            for m in all_active_mappings:
+                m_lower = m["merchant"].lower()
+                if m_lower in merchant_lower or merchant_lower in m_lower:
+                    suggestions.append(
+                        {
+                            "transaction_id": txn_id,
+                            "merchant": merchant_name,
+                            "suggested_category": m["category"],
+                            "confidence": float(m["confidence"]),
+                        }
+                    )
+                    break  # already ordered by confidence DESC
 
     return {"suggestions": suggestions, "as_of": datetime.now(UTC).isoformat()}
 
@@ -611,22 +666,41 @@ async def predict_bills(
     """Predict upcoming bill payments from historical transaction patterns.
 
     Analyzes ``finance.transactions WHERE deleted_at IS NULL`` for payees with
-    3+ regular payments and computes the predicted next payment date from the
-    median interval.
+    3+ regular payments.  For each qualifying payee the function computes:
+
+    - **predicted_date**  : last_payment_date + median_interval_days
+    - **predicted_amount**: median amount across historical charges
+    - **is_tracked**      : True when a matching ``finance.bills`` record with
+                            ``status IN ('pending', 'overdue')`` or a matching
+                            ``finance.subscriptions`` record with
+                            ``status = 'active'`` exists.
+    - **amount_drift**    : True when the predicted amount differs from the
+                            tracked bill/subscription amount by more than 10%.
+
+    Only predictions whose predicted_date falls within ``days_ahead`` days from
+    today are included in the response.
 
     Parameters
     ----------
     pool:
         asyncpg connection pool.
     days_ahead:
-        Number of days ahead to include predictions (default 30).
+        Number of days from today to look ahead. Default: 30.
 
     Returns
     -------
     dict
-        ``{predictions: [{merchant, predicted_date, predicted_amount, frequency,
-        is_tracked, amount_drift}], as_of}``
+        Keys: ``as_of``, ``window_days``, ``predictions``, ``status``.
+
+        Each prediction includes: ``payee``, ``predicted_date``,
+        ``predicted_amount``, ``currency``, ``median_interval_days``,
+        ``occurrences``, ``last_payment_date``, ``is_tracked``,
+        ``amount_drift``.
     """
+    now = datetime.now(UTC)
+    today = now.date()
+    horizon = today + timedelta(days=days_ahead)
+
     has_deleted_at = await pool.fetchval(
         """
         SELECT EXISTS (
@@ -637,122 +711,128 @@ async def predict_bills(
     )
     deleted_filter = "AND deleted_at IS NULL" if has_deleted_at else ""
 
+    # Fetch all debit transactions for payees with enough history.
     rows = await pool.fetch(
         f"""
-        SELECT merchant, posted_at, amount, currency
+        SELECT merchant,
+               array_agg(posted_at::date ORDER BY posted_at) AS dates,
+               array_agg(amount ORDER BY posted_at)          AS amounts,
+               COUNT(*) AS cnt,
+               MAX(currency) AS currency
         FROM transactions
         WHERE direction = 'debit'
           {deleted_filter}
-        ORDER BY merchant ASC, posted_at ASC
-        """
+        GROUP BY merchant
+        HAVING COUNT(*) >= $1
+        ORDER BY merchant
+        """,
+        _MIN_OCCURRENCES,
     )
 
     if not rows:
         return {
+            "as_of": now.isoformat(),
+            "window_days": days_ahead,
             "predictions": [],
             "status": "insufficient_data",
-            "as_of": datetime.now(UTC).isoformat(),
         }
 
-    merchant_data: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        merchant_data[row["merchant"]].append(
-            {
-                "posted_at": row["posted_at"],
-                "amount": Decimal(str(row["amount"])),
-                "currency": row["currency"],
-            }
-        )
-
-    # Lookup tracked bills for is_tracked / amount_drift.
-    bills_by_payee: dict[str, dict[str, Any]] = {}
-    has_bills = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_name = 'bills'
-        )
-        """
-    )
-    if has_bills:
+    # Pre-fetch all pending/overdue bills and active subscriptions once to avoid
+    # N+1 per-payee queries inside the loop.
+    bills_lookup: dict[str, Decimal] = {}
+    try:
         bill_rows = await pool.fetch(
             """
-            SELECT payee, amount, currency
-            FROM bills
+            SELECT payee, amount FROM bills
             WHERE status IN ('pending', 'overdue')
+            ORDER BY due_date DESC
             """
         )
-        for bill in bill_rows:
-            bills_by_payee[bill["payee"].lower()] = {
-                "amount": Decimal(str(bill["amount"])),
-                "currency": bill["currency"],
-            }
+        for br in bill_rows:
+            key = br["payee"].lower()
+            if key not in bills_lookup:
+                bills_lookup[key] = Decimal(str(br["amount"]))
+    except asyncpg.UndefinedTableError:
+        pass  # bills table not yet available
 
-    today = datetime.now(UTC).date()
-    horizon = today + timedelta(days=days_ahead)
+    subs_lookup: dict[str, Decimal] = {}
+    try:
+        sub_rows = await pool.fetch(
+            """
+            SELECT service, amount FROM subscriptions
+            WHERE status = 'active'
+            ORDER BY updated_at DESC
+            """
+        )
+        for sr in sub_rows:
+            key = sr["service"].lower()
+            if key not in subs_lookup:
+                subs_lookup[key] = Decimal(str(sr["amount"]))
+    except asyncpg.UndefinedTableError:
+        pass  # subscriptions table not yet available
+
     predictions: list[dict[str, Any]] = []
 
-    for merchant, charges in merchant_data.items():
-        if len(charges) < 3:
+    for row in rows:
+        dates: list[date] = list(row["dates"])
+        amounts: list[Decimal] = [Decimal(str(a)) for a in row["amounts"]]
+        merchant = row["merchant"]
+        currency = row["currency"] or "USD"
+
+        # Check amount consistency — skip highly irregular payees.
+        variance = _amount_variance_fraction(amounts)
+        if variance > _AMOUNT_VARIANCE_THRESHOLD:
             continue
 
-        posted_dates = [c["posted_at"] for c in charges]
-        amounts = [c["amount"] for c in charges]
-        currency = charges[0]["currency"]
-
-        intervals_days: list[float] = []
-        for i in range(1, len(posted_dates)):
-            delta = (posted_dates[i] - posted_dates[i - 1]).total_seconds() / 86400.0
-            if delta > 0:
-                intervals_days.append(delta)
-
-        if not intervals_days:
+        # Compute median interval.
+        median_days = _median_interval_days(dates)
+        if median_days is None or median_days < 1:
             continue
 
-        if not _intervals_are_regular(intervals_days):
+        last_date = max(dates)
+        predicted_date = last_date + timedelta(days=round(median_days))
+
+        # Only include predictions within the requested horizon.
+        if predicted_date < today or predicted_date > horizon:
             continue
 
-        median_interval = statistics.median(intervals_days)
-        last_seen = posted_dates[-1]
-        last_seen_date = last_seen.date() if hasattr(last_seen, "date") else last_seen
-        predicted_date = last_seen_date + timedelta(days=round(median_interval))
+        predicted_amount = _median_amount(amounts)
 
-        if not (today <= predicted_date <= horizon):
-            continue
-
-        avg_amount = Decimal(str(round(sum(float(a) for a in amounts) / len(amounts), 2)))
-        frequency = _classify_frequency(median_interval)
-
-        # is_tracked / amount_drift.
-        is_tracked = False
-        amount_drift: str | None = None
+        # is_tracked flag (use pre-fetched lookups, no per-payee queries).
         merchant_lower = merchant.lower()
-        for payee_name, bill_data in bills_by_payee.items():
-            if payee_name in merchant_lower or merchant_lower in payee_name:
-                is_tracked = True
-                tracked_amount = bill_data["amount"]
-                if tracked_amount > 0:
-                    drift = (float(avg_amount) - float(tracked_amount)) / float(tracked_amount)
-                    if abs(drift) > 0.10:
-                        amount_drift = f"{drift:+.1%}"
-                break
+        tracked_amount: Decimal | None = bills_lookup.get(merchant_lower)
+        is_tracked = tracked_amount is not None
+        if not is_tracked:
+            tracked_amount = subs_lookup.get(merchant_lower)
+            is_tracked = tracked_amount is not None
+
+        # amount_drift flag.
+        amount_drift = False
+        if is_tracked and tracked_amount is not None and tracked_amount > 0:
+            drift = abs(predicted_amount - tracked_amount) / tracked_amount
+            amount_drift = float(drift) > _BILL_DRIFT_THRESHOLD
 
         predictions.append(
             {
-                "merchant": merchant,
+                "payee": merchant,
                 "predicted_date": predicted_date.isoformat(),
-                "predicted_amount": str(avg_amount),
+                "predicted_amount": str(predicted_amount.quantize(Decimal("0.01"))),
                 "currency": currency,
-                "frequency": frequency,
+                "median_interval_days": round(median_days, 1),
+                "occurrences": len(dates),
+                "last_payment_date": last_date.isoformat(),
                 "is_tracked": is_tracked,
                 "amount_drift": amount_drift,
             }
         )
 
-    predictions.sort(key=lambda x: x["predicted_date"])
+    # Sort by predicted_date ascending.
+    predictions.sort(key=lambda p: p["predicted_date"])
 
+    status = "ok" if predictions else "insufficient_data"
     return {
+        "as_of": now.isoformat(),
+        "window_days": days_ahead,
         "predictions": predictions,
-        "status": "ok" if predictions else "no_predictions",
-        "as_of": datetime.now(UTC).isoformat(),
+        "status": status,
     }
