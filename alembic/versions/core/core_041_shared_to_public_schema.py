@@ -182,29 +182,10 @@ def upgrade() -> None:
             )
         )
 
-    # -------------------------------------------------------------------------
-    # 4. Create FK-compatible stubs in shared for tables referenced by
-    #    historical core migrations.  Core_007 adds FKs from
-    #    relationship.* → shared.contacts(id).  Because each butler runs the
-    #    full core chain and to_regclass('relationship.relationships') resolves
-    #    globally, core_007 tries to create FKs even for non-relationship
-    #    butlers.  The FK target must be a real table (views don't work).
-    #    We create minimal stub tables with just the PK column so FKs succeed.
-    #    These stubs hold no data — all real data lives in public.
-    # -------------------------------------------------------------------------
-    conn.execute(text("CREATE SCHEMA IF NOT EXISTS shared"))
-    _STUB_TABLES = ["contacts", "entities"]
-    for stub in _STUB_TABLES:
-        exists_in_shared = conn.execute(
-            text("SELECT to_regclass(:tbl)"),
-            {"tbl": f"shared.{stub}"},
-        ).scalar()
-        if exists_in_shared is None:
-            conn.execute(
-                text(f"CREATE TABLE shared.{stub} (id UUID PRIMARY KEY)")
-            )
-    log.info(
-        "shared schema now contains FK-compatible stubs; real data in public"
+    # Leave the shared schema empty.  It's created by alembic/env.py and
+    # needed for historical migration search_path resolution.  core_007's
+    # FK-creation guard was fixed to skip non-relationship butlers.
+    log.info("shared schema is now empty — tables moved to public"
     )
 
 

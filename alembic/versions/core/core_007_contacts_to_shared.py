@@ -269,8 +269,14 @@ def upgrade() -> None:
             DECLARE
                 v_table_oid OID;
             BEGIN
-                -- Skip if table does not exist in relationship schema.
+                -- Skip if table does not exist in relationship schema,
+                -- or if we are not running in the relationship schema
+                -- (to_regclass resolves globally, so a table in another
+                -- butler's schema would pass this check incorrectly).
                 IF to_regclass('relationship.{table}') IS NULL THEN
+                    RETURN;
+                END IF;
+                IF current_setting('search_path') NOT LIKE 'relationship%' THEN
                     RETURN;
                 END IF;
 
