@@ -329,6 +329,8 @@ async def update_transaction(
         Updated TransactionRecord dict, or ``{"error": ..., "transaction_id": ...}``
         when the transaction is not found.
     """
+    # "updated_at = now()" is included only when at least one real field is being
+    # changed; the early-return branch below skips the UPDATE entirely for no-op calls.
     sets: list[str] = ["updated_at = now()"]
     params: list[Any] = []
     idx = 1

@@ -1798,6 +1798,7 @@ class TestUpdateTransactionCategoryFeedback:
 
     async def test_update_merchant_name(self, pool_merchant):
         """Merchant name can be updated without affecting category mappings."""
+        from butlers.tools.finance.pattern_recognition import recall_merchant_mappings
         from butlers.tools.finance.transactions import update_transaction
 
         row = await pool_merchant.fetchrow(
@@ -1814,3 +1815,6 @@ class TestUpdateTransactionCategoryFeedback:
 
         assert result.get("error") is None
         assert result["merchant"] == "New Name"
+        # Merchant-only update must not trigger the category feedback loop.
+        mappings = await recall_merchant_mappings(pool_merchant, merchant_pattern="New Name")
+        assert len(mappings["mappings"]) == 0
