@@ -138,7 +138,20 @@ pytestmark_integration = [
 
 @pytest.fixture
 async def lifestyle_pool(provisioned_postgres_pool):
-    """Provision a fresh database with the facts/predicate tables for memory tests."""
+    """Provision a fresh database with the facts/predicate tables for memory tests.
+
+    SCHEMA DRIFT WARNING: This fixture manually recreates a subset of the production
+    schema to keep tests lightweight and avoid adding Alembic as a test dependency.
+    If any of the following migrations are updated, this fixture must be updated too:
+      - src/butlers/modules/memory/migrations/001_memory_baseline.py  (facts table)
+      - src/butlers/modules/memory/migrations/002_entities.py         (public.entities)
+      - src/butlers/modules/memory/migrations/005_predicate_registry.py (predicate_registry)
+      - src/butlers/modules/memory/migrations/007_bitemporal_facts.py  (valid_at, observed_at)
+      - src/butlers/modules/memory/migrations/014_tenant_request_lineage.py (tenant_id, request_id)
+      - src/butlers/modules/memory/migrations/015_consolidation_state_machine.py (memory_links)
+      - src/butlers/modules/memory/migrations/017_memory_policies.py   (retention_class, sens.)
+      - src/butlers/modules/memory/migrations/026_preferences_predicates.py (lifestyle predicates)
+    """
     async with provisioned_postgres_pool() as p:
         # shared schema required by store_fact (entity resolution)
         await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
