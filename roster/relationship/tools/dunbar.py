@@ -440,6 +440,11 @@ async def compute_urgency(
         # Urgency — contacts not yet overdue (days_overdue=0) rank by context only
         urgency = (days_overdue / effective_cadence) * weight + context_bonus
 
+        # Filter: exclude non-overdue contacts with zero context bonus
+        # (spec requirement: "non-overdue zero-context contacts MUST be filtered OUT of results")
+        if days_overdue == 0.0 and context_bonus == 0.0:
+            continue
+
         results.append(
             {
                 "contact_id": contact_id,

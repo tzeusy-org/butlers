@@ -806,6 +806,19 @@ async def test_urgency_stay_in_touch_overrides_tier_cadence(dunbar_pool):
     contact = await _make_contact(dunbar_pool, "LongCadenceInner", stay_in_touch_days=90)
     await _log_interaction(dunbar_pool, contact["id"], days_ago=20)
 
+    # Add an upcoming date (within 14 days) to provide a context bonus
+    # so the contact passes the "zero-context" filter
+    upcoming = datetime.now(UTC) + timedelta(days=7)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO important_dates (contact_id, label, month, day)
+        VALUES ($1, 'birthday', $2, $3)
+        """,
+        contact["id"],
+        upcoming.month,
+        upcoming.day,
+    )
+
     scores = [
         {
             "contact_id": contact["id"],
@@ -819,8 +832,10 @@ async def test_urgency_stay_in_touch_overrides_tier_cadence(dunbar_pool):
     row = next((r for r in results if r["contact_id"] == contact["id"]), None)
     assert row is not None
     # With stay_in_touch_days=90, 20 days elapsed → not overdue yet (days_overdue=0)
+    # But has a context bonus from the upcoming date
     assert row["effective_cadence"] == 90
     assert row["days_overdue"] == 0.0
+    assert row["context_bonus"] > 0.0
 
 
 @pytest.mark.integration
@@ -845,6 +860,36 @@ async def test_urgency_contact_with_no_interactions_overdue(dunbar_pool):
     row = next((r for r in results if r["contact_id"] == contact["id"]), None)
     assert row is not None
     assert row["days_overdue"] == float(row["effective_cadence"])
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_urgency_excludes_non_overdue_zero_context_contacts(dunbar_pool):
+    """Non-overdue contacts with zero context bonus MUST be filtered from results."""
+    from butlers.tools.relationship.dunbar import compute_urgency, get_tier_ranking
+
+    # Contact with stay_in_touch_days=365, last interaction 20 days ago
+    # days_overdue = max(20 - 365, 0) = 0
+    # context_bonus = 0 (no dates, gifts, or positive notes)
+    # Result: should be EXCLUDED from output
+    contact = await _make_contact(dunbar_pool, "NoUrgency", stay_in_touch_days=365)
+    await _log_interaction(dunbar_pool, contact["id"], days_ago=20)
+
+    scores = [
+        {
+            "contact_id": contact["id"],
+            "entity_id": contact["entity_id"],
+            "score": 5.0,
+            "last_interaction_at": datetime.now(UTC) - timedelta(days=20),
+        }
+    ]
+    tier_ranking = get_tier_ranking(scores)
+    results = await compute_urgency(dunbar_pool, tier_ranking=tier_ranking)
+
+    # Contact should NOT appear in results (filtered out)
+    ids = [r["contact_id"] for r in results]
+    assert contact["id"] not in ids
 
 
 # ===========================================================================
