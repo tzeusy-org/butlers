@@ -32,6 +32,7 @@ Create Date: 2026-03-26 00:00:00.000000
 from __future__ import annotations
 
 from alembic import op
+from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision = "mem_026"
@@ -192,7 +193,7 @@ _SCOPE_VALUES_ORIGINAL = "('global', 'health', 'relationship', 'finance', 'home'
 def _alter_scope_constraint(new_values: str) -> None:
     """Replace the scope CHECK constraint with an updated IN-list."""
     conn = op.get_bind()
-    row = conn.execute(op.inline_literal(_SCOPE_CHECK_FIND)).fetchone()  # type: ignore[arg-type]
+    row = conn.execute(text(_SCOPE_CHECK_FIND)).fetchone()
     if row:
         constraint_name = row[0]
         op.execute(f"ALTER TABLE predicate_registry DROP CONSTRAINT IF EXISTS {constraint_name}")
