@@ -36,29 +36,39 @@ policy = "suggest"
 name = "upcoming-bills-check"
 cron = "15 21 * * 0"
 prompt = """
-Daily bills check. Use upcoming_bills(days_ahead=14, include_overdue=true) to surface bills due
+Weekly bills check. Use upcoming_bills(days_ahead=14, include_overdue=true) to surface bills due
 in the next two weeks, ranked by urgency:
 - Overdue bills first
 - Bills due today
 - Bills due this week
 - Bills due within 14 days
 
-If any bills are upcoming or overdue, send the urgency-ranked list and total amount due via
-notify(channel="telegram", intent="send", message=<urgency_ranked_list>).
-If no bills are upcoming or overdue, do not send a message.
+Also call predict_bills(days_ahead=30) to surface upcoming bills predicted from historical
+payment patterns. For each predicted bill, note whether it is already tracked (is_tracked=true)
+or is a new pattern, and flag any amount_drift detected vs the tracked record.
+
+Notify the owner via Telegram with the urgency-ranked list, total amount due, and any
+pattern-based predictions not yet tracked as bills.
+Use notify(channel="telegram", intent="send", message=<urgency_ranked_list>).
+If no bills are upcoming, overdue, or predicted, do not send a message.
 """
 
 [[butler.schedule]]
 name = "subscription-renewal-alerts"
 cron = "20 21 * * 0"
 prompt = """
-Daily subscription renewal scan. Check for subscriptions renewing within the next 7 days.
+Weekly subscription renewal scan. Check for subscriptions renewing within the next 7 days.
 For each upcoming renewal, include the service name, amount, and renewal date.
 
+Also call detect_price_changes(days_back=60) to identify subscriptions where the recent charge
+amount differs from the recorded subscription amount. Flag any price changes — include the
+previous amount, new amount, and percentage change so the owner can decide whether to accept
+the new price or cancel.
+
 Flag any subscriptions where the user may want to review before auto-renewal.
-If any renewals are approaching, send the renewal summary via
+If any renewals are approaching or price changes are detected, send the summary via
 notify(channel="telegram", intent="send", message=<renewal_summary>).
-If no renewals are upcoming, do not send a message.
+If no renewals are upcoming and no price changes detected, do not send a message.
 """
 
 [[butler.schedule]]
@@ -69,11 +79,67 @@ Monthly spending summary. Use spending_summary for the previous calendar month, 
 Include:
 - Total spend for the month
 - Top spending categories with amounts
-- Notable changes compared to the prior month (if data available)
+- Notable changes compared to the prior month using spending_trends(comparison="month_over_month", months=2)
+- Budget status: call budget_status() and include per-category utilization and any warning/exceeded categories
+- Anomaly count: call anomaly_scan(days_back=30) and report the number of anomalies flagged, with a brief summary of the most significant ones
+- Subscription audit summary: call subscription_audit() and report total active subscriptions, annual cost projection, and any new or changed subscriptions detected since last audit
+- Net worth update prompt: remind owner to run net_worth_snapshot() if account balances have changed
 - Any outstanding obligations carried forward
 
 Send the formatted monthly overview via
 notify(channel="telegram", intent="send", message=<monthly_overview>).
+"""
+
+[[butler.schedule]]
+name = "anomaly-digest"
+cron = "0 21 * * *"
+prompt = """
+Daily anomaly digest. Call anomaly_scan(days_back=1, sensitivity="medium") to check for
+spending anomalies in the past 24 hours. Anomaly types to detect: unusually large transactions
+(vs merchant or category baseline), new merchants not seen before, and category velocity spikes.
+
+If anomalies are found, notify the owner via Telegram with a concise list:
+- Anomaly type and severity
+- Merchant and amount
+- Why it was flagged (brief explanation)
+
+Use notify(channel="telegram", intent="send", message=<formatted_digest>).
+If no anomalies are detected, do not send a message.
+"""
+
+[[butler.schedule]]
+name = "budget-status-check"
+cron = "0 9 * * 1"
+prompt = """
+Weekly budget status check. Call budget_status() to get the current spending status for all
+active budget categories. Review each category for:
+- warning: spending has reached the warn_threshold percentage
+- exceeded: spending has surpassed the alert_threshold or budget limit
+
+If any category is in warning or exceeded status, notify the owner via Telegram with:
+- Category name
+- Budget amount and current spend
+- Utilization percentage
+- Status (warning or exceeded)
+
+Use notify(channel="telegram", intent="send", message=<formatted_status>).
+If all categories are on_track, do not send a message.
+"""
+
+[[butler.schedule]]
+name = "subscription-audit-monthly"
+cron = "0 10 1 * *"
+prompt = """
+Monthly subscription audit. Call subscription_audit() to get a complete picture of all active
+subscriptions and detected recurring charges. The audit should include:
+- Total active subscriptions and their combined monthly and annual cost projections
+- Any subscriptions where the price has changed since the last audit
+- Any newly detected recurring charges not yet tracked as subscriptions
+- Any subscriptions that appear to have lapsed or been cancelled
+
+Notify the owner via Telegram with a structured audit summary.
+Use notify(channel="telegram", intent="send", message=<formatted_audit>).
+Always send the audit summary — this is a monthly review that should always fire.
 """
 
 [[butler.schedule]]

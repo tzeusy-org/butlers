@@ -1,7 +1,7 @@
 ---
 name: subscription-renewal-alerts
-description: Scheduled task skill — daily subscription renewal scan, alerts for renewals within 7 days via notify intent=send
-version: 1.0.0
+description: Scheduled task skill — weekly subscription renewal scan with price change detection, alerts via notify intent=send
+version: 1.1.0
 trigger_patterns:
   - scheduled task subscription-renewal-alerts
 ---
@@ -10,26 +10,27 @@ trigger_patterns:
 
 ## Purpose
 
-Daily scheduled scan for subscriptions renewing within the next 7 days. For each upcoming
-renewal, surface the service name, amount, renewal date, and auto-renew status. Deliver a
-Telegram alert so the owner can cancel or adjust before being charged. If no renewals are
-approaching, send nothing.
+Weekly scheduled scan for subscriptions renewing within the next 7 days, plus detection of
+price changes in recent subscription charges. For each upcoming renewal, surface the service
+name, amount, renewal date, and auto-renew status. Flag any subscriptions where the charged
+amount has changed vs the tracked amount. Deliver a Telegram alert so the owner can cancel or
+adjust before being charged. If no renewals are approaching and no price changes detected,
+send nothing.
 
 ## When to Use
 
 Use this skill when:
-- The `subscription-renewal-alerts` scheduled task fires (cron: `30 8 * * *`, daily at 08:30)
+- The `subscription-renewal-alerts` scheduled task fires (cron: `20 21 * * 0`, weekly on Sunday at 21:20)
 
 ## Execution Protocol
 
-### Step 1: Fetch Active Subscriptions
+### Step 1: Fetch Active Subscriptions and Price Changes
 
-The finance tools do not have a dedicated "upcoming renewals" query. Use the available tools:
+Run both calls:
 
-1. Query active subscriptions by filtering for `status="active"` and `next_renewal` within 7
-   days. Use whatever subscription listing tool is available (e.g., a future `list_subscriptions`
-   tool), or fall back to `memory_search(query="active subscriptions")` if the tool is not yet
-   available.
+1. Query active subscriptions renewing within 7 days. Use whatever subscription listing tool
+   is available (e.g., a future `list_subscriptions` tool), or fall back to
+   `memory_search(query="active subscriptions")` if the tool is not yet available.
 
    **Preferred (when tool is available):**
    ```python
@@ -41,12 +42,20 @@ The finance tools do not have a dedicated "upcoming renewals" query. Use the ava
    memory_search(query="active subscriptions renewing soon")
    ```
 
-2. If no subscription tool or memory results exist, send nothing and exit.
+2. Check for price changes in recent subscription charges:
 
-### Step 2: Early Exit — No Upcoming Renewals
+   ```python
+   price_changes = detect_price_changes(days_back=60)
+   ```
 
-If no active subscriptions renew within 7 days, **do not send a notification**. Exit
-immediately.
+   This returns subscriptions where the most recent charge amount differs from the tracked
+   subscription amount. Each result includes: `service`, `tracked_amount`, `recent_amount`,
+   `change_pct`, and `last_charge_date`.
+
+### Step 2: Early Exit — Nothing to Report
+
+If no active subscriptions renew within 7 days **and** `detect_price_changes` returns no
+results, **do not send a notification**. Exit immediately.
 
 ### Step 3: Classify Renewals
 
@@ -62,29 +71,43 @@ Sort by `next_renewal` ascending (soonest first).
 Flag any subscription where `auto_renew=true` and renewal is within 3 days — these are highest
 priority since the charge is imminent and unavoidable without action today.
 
-### Step 4: Compose Alert
+### Step 4: Classify Price Changes
 
-Format concisely for Telegram:
+For each price change returned by `detect_price_changes`:
+- Determine direction: price increase or price decrease
+- Compute delta: `recent_amount - tracked_amount`
+- Note whether the service is also renewing soon (overlap with Step 3 results)
+
+Sort by absolute `change_pct` descending (largest change first).
+
+### Step 5: Compose Alert
+
+Format concisely for Telegram. Include both sections if data exists for both; omit any section
+with no data:
 
 ```
-Subscription renewals — next 7 days
+Subscription update — [date]
 
 🔴 RENEWING SOON (auto-renews):
 - [Service]: $[amount] — renews [date] ([N] days) ⚡ auto-renew ON
 
-🟡 UPCOMING:
+🟡 UPCOMING RENEWALS:
 - [Service]: $[amount] — renews [date] ([N] days) [auto-renew: ON/OFF]
 - [Service]: $[amount] — renews [date] ([N] days) [auto-renew: OFF — manual action needed]
 
 Total charges expected: $[sum]
+
+💲 PRICE CHANGES DETECTED:
+- [Service]: $[tracked_amount] → $[recent_amount] ([+/-]N%) — last charged [date]
 ```
 
 Omit the "RENEWING SOON" section if no auto-renewing subscriptions are within 3 days.
+Omit the "PRICE CHANGES DETECTED" section if `detect_price_changes` returns no results.
 
 For subscriptions with `auto_renew=false`, note "manual action needed" to remind the owner to
 initiate the payment or renewal themselves.
 
-### Step 5: Deliver Notification
+### Step 6: Deliver Notification
 
 ```python
 notify(
@@ -100,7 +123,8 @@ Use `intent="send"` (not `reply`) — this is a proactive scheduled delivery.
 ## Exit Criteria
 
 - Active subscriptions queried for renewals within 7 days
-- If no upcoming renewals: session exits without sending
-- If renewals exist: alert sent via `notify(intent="send")` with service names, amounts, dates,
-  and auto-renew status
+- `detect_price_changes(days_back=60)` called to surface any price changes
+- If no upcoming renewals and no price changes: session exits without sending
+- If renewals or price changes exist: alert sent via `notify(intent="send")` with service names,
+  amounts, dates, auto-renew status, and price change details
 - Session exits after delivery — no interactive follow-up in this session

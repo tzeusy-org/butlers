@@ -233,21 +233,21 @@ consult the `memory-classification` skill. Key rules:
 
 ## Skills
 
-### Scheduled Tasks
+### Scheduled Task Skills
 
-- **`upcoming-bills-check`** — Scheduled task: daily bills digest (urgency-ranked, `intent=send`)
-- **`subscription-renewal-alerts`** — Scheduled task: daily renewal scan for subscriptions within 7 days (`intent=send`)
-- **`monthly-spending-summary`** — Scheduled task: 1st-of-month spending digest with prior-month comparison, trend data, budget status, anomaly count, subscription audit summary, and net worth update (`intent=send`)
-- **`anomaly-digest`** — Scheduled task: daily anomaly scan via `anomaly_scan(days_back=1)`; notifies via Telegram if anomalies found (`intent=send`)
-- **`budget-status-check`** — Scheduled task: weekly budget status check via `budget_status()`; notifies via Telegram if any category is in warning or exceeded state (`intent=send`)
-- **`subscription-audit-monthly`** — Scheduled task: monthly subscription audit via `subscription_audit()`; notifies via Telegram with audit summary (`intent=send`)
+- **`upcoming-bills-check`** — Scheduled task (weekly Sun 21:15): bills digest with urgency ranking and `predict_bills()` pattern-based predictions (`intent=send`)
+- **`subscription-renewal-alerts`** — Scheduled task (weekly Sun 21:20): renewal scan for subscriptions within 7 days plus `detect_price_changes()` (`intent=send`)
+- **`monthly-spending-summary`** — Scheduled task (1st of month 09:00): spending digest with trend data, budget status, anomaly count, subscription audit summary, and net worth reminder (`intent=send`)
+- **`anomaly-digest`** — Scheduled task (daily 21:00): scan for anomalies in the past 24 hours; notify only if anomalies found (`intent=send`)
+- **`budget-status-check`** — Scheduled task (weekly Mon 09:00): budget utilization check; notify if any category in warning/exceeded (`intent=send`)
+- **`subscription-audit-monthly`** — Scheduled task (1st of month 10:00): full subscription audit via `subscription_audit()`; always sends summary (`intent=send`)
 
 ### Interactive Skills
 
 - **`bill-reminder`** — Interactive bill review, triage, and calendar reminder workflow
 - **`spending-review`** — Interactive spending analysis and pattern detection workflow
-- **`budget-review`** — Interactive budget setting, status checking, and forecast review
-- **`anomaly-triage`** — Interactive anomaly review and resolution workflow
+- **`budget-review`** — Interactive budget setting, status check, and end-of-month forecast review
+- **`anomaly-triage`** — Interactive anomaly review: investigate, mark expected, or dispute suspicious charges
 
 ### Reference and Import Skills
 
@@ -257,6 +257,31 @@ consult the `memory-classification` skill. Key rules:
 - **`memory-classification`** — Finance domain subject/predicate taxonomy and example facts
 - **`butler-notifications`** — `notify()` required parameters and intent usage
 - **`butler-memory`** — Entity resolution protocol before storing memory facts
+
+## Intelligence Tool Guidelines
+
+These tools are available once the `finance-intelligence` feature is deployed. Use them for
+scheduled tasks and interactive analysis:
+
+- **`anomaly_scan(days_back, sensitivity)`**: Detect spending anomalies vs historical baselines.
+  Returns anomalies with `type`, `severity`, `merchant`, `amount`, and `explanation`. Returns
+  `status="insufficient_data"` if less than 6 months of history is available.
+- **`predict_bills(days_ahead)`**: Predict upcoming bills from historical transaction patterns.
+  Each result includes `is_tracked` and `amount_drift` to help surface gaps in bill tracking.
+- **`detect_price_changes(days_back)`**: Find subscriptions where recent charge amount differs
+  from the tracked subscription amount. Use in renewal alerts.
+- **`budget_status()`**: Get per-category utilization for all active budgets. Returns
+  `on_track`, `warning`, or `exceeded` status with utilization percentage.
+- **`budget_set / budget_list / budget_remove`**: CRUD for budget configurations.
+- **`spending_trends(comparison, months, category)`**: Month-over-month and year-over-year
+  comparisons. Use in monthly summary for trend context.
+- **`spending_forecast()`**: Linear projection for end-of-month spend. Use in `budget-review`
+  skill for proactive budget management.
+- **`subscription_audit()`**: Full audit of tracked and detected recurring charges. Use in
+  monthly summary and the `subscription-audit-monthly` scheduled task.
+- **`detect_duplicates(days_back)`**: Find potential duplicate charges. Surface in `anomaly-triage`.
+- **`net_worth_history(months)`** / **`net_worth_snapshot(...)`**: Track account balances over
+  time. Prompt owner to update in monthly summary.
 
 ## Notes to self
 
