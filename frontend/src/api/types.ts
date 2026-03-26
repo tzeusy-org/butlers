@@ -2481,7 +2481,13 @@ export interface WhatsAppDisconnectResponse {
 // ---------------------------------------------------------------------------
 
 /** Connection state for the Spotify account. */
-export type SpotifyState = "connected" | "disconnected" | "error" | "not_configured";
+export type SpotifyState =
+  | "connected"
+  | "disconnected"
+  | "error"
+  | "not_configured"
+  | "needs_auth"
+  | "needs_reauth";
 
 /** Response from GET /api/spotify/status */
 export interface SpotifyStatusResponse {
@@ -2492,6 +2498,10 @@ export interface SpotifyStatusResponse {
   account_type: string | null;
   last_sync_at: string | null;
   error: string | null;
+  /** True when stored scopes are insufficient for current requirements. */
+  needs_reauth: boolean;
+  /** Scopes that are required but were not granted. */
+  missing_scopes: string[];
 }
 
 /** Response from POST /api/spotify/oauth/start */
