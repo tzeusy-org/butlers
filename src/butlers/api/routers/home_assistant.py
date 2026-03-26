@@ -77,7 +77,8 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
 
     try:
         pool = db_manager.credential_shared_pool()
-    except Exception:
+    except Exception:  # noqa: BLE001 — pool API is dynamic; exception type is unknown
+        logger.debug("Shared credential pool unavailable", exc_info=True)
         butler_names = getattr(db_manager, "butler_names", [])
         if not butler_names:
             logger.debug("Shared credential pool unavailable and no butler pools are registered.")
@@ -88,8 +89,8 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
                 "Shared credential pool unavailable; using fallback pool from %s",
                 butler_names[0],
             )
-        except Exception:
-            logger.debug("Failed to obtain fallback DB pool; credential store unavailable.")
+        except Exception:  # noqa: BLE001 — pool API is dynamic; exception type is unknown
+            logger.debug("Failed to obtain fallback DB pool; credential store unavailable.", exc_info=True)
             return None
 
     return CredentialStore(pool)
@@ -197,11 +198,14 @@ async def get_ha_status(
     Checks stored credentials in CredentialStore. Returns the connection
     state and a masked URL (base origin only) without making any network call.
 
-    Returns ``not_configured`` when no URL or token has been stored.
-    Returns ``disconnected`` when credentials are present but we can't
-    verify (the endpoint only checks storage, not live connectivity).
-    Returns ``connected`` when both URL and token are present (verified
-    on last POST).
+    Returns ``not_configured`` when no URL or token has been stored,
+    or when the credential store is unavailable.
+    Returns ``connected`` when both URL and token are present in the store
+    (credentials were validated on the last successful POST).
+
+    Note: This endpoint does not perform a live connectivity check. The
+    ``connected`` state reflects that credentials are stored and were
+    validated at configuration time, not that HA is reachable right now.
     """
     cred_store = _make_credential_store(db_manager)
     if cred_store is None:
