@@ -619,7 +619,9 @@ class ContactsModule(Module):
                 ),
             }
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Initialize contacts providers and start sync runtimes.
 
         Creates one provider and sync runtime per configured provider entry.

@@ -59,7 +59,13 @@ class Module(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self,
+        config: Any,
+        db: Any,
+        credential_store: Any = None,
+        blob_store: Any = None,
+    ) -> None:
         """Called after dependency resolution and migrations.
 
         Parameters
@@ -73,6 +79,10 @@ class Module(abc.ABC):
             DB-first credential resolution.  Passed by the daemon since
             step 8b.  May be ``None`` in tests that do not need DB credential
             resolution.
+        blob_store:
+            Optional :class:`~butlers.storage.BlobStore` for reading and
+            writing blobs (e.g. CSV attachments for import tools).
+            May be ``None`` when blob storage is not configured.
         """
         ...
 

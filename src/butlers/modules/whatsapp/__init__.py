@@ -135,7 +135,9 @@ class WhatsAppModule(Module):
                     chat_jid=chat_jid, message_id=message_id, text=text
                 )
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Initialize module config, resolve credentials, start Go bridge.
 
         Steps:

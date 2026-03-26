@@ -175,7 +175,9 @@ class EmailModule(Module):
             """Read a specific email by message ID."""
             return await module._read_email(message_id)
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Initialize email config and resolve credentials.
 
         User-scope credentials (USER_EMAIL_ADDRESS, USER_EMAIL_PASSWORD) are

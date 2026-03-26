@@ -1869,7 +1869,9 @@ class PipelineModule(Module):
 
         mcp.tool(name="pipeline.process")(pipeline_process)
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Validate config and cache the DB pool for later pipeline wiring.
 
         The pipeline itself is wired by the daemon after all modules have

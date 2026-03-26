@@ -4763,7 +4763,9 @@ class CalendarModule(Module):
         except Exception as exc:
             logger.debug("Orphan sweep skipped: %s", exc)
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Initialize the calendar provider with resolved Google OAuth credentials.
 
         Credentials are resolved from CredentialStore (``butler_secrets``) only.

@@ -225,7 +225,9 @@ class TelegramModule(Module):
         mcp.tool()(telegram_reply_to_message)
         mcp.tool()(telegram_react_to_message)
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Set webhook if configured. Ingestion is handled by TelegramBotConnector.
 
         Parameters

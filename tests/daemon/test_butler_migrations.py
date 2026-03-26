@@ -385,7 +385,9 @@ class StubModule(Module):
     def migration_revisions(self) -> str | None:
         return "stub_mod"
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         self.started = True
 
     async def on_shutdown(self) -> None:

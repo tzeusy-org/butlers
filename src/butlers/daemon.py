@@ -1597,7 +1597,9 @@ class ButlerDaemon:
                 continue
             try:
                 validated_config = self._module_configs.get(mod.name)
-                await mod.on_startup(validated_config, self.db, credential_store)
+                await mod.on_startup(
+                    validated_config, self.db, credential_store, blob_store=self.blob_store
+                )
                 started_modules.append(mod)
             except Exception as exc:
                 error_msg = str(exc)

@@ -256,7 +256,9 @@ class HomeAssistantModule(Module):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         """Resolve HA token, create HTTP client, connect WebSocket, seed caches.
 
         Parameters

@@ -75,7 +75,9 @@ class StubModuleA(Module):
     def migration_revisions(self) -> str | None:
         return "stub_a"
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         self.started = True
         self._startup_config = config
         self._startup_db = db
@@ -114,7 +116,9 @@ class StubModuleB(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         self.started = True
 
     async def on_shutdown(self) -> None:
@@ -3277,7 +3281,9 @@ class StubModuleFailStartup(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
         raise RuntimeError("on_startup boom")
 
     async def on_shutdown(self) -> None:
