@@ -102,9 +102,7 @@ class TestMaskUrl:
         )
 
     def test_bare_origin(self):
-        assert _mask_url("http://homeassistant.local:8123") == (
-            "http://homeassistant.local:8123"
-        )
+        assert _mask_url("http://homeassistant.local:8123") == ("http://homeassistant.local:8123")
 
     def test_https(self):
         assert _mask_url("https://ha.example.com/api/") == "https://ha.example.com"
@@ -142,9 +140,7 @@ class TestValidateHAConnection:
         """Validation raises unreachable on httpx.RequestError."""
         with patch("butlers.api.routers.home_assistant.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
-            mock_client.get = AsyncMock(
-                side_effect=httpx.ConnectError("Connection refused")
-            )
+            mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
             mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -157,9 +153,7 @@ class TestValidateHAConnection:
         """Validation raises unreachable on httpx.TimeoutException."""
         with patch("butlers.api.routers.home_assistant.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
-            mock_client.get = AsyncMock(
-                side_effect=httpx.TimeoutException("Timeout")
-            )
+            mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("Timeout"))
             mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -356,9 +350,10 @@ class TestConfigureHA:
         cred_store = _make_cred_store()
         app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store), patch(
-            _VALIDATE_PATCH, return_value=None
-        ) as mock_validate:
+        with (
+            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_VALIDATE_PATCH, return_value=None) as mock_validate,
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -391,8 +386,9 @@ class TestConfigureHA:
         cred_store = _make_cred_store()
         app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store), patch(
-            _VALIDATE_PATCH, return_value=None
+        with (
+            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_VALIDATE_PATCH, return_value=None),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -403,9 +399,7 @@ class TestConfigureHA:
                 )
 
         # Find the call that stored HA_TOKEN
-        token_call = next(
-            c for c in cred_store.store.call_args_list if c.args[0] == "HA_TOKEN"
-        )
+        token_call = next(c for c in cred_store.store.call_args_list if c.args[0] == "HA_TOKEN")
         assert token_call.kwargs.get("is_sensitive", True) is True
 
     async def test_url_stored_as_not_sensitive(self):
@@ -413,8 +407,9 @@ class TestConfigureHA:
         cred_store = _make_cred_store()
         app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store), patch(
-            _VALIDATE_PATCH, return_value=None
+        with (
+            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_VALIDATE_PATCH, return_value=None),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -424,9 +419,7 @@ class TestConfigureHA:
                     json={"url": "http://ha.local:8123", "token": "token123"},
                 )
 
-        url_call = next(
-            c for c in cred_store.store.call_args_list if c.args[0] == "HA_URL"
-        )
+        url_call = next(c for c in cred_store.store.call_args_list if c.args[0] == "HA_URL")
         assert url_call.kwargs.get("is_sensitive", True) is False
 
     async def test_returns_502_on_unreachable(self):
@@ -434,9 +427,12 @@ class TestConfigureHA:
         cred_store = _make_cred_store()
         app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store), patch(
-            _VALIDATE_PATCH,
-            side_effect=_HAValidationError("Cannot connect", category="unreachable"),
+        with (
+            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(
+                _VALIDATE_PATCH,
+                side_effect=_HAValidationError("Cannot connect", category="unreachable"),
+            ),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -457,11 +453,14 @@ class TestConfigureHA:
         cred_store = _make_cred_store()
         app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store), patch(
-            _VALIDATE_PATCH,
-            side_effect=_HAValidationError(
-                "Authentication failed (HTTP 401). Check the token.",
-                category="auth_failure",
+        with (
+            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(
+                _VALIDATE_PATCH,
+                side_effect=_HAValidationError(
+                    "Authentication failed (HTTP 401). Check the token.",
+                    category="auth_failure",
+                ),
             ),
         ):
             async with httpx.AsyncClient(
@@ -480,10 +479,13 @@ class TestConfigureHA:
         cred_store = _make_cred_store()
         app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store), patch(
-            _VALIDATE_PATCH,
-            side_effect=_HAValidationError(
-                "Unexpected response (HTTP 500).", category="unexpected"
+        with (
+            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(
+                _VALIDATE_PATCH,
+                side_effect=_HAValidationError(
+                    "Unexpected response (HTTP 500).", category="unexpected"
+                ),
             ),
         ):
             async with httpx.AsyncClient(
@@ -547,8 +549,9 @@ class TestConfigureHA:
         cred_store = _make_cred_store()
         app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store), patch(
-            _VALIDATE_PATCH, return_value=None
+        with (
+            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_VALIDATE_PATCH, return_value=None),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"

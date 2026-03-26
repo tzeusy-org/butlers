@@ -1629,9 +1629,7 @@ async def run_spotify_connector() -> None:
         }
         if shared_schema:
             try:
-                pool_kwargs["server_settings"] = {
-                    "search_path": schema_search_path(shared_schema)
-                }
+                pool_kwargs["server_settings"] = {"search_path": schema_search_path(shared_schema)}
             except ValueError:
                 pass
         ssl = db_params.get("ssl")

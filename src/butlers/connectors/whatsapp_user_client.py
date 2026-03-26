@@ -454,17 +454,14 @@ class WhatsAppUserClientConnector:
             status = await self._bridge_manager.get_status()
             bridge_phone = status.get("phone")
             if bridge_phone:
-                self._config = replace(
-                    self._config, endpoint_identity=f"whatsapp:{bridge_phone}"
-                )
+                self._config = replace(self._config, endpoint_identity=f"whatsapp:{bridge_phone}")
                 logger.info(
                     "Resolved endpoint_identity from bridge: %s",
                     self._config.endpoint_identity,
                 )
             else:
                 logger.warning(
-                    "Bridge connected but did not report phone number — "
-                    "using endpoint_identity=%s",
+                    "Bridge connected but did not report phone number — using endpoint_identity=%s",
                     self._config.endpoint_identity,
                 )
 

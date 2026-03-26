@@ -31,8 +31,9 @@ Create Date: 2026-03-26 00:00:00.000000
 
 from __future__ import annotations
 
-from alembic import op
 from sqlalchemy import text
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "mem_026"
