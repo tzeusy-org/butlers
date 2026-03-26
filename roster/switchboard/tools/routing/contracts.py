@@ -50,7 +50,7 @@ SourceProvider = Literal[
     "home_assistant",
 ]
 NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
-NotifyIntent = Literal["send", "reply", "react"]
+NotifyIntent = Literal["send", "reply", "react", "insight"]
 PolicyTier = Literal["default", "interactive", "high_priority"]
 IngestionTier = Literal["full", "metadata"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
@@ -514,9 +514,9 @@ class NotifyDeliveryV1(BaseModel):
     @field_validator("message")
     @classmethod
     def _validate_message_required_for_send_reply(cls, value: str, info: ValidationInfo) -> str:
-        """Message must be non-empty for send and reply intents."""
+        """Message must be non-empty for send, reply, and insight intents."""
         intent = info.data.get("intent")
-        if intent in ("send", "reply") and (not value or not value.strip()):
+        if intent in ("send", "reply", "insight") and (not value or not value.strip()):
             raise PydanticCustomError(
                 "message_required",
                 "delivery.message must be non-empty for {intent} intent.",

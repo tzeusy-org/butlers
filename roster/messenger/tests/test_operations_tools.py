@@ -182,6 +182,61 @@ async def test_validate_notify_invalid_intent():
     assert any("delivery.intent" in err["field"] for err in result["errors"])
 
 
+async def test_validate_notify_insight_intent_accepted():
+    """Insight intent passes validation (same requirements as send). [bu-iuuc]"""
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+            "message": "Your resting heart rate trend improved this week.",
+            "recipient": "123456789",
+        },
+    }
+
+    result = await messenger_validate_notify(request)
+
+    assert result["valid"] is True
+    assert result["errors"] == []
+
+
+async def test_validate_notify_insight_requires_message():
+    """Insight intent fails validation when message is missing. [bu-iuuc]"""
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+        },
+    }
+
+    result = await messenger_validate_notify(request)
+
+    assert result["valid"] is False
+    assert any("delivery.message" in err["field"] for err in result["errors"])
+
+
+async def test_validate_notify_insight_request_context_optional():
+    """Insight intent does not require request_context. [bu-iuuc]"""
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "finance",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+            "message": "Your monthly spending is on track.",
+            "recipient": "987654321",
+        },
+        # request_context intentionally omitted
+    }
+
+    result = await messenger_validate_notify(request)
+
+    assert result["valid"] is True
+
+
 async def test_validate_notify_missing_message():
     """Missing message fails validation."""
     request = {
@@ -290,6 +345,28 @@ async def test_dry_run_valid_reply():
     assert result["target_identity"] == "user@example.com"
     assert result["channel_adapter"] == "email.bot"
     assert result["intent"] == "reply"
+
+
+async def test_dry_run_valid_insight():
+    """Dry-run for valid insight request resolves target like send. [bu-iuuc]"""
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "insight",
+            "channel": "telegram",
+            "message": "You hit 8,000 steps today!",
+            "recipient": "user123",
+        },
+    }
+
+    result = await messenger_dry_run(request)
+
+    assert result["valid"] is True
+    assert result["target_identity"] == "user123"
+    assert result["channel_adapter"] == "telegram.bot"
+    assert result["intent"] == "insight"
+    assert result["would_be_admitted"] is True
 
 
 async def test_dry_run_invalid_request():
