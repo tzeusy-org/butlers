@@ -122,3 +122,44 @@ class ExpireStaleActionsResponse(BaseModel):
 
     expired_count: int
     expired_ids: list[str]
+
+
+class AutonomySuggestionVelocity(BaseModel):
+    """Approval velocity data for an autonomy suggestion."""
+
+    avg_seconds: float | None = None
+    sample_count: int = 0
+    fast_approval: bool = False
+    updated_at: datetime | None = None
+
+
+class AutonomySuggestion(BaseModel):
+    """Autonomy promotion/demotion suggestion for dashboard API.
+
+    Represents a suggestion that a frequently-approved tool pattern should
+    be promoted to a standing rule (promotion), or a failing auto-approved
+    action pattern should be demoted (demotion).
+    """
+
+    id: str
+    suggestion_type: str  # "promotion" or "demotion"
+    pattern_fingerprint: str
+    tool_name: str
+    representative_args: dict[str, Any]
+    status: str  # "pending", "confirmed", "dismissed", "superseded"
+    approval_count_at_creation: int = 0
+    scope_description: str
+    created_at: datetime
+    decided_at: datetime | None = None
+    decided_by: str | None = None
+    resulting_rule_id: str | None = None
+    cooldown_until: datetime | None = None
+    dismissal_reason: str | None = None
+    velocity: AutonomySuggestionVelocity | None = None
+
+
+class AutonomySuggestionDismissRequest(BaseModel):
+    """Request body for dismissing an autonomy suggestion."""
+
+    reason: str | None = Field(default=None, description="Optional reason for dismissal")
+    cooldown_days: int = Field(default=30, ge=0, description="Days before suggestion can reappear")

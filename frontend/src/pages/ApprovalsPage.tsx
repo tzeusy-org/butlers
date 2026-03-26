@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
+import { toast } from "sonner";
 import type { ApprovalAction, ApprovalActionParams } from "@/api/types";
 import { ActionTable } from "@/components/approvals/action-table";
 import { ActionDetailDialog } from "@/components/approvals/action-detail-dialog";
 import { ApprovalMetricsBar } from "@/components/approvals/approval-metrics";
+import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner";
 import { HistoryTable } from "@/components/approvals/history-table";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,6 +22,9 @@ import {
   useApprovalAction,
   useApprovalActions,
   useApprovalMetrics,
+  useAutonomySuggestions,
+  useConfirmAutonomySuggestion,
+  useDismissAutonomySuggestion,
   useExpireStaleActions,
 } from "@/hooks/use-approvals";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
@@ -54,6 +60,7 @@ export default function ApprovalsPage() {
   const [page, setPage] = useState(0);
   const [selectedAction, setSelectedAction] = useState<ApprovalAction | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [pendingSuggestionIds, setPendingSuggestionIds] = useState<Set<string>>(new Set());
 
   const actionIdParam = searchParams.get("action");
 
@@ -74,6 +81,9 @@ export default function ApprovalsPage() {
     limit: 50,
   });
   const { data: deepLinkedAction } = useApprovalAction(actionIdParam ?? "");
+  const { data: suggestionsResponse } = useAutonomySuggestions({ status: "pending", limit: 20 });
+  const confirmSuggestion = useConfirmAutonomySuggestion();
+  const dismissSuggestion = useDismissAutonomySuggestion();
   const expireMutation = useExpireStaleActions();
 
   // Open dialog when ?action=<id> is present and the action data loads
@@ -91,9 +101,56 @@ export default function ApprovalsPage() {
   const meta = actionsResponse?.meta;
   const total = meta?.total ?? 0;
   const hasMore = meta?.has_more ?? false;
+  const pendingSuggestions = (suggestionsResponse?.data ?? []).filter(
+    (s) => s.status === "pending",
+  );
+  const activeSuggestionsCount = pendingSuggestions.length;
 
   const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const rangeEnd = Math.min((page + 1) * PAGE_SIZE, total);
+
+  function addPendingId(id: string) {
+    setPendingSuggestionIds((prev) => new Set([...prev, id]));
+  }
+
+  function removePendingId(id: string) {
+    setPendingSuggestionIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  function handleConfirmSuggestion(id: string) {
+    addPendingId(id);
+    confirmSuggestion.mutate(id, {
+      onSuccess: () => {
+        toast.success("Standing rule created from suggestion");
+        removePendingId(id);
+      },
+      onError: (err) => {
+        toast.error(`Failed to confirm suggestion: ${err instanceof Error ? err.message : String(err)}`);
+        removePendingId(id);
+      },
+    });
+  }
+
+  function handleDismissSuggestion(id: string) {
+    addPendingId(id);
+    dismissSuggestion.mutate(
+      { suggestionId: id },
+      {
+        onSuccess: () => {
+          toast.success("Suggestion dismissed");
+          removePendingId(id);
+        },
+        onError: (err) => {
+          toast.error(`Failed to dismiss suggestion: ${err instanceof Error ? err.message : String(err)}`);
+          removePendingId(id);
+        },
+      },
+    );
+  }
 
   function handleFilterChange(key: keyof FilterState, value: string) {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -153,7 +210,19 @@ export default function ApprovalsPage() {
       </div>
 
       {/* Metrics */}
-      {metrics && !metricsLoading && <ApprovalMetricsBar metrics={metrics} />}
+      {metrics && !metricsLoading && (
+        <ApprovalMetricsBar metrics={metrics} activeSuggestionsCount={activeSuggestionsCount} />
+      )}
+
+      {/* Autonomy Suggestions Banner */}
+      {pendingSuggestions.length > 0 && (
+        <AutonomySuggestionsBanner
+          suggestions={pendingSuggestions}
+          onConfirm={handleConfirmSuggestion}
+          onDismiss={handleDismissSuggestion}
+          pendingIds={pendingSuggestionIds}
+        />
+      )}
 
       {/* Filters */}
       <Card>

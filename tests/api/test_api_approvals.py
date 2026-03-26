@@ -1047,3 +1047,311 @@ async def test_list_actions_target_contact_null_when_contact_not_found(app):
     data = response.json()
     assert len(data["data"]) == 1
     assert data["data"][0]["target_contact"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Autonomy Suggestions endpoints
+# ---------------------------------------------------------------------------
+
+_SUGGESTION_ID = uuid4()
+
+
+def _make_suggestion_record(
+    *,
+    suggestion_id=None,
+    suggestion_type="promotion",
+    pattern_fingerprint="abc123",
+    tool_name="telegram_send_message",
+    representative_args=None,
+    status="pending",
+    approval_count_at_creation=5,
+    created_at=_NOW,
+    decided_at=None,
+    decided_by=None,
+    resulting_rule_id=None,
+    cooldown_until=None,
+    dismissal_reason=None,
+) -> dict:
+    """Create a dict mimicking an asyncpg Record for autonomy_suggestions columns."""
+    return {
+        "id": suggestion_id or _SUGGESTION_ID,
+        "suggestion_type": suggestion_type,
+        "pattern_fingerprint": pattern_fingerprint,
+        "tool_name": tool_name,
+        "representative_args": representative_args or {"chat_id": "12345", "text": "Hello"},
+        "status": status,
+        "approval_count_at_creation": approval_count_at_creation,
+        "created_at": created_at,
+        "decided_at": decided_at,
+        "decided_by": decided_by,
+        "resulting_rule_id": resulting_rule_id,
+        "cooldown_until": cooldown_until,
+        "dismissal_reason": dismissal_reason,
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_suggestions_empty_when_no_table(app):
+    """GET /api/approvals/suggestions returns empty list when no suggestions table exists."""
+    app, _ = _app_with_mock_db(app, has_approvals_tables=False)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/suggestions")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"] == []
+    assert data["meta"]["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_suggestions_empty_results(app):
+    """GET /api/approvals/suggestions returns empty list when no suggestions exist."""
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[], fetchval_return=0)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/suggestions")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"] == []
+    assert data["meta"]["total"] == 0
+    assert data["meta"]["offset"] == 0
+    assert data["meta"]["limit"] == 50
+
+
+@pytest.mark.asyncio
+async def test_list_suggestions_returns_pending_by_default(app):
+    """GET /api/approvals/suggestions returns pending suggestions with scope_description."""
+    suggestion = _make_suggestion_record(
+        tool_name="telegram_send_message",
+        representative_args={"chat_id": "12345", "text": "Hello"},
+    )
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[suggestion], fetchval_return=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/suggestions")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["data"]) == 1
+    item = data["data"][0]
+    assert item["tool_name"] == "telegram_send_message"
+    assert item["status"] == "pending"
+    assert item["suggestion_type"] == "promotion"
+    assert item["approval_count_at_creation"] == 5
+    # scope_description must be present and human-readable
+    assert "scope_description" in item
+    assert "telegram_send_message" in item["scope_description"]
+    assert data["meta"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_suggestions_scope_description_format(app):
+    """Scope description lists all arg pairs with exact values."""
+    suggestion = _make_suggestion_record(
+        tool_name="send_telegram",
+        representative_args={"chat_id": "mom_123", "text": "Good morning"},
+    )
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[suggestion], fetchval_return=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/suggestions")
+
+    assert response.status_code == 200
+    data = response.json()
+    scope = data["data"][0]["scope_description"]
+    assert "send_telegram" in scope
+    assert "chat_id" in scope
+    assert "mom_123" in scope
+    assert "text" in scope
+    assert "Good morning" in scope
+
+
+@pytest.mark.asyncio
+async def test_list_suggestions_with_status_filter(app):
+    """GET /api/approvals/suggestions?status=confirmed returns confirmed suggestions."""
+    suggestion = _make_suggestion_record(status="confirmed")
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[suggestion], fetchval_return=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/suggestions?status=confirmed")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["data"]) == 1
+    assert data["data"][0]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_list_suggestions_with_type_filter(app):
+    """GET /api/approvals/suggestions?suggestion_type=demotion filters by type."""
+    suggestion = _make_suggestion_record(suggestion_type="demotion")
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[suggestion], fetchval_return=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/suggestions?suggestion_type=demotion")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["data"]) == 1
+    assert data["data"][0]["suggestion_type"] == "demotion"
+
+
+@pytest.mark.asyncio
+async def test_list_suggestions_pagination(app):
+    """GET /api/approvals/suggestions supports limit/offset pagination."""
+    suggestions = [_make_suggestion_record(suggestion_id=uuid4()) for _ in range(3)]
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=suggestions, fetchval_return=3)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/suggestions?limit=2&offset=0")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["meta"]["total"] == 3
+    assert data["meta"]["limit"] == 2
+
+
+@pytest.mark.asyncio
+async def test_confirm_suggestion_invalid_uuid(app):
+    """POST /api/approvals/suggestions/{id}/confirm returns 400 for invalid UUID."""
+    app, _ = _app_with_mock_db(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/approvals/suggestions/not-a-uuid/confirm")
+
+    assert response.status_code == 400
+    assert "Invalid suggestion_id" in response.json()["detail"]
+
+
+def _app_with_suggestion_db(app, *, fetchrow_return=None, has_table=True):
+    """Create a FastAPI app with a mock DB configured for autonomy suggestions tests.
+
+    Uses MagicMock (not AsyncMock) for the pool so that pool.acquire() returns
+    a synchronous context manager, matching asyncpg's actual API.
+    """
+    mock_conn = AsyncMock()
+
+    def fetchval_side_effect(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql:
+            return has_table
+        return None
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side_effect)
+    mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
+
+    class MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *args):
+            pass
+
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value = MockAcquire()
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    if has_table:
+        mock_db.pool.return_value = mock_pool
+        mock_db.butler_names = ["general"]
+    else:
+        mock_db.pool.side_effect = KeyError("No pool")
+        mock_db.butler_names = []
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    return app, mock_conn
+
+
+@pytest.mark.asyncio
+async def test_confirm_suggestion_not_found(app):
+    """POST /api/approvals/suggestions/{id}/confirm returns 404 when suggestion not found."""
+    suggestion_id = uuid4()
+    app, _ = _app_with_suggestion_db(app, fetchrow_return=None)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/suggestions/{suggestion_id}/confirm")
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_confirm_suggestion_already_decided(app):
+    """POST /api/approvals/suggestions/{id}/confirm returns 409 if already decided."""
+    suggestion_id = uuid4()
+    suggestion = _make_suggestion_record(suggestion_id=suggestion_id, status="confirmed")
+    app, _ = _app_with_suggestion_db(app, fetchrow_return=suggestion)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/suggestions/{suggestion_id}/confirm")
+
+    assert response.status_code == 409
+    assert "already been decided" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_dismiss_suggestion_invalid_uuid(app):
+    """POST /api/approvals/suggestions/{id}/dismiss returns 400 for invalid UUID."""
+    app, _ = _app_with_mock_db(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/approvals/suggestions/not-a-uuid/dismiss")
+
+    assert response.status_code == 400
+    assert "Invalid suggestion_id" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_dismiss_suggestion_not_found(app):
+    """POST /api/approvals/suggestions/{id}/dismiss returns 404 when suggestion not found."""
+    suggestion_id = uuid4()
+    app, _ = _app_with_suggestion_db(app, fetchrow_return=None)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/suggestions/{suggestion_id}/dismiss")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_dismiss_suggestion_already_decided(app):
+    """POST /api/approvals/suggestions/{id}/dismiss returns 409 if already decided."""
+    suggestion_id = uuid4()
+    suggestion = _make_suggestion_record(suggestion_id=suggestion_id, status="dismissed")
+    app, _ = _app_with_suggestion_db(app, fetchrow_return=suggestion)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/approvals/suggestions/{suggestion_id}/dismiss",
+            json={"reason": "Not needed"},
+        )
+
+    assert response.status_code == 409
