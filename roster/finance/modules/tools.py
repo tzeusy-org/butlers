@@ -688,6 +688,41 @@ def register_tools(mcp: Any, module: Any) -> None:
                 dry_run=dry_run,
             )
 
+    if _data_import is not None and hasattr(_data_import, "import_transactions_from_file"):
+
+        @mcp.tool()
+        async def import_transactions_from_file(
+            file_path: str,
+            account_id: str | None = None,
+            currency: str = "USD",
+            column_map: str | None = None,
+            dry_run: bool = False,
+        ) -> dict[str, Any]:
+            """Import transactions from a bank CSV file on the local filesystem.
+
+            Automatically detects Chase, Amex, Capital One, and generic CSV formats.
+            Normalizes dates, amounts, and merchant names before ingestion.
+            Auto-applies learned merchant category mappings for uncategorized rows.
+
+            file_path: Absolute path to the CSV file on the local filesystem.
+            account_id: Account to associate all imported transactions with.
+            currency: ISO-4217 currency code for the import (default "USD").
+            column_map: JSON string — optional column name overrides for custom CSV formats.
+            dry_run: If true, parse, validate, and detect duplicates without inserting;
+              returns preview of first 10 transactions with is_duplicate flags.
+
+            Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
+                      merchant_mappings_applied, mv_refreshed, baselines_triggered}
+            """
+            return await _data_import.import_transactions_from_file(
+                module._get_pool(),
+                file_path=file_path,
+                account_id=account_id,
+                currency=currency,
+                column_map=_parse_metadata(column_map),
+                dry_run=dry_run,
+            )
+
     # =================================================================
     # Merchant pattern recognition (finance-intelligence)
     # =================================================================

@@ -6,6 +6,7 @@ deduplicates against existing transactions, and processes in batches of 500.
 
 Public API:
     import_transactions(pool, blob_store, storage_ref, account_id, currency, column_map, dry_run)
+    import_transactions_from_file(pool, file_path, account_id, currency, column_map, dry_run)
 
 Internal helpers are prefixed with ``_`` and are not part of the public contract.
 """
@@ -16,6 +17,7 @@ import csv
 import io
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -858,5 +860,430 @@ async def import_transactions(
         "detected_format": fmt["name"],
         "date_format_detected": date_fmt,
         "dry_run": False,
+        "error_details": all_errors[:50],  # cap to first 50 for response size
+    }
+
+
+# ---------------------------------------------------------------------------
+# File-path based CSV loading
+# ---------------------------------------------------------------------------
+
+
+def _load_csv_from_file(file_path: str) -> str:
+    """Read CSV content from a local filesystem path.
+
+    Falls back to latin-1 when the content is not valid UTF-8 (common in
+    older bank export files).
+
+    Raises
+    ------
+    FileNotFoundError
+        When the file does not exist at *file_path*.
+    PermissionError
+        When the process lacks read access to the file.
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"CSV file not found: {file_path}")
+    try:
+        with open(file_path, encoding="utf-8-sig") as fh:
+            return fh.read()
+    except UnicodeDecodeError:
+        with open(file_path, encoding="latin-1") as fh:
+            return fh.read()
+
+
+# ---------------------------------------------------------------------------
+# Merchant mapping lookup helpers
+# ---------------------------------------------------------------------------
+
+
+async def _has_merchant_mappings_table(pool: asyncpg.Pool) -> bool:
+    """Return True if the merchant_mappings table exists in the current schema."""
+    exists = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = 'merchant_mappings'
+        )
+        """
+    )
+    return bool(exists)
+
+
+async def _lookup_merchant_category(
+    pool: asyncpg.Pool,
+    merchant: str,
+) -> str | None:
+    """Look up the best matching category for *merchant* in merchant_mappings.
+
+    Uses ILIKE matching against the stored patterns.  Returns the category
+    with the highest confidence, or None when no mapping is found.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    merchant:
+        Normalized merchant name to match.
+
+    Returns
+    -------
+    str | None
+        Matched category string, or None when no active mapping matches.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT category
+        FROM merchant_mappings
+        WHERE is_active = true
+          AND lower($1) LIKE lower(merchant)
+        ORDER BY confidence DESC
+        LIMIT 1
+        """,
+        merchant,
+    )
+    if row is not None:
+        return row["category"]
+
+    # Fallback: ILIKE match in the other direction (merchant ILIKE pattern)
+    row = await pool.fetchrow(
+        """
+        SELECT category
+        FROM merchant_mappings
+        WHERE is_active = true
+          AND $1 ILIKE merchant
+        ORDER BY confidence DESC
+        LIMIT 1
+        """,
+        f"%{merchant}%",
+    )
+    return row["category"] if row is not None else None
+
+
+async def _apply_merchant_mappings(
+    pool: asyncpg.Pool,
+    parsed: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Auto-apply merchant category mappings to parsed transaction rows.
+
+    For each row whose category is ``"uncategorized"``, looks up the merchant
+    in ``finance.merchant_mappings``.  When a mapping is found, the row's
+    ``category`` field is updated in-place.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    parsed:
+        List of normalised transaction dicts from ``_parse_csv_rows``.
+
+    Returns
+    -------
+    tuple[list[dict], int]
+        The (possibly updated) list of rows and the count of rows that had
+        their category auto-assigned from the mappings table.
+    """
+    if not await _has_merchant_mappings_table(pool):
+        return parsed, 0
+
+    # Pre-collect unique uncategorized merchants to avoid N+1 DB round-trips.
+    merchants_to_look_up: set[str] = set()
+    for row in parsed:
+        if row.get("category", "uncategorized") == "uncategorized":
+            merchants_to_look_up.add(row["merchant"])
+
+    if not merchants_to_look_up:
+        return parsed, 0
+
+    mapping_cache: dict[str, str | None] = {}
+    for merchant in merchants_to_look_up:
+        mapping_cache[merchant] = await _lookup_merchant_category(pool, merchant)
+
+    auto_applied = 0
+    for row in parsed:
+        if row.get("category", "uncategorized") == "uncategorized":
+            mapped = mapping_cache.get(row["merchant"])
+            if mapped:
+                row["category"] = mapped
+                auto_applied += 1
+
+    return parsed, auto_applied
+
+
+# ---------------------------------------------------------------------------
+# Post-import triggers
+# ---------------------------------------------------------------------------
+
+
+async def _has_spending_summaries_mv(pool: asyncpg.Pool) -> bool:
+    """Return True if the spending_summaries materialized view exists."""
+    exists = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = 'spending_summaries'
+              AND table_type = 'BASE TABLE'
+        )
+        UNION ALL
+        SELECT EXISTS (
+            SELECT 1 FROM pg_matviews
+            WHERE schemaname = current_schema()
+              AND matviewname = 'spending_summaries'
+        )
+        LIMIT 1
+        """
+    )
+    return bool(exists)
+
+
+async def _refresh_spending_summaries(pool: asyncpg.Pool) -> bool:
+    """Attempt to refresh the spending_summaries materialized view.
+
+    Returns True on success, False when the MV does not exist or refresh fails.
+    """
+    try:
+        has_mv = await pool.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_matviews
+                WHERE schemaname = current_schema()
+                  AND matviewname = 'spending_summaries'
+            )
+            """
+        )
+        if not has_mv:
+            return False
+        await pool.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY spending_summaries")
+        logger.info("import: refreshed spending_summaries materialized view")
+        return True
+    except asyncpg.PostgresError as exc:
+        logger.warning("import: failed to refresh spending_summaries: %s", exc)
+        return False
+
+
+async def _trigger_compute_baselines(pool: asyncpg.Pool) -> bool:
+    """Fire-and-forget call to compute_baselines after a large import.
+
+    Returns True when triggered, False when the function is unavailable.
+    """
+    try:
+        from butlers.tools.finance.anomaly_detection import compute_baselines
+
+        await compute_baselines(pool)
+        logger.info("import: compute_baselines triggered post-import")
+        return True
+    except Exception as exc:
+        logger.warning("import: compute_baselines trigger failed: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Dry run with duplicate detection
+# ---------------------------------------------------------------------------
+
+
+async def _check_duplicates_for_preview(
+    pool: asyncpg.Pool,
+    parsed: list[dict[str, Any]],
+    account_id: str | None,
+) -> list[dict[str, Any]]:
+    """Add a ``is_duplicate`` flag to each row in the preview list.
+
+    Performs the same composite dedup check as ``_check_duplicate``.
+    """
+    result = []
+    for txn in parsed[:10]:
+        is_dup = False
+        try:
+            is_dup = await _check_duplicate(
+                pool,
+                txn["merchant"],
+                txn["amount"],
+                txn["posted_at"],
+                account_id,
+            )
+        except Exception:
+            pass
+        entry = {
+            "posted_at": txn["posted_at"].isoformat(),
+            "merchant": txn["merchant"],
+            "amount": str(txn["amount"]),
+            "currency": txn["currency"],
+            "direction": txn["direction"],
+            "category": txn["category"],
+            "description": txn.get("description"),
+            "is_duplicate": is_dup,
+        }
+        result.append(entry)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Public entry point — file-path based
+# ---------------------------------------------------------------------------
+
+
+async def import_transactions_from_file(
+    pool: asyncpg.Pool,
+    file_path: str,
+    account_id: str | None = None,
+    currency: str = "USD",
+    column_map: dict[str, str] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Import transactions from a bank CSV file on the local filesystem.
+
+    Automatically detects Chase, Amex, Capital One, and generic CSV formats.
+    Normalizes dates, amounts, and merchant names.  Deduplicates against
+    existing rows using a composite key (account_id, posted_at, amount, merchant).
+    Auto-applies merchant category mappings for uncategorized rows.
+    Processes in batches of 500 rows.
+
+    Post-import triggers (non-dry-run only, when 1+ rows imported):
+    - Refreshes the ``spending_summaries`` materialized view (if present).
+    - Calls ``compute_baselines()`` when 50 or more rows were imported.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    file_path:
+        Absolute or relative path to the CSV file on the local filesystem.
+    account_id:
+        UUID string of the account to associate all transactions with.
+    currency:
+        ISO-4217 currency code.  Applied to all rows unless the CSV contains
+        a per-row currency column.
+    column_map:
+        Optional mapping of canonical field names (``date``, ``merchant``,
+        ``amount``, ``description``, ``category``) to actual CSV column names.
+        Useful for non-standard or renamed headers.
+    dry_run:
+        When True, parses, validates, checks for duplicates against the DB,
+        and returns a preview of the first 10 transactions without inserting.
+        Preview includes an ``is_duplicate`` flag per row.
+
+    Returns
+    -------
+    dict
+        ``{total, imported, skipped, errors, import_batch_id, detected_format,
+           dry_run, merchant_mappings_applied, mv_refreshed,
+           baselines_triggered, preview (when dry_run=True)}``
+    """
+    import_batch_id = str(uuid.uuid4())
+
+    # --- Load from local filesystem ---
+    try:
+        content = _load_csv_from_file(file_path)
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        return {
+            "status": "error",
+            "error": f"Failed to load CSV file: {exc}",
+            "file_path": file_path,
+            "import_batch_id": import_batch_id,
+        }
+
+    # --- Detect format ---
+    reader_probe = csv.DictReader(io.StringIO(content))
+    headers = list(reader_probe.fieldnames or [])
+    fmt = detect_format(headers)
+
+    # --- Detect date format ---
+    if fmt["name"] == "generic":
+        resolved_generic = _resolve_generic_cols(headers)
+        date_col_name = resolved_generic.get(_COL_DATE)
+    else:
+        date_col_name = fmt["col_map"].get(_COL_DATE)
+    if column_map and _COL_DATE in column_map:
+        date_col_name = column_map[_COL_DATE]
+
+    sample_dates = _sample_date_values(content, date_col_name, n=10)
+    date_fmt = _detect_date_format(sample_dates)
+
+    if date_fmt is None:
+        return {
+            "status": "error",
+            "error": (
+                "Could not auto-detect date format. "
+                f"Sample values: {sample_dates[:5]}. "
+                "Provide a column_map with 'date' pointing to the correct column, "
+                "or verify the file contains a date column."
+            ),
+            "import_batch_id": import_batch_id,
+            "detected_format": fmt["name"],
+        }
+
+    # --- Parse all rows ---
+    parsed, parse_errors = _parse_csv_rows(content, fmt, date_fmt, currency, column_map)
+    total_rows = len(parsed) + len(parse_errors)
+
+    # --- Merchant mapping auto-apply ---
+    try:
+        parsed, merchant_mappings_applied = await _apply_merchant_mappings(pool, parsed)
+    except Exception as exc:
+        logger.warning("import_from_file: merchant mapping lookup failed: %s", exc)
+        merchant_mappings_applied = 0
+
+    if dry_run:
+        # Dry run: detect duplicates and return preview without inserting.
+        preview = await _check_duplicates_for_preview(pool, parsed, account_id)
+        return {
+            "dry_run": True,
+            "total": total_rows,
+            "parsed": len(parsed),
+            "parse_errors": len(parse_errors),
+            "preview": preview,
+            "import_batch_id": import_batch_id,
+            "detected_format": fmt["name"],
+            "date_format_detected": date_fmt,
+            "merchant_mappings_applied": merchant_mappings_applied,
+            "error_details": parse_errors[:20],
+        }
+
+    # --- Process in batches of _BATCH_SIZE ---
+    total_imported = 0
+    total_skipped = 0
+    all_errors: list[dict[str, Any]] = list(parse_errors)
+
+    for batch_start in range(0, len(parsed), _BATCH_SIZE):
+        batch = parsed[batch_start : batch_start + _BATCH_SIZE]
+        batch_imported, batch_skipped, batch_errors = await _insert_batch(
+            pool, batch, account_id, import_batch_id
+        )
+        total_imported += batch_imported
+        total_skipped += batch_skipped
+        all_errors.extend(batch_errors)
+
+        logger.info(
+            "import_from_file: batch %d-%d — imported=%d skipped=%d errors=%d",
+            batch_start,
+            batch_start + len(batch) - 1,
+            batch_imported,
+            batch_skipped,
+            len(batch_errors),
+        )
+
+    # --- Post-import triggers ---
+    mv_refreshed = False
+    baselines_triggered = False
+    if total_imported > 0:
+        mv_refreshed = await _refresh_spending_summaries(pool)
+        if total_imported >= 50:
+            baselines_triggered = await _trigger_compute_baselines(pool)
+
+    return {
+        "total": total_rows,
+        "imported": total_imported,
+        "skipped": total_skipped,
+        "errors": len(all_errors),
+        "import_batch_id": import_batch_id,
+        "detected_format": fmt["name"],
+        "date_format_detected": date_fmt,
+        "dry_run": False,
+        "merchant_mappings_applied": merchant_mappings_applied,
+        "mv_refreshed": mv_refreshed,
+        "baselines_triggered": baselines_triggered,
         "error_details": all_errors[:50],  # cap to first 50 for response size
     }
