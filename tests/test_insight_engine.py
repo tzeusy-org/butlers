@@ -1868,6 +1868,7 @@ class TestProposeInsightCandidateUnit:
         )
         assert result["status"] == "error"
         assert "priority must be between 1 and 100" in result["reason"]
+        pool.fetchrow.assert_not_called()
         pool.execute.assert_not_called()
 
     async def test_priority_boundary_1_is_valid(self):
@@ -2021,7 +2022,8 @@ class TestProposeInsightCandidateUnit:
         )
         assert result["status"] == "error"
         assert "expires_at must be in the future" in result["reason"]
-        # execute (INSERT) must NOT be called
+        # Neither the settings fetch nor the INSERT should be called
+        pool.fetchrow.assert_not_called()
         pool.execute.assert_not_called()
 
     async def test_invalid_expires_at_string_returns_error(self):
@@ -2059,6 +2061,24 @@ class TestProposeInsightCandidateUnit:
         assert result["status"] == "filtered"
         assert result["reason"] == "verbosity is off"
         # No INSERT should be called
+        pool.execute.assert_not_called()
+
+    async def test_custom_budget_zero_returns_filtered(self):
+        """custom_budget=0 returns filtered regardless of verbosity preset."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool(verbosity="minimal", custom_budget=0)
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="No BP logged",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "filtered"
+        assert result["reason"] == "verbosity is off"
         pool.execute.assert_not_called()
 
     async def test_valid_submission_accepted(self):
@@ -2099,10 +2119,12 @@ class TestProposeInsightCandidateUnit:
         )
         assert result["status"] == "accepted"
         pool.execute.assert_called_once()
-        # Confirm INSERT args contain the optional values
+        # Confirm INSERT args contain the optional values.
+        # Args order: (sql, origin_butler, priority, category, dedup_key,
+        #              cooldown_days, expires_dt, message, channel, metadata_json)
         call_args = pool.execute.call_args.args
-        assert 3 in call_args  # cooldown_days
-        assert "telegram" in call_args  # channel
+        assert call_args[5] == 3, "cooldown_days arg mismatch"
+        assert call_args[8] == "telegram", "channel arg mismatch"
 
 
 # ===========================================================================
