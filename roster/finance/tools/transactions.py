@@ -964,22 +964,52 @@ async def merge_duplicates(
 
             # Soft-delete each duplicate with is_duplicate / duplicate_of flags.
             for did in ids_to_discard:
-                extra_sets = ""
-                if has_is_duplicate:
-                    extra_sets += ", is_duplicate = true"
-                if has_duplicate_of:
-                    extra_sets += f", duplicate_of = '{keep_id}'::uuid"
-
-                await conn.execute(
-                    f"""
-                    UPDATE transactions
-                    SET deleted_at = COALESCE(deleted_at, now()),
-                        updated_at = now()
-                        {extra_sets}
-                    WHERE id = $1::uuid
-                    """,
-                    did,
-                )
+                if has_is_duplicate and has_duplicate_of:
+                    await conn.execute(
+                        """
+                        UPDATE transactions
+                        SET deleted_at = COALESCE(deleted_at, now()),
+                            updated_at = now(),
+                            is_duplicate = true,
+                            duplicate_of = $2::uuid
+                        WHERE id = $1::uuid
+                        """,
+                        did,
+                        keep_id,
+                    )
+                elif has_is_duplicate:
+                    await conn.execute(
+                        """
+                        UPDATE transactions
+                        SET deleted_at = COALESCE(deleted_at, now()),
+                            updated_at = now(),
+                            is_duplicate = true
+                        WHERE id = $1::uuid
+                        """,
+                        did,
+                    )
+                elif has_duplicate_of:
+                    await conn.execute(
+                        """
+                        UPDATE transactions
+                        SET deleted_at = COALESCE(deleted_at, now()),
+                            updated_at = now(),
+                            duplicate_of = $2::uuid
+                        WHERE id = $1::uuid
+                        """,
+                        did,
+                        keep_id,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE transactions
+                        SET deleted_at = COALESCE(deleted_at, now()),
+                            updated_at = now()
+                        WHERE id = $1::uuid
+                        """,
+                        did,
+                    )
 
                 # Record correction for audit trail.
                 if has_corrections:
@@ -1291,8 +1321,8 @@ async def bulk_recategorize(
                     exc_info=True,
                 )
 
-        # Upsert merchant mapping rule when create_rule=True.
-        if create_rule and updated >= 0:
+        # Upsert merchant mapping rule when create_rule=True and at least one transaction matched.
+        if create_rule and updated > 0:
             try:
                 has_mm = await _has_table(pool, "merchant_mappings")
                 if has_mm:

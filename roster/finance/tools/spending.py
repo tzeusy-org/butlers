@@ -9,6 +9,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.finance.transactions import _has_column
+
 logger = logging.getLogger(__name__)
 
 VALID_GROUP_BY_MODES = {"category", "merchant", "week", "month"}
@@ -106,13 +108,7 @@ async def spending_summary(
         end_date = date.fromisoformat(end_date)
 
     # Check whether the deleted_at column exists (added in finance_002 migration).
-    has_deleted_at = await pool.fetchval(
-        """
-        SELECT COUNT(*) FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = 'transactions' AND column_name = 'deleted_at'
-        """
-    )
+    has_deleted_at = await _has_column(pool, "transactions", "deleted_at")
 
     # Build WHERE clauses
     conditions: list[str] = [
