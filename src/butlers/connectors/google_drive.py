@@ -79,7 +79,7 @@ _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # Default config values
 _DEFAULT_POLL_INTERVAL_S = 300
 _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S = 300
-_DEFAULT_HEALTH_PORT = 40085
+_DEFAULT_HEALTH_PORT = 40088  # 40085 is taken by connector-google-calendar
 
 # Rate-limit retry config (task 11.6)
 _RATE_LIMIT_MAX_RETRIES = 5
@@ -1279,15 +1279,17 @@ async def run_google_drive_connector() -> None:
         cursor_pool = None
 
     # Step 3: Start the multi-account manager.
+    # Manager is created outside the try block so it is always defined when
+    # the finally block runs. If the constructor raises, no cleanup is needed.
+    manager = GDriveConnectorManager(
+        db_pool=shared_pool,
+        credential_store=None,  # manager resolves credentials lazily via pool
+        switchboard_mcp_url=process_config.switchboard_mcp_url,
+        poll_interval_s=process_config.poll_interval_s,
+        account_rescan_interval_s=process_config.account_rescan_interval_s,
+        cursor_pool=cursor_pool,
+    )
     try:
-        manager = GDriveConnectorManager(
-            db_pool=shared_pool,
-            credential_store=None,  # manager resolves credentials lazily via pool
-            switchboard_mcp_url=process_config.switchboard_mcp_url,
-            poll_interval_s=process_config.poll_interval_s,
-            account_rescan_interval_s=process_config.account_rescan_interval_s,
-            cursor_pool=cursor_pool,
-        )
         # Perform initial account sync and start account loops.
         added, removed, unchanged = await manager.sync_accounts()
         logger.info(
