@@ -202,7 +202,7 @@ class TestDriveScopeOAuthFlow:
             discovered = await manager.discover_drive_accounts()
 
         assert len(discovered) == 1
-        assert discovered[0].email == _FAKE_ACCOUNT_EMAIL
+        assert discovered[0]["email"] == _FAKE_ACCOUNT_EMAIL
 
     async def test_connector_skips_accounts_without_drive_scope(self) -> None:
         """GDriveConnectorManager skips accounts that lack drive scopes."""
@@ -237,7 +237,6 @@ class TestDriveScopeOAuthFlow:
 
     async def test_module_resolves_drive_credentials_for_primary_account(self) -> None:
         """GoogleDriveModule on_startup resolves credentials for the primary account."""
-        mock_pool = _make_mock_db_pool()
         mock_store = _make_mock_credential_store()
         fake_creds = _make_google_credentials()
 
@@ -251,10 +250,8 @@ class TestDriveScopeOAuthFlow:
             module = GoogleDriveModule()
             await module.on_startup(
                 config=config,
-                store=mock_store,
-                pool=mock_pool,
-                butler_name="general",
-                server=MagicMock(),
+                db=None,
+                credential_store=mock_store,
             )
 
         mock_resolve.assert_awaited_once()
@@ -268,7 +265,6 @@ class TestDriveScopeOAuthFlow:
 
     async def test_module_resolves_drive_credentials_for_specific_account(self) -> None:
         """GoogleDriveModule on_startup resolves credentials for a specific account."""
-        mock_pool = _make_mock_db_pool()
         mock_store = _make_mock_credential_store()
         fake_creds = _make_google_credentials(_FAKE_ACCOUNT_EMAIL)
 
@@ -282,10 +278,8 @@ class TestDriveScopeOAuthFlow:
             module = GoogleDriveModule()
             await module.on_startup(
                 config=config,
-                store=mock_store,
-                pool=mock_pool,
-                butler_name="general",
-                server=MagicMock(),
+                db=None,
+                credential_store=mock_store,
             )
 
         mock_resolve.assert_awaited_once()
@@ -295,8 +289,8 @@ class TestDriveScopeOAuthFlow:
     async def test_module_startup_fails_missing_drive_scope(self) -> None:
         """Module on_startup raises when 'drive' scope is absent from granted_scopes."""
         from butlers.google_credentials import MissingGoogleCredentialsError  # noqa: PLC0415
+        from butlers.modules.google_drive import GoogleDriveStartupError  # noqa: PLC0415
 
-        mock_pool = _make_mock_db_pool()
         mock_store = _make_mock_credential_store()
 
         # Credentials with only read-only scope — insufficient for the module (needs write).
@@ -315,13 +309,13 @@ class TestDriveScopeOAuthFlow:
             return_value=readonly_creds,
         ):
             module = GoogleDriveModule()
-            with pytest.raises((MissingGoogleCredentialsError, RuntimeError, ValueError)):
+            with pytest.raises(
+                (MissingGoogleCredentialsError, GoogleDriveStartupError, RuntimeError, ValueError)
+            ):
                 await module.on_startup(
                     config=config,
-                    store=mock_store,
-                    pool=mock_pool,
-                    butler_name="general",
-                    server=MagicMock(),
+                    db=None,
+                    credential_store=mock_store,
                 )
 
 
@@ -345,8 +339,9 @@ class TestDriveButlerFolderHierarchy:
         butler_subfolder_id: str = _FAKE_BUTLER_SUBFOLDER_ID,
     ) -> tuple[GoogleDriveModule, MagicMock]:
         """Create a GoogleDriveModule with a mocked HTTP client and DB pool."""
+        from butlers.modules.google_drive import _DriveHTTPClient  # noqa: PLC0415
+
         mock_pool = _make_mock_db_pool()
-        fake_creds = _make_google_credentials()
 
         # Mock the DB calls for the butler_folders table.
         conn = mock_pool.acquire.return_value.__aenter__.return_value
@@ -355,13 +350,16 @@ class TestDriveButlerFolderHierarchy:
 
         # Build the module and inject mocked internals.
         module = GoogleDriveModule()
-        module._creds = fake_creds  # type: ignore[attr-defined]
-        module._pool = mock_pool  # type: ignore[attr-defined]
-        module._butler_name = "general"  # type: ignore[attr-defined]
-        module._config = GoogleDriveConfig()  # type: ignore[attr-defined]
+        module._butler_name = "general"
+        module._config = GoogleDriveConfig()
+
+        # Wire a mock db with pool so _get_cached_folder/_cache_folder work.
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        module._db = mock_db
 
         # Mock HTTP client responses.
-        http_client = AsyncMock()
+        mock_client = MagicMock(spec=_DriveHTTPClient)
 
         # files.list response (folder search returns empty → triggers creation).
         empty_list_response = MagicMock()
@@ -386,17 +384,17 @@ class TestDriveButlerFolderHierarchy:
             "mimeType": "application/vnd.google-apps.folder",
         }
 
-        http_client.get = AsyncMock(return_value=empty_list_response)
-        http_client.post = AsyncMock(
+        mock_client.get = AsyncMock(return_value=empty_list_response)
+        mock_client.post = AsyncMock(
             side_effect=[root_folder_create_response, sub_folder_create_response]
         )
 
-        module._http = http_client  # type: ignore[attr-defined]
-        return module, http_client
+        module._client = mock_client
+        return module, mock_client
 
     async def test_drive_write_creates_root_butler_folder_when_missing(self) -> None:
-        """drive_write_file creates the 'butlers/' root folder if it doesn't exist."""
-        module, http_client = self._make_drive_module_with_mocked_http()
+        """_drive_write_file creates the 'butlers/' root folder if it doesn't exist."""
+        module, mock_client = self._make_drive_module_with_mocked_http()
 
         # Simulate the file create response.
         file_create_response = MagicMock()
@@ -406,7 +404,7 @@ class TestDriveButlerFolderHierarchy:
             "name": "test.txt",
             "webViewLink": "https://drive.google.com/file/d/fake",
         }
-        http_client.post = AsyncMock(
+        mock_client.post = AsyncMock(
             side_effect=[
                 # Calls: root folder create, subfolder create, file create.
                 MagicMock(
@@ -433,30 +431,25 @@ class TestDriveButlerFolderHierarchy:
             ]
         )
 
-        with patch.object(
-            module,
-            "_get_valid_access_token",
-            new_callable=AsyncMock,
-            return_value=_FAKE_ACCESS_TOKEN,
-        ):
-            result = await module.drive_write_file(
-                name="test.txt",
-                content="Hello from Butler!",
-                mime_type="text/plain",
-            )
+        result = await module._drive_write_file(
+            name="test.txt",
+            content="Hello from Butler!",
+            folder_id=None,
+            mime_type="text/plain",
+        )
 
         assert result["file_id"] == _FAKE_FILE_ID
         # Root folder and subfolder should have been created.
-        assert http_client.post.call_count >= 2, (
+        assert mock_client.post.call_count >= 2, (
             "Expected at least two POST calls: root folder + subfolder creation"
         )
 
     async def test_drive_write_reuses_cached_folder_ids(self) -> None:
-        """drive_write_file uses cached folder IDs without re-querying Drive."""
-        module, http_client = self._make_drive_module_with_mocked_http()
+        """_drive_write_file uses cached folder IDs without re-querying Drive."""
+        module, mock_client = self._make_drive_module_with_mocked_http()
 
-        # Pre-populate folder cache (simulates a prior write that stored IDs).
-        conn = module._pool.acquire.return_value.__aenter__.return_value  # type: ignore[attr-defined]
+        # Pre-populate DB-cache (simulates a prior write that stored IDs).
+        conn = module._db.pool.acquire.return_value.__aenter__.return_value
 
         folder_cache_row = MagicMock()
         folder_cache_row.__getitem__ = lambda self, k: {
@@ -471,9 +464,9 @@ class TestDriveButlerFolderHierarchy:
         folder_get_response.json.return_value = {
             "id": _FAKE_BUTLER_SUBFOLDER_ID,
             "name": "general",
-            "mimeType": "application/vnd.google-apps.folder",
+            "trashed": False,
         }
-        http_client.get = AsyncMock(return_value=folder_get_response)
+        mock_client.get = AsyncMock(return_value=folder_get_response)
 
         file_create_response = MagicMock()
         file_create_response.status_code = 200
@@ -482,29 +475,24 @@ class TestDriveButlerFolderHierarchy:
             "name": "test.txt",
             "webViewLink": "https://drive.google.com/file/d/fake",
         }
-        http_client.post = AsyncMock(return_value=file_create_response)
+        mock_client.post = AsyncMock(return_value=file_create_response)
 
-        with patch.object(
-            module,
-            "_get_valid_access_token",
-            new_callable=AsyncMock,
-            return_value=_FAKE_ACCESS_TOKEN,
-        ):
-            result = await module.drive_write_file(
-                name="test.txt",
-                content="Hello from Butler!",
-                mime_type="text/plain",
-            )
+        result = await module._drive_write_file(
+            name="test.txt",
+            content="Hello from Butler!",
+            folder_id=None,
+            mime_type="text/plain",
+        )
 
         assert result["file_id"] == _FAKE_FILE_ID
         # Folder creation should NOT be called (only one POST: the file create).
-        assert http_client.post.call_count == 1, (
+        assert mock_client.post.call_count == 1, (
             "Expected exactly one POST (file create) when folder IDs are cached"
         )
 
     async def test_drive_read_file_returns_text_content(self) -> None:
-        """drive_read_file returns file content for a text file."""
-        module, http_client = self._make_drive_module_with_mocked_http()
+        """_drive_read_file returns file content for a text file."""
+        module, mock_client = self._make_drive_module_with_mocked_http()
 
         # Simulate files.get?alt=media response for a text file.
         file_meta_response = MagicMock()
@@ -520,26 +508,22 @@ class TestDriveButlerFolderHierarchy:
         file_content_response.status_code = 200
         file_content_response.text = _FAKE_FILE_CONTENT
 
-        http_client.get = AsyncMock(side_effect=[file_meta_response, file_content_response])
+        mock_client.get = AsyncMock(side_effect=[file_meta_response, file_content_response])
 
-        with patch.object(
-            module,
-            "_get_valid_access_token",
-            new_callable=AsyncMock,
-            return_value=_FAKE_ACCESS_TOKEN,
-        ):
-            result = await module.drive_read_file(file_id=_FAKE_FILE_ID)
+        result = await module._drive_read_file(file_id=_FAKE_FILE_ID)
 
         assert result["content"] == _FAKE_FILE_CONTENT
-        assert result["file_id"] == _FAKE_FILE_ID
+        # The read result does NOT include file_id; check name and mime_type instead.
+        assert result["name"] == "test.txt"
+        assert result["mime_type"] == "text/plain"
 
     async def test_drive_write_then_read_roundtrip(self) -> None:
         """Full write → read-back roundtrip via mocked Drive API."""
-        module, http_client = self._make_drive_module_with_mocked_http()
+        module, mock_client = self._make_drive_module_with_mocked_http()
         written_content = "Butler output: monthly report summary."
 
         # Write responses: root folder, subfolder, file create.
-        http_client.post = AsyncMock(
+        mock_client.post = AsyncMock(
             side_effect=[
                 MagicMock(
                     status_code=200,
@@ -572,10 +556,16 @@ class TestDriveButlerFolderHierarchy:
             ]
         )
 
-        # Read responses: metadata + content.
-        http_client.get = AsyncMock(
+        # GET calls in order:
+        #   1. Write: folder search for root (empty → will create)
+        #   2. Write: folder search for subfolder (empty → will create)
+        #   3. Read: files.get metadata
+        #   4. Read: files.get?alt=media content download
+        mock_client.get = AsyncMock(
             side_effect=[
-                # Search during folder ensure: no existing folders.
+                # Folder search for root 'butlers/': no existing folders.
+                MagicMock(status_code=200, json=MagicMock(return_value={"files": []})),
+                # Folder search for 'general/' subfolder: no existing folders.
                 MagicMock(status_code=200, json=MagicMock(return_value={"files": []})),
                 # files.get metadata for read_file.
                 MagicMock(
@@ -594,31 +584,26 @@ class TestDriveButlerFolderHierarchy:
             ]
         )
 
-        with patch.object(
-            module,
-            "_get_valid_access_token",
-            new_callable=AsyncMock,
-            return_value=_FAKE_ACCESS_TOKEN,
-        ):
-            write_result = await module.drive_write_file(
-                name="report.txt",
-                content=written_content,
-                mime_type="text/plain",
-            )
-            assert write_result["file_id"] == _FAKE_FILE_ID
+        write_result = await module._drive_write_file(
+            name="report.txt",
+            content=written_content,
+            folder_id=None,
+            mime_type="text/plain",
+        )
+        assert write_result["file_id"] == _FAKE_FILE_ID
 
-            read_result = await module.drive_read_file(file_id=_FAKE_FILE_ID)
+        read_result = await module._drive_read_file(file_id=_FAKE_FILE_ID)
 
         assert read_result["content"] == written_content, (
             "Content read back from Drive must match what was written"
         )
 
     async def test_drive_write_recreates_deleted_folder(self) -> None:
-        """drive_write_file re-creates a butler folder when the cached ID is stale (deleted)."""
-        module, http_client = self._make_drive_module_with_mocked_http()
+        """_drive_write_file re-creates a butler folder when the cached ID is stale (deleted)."""
+        module, mock_client = self._make_drive_module_with_mocked_http()
 
         # Cache returns a folder ID.
-        conn = module._pool.acquire.return_value.__aenter__.return_value  # type: ignore[attr-defined]
+        conn = module._db.pool.acquire.return_value.__aenter__.return_value
         stale_row = MagicMock()
         stale_row.__getitem__ = lambda self, k: {
             "folder_id": "stale-deleted-folder-id",
@@ -637,6 +622,14 @@ class TestDriveButlerFolderHierarchy:
         new_folder_response.status_code = 200
         new_folder_response.json.return_value = {
             "id": "new-folder-id-after-recreate",
+            "name": "butlers",
+            "mimeType": "application/vnd.google-apps.folder",
+        }
+
+        new_sub_folder_response = MagicMock()
+        new_sub_folder_response.status_code = 200
+        new_sub_folder_response.json.return_value = {
+            "id": "new-sub-folder-id-after-recreate",
             "name": "general",
             "mimeType": "application/vnd.google-apps.folder",
         }
@@ -649,23 +642,28 @@ class TestDriveButlerFolderHierarchy:
             "webViewLink": "https://drive.google.com/file/d/fake",
         }
 
-        http_client.get = AsyncMock(return_value=not_found_response)
-        http_client.post = AsyncMock(side_effect=[new_folder_response, file_create_response])
+        # get: 1st call = check cached folder (404), then folder searches (empty), then...
+        # the _find_or_create_folder will search then create
+        search_empty = MagicMock()
+        search_empty.status_code = 200
+        search_empty.json.return_value = {"files": []}
 
-        with patch.object(
-            module,
-            "_get_valid_access_token",
-            new_callable=AsyncMock,
-            return_value=_FAKE_ACCESS_TOKEN,
-        ):
-            result = await module.drive_write_file(
-                name="test.txt",
-                content="content after folder re-creation",
-                mime_type="text/plain",
-            )
+        mock_client.get = AsyncMock(
+            side_effect=[not_found_response, search_empty, search_empty]
+        )
+        mock_client.post = AsyncMock(
+            side_effect=[new_folder_response, new_sub_folder_response, file_create_response]
+        )
+
+        result = await module._drive_write_file(
+            name="test.txt",
+            content="content after folder re-creation",
+            folder_id=None,
+            mime_type="text/plain",
+        )
 
         assert result["file_id"] == _FAKE_FILE_ID, (
             "Write must succeed after re-creating the deleted folder"
         )
-        # Folder creation POST must have been called.
-        assert http_client.post.call_count >= 1
+        # Folder creation POST must have been called (at least root + sub + file).
+        assert mock_client.post.call_count >= 2
