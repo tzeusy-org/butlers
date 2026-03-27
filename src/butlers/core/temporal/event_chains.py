@@ -78,18 +78,9 @@ def materialize_chain_actions(
         List of task dicts ready for DB insertion.
     """
     tasks = []
-    cumulative_delay = timedelta()
 
     for i, action in enumerate(actions):
         action_type = action["action_type"]
-        delay_minutes = action.get("delay_minutes", 0)
-        cumulative_delay = (
-            timedelta(minutes=delay_minutes)
-            if i == 0
-            else (cumulative_delay + timedelta(minutes=delay_minutes))
-        )
-
-        # Recalculate cumulative delay correctly
         total_minutes = sum(actions[j].get("delay_minutes", 0) for j in range(i + 1))
         next_run_at = fired_at + timedelta(minutes=total_minutes)
         until_at = next_run_at + timedelta(minutes=1)
