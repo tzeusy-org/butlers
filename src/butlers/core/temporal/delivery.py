@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def is_in_quiet_hours(
@@ -130,33 +131,46 @@ def compute_deliver_at(
 ) -> datetime:
     """Compute the next delivery time based on batch_delivery_time in prefs.
 
-    Returns the next occurrence of batch_delivery_time on or after now.
+    Returns the next occurrence of batch_delivery_time on or after now,
+    computed in the user's configured timezone and returned as UTC.
 
     Args:
         prefs: Delivery preferences dict with 'batch_delivery_time' and 'timezone'.
-        now: Current UTC datetime.
+        now: Current UTC datetime (must be timezone-aware).
 
     Returns:
         UTC datetime of the next batch delivery time.
     """
-    batch_time = _parse_time(prefs.get("batch_delivery_time", "07:00"))
+    if now.tzinfo is None:
+        raise ValueError("now must be a timezone-aware datetime")
 
-    # Build today's delivery datetime in UTC (simplified: assume UTC for now)
-    # Full timezone-aware implementation will use pytz/zoneinfo when integrated
-    today_delivery = datetime(
-        now.year,
-        now.month,
-        now.day,
+    batch_time = _parse_time(prefs.get("batch_delivery_time", "07:00"))
+    tz_name = prefs.get("timezone", "UTC")
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError as e:
+        raise ValueError(f"Unknown timezone: {tz_name!r}") from e
+
+    # Convert `now` to the user's local timezone to determine their "today"
+    now_local = now.astimezone(tz)
+
+    # Build today's delivery datetime in user's timezone
+    today_delivery_local = datetime(
+        now_local.year,
+        now_local.month,
+        now_local.day,
         batch_time.hour,
         batch_time.minute,
-        tzinfo=now.tzinfo,
+        tzinfo=tz,
     )
 
-    if today_delivery > now:
-        return today_delivery
+    if today_delivery_local > now_local:
+        # Batch time is still ahead today in user's timezone
+        return today_delivery_local.astimezone(now.tzinfo)
 
-    # Batch time has already passed today — schedule for tomorrow
-    return today_delivery + timedelta(days=1)
+    # Batch time has already passed today — schedule for tomorrow in user's timezone
+    tomorrow_delivery_local = today_delivery_local + timedelta(days=1)
+    return tomorrow_delivery_local.astimezone(now.tzinfo)
 
 
 def is_notification_due(notif: dict[str, Any], *, now: datetime) -> bool:

@@ -957,6 +957,106 @@ class TestQuietHoursEnforcement:
         assert deliver_at.date() == date(2026, 1, 15)
         assert deliver_at.hour == 7
 
+    def test_deliver_at_uses_user_timezone_for_next_occurrence(self):
+        """compute_deliver_at computes batch time in user's timezone, not UTC.
+
+        America/New_York is UTC-5 in January (EST).
+        If now is 2026-01-15 10:00 UTC (= 05:00 EST), and batch_delivery_time is 07:00,
+        the next 07:00 EST is still today → 07:00 EST = 12:00 UTC.
+        """
+        from zoneinfo import ZoneInfo
+
+        from butlers.core.temporal.delivery import compute_deliver_at
+
+        prefs = self._make_prefs(timezone="America/New_York")
+        prefs["batch_delivery_time"] = "07:00"
+        # 10:00 UTC = 05:00 EST — batch time (07:00 EST) is still ahead today
+        now = datetime(2026, 1, 15, 10, 0, tzinfo=UTC)
+        deliver_at = compute_deliver_at(prefs=prefs, now=now)
+
+        # Result should be 07:00 EST = 12:00 UTC on Jan 15
+        expected_local = datetime(2026, 1, 15, 7, 0, tzinfo=ZoneInfo("America/New_York"))
+        expected_utc = expected_local.astimezone(UTC)
+        assert deliver_at == expected_utc
+
+    def test_deliver_at_schedules_tomorrow_in_user_timezone_when_batch_time_passed(self):
+        """When batch_delivery_time has already passed in user's timezone, schedule tomorrow.
+
+        America/New_York is UTC-5 in January (EST).
+        If now is 2026-01-15 16:00 UTC (= 11:00 EST), and batch_delivery_time is 07:00,
+        07:00 EST has already passed today → next occurrence is 2026-01-16 07:00 EST = 12:00 UTC.
+        """
+        from zoneinfo import ZoneInfo
+
+        from butlers.core.temporal.delivery import compute_deliver_at
+
+        prefs = self._make_prefs(timezone="America/New_York")
+        prefs["batch_delivery_time"] = "07:00"
+        # 16:00 UTC = 11:00 EST — batch time (07:00 EST) already passed today
+        now = datetime(2026, 1, 15, 16, 0, tzinfo=UTC)
+        deliver_at = compute_deliver_at(prefs=prefs, now=now)
+
+        # Result should be 07:00 EST on Jan 16 = 12:00 UTC on Jan 16
+        expected_local = datetime(2026, 1, 16, 7, 0, tzinfo=ZoneInfo("America/New_York"))
+        expected_utc = expected_local.astimezone(UTC)
+        assert deliver_at == expected_utc
+
+    def test_deliver_at_with_positive_utc_offset_timezone(self):
+        """compute_deliver_at handles positive-offset timezones (e.g., Asia/Tokyo UTC+9).
+
+        If now is 2026-01-15 23:00 UTC (= 2026-01-16 08:00 JST), and batch_delivery_time is 09:00,
+        08:00 JST is before 09:00 JST — batch time still ahead today, so deliver today.
+        """
+        from zoneinfo import ZoneInfo
+
+        from butlers.core.temporal.delivery import compute_deliver_at
+
+        prefs = self._make_prefs(timezone="Asia/Tokyo")
+        prefs["batch_delivery_time"] = "09:00"
+        # 2026-01-15 23:00 UTC = 2026-01-16 08:00 JST — batch time (09:00 JST) still ahead
+        now = datetime(2026, 1, 15, 23, 0, tzinfo=UTC)
+        deliver_at = compute_deliver_at(prefs=prefs, now=now)
+
+        # Result should be 09:00 JST on Jan 16 = 00:00 UTC on Jan 16
+        expected_local = datetime(2026, 1, 16, 9, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+        expected_utc = expected_local.astimezone(UTC)
+        assert deliver_at == expected_utc
+
+    def test_deliver_at_result_is_utc_aware(self):
+        """compute_deliver_at always returns a UTC-aware datetime."""
+        from butlers.core.temporal.delivery import compute_deliver_at
+
+        prefs = self._make_prefs(timezone="America/Los_Angeles")
+        now = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+        deliver_at = compute_deliver_at(prefs=prefs, now=now)
+
+        assert deliver_at.tzinfo is not None
+        # Result must be UTC (zero UTC offset), not just any timezone-aware datetime
+        utc_offset = deliver_at.utcoffset()
+        assert utc_offset is not None
+        assert utc_offset.total_seconds() == 0, (
+            f"Expected UTC result (zero offset) but got {deliver_at.tzinfo!r}"
+            f" with offset {utc_offset}"
+        )
+
+    def test_deliver_at_raises_for_invalid_timezone(self):
+        """compute_deliver_at raises ValueError for unrecognized timezone names."""
+        from butlers.core.temporal.delivery import compute_deliver_at
+
+        prefs = self._make_prefs(timezone="Invalid/Zone")
+        now = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+        with pytest.raises(ValueError, match="Unknown timezone"):
+            compute_deliver_at(prefs=prefs, now=now)
+
+    def test_deliver_at_raises_for_naive_now(self):
+        """compute_deliver_at raises ValueError when now is a naive datetime."""
+        from butlers.core.temporal.delivery import compute_deliver_at
+
+        prefs = self._make_prefs(timezone="UTC")
+        now_naive = datetime(2026, 1, 15, 12, 0)  # no tzinfo
+        with pytest.raises(ValueError, match="timezone-aware"):
+            compute_deliver_at(prefs=prefs, now=now_naive)
+
 
 # ---------------------------------------------------------------------------
 # 12.9 — Deferred notification flush, expiry, retry
