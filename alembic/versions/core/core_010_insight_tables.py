@@ -213,11 +213,11 @@ def upgrade() -> None:
         ON public.insight_engagement (delivered_at DESC)
     """)
 
-    # Index: cleanup sweep.
+    # Index: cleanup sweep (plain index — partial predicate with now() would be
+    # evaluated once at CREATE INDEX time and become a stale constant immediately).
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_insight_engagement_cleanup
         ON public.insight_engagement (delivered_at)
-        WHERE delivered_at < now() - interval '30 days'
     """)
 
     # =========================================================================
