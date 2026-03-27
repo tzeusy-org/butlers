@@ -60,6 +60,7 @@ dev = [
 [project.scripts]
 gmail-connector = "butlers.connectors.gmail:main"
 google-calendar-connector = "butlers.connectors.google_calendar:main"
+google-drive-connector = "butlers.connectors.google_drive:main"
 steam-connector = "butlers.connectors.steam:main"
 telegram-user-client-connector = "butlers.connectors.telegram_user_client:run_telegram_user_client_connector"
 discord-user-connector = "butlers.connectors.discord_user:run_discord_user_connector"

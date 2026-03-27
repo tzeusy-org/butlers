@@ -1921,3 +1921,119 @@ class TestMultiAccountLifecycle:
         response = client.post("/reload")
         assert response.status_code == 200
         assert response.json()["status"] == "reload_triggered"
+
+
+# ---------------------------------------------------------------------------
+# Task 13.1 — additional env var coverage (CONNECTOR_HEALTH_PORT, etc.)
+# ---------------------------------------------------------------------------
+
+
+class TestGDriveProcessConfigEnvVars:
+    """Additional env var coverage for task 13.1 (full env var set)."""
+
+    def test_from_env_connector_health_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CONNECTOR_HEALTH_PORT is parsed and applied to health_port."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", _SWITCHBOARD_URL)
+        monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40088")
+
+        config = GDriveProcessConfig.from_env()
+
+        assert config.health_port == 40088
+
+    def test_from_env_default_health_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default CONNECTOR_HEALTH_PORT is 40088 (distinct from google-calendar's 40085)."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", _SWITCHBOARD_URL)
+        monkeypatch.delenv("CONNECTOR_HEALTH_PORT", raising=False)
+
+        config = GDriveProcessConfig.from_env()
+
+        assert config.health_port == 40088
+
+    def test_from_env_invalid_health_port_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Invalid CONNECTOR_HEALTH_PORT falls back to default (40088)."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", _SWITCHBOARD_URL)
+        monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "not-a-port")
+
+        config = GDriveProcessConfig.from_env()
+
+        assert config.health_port == 40088
+
+    def test_from_env_all_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """All env vars can be set simultaneously."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", _SWITCHBOARD_URL)
+        monkeypatch.setenv("GDRIVE_POLL_INTERVAL_S", "60")
+        monkeypatch.setenv("GDRIVE_ACCOUNT_RESCAN_INTERVAL_S", "120")
+        monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40088")
+        monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "16")
+        monkeypatch.setenv("CONNECTOR_HEARTBEAT_INTERVAL_S", "60")
+
+        config = GDriveProcessConfig.from_env()
+
+        assert config.switchboard_mcp_url == _SWITCHBOARD_URL
+        assert config.poll_interval_s == 60
+        assert config.account_rescan_interval_s == 120
+        assert config.health_port == 40088
+        assert config.max_inflight == 16
+        assert config.heartbeat_interval_s == 60
+
+
+# ---------------------------------------------------------------------------
+# Task 13.2 — per-account config overrides (additional coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestPerAccountConfigOverrides:
+    """Additional tests for per-account config overrides via google_accounts.metadata."""
+
+    def test_make_account_config_empty_metadata_uses_defaults(
+        self, process_config: GDriveProcessConfig
+    ) -> None:
+        """Empty metadata dict (no google_drive key) uses process defaults."""
+        account_cfg = process_config.make_account_config(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+            metadata_gdrive={},  # empty google_drive section
+        )
+        assert account_cfg.poll_interval_s == process_config.poll_interval_s
+
+    def test_make_account_config_propagates_email(
+        self, process_config: GDriveProcessConfig
+    ) -> None:
+        """email field is propagated correctly to account config."""
+        account_cfg = process_config.make_account_config(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+        )
+        assert account_cfg.email == _FAKE_EMAIL
+        assert account_cfg.endpoint_identity == f"google_drive:user:{_FAKE_EMAIL}"
+
+    def test_make_account_config_inherits_switchboard_url(
+        self, process_config: GDriveProcessConfig
+    ) -> None:
+        """switchboard_mcp_url is inherited from process config."""
+        account_cfg = process_config.make_account_config(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+        )
+        assert account_cfg.switchboard_mcp_url == _SWITCHBOARD_URL
+
+    def test_make_account_config_zero_poll_interval_ignored(
+        self, process_config: GDriveProcessConfig
+    ) -> None:
+        """Zero poll_interval_s in metadata is applied (0 is valid int)."""
+        # Note: 0 is technically valid as an int even if not practical.
+        # The spec says we apply it — the caller is responsible for sane values.
+        account_cfg = process_config.make_account_config(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+            metadata_gdrive={"poll_interval_s": 0},
+        )
+        assert account_cfg.poll_interval_s == 0

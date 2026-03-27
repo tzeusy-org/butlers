@@ -79,7 +79,7 @@ _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # Default config values
 _DEFAULT_POLL_INTERVAL_S = 300
 _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S = 300
-_DEFAULT_HEALTH_PORT = 40085
+_DEFAULT_HEALTH_PORT = 40088  # 40085 is taken by connector-google-calendar
 
 # Rate-limit retry config (task 11.6)
 _RATE_LIMIT_MAX_RETRIES = 5
@@ -1180,3 +1180,159 @@ def build_changes_list_url(page_token: str, *, include_removed: bool = True) -> 
     """Return the Drive API URL for changes.list (task 9.2)."""
     removed_flag = "true" if include_removed else "false"
     return f"{_DRIVE_API_BASE}/changes?pageToken={page_token}&includeRemoved={removed_flag}"
+
+
+# ---------------------------------------------------------------------------
+# Async entrypoint — process bootstrap (task 13.4)
+# ---------------------------------------------------------------------------
+
+
+async def run_google_drive_connector() -> None:
+    """Run the multi-account Google Drive connector manager (async entrypoint).
+
+    Discovers all active Google accounts with Drive scopes from public.google_accounts
+    and manages independent polling loops per account. Identity is derived per-account
+    from the email address (``google_drive:user:<email>``).
+    Runs in idle/degraded mode if no qualifying accounts are found at startup.
+
+    Environment variables consumed (task 13.1):
+    - SWITCHBOARD_MCP_URL (required)
+    - CONNECTOR_PROVIDER=google_drive (set in Docker env; constant in code)
+    - CONNECTOR_CHANNEL=google_drive (set in Docker env; constant in code)
+    - GDRIVE_POLL_INTERVAL_S (optional, default 300)
+    - GDRIVE_ACCOUNT_RESCAN_INTERVAL_S (optional, default 300)
+    - CONNECTOR_HEALTH_PORT (optional, default 40085)
+    - CONNECTOR_MAX_INFLIGHT (optional, default 8)
+    - CONNECTOR_HEARTBEAT_INTERVAL_S (optional, default 120)
+    - POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD (DB connectivity)
+    - CONNECTOR_BUTLER_DB_NAME (optional; butler DB name, defaults to 'butlers')
+    - BUTLER_SHARED_DB_NAME (optional; shared credentials DB, defaults to 'butlers')
+    - BUTLER_SHARED_DB_SCHEMA (optional; shared credentials schema, defaults to 'shared')
+    """
+    from butlers.core.logging import configure_logging
+
+    configure_logging(level="INFO", butler_name="google_drive")
+
+    # Step 1: Parse process-level config from environment variables.
+    try:
+        process_config = GDriveProcessConfig.from_env()
+    except Exception as exc:
+        logger.error("Google Drive connector: failed to load process config: %s", exc)
+        raise
+
+    logger.info(
+        "Google Drive connector starting: poll_interval=%ds rescan_interval=%ds health_port=%d",
+        process_config.poll_interval_s,
+        process_config.account_rescan_interval_s,
+        process_config.health_port,
+    )
+
+    # Step 2: Create DB pools.
+    import asyncpg as _asyncpg
+
+    from butlers.connectors.cursor_store import create_cursor_pool_from_env
+    from butlers.credential_store import shared_db_name_from_env
+    from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+
+    db_params = db_params_from_env()
+    shared_db_name = shared_db_name_from_env()
+
+    shared_pool: _asyncpg.Pool | None = None
+    try:
+        pool_kwargs: dict[str, Any] = {
+            "host": str(db_params.get("host") or "localhost"),
+            "port": int(db_params.get("port") or 5432),
+            "user": str(db_params.get("user") or "butlers"),
+            "password": str(db_params.get("password") or "butlers"),
+            "database": shared_db_name,
+            "min_size": 1,
+            "max_size": 5,
+            "command_timeout": 10,
+        }
+        ssl = db_params.get("ssl")
+        if ssl is not None:
+            pool_kwargs["ssl"] = ssl
+
+        try:
+            shared_pool = await _asyncpg.create_pool(**pool_kwargs)
+        except Exception as exc:
+            if should_retry_with_ssl_disable(exc, pool_kwargs.get("ssl")):
+                pool_kwargs["ssl"] = "disable"
+                shared_pool = await _asyncpg.create_pool(**pool_kwargs)
+            else:
+                raise
+
+        logger.info("Google Drive connector: shared DB pool established (db=%s)", shared_db_name)
+    except Exception as exc:
+        logger.error("Google Drive connector: failed to create shared DB pool: %s", exc)
+        raise
+
+    cursor_pool: _asyncpg.Pool | None = None
+    try:
+        cursor_pool = await create_cursor_pool_from_env()
+        logger.info("Google Drive connector: cursor pool established for checkpoints")
+    except Exception as exc:
+        logger.warning(
+            "Google Drive connector: cursor pool failed (checkpoint persistence unavailable): %s",
+            exc,
+        )
+        cursor_pool = None
+
+    # Step 3: Start the multi-account manager.
+    # Manager is created outside the try block so it is always defined when
+    # the finally block runs. If the constructor raises, no cleanup is needed.
+    manager = GDriveConnectorManager(
+        db_pool=shared_pool,
+        credential_store=None,  # manager resolves credentials lazily via pool
+        switchboard_mcp_url=process_config.switchboard_mcp_url,
+        poll_interval_s=process_config.poll_interval_s,
+        account_rescan_interval_s=process_config.account_rescan_interval_s,
+        cursor_pool=cursor_pool,
+    )
+    try:
+        # Perform initial account sync and start account loops.
+        added, removed, unchanged = await manager.sync_accounts()
+        logger.info(
+            "Google Drive connector: initial account sync complete "
+            "(added=%d removed=%d unchanged=%d)",
+            len(added),
+            len(removed),
+            len(unchanged),
+        )
+
+        # Run the periodic re-scan loop until cancelled.
+        while True:
+            await asyncio.sleep(process_config.account_rescan_interval_s)
+            try:
+                added, removed, unchanged = await manager.sync_accounts()
+                if added or removed:
+                    logger.info(
+                        "Google Drive connector: account re-scan complete "
+                        "(added=%d removed=%d unchanged=%d)",
+                        len(added),
+                        len(removed),
+                        len(unchanged),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Google Drive connector: account re-scan error (non-fatal): %s", exc)
+    finally:
+        await manager.stop()
+        if cursor_pool is not None:
+            await cursor_pool.close()
+        if shared_pool is not None:
+            await shared_pool.close()
+
+
+def main() -> None:
+    """CLI entrypoint for Google Drive connector (task 13.4).
+
+    Discovers and manages all Drive-scoped Google accounts from public.google_accounts.
+    Identity is derived per-account from the email address.
+    """
+    asyncio.run(run_google_drive_connector())
+
+
+if __name__ == "__main__":
+    main()
