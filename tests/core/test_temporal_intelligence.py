@@ -1322,6 +1322,23 @@ class TestTickIntegration:
     - tasks.md §12.11
     """
 
+    @pytest.fixture(autouse=True)
+    def reset_otel_state(self):
+        """Reset OpenTelemetry global tracer provider state before and after each test.
+
+        This ensures each test that sets its own TracerProvider can do so cleanly,
+        regardless of test execution order in the same worker process.
+        """
+        from opentelemetry import trace
+
+        def _reset():
+            trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
+            trace._TRACER_PROVIDER = None
+
+        _reset()
+        yield
+        _reset()
+
     # DDL for temporal intelligence tables
     _SCHEDULED_TASKS_DDL = """
         CREATE TABLE IF NOT EXISTS scheduled_tasks (
