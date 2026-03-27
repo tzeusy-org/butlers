@@ -1804,6 +1804,308 @@ class TestAutoOffTotalDisengagement:
 
 
 # ===========================================================================
+# Category: propose_insight_candidate unit tests (no Docker) [bu-19ti]
+# ===========================================================================
+
+
+class TestProposeInsightCandidateUnit:
+    """Unit tests for propose_insight_candidate validation and verbosity gate.
+
+    These tests use mock pools and do not require a running Docker/Postgres
+    instance. They cover all validation error cases, verbosity=off filtering,
+    and the happy-path accepted response.
+    """
+
+    def _make_mock_pool(self, verbosity: str = "minimal", custom_budget=None) -> AsyncMock:
+        """Return a mock asyncpg pool that fakes get_insight_settings."""
+        pool = AsyncMock()
+        # get_insight_settings issues a fetchrow call
+        pool.fetchrow.return_value = {
+            "id": 1,
+            "verbosity": verbosity,
+            "custom_budget": custom_budget,
+            "quiet_start": None,
+            "quiet_end": None,
+            "quiet_timezone": None,
+            "updated_at": datetime.now(UTC),
+        }
+        # INSERT succeeds silently
+        pool.execute.return_value = "INSERT 0 1"
+        return pool
+
+    async def test_priority_zero_returns_error(self):
+        """priority=0 returns error without any DB call."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = AsyncMock()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=0,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="test",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "error"
+        assert "priority must be between 1 and 100" in result["reason"]
+        pool.fetchrow.assert_not_called()
+        pool.execute.assert_not_called()
+
+    async def test_priority_101_returns_error(self):
+        """priority=101 returns error without any DB call."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = AsyncMock()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=101,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="test",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "error"
+        assert "priority must be between 1 and 100" in result["reason"]
+        pool.execute.assert_not_called()
+
+    async def test_priority_boundary_1_is_valid(self):
+        """priority=1 (minimum) does not trigger priority error."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=1,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="valid message",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "accepted"
+
+    async def test_priority_boundary_100_is_valid(self):
+        """priority=100 (maximum) does not trigger priority error."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=100,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="critical insight",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "accepted"
+
+    async def test_empty_dedup_key_returns_error(self):
+        """Empty dedup_key returns error without DB call."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = AsyncMock()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="",
+            message="test",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "error"
+        assert "dedup_key is required" in result["reason"]
+        pool.execute.assert_not_called()
+
+    async def test_invalid_dedup_key_format_returns_error(self):
+        """dedup_key without colons returns error with format hint."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = AsyncMock()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="nodots-at-all",
+            message="test",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "error"
+        assert "dedup_key must match format" in result["reason"]
+        pool.execute.assert_not_called()
+
+    async def test_three_segment_dedup_key_is_valid(self):
+        """3-segment dedup_key passes format validation."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="relationship",
+            priority=75,
+            category="birthday",
+            dedup_key="birthday:entity-123:2026",
+            message="Alice's birthday",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "accepted"
+
+    async def test_four_segment_dedup_key_is_valid(self):
+        """4-segment dedup_key (butler-specific) passes format validation."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="finance",
+            priority=55,
+            category="spending",
+            dedup_key="finance:spending:overage:2026-w13",
+            message="Over budget",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "accepted"
+
+    async def test_empty_message_returns_error(self):
+        """Empty message returns error without DB call."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = AsyncMock()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "error"
+        assert "message must be non-empty" in result["reason"]
+        pool.execute.assert_not_called()
+
+    async def test_whitespace_only_message_returns_error(self):
+        """Whitespace-only message returns error."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = AsyncMock()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="   ",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "error"
+        assert "message must be non-empty" in result["reason"]
+
+    async def test_past_expires_at_returns_error(self):
+        """expires_at in the past returns error without DB insert."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="valid message",
+            expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        assert result["status"] == "error"
+        assert "expires_at must be in the future" in result["reason"]
+        # execute (INSERT) must NOT be called
+        pool.execute.assert_not_called()
+
+    async def test_invalid_expires_at_string_returns_error(self):
+        """expires_at as invalid ISO string returns error."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = AsyncMock()
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="valid",
+            expires_at="not-a-datetime",
+        )
+        assert result["status"] == "error"
+        assert "ISO 8601" in result["reason"]
+        pool.execute.assert_not_called()
+
+    async def test_verbosity_off_returns_filtered(self):
+        """verbosity=off returns filtered without inserting a row."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool(verbosity="off")
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="No BP logged",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "filtered"
+        assert result["reason"] == "verbosity is off"
+        # No INSERT should be called
+        pool.execute.assert_not_called()
+
+    async def test_valid_submission_accepted(self):
+        """Valid submission with all required fields returns accepted."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool(verbosity="minimal")
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="relationship",
+            priority=80,
+            category="birthday",
+            dedup_key="birthday:entity-123:2026",
+            message="Alice's birthday is in 3 days",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert result["status"] == "accepted"
+        assert "candidate queued" in result["reason"]
+        # INSERT must be called
+        pool.execute.assert_called_once()
+
+    async def test_valid_submission_with_optional_fields(self):
+        """Valid submission with optional fields returns accepted and passes args to INSERT."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool(verbosity="normal")
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="finance",
+            priority=55,
+            category="spending",
+            dedup_key="finance:spending:overage:2026-w13",
+            message="Over budget this week",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+            cooldown_days=3,
+            channel="telegram",
+            metadata={"amount_over": 150},
+        )
+        assert result["status"] == "accepted"
+        pool.execute.assert_called_once()
+        # Confirm INSERT args contain the optional values
+        call_args = pool.execute.call_args.args
+        assert 3 in call_args  # cooldown_days
+        assert "telegram" in call_args  # channel
+
+
+# ===========================================================================
 # Category: Daemon job handler registration [bu-a3wr]
 # ===========================================================================
 
