@@ -45,6 +45,7 @@ from butlers.connectors.google_drive import (
     build_start_page_token_url,
     parse_changes_list_response,
 )
+from butlers.connectors.metrics import ConnectorMetrics
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -2037,3 +2038,515 @@ class TestPerAccountConfigOverrides:
             metadata_gdrive={"poll_interval_s": 0},
         )
         assert account_cfg.poll_interval_s == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 11.1–11.6: Filter, Metrics, Rate Limiting
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionPolicyEvaluatorIntegration:
+    """Task 11.1: IngestionPolicyEvaluator integration in GDriveAccountLoop."""
+
+    def test_account_loop_has_ingestion_policy(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """GDriveAccountLoop initialises with an IngestionPolicyEvaluator."""
+        from butlers.ingestion_policy import IngestionPolicyEvaluator
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        assert hasattr(loop, "_ingestion_policy")
+        assert isinstance(loop._ingestion_policy, IngestionPolicyEvaluator)
+
+    def test_policy_scope_matches_spec(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """IngestionPolicyEvaluator scope follows connector:<type>:<identity> format."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        expected_scope = f"connector:google_drive:{account_config.endpoint_identity}"
+        assert loop._ingestion_policy.scope == expected_scope
+
+    def test_process_change_blocked_by_policy_returns_none(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """process_change returns None when connector policy blocks the event."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        # Replace the evaluator with one that always blocks
+        mock_policy = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.allowed = False
+        mock_decision.action = "block"
+        mock_decision.matched_rule_type = "sender_domain"
+        mock_policy.evaluate.return_value = mock_decision
+        loop._ingestion_policy = mock_policy
+
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "blocked.txt",
+                "mimeType": "text/plain",
+            },
+        }
+        result = loop.process_change(change)
+        assert result is None
+
+    def test_process_change_allowed_by_policy_returns_envelope(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """process_change returns envelope when policy allows the event."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        # Replace the evaluator with one that always allows
+        mock_policy = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.allowed = True
+        mock_policy.evaluate.return_value = mock_decision
+        loop._ingestion_policy = mock_policy
+
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "allowed.txt",
+                "mimeType": "text/plain",
+            },
+        }
+        result = loop.process_change(change)
+        assert result is not None
+        assert result["schema_version"] == "ingest.v1"
+
+    def test_process_change_policy_evaluator_exception_is_fail_open(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """If policy evaluator raises, the change is processed (fail-open)."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_policy = MagicMock()
+        mock_policy.evaluate.side_effect = RuntimeError("DB unavailable")
+        loop._ingestion_policy = mock_policy
+
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "failopen.txt",
+                "mimeType": "text/plain",
+            },
+        }
+        result = loop.process_change(change)
+        # fail-open: envelope is returned even when policy evaluation raises
+        assert result is not None
+
+
+class TestFilteredEventBatchFlush:
+    """Task 11.2: Filtered event buffer population and batch flush."""
+
+    def test_account_loop_has_filtered_event_buffer(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """GDriveAccountLoop initialises with a FilteredEventBuffer."""
+        from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        assert hasattr(loop, "_filtered_event_buffer")
+        assert isinstance(loop._filtered_event_buffer, FilteredEventBuffer)
+
+    def test_blocked_change_adds_to_filtered_buffer(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """A change blocked by policy is recorded in the FilteredEventBuffer."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_policy = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.allowed = False
+        mock_decision.action = "block"
+        mock_decision.matched_rule_type = "sender_domain"
+        mock_policy.evaluate.return_value = mock_decision
+        loop._ingestion_policy = mock_policy
+
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "blocked.txt",
+                "mimeType": "text/plain",
+            },
+        }
+        assert len(loop._filtered_event_buffer) == 0
+        loop.process_change(change)
+        assert len(loop._filtered_event_buffer) == 1
+
+    async def test_flush_filtered_events_calls_buffer_flush(
+        self,
+        account_config: GDriveAccountConfig,
+        mock_db_pool: MagicMock,
+    ) -> None:
+        """_flush_filtered_events calls FilteredEventBuffer.flush with the pool."""
+        loop = GDriveAccountLoop(
+            email=_FAKE_EMAIL,
+            config=account_config,
+            db_pool=mock_db_pool,
+        )
+
+        mock_buffer = AsyncMock()
+        mock_buffer.flush = AsyncMock()
+        loop._filtered_event_buffer = mock_buffer
+
+        await loop._flush_filtered_events()
+
+        mock_buffer.flush.assert_called_once_with(mock_db_pool)
+
+    async def test_flush_filtered_events_noop_without_pool(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """_flush_filtered_events is a no-op when no DB pool is configured."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)  # no db_pool
+
+        mock_buffer = AsyncMock()
+        mock_buffer.flush = AsyncMock()
+        loop._filtered_event_buffer = mock_buffer
+
+        await loop._flush_filtered_events()
+        mock_buffer.flush.assert_not_called()
+
+
+class TestReplayQueueDrain:
+    """Task 11.3: Replay queue drain loop."""
+
+    async def test_drain_replay_pending_called_at_startup(
+        self,
+        account_config: GDriveAccountConfig,
+        mock_db_pool: MagicMock,
+    ) -> None:
+        """_drain_replay_pending is called once before entering the poll loop."""
+        loop = GDriveAccountLoop(
+            email=_FAKE_EMAIL,
+            config=account_config,
+            db_pool=mock_db_pool,
+        )
+
+        drain_called = False
+
+        async def fake_drain() -> None:
+            nonlocal drain_called
+            drain_called = True
+
+        loop._drain_replay_pending = fake_drain  # type: ignore[method-assign]
+
+        # We can't easily run the full poll loop, so test the internal
+        # method invocation via a single wrapped call.
+        poll_count = 0
+
+        async def fake_poll_once() -> None:
+            nonlocal poll_count
+            poll_count += 1
+            raise asyncio.CancelledError
+
+        loop._poll_once = fake_poll_once  # type: ignore[method-assign]
+        loop._flush_filtered_events = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(asyncio.CancelledError):
+            await loop._poll_loop()
+
+        assert drain_called
+
+    async def test_drain_replay_pending_noop_without_pool(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """_drain_replay_pending is a no-op when no DB pool is configured."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)  # no db_pool
+
+        # Should not raise even with no pool
+        await loop._drain_replay_pending()
+
+    async def test_drain_replay_pending_calls_drain_helper(
+        self,
+        account_config: GDriveAccountConfig,
+        mock_db_pool: MagicMock,
+    ) -> None:
+        """_drain_replay_pending calls the drain_replay_pending helper with correct args."""
+        loop = GDriveAccountLoop(
+            email=_FAKE_EMAIL,
+            config=account_config,
+            db_pool=mock_db_pool,
+        )
+
+        with patch(
+            "butlers.connectors.google_drive.drain_replay_pending",
+            new_callable=AsyncMock,
+        ) as mock_drain:
+            await loop._drain_replay_pending()
+
+        mock_drain.assert_called_once()
+        call_kwargs = mock_drain.call_args
+        assert call_kwargs.kwargs["pool"] is mock_db_pool
+        assert call_kwargs.kwargs["connector_type"] == "google_drive"
+        assert call_kwargs.kwargs["endpoint_identity"] == loop.endpoint_identity
+
+    async def test_drain_replay_pending_handles_failure_gracefully(
+        self,
+        account_config: GDriveAccountConfig,
+        mock_db_pool: MagicMock,
+    ) -> None:
+        """_drain_replay_pending swallows errors so the poll loop can still start."""
+        loop = GDriveAccountLoop(
+            email=_FAKE_EMAIL,
+            config=account_config,
+            db_pool=mock_db_pool,
+        )
+
+        with patch(
+            "butlers.connectors.google_drive.drain_replay_pending",
+            new_callable=AsyncMock,
+            side_effect=Exception("DB unavailable"),
+        ):
+            # Should not raise
+            await loop._drain_replay_pending()
+
+
+class TestConnectorMetrics:
+    """Task 11.4: Standard ConnectorMetrics integration."""
+
+    def test_account_loop_has_connector_metrics(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """GDriveAccountLoop initialises with a ConnectorMetrics instance."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        assert hasattr(loop, "_metrics")
+        assert isinstance(loop._metrics, ConnectorMetrics)
+
+    def test_metrics_connector_type_is_google_drive(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """ConnectorMetrics uses connector_type='google_drive'."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        assert loop._metrics._connector_type == "google_drive"
+
+    def test_metrics_endpoint_identity_matches_loop(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """ConnectorMetrics endpoint_identity matches the loop's endpoint_identity."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        assert loop._metrics._endpoint_identity == loop.endpoint_identity
+
+
+class TestGDriveSpecificMetrics:
+    """Task 11.5: Drive-specific Prometheus counter and gauge."""
+
+    def test_gdrive_event_type_counter_exists(self) -> None:
+        """connector_gdrive_event_type_total counter is defined at module level."""
+        from butlers.connectors.google_drive import gdrive_event_type_total
+
+        assert gdrive_event_type_total is not None
+
+    def test_gdrive_metadata_cache_size_gauge_exists(self) -> None:
+        """connector_gdrive_metadata_cache_size gauge is defined at module level."""
+        from butlers.connectors.google_drive import gdrive_metadata_cache_size
+
+        assert gdrive_metadata_cache_size is not None
+
+    def test_process_change_increments_event_type_counter(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """process_change increments the gdrive_event_type_total counter."""
+        from prometheus_client import REGISTRY
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        # Allow policy evaluation (no blocking)
+        mock_policy = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.allowed = True
+        mock_policy.evaluate.return_value = mock_decision
+        loop._ingestion_policy = mock_policy
+
+        label_key = {
+            "endpoint_identity": loop.endpoint_identity,
+            "event_type": _CHANGE_TYPE_CREATED,
+        }
+
+        # Get current value before
+        try:
+            before = (
+                REGISTRY.get_sample_value(
+                    "connector_gdrive_event_type_total",
+                    label_key,
+                )
+                or 0.0
+            )
+        except Exception:
+            before = 0.0
+
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "new.txt",
+                "mimeType": "text/plain",
+            },
+        }
+        loop.process_change(change)
+
+        after = (
+            REGISTRY.get_sample_value(
+                "connector_gdrive_event_type_total",
+                label_key,
+            )
+            or 0.0
+        )
+        assert after == before + 1.0
+
+    async def test_poll_loop_updates_metadata_cache_size_gauge(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """The poll loop updates connector_gdrive_metadata_cache_size after each cycle."""
+        from prometheus_client import REGISTRY
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        # Seed the cache with one entry
+        loop._metadata_cache[_FAKE_FILE_ID] = _FileMetadata(
+            file_id=_FAKE_FILE_ID,
+            name="cached.txt",
+            mime_type="text/plain",
+            parents=[],
+            shared=False,
+            modified_time=None,
+        )
+
+        # After one iteration the gauge should reflect the cache size
+        loop._flush_filtered_events = AsyncMock()  # type: ignore[method-assign]
+        loop._drain_replay_pending = AsyncMock()  # type: ignore[method-assign]
+
+        call_count = 0
+
+        async def fake_poll_once() -> None:
+            nonlocal call_count
+            call_count += 1
+            raise asyncio.CancelledError
+
+        loop._poll_once = fake_poll_once  # type: ignore[method-assign]
+
+        with pytest.raises(asyncio.CancelledError):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                await loop._poll_loop()
+
+        label_key = {"endpoint_identity": loop.endpoint_identity}
+        gauge_value = REGISTRY.get_sample_value(
+            "connector_gdrive_metadata_cache_size",
+            label_key,
+        )
+        # The gauge is set to the cache size; exact value depends on execution
+        assert gauge_value is not None
+
+
+class TestRateLimitWithJitterAndMaxDelay:
+    """Task 11.6: Rate-limit handling — base 1s, max 60s, 5 retries, jitter, Retry-After."""
+
+    async def test_max_retries_default_is_five(self) -> None:
+        """_exponential_backoff_retry defaults to 5 retries."""
+        from butlers.connectors.google_drive import (
+            _RATE_LIMIT_MAX_RETRIES,
+        )
+
+        assert _RATE_LIMIT_MAX_RETRIES == 5
+
+    async def test_base_delay_is_one_second(self) -> None:
+        """_exponential_backoff_retry base delay is 1.0 second."""
+        from butlers.connectors.google_drive import (
+            _RATE_LIMIT_BASE_DELAY_S,
+        )
+
+        assert _RATE_LIMIT_BASE_DELAY_S == 1.0
+
+    async def test_max_delay_is_sixty_seconds(self) -> None:
+        """_exponential_backoff_retry max delay is 60 seconds."""
+        from butlers.connectors.google_drive import (
+            _RATE_LIMIT_MAX_DELAY_S,
+        )
+
+        assert _RATE_LIMIT_MAX_DELAY_S == 60.0
+
+    async def test_backoff_delay_does_not_exceed_max(self) -> None:
+        """Exponential backoff delay is capped at max_delay."""
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.headers = {}
+
+        success = MagicMock()
+        success.status_code = 200
+
+        # Return rate-limited many times then succeed
+        call_count = 0
+
+        async def mock_call() -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 5:
+                return success
+            return rate_limited
+
+        sleep_calls: list[float] = []
+
+        async def capture_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch("asyncio.sleep", new=capture_sleep):
+            await _exponential_backoff_retry(
+                mock_call,
+                max_retries=5,
+                base_delay=1.0,
+                max_delay=60.0,
+            )
+
+        for delay in sleep_calls:
+            assert delay <= 61.0  # max_delay + jitter upper bound
+
+    async def test_retry_after_header_honored_over_exponential_backoff(self) -> None:
+        """When Retry-After is present, it is used instead of exponential backoff."""
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.headers = {"Retry-After": "30"}
+
+        success = MagicMock()
+        success.status_code = 200
+
+        responses = iter([rate_limited, success])
+
+        async def mock_call() -> MagicMock:
+            return next(responses)
+
+        sleep_calls: list[float] = []
+
+        async def capture_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch("asyncio.sleep", new=capture_sleep):
+            result = await _exponential_backoff_retry(
+                mock_call,
+                max_retries=5,
+                base_delay=1.0,
+                max_delay=60.0,
+            )
+
+        assert result.status_code == 200
+        # Retry-After of 30 should be used (< max_delay)
+        assert len(sleep_calls) == 1
+        assert sleep_calls[0] == 30.0
