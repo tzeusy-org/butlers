@@ -166,6 +166,18 @@ except (ImportError, AttributeError):
     alert_list = None  # type: ignore[assignment]
     detect_price_changes = None  # type: ignore[assignment]
 
+# --- SPO backfill (bu-ofv8) ---
+try:
+    from butlers.tools.finance.backfill import (  # type: ignore[attr-defined]
+        BackfillResult,
+        SkippedRow,
+        backfill_spo_transactions,
+    )
+except (ImportError, AttributeError):
+    backfill_spo_transactions = None  # type: ignore[assignment]
+    BackfillResult = None  # type: ignore[assignment]
+    SkippedRow = None  # type: ignore[assignment]
+
 __all__ = [
     # spending
     "VALID_GROUP_BY_MODES",
@@ -222,4 +234,8 @@ __all__ = [
     "alert_configure",
     "alert_list",
     "detect_price_changes",
+    # SPO backfill (bu-ofv8)
+    "backfill_spo_transactions",
+    "BackfillResult",
+    "SkippedRow",
 ]
