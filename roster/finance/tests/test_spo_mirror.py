@@ -17,10 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-pytestmark = [
-    pytest.mark.unit,
-    pytest.mark.asyncio(loop_scope="session"),
-]
+# Async tests: apply asyncio mark at function level to avoid warnings on sync tests.
+pytestmark = pytest.mark.unit
 
 
 def _utcnow() -> datetime:
@@ -102,6 +100,7 @@ def _make_pool(fetchrow_return=None):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_record_transaction_schedules_spo_mirror():
     """After a successful insert, record_transaction() schedules a SPO mirror task."""
     from butlers.tools.finance.transactions import record_transaction
@@ -128,16 +127,24 @@ async def test_record_transaction_schedules_spo_mirror():
     assert mirror_called.is_set(), "SPO mirror was not scheduled/called after primary insert"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_spo_mirror_failure_does_not_raise_or_rollback_primary():
-    """If the SPO mirror write fails, record_transaction() still succeeds."""
+    """If the SPO mirror write fails, record_transaction() still succeeds.
+
+    Patches the underlying record_transaction_fact (called inside _mirror_to_spo)
+    so that _mirror_to_spo's own exception handler is exercised.  The primary
+    insert result must be returned successfully even when the mirror throws.
+    """
     from butlers.tools.finance.transactions import record_transaction
 
     pool = _make_pool(fetchrow_return=_make_row(merchant="Netflix", direction="debit"))
 
-    async def _failing_mirror(*args, **kwargs):
+    async def _failing_fact(*args, **kwargs):
         raise RuntimeError("Simulated SPO mirror failure")
 
-    with patch("butlers.tools.finance.transactions._mirror_to_spo", side_effect=_failing_mirror):
+    with patch(
+        "butlers.tools.finance.facts.record_transaction_fact", side_effect=_failing_fact
+    ):
         result = await record_transaction(
             pool=pool,
             posted_at=_utcnow(),
@@ -146,7 +153,8 @@ async def test_spo_mirror_failure_does_not_raise_or_rollback_primary():
             currency="USD",
             category="subscriptions",
         )
-        # Run the background task so any exception from the mirror is surfaced
+        # Yield to the event loop so the background task runs and
+        # _mirror_to_spo's exception handler swallows the error.
         await asyncio.sleep(0)
 
     # Primary insert succeeded: result contains id
@@ -154,6 +162,7 @@ async def test_spo_mirror_failure_does_not_raise_or_rollback_primary():
     assert result["merchant"] == "Netflix"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_spo_mirror_called_with_correct_predicate_for_debit():
     """SPO mirror receives the correct arguments for a debit transaction."""
     from butlers.tools.finance.transactions import record_transaction
@@ -190,6 +199,7 @@ async def test_spo_mirror_called_with_correct_predicate_for_debit():
     assert Decimal(str(kwargs["amount"])) == Decimal("-5.50")
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_spo_mirror_called_for_credit_transaction():
     """SPO mirror is called for credit (positive amount) transactions too."""
     from butlers.tools.finance.transactions import record_transaction
@@ -215,6 +225,7 @@ async def test_spo_mirror_called_for_credit_transaction():
     assert mirror_called.is_set()
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_spo_mirror_not_called_on_dedup_hit():
     """When a duplicate is detected (fetchrow returns existing row), no new
     primary insert fires, but the function still returns the existing record.
@@ -252,6 +263,7 @@ async def test_spo_mirror_not_called_on_dedup_hit():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_routes_through_record_transaction():
     """bulk_record_transactions() calls record_transaction() for each valid row."""
     from butlers.tools.finance.transactions import bulk_record_transactions
@@ -296,6 +308,7 @@ async def test_bulk_record_transactions_routes_through_record_transaction():
     assert merchants == {"Amazon", "Netflix"}
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_handles_invalid_date():
     """Rows with unparseable posted_at are counted as errors."""
     from butlers.tools.finance.transactions import bulk_record_transactions
@@ -316,6 +329,7 @@ async def test_bulk_record_transactions_handles_invalid_date():
     assert result["error_details"][0]["reason"] == "invalid_date"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_handles_invalid_amount():
     """Rows with non-numeric amount are counted as errors."""
     from butlers.tools.finance.transactions import bulk_record_transactions
@@ -336,6 +350,7 @@ async def test_bulk_record_transactions_handles_invalid_amount():
     assert result["error_details"][0]["reason"] == "invalid_amount"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_handles_missing_merchant():
     """Rows with missing merchant are counted as errors."""
     from butlers.tools.finance.transactions import bulk_record_transactions
@@ -356,6 +371,7 @@ async def test_bulk_record_transactions_handles_missing_merchant():
     assert result["error_details"][0]["reason"] == "missing_merchant"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_skips_duplicates():
     """Rows that raise UniqueViolationError are counted as skipped."""
     import asyncpg
@@ -386,6 +402,7 @@ async def test_bulk_record_transactions_skips_duplicates():
     assert result["error_details"][0]["reason"] == "duplicate"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_inherits_account_id():
     """Top-level account_id is passed to record_transaction when not overridden per-row."""
     from butlers.tools.finance.transactions import bulk_record_transactions
@@ -412,6 +429,7 @@ async def test_bulk_record_transactions_inherits_account_id():
     assert captured[0]["account_id"] == "acct-top-level-uuid"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_per_row_account_id_overrides_top():
     """Per-row account_id overrides the top-level account_id."""
     from butlers.tools.finance.transactions import bulk_record_transactions
@@ -439,6 +457,7 @@ async def test_bulk_record_transactions_per_row_account_id_overrides_top():
     assert captured[0]["account_id"] == "acct-per-row-uuid"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_source_stored_in_metadata():
     """The top-level source parameter is stored in each row's metadata as import_source."""
     from butlers.tools.finance.transactions import bulk_record_transactions
@@ -466,6 +485,7 @@ async def test_bulk_record_transactions_source_stored_in_metadata():
     assert meta.get("import_source") == "chase_csv"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_batch_too_large():
     """Raises ValueError when batch exceeds _MAX_BULK_TRANSACTIONS."""
     from butlers.tools.finance.transactions import _MAX_BULK_TRANSACTIONS, bulk_record_transactions
@@ -525,6 +545,7 @@ def test_spending_summary_valid_group_by_modes_unchanged():
     assert required_modes == VALID_GROUP_BY_MODES
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_spending_summary_raises_on_invalid_group_by():
     """spending_summary() raises ValueError for unsupported group_by values."""
     from unittest.mock import AsyncMock

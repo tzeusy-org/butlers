@@ -231,7 +231,11 @@ async def record_transaction(
 
     # Fire-and-forget SPO mirror write to public.facts.  Scheduled as a
     # background task so failures never roll back the primary insert.
-    asyncio.ensure_future(
+    # Use create_task (preferred over ensure_future since Python 3.7).
+    # The task reference is intentionally not retained; _mirror_to_spo
+    # swallows all exceptions so task GC before completion only risks a
+    # silent skip of the mirror — acceptable for a best-effort write.
+    asyncio.create_task(
         _mirror_to_spo(
             pool=pool,
             posted_at=posted_at,
