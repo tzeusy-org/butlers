@@ -46,6 +46,7 @@ import logging
 import os
 import signal
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import Thread
@@ -177,6 +178,10 @@ class AccountPollerState:
     endpoint_identity: str
     api_key: str
 
+    # UUID PK from public.steam_accounts — used for play_history FK upserts.
+    # None for legacy/test pollers that were created before core_011.
+    steam_account_id: uuid.UUID | None = None
+
     # Per-data-type poll intervals (seconds)
     intervals: dict[str, int] = field(default_factory=dict)
 
@@ -213,6 +218,89 @@ class AccountPollerState:
         if "degraded" in statuses or self.account_health == "degraded":
             return "degraded"
         return "healthy"
+
+
+# ---------------------------------------------------------------------------
+# Play history persistence
+# ---------------------------------------------------------------------------
+
+_PLAY_HISTORY_SCHEMA = "connectors"
+_PLAY_HISTORY_TABLE = "steam_play_history"
+
+# Upsert into connectors.steam_play_history using the post-core_011 schema.
+# Conflicts on (steam_account_id, app_id, date); updates cumulative playtime.
+_PLAY_HISTORY_UPSERT_SQL = f"""
+INSERT INTO {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}
+    (steam_id, steam_account_id, app_id, app_name, date, playtime_minutes, recorded_at)
+VALUES ($1, $2, $3, $4, $5, $6, now())
+ON CONFLICT (steam_account_id, app_id, date)
+DO UPDATE SET
+    playtime_minutes = GREATEST(
+        {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}.playtime_minutes,
+        EXCLUDED.playtime_minutes
+    ),
+    app_name     = COALESCE(EXCLUDED.app_name,
+                            {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}.app_name),
+    recorded_at  = now()
+"""
+
+# Fallback upsert for the legacy pre-core_011 schema (missing steam_account_id / app_name columns,
+# play_date column not yet renamed). Used when the new schema columns are absent.
+_PLAY_HISTORY_UPSERT_SQL_LEGACY = f"""
+INSERT INTO {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}
+    (steam_id, app_id, play_date, playtime_minutes, recorded_at)
+VALUES ($1, $2, $3, $4, now())
+ON CONFLICT (steam_id, app_id, play_date)
+DO UPDATE SET
+    playtime_minutes = GREATEST(
+        {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}.playtime_minutes,
+        EXCLUDED.playtime_minutes
+    ),
+    recorded_at = now()
+"""
+
+
+async def _upsert_play_history(
+    pool: asyncpg.Pool,
+    *,
+    steam_id: int,
+    steam_account_id: uuid.UUID | None,
+    app_id: int,
+    app_name: str,
+    play_date: datetime,
+    playtime_minutes: int,
+) -> None:
+    """Upsert a play-history row, falling back to the legacy schema if needed."""
+    date_only = play_date.date()
+    try:
+        async with pool.acquire() as conn:
+            if steam_account_id is not None:
+                await conn.execute(
+                    _PLAY_HISTORY_UPSERT_SQL,
+                    steam_id,
+                    steam_account_id,
+                    app_id,
+                    app_name or None,
+                    date_only,
+                    playtime_minutes,
+                )
+            else:
+                # No account UUID available — use legacy path (steam_id + play_date key).
+                await conn.execute(
+                    _PLAY_HISTORY_UPSERT_SQL_LEGACY,
+                    steam_id,
+                    app_id,
+                    date_only,
+                    playtime_minutes,
+                )
+    except Exception:
+        logger.warning(
+            "Failed to upsert play history: steam_id=%s app_id=%s date=%s",
+            steam_id,
+            app_id,
+            date_only,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -903,6 +991,7 @@ class SteamAccountPoller:
             return
 
         poll_ts = _now_iso()
+        poll_dt = datetime.now(UTC)
         events_emitted = 0
 
         for game in games:
@@ -913,13 +1002,24 @@ class SteamAccountPoller:
             prev_entry = (prev_snapshot or {}).get(str(app_id), {})
             prev_playtime = prev_entry.get("playtime_2weeks", 0) if prev_entry else None
 
+            # First poll — establish baseline: record current playtime in
+            # play_history but do NOT emit an event (no delta reference yet).
+            if prev_snapshot is None:
+                if playtime_2weeks > 0:
+                    await _upsert_play_history(
+                        self._db_pool,
+                        steam_id=self._state.steam_id,
+                        steam_account_id=self._state.steam_account_id,
+                        app_id=app_id,
+                        app_name=game_name,
+                        play_date=poll_dt,
+                        playtime_minutes=playtime_2weeks,
+                    )
+                continue
+
             # Emit event if:
             # - New game in recently played (not in prev)
             # - Playtime increased
-            if prev_snapshot is None:
-                # First poll — establish baseline without emitting
-                continue
-
             if prev_playtime is None or playtime_2weeks > prev_playtime:
                 delta = (
                     (playtime_2weeks - prev_playtime)
@@ -941,6 +1041,17 @@ class SteamAccountPoller:
                 )
                 await self._maybe_submit(envelope, data_type="recently_played")
                 events_emitted += 1
+
+                # Persist detected play session in play_history.
+                await _upsert_play_history(
+                    self._db_pool,
+                    steam_id=self._state.steam_id,
+                    steam_account_id=self._state.steam_account_id,
+                    app_id=app_id,
+                    app_name=game_name,
+                    play_date=poll_dt,
+                    playtime_minutes=playtime_2weeks,
+                )
 
         # Update cursor
         new_cursor = SteamCursor(
@@ -1458,6 +1569,7 @@ class SteamConnector:
 
         for row in rows:
             steam_id = row["steam_id"]
+            steam_account_id: uuid.UUID | None = row["id"]
             api_key = row["api_key"]
             metadata = dict(row["metadata"]) if row["metadata"] else {}
             endpoint_identity = f"steam:user:{steam_id}"
@@ -1492,6 +1604,7 @@ class SteamConnector:
 
             state = AccountPollerState(
                 steam_id=steam_id,
+                steam_account_id=steam_account_id,
                 endpoint_identity=endpoint_identity,
                 api_key=api_key,
                 intervals=intervals,

@@ -16,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,6 +30,7 @@ from butlers.connectors.steam import (
     _make_ingestion_envelope_for_filter,
     _redact_steam_id,
     _state_hash,
+    _upsert_play_history,
     build_achievement_unlock_envelope,
     build_friend_change_envelope,
     build_game_purchase_envelope,
@@ -64,15 +66,20 @@ def _make_mock_pool() -> AsyncMock:
     return pool
 
 
+_ACCOUNT_UUID = uuid.UUID("00000000-1234-5678-abcd-000000000001")
+
+
 def _make_poller_state(
     intervals: dict[str, int] | None = None,
     cursors: dict[str, SteamCursor] | None = None,
     tracked_games: list[str] | None = None,
+    steam_account_id: uuid.UUID | None = None,
 ) -> AccountPollerState:
     return AccountPollerState(
         steam_id=_STEAM_ID,
         endpoint_identity=_ENDPOINT,
         api_key="test_api_key",
+        steam_account_id=steam_account_id,
         intervals=intervals or {},
         cursors=cursors or {},
         tracked_games=tracked_games or [],
@@ -1042,3 +1049,248 @@ class TestSteamConnectorHealthReport:
             steam_id_field = acct["steam_id"]
             # Should not be the full integer as a clean string
             assert "***" in steam_id_field
+
+
+# ---------------------------------------------------------------------------
+# _upsert_play_history — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertPlayHistory:
+    """Tests for the _upsert_play_history helper."""
+
+    def _make_pool_capture(self) -> tuple[AsyncMock, list]:
+        """Return a mock pool that captures executed SQL calls."""
+        executed: list = []
+
+        async def _capture_execute(sql, *args):
+            executed.append((sql, args))
+            return None
+
+        pool = AsyncMock()
+        conn = AsyncMock()
+        conn.execute = AsyncMock(side_effect=_capture_execute)
+        pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=conn), __aexit__=AsyncMock(return_value=False)
+            )
+        )
+        return pool, executed
+
+    async def test_upsert_with_account_uuid_uses_new_schema(self) -> None:
+        """When steam_account_id is provided, the new-schema SQL path is used."""
+        from datetime import UTC, datetime
+
+        pool, executed = self._make_pool_capture()
+        play_date = datetime(2026, 3, 27, 12, 0, 0, tzinfo=UTC)
+
+        await _upsert_play_history(
+            pool,
+            steam_id=_STEAM_ID,
+            steam_account_id=_ACCOUNT_UUID,
+            app_id=730,
+            app_name="CS2",
+            play_date=play_date,
+            playtime_minutes=120,
+        )
+
+        assert len(executed) == 1
+        sql, args = executed[0]
+        # Should target the new-schema unique key path
+        assert "steam_account_id" in sql
+        assert "app_name" in sql
+        # Check args passed: steam_id, steam_account_id, app_id, app_name, date, playtime
+        assert args[0] == _STEAM_ID
+        assert args[1] == _ACCOUNT_UUID
+        assert args[2] == 730
+        assert args[3] == "CS2"
+        assert args[5] == 120  # playtime_minutes
+
+    async def test_upsert_without_account_uuid_uses_legacy_schema(self) -> None:
+        """When steam_account_id is None, the legacy SQL path is used."""
+        from datetime import UTC, datetime
+
+        pool, executed = self._make_pool_capture()
+        play_date = datetime(2026, 3, 27, 12, 0, 0, tzinfo=UTC)
+
+        await _upsert_play_history(
+            pool,
+            steam_id=_STEAM_ID,
+            steam_account_id=None,
+            app_id=570,
+            app_name="Dota 2",
+            play_date=play_date,
+            playtime_minutes=60,
+        )
+
+        assert len(executed) == 1
+        sql, args = executed[0]
+        # Legacy path uses play_date column name
+        assert "play_date" in sql
+        # Does NOT include steam_account_id
+        assert "steam_account_id" not in sql
+
+    async def test_upsert_db_error_is_swallowed(self) -> None:
+        """DB errors in _upsert_play_history are caught and logged, not raised."""
+        from datetime import UTC, datetime
+
+        pool = AsyncMock()
+        conn = AsyncMock()
+        conn.execute = AsyncMock(side_effect=RuntimeError("DB down"))
+        pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=conn), __aexit__=AsyncMock(return_value=False)
+            )
+        )
+
+        # Should not raise
+        await _upsert_play_history(
+            pool,
+            steam_id=_STEAM_ID,
+            steam_account_id=_ACCOUNT_UUID,
+            app_id=730,
+            app_name="CS2",
+            play_date=datetime(2026, 3, 27, tzinfo=UTC),
+            playtime_minutes=30,
+        )
+
+    async def test_upsert_converts_datetime_to_date(self) -> None:
+        """play_date datetime is converted to a date object for the DB call."""
+        from datetime import UTC, datetime
+
+        pool, executed = self._make_pool_capture()
+        play_date = datetime(2026, 3, 27, 15, 30, 0, tzinfo=UTC)
+
+        await _upsert_play_history(
+            pool,
+            steam_id=_STEAM_ID,
+            steam_account_id=_ACCOUNT_UUID,
+            app_id=730,
+            app_name="CS2",
+            play_date=play_date,
+            playtime_minutes=45,
+        )
+
+        assert len(executed) == 1
+        _, args = executed[0]
+        import datetime as dt_mod
+
+        date_arg = args[4]
+        assert isinstance(date_arg, dt_mod.date)
+        assert date_arg == play_date.date()
+
+
+# ---------------------------------------------------------------------------
+# _poll_recently_played — play_history upsert integration
+# ---------------------------------------------------------------------------
+
+
+class TestRecentlyPlayedPlayHistoryUpsert:
+    """Tests that _poll_recently_played writes to play_history."""
+
+    def _make_poller_with_account(
+        self,
+        cursors: dict | None = None,
+        steam_account_id: uuid.UUID | None = _ACCOUNT_UUID,
+    ) -> tuple[SteamAccountPoller, AsyncMock, AsyncMock]:
+        state = _make_poller_state(cursors=cursors, steam_account_id=steam_account_id)
+        pool = _make_mock_pool()
+        mcp_client = AsyncMock()
+        mcp_client.call_tool = AsyncMock(return_value={"status": "accepted"})
+        metrics = MagicMock()
+        metrics.record_ingest_submission = MagicMock()
+        metrics.record_source_api_call = MagicMock()
+        poller = SteamAccountPoller(
+            state=state,
+            db_pool=pool,
+            mcp_client=mcp_client,
+            metrics=metrics,
+        )
+        return poller, mcp_client, pool
+
+    async def test_first_poll_writes_baseline_to_play_history(self) -> None:
+        """First poll (no cursor) writes current playtime to play_history."""
+        poller, mcp, pool = self._make_poller_with_account()
+        poller._steam_client = AsyncMock()
+        poller._steam_client.request = AsyncMock(
+            return_value={
+                "games": [
+                    {"appid": 730, "name": "CS2", "playtime_2weeks": 120, "playtime_forever": 500}
+                ]
+            }
+        )
+
+        # Capture conn.execute calls
+        conn_execute_calls = pool.acquire.return_value.__aenter__.return_value.execute
+
+        await poller._poll_recently_played()
+
+        # No MCP event (first poll = baseline)
+        mcp.call_tool.assert_not_called()
+
+        # But play_history upsert should have been called
+        # conn.execute is called for cursor save AND play_history upsert
+        assert conn_execute_calls.call_count >= 1
+        # At least one call should reference steam_play_history
+        calls_sql = [str(call.args[0]) for call in conn_execute_calls.call_args_list]
+        assert any("steam_play_history" in sql for sql in calls_sql)
+
+    async def test_playtime_increase_writes_to_play_history(self) -> None:
+        """When playtime increases, play_history upsert is called alongside event emit."""
+        prev_state = {"730": {"playtime_2weeks": 100, "playtime_forever": 500}}
+        prev_hash = _state_hash(prev_state)
+        cursor = SteamCursor(
+            endpoint_identity=_ENDPOINT,
+            data_type="recently_played",
+            state_hash=prev_hash,
+            state_snapshot=prev_state,
+        )
+        poller, mcp, pool = self._make_poller_with_account(cursors={"recently_played": cursor})
+        poller._steam_client = AsyncMock()
+        poller._steam_client.request = AsyncMock(
+            return_value={
+                "games": [
+                    {"appid": 730, "name": "CS2", "playtime_2weeks": 145, "playtime_forever": 545}
+                ]
+            }
+        )
+
+        conn_execute_calls = pool.acquire.return_value.__aenter__.return_value.execute
+
+        await poller._poll_recently_played()
+
+        # Event should be emitted
+        mcp.call_tool.assert_called_once()
+
+        # Play history should be written
+        calls_sql = [str(call.args[0]) for call in conn_execute_calls.call_args_list]
+        assert any("steam_play_history" in sql for sql in calls_sql)
+
+    async def test_no_change_does_not_write_play_history(self) -> None:
+        """When playtime is unchanged, no play_history upsert occurs."""
+        prev_state = {"730": {"playtime_2weeks": 100, "playtime_forever": 500}}
+        prev_hash = _state_hash(prev_state)
+        cursor = SteamCursor(
+            endpoint_identity=_ENDPOINT,
+            data_type="recently_played",
+            state_hash=prev_hash,
+            state_snapshot=prev_state,
+        )
+        poller, mcp, pool = self._make_poller_with_account(cursors={"recently_played": cursor})
+        poller._steam_client = AsyncMock()
+        poller._steam_client.request = AsyncMock(
+            return_value={
+                "games": [
+                    {"appid": 730, "name": "CS2", "playtime_2weeks": 100, "playtime_forever": 500}
+                ]
+            }
+        )
+
+        conn_execute_calls = pool.acquire.return_value.__aenter__.return_value.execute
+
+        await poller._poll_recently_played()
+
+        # No event, no play_history upsert (hash unchanged → early return)
+        mcp.call_tool.assert_not_called()
+        calls_sql = [str(call.args[0]) for call in conn_execute_calls.call_args_list]
+        assert not any("steam_play_history" in sql for sql in calls_sql)
