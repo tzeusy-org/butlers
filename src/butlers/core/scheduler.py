@@ -588,7 +588,8 @@ async def _tick_deadline_pass(
         """
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'scheduled_tasks' AND column_name = 'task_type'
+            WHERE table_schema = current_schema()
+              AND table_name = 'scheduled_tasks' AND column_name = 'task_type'
         )
         """
     )
@@ -763,7 +764,8 @@ async def _tick_event_chain_pass(
         """
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
-            WHERE table_name = 'calendar_projection'
+            WHERE table_schema = current_schema()
+              AND table_name = 'calendar_projection'
         )
         """
     )
@@ -883,7 +885,8 @@ async def _tick_deferred_notification_pass(
         """
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
-            WHERE table_name = 'deferred_notifications'
+            WHERE table_schema = current_schema()
+              AND table_name = 'deferred_notifications'
         )
         """
     )
@@ -927,7 +930,6 @@ async def _tick_deferred_notification_pass(
             await dispatch_fn(
                 prompt=message,
                 trigger_source=f"deferred_notification:{notif_id}",
-                channel=channel,
             )
             # Mark as delivered
             await pool.execute(
@@ -992,7 +994,8 @@ async def tick(
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'scheduled_tasks' AND column_name = 'task_type'
+                WHERE table_schema = current_schema()
+                  AND table_name = 'scheduled_tasks' AND column_name = 'task_type'
             )
             """
         )
