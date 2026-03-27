@@ -19,6 +19,7 @@ uv.lock
 # Testing
 .pytest_cache/
 .coverage
+coverage.json
 htmlcov/
 
 # Ruff
@@ -49,6 +50,7 @@ pgdata/
 /tmp/butler_*/
 
 # bv (beads viewer) local config and caches
+.beads/.doctor-test-write
 .beads/interaction.jsonl
 .beads/.bv.lock
 .beads/issues.jsonl
