@@ -858,7 +858,6 @@ class GDriveAccountLoop:
                 headers={"Authorization": f"Bearer {token}"},
             )
 
-        self._metrics.record_source_api_call(operation="changes.getStartPageToken", status="ok")
         resp = await _exponential_backoff_retry(_call)
 
         if resp.status_code != 200:
@@ -868,6 +867,8 @@ class GDriveAccountLoop:
             raise RuntimeError(
                 f"Drive: getStartPageToken failed for email={self.email!r}: HTTP {resp.status_code}"
             )
+
+        self._metrics.record_source_api_call(operation="changes.getStartPageToken", status="ok")
 
         data = resp.json()
         start_token = data.get("startPageToken")
@@ -900,13 +901,14 @@ class GDriveAccountLoop:
                 headers={"Authorization": f"Bearer {token}"},
             )
 
-        self._metrics.record_source_api_call(operation="changes.list", status="ok")
         resp = await _exponential_backoff_retry(_call)
 
         if resp.status_code == 401:
-            # Token expired mid-cycle; force refresh and propagate
+            # Token expired mid-cycle; force refresh and propagate.
+            # 401 is intentionally absent from retry_on to prevent infinite loops on revoked creds.
             self._access_token = None
             self._token_expires_at = None
+            self._metrics.record_source_api_call(operation="changes.list", status="error")
             raise RuntimeError(
                 f"Drive: changes.list 401 for email={self.email!r} — will refresh token"
             )
@@ -917,6 +919,7 @@ class GDriveAccountLoop:
                 f"Drive: changes.list failed for email={self.email!r}: HTTP {resp.status_code}"
             )
 
+        self._metrics.record_source_api_call(operation="changes.list", status="ok")
         self._source_api_ok = True
         return resp.json()
 
@@ -1031,6 +1034,11 @@ class GDriveAccountLoop:
         # Load cursor from store (or None if first run)
         cursor = await self._load_cursor()
 
+        # Restore metadata cache on every cold start (in-memory cache is empty after restart).
+        # Must happen before any poll so _detect_change_type sees prior file state.
+        if not self._metadata_cache:
+            await self._load_metadata_cache_from_store()
+
         if cursor is None:
             # First run: fetch startPageToken (task 9.1)
             start_token = await self._get_start_page_token()
@@ -1038,8 +1046,6 @@ class GDriveAccountLoop:
                 page_token=start_token,
                 last_updated_at=datetime.now(UTC),
             )
-            # Load any persisted metadata cache so we can detect renames/moves
-            await self._load_metadata_cache_from_store()
             # Save the initial cursor so restarts don't re-fetch startPageToken
             await self._save_cursor(cursor)
 
