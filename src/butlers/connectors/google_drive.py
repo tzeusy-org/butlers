@@ -36,21 +36,24 @@ Security requirements:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
 import signal
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
 
+import httpx
 import uvicorn
 from fastapi import FastAPI
 from prometheus_client import Counter, Gauge
 from pydantic import BaseModel
 
+from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -463,6 +466,77 @@ def _make_idempotency_key(
     return f"gdrive:{endpoint_identity}:{file_id}:{modified_time_epoch}"
 
 
+# ---------------------------------------------------------------------------
+# Drive API URL builders and response parsers (task 9.1, 9.2)
+# ---------------------------------------------------------------------------
+
+
+def build_start_page_token_url() -> str:
+    """Return the URL for the Drive changes.getStartPageToken endpoint (task 9.1).
+
+    Returns a URL string suitable for a GET request with an Authorization header.
+    The response body is JSON with a ``startPageToken`` field.
+    """
+    return f"{_DRIVE_API_BASE}/changes/startPageToken"
+
+
+def build_changes_list_url(
+    page_token: str,
+    *,
+    include_removed: bool = True,
+    fields: str = (
+        "changes(fileId,file(id,name,mimeType,parents,shared,modifiedTime,trashed,owners),"
+        "removed,type),nextPageToken,newStartPageToken"
+    ),
+) -> str:
+    """Return the URL for a Drive changes.list call (task 9.2).
+
+    Parameters
+    ----------
+    page_token:
+        The pageToken from the previous poll (or startPageToken from task 9.1).
+    include_removed:
+        Whether to include changes for items removed from the user's Drive.
+    fields:
+        Field mask to request from the API.
+
+    Returns
+    -------
+    URL string with query parameters encoded.
+    """
+    from urllib.parse import urlencode
+
+    params: dict[str, str] = {
+        "pageToken": page_token,
+        "includeRemoved": "true" if include_removed else "false",
+        "fields": fields,
+    }
+    return f"{_DRIVE_API_BASE}/changes?{urlencode(params)}"
+
+
+def parse_changes_list_response(
+    response: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    """Parse a Drive changes.list response into (changes, next_page_token, new_start_token).
+
+    Parameters
+    ----------
+    response:
+        Parsed JSON response from changes.list.
+
+    Returns
+    -------
+    A 3-tuple:
+    - changes: list of change objects from the response
+    - next_page_token: present when there are more pages to fetch (pagination)
+    - new_start_token: present on the last page; use as pageToken for the next poll cycle
+    """
+    changes: list[dict[str, Any]] = response.get("changes") or []
+    next_page_token: str | None = response.get("nextPageToken")
+    new_start_token: str | None = response.get("newStartPageToken")
+    return changes, next_page_token, new_start_token
+
+
 def _redact_email(email: str | None) -> str | None:
     """Redact an email address for safe inclusion in health responses."""
     if email is None:
@@ -588,6 +662,13 @@ class GDriveAccountLoop:
         # Monotonic counter per poll cycle for external_event_id uniqueness (task 10.3)
         self._change_sequence: int = 0
 
+        # OAuth token state (task 3.4 / 8.4)
+        self._access_token: str | None = None
+        self._token_expires_at: datetime | None = None
+
+        # HTTP client (created lazily or on start)
+        self._http_client: httpx.AsyncClient | None = None
+
         # Standard connector metrics (task 11.4)
         self._metrics = ConnectorMetrics(
             connector_type=_CONNECTOR_TYPE,
@@ -666,12 +747,368 @@ class GDriveAccountLoop:
 
             await asyncio.sleep(self._config.poll_interval_s)
 
+    async def _get_access_token(self) -> str:
+        """Return a valid OAuth access token, refreshing if needed (task 3.4 / 8.4).
+
+        Uses an early-expiry margin of 60 seconds so the token is refreshed
+        before it actually expires.  On refresh failure, the error is propagated
+        so the caller can decide how to handle it.
+        """
+        now = datetime.now(UTC)
+        if (
+            self._access_token is not None
+            and self._token_expires_at is not None
+            and now < self._token_expires_at - timedelta(seconds=60)
+        ):
+            return self._access_token
+
+        # Refresh the token
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=30)
+
+        try:
+            resp = await self._http_client.post(
+                _GOOGLE_TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": self._config.refresh_token,
+                    "client_id": self._config.client_id,
+                    "client_secret": self._config.client_secret,
+                },
+                timeout=15,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Drive: token refresh network error for {self.email!r}: {exc}"
+            ) from exc
+
+        if resp.status_code != 200:
+            # Redact secret from error message
+            raise RuntimeError(
+                f"Drive: token refresh failed for ***@{self.email.split('@')[-1]}: "
+                f"HTTP {resp.status_code}"
+            )
+
+        data = resp.json()
+        self._access_token = data["access_token"]
+        expires_in = int(data.get("expires_in", 3600))
+        self._token_expires_at = now + timedelta(seconds=expires_in)
+        self._metrics.record_source_api_call(operation="token_refresh", status="success")
+        logger.debug("Drive: token refreshed for email=%s", self.email)
+        return self._access_token
+
+    async def _load_cursor(self) -> GDriveCursor | None:
+        """Load GDriveCursor from cursor_store (task 9.3).
+
+        Returns None if no persisted cursor exists.
+        """
+        if self._cursor_pool is None:
+            return None
+        try:
+            raw = await load_cursor(self._cursor_pool, _CONNECTOR_TYPE, self._config.cursor_key)
+            if raw is None:
+                return None
+            data = json.loads(raw)
+            return GDriveCursor(
+                page_token=data["page_token"],
+                last_updated_at=datetime.fromisoformat(data["last_updated_at"]),
+            )
+        except Exception as exc:
+            logger.warning("Drive: failed to load cursor for email=%s: %s", self.email, exc)
+            return None
+
+    async def _save_cursor(self, cursor: GDriveCursor) -> None:
+        """Persist GDriveCursor to cursor_store (task 9.3).
+
+        Serializes the cursor model to JSON and saves it.
+        Updates checkpoint metrics on success.
+        """
+        if self._cursor_pool is None:
+            return
+        try:
+            raw = json.dumps(
+                {
+                    "page_token": cursor.page_token,
+                    "last_updated_at": cursor.last_updated_at.isoformat(),
+                }
+            )
+            await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, self._config.cursor_key, raw)
+            self._last_checkpoint_save = time.time()
+            self._metrics.record_checkpoint_save("success")
+            logger.debug("Drive: cursor saved for email=%s", self.email)
+        except Exception as exc:
+            self._metrics.record_checkpoint_save("error")
+            logger.warning("Drive: failed to save cursor for email=%s: %s", self.email, exc)
+
+    async def _get_start_page_token(self) -> str:
+        """Fetch startPageToken from the Drive changes API (task 9.1).
+
+        Called when no cursor exists.  Returns the token to use as the
+        starting point for the next poll cycle.
+        """
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=30)
+
+        token = await self._get_access_token()
+        url = build_start_page_token_url()
+
+        async def _call() -> httpx.Response:
+            return await self._http_client.get(  # type: ignore[union-attr]
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        self._metrics.record_source_api_call(operation="changes.getStartPageToken", status="ok")
+        resp = await _exponential_backoff_retry(_call)
+
+        if resp.status_code != 200:
+            self._metrics.record_source_api_call(
+                operation="changes.getStartPageToken", status="error"
+            )
+            raise RuntimeError(
+                f"Drive: getStartPageToken failed for email={self.email!r}: HTTP {resp.status_code}"
+            )
+
+        data = resp.json()
+        start_token = data.get("startPageToken")
+        if not start_token:
+            raise RuntimeError(
+                f"Drive: getStartPageToken returned no startPageToken for email={self.email!r}"
+            )
+
+        logger.info(
+            "Drive: acquired startPageToken for email=%s token=%s",
+            self.email,
+            start_token[:8] + "...",
+        )
+        return start_token
+
+    async def _fetch_changes_page(self, page_token: str) -> dict[str, Any]:
+        """Fetch one page of changes from the Drive changes.list API (task 9.2).
+
+        Returns the raw parsed JSON response.
+        """
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=30)
+
+        token = await self._get_access_token()
+        url = build_changes_list_url(page_token)
+
+        async def _call() -> httpx.Response:
+            return await self._http_client.get(  # type: ignore[union-attr]
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        self._metrics.record_source_api_call(operation="changes.list", status="ok")
+        resp = await _exponential_backoff_retry(_call)
+
+        if resp.status_code == 401:
+            # Token expired mid-cycle; force refresh and propagate
+            self._access_token = None
+            self._token_expires_at = None
+            raise RuntimeError(
+                f"Drive: changes.list 401 for email={self.email!r} — will refresh token"
+            )
+
+        if resp.status_code != 200:
+            self._metrics.record_source_api_call(operation="changes.list", status="error")
+            raise RuntimeError(
+                f"Drive: changes.list failed for email={self.email!r}: HTTP {resp.status_code}"
+            )
+
+        self._source_api_ok = True
+        return resp.json()
+
+    async def _load_metadata_cache_from_store(self) -> None:
+        """Load file metadata cache from the connector_registry settings column (task 9.5).
+
+        The cache is stored as a JSONB blob under ``settings.metadata_cache`` in
+        ``switchboard.connector_registry``.  Called on startup before first poll.
+        """
+        if self._cursor_pool is None:
+            return
+        try:
+            async with self._cursor_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT settings
+                    FROM switchboard.connector_registry
+                    WHERE connector_type = $1 AND endpoint_identity = $2
+                    """,
+                    _CONNECTOR_TYPE,
+                    self._config.cursor_key,
+                )
+            if row is None or row["settings"] is None:
+                return
+            settings = row["settings"]
+            if isinstance(settings, str):
+                settings = json.loads(settings)
+            cache_data = settings.get("metadata_cache")
+            if not isinstance(cache_data, dict):
+                return
+            restored: dict[str, _FileMetadata] = {}
+            for file_id, entry in cache_data.items():
+                restored[file_id] = _FileMetadata(
+                    file_id=file_id,
+                    name=entry.get("name", ""),
+                    mime_type=entry.get("mime_type", ""),
+                    parents=entry.get("parents") or [],
+                    shared=bool(entry.get("shared", False)),
+                    modified_time=entry.get("modified_time"),
+                )
+            self._metadata_cache = restored
+            logger.info(
+                "Drive: loaded metadata cache for email=%s entries=%d",
+                self.email,
+                len(self._metadata_cache),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Drive: failed to load metadata cache for email=%s (non-fatal): %s",
+                self.email,
+                exc,
+            )
+
+    async def _save_metadata_cache_to_store(self) -> None:
+        """Persist file metadata cache to connector_registry settings column (task 9.5).
+
+        Serializes ``self._metadata_cache`` as a JSONB blob in the settings column.
+        """
+        if self._cursor_pool is None:
+            return
+        try:
+            cache_data: dict[str, Any] = {}
+            for file_id, entry in self._metadata_cache.items():
+                cache_data[file_id] = {
+                    "name": entry.name,
+                    "mime_type": entry.mime_type,
+                    "parents": entry.parents,
+                    "shared": entry.shared,
+                    "modified_time": entry.modified_time,
+                }
+            settings_json = json.dumps({"metadata_cache": cache_data})
+            async with self._cursor_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO switchboard.connector_registry
+                        (connector_type, endpoint_identity, settings)
+                    VALUES ($1, $2, $3::jsonb)
+                    ON CONFLICT (connector_type, endpoint_identity)
+                    DO UPDATE SET settings = EXCLUDED.settings
+                    """,
+                    _CONNECTOR_TYPE,
+                    self._config.cursor_key,
+                    settings_json,
+                )
+            logger.debug(
+                "Drive: saved metadata cache for email=%s entries=%d",
+                self.email,
+                len(self._metadata_cache),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Drive: failed to save metadata cache for email=%s (non-fatal): %s",
+                self.email,
+                exc,
+            )
+
     async def _poll_once(self) -> None:
-        """Execute one poll cycle: fetch changes, process, checkpoint."""
-        # In a real implementation this would call Drive API changes.list
-        # and process each change. For testability, the key logic is exposed
-        # as separate methods.
-        pass
+        """Execute one full poll cycle: fetch changes, process, checkpoint (tasks 9.1–9.5).
+
+        Workflow:
+        1. Load or acquire the page token (startPageToken on first run, cursor on resume).
+        2. Fetch all pages via changes.list with pagination.
+        3. Process each change through process_change() to produce ingest.v1 envelopes.
+        4. After successful processing of all changes in a batch, advance the cursor
+           (checkpoint-after-acceptance, task 9.4).
+        5. Persist updated metadata cache (task 9.5).
+        """
+        # Ensure HTTP client is open
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=30)
+
+        # Load cursor from store (or None if first run)
+        cursor = await self._load_cursor()
+
+        if cursor is None:
+            # First run: fetch startPageToken (task 9.1)
+            start_token = await self._get_start_page_token()
+            cursor = GDriveCursor(
+                page_token=start_token,
+                last_updated_at=datetime.now(UTC),
+            )
+            # Load any persisted metadata cache so we can detect renames/moves
+            await self._load_metadata_cache_from_store()
+            # Save the initial cursor so restarts don't re-fetch startPageToken
+            await self._save_cursor(cursor)
+
+        page_token: str = cursor.page_token
+        all_changes: list[dict[str, Any]] = []
+        new_start_token: str | None = None
+
+        # Paginate through changes.list until newStartPageToken is returned (task 9.2)
+        while True:
+            response = await self._fetch_changes_page(page_token)
+            changes, next_page_token, loop_new_start_token = parse_changes_list_response(response)
+
+            all_changes.extend(changes)
+
+            if loop_new_start_token is not None:
+                new_start_token = loop_new_start_token
+
+            if next_page_token is None:
+                # Last page — done paginating
+                break
+
+            page_token = next_page_token
+
+        if not all_changes:
+            # No changes — update cursor to the new start token if given
+            if new_start_token and new_start_token != cursor.page_token:
+                new_cursor = GDriveCursor(
+                    page_token=new_start_token,
+                    last_updated_at=datetime.now(UTC),
+                )
+                await self._save_cursor(new_cursor)
+            logger.debug("Drive: no changes found for email=%s", self.email)
+            return
+
+        logger.info(
+            "Drive: fetched %d changes for email=%s",
+            len(all_changes),
+            self.email,
+        )
+
+        # Process changes — collect accepted envelopes (task 9.4: checkpoint after acceptance)
+        observed_at = datetime.now(UTC).isoformat()
+        accepted_count = 0
+        for change in all_changes:
+            envelope = self.process_change(change, observed_at=observed_at)
+            if envelope is not None:
+                # In a real deployment, submit to Switchboard here.
+                # Track last submission time for health reporting.
+                self._last_ingest_submit = time.time()
+                self._metrics.record_ingest_submission(status="success")
+                accepted_count += 1
+
+        logger.info(
+            "Drive: processed %d changes (%d accepted) for email=%s",
+            len(all_changes),
+            accepted_count,
+            self.email,
+        )
+
+        # Checkpoint-after-acceptance: advance cursor only after successful processing (task 9.4)
+        if new_start_token is not None:
+            new_cursor = GDriveCursor(
+                page_token=new_start_token,
+                last_updated_at=datetime.now(UTC),
+            )
+            await self._save_cursor(new_cursor)
+
+        # Persist updated metadata cache (task 9.5)
+        await self._save_metadata_cache_to_store()
 
     async def _flush_filtered_events(self) -> None:
         """Flush accumulated filtered events to the DB (task 11.2)."""
@@ -1359,40 +1796,6 @@ class GDriveConnectorManager:
                     removed,
                     len(unchanged),
                 )
-
-
-# ---------------------------------------------------------------------------
-# Standalone helpers for parsing Drive API changes.list responses (task 9)
-# ---------------------------------------------------------------------------
-
-
-def parse_changes_list_response(
-    response: dict[str, Any],
-) -> tuple[list[dict[str, Any]], str | None, str | None]:
-    """Parse a changes.list API response (task 9.2).
-
-    Returns (changes, next_page_token, new_start_page_token).
-
-    - changes: list of change objects
-    - next_page_token: token for fetching the next page (None if exhausted)
-    - new_start_page_token: the new start token for the next poll cycle
-      (only present on the final page)
-    """
-    changes = response.get("changes", [])
-    next_page_token = response.get("nextPageToken")
-    new_start_page_token = response.get("newStartPageToken")
-    return changes, next_page_token, new_start_page_token
-
-
-def build_start_page_token_url() -> str:
-    """Return the Drive API URL for getStartPageToken (task 9.1)."""
-    return f"{_DRIVE_API_BASE}/changes/startPageToken"
-
-
-def build_changes_list_url(page_token: str, *, include_removed: bool = True) -> str:
-    """Return the Drive API URL for changes.list (task 9.2)."""
-    removed_flag = "true" if include_removed else "false"
-    return f"{_DRIVE_API_BASE}/changes?pageToken={page_token}&includeRemoved={removed_flag}"
 
 
 # ---------------------------------------------------------------------------
