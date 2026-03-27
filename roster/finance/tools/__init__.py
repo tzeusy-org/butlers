@@ -16,6 +16,7 @@ from butlers.tools.finance.spending import (
     spending_summary,
 )
 from butlers.tools.finance.transactions import (
+    bulk_record_transactions,
     list_transactions,
     record_transaction,
 )
@@ -54,13 +55,8 @@ except (ImportError, AttributeError):
     track_bill_fact = None  # type: ignore[assignment]
     track_subscription_fact = None  # type: ignore[assignment]
 
-# --- Bulk ingestion (bu-8c8c) ---
-try:
-    from butlers.tools.finance.facts import (  # type: ignore[attr-defined]
-        bulk_record_transactions,
-    )
-except (ImportError, AttributeError):
-    bulk_record_transactions = None  # type: ignore[assignment]
+# --- Bulk ingestion: canonical implementation routes through record_transaction ---
+# bulk_record_transactions is already imported above from transactions.py
 
 # --- Transaction CRUD extensions (finance-intelligence) ---
 try:

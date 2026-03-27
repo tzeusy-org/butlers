@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -13,6 +14,60 @@ import asyncpg
 from butlers.tools.finance._helpers import _log_activity, _row_to_dict
 
 logger = logging.getLogger(__name__)
+
+# Maximum rows accepted by bulk_record_transactions in a single call.
+_MAX_BULK_TRANSACTIONS = 500
+
+
+async def _mirror_to_spo(
+    pool: asyncpg.Pool,
+    posted_at: datetime,
+    merchant: str,
+    amount: Decimal | float | int,
+    currency: str,
+    category: str,
+    description: str | None = None,
+    payment_method: str | None = None,
+    account_id: str | None = None,
+    receipt_url: str | None = None,
+    external_ref: str | None = None,
+    source_message_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Fire-and-forget SPO mirror write to shared.facts after a primary insert.
+
+    Writes a bitemporal fact with predicate='transaction_{direction}' to
+    public.facts via record_transaction_fact.  Errors are swallowed so that
+    a mirror failure never rolls back the primary finance.transactions insert.
+
+    This function is scheduled via asyncio.ensure_future and must never raise.
+    """
+    try:
+        from butlers.tools.finance.facts import record_transaction_fact
+
+        await record_transaction_fact(
+            pool=pool,
+            posted_at=posted_at,
+            merchant=merchant,
+            amount=amount,
+            currency=currency,
+            category=category,
+            description=description,
+            payment_method=payment_method,
+            account_id=account_id,
+            receipt_url=receipt_url,
+            external_ref=external_ref,
+            source_message_id=source_message_id,
+            metadata=metadata,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_mirror_to_spo: SPO mirror write failed for merchant=%r posted_at=%r; "
+            "primary insert is unaffected",
+            merchant,
+            posted_at,
+            exc_info=True,
+        )
 
 
 def _infer_direction(amount: Decimal | float | int) -> str:
@@ -173,6 +228,27 @@ async def record_transaction(
         entity_type="transaction",
         entity_id=str(row["id"]),
     )
+
+    # Fire-and-forget SPO mirror write to public.facts.  Scheduled as a
+    # background task so failures never roll back the primary insert.
+    asyncio.ensure_future(
+        _mirror_to_spo(
+            pool=pool,
+            posted_at=posted_at,
+            merchant=merchant,
+            amount=amount,
+            currency=currency,
+            category=category,
+            description=description,
+            payment_method=payment_method,
+            account_id=account_id,
+            receipt_url=receipt_url,
+            external_ref=external_ref,
+            source_message_id=source_message_id,
+            metadata=metadata,
+        )
+    )
+
     return _row_to_dict(row)
 
 
@@ -835,4 +911,133 @@ async def bulk_recategorize(
         "updated": updated,
         "dry_run": dry_run,
         "sample_transactions": [_row_to_dict(r) for r in sample_rows],
+    }
+
+
+async def bulk_record_transactions(
+    pool: asyncpg.Pool,
+    transactions: list[dict[str, Any]],
+    account_id: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Bulk-ingest normalized transaction objects.
+
+    Routes each row through ``record_transaction()`` to obtain per-row
+    deduplication (source_message_id uniqueness) and the SPO mirror write
+    to public.facts.
+
+    Args:
+        pool: Database connection pool.
+        transactions: List of normalized transaction dicts.  Each must have:
+            posted_at (ISO 8601 str or datetime), merchant (str),
+            amount (str decimal or numeric).
+            Optional: currency, category, description, payment_method,
+            account_id (per-row override), receipt_url, external_ref,
+            source_message_id, metadata.
+        account_id: Top-level account_id inherited by all rows unless a
+            per-row account_id is set.
+        source: Stored as import_source in each row's metadata.
+
+    Returns:
+        {total, imported, skipped, errors, error_details}
+        error_details items have: {index, reason}
+        reason is "duplicate" for dedup skips, "invalid_date" for
+        unparseable dates, "invalid_amount" for non-numeric amounts.
+    """
+    if len(transactions) > _MAX_BULK_TRANSACTIONS:
+        raise ValueError(
+            f"Batch too large: {len(transactions)} exceeds maximum of {_MAX_BULK_TRANSACTIONS}"
+        )
+
+    from datetime import UTC
+
+    imported = 0
+    skipped = 0
+    errors = 0
+    error_details: list[dict[str, Any]] = []
+
+    for idx, txn in enumerate(transactions):
+        # ------------------------------------------------------------------
+        # 1. Parse and validate required fields
+        # ------------------------------------------------------------------
+        try:
+            raw_posted_at = txn.get("posted_at")
+            if not raw_posted_at:
+                raise ValueError("missing posted_at")
+            if isinstance(raw_posted_at, datetime):
+                posted_at = raw_posted_at
+            else:
+                posted_at = datetime.fromisoformat(str(raw_posted_at))
+            if posted_at.tzinfo is None:
+                posted_at = posted_at.replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            errors += 1
+            error_details.append({"index": idx, "reason": "invalid_date"})
+            continue
+
+        try:
+            raw_amount = txn.get("amount")
+            if raw_amount is None:
+                raise ValueError("missing amount")
+            amount_decimal = Decimal(str(raw_amount))
+        except (ValueError, TypeError, InvalidOperation):
+            errors += 1
+            error_details.append({"index": idx, "reason": "invalid_amount"})
+            continue
+
+        merchant = txn.get("merchant")
+        if not merchant:
+            errors += 1
+            error_details.append({"index": idx, "reason": "missing_merchant"})
+            continue
+
+        # ------------------------------------------------------------------
+        # 2. Resolve per-row fields
+        # ------------------------------------------------------------------
+        effective_account_id: str | None = txn.get("account_id") or account_id
+        currency = (txn.get("currency") or "USD").upper()
+        category = txn.get("category") or "uncategorized"
+        description = txn.get("description")
+        payment_method = txn.get("payment_method")
+        source_message_id = txn.get("source_message_id")
+        receipt_url = txn.get("receipt_url")
+        external_ref = txn.get("external_ref")
+        extra_metadata: dict[str, Any] = dict(txn.get("metadata") or {})
+        if source is not None:
+            extra_metadata.setdefault("import_source", source)
+
+        # ------------------------------------------------------------------
+        # 3. Route through record_transaction for dedup + SPO mirror
+        # ------------------------------------------------------------------
+        try:
+            await record_transaction(
+                pool=pool,
+                posted_at=posted_at,
+                merchant=merchant,
+                amount=amount_decimal,
+                currency=currency,
+                category=category,
+                description=description,
+                payment_method=payment_method,
+                account_id=effective_account_id,
+                receipt_url=receipt_url,
+                external_ref=external_ref,
+                source_message_id=source_message_id,
+                metadata=extra_metadata if extra_metadata else None,
+            )
+            imported += 1
+        except asyncpg.UniqueViolationError:
+            skipped += 1
+            error_details.append({"index": idx, "reason": "duplicate"})
+        except asyncpg.PostgresError as exc:
+            logger.warning("bulk_record_transactions: row %d failed: %s", idx, exc)
+            errors += 1
+            error_details.append({"index": idx, "reason": f"db_error: {exc}"})
+
+    return {
+        "total": len(transactions),
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+        "error_details": error_details,
     }
