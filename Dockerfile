@@ -39,6 +39,7 @@ COPY alembic/ alembic/
 COPY scripts/ scripts/
 COPY roster/ roster/
 COPY pricing.toml pricing.toml
+COPY model_catalog_defaults.toml model_catalog_defaults.toml
 
 # --frozen: don't re-sync at runtime. --no-dev: skip dev deps.
 ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "butlers"]
