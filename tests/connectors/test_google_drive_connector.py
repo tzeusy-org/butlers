@@ -551,36 +551,33 @@ class TestEventNormalization:
 
     # Normalized text
 
-    def test_normalized_text_contains_label(self) -> None:
-        """Normalized text starts with [CHANGE_TYPE] label."""
+    def test_normalized_text_created(self) -> None:
+        """Normalized text for CREATED uses spec format."""
         text = _build_normalized_text(
             change_type=_CHANGE_TYPE_CREATED,
-            file_id=_FAKE_FILE_ID,
             name="report.pdf",
             mime_type="application/pdf",
             modified_time="2026-03-26T10:00:00Z",
             shared=False,
+            new_parent="parent-folder-id",
         )
-        assert "[CREATED]" in text
-        assert "report.pdf" in text
+        assert text == "file_created: report.pdf (application/pdf) in parent-folder-id"
 
-    def test_normalized_text_includes_file_id(self) -> None:
-        """Normalized text includes the file ID for traceability."""
+    def test_normalized_text_modified(self) -> None:
+        """Normalized text for MODIFIED uses spec format."""
         text = _build_normalized_text(
             change_type=_CHANGE_TYPE_MODIFIED,
-            file_id=_FAKE_FILE_ID,
             name="sheet.csv",
             mime_type="text/csv",
-            modified_time=None,
+            modified_time="2026-03-26T10:00:00Z",
             shared=False,
         )
-        assert _FAKE_FILE_ID in text
+        assert text == "file_modified: sheet.csv (text/csv) at 2026-03-26T10:00:00Z"
 
     def test_normalized_text_includes_mime_type(self) -> None:
-        """Normalized text includes the MIME type."""
+        """Normalized text for MODIFIED includes the MIME type."""
         text = _build_normalized_text(
-            change_type=_CHANGE_TYPE_RENAMED,
-            file_id=_FAKE_FILE_ID,
+            change_type=_CHANGE_TYPE_MODIFIED,
             name="doc.txt",
             mime_type="text/plain",
             modified_time="2026-03-26T10:00:00Z",
@@ -588,29 +585,74 @@ class TestEventNormalization:
         )
         assert "text/plain" in text
 
+    def test_normalized_text_renamed(self) -> None:
+        """Normalized text for RENAMED uses spec format: 'file_renamed: <old> -> <new>'."""
+        text = _build_normalized_text(
+            change_type=_CHANGE_TYPE_RENAMED,
+            name="new-name.txt",
+            mime_type="text/plain",
+            modified_time=None,
+            shared=False,
+            old_name="old-name.txt",
+        )
+        assert text == "file_renamed: old-name.txt -> new-name.txt"
+
+    def test_normalized_text_moved(self) -> None:
+        """Normalized text for MOVED uses spec format: 'file_moved: <name> from <old> to <new>'."""
+        text = _build_normalized_text(
+            change_type=_CHANGE_TYPE_MOVED,
+            name="doc.txt",
+            mime_type="text/plain",
+            modified_time=None,
+            shared=False,
+            old_parent="old-folder-id",
+            new_parent="new-folder-id",
+        )
+        assert text == "file_moved: doc.txt from old-folder-id to new-folder-id"
+
     def test_normalized_text_shared_flag(self) -> None:
-        """Normalized text notes when file is shared."""
+        """Normalized text for SHARING_CHANGED uses spec format."""
         text = _build_normalized_text(
             change_type=_CHANGE_TYPE_SHARING_CHANGED,
-            file_id=_FAKE_FILE_ID,
             name="shared-doc.txt",
             mime_type="text/plain",
             modified_time=None,
             shared=True,
         )
-        assert "Shared" in text or "shared" in text
+        assert text == "sharing_changed: shared-doc.txt (shared=true)"
+
+    def test_normalized_text_sharing_changed_false(self) -> None:
+        """Normalized text for SHARING_CHANGED reflects shared=false when unshared."""
+        text = _build_normalized_text(
+            change_type=_CHANGE_TYPE_SHARING_CHANGED,
+            name="private-doc.txt",
+            mime_type="text/plain",
+            modified_time=None,
+            shared=False,
+        )
+        assert text == "sharing_changed: private-doc.txt (shared=false)"
 
     def test_normalized_text_trashed(self) -> None:
-        """Normalized text for TRASHED changes has correct label."""
+        """Normalized text for TRASHED uses spec format: 'file_trashed: <name>'."""
         text = _build_normalized_text(
             change_type=_CHANGE_TYPE_TRASHED,
-            file_id=_FAKE_FILE_ID,
             name="old-doc.txt",
             mime_type="text/plain",
             modified_time=None,
             shared=False,
         )
-        assert "[TRASHED]" in text
+        assert text == "file_trashed: old-doc.txt"
+
+    def test_normalized_text_fallback(self) -> None:
+        """Normalized text for unknown change type uses fallback format."""
+        text = _build_normalized_text(
+            change_type="unknown_type",
+            name="doc.txt",
+            mime_type="text/plain",
+            modified_time=None,
+            shared=False,
+        )
+        assert text == "file_changed: doc.txt (text/plain)"
 
     # Metadata cache updates via process_change
 
@@ -710,6 +752,183 @@ class TestEventNormalization:
         assert envelope is not None
         assert envelope["schema_version"] == "ingest.v1"
 
+    def test_process_change_external_event_id_uses_sequence(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change sets event.external_event_id to 'gdrive:<file_id>:<sequence>'."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {"id": _FAKE_FILE_ID, "name": "doc.txt"},
+        }
+
+        envelope = loop.process_change(change, observed_at="2026-03-26T10:00:00Z")
+
+        assert envelope is not None
+        ext_id = envelope["event"]["external_event_id"]
+        assert ext_id.startswith("gdrive:")
+        assert _FAKE_FILE_ID in ext_id
+
+    def test_process_change_sequence_increments(self, account_config: GDriveAccountConfig) -> None:
+        """Each call to process_change increments the change_sequence counter."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        change1 = {
+            "fileId": "file-id-1",
+            "file": {"id": "file-id-1", "name": "doc1.txt"},
+        }
+        change2 = {
+            "fileId": "file-id-2",
+            "file": {"id": "file-id-2", "name": "doc2.txt"},
+        }
+
+        env1 = loop.process_change(change1, observed_at="2026-03-26T10:00:00Z")
+        env2 = loop.process_change(change2, observed_at="2026-03-26T10:00:01Z")
+
+        assert env1 is not None and env2 is not None
+        seq1 = int(env1["event"]["external_event_id"].rsplit(":", 1)[-1])
+        seq2 = int(env2["event"]["external_event_id"].rsplit(":", 1)[-1])
+        assert seq2 == seq1 + 1
+
+    def test_process_change_external_thread_id_is_file_id(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change sets event.external_thread_id to file_id (groups changes to same file)."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {"id": _FAKE_FILE_ID, "name": "doc.txt"},
+        }
+
+        envelope = loop.process_change(change, observed_at="2026-03-26T10:00:00Z")
+
+        assert envelope is not None
+        assert envelope["event"]["external_thread_id"] == _FAKE_FILE_ID
+
+    def test_process_change_sender_uses_owner_email(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change sets sender.identity to file owner's email when available."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        owner_email = "owner@example.com"
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "doc.txt",
+                "owners": [{"emailAddress": owner_email, "displayName": "Owner"}],
+            },
+        }
+
+        envelope = loop.process_change(change, observed_at="2026-03-26T10:00:00Z")
+
+        assert envelope is not None
+        assert envelope["sender"]["identity"] == owner_email
+
+    def test_process_change_sender_falls_back_to_endpoint_identity(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change falls back to endpoint_identity when no owner email is present."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {"id": _FAKE_FILE_ID, "name": "doc.txt"},  # no owners
+        }
+
+        envelope = loop.process_change(change, observed_at="2026-03-26T10:00:00Z")
+
+        assert envelope is not None
+        assert envelope["sender"]["identity"] == loop.endpoint_identity
+
+    def test_process_change_idempotency_key_uses_modified_time(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change uses modified_time as the idempotency key epoch when present."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        modified_time = "2026-06-01T12:00:00Z"
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "doc.txt",
+                "modifiedTime": modified_time,
+            },
+        }
+
+        envelope = loop.process_change(change, observed_at="2026-03-26T10:00:00Z")
+
+        assert envelope is not None
+        assert modified_time in envelope["control"]["idempotency_key"]
+
+    def test_process_change_normalized_text_for_created(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change produces 'file_created: ...' normalized text for a new file."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "new-doc.txt",
+                "mimeType": "text/plain",
+                "parents": [_FAKE_FOLDER_ID],
+            },
+        }
+
+        envelope = loop.process_change(change, observed_at="2026-03-26T10:00:00Z")
+
+        assert envelope is not None
+        assert envelope["payload"]["normalized_text"].startswith("file_created:")
+
+    def test_process_change_normalized_text_for_trashed(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change produces 'file_trashed: ...' normalized text for removed files."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._metadata_cache[_FAKE_FILE_ID] = _FileMetadata(
+            file_id=_FAKE_FILE_ID,
+            name="old-doc.txt",
+            mime_type="text/plain",
+            parents=[_FAKE_FOLDER_ID],
+            shared=False,
+            modified_time=None,
+        )
+        change = {"fileId": _FAKE_FILE_ID, "removed": True}
+
+        envelope = loop.process_change(change, observed_at="2026-03-26T10:00:00Z")
+
+        assert envelope is not None
+        assert envelope["payload"]["normalized_text"] == "file_trashed: old-doc.txt"
+
+    def test_process_change_normalized_text_for_renamed(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change produces 'file_renamed: <old> -> <new>' for name changes."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._metadata_cache[_FAKE_FILE_ID] = _FileMetadata(
+            file_id=_FAKE_FILE_ID,
+            name="old-name.txt",
+            mime_type="text/plain",
+            parents=[_FAKE_FOLDER_ID],
+            shared=False,
+            modified_time=None,
+        )
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "new-name.txt",
+                "parents": [_FAKE_FOLDER_ID],
+            },
+        }
+
+        envelope = loop.process_change(change, observed_at="2026-03-26T10:00:00Z")
+
+        assert envelope is not None
+        text = envelope["payload"]["normalized_text"]
+        assert "file_renamed:" in text
+        assert "old-name.txt" in text
+        assert "new-name.txt" in text
+
 
 # ---------------------------------------------------------------------------
 # 14.4: ingest.v1 envelope construction
@@ -723,12 +942,15 @@ class TestIngestV1EnvelopeConstruction:
         defaults: dict[str, Any] = {
             "file_id": _FAKE_FILE_ID,
             "change_type": _CHANGE_TYPE_CREATED,
+            "change_sequence": 1,
             "file_name": "report.pdf",
             "mime_type": "application/pdf",
             "endpoint_identity": f"google_drive:user:{_FAKE_EMAIL}",
             "observed_at": "2026-03-26T10:00:00+00:00",
-            "normalized_text": "[CREATED] report.pdf",
-            "idempotency_key": "google_drive:user:user@example.com:gdrive-file-abc123:2026-03-26",
+            "normalized_text": "file_created: report.pdf (application/pdf) in root",
+            "idempotency_key": (
+                "gdrive:google_drive:user:user@example.com:gdrive-file-abc123:1711447200"
+            ),
         }
         defaults.update(overrides)
         return _build_ingest_envelope(**defaults)
@@ -754,15 +976,15 @@ class TestIngestV1EnvelopeConstruction:
         envelope = self._build_test_envelope(endpoint_identity=endpoint)
         assert envelope["source"]["endpoint_identity"] == endpoint
 
-    def test_event_external_event_id_is_file_id(self) -> None:
-        """event.external_event_id is the Drive file ID."""
-        envelope = self._build_test_envelope(file_id=_FAKE_FILE_ID)
-        assert envelope["event"]["external_event_id"] == _FAKE_FILE_ID
+    def test_event_external_event_id_format(self) -> None:
+        """event.external_event_id follows 'gdrive:<file_id>:<change_sequence>' format."""
+        envelope = self._build_test_envelope(file_id=_FAKE_FILE_ID, change_sequence=3)
+        assert envelope["event"]["external_event_id"] == f"gdrive:{_FAKE_FILE_ID}:3"
 
-    def test_event_external_thread_id_is_null(self) -> None:
-        """event.external_thread_id is null for Drive changes (no threading)."""
-        envelope = self._build_test_envelope()
-        assert envelope["event"]["external_thread_id"] is None
+    def test_event_external_thread_id_is_file_id(self) -> None:
+        """event.external_thread_id groups changes to the same file by file_id."""
+        envelope = self._build_test_envelope(file_id=_FAKE_FILE_ID)
+        assert envelope["event"]["external_thread_id"] == _FAKE_FILE_ID
 
     def test_event_type_includes_change_type(self) -> None:
         """event.event_type follows drive.file.<change_type> format."""
@@ -798,32 +1020,34 @@ class TestIngestV1EnvelopeConstruction:
         assert envelope["control"]["policy_tier"] == "default"
 
     def test_idempotency_key_format(self) -> None:
-        """Idempotency key follows google_drive:<endpoint>:<file_id>:<observed_at> format."""
+        """Idempotency key follows 'gdrive:<endpoint>:<file_id>:<modified_time_epoch>' format."""
         endpoint = f"google_drive:user:{_FAKE_EMAIL}"
-        observed_at = "2026-03-26T10:00:00Z"
-        key = _make_idempotency_key(endpoint, _FAKE_FILE_ID, observed_at)
+        modified_time_epoch = "1711447200"
+        key = _make_idempotency_key(endpoint, _FAKE_FILE_ID, modified_time_epoch)
 
-        assert key.startswith("google_drive:")
+        assert key.startswith("gdrive:")
         assert endpoint in key
         assert _FAKE_FILE_ID in key
-        assert observed_at in key
+        assert modified_time_epoch in key
 
     def test_idempotency_key_deterministic(self) -> None:
         """Same inputs always produce the same idempotency key."""
         endpoint = f"google_drive:user:{_FAKE_EMAIL}"
-        key1 = _make_idempotency_key(endpoint, _FAKE_FILE_ID, "2026-03-26T10:00:00Z")
-        key2 = _make_idempotency_key(endpoint, _FAKE_FILE_ID, "2026-03-26T10:00:00Z")
+        key1 = _make_idempotency_key(endpoint, _FAKE_FILE_ID, "1711447200")
+        key2 = _make_idempotency_key(endpoint, _FAKE_FILE_ID, "1711447200")
         assert key1 == key2
 
     def test_idempotency_key_differs_for_different_files(self) -> None:
         """Different file_ids produce different idempotency keys."""
         endpoint = f"google_drive:user:{_FAKE_EMAIL}"
-        key1 = _make_idempotency_key(endpoint, "file-id-1", "2026-03-26T10:00:00Z")
-        key2 = _make_idempotency_key(endpoint, "file-id-2", "2026-03-26T10:00:00Z")
+        key1 = _make_idempotency_key(endpoint, "file-id-1", "1711447200")
+        key2 = _make_idempotency_key(endpoint, "file-id-2", "1711447200")
         assert key1 != key2
 
-    def test_idempotency_key_in_envelope(self, account_config: GDriveAccountConfig) -> None:
-        """process_change places the idempotency key in the envelope event field."""
+    def test_idempotency_key_in_envelope_control_section(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """process_change places the idempotency key in the envelope control field (not event)."""
         loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
         observed_at = "2026-03-26T10:00:00Z"
         change = {
@@ -834,8 +1058,9 @@ class TestIngestV1EnvelopeConstruction:
         envelope = loop.process_change(change, observed_at=observed_at)
 
         assert envelope is not None
-        assert "idempotency_key" in envelope["event"]
-        assert _FAKE_FILE_ID in envelope["event"]["idempotency_key"]
+        assert "idempotency_key" in envelope["control"]
+        assert _FAKE_FILE_ID in envelope["control"]["idempotency_key"]
+        assert envelope["control"]["idempotency_key"].startswith("gdrive:")
 
 
 # ---------------------------------------------------------------------------
