@@ -337,6 +337,28 @@ class TestOnStartup:
         assert module._credentials_ok is True
         await module.on_shutdown()
 
+    async def test_startup_drive_readonly_scope_is_rejected(self):
+        """drive.readonly scope must NOT satisfy the drive scope check (substring bug guard)."""
+        module = _make_module()
+        # drive.readonly contains "drive" as a substring — must not pass the scope check
+        creds = _make_creds(scope="https://www.googleapis.com/auth/drive.readonly")
+        credential_store = MagicMock()
+        db = MagicMock()
+        db.pool = None
+
+        with patch(
+            "butlers.modules.google_drive.resolve_google_credentials",
+            AsyncMock(return_value=creds),
+        ):
+            await module.on_startup(
+                config=GoogleDriveConfig(),
+                db=db,
+                credential_store=credential_store,
+            )
+
+        assert module._credentials_ok is False
+        assert module._http_client is None
+
     async def test_startup_db_none_still_works(self):
         """on_startup with db=None completes without error."""
         module = _make_module()

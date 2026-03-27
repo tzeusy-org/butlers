@@ -18,6 +18,7 @@ Configured via ``[modules.google_drive]`` in butler.toml.
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 import mimetypes
 import re
@@ -414,9 +415,11 @@ class GoogleDriveModule(Module):
             )
             return
 
-        # Validate drive scope is present (not just drive.readonly)
+        # Validate drive scope is present (not just drive.readonly).
+        # Split on whitespace to avoid substring match: "drive" must not match
+        # "drive.readonly" (https://www.googleapis.com/auth/drive vs drive.readonly).
         granted = creds.scope or ""
-        if _DRIVE_SCOPE not in granted:
+        if _DRIVE_SCOPE not in granted.split():
             account_hint = self._config.account or ""
             qs = (
                 f"?account_hint={account_hint}&force_consent=true"
@@ -570,6 +573,8 @@ class GoogleDriveModule(Module):
                 if not data.get("trashed", False):
                     self._folder_cache[cache_key] = cached_id
                     return cached_id
+            # Evict stale in-memory entry to avoid a redundant second API call below.
+            self._folder_cache.pop(cache_key, None)
             logger.info(
                 "GoogleDriveModule: cached folder %s missing/trashed, recreating",
                 cached_id,
@@ -880,8 +885,6 @@ class GoogleDriveModule(Module):
                 "name": name,
                 "parents": [folder_id],
             }
-
-            import json as _json
 
             boundary = "butlers_drive_boundary"
             body = (
