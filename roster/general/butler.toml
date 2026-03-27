@@ -101,6 +101,8 @@ job_name = "collect_briefing_contributions"
 
 [modules.memory]
 
+[modules.steam]
+
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true
 # [modules.google_drive]

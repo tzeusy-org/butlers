@@ -65,6 +65,32 @@ If credentials are missing, each tool returns an actionable error with setup ins
 - **`spotify_save_tracks`**: Save tracks to the library
 - **`spotify_remove_saved_tracks`**: Remove tracks from the library
 
+### Steam Tools
+
+All Steam tools require the user's Steam account to be connected via dashboard settings.
+If no Steam account is connected, each tool returns an actionable error directing the user to the dashboard.
+Public endpoints (`steam_get_game_news`, `steam_get_current_players`) work without authentication.
+All tools default to the primary connected account when `steam_id` is omitted.
+
+**Profile & Level (Group 1)**
+- **`steam_get_player_summary`**: Get player profile info (display name, avatar, online status, visibility)
+- **`steam_get_player_level`**: Get the Steam Experience Level for an account
+
+**Library & Playtime (Group 2)**
+- **`steam_get_owned_games`**: Get the full game library with playtime, optional free-game inclusion
+- **`steam_get_recently_played`**: Get games played in the last 2 weeks (count param, max 50)
+- **`steam_get_achievements`**: Get per-game achievements for a Steam account (requires app_id)
+
+**Social (Group 3)**
+- **`steam_get_friend_list`**: Get the friend list; optional `enrich=True` batch-fetches profiles (100 per call)
+
+**Game Info (Group 4) — public endpoints, no auth required**
+- **`steam_get_game_news`**: Get recent news articles for any Steam game (by app_id)
+- **`steam_get_current_players`**: Get the live player count for any Steam game (by app_id)
+
+**Identity (Group 5)**
+- **`steam_resolve_vanity_url`**: Resolve a Steam vanity URL name to a SteamID64
+
 ## Guidelines
 
 - Capture taste preferences as they emerge from casual conversation — don't wait for explicit requests
@@ -72,6 +98,8 @@ If credentials are missing, each tool returns an actionable error with setup ins
 - Use `stable` permanence for stable preferences (genre likes, cuisine preferences, hobbies)
 - Use `volatile` permanence for current consumption state (watching, reading, playing, listening)
 - Spotify-enriched facts (artist rotation, playlist purpose) default to `stable`
+- Steam gaming facts (currently playing, playtime milestones) use `plays` predicate at `volatile` permanence
+- When a user mentions a game they've been playing heavily, store as `plays` (volatile) and `hobby` (stable) if it's a recurring interest
 - Never offer nutritional advice or calorie tracking — refer to the Health butler
 - Never suggest formal learning pathways — refer to the Education butler
 - Never plan social events or manage relationships — refer to the Relationship butler
