@@ -147,6 +147,32 @@ async def get_secret(
 
 
 # ---------------------------------------------------------------------------
+# Reveal endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{name}/secrets/{key}/reveal",
+    response_model=ApiResponse[dict],
+)
+async def reveal_secret(
+    name: str,
+    key: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Return the raw value of a single secret.
+
+    Returns the actual stored value for inspection/debugging.
+    404 if the key does not exist.
+    """
+    store = _credential_store_for(db, name)
+    value = await store.load(key)
+    if value is None:
+        raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
+    return ApiResponse[dict](data={"key": key, "value": value})
+
+
+# ---------------------------------------------------------------------------
 # Write endpoints
 # ---------------------------------------------------------------------------
 

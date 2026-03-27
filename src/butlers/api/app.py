@@ -32,6 +32,7 @@ from butlers.api.middleware import ApiKeyMiddleware, register_error_handlers
 from butlers.api.router_discovery import discover_butler_routers
 from butlers.api.routers.approvals import router as approvals_router
 from butlers.api.routers.audit import router as audit_router
+from butlers.api.routers.blob_storage import router as blob_storage_router
 from butlers.api.routers.butlers import router as butlers_router
 from butlers.api.routers.calendar_workspace import (
     router as calendar_workspace_router,
@@ -235,6 +236,7 @@ def create_app(
     app.include_router(butler_model_router)
     app.include_router(healing_router)
     app.include_router(provider_settings_router)
+    app.include_router(blob_storage_router)
     app.include_router(owntracks_router)
     app.include_router(home_assistant_router)
     app.include_router(spotify_router)

@@ -146,8 +146,10 @@ async def _create_companion_entity(conn: Any, steam_id: int) -> uuid.UUID:
         """
         INSERT INTO public.entities (tenant_id, canonical_name, entity_type, roles)
         VALUES ('shared', $1, 'other', ARRAY['steam_account'])
-        ON CONFLICT (tenant_id, canonical_name, entity_type) DO UPDATE
-            SET roles = ARRAY['steam_account']
+        ON CONFLICT (tenant_id, canonical_name, entity_type)
+            WHERE (metadata->>'merged_into') IS NULL
+              AND (metadata->>'deleted_at') IS NULL
+            DO UPDATE SET roles = ARRAY['steam_account']
         RETURNING id
         """,
         canonical_name,

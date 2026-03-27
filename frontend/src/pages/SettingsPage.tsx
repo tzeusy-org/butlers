@@ -12,6 +12,7 @@ import type {
   ProviderConfigUpdate,
 } from "@/api/index.ts";
 import { getGoogleOAuthStartUrl } from "@/api/index.ts";
+import { BlobStorageCard } from "@/components/settings/BlobStorageCard.tsx";
 import { IntegrationsCard } from "@/components/settings/IntegrationsCard.tsx";
 import { ModelCatalogCard } from "@/components/settings/ModelCatalogCard.tsx";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
@@ -875,6 +876,8 @@ export default function SettingsPage() {
       <CLIAuthCard />
 
       <IntegrationsCard />
+
+      <BlobStorageCard />
 
       <Card>
         <CardHeader>

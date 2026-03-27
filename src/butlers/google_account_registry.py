@@ -163,8 +163,10 @@ async def _create_companion_entity(conn: Any, email: str | None) -> uuid.UUID:
         """
         INSERT INTO public.entities (tenant_id, canonical_name, entity_type, roles)
         VALUES ('shared', $1, 'other', ARRAY['google_account'])
-        ON CONFLICT (tenant_id, canonical_name, entity_type) DO UPDATE
-            SET roles = ARRAY['google_account']
+        ON CONFLICT (tenant_id, canonical_name, entity_type)
+            WHERE (metadata->>'merged_into') IS NULL
+              AND (metadata->>'deleted_at') IS NULL
+            DO UPDATE SET roles = ARRAY['google_account']
         RETURNING id
         """,
         canonical_name,

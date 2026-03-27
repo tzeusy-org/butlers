@@ -6,9 +6,10 @@
  * empty and must be re-entered if you want to change it.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { SecretEntry } from "@/api/types.ts";
+import { revealSecret } from "@/api/index.ts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -114,6 +115,20 @@ export function SecretFormModal({
     setSuccess(false);
   }
 
+  // Pre-fill value when editing by fetching from the reveal endpoint
+  useEffect(() => {
+    if (open && isEditing && editSecret) {
+      revealSecret(butlerName, editSecret.key)
+        .then((resp) => {
+          setForm((prev) => ({ ...prev, value: resp.data.value }));
+        })
+        .catch(() => {
+          // Silently fail — user can still type a new value
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, isEditing, editSecret?.key, butlerName]);
+
   const upsertMutation = useUpsertSecret(butlerName);
 
   // Auto-suggest category and description from template when typing key (create mode only)
@@ -145,11 +160,7 @@ export function SecretFormModal({
       return;
     }
     if (!form.value.trim()) {
-      setError(
-        isEditing
-          ? "Enter a new value to update this secret. (Values are write-only and cannot be pre-filled.)"
-          : "Value is required when creating a new secret.",
-      );
+      setError("Value is required.");
       return;
     }
 
@@ -178,8 +189,8 @@ export function SecretFormModal({
           <DialogTitle>{isEditing ? "Edit Secret" : "Add Secret"}</DialogTitle>
           <DialogDescription>
             {isEditing
-              ? `Update the value or metadata for ${editSecret?.key}. The current value cannot be displayed.`
-              : "Store a new secret in the database. Values are encrypted at rest and never echoed back."}
+              ? `Update the value or metadata for ${editSecret?.key}.`
+              : "Store a new secret in the database."}
           </DialogDescription>
         </DialogHeader>
 
@@ -225,16 +236,14 @@ export function SecretFormModal({
             </Label>
             <Input
               id="secret-value"
-              type="password"
-              placeholder={isEditing ? "Enter new value to update..." : "Enter secret value..."}
+              type="text"
+              placeholder={isEditing ? "Enter new value..." : "Enter secret value..."}
               value={form.value}
               onChange={(e) => setForm((prev) => ({ ...prev, value: e.target.value }))}
-              autoComplete="new-password"
+              autoComplete="off"
+              className="font-mono"
               required
             />
-            <p className="text-xs text-muted-foreground">
-              Write-only — values are stored securely and never displayed.
-            </p>
           </div>
 
           {/* Category */}

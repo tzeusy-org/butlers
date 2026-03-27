@@ -1714,6 +1714,16 @@ export function getSecretMeta(
   );
 }
 
+/** Reveal the raw value of a secret. */
+export function revealSecret(
+  butlerName: string,
+  key: string,
+): Promise<ApiResponse<{ key: string; value: string }>> {
+  return apiFetch<ApiResponse<{ key: string; value: string }>>(
+    `/butlers/${encodeURIComponent(butlerName)}/secrets/${encodeURIComponent(key)}/reveal`,
+  );
+}
+
 /** Create or update a secret. Value is write-only and never echoed back. */
 export function upsertSecret(
   butlerName: string,

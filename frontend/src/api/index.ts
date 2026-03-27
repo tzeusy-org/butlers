@@ -306,6 +306,7 @@ export {
   deleteSecret,
   getSecretMeta,
   listSecrets,
+  revealSecret,
   upsertSecret,
 } from "./client.ts";
 
@@ -466,6 +467,16 @@ export type {
   ProviderConfigCreate,
   ProviderConfigUpdate,
   ProviderConnectivityResult,
+} from "./types.ts";
+
+export {
+  getBlobStorageStatus,
+  testBlobStorage,
+} from "./client.ts";
+
+export type {
+  BlobStorageStatus,
+  BlobStorageTestResult,
 } from "./types.ts";
 
 export {

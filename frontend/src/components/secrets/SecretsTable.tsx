@@ -8,6 +8,7 @@
 import { useState } from "react";
 
 import type { SecretEntry } from "@/api/types.ts";
+import { revealSecret } from "@/api/index.ts";
 import { buildSecretRows, type SecretDisplayRow, type SecretRowState } from "@/lib/secrets-rows";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -135,63 +136,62 @@ function StatusBadge({ rowState, source }: { rowState: SecretRowState; source: s
 // Masked value cell with reveal toggle
 // ---------------------------------------------------------------------------
 
-function MaskedValue({ rowState }: { rowState: SecretRowState }) {
+function MaskedValue({
+  rowState,
+  butlerName,
+  secretKey,
+}: {
+  rowState: SecretRowState;
+  butlerName: string;
+  secretKey: string;
+}) {
   const [revealed, setRevealed] = useState(false);
+  const [value, setValue] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   if (rowState === "missing") {
     return <span className="text-muted-foreground text-xs italic">null</span>;
   }
 
-  if (rowState === "inherited") {
-    return (
-      <span className="font-mono text-sm text-muted-foreground">
-        •••••••• (inherited)
-      </span>
-    );
+  async function handleReveal() {
+    if (revealed) {
+      setRevealed(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const resp = await revealSecret(butlerName, secretKey);
+      setValue(resp.data.value);
+      setRevealed(true);
+    } catch {
+      setValue("(failed to load)");
+      setRevealed(true);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <span className="flex items-center gap-1.5">
-      <span className="font-mono text-sm">
-        {revealed ? "(value hidden — write-only)" : "••••••••"}
+      <span className="font-mono text-sm max-w-[200px] truncate" title={revealed && value ? value : undefined}>
+        {loading ? "loading..." : revealed && value !== null ? value : "••••••••"}
       </span>
       <button
         type="button"
-        onClick={() => setRevealed((v) => !v)}
-        className="text-muted-foreground hover:text-foreground transition-colors"
+        onClick={handleReveal}
+        disabled={loading}
+        className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
         title={revealed ? "Hide" : "Reveal"}
-        aria-label={revealed ? "Hide value" : "Reveal value indicator"}
+        aria-label={revealed ? "Hide value" : "Reveal value"}
       >
         {revealed ? (
-          // Eye-off icon
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
             <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
             <line x1="1" y1="1" x2="23" y2="23" />
           </svg>
         ) : (
-          // Eye icon
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
             <circle cx="12" cy="12" r="3" />
           </svg>
@@ -345,7 +345,7 @@ function SecretRow({
         </TableCell>
         <TableCell className="text-sm text-muted-foreground">{updatedAt}</TableCell>
         <TableCell>
-          <MaskedValue rowState={secret.rowState} />
+          <MaskedValue rowState={secret.rowState} butlerName={butlerName} secretKey={secret.key} />
         </TableCell>
         <TableCell>
           {canEditLocal ? (
