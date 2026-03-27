@@ -917,8 +917,10 @@ async def _lookup_merchant_category(
 ) -> str | None:
     """Look up the best matching category for *merchant* in merchant_mappings.
 
-    Uses ILIKE matching against the stored patterns.  Returns the category
-    with the highest confidence, or None when no mapping is found.
+    Checks whether the stored merchant name is a substring of the input
+    merchant string (e.g., "Whole Foods" stored in the DB matches the bank
+    statement value "WHOLE FOODS MARKET 1234").  Returns the category with
+    the highest confidence, or None when no mapping matches.
 
     Parameters
     ----------
@@ -937,26 +939,11 @@ async def _lookup_merchant_category(
         SELECT category
         FROM merchant_mappings
         WHERE is_active = true
-          AND lower($1) LIKE lower(merchant)
+          AND $1 ILIKE '%' || merchant || '%'
         ORDER BY confidence DESC
         LIMIT 1
         """,
         merchant,
-    )
-    if row is not None:
-        return row["category"]
-
-    # Fallback: ILIKE match in the other direction (merchant ILIKE pattern)
-    row = await pool.fetchrow(
-        """
-        SELECT category
-        FROM merchant_mappings
-        WHERE is_active = true
-          AND $1 ILIKE merchant
-        ORDER BY confidence DESC
-        LIMIT 1
-        """,
-        f"%{merchant}%",
     )
     return row["category"] if row is not None else None
 
@@ -1015,27 +1002,6 @@ async def _apply_merchant_mappings(
 # Post-import triggers
 # ---------------------------------------------------------------------------
 
-
-async def _has_spending_summaries_mv(pool: asyncpg.Pool) -> bool:
-    """Return True if the spending_summaries materialized view exists."""
-    exists = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = current_schema()
-              AND table_name = 'spending_summaries'
-              AND table_type = 'BASE TABLE'
-        )
-        UNION ALL
-        SELECT EXISTS (
-            SELECT 1 FROM pg_matviews
-            WHERE schemaname = current_schema()
-              AND matviewname = 'spending_summaries'
-        )
-        LIMIT 1
-        """
-    )
-    return bool(exists)
 
 
 async def _refresh_spending_summaries(pool: asyncpg.Pool) -> bool:
