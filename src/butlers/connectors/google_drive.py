@@ -349,42 +349,76 @@ def _detect_change_type(
 def _build_normalized_text(
     *,
     change_type: str,
-    file_id: str,
     name: str,
     mime_type: str,
     modified_time: str | None,
     shared: bool,
+    old_name: str | None = None,
+    old_parent: str | None = None,
+    new_parent: str | None = None,
 ) -> str:
     """Build a structured normalized_text string for a Drive change (task 10.2).
 
-    Format follows the spec format strings for each event type.
+    Format strings follow the connector-google-drive spec exactly:
+    - created:         "file_created: <name> (<mime_type>) in <parent>"
+    - modified:        "file_modified: <name> (<mime_type>) at <modified_time>"
+    - trashed:         "file_trashed: <name>"
+    - renamed:         "file_renamed: <old_name> -> <name>"
+    - moved:           "file_moved: <name> from <old_parent> to <new_parent>"
+    - sharing_changed: "sharing_changed: <name> (shared=<true|false>)"
+    - fallback:        "file_changed: <name> (<mime_type>)"
     """
-    label = change_type.upper()
-    parts = [f"[{label}] {name}"]
-    parts.append(f"File ID: {file_id}")
-    if mime_type:
-        parts.append(f"Type: {mime_type}")
-    if modified_time:
-        parts.append(f"Modified: {modified_time}")
-    if shared:
-        parts.append("Shared: yes")
-    return " | ".join(parts)
+    if change_type == _CHANGE_TYPE_CREATED:
+        parent_label = new_parent or "unknown"
+        return f"file_created: {name} ({mime_type}) in {parent_label}"
+    if change_type == _CHANGE_TYPE_MODIFIED:
+        ts = modified_time or "unknown"
+        return f"file_modified: {name} ({mime_type}) at {ts}"
+    if change_type == _CHANGE_TYPE_TRASHED:
+        return f"file_trashed: {name}"
+    if change_type == _CHANGE_TYPE_RENAMED:
+        prev = old_name or name
+        return f"file_renamed: {prev} -> {name}"
+    if change_type == _CHANGE_TYPE_MOVED:
+        old_p = old_parent or "unknown"
+        new_p = new_parent or "unknown"
+        return f"file_moved: {name} from {old_p} to {new_p}"
+    if change_type == _CHANGE_TYPE_SHARING_CHANGED:
+        shared_str = "true" if shared else "false"
+        return f"sharing_changed: {name} (shared={shared_str})"
+    # fallback
+    return f"file_changed: {name} ({mime_type})"
 
 
 def _build_ingest_envelope(
     *,
     file_id: str,
     change_type: str,
+    change_sequence: int,
     file_name: str,
     mime_type: str,
     endpoint_identity: str,
     observed_at: str,
     normalized_text: str,
     idempotency_key: str,
+    owner_email: str | None = None,
 ) -> dict[str, Any]:
     """Build an ingest.v1 envelope for a Drive file change (task 10.3).
 
     Per spec: ingest.v1 field mapping with ingestion_tier=metadata, payload.raw=null.
+
+    Field mapping (from connector-google-drive spec):
+    - source.channel                = "google_drive"
+    - source.provider               = "google_drive"
+    - source.endpoint_identity      = "google_drive:user:<email>"
+    - event.external_event_id       = "gdrive:<file_id>:<change_sequence>"
+    - event.external_thread_id      = file_id  (groups changes to the same file)
+    - event.observed_at             = connector-observed timestamp (RFC3339)
+    - sender.identity               = file owner's email (from file.owners[0].emailAddress)
+    - payload.raw                   = null (metadata tier only)
+    - payload.normalized_text       = structured metadata summary
+    - control.ingestion_tier        = "metadata"
+    - control.idempotency_key       = "gdrive:<endpoint_identity>:<file_id>:<modified_time_epoch>"
     """
     return {
         "schema_version": "ingest.v1",
@@ -394,14 +428,13 @@ def _build_ingest_envelope(
             "endpoint_identity": endpoint_identity,
         },
         "event": {
-            "external_event_id": file_id,
-            "external_thread_id": None,
+            "external_event_id": f"gdrive:{file_id}:{change_sequence}",
+            "external_thread_id": file_id,
             "observed_at": observed_at,
             "event_type": f"drive.file.{change_type}",
-            "idempotency_key": idempotency_key,
         },
         "sender": {
-            "identity": endpoint_identity,
+            "identity": owner_email or endpoint_identity,
         },
         "payload": {
             "raw": None,
@@ -412,16 +445,22 @@ def _build_ingest_envelope(
         "control": {
             "policy_tier": "default",
             "ingestion_tier": "metadata",
+            "idempotency_key": idempotency_key,
         },
     }
 
 
-def _make_idempotency_key(endpoint_identity: str, file_id: str, observed_at: str) -> str:
+def _make_idempotency_key(
+    endpoint_identity: str, file_id: str, modified_time_epoch: str | int
+) -> str:
     """Build an idempotency key for a Drive change event (task 10.3).
 
-    Format: google_drive:<endpoint_identity>:<file_id>:<observed_at>
+    Format: gdrive:<endpoint_identity>:<file_id>:<modified_time_epoch>
+
+    Per spec: uses the file's modified_time epoch (or observed_at epoch as fallback)
+    so that re-ingesting the same file change produces the same key.
     """
-    return f"google_drive:{endpoint_identity}:{file_id}:{observed_at}"
+    return f"gdrive:{endpoint_identity}:{file_id}:{modified_time_epoch}"
 
 
 def _redact_email(email: str | None) -> str | None:
@@ -546,6 +585,8 @@ class GDriveAccountLoop:
         self._last_checkpoint_save: float | None = None
         self._last_ingest_submit: float | None = None
         self._source_api_ok: bool | None = None
+        # Monotonic counter per poll cycle for external_event_id uniqueness (task 10.3)
+        self._change_sequence: int = 0
 
         # Standard connector metrics (task 11.4)
         self._metrics = ConnectorMetrics(
@@ -731,6 +772,16 @@ class GDriveAccountLoop:
         shared = file_data.get("shared", cached.shared if cached else False)
         modified_time = file_data.get("modifiedTime") or (cached.modified_time if cached else None)
 
+        # Extract owner email from file.owners[0].emailAddress (task 10.3)
+        owners = file_data.get("owners") or []
+        owner_email: str | None = None
+        if owners and isinstance(owners[0], dict):
+            owner_email = owners[0].get("emailAddress")
+
+        # Capture old state for normalized_text construction (before cache update)
+        old_name: str | None = cached.name if cached else None
+        old_parents: list[str] = list(cached.parents) if cached else []
+
         # Update metadata cache (task 10.4)
         if change_type == _CHANGE_TYPE_TRASHED:
             # Remove trashed files from cache
@@ -751,13 +802,19 @@ class GDriveAccountLoop:
             event_type=change_type,
         ).inc()
 
+        # Determine parent context for normalized_text
+        old_parent = old_parents[0] if old_parents else None
+        new_parent = list(parents)[0] if parents else None
+
         normalized_text = _build_normalized_text(
             change_type=change_type,
-            file_id=file_id,
             name=name,
             mime_type=mime_type,
             modified_time=modified_time,
             shared=bool(shared),
+            old_name=old_name,
+            old_parent=old_parent,
+            new_parent=new_parent,
         )
 
         # Build policy envelope for ingestion policy evaluation (task 11.1)
@@ -800,17 +857,27 @@ class GDriveAccountLoop:
             )
             return None
 
-        idempotency_key = _make_idempotency_key(self.endpoint_identity, file_id, observed_at)
+        # Idempotency key uses modified_time epoch; fall back to observed_at (task 10.3)
+        modified_time_epoch: str | int = modified_time or observed_at
+        idempotency_key = _make_idempotency_key(
+            self.endpoint_identity, file_id, modified_time_epoch
+        )
+
+        # Advance monotonic change sequence counter (task 10.3)
+        self._change_sequence += 1
+        change_sequence = self._change_sequence
 
         return _build_ingest_envelope(
             file_id=file_id,
             change_type=change_type,
+            change_sequence=change_sequence,
             file_name=name,
             mime_type=mime_type,
             endpoint_identity=self.endpoint_identity,
             observed_at=observed_at,
             normalized_text=normalized_text,
             idempotency_key=idempotency_key,
+            owner_email=owner_email,
         )
 
     def get_health(self) -> AccountHealthStatus:
