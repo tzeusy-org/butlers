@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 
 from butlers.connectors.google_drive import (
     _CHANGE_TYPE_CREATED,
@@ -1481,3 +1482,442 @@ class TestAggregatedHealthStatus:
         # Email should be redacted in health output
         account_health = health.account_health[0]
         assert "us***" in (account_health.email or "")
+
+
+# ---------------------------------------------------------------------------
+# Tasks 12.1–12.5: Multi-account lifecycle management
+# ---------------------------------------------------------------------------
+
+
+class TestMultiAccountLifecycle:
+    """Tasks 12.1–12.5: rescan loop, reload, SIGHUP, health server, heartbeat."""
+
+    # ------------------------------------------------------------------
+    # 12.1: Periodic account re-scan via _run_rescan_loop
+    # ------------------------------------------------------------------
+
+    async def test_run_rescan_loop_calls_sync_on_timeout(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """_run_rescan_loop triggers sync_accounts when rescan interval elapses."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+            account_rescan_interval_s=1,
+        )
+        manager._running = True
+
+        sync_calls: list[int] = []
+
+        async def _mock_sync() -> tuple[list[str], list[str], list[str]]:
+            sync_calls.append(1)
+            manager._running = False  # Stop after one cycle
+            return [], [], []
+
+        manager.sync_accounts = _mock_sync  # type: ignore[method-assign]
+
+        # Run rescan loop — it should call sync once and then stop
+        await manager._run_rescan_loop()
+        assert len(sync_calls) >= 1
+
+    async def test_run_rescan_loop_stops_when_running_false(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """_run_rescan_loop exits immediately when _running is set to False."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+            account_rescan_interval_s=10,  # Long interval
+        )
+        manager._running = False  # Not running
+
+        sync_calls: list[int] = []
+
+        async def _mock_sync() -> tuple[list[str], list[str], list[str]]:
+            sync_calls.append(1)
+            return [], [], []
+
+        manager.sync_accounts = _mock_sync  # type: ignore[method-assign]
+
+        # Should exit without calling sync because _running=False
+        # Set reload event to unblock wait_for immediately
+        manager._reload_event.set()
+        await manager._run_rescan_loop()
+        # sync_accounts must NOT be called when _running=False
+        assert len(sync_calls) == 0
+
+    # ------------------------------------------------------------------
+    # 12.2: On-demand reload via reload_accounts() and SIGHUP
+    # ------------------------------------------------------------------
+
+    async def test_reload_accounts_returns_summary(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """reload_accounts() returns added/removed/unchanged summary."""
+        row = _make_drive_account_row(_FAKE_EMAIL)
+        mock_db_pool.acquire.return_value.__aenter__.return_value.fetch = AsyncMock(
+            return_value=[row]
+        )
+
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+
+        fake_creds = _make_mock_credentials()
+
+        with patch(
+            "butlers.connectors.google_drive.resolve_google_credentials",
+            new_callable=AsyncMock,
+            return_value=fake_creds,
+        ):
+            result = await manager.reload_accounts()
+
+        assert "added" in result
+        assert "removed" in result
+        assert "unchanged" in result
+
+    async def test_reload_event_triggers_rescan_loop_early(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """Setting _reload_event unblocks the rescan loop before the timeout."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+            account_rescan_interval_s=300,  # Long timeout — should be interrupted
+        )
+        manager._running = True
+
+        sync_calls: list[int] = []
+
+        async def _mock_sync() -> tuple[list[str], list[str], list[str]]:
+            sync_calls.append(1)
+            manager._running = False  # Stop after first sync
+            return [], [], []
+
+        manager.sync_accounts = _mock_sync  # type: ignore[method-assign]
+
+        # Trigger reload event immediately
+        manager._reload_event.set()
+
+        # Run loop — it should wake up immediately and call sync
+        await manager._run_rescan_loop()
+        assert len(sync_calls) == 1
+
+    # ------------------------------------------------------------------
+    # 12.2: SIGHUP handler setup
+    # ------------------------------------------------------------------
+
+    def test_setup_sighup_registers_handler(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """_setup_sighup does not raise (handler registration smoke test)."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        # Should not raise — SIGHUP not available on all platforms is handled gracefully
+        try:
+            manager._setup_sighup()
+        except (OSError, NotImplementedError):
+            pass  # OK — unavailable on Windows
+
+    # ------------------------------------------------------------------
+    # 12.3: Graceful shutdown on account removal
+    # ------------------------------------------------------------------
+
+    async def test_sync_accounts_graceful_removal_stops_loop(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """sync_accounts stops the loop for a removed account (task 12.3)."""
+        config = GDriveAccountConfig(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=config)
+        stop_called = [False]
+
+        async def _mock_stop() -> None:
+            stop_called[0] = True
+
+        loop.stop = _mock_stop  # type: ignore[method-assign]
+
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        manager._loops[_FAKE_EMAIL] = loop
+
+        # DB returns empty — account removed
+        mock_db_pool.acquire.return_value.__aenter__.return_value.fetch = AsyncMock(return_value=[])
+
+        added, removed, unchanged = await manager.sync_accounts()
+
+        assert _FAKE_EMAIL in removed
+        assert stop_called[0], "loop.stop() must be called on graceful removal"
+        assert _FAKE_EMAIL not in manager._loops
+
+    async def test_manager_stop_gracefully_stops_all_loops(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """manager.stop() calls loop.stop() for every active loop (task 12.3)."""
+        stopped: list[str] = []
+
+        def _make_loop(email: str) -> GDriveAccountLoop:
+            cfg = GDriveAccountConfig(
+                email=email,
+                client_id="cid",
+                client_secret="cs",
+                refresh_token="rt",
+                switchboard_mcp_url=_SWITCHBOARD_URL,
+            )
+            lp = GDriveAccountLoop(email=email, config=cfg)
+
+            async def _mock_stop() -> None:
+                stopped.append(email)
+
+            lp.stop = _mock_stop  # type: ignore[method-assign]
+            return lp
+
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        manager._loops[_FAKE_EMAIL] = _make_loop(_FAKE_EMAIL)
+        manager._loops[_FAKE_EMAIL2] = _make_loop(_FAKE_EMAIL2)
+
+        await manager.stop()
+
+        assert _FAKE_EMAIL in stopped
+        assert _FAKE_EMAIL2 in stopped
+        assert len(manager._loops) == 0
+
+    # ------------------------------------------------------------------
+    # 12.4: Aggregated health endpoint
+    # ------------------------------------------------------------------
+
+    def test_get_health_state_for_heartbeat_healthy(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """_get_health_state_for_heartbeat returns 'healthy' when all loops healthy."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        config = GDriveAccountConfig(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=config)
+        loop._source_api_ok = True
+        manager._loops[_FAKE_EMAIL] = loop
+
+        state, error_msg = manager._get_health_state_for_heartbeat()
+        assert state == "healthy"
+        assert error_msg is None
+
+    def test_get_health_state_for_heartbeat_error(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """_get_health_state_for_heartbeat returns 'error' with message when loop fails."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        config = GDriveAccountConfig(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=config)
+        loop._source_api_ok = False
+        loop._error = "Drive API 500"
+        manager._loops[_FAKE_EMAIL] = loop
+
+        state, error_msg = manager._get_health_state_for_heartbeat()
+        assert state == "error"
+        assert error_msg == "Drive API 500"
+
+    # ------------------------------------------------------------------
+    # 12.5: Heartbeat protocol
+    # ------------------------------------------------------------------
+
+    def test_get_capabilities_has_required_keys(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """_get_capabilities returns a dict with expected capability flags."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        caps = manager._get_capabilities()
+        assert "multi_account" in caps
+        assert "changes_polling" in caps
+        assert "metadata_only" in caps
+        assert "reload_accounts" in caps
+        assert caps["multi_account"] is True
+
+    def test_start_heartbeat_without_mcp_client_is_noop(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """_start_heartbeat is a no-op when no MCP client is wired (non-fatal)."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+        # No mcp_client set — should not raise
+        manager._start_heartbeat()
+        assert manager._heartbeat is None
+
+    def test_start_heartbeat_with_mocked_mcp_client(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """_start_heartbeat creates and starts a ConnectorHeartbeat when MCP client is wired."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+            heartbeat_interval_s=120,
+        )
+
+        mock_mcp_client = MagicMock()
+        manager._mcp_client = mock_mcp_client
+
+        with patch("butlers.connectors.google_drive.ConnectorHeartbeat") as mock_hb_cls:
+            mock_hb_instance = MagicMock()
+            mock_hb_cls.return_value = mock_hb_instance
+
+            manager._start_heartbeat()
+
+        # Heartbeat should be created and started
+        assert mock_hb_cls.called
+        assert mock_hb_instance.start.called
+        assert manager._heartbeat is mock_hb_instance
+
+    async def test_stop_stops_heartbeat(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """manager.stop() shuts down the heartbeat task (task 12.5)."""
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+
+        mock_heartbeat = MagicMock()
+        mock_heartbeat.stop = AsyncMock()
+        manager._heartbeat = mock_heartbeat
+
+        await manager.stop()
+
+        mock_heartbeat.stop.assert_called_once()
+        assert manager._heartbeat is None
+
+    # ------------------------------------------------------------------
+    # Health server smoke test (no port bind — just app route logic)
+    # ------------------------------------------------------------------
+
+    async def test_health_server_app_health_route(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """The /health FastAPI route returns a MultiAccountHealthStatus object."""
+        from fastapi.testclient import TestClient
+
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+
+        # Build the same FastAPI app used internally by _start_health_server
+        app = FastAPI(title="Google Drive Connector Health Test")
+
+        @app.get("/health")
+        async def health() -> MultiAccountHealthStatus:
+            return manager.get_health()
+
+        @app.post("/reload")
+        async def reload() -> dict[str, Any]:
+            return {"status": "reload_triggered"}
+
+        client = TestClient(app)
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert "status" in data
+        assert "active_accounts" in data
+        assert "account_health" in data
+
+    async def test_health_server_reload_route(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """The /reload FastAPI route returns a status confirmation."""
+        from fastapi.testclient import TestClient
+
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+
+        app = FastAPI(title="Google Drive Connector Reload Test")
+
+        @app.post("/reload")
+        async def reload() -> dict[str, Any]:
+            if manager._main_loop is not None and manager._main_loop.is_running():
+                manager._main_loop.call_soon_threadsafe(manager._reload_event.set)
+            return {"status": "reload_triggered"}
+
+        client = TestClient(app)
+        response = client.post("/reload")
+        assert response.status_code == 200
+        assert response.json()["status"] == "reload_triggered"

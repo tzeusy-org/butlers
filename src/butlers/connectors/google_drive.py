@@ -39,13 +39,20 @@ import asyncio
 import logging
 import os
 import random
+import signal
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
 
+import uvicorn
+from fastapi import FastAPI
 from pydantic import BaseModel
 
+from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.mcp_client import CachedMCPClient
+from butlers.connectors.metrics import ConnectorMetrics
 from butlers.google_credentials import resolve_google_credentials
 
 if TYPE_CHECKING:
@@ -728,6 +735,8 @@ class GDriveConnectorManager:
         poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S,
         account_rescan_interval_s: int = _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S,
         cursor_pool: asyncpg.Pool | None = None,
+        health_port: int = _DEFAULT_HEALTH_PORT,
+        heartbeat_interval_s: int = 120,
     ) -> None:
         self._db_pool = db_pool
         self._credential_store = credential_store
@@ -735,6 +744,8 @@ class GDriveConnectorManager:
         self._poll_interval_s = poll_interval_s
         self._account_rescan_interval_s = account_rescan_interval_s
         self._cursor_pool = cursor_pool
+        self._health_port = health_port
+        self._heartbeat_interval_s = heartbeat_interval_s
 
         # Active account loops keyed by email
         self._loops: dict[str, GDriveAccountLoop] = {}
@@ -743,6 +754,21 @@ class GDriveConnectorManager:
         self._start_time = time.time()
         self._running = False
         self._reload_event = asyncio.Event()
+        # Capture the main event loop so background health-server thread can
+        # signal _reload_event via call_soon_threadsafe.
+        self._main_loop: asyncio.AbstractEventLoop | None = None
+
+        # Health server (started in background thread)
+        self._health_server: uvicorn.Server | None = None
+        self._health_thread: Thread | None = None
+
+        # Rescan task
+        self._rescan_task: asyncio.Task[None] | None = None
+
+        # Heartbeat (per-connector-manager, uses aggregated health)
+        self._heartbeat: ConnectorHeartbeat | None = None
+        self._mcp_client: CachedMCPClient | None = None
+        self._metrics: ConnectorMetrics | None = None
 
     async def discover_drive_accounts(self) -> list[Any]:
         """Query public.google_accounts for active accounts with drive scope (task 8.3).
@@ -892,10 +918,234 @@ class GDriveConnectorManager:
     async def stop(self) -> None:
         """Stop all account loops gracefully."""
         self._running = False
+
+        # Stop heartbeat
+        if self._heartbeat is not None:
+            await self._heartbeat.stop()
+            self._heartbeat = None
+
+        # Stop MCP client
+        if self._mcp_client is not None:
+            try:
+                await self._mcp_client.close()
+            except Exception:
+                pass
+            self._mcp_client = None
+
         for email, loop in list(self._loops.items()):
             logger.info("Drive manager: stopping loop for account %r", email)
             await loop.stop()
         self._loops.clear()
+        logger.info("Drive manager: all account loops stopped")
+
+    # ------------------------------------------------------------------
+    # Task 12.2: SIGHUP handler and reload_accounts MCP tool
+    # ------------------------------------------------------------------
+
+    def _setup_sighup(self) -> None:
+        """Register SIGHUP handler to trigger immediate account re-scan (task 12.2)."""
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _on_sighup() -> None:
+                logger.info("Drive manager: SIGHUP received — triggering account reload")
+                self._reload_event.set()
+
+            loop.add_signal_handler(signal.SIGHUP, _on_sighup)
+            logger.debug("Drive manager: SIGHUP handler registered")
+        except (OSError, NotImplementedError):
+            # SIGHUP not available on Windows
+            logger.debug("Drive manager: SIGHUP not available on this platform")
+
+    async def reload_accounts(self) -> dict[str, Any]:
+        """Trigger immediate account re-scan (connector_reload_accounts MCP tool, task 12.2).
+
+        Returns a summary of accounts added, removed, and unchanged.
+        """
+        added, removed, unchanged = await self.sync_accounts()
+        return {
+            "added": added,
+            "removed": removed,
+            "unchanged": unchanged,
+        }
+
+    # ------------------------------------------------------------------
+    # Task 12.4: Aggregated health HTTP endpoint
+    # ------------------------------------------------------------------
+
+    def _start_health_server(self) -> None:
+        """Start aggregated health endpoint in background thread (task 12.4)."""
+        app = FastAPI(title="Google Drive Connector Health")
+
+        @app.get("/health")
+        async def health() -> MultiAccountHealthStatus:
+            return self.get_health()
+
+        @app.post("/reload")
+        async def reload() -> dict[str, Any]:
+            """Trigger immediate account re-scan (connector_reload_accounts MCP tool)."""
+            # _reload_event was created in the main event loop. This endpoint runs
+            # inside asyncio.run() in a background thread (a separate event loop),
+            # so calling .set() directly would be unsafe. Use call_soon_threadsafe.
+            if self._main_loop is not None and self._main_loop.is_running():
+                self._main_loop.call_soon_threadsafe(self._reload_event.set)
+            return {"status": "reload_triggered"}
+
+        try:
+            from butlers.connectors.health_socket import make_health_socket
+
+            sock = make_health_socket("127.0.0.1", self._health_port)
+            config = uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=self._health_port,
+                log_level="warning",
+            )
+            self._health_server = uvicorn.Server(config)
+
+            def run_server() -> None:
+                asyncio.run(self._health_server.serve(sockets=[sock]))
+
+            self._health_thread = Thread(target=run_server, daemon=True)
+            self._health_thread.start()
+            logger.info("Drive manager: health server started on port %d", self._health_port)
+        except Exception as exc:
+            logger.warning("Drive manager: health server failed to start (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------
+    # Task 12.5: Heartbeat protocol
+    # ------------------------------------------------------------------
+
+    def _get_health_state_for_heartbeat(self) -> tuple[str, str | None]:
+        """Return (state, error_message) tuple for heartbeat reporting (task 12.5)."""
+        health = self.get_health()
+        error_msg: str | None = None
+        if health.status == "error":
+            # Aggregate first error message from account loops
+            for account in health.account_health:
+                if account.error:
+                    error_msg = account.error
+                    break
+        return health.status, error_msg
+
+    def _get_capabilities(self) -> dict[str, object]:
+        """Return connector capabilities dict for heartbeat advertisement (task 12.5)."""
+        return {
+            "multi_account": True,
+            "changes_polling": True,
+            "metadata_only": True,
+            "account_rescan": True,
+            "reload_accounts": True,
+        }
+
+    def _start_heartbeat(self) -> None:
+        """Initialize and start heartbeat background task (task 12.5).
+
+        Uses manager-level aggregated health for heartbeat state.
+        """
+        if self._mcp_client is None:
+            logger.debug("Drive manager: no MCP client — heartbeat not started")
+            return
+
+        if self._metrics is None:
+            self._metrics = ConnectorMetrics(
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity="google_drive:manager:process",
+            )
+
+        heartbeat_config = HeartbeatConfig(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity="google_drive:manager:process",
+            interval_s=self._heartbeat_interval_s,
+        )
+
+        self._heartbeat = ConnectorHeartbeat(
+            config=heartbeat_config,
+            mcp_client=self._mcp_client,
+            metrics=self._metrics,
+            get_health_state=self._get_health_state_for_heartbeat,
+            get_capabilities=self._get_capabilities,
+        )
+        self._heartbeat.start()
+        logger.info("Drive manager: heartbeat started (interval=%ds)", self._heartbeat_interval_s)
+
+    # ------------------------------------------------------------------
+    # Task 12.1: Periodic rescan loop + start/stop lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start the connector manager: discover accounts, start loops, run rescan loop.
+
+        Task 12.1: Implements periodic account re-scan at account_rescan_interval_s.
+        Task 12.2: Registers SIGHUP handler for on-demand reload.
+        Task 12.4: Starts aggregated health HTTP endpoint.
+        Task 12.5: Starts heartbeat protocol.
+        """
+        self._running = True
+
+        # Capture the running event loop so the background health-server thread
+        # can safely signal _reload_event via loop.call_soon_threadsafe.
+        self._main_loop = asyncio.get_running_loop()
+
+        # Start health server (task 12.4)
+        self._start_health_server()
+
+        # Register SIGHUP for on-demand reload (task 12.2)
+        self._setup_sighup()
+
+        # Initial account discovery (task 12.1)
+        added, removed, unchanged = await self.sync_accounts()
+        logger.info(
+            "Drive manager: initial account sync — added=%d removed=%d unchanged=%d",
+            len(added),
+            len(removed),
+            len(unchanged),
+        )
+
+        if not self._loops:
+            logger.warning(
+                "Drive manager: no qualifying Drive accounts found at startup. "
+                "Running in idle/degraded mode. Will retry at rescan interval=%ds.",
+                self._account_rescan_interval_s,
+            )
+
+        # Start heartbeat (task 12.5) — MCP client must be wired externally before start()
+        self._start_heartbeat()
+
+        # Main rescan loop (task 12.1)
+        try:
+            await self._run_rescan_loop()
+        finally:
+            await self.stop()
+
+    async def _run_rescan_loop(self) -> None:
+        """Periodically re-scan for account changes, also triggered by reload events.
+
+        Task 12.1: Periodic re-scan at account_rescan_interval_s.
+        Task 12.2: Also triggered by _reload_event (SIGHUP or /reload endpoint).
+        Task 12.3: Graceful loop shutdown — removed accounts have their loops stopped.
+        """
+        rescan_interval = self._account_rescan_interval_s
+        while self._running:
+            # Wait for either rescan interval or reload trigger
+            try:
+                await asyncio.wait_for(self._reload_event.wait(), timeout=rescan_interval)
+                logger.info("Drive manager: reload triggered — re-scanning accounts")
+                self._reload_event.clear()
+            except TimeoutError:
+                logger.debug("Drive manager: periodic re-scan triggered")
+
+            if not self._running:
+                break
+
+            added, removed, unchanged = await self.sync_accounts()
+            if added or removed:
+                logger.info(
+                    "Drive manager: account sync — added=%s removed=%s unchanged=%d",
+                    added,
+                    removed,
+                    len(unchanged),
+                )
 
 
 # ---------------------------------------------------------------------------
