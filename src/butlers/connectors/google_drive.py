@@ -782,7 +782,7 @@ class GDriveAccountLoop:
                 sender_identity=self.endpoint_identity,
                 subject_or_preview=name,
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
-                    decision.matched_rule_type or "connector_rule",
+                    "connector_rule",
                     decision.action,
                     decision.matched_rule_type or "unknown",
                 ),
