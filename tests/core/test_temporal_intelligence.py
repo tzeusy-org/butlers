@@ -1328,16 +1328,19 @@ class TestTickIntegration:
 
         This ensures each test that sets its own TracerProvider can do so cleanly,
         regardless of test execution order in the same worker process.
+
+        Uses unittest.mock.patch to reset the private OTel state rather than directly
+        mutating private attributes, which improves resilience across OTel SDK versions.
         """
+        import unittest.mock
+
         from opentelemetry import trace
 
-        def _reset():
-            trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
-            trace._TRACER_PROVIDER = None
-
-        _reset()
-        yield
-        _reset()
+        with (
+            unittest.mock.patch.object(trace, "_TRACER_PROVIDER_SET_ONCE", trace.Once()),
+            unittest.mock.patch.object(trace, "_TRACER_PROVIDER", None),
+        ):
+            yield
 
     # DDL for temporal intelligence tables
     _SCHEDULED_TASKS_DDL = """
@@ -1744,3 +1747,88 @@ class TestTickIntegration:
             "SELECT status FROM deferred_notifications WHERE id = $1", notif_id
         )
         assert row["status"] == "expired"
+
+    async def test_sync_schedules_inserts_deadline_task(self, pool):
+        """sync_schedules inserts a deadline entry with all temporal fields."""
+        from butlers.core.scheduler import sync_schedules
+
+        target = _future_date(60)
+        await sync_schedules(
+            pool,
+            [
+                {
+                    "name": "visa-renewal",
+                    "cron": "0 9 * * *",
+                    "task_type": "deadline",
+                    "prompt": "Check visa renewal status and notify",
+                    "dispatch_mode": "prompt",
+                    "target_date": target.isoformat(),
+                    "lead_time_days": 60,
+                    "alert_thresholds": [
+                        {"days_before": 60, "severity": "info"},
+                        {"days_before": 30, "severity": "warning"},
+                    ],
+                }
+            ],
+        )
+
+        row = await pool.fetchrow(
+            """
+            SELECT task_type, target_date, lead_time_days, alert_thresholds
+            FROM scheduled_tasks WHERE name = 'visa-renewal'
+            """
+        )
+        assert row is not None
+        assert row["task_type"] == "deadline"
+        assert row["target_date"] == target
+        assert row["lead_time_days"] == 60
+        thresholds = row["alert_thresholds"]
+        if isinstance(thresholds, str):
+            import json as _json
+
+            thresholds = _json.loads(thresholds)
+        assert len(thresholds) == 2
+
+    async def test_sync_schedules_deadline_missing_target_date_raises(self, pool):
+        """sync_schedules raises ValueError when task_type='deadline' has no target_date."""
+        from butlers.core.scheduler import sync_schedules
+
+        with pytest.raises(ValueError, match="target_date"):
+            await sync_schedules(
+                pool,
+                [
+                    {
+                        "name": "bad-deadline",
+                        "cron": "0 9 * * *",
+                        "task_type": "deadline",
+                        "prompt": "Some prompt calling notify",
+                        "dispatch_mode": "prompt",
+                        "lead_time_days": 30,
+                        "alert_thresholds": [{"days_before": 30, "severity": "info"}],
+                    }
+                ],
+            )
+
+    async def test_sync_schedules_cron_task_type_works_unchanged(self, pool):
+        """sync_schedules still inserts plain cron tasks when task_type='cron'."""
+        from butlers.core.scheduler import sync_schedules
+
+        await sync_schedules(
+            pool,
+            [
+                {
+                    "name": "morning-summary",
+                    "cron": "0 8 * * *",
+                    "task_type": "cron",
+                    "prompt": "Morning briefing — call notify to send summary",
+                    "dispatch_mode": "prompt",
+                }
+            ],
+        )
+
+        row = await pool.fetchrow(
+            "SELECT task_type FROM scheduled_tasks WHERE name = 'morning-summary'"
+        )
+        assert row is not None
+        # task_type column exists in this test DDL so it should be 'cron'
+        assert row["task_type"] == "cron"
