@@ -1171,7 +1171,7 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
                     """
                     SELECT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'shared'
+                        WHERE table_schema = 'public'
                           AND table_name = 'entities'
                           AND column_name = 'roles'
                     )
