@@ -54,7 +54,7 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   const [showCredentials, setShowCredentials] = useState(false);
   const [telegramApiHash, setTelegramApiHash] = useState("");
   const [telegramApiId, setTelegramApiId] = useState("");
-  const [telegramUserSession, setTelegramUserSession] = useState("");
+  // telegram_user_session — now managed via the interactive Telegram Session Setup card
   const [homeAssistantUrl, setHomeAssistantUrl] = useState("");
   const [homeAssistantToken, setHomeAssistantToken] = useState("");
 
@@ -88,7 +88,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
     const trimmedChatId = telegramChatId.trim();
     const trimmedApiHash = telegramApiHash.trim();
     const trimmedApiId = telegramApiId.trim();
-    const trimmedTelegramUserSession = telegramUserSession.trim();
     const trimmedHomeAssistantUrl = homeAssistantUrl.trim();
     const trimmedHomeAssistantToken = homeAssistantToken.trim();
 
@@ -98,7 +97,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
       !trimmedChatId &&
       !trimmedApiHash &&
       !trimmedApiId &&
-      !trimmedTelegramUserSession &&
       !trimmedHomeAssistantUrl &&
       !trimmedHomeAssistantToken
     ) {
@@ -168,20 +166,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
         );
       }
 
-      if (trimmedTelegramUserSession) {
-        promises.push(
-          createInfo.mutateAsync({
-            entityId,
-            request: {
-              type: "telegram_user_session",
-              value: trimmedTelegramUserSession,
-              is_primary: true,
-              secured: true,
-            },
-          }),
-        );
-      }
-
       if (trimmedHomeAssistantUrl) {
         promises.push(
           createInfo.mutateAsync({
@@ -217,7 +201,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
       setTelegramChatId("");
       setTelegramApiHash("");
       setTelegramApiId("");
-      setTelegramUserSession("");
       setHomeAssistantUrl("");
       setHomeAssistantToken("");
     } catch (err) {
@@ -346,17 +329,10 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
                         disabled={isSaving}
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="owner-tg-user-session">Telegram user session</Label>
-                      <Input
-                        id="owner-tg-user-session"
-                        type="password"
-                        placeholder="••••••••"
-                        value={telegramUserSession}
-                        onChange={(e) => setTelegramUserSession(e.target.value)}
-                        disabled={isSaving}
-                      />
-                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Telegram user session is generated interactively via the Telegram Session
+                      Setup card on this page.
+                    </p>
                     <div className="space-y-2">
                       <Label htmlFor="owner-home-assistant-url">Home Assistant URL</Label>
                       <Input

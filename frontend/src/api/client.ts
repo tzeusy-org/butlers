@@ -172,6 +172,11 @@ import type {
   Message,
   CreateConversationRequest,
   SendMessageRequest,
+  TelegramSendCodeRequest,
+  TelegramSendCodeResponse,
+  TelegramVerifyCodeRequest,
+  TelegramVerifyCodeResponse,
+  TelegramSessionStatusResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2907,4 +2912,33 @@ export function sendMessage(
       signal,
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Telegram Session Auth
+// ---------------------------------------------------------------------------
+
+/** POST /api/telegram/session/send-code — start Telegram login, send OTP */
+export function telegramSendCode(
+  request: TelegramSendCodeRequest,
+): Promise<TelegramSendCodeResponse> {
+  return apiFetch<TelegramSendCodeResponse>("/telegram/session/send-code", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+/** POST /api/telegram/session/verify — verify OTP code and persist session */
+export function telegramVerifyCode(
+  request: TelegramVerifyCodeRequest,
+): Promise<TelegramVerifyCodeResponse> {
+  return apiFetch<TelegramVerifyCodeResponse>("/telegram/session/verify", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+/** GET /api/telegram/session/status — check if Telegram credentials are configured */
+export function getTelegramSessionStatus(): Promise<TelegramSessionStatusResponse> {
+  return apiFetch<TelegramSessionStatusResponse>("/telegram/session/status");
 }

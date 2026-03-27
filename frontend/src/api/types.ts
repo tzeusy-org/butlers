@@ -2650,3 +2650,42 @@ export interface ConversationSseEvent {
   event: ConversationSseEventType;
   data: unknown;
 }
+
+// ---------------------------------------------------------------------------
+// Telegram Session Auth
+// ---------------------------------------------------------------------------
+
+/** Request body for POST /api/telegram/session/send-code */
+export interface TelegramSendCodeRequest {
+  api_id: number;
+  api_hash: string;
+  phone: string;
+}
+
+/** Response from POST /api/telegram/session/send-code */
+export interface TelegramSendCodeResponse {
+  session_token: string;
+  phone_code_hash: string;
+}
+
+/** Request body for POST /api/telegram/session/verify */
+export interface TelegramVerifyCodeRequest {
+  session_token: string;
+  code: string;
+  password?: string | null;
+}
+
+/** Response from POST /api/telegram/session/verify */
+export interface TelegramVerifyCodeResponse {
+  success: boolean;
+  user_name: string | null;
+  message: string;
+}
+
+/** Response from GET /api/telegram/session/status */
+export interface TelegramSessionStatusResponse {
+  has_api_id: boolean;
+  has_api_hash: boolean;
+  has_session: boolean;
+  ready: boolean;
+}

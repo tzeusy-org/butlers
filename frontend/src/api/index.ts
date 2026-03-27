@@ -573,3 +573,17 @@ export type {
   ConversationSseEventType,
   ConversationSseEvent,
 } from "./types.ts";
+
+export {
+  getTelegramSessionStatus,
+  telegramSendCode,
+  telegramVerifyCode,
+} from "./client.ts";
+
+export type {
+  TelegramSendCodeRequest,
+  TelegramSendCodeResponse,
+  TelegramVerifyCodeRequest,
+  TelegramVerifyCodeResponse,
+  TelegramSessionStatusResponse,
+} from "./types.ts";
