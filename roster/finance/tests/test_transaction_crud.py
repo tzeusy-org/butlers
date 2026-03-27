@@ -579,3 +579,724 @@ class TestToolRegistration:
 
         assert hasattr(module, "register_tools")
         assert callable(module.register_tools)
+
+
+# ---------------------------------------------------------------------------
+# Extended pool fixture with finance_002 columns
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pool_v2(provisioned_postgres_pool):
+    """Provision schema with finance_002 columns: version, is_category_locked, etc."""
+    async with provisioned_postgres_pool() as p:
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                institution TEXT NOT NULL,
+                type        TEXT NOT NULL
+                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
+                name        TEXT,
+                last_four   CHAR(4),
+                currency    CHAR(3) NOT NULL DEFAULT 'USD',
+                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
+                source_message_id TEXT,
+                external_id       TEXT,
+                posted_at         TIMESTAMPTZ NOT NULL,
+                merchant          TEXT NOT NULL,
+                description       TEXT,
+                amount            NUMERIC(14, 2) NOT NULL,
+                currency          CHAR(3) NOT NULL,
+                direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
+                category          TEXT NOT NULL,
+                category_source   TEXT NOT NULL DEFAULT 'explicit',
+                is_category_locked BOOLEAN NOT NULL DEFAULT false,
+                payment_method    TEXT,
+                receipt_url       TEXT,
+                external_ref      TEXT,
+                deleted_at        TIMESTAMPTZ,
+                is_duplicate      BOOLEAN NOT NULL DEFAULT false,
+                duplicate_of      UUID REFERENCES transactions(id),
+                tags              TEXT[] NOT NULL DEFAULT '{}',
+                version           INTEGER NOT NULL DEFAULT 1,
+                metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_dedupe
+                ON transactions (source_message_id, merchant, amount, posted_at)
+                WHERE source_message_id IS NOT NULL
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS transaction_corrections (
+                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                transaction_id UUID NOT NULL,
+                field_name     TEXT NOT NULL,
+                old_value      TEXT,
+                new_value      TEXT,
+                reason         TEXT,
+                source         TEXT NOT NULL DEFAULT 'manual',
+                created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS merchant_mappings (
+                id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                merchant_pattern TEXT NOT NULL UNIQUE,
+                category         TEXT NOT NULL,
+                confidence       NUMERIC(5, 4) NOT NULL DEFAULT 1.0,
+                sample_count     INTEGER NOT NULL DEFAULT 1,
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        yield p
+
+
+async def _insert_txn_v2(
+    pool,
+    merchant="Test Co",
+    amount=-10.00,
+    category="shopping",
+    description=None,
+    metadata=None,
+    account_id=None,
+    external_id=None,
+    source_message_id=None,
+) -> dict:
+    """Helper: insert a transaction into the v2 schema."""
+    from butlers.tools.finance.transactions import record_transaction
+
+    return await record_transaction(
+        pool=pool,
+        posted_at=_utcnow(),
+        merchant=merchant,
+        amount=amount,
+        currency="USD",
+        category=category,
+        description=description,
+        metadata=metadata,
+        account_id=account_id,
+        external_id=external_id,
+        source_message_id=source_message_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# record_transaction enhanced features
+# ---------------------------------------------------------------------------
+
+
+class TestRecordTransactionEnhanced:
+    """Tests for enhanced record_transaction with tiered dedup and merchant mapping."""
+
+    async def test_dedup_priority1_external_id(self, pool_v2):
+        """Priority-1 dedup: same (account_id, external_id) returns existing record."""
+        from butlers.tools.finance.transactions import record_transaction
+
+        # Create an account first (FK constraint requires it).
+        acct_row = await pool_v2.fetchrow(
+            """
+            INSERT INTO accounts (institution, type, currency)
+            VALUES ('TestBank', 'checking', 'USD')
+            RETURNING id
+            """
+        )
+        acct_id = str(acct_row["id"])
+        posted = _utcnow()
+        txn1 = await record_transaction(
+            pool=pool_v2,
+            posted_at=posted,
+            merchant="BankCo",
+            amount=-50.00,
+            currency="USD",
+            category="shopping",
+            account_id=acct_id,
+            external_id="EXTID-001",
+        )
+        # Second call with same external_id + account_id should return existing row.
+        txn2 = await record_transaction(
+            pool=pool_v2,
+            posted_at=posted,
+            merchant="BankCo",
+            amount=-50.00,
+            currency="USD",
+            category="shopping",
+            account_id=acct_id,
+            external_id="EXTID-001",
+        )
+        assert txn1["id"] == txn2["id"]
+
+    async def test_dedup_priority2_source_message_id(self, pool_v2):
+        """Priority-2 dedup: same (source_message_id, merchant, amount, posted_at)."""
+        from butlers.tools.finance.transactions import record_transaction
+
+        posted = _utcnow()
+        txn1 = await record_transaction(
+            pool=pool_v2,
+            posted_at=posted,
+            merchant="EmailCo",
+            amount=-25.00,
+            currency="USD",
+            category="bills",
+            source_message_id="msg-abc-123",
+        )
+        txn2 = await record_transaction(
+            pool=pool_v2,
+            posted_at=posted,
+            merchant="EmailCo",
+            amount=-25.00,
+            currency="USD",
+            category="bills",
+            source_message_id="msg-abc-123",
+        )
+        assert txn1["id"] == txn2["id"]
+
+    async def test_dedup_priority3_composite_fallback(self, pool_v2):
+        """Priority-3 dedup: same (account_id, posted_at, amount, merchant) with no ids."""
+        from butlers.tools.finance.transactions import record_transaction
+
+        # Create an account first (FK constraint requires it).
+        acct_row = await pool_v2.fetchrow(
+            """
+            INSERT INTO accounts (institution, type, currency)
+            VALUES ('CsvBank', 'checking', 'USD')
+            RETURNING id
+            """
+        )
+        acct_id = str(acct_row["id"])
+        posted = _utcnow()
+        txn1 = await record_transaction(
+            pool=pool_v2,
+            posted_at=posted,
+            merchant="CsvBank",
+            amount=-75.00,
+            currency="USD",
+            category="groceries",
+            account_id=acct_id,
+        )
+        # No external_id, no source_message_id — composite fallback should deduplicate.
+        txn2 = await record_transaction(
+            pool=pool_v2,
+            posted_at=posted,
+            merchant="CsvBank",
+            amount=-75.00,
+            currency="USD",
+            category="groceries",
+            account_id=acct_id,
+        )
+        assert txn1["id"] == txn2["id"]
+
+    async def test_auto_categorization_via_merchant_mapping(self, pool_v2):
+        """record_transaction auto-assigns category from merchant_mappings."""
+        from butlers.tools.finance.transactions import record_transaction
+
+        # Seed a merchant mapping.
+        await pool_v2.execute(
+            """
+            INSERT INTO merchant_mappings (merchant_pattern, category, confidence)
+            VALUES ('%Netflix%', 'subscriptions', 0.99)
+            """
+        )
+
+        txn = await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Netflix",
+            amount=-15.99,
+            currency="USD",
+            category="uncategorized",
+        )
+        assert txn["category"] == "subscriptions"
+        assert txn.get("category_source") == "auto"
+
+    async def test_explicit_category_not_overridden(self, pool_v2):
+        """record_transaction does NOT override an explicit (non-uncategorized) category."""
+        from butlers.tools.finance.transactions import record_transaction
+
+        await pool_v2.execute(
+            """
+            INSERT INTO merchant_mappings (merchant_pattern, category, confidence)
+            VALUES ('%Spotify%', 'subscriptions', 0.99)
+            """
+        )
+
+        txn = await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Spotify",
+            amount=-9.99,
+            currency="USD",
+            category="entertainment",  # explicit override
+        )
+        assert txn["category"] == "entertainment"
+
+
+# ---------------------------------------------------------------------------
+# list_transactions: direction and tags filters
+# ---------------------------------------------------------------------------
+
+
+class TestListTransactionsEnhanced:
+    """Tests for list_transactions with direction and tags filters."""
+
+    async def test_list_filter_by_direction_debit(self, pool_v2):
+        """list_transactions(direction='debit') returns only debit transactions."""
+        from butlers.tools.finance.transactions import list_transactions, record_transaction
+
+        await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Shop",
+            amount=-20.00,
+            currency="USD",
+            category="shopping",
+        )
+        await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Refund",
+            amount=20.00,
+            currency="USD",
+            category="refund",
+        )
+
+        result = await list_transactions(pool=pool_v2, direction="debit")
+        assert all(item["direction"] == "debit" for item in result["items"])
+
+    async def test_list_filter_by_direction_credit(self, pool_v2):
+        """list_transactions(direction='credit') returns only credit transactions."""
+        from butlers.tools.finance.transactions import list_transactions, record_transaction
+
+        await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Debit",
+            amount=-30.00,
+            currency="USD",
+            category="shopping",
+        )
+        await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Cashback",
+            amount=5.00,
+            currency="USD",
+            category="cashback",
+        )
+
+        result = await list_transactions(pool=pool_v2, direction="credit")
+        assert all(item["direction"] == "credit" for item in result["items"])
+
+    async def test_list_filter_by_tags(self, pool_v2):
+        """list_transactions(tags=['business']) returns only tagged transactions."""
+        from butlers.tools.finance.transactions import list_transactions, record_transaction
+
+        # Insert one tagged and one untagged transaction directly.
+        await pool_v2.execute(
+            """
+            INSERT INTO transactions (posted_at, merchant, amount, currency, direction,
+                                      category, tags)
+            VALUES (now(), 'BizCo', 50.00, 'USD', 'debit', 'business', ARRAY['business', 'tax'])
+            """
+        )
+        await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Personal",
+            amount=-10.00,
+            currency="USD",
+            category="shopping",
+        )
+
+        result = await list_transactions(pool=pool_v2, tags=["business"])
+        assert result["total"] >= 1
+        assert all("business" in (item.get("tags") or []) for item in result["items"])
+
+    async def test_list_direction_invalid_raises(self, pool_v2):
+        """list_transactions raises ValueError for invalid direction."""
+        from butlers.tools.finance.transactions import list_transactions
+
+        with pytest.raises(ValueError, match="direction must be"):
+            await list_transactions(pool=pool_v2, direction="invalid")
+
+    async def test_list_excludes_soft_deleted(self, pool_v2):
+        """list_transactions always excludes soft-deleted transactions."""
+        from butlers.tools.finance.transactions import (
+            delete_transaction,
+            list_transactions,
+            record_transaction,
+        )
+
+        txn = await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="DeleteMe",
+            amount=-5.00,
+            currency="USD",
+            category="test",
+        )
+        await delete_transaction(pool=pool_v2, transaction_id=txn["id"])
+
+        result = await list_transactions(pool=pool_v2, merchant="DeleteMe")
+        assert result["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# update_transaction: optimistic locking and category lock
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateTransactionEnhanced:
+    """Tests for update_transaction with version locking and category lock."""
+
+    async def test_category_update_sets_is_category_locked(self, pool_v2):
+        """Updating category sets is_category_locked=true and category_source='manual'."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        txn = await _insert_txn_v2(pool_v2, category="shopping")
+        result = await update_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            category="electronics",
+        )
+        assert result["category"] == "electronics"
+        assert result.get("is_category_locked") is True
+        assert result.get("category_source") == "manual"
+
+    async def test_version_incremented_on_update(self, pool_v2):
+        """update_transaction increments the version column."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        txn = await _insert_txn_v2(pool_v2)
+        initial_version = txn.get("version", 1)
+        result = await update_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            description="Updated",
+        )
+        assert result.get("version", initial_version) > initial_version
+
+    async def test_optimistic_locking_correct_version_succeeds(self, pool_v2):
+        """update_transaction with correct expected_version succeeds."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        txn = await _insert_txn_v2(pool_v2)
+        current_version = txn.get("version", 1)
+        result = await update_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            description="With lock",
+            expected_version=current_version,
+        )
+        assert result.get("description") == "With lock"
+
+    async def test_optimistic_locking_stale_version_fails(self, pool_v2):
+        """update_transaction with stale expected_version returns version_conflict error."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        txn = await _insert_txn_v2(pool_v2)
+        # First update to advance version.
+        await update_transaction(pool=pool_v2, transaction_id=txn["id"], description="First")
+
+        # Now try to update with the original version (now stale).
+        result = await update_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            description="Second",
+            expected_version=txn.get("version", 1),  # stale
+        )
+        assert result.get("error") == "version_conflict"
+        assert "transaction_id" in result
+
+    async def test_correction_logged_on_category_change(self, pool_v2):
+        """update_transaction records a correction entry when category changes."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        txn = await _insert_txn_v2(pool_v2, category="groceries")
+        await update_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            category="dining",
+            reason="user manual correction",
+        )
+        # Verify correction was recorded.
+        correction = await pool_v2.fetchrow(
+            """
+            SELECT * FROM transaction_corrections
+            WHERE transaction_id = $1::uuid AND field_name = 'category'
+            """,
+            txn["id"],
+        )
+        assert correction is not None
+        assert correction["old_value"] == "groceries"
+        assert correction["new_value"] == "dining"
+
+
+# ---------------------------------------------------------------------------
+# delete_transaction: version increment
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteTransactionEnhanced:
+    """Tests for delete_transaction version increment."""
+
+    async def test_delete_increments_version(self, pool_v2):
+        """delete_transaction increments the version column."""
+        from butlers.tools.finance.transactions import delete_transaction
+
+        txn = await _insert_txn_v2(pool_v2)
+        initial_version = txn.get("version", 1)
+        result = await delete_transaction(pool=pool_v2, transaction_id=txn["id"])
+        assert result.get("version", initial_version) > initial_version
+
+
+# ---------------------------------------------------------------------------
+# merge_duplicates: duplicate_ids list and audit trail
+# ---------------------------------------------------------------------------
+
+
+class TestMergeDuplicatesEnhanced:
+    """Tests for merge_duplicates with duplicate_ids list and finance_002 columns."""
+
+    async def test_merge_multiple_duplicates(self, pool_v2):
+        """merge_duplicates accepts a list of duplicate_ids and processes all."""
+        from butlers.tools.finance.transactions import merge_duplicates
+
+        keep = await _insert_txn_v2(pool_v2, merchant="MergeTest")
+        dup1 = await _insert_txn_v2(pool_v2, merchant="MergeTest")
+        dup2 = await _insert_txn_v2(pool_v2, merchant="MergeTest")
+
+        result = await merge_duplicates(
+            pool=pool_v2,
+            keep_id=keep["id"],
+            duplicate_ids=[dup1["id"], dup2["id"]],
+        )
+        assert result["id"] == keep["id"]
+
+        # Both duplicates should be soft-deleted.
+        for did in [dup1["id"], dup2["id"]]:
+            row = await pool_v2.fetchrow(
+                "SELECT deleted_at, is_duplicate FROM transactions WHERE id = $1::uuid", did
+            )
+            assert row["deleted_at"] is not None
+            assert row["is_duplicate"] is True
+
+    async def test_merge_sets_duplicate_of(self, pool_v2):
+        """merge_duplicates sets duplicate_of=keep_id on discarded records."""
+        from butlers.tools.finance.transactions import merge_duplicates
+
+        keep = await _insert_txn_v2(pool_v2, merchant="DupOf")
+        dup = await _insert_txn_v2(pool_v2, merchant="DupOf")
+
+        await merge_duplicates(
+            pool=pool_v2,
+            keep_id=keep["id"],
+            duplicate_ids=[dup["id"]],
+        )
+
+        row = await pool_v2.fetchrow(
+            "SELECT duplicate_of FROM transactions WHERE id = $1::uuid", dup["id"]
+        )
+        assert str(row["duplicate_of"]) == keep["id"]
+
+    async def test_merge_correction_logged(self, pool_v2):
+        """merge_duplicates records a correction entry in transaction_corrections."""
+        from butlers.tools.finance.transactions import merge_duplicates
+
+        keep = await _insert_txn_v2(pool_v2, merchant="AuditMerge")
+        dup = await _insert_txn_v2(pool_v2, merchant="AuditMerge")
+
+        await merge_duplicates(
+            pool=pool_v2,
+            keep_id=keep["id"],
+            duplicate_ids=[dup["id"]],
+        )
+
+        correction = await pool_v2.fetchrow(
+            """
+            SELECT * FROM transaction_corrections
+            WHERE transaction_id = $1::uuid AND field_name = 'merge'
+            """,
+            keep["id"],
+        )
+        assert correction is not None
+        assert dup["id"] in correction["new_value"]
+
+    async def test_merge_keep_id_in_duplicate_ids_returns_error(self, pool_v2):
+        """merge_duplicates returns error when keep_id appears in duplicate_ids."""
+        from butlers.tools.finance.transactions import merge_duplicates
+
+        txn = await _insert_txn_v2(pool_v2)
+        result = await merge_duplicates(
+            pool=pool_v2,
+            keep_id=txn["id"],
+            duplicate_ids=[txn["id"]],
+        )
+        assert "error" in result
+
+    async def test_merge_backward_compat_discard_id(self, pool_v2):
+        """merge_duplicates still works with legacy discard_id parameter."""
+        from butlers.tools.finance.transactions import merge_duplicates
+
+        keep = await _insert_txn_v2(pool_v2, merchant="LegacyMerge")
+        dup = await _insert_txn_v2(pool_v2, merchant="LegacyMerge")
+
+        result = await merge_duplicates(
+            pool=pool_v2,
+            keep_id=keep["id"],
+            discard_id=dup["id"],
+        )
+        assert result["id"] == keep["id"]
+
+
+# ---------------------------------------------------------------------------
+# split_transaction: metadata.split_from and corrections
+# ---------------------------------------------------------------------------
+
+
+class TestSplitTransactionEnhanced:
+    """Tests for split_transaction with metadata.split_from and corrections."""
+
+    async def test_split_children_have_split_from_in_metadata(self, pool_v2):
+        """Split records have metadata.split_from set to the original transaction ID."""
+        from butlers.tools.finance.transactions import split_transaction
+
+        txn = await _insert_txn_v2(pool_v2, amount=-100.00)
+        result = await split_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            splits=[
+                {"amount": "60.00", "category": "groceries"},
+                {"amount": "40.00", "category": "dining"},
+            ],
+        )
+        for child in result["splits"]:
+            assert child.get("metadata", {}).get("split_from") == txn["id"]
+
+    async def test_split_correction_logged(self, pool_v2):
+        """split_transaction records a correction entry in transaction_corrections."""
+        from butlers.tools.finance.transactions import split_transaction
+
+        txn = await _insert_txn_v2(pool_v2, amount=-50.00)
+        await split_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            splits=[
+                {"amount": "30.00", "category": "a"},
+                {"amount": "20.00", "category": "b"},
+            ],
+        )
+
+        correction = await pool_v2.fetchrow(
+            """
+            SELECT * FROM transaction_corrections
+            WHERE transaction_id = $1::uuid AND field_name = 'split'
+            """,
+            txn["id"],
+        )
+        assert correction is not None
+
+
+# ---------------------------------------------------------------------------
+# bulk_recategorize: create_rule and is_category_locked
+# ---------------------------------------------------------------------------
+
+
+class TestBulkRecategorizeEnhanced:
+    """Tests for bulk_recategorize with create_rule and category lock."""
+
+    async def test_bulk_recategorize_create_rule_upserts_mapping(self, pool_v2):
+        """bulk_recategorize with create_rule=True upserts a merchant_mappings row."""
+        from butlers.tools.finance.transactions import bulk_recategorize
+
+        await _insert_txn_v2(pool_v2, merchant="RuleTest Corp", category="misc")
+        result = await bulk_recategorize(
+            pool=pool_v2,
+            merchant_pattern="%RuleTest%",
+            new_category="services",
+            create_rule=True,
+        )
+        assert result["create_rule"] is True
+
+        # Verify mapping was created.
+        mapping = await pool_v2.fetchrow(
+            "SELECT * FROM merchant_mappings WHERE merchant_pattern = $1",
+            "%RuleTest%",
+        )
+        assert mapping is not None
+        assert mapping["category"] == "services"
+
+    async def test_bulk_recategorize_skips_locked_transactions(self, pool_v2):
+        """bulk_recategorize does not update category-locked transactions."""
+        from butlers.tools.finance.transactions import bulk_recategorize, update_transaction
+
+        txn = await _insert_txn_v2(pool_v2, merchant="LockedMerchant", category="original")
+        # Lock the category by doing a manual update.
+        await update_transaction(pool=pool_v2, transaction_id=txn["id"], category="manual_cat")
+        # Now the transaction should be category-locked.
+
+        result = await bulk_recategorize(
+            pool=pool_v2,
+            merchant_pattern="%LockedMerchant%",
+            new_category="bulk_override",
+        )
+        # The locked transaction should not be updated.
+        assert result["updated"] == 0
+
+    async def test_bulk_recategorize_create_rule_response_key(self, pool_v2):
+        """bulk_recategorize result always includes create_rule key."""
+        from butlers.tools.finance.transactions import bulk_recategorize
+
+        result = await bulk_recategorize(
+            pool=pool_v2,
+            merchant_pattern="%NothingMatches%",
+            new_category="test",
+        )
+        assert "create_rule" in result
+        assert result["create_rule"] is False
+
+
+# ---------------------------------------------------------------------------
+# spending_summary: deleted_at IS NULL filter
+# ---------------------------------------------------------------------------
+
+
+class TestSpendingSummaryEnhanced:
+    """Tests for spending_summary with deleted_at exclusion."""
+
+    async def test_spending_summary_excludes_deleted(self, pool_v2):
+        """spending_summary does not count soft-deleted transactions."""
+        from datetime import date
+
+        from butlers.tools.finance.spending import spending_summary
+        from butlers.tools.finance.transactions import delete_transaction, record_transaction
+
+        today = _utcnow()
+        txn = await record_transaction(
+            pool=pool_v2,
+            posted_at=today,
+            merchant="DeletedSpend",
+            amount=-200.00,
+            currency="USD",
+            category="shopping",
+        )
+        await delete_transaction(pool=pool_v2, transaction_id=txn["id"])
+
+        result = await spending_summary(
+            pool=pool_v2,
+            start_date=date(today.year, today.month, today.day),
+            end_date=date(today.year, today.month, today.day),
+        )
+        # The deleted transaction should not appear in the total.
+        assert Decimal(result["total_spend"]) == Decimal("0")

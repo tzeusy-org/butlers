@@ -98,10 +98,23 @@ def register_tools(mcp: Any, module: Any) -> None:
         account_id: str | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
+        direction: str | None = None,
+        tags: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Return a paginated, filtered list of transactions."""
+        """Return a paginated, filtered list of transactions.
+
+        direction: 'debit' (money out) or 'credit' (money in / refund), or None for both.
+        tags: JSON string — array of tag strings; returns only transactions containing
+          ALL provided tags (requires finance_002 migration for tags column).
+        Soft-deleted transactions are always excluded.
+        """
+        parsed_tags: list[str] | None = None
+        if tags is not None:
+            import json as _json
+
+            parsed_tags = _json.loads(tags)
         return await _transactions.list_transactions(
             module._get_pool(),
             start_date=(datetime.fromisoformat(start_date) if start_date is not None else None),
@@ -111,6 +124,8 @@ def register_tools(mcp: Any, module: Any) -> None:
             account_id=account_id,
             min_amount=min_amount,
             max_amount=max_amount,
+            direction=direction,
+            tags=parsed_tags,
             limit=limit,
             offset=offset,
         )
@@ -549,11 +564,20 @@ def register_tools(mcp: Any, module: Any) -> None:
             merchant: str | None = None,
             description: str | None = None,
             metadata: str | None = None,
+            expected_version: int | None = None,
+            reason: str | None = None,
         ) -> dict[str, Any]:
             """Update fields on an existing transaction record.
 
             Only provided fields are updated; omitted fields retain their current values.
+            When category is changed, category_source is set to 'manual' and
+            is_category_locked is set to true (prevents future auto-recategorization).
             Triggers merchant category mapping refresh when category is changed.
+
+            expected_version: When provided and the version column exists (finance_002),
+              the update will only succeed if the row's current version matches
+              (optimistic locking). Returns a version_conflict error on mismatch.
+            reason: Optional human-readable reason for the update, recorded in corrections.
             """
             return await _transactions.update_transaction(
                 module._get_pool(),
@@ -562,6 +586,8 @@ def register_tools(mcp: Any, module: Any) -> None:
                 merchant=merchant,
                 description=description,
                 metadata=_parse_metadata(metadata),
+                expected_version=expected_version,
+                reason=reason,
             )
 
     if hasattr(_transactions, "delete_transaction"):
@@ -584,15 +610,30 @@ def register_tools(mcp: Any, module: Any) -> None:
         @mcp.tool()
         async def merge_duplicates(
             keep_id: str,
-            discard_id: str,
+            duplicate_ids: str | None = None,
+            discard_id: str | None = None,
         ) -> dict[str, Any]:
-            """Merge two duplicate transactions, keeping one and soft-deleting the other.
+            """Merge duplicate transactions, keeping one canonical and soft-deleting the rest.
 
-            Merges metadata from the discarded record into the kept record before deletion.
+
+            keep_id: UUID of the transaction to keep (canonical record).
+            duplicate_ids: JSON string — array of transaction IDs to mark as duplicates
+              and soft-delete. Each duplicate gets is_duplicate=true and duplicate_of=keep_id
+              (when those columns exist from finance_002 migration).
+            discard_id: Legacy single-record interface. Ignored when duplicate_ids is provided.
+
+            Merges metadata from all discarded records into the kept record before deletion.
+            Records corrections in transaction_corrections for the audit trail.
             """
+            import json as _json
+
+            parsed_duplicate_ids: list[str] | None = None
+            if duplicate_ids is not None:
+                parsed_duplicate_ids = _json.loads(duplicate_ids)
             return await _transactions.merge_duplicates(
                 module._get_pool(),
                 keep_id=keep_id,
+                duplicate_ids=parsed_duplicate_ids,
                 discard_id=discard_id,
             )
 
@@ -628,17 +669,24 @@ def register_tools(mcp: Any, module: Any) -> None:
             merchant_pattern: str,
             new_category: str,
             dry_run: bool = False,
+            create_rule: bool = False,
         ) -> dict[str, Any]:
             """Reassign category for all transactions matching a merchant pattern (ILIKE).
 
+            Excludes soft-deleted transactions and category-locked transactions
+            (is_category_locked=true, from finance_002 migration).
+
             dry_run=True returns a preview of affected transactions without modifying them.
-            Returns: {matched, updated, dry_run, sample_transactions}
+            create_rule=True upserts a merchant_mappings rule for future auto-categorization.
+
+            Returns: {matched, updated, dry_run, create_rule, sample_transactions}
             """
             return await _transactions.bulk_recategorize(
                 module._get_pool(),
                 merchant_pattern=merchant_pattern,
                 new_category=new_category,
                 dry_run=dry_run,
+                create_rule=create_rule,
             )
 
     # =================================================================
