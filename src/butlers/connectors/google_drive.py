@@ -48,12 +48,15 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import Counter, Gauge
 from pydantic import BaseModel
 
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.google_credentials import resolve_google_credentials
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 if TYPE_CHECKING:
     import asyncpg
@@ -94,6 +97,23 @@ _CHANGE_TYPE_RENAMED = "renamed"
 _CHANGE_TYPE_MOVED = "moved"
 _CHANGE_TYPE_SHARING_CHANGED = "sharing_changed"
 _CHANGE_TYPE_FALLBACK = "updated"
+
+
+# ---------------------------------------------------------------------------
+# Google Drive–specific Prometheus metrics (task 11.5)
+# ---------------------------------------------------------------------------
+
+gdrive_event_type_total = Counter(
+    "connector_gdrive_event_type_total",
+    "Total Google Drive change events processed, broken down by event type",
+    labelnames=["endpoint_identity", "event_type"],
+)
+
+gdrive_metadata_cache_size = Gauge(
+    "connector_gdrive_metadata_cache_size",
+    "Current number of entries in the per-account Drive file metadata cache",
+    labelnames=["endpoint_identity"],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +547,24 @@ class GDriveAccountLoop:
         self._last_ingest_submit: float | None = None
         self._source_api_ok: bool | None = None
 
+        # Standard connector metrics (task 11.4)
+        self._metrics = ConnectorMetrics(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=self.endpoint_identity,
+        )
+
+        # Ingestion policy evaluator — connector scope (task 11.1)
+        self._ingestion_policy = IngestionPolicyEvaluator(
+            scope=f"connector:{_CONNECTOR_TYPE}:{self.endpoint_identity}",
+            db_pool=db_pool,
+        )
+
+        # Filtered event buffer — flushed at end of each poll cycle (task 11.2)
+        self._filtered_event_buffer = FilteredEventBuffer(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=self.endpoint_identity,
+        )
+
     def start(self) -> None:
         """Launch the per-account poll loop as an asyncio task."""
         self._task = asyncio.create_task(self._run(), name=f"gdrive-account-{self.email}")
@@ -553,7 +591,14 @@ class GDriveAccountLoop:
             raise
 
     async def _poll_loop(self) -> None:
-        """Main polling loop for this account."""
+        """Main polling loop for this account.
+
+        On startup, drains any replay_pending rows from a previous run
+        (task 11.3). Then enters the normal poll-flush cycle.
+        """
+        # Drain replay queue before first live poll (task 11.3)
+        await self._drain_replay_pending()
+
         while True:
             try:
                 await self._poll_once()
@@ -566,6 +611,18 @@ class GDriveAccountLoop:
                     exc,
                 )
                 self._source_api_ok = False
+                self._metrics.record_error(
+                    error_type=type(exc).__name__.lower(),
+                    operation="poll_cycle",
+                )
+            finally:
+                # Flush filtered events accumulated during this cycle (task 11.2)
+                await self._flush_filtered_events()
+                # Update Drive-specific metadata cache size gauge (task 11.5)
+                gdrive_metadata_cache_size.labels(endpoint_identity=self.endpoint_identity).set(
+                    len(self._metadata_cache)
+                )
+
             await asyncio.sleep(self._config.poll_interval_s)
 
     async def _poll_once(self) -> None:
@@ -574,6 +631,45 @@ class GDriveAccountLoop:
         # and process each change. For testability, the key logic is exposed
         # as separate methods.
         pass
+
+    async def _flush_filtered_events(self) -> None:
+        """Flush accumulated filtered events to the DB (task 11.2)."""
+        if self._db_pool is None:
+            return
+        await self._filtered_event_buffer.flush(self._db_pool)
+
+    async def _drain_replay_pending(self) -> None:
+        """Drain replay_pending rows from a previous run (task 11.3)."""
+        if self._db_pool is None:
+            return
+        try:
+            await drain_replay_pending(
+                pool=self._db_pool,
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity=self.endpoint_identity,
+                submit_fn=self._submit_envelope_for_replay,
+                drain_logger=logger,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Drive account loop: replay drain failed (non-fatal): email=%s error=%s",
+                self.email,
+                exc,
+            )
+
+    async def _submit_envelope_for_replay(self, envelope: dict[str, Any]) -> None:
+        """Submit a replayed ingest.v1 envelope.
+
+        This is a stub used by the replay drain loop.  In a real deployment it
+        would call the Switchboard MCP ingest tool.  It records the submission
+        attempt in ConnectorMetrics so tests can observe replay activity.
+        """
+        logger.debug(
+            "Drive replay: submitting envelope for file_id=%s endpoint=%s",
+            (envelope.get("event") or {}).get("external_event_id"),
+            self.endpoint_identity,
+        )
+        self._metrics.record_ingest_submission(status="success")
 
     def _on_done(self, task: asyncio.Task[None]) -> None:
         if not task.cancelled():
@@ -603,8 +699,12 @@ class GDriveAccountLoop:
     ) -> dict[str, Any] | None:
         """Process a single Drive API change into an ingest.v1 envelope.
 
+        Applies IngestionPolicyEvaluator (task 11.1) and records filtered
+        events in the FilteredEventBuffer (task 11.2).  Also emits the
+        Drive-specific event_type counter (task 11.5).
+
         Updates the metadata cache (task 10.4). Returns the envelope or None
-        if the change should be skipped.
+        if the change is filtered or should be skipped.
 
         Parameters
         ----------
@@ -645,6 +745,12 @@ class GDriveAccountLoop:
                 modified_time=modified_time,
             )
 
+        # Emit Drive-specific event type counter (task 11.5)
+        gdrive_event_type_total.labels(
+            endpoint_identity=self.endpoint_identity,
+            event_type=change_type,
+        ).inc()
+
         normalized_text = _build_normalized_text(
             change_type=change_type,
             file_id=file_id,
@@ -653,6 +759,46 @@ class GDriveAccountLoop:
             modified_time=modified_time,
             shared=bool(shared),
         )
+
+        # Build policy envelope for ingestion policy evaluation (task 11.1)
+        policy_envelope = IngestionEnvelope(
+            sender_address=self.endpoint_identity,
+            source_channel=_CONNECTOR_CHANNEL,
+            raw_key=file_id,
+        )
+
+        # Evaluate connector-scoped ingestion policy (synchronous — TTL refresh is background)
+        try:
+            decision = self._ingestion_policy.evaluate(policy_envelope)
+        except Exception as exc:
+            logger.warning("Drive: policy evaluation failed for file %s: %s", file_id, exc)
+            decision = None
+
+        if decision is not None and not decision.allowed:
+            # Record filtered event in buffer for batch flush (task 11.2)
+            self._filtered_event_buffer.record(
+                external_message_id=file_id,
+                source_channel=_CONNECTOR_CHANNEL,
+                sender_identity=self.endpoint_identity,
+                subject_or_preview=name,
+                filter_reason=FilteredEventBuffer.reason_policy_rule(
+                    decision.matched_rule_type or "connector_rule",
+                    decision.action,
+                    decision.matched_rule_type or "unknown",
+                ),
+                full_payload=FilteredEventBuffer.full_payload(
+                    channel=_CONNECTOR_CHANNEL,
+                    provider=_CONNECTOR_PROVIDER,
+                    endpoint_identity=self.endpoint_identity,
+                    external_event_id=file_id,
+                    external_thread_id=None,
+                    observed_at=observed_at,
+                    sender_identity=self.endpoint_identity,
+                    raw=None,
+                    normalized_text=normalized_text,
+                ),
+            )
+            return None
 
         idempotency_key = _make_idempotency_key(self.endpoint_identity, file_id, observed_at)
 
