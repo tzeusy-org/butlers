@@ -1004,8 +1004,8 @@ class TestQuietHoursEnforcement:
     def test_deliver_at_with_positive_utc_offset_timezone(self):
         """compute_deliver_at handles positive-offset timezones (e.g., Asia/Tokyo UTC+9).
 
-        If now is 2026-01-15 22:00 UTC (= 07:00 JST Jan 16), and batch_delivery_time is 07:00,
-        07:00 JST on Jan 16 is exactly 'now' in JST — already equal so schedule tomorrow.
+        If now is 2026-01-15 23:00 UTC (= 2026-01-16 08:00 JST), and batch_delivery_time is 09:00,
+        08:00 JST is before 09:00 JST — batch time still ahead today, so deliver today.
         """
         from zoneinfo import ZoneInfo
 
@@ -1031,9 +1031,31 @@ class TestQuietHoursEnforcement:
         deliver_at = compute_deliver_at(prefs=prefs, now=now)
 
         assert deliver_at.tzinfo is not None
-        # The returned value should be expressible in UTC
+        # Result must be UTC (zero UTC offset), not just any timezone-aware datetime
         utc_offset = deliver_at.utcoffset()
         assert utc_offset is not None
+        assert utc_offset.total_seconds() == 0, (
+            f"Expected UTC result (zero offset) but got {deliver_at.tzinfo!r}"
+            f" with offset {utc_offset}"
+        )
+
+    def test_deliver_at_raises_for_invalid_timezone(self):
+        """compute_deliver_at raises ValueError for unrecognized timezone names."""
+        from butlers.core.temporal.delivery import compute_deliver_at
+
+        prefs = self._make_prefs(timezone="Invalid/Zone")
+        now = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+        with pytest.raises(ValueError, match="Unknown timezone"):
+            compute_deliver_at(prefs=prefs, now=now)
+
+    def test_deliver_at_raises_for_naive_now(self):
+        """compute_deliver_at raises ValueError when now is a naive datetime."""
+        from butlers.core.temporal.delivery import compute_deliver_at
+
+        prefs = self._make_prefs(timezone="UTC")
+        now_naive = datetime(2026, 1, 15, 12, 0)  # no tzinfo
+        with pytest.raises(ValueError, match="timezone-aware"):
+            compute_deliver_at(prefs=prefs, now=now_naive)
 
 
 # ---------------------------------------------------------------------------

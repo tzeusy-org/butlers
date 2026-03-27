@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def is_in_quiet_hours(
@@ -141,9 +141,15 @@ def compute_deliver_at(
     Returns:
         UTC datetime of the next batch delivery time.
     """
+    if now.tzinfo is None:
+        raise ValueError("now must be a timezone-aware datetime")
+
     batch_time = _parse_time(prefs.get("batch_delivery_time", "07:00"))
     tz_name = prefs.get("timezone", "UTC")
-    tz = ZoneInfo(tz_name)
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError as e:
+        raise ValueError(f"Unknown timezone: {tz_name!r}") from e
 
     # Convert `now` to the user's local timezone to determine their "today"
     now_local = now.astimezone(tz)
