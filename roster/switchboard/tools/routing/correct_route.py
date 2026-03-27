@@ -158,6 +158,8 @@ async def correct_route(
     # Include received_at in the WHERE clause to allow partition pruning on
     # month-partitioned message_inbox tables (PRIMARY KEY is (received_at, id)).
     # We use a 1-day window around the ingestion timestamp to handle minor clock skew.
+    window_start = received_at - timedelta(days=1)
+    window_end = received_at + timedelta(days=1)
     inbox_row = await pool.fetchrow(
         """
         SELECT
@@ -170,11 +172,12 @@ async def correct_route(
             attachments
         FROM message_inbox
         WHERE id = $1
-          AND received_at >= $2 - interval '1 day'
-          AND received_at <= $2 + interval '1 day'
+          AND received_at >= $2
+          AND received_at <= $3
         """,
         request_id,
-        received_at,
+        window_start,
+        window_end,
     )
 
     if inbox_row is None:

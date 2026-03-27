@@ -640,6 +640,7 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
   const events = allEvents.filter((e) => enabledStatuses.has(e.status));
 
   // Auto-load more pages when too few rows survive the client-side filter
+  /* eslint-disable react-hooks/set-state-in-effect -- auto-pagination intentionally advances offset based on fetched/filter state. */
   useEffect(() => {
     if (
       !isLoading &&
@@ -650,6 +651,7 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
       setOffset((prev) => prev + PAGE_SIZE);
     }
   }, [isLoading, isError, hasMore, events.length]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleToggle = useCallback(
     (id: string) => {

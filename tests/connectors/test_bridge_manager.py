@@ -152,6 +152,11 @@ class TestClassifyExit:
         mgr._classify_exit(42)
         assert not mgr.is_degraded
 
+    def test_none_exit_triggers_restart(self):
+        mgr = self._mgr()
+        assert mgr._classify_exit(None) is True
+        assert not mgr.is_degraded
+
 
 # ---------------------------------------------------------------------------
 # is_running property

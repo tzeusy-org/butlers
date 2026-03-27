@@ -90,6 +90,7 @@ export function WhatsAppPairModal({
   // Start pairing when modal opens
   // ---------------------------------------------------------------------------
 
+  /* eslint-disable react-hooks/set-state-in-effect -- modal state transitions are intentionally driven by open/close lifecycle. */
   useEffect(() => {
     if (!open) {
       // Reset state when modal is closed
@@ -112,11 +113,13 @@ export function WhatsAppPairModal({
       fetchQr();
     }
   }, [open, modalState, fetchQr]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // ---------------------------------------------------------------------------
   // Handle QR expiry — auto-refresh
   // ---------------------------------------------------------------------------
 
+  /* eslint-disable react-hooks/set-state-in-effect -- QR expiry transitions intentionally update local state machine. */
   useEffect(() => {
     if (modalState !== "qr_ready" || !qrExpiresAt) return;
 
@@ -137,11 +140,13 @@ export function WhatsAppPairModal({
 
     return () => clearTimeout(refreshTimer);
   }, [modalState, qrExpiresAt, fetchQr]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // ---------------------------------------------------------------------------
   // Handle polling result
   // ---------------------------------------------------------------------------
 
+  /* eslint-disable react-hooks/set-state-in-effect -- polling responses intentionally drive local modal state transitions. */
   useEffect(() => {
     if (!pollQuery.data) return;
 
@@ -166,6 +171,7 @@ export function WhatsAppPairModal({
     }
     // 'waiting' requires no action
   }, [pollQuery.data, onPaired, modalState, fetchQr]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // ---------------------------------------------------------------------------
   // Cleanup on unmount

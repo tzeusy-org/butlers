@@ -347,6 +347,9 @@ make test-qg
 ### Switchboard no-tool fallback routing contract
 - In `src/butlers/modules/pipeline.py`, when LLM output includes no recognized `route_to_butler` calls, fallback routing should first attempt unambiguous target inference from CC summary text patterns like `routed to <butler>` (restricted to currently available butlers) before defaulting to `general`.
 
+### Switchboard correct_route inbox lookup contract
+- `roster/switchboard/tools/routing/correct_route.py` should pass explicit timestamp bounds (`window_start`, `window_end`) as separate bind parameters when filtering `message_inbox.received_at`; avoid expressions like `$2 ± interval '1 day'` on untyped bind params because asyncpg can infer `interval` and trigger `UndefinedFunctionError` (`timestamptz >= interval`).
+
 ### Runtime tool-call capture contract
 - `src/butlers/core/spawner.py` augments adapter-parsed `tool_calls` with daemon-observed MCP executions captured via `src/butlers/core/tool_call_capture.py`, keyed by `runtime_session_id`.
 - Switchboard MCP URLs include `runtime_session_id=<session_uuid>` query params so daemon request middleware (`_McpRuntimeSessionGuard` in `src/butlers/daemon.py`) can bind incoming tool invocations to the active runtime session and capture ground-truth tool calls for fallback decisions.

@@ -38,9 +38,28 @@ pytestmark = [
 _GEMINI_ARGS = ["--sandbox=false"]
 
 
+def _requires_interactive_auth(output: str) -> bool:
+    """True when output indicates Gemini CLI is asking for interactive OAuth."""
+    normalized = output.lower()
+    auth_markers = (
+        "please visit the following url to authorize the application",
+        "accounts.google.com/o/oauth2",
+        "codeassist.google.com/authcode",
+    )
+    return any(marker in normalized for marker in auth_markers)
+
+
+def _skip_if_auth_required(stdout: str, stderr: str) -> None:
+    """Skip when Gemini CLI is installed but requires interactive OAuth login."""
+    if _requires_interactive_auth(f"{stdout}\n{stderr}"):
+        pytest.skip("Gemini CLI requires interactive OAuth login in this environment")
+
+
 def _run_gemini(prompt: str, timeout: int = 120) -> tuple[str, str, int]:
     """Run ``gemini --sandbox=false --prompt <prompt>`` via shared helper."""
-    return run_cli("gemini", [*_GEMINI_ARGS, "--prompt"], prompt, timeout=timeout)
+    stdout, stderr, rc = run_cli("gemini", [*_GEMINI_ARGS, "--prompt"], prompt, timeout=timeout)
+    _skip_if_auth_required(stdout, stderr)
+    return stdout, stderr, rc
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +195,12 @@ class TestAdapterInvoke:
             env=dict(os.environ),
             timeout=120,
         )
+
+        if not tool_calls:
+            info = adapter.last_process_info or {}
+            combined_output = f"{result_text or ''}\n{info.get('stderr', '')}"
+            if _requires_interactive_auth(combined_output):
+                pytest.skip("Gemini CLI requires interactive OAuth login in this environment")
 
         assert len(tool_calls) >= 1, f"Expected tool calls, got: {tool_calls}"
         tc = tool_calls[0]

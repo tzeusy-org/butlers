@@ -454,7 +454,7 @@ class BridgeSubprocessManager:
         # Wait for the process to terminate
         try:
             await asyncio.wait_for(self._process.wait(), timeout=_GRACEFUL_SHUTDOWN_TIMEOUT_S)
-            logger.info("Bridge exited cleanly (rc=%d)", self._process.returncode)
+            logger.info("Bridge exited cleanly (rc=%s)", self._process.returncode)
             return
         except TimeoutError:
             pass
@@ -506,7 +506,7 @@ class BridgeSubprocessManager:
                         pass
 
             if self._stopping:
-                logger.debug("Bridge exited during shutdown (rc=%d) — not restarting", rc)
+                logger.debug("Bridge exited during shutdown (rc=%s) — not restarting", rc)
                 break
 
             should_restart = self._classify_exit(rc)
@@ -558,11 +558,15 @@ class BridgeSubprocessManager:
 
         logger.debug("Bridge monitor loop exiting")
 
-    def _classify_exit(self, rc: int) -> bool:
+    def _classify_exit(self, rc: int | None) -> bool:
         """Decide whether to restart based on the exit code.
 
         Returns True if the bridge should be restarted, False otherwise.
         """
+        if rc is None:
+            logger.error("Bridge exited with unknown return code (rc=None) — scheduling restart")
+            return True
+
         if rc == _EXIT_CLEAN:
             logger.info("Bridge exited cleanly (rc=0) — no restart")
             return False
@@ -579,7 +583,7 @@ class BridgeSubprocessManager:
             self._set_degraded("Session invalidated — re-pair required")
             return False
 
-        logger.error("Bridge exited unexpectedly (rc=%d) — scheduling restart", rc)
+        logger.error("Bridge exited unexpectedly (rc=%s) — scheduling restart", rc)
         return True
 
     def _set_degraded(self, reason: str) -> None:

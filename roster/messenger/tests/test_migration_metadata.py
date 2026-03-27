@@ -51,7 +51,15 @@ def test_migration_branch_label(migration_file: Path) -> None:
 
 def test_msg_001_is_branch_root():
     """msg_001 must be the branch root with no down_revision."""
-    module = _load_migration("msg_001_create_delivery_tables.py")
+    root_module = None
+    for migration_file in _get_migration_files():
+        module = _load_migration(migration_file.name)
+        if module.revision == "msg_001":
+            root_module = module
+            break
+
+    assert root_module is not None, "Expected a messenger migration with revision 'msg_001'"
+    module = root_module
     assert module.revision == "msg_001", "First migration should have revision 'msg_001'"
     assert module.down_revision is None, "Branch root should have down_revision=None"
     assert module.branch_labels == ("messenger",), "Branch root should declare branch_labels"
@@ -62,7 +70,7 @@ def test_migration_files_exist():
     """Verify expected migration files exist."""
     migration_dir = _messenger_migration_dir()
     expected_files = [
-        "msg_001_create_delivery_tables.py",
+        "001_messenger_tables.py",
     ]
 
     for filename in expected_files:
