@@ -340,6 +340,11 @@ class GoogleDriveModule(Module):
         self._config = config
         self._db = db
 
+        # Derive butler name from the DB schema (same pattern as MetricsModule).
+        schema: str | None = getattr(db, "schema", None)
+        if schema:
+            self._butler_name = schema
+
         if credential_store is None:
             raise GoogleDriveStartupError(
                 "Google Drive module requires a credential_store. "
@@ -456,9 +461,10 @@ class GoogleDriveModule(Module):
         assert self._client is not None
 
         # Search for existing folder
+        escaped_name = name.replace("\\", "\\\\").replace("'", "\\'")
         parent_filter = f"'{parent_id}' in parents" if parent_id else "'root' in parents"
         q = (
-            f"name='{name}' and mimeType='{_FOLDER_MIME_TYPE}' "
+            f"name='{escaped_name}' and mimeType='{_FOLDER_MIME_TYPE}' "
             f"and {parent_filter} and trashed=false"
         )
 
@@ -947,7 +953,8 @@ class GoogleDriveModule(Module):
     ) -> dict[str, Any]:
         assert self._client is not None, "Module not started"
 
-        q = f"fullText contains '{query}' and trashed=false"
+        escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
+        q = f"fullText contains '{escaped_query}' and trashed=false"
         params: dict[str, Any] = {
             "q": q,
             "fields": f"nextPageToken,{_SEARCH_FIELDS}",
