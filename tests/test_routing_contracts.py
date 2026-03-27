@@ -935,6 +935,59 @@ def test_home_assistant_idempotency_key_format():
 
 
 # ---------------------------------------------------------------------------
+# Gaming channel / Steam provider contract validations  [bu-xway]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_gaming_steam_channel_provider_accepted():
+    """IngestEnvelopeV1 accepts gaming channel with steam provider."""
+    envelope = _build_valid_ingest_envelope(
+        channel="gaming",
+        provider="steam",
+        endpoint_identity="steam:76561198000000001",
+        sender_identity="steam:76561198000000001",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert parsed.source.channel == "gaming"
+    assert parsed.source.provider == "steam"
+
+
+@pytest.mark.unit
+def test_gaming_channel_rejects_invalid_provider():
+    """gaming channel rejects non-steam providers."""
+    envelope = _build_valid_ingest_envelope(
+        channel="gaming",
+        provider="internal",  # wrong provider
+        endpoint_identity="steam:76561198000000001",
+        sender_identity="steam:76561198000000001",
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+    assert "gaming" in str(exc_info.value) or "internal" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_steam_provider_rejected_for_telegram_channel():
+    """steam provider is invalid for telegram_bot channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="telegram_bot",
+        provider="steam",  # wrong provider for telegram_bot
+    )
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(envelope)
+
+
+@pytest.mark.unit
+def test_gaming_in_allowed_providers_by_channel():
+    """gaming is registered in _ALLOWED_PROVIDERS_BY_CHANNEL with steam."""
+    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
+
+    assert "gaming" in _ALLOWED_PROVIDERS_BY_CHANNEL
+    assert _ALLOWED_PROVIDERS_BY_CHANNEL["gaming"] == frozenset({"steam"})
+
+
+# ---------------------------------------------------------------------------
 # Insight intent contract validations (bu-iuuc)
 # ---------------------------------------------------------------------------
 
