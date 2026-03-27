@@ -559,6 +559,397 @@ async def sync_schedules(
             logger.info("Disabled removed TOML schedule: %s", name)
 
 
+async def _tick_deadline_pass(
+    pool: asyncpg.Pool,
+    dispatch_fn,
+    now: datetime,
+) -> int:
+    """Evaluate deadline tasks: check expiry and fire due thresholds.
+
+    - Marks tasks past their target_date as expired and disables them.
+    - For tasks with a newly due threshold, dispatches and updates fired_thresholds
+      and deadline_status.
+
+    Returns the number of deadline tasks evaluated.
+    Returns 0 if the temporal intelligence columns do not exist yet (graceful degradation).
+    """
+    import json as _json
+
+    from butlers.core.temporal.deadlines import (
+        compute_days_remaining,
+        compute_expiry_transition,
+        compute_next_deadline_status,
+        find_unfired_threshold,
+        is_deadline_blocked,
+    )
+
+    # Check if temporal intelligence columns exist (graceful degradation for older schemas)
+    has_temporal_cols = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'scheduled_tasks' AND column_name = 'task_type'
+        )
+        """
+    )
+    if not has_temporal_cols:
+        return 0
+
+    deadline_rows = await pool.fetch(
+        """
+        SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
+               complexity, until_at,
+               target_date, lead_time_days, alert_thresholds,
+               deadline_status, fired_thresholds, depends_on
+        FROM scheduled_tasks
+        WHERE enabled = true AND task_type = 'deadline'
+        """,
+    )
+
+    evaluated = 0
+
+    for row in deadline_rows:
+        evaluated += 1
+        task_id = row["id"]
+        name = row["name"]
+        target_date = row["target_date"]
+        current_status = row["deadline_status"] or "pending"
+
+        # Deserialize JSONB fields
+        alert_thresholds = row["alert_thresholds"]
+        if isinstance(alert_thresholds, str):
+            alert_thresholds = _json.loads(alert_thresholds)
+        alert_thresholds = alert_thresholds or []
+
+        fired_thresholds = row["fired_thresholds"]
+        if isinstance(fired_thresholds, str):
+            fired_thresholds = _json.loads(fired_thresholds)
+        fired_thresholds = fired_thresholds or []
+
+        depends_on = row["depends_on"]
+        if isinstance(depends_on, str):
+            depends_on = _json.loads(depends_on)
+        depends_on = depends_on or []
+
+        if target_date is None:
+            logger.warning("Deadline task %r has no target_date; skipping", name)
+            continue
+
+        # Expiry check: if target_date has passed, mark expired and disable
+        new_status, should_disable = compute_expiry_transition(
+            current_status=current_status,
+            target_date=target_date,
+        )
+        if should_disable:
+            logger.info(
+                "Deadline task %r has expired (target_date=%s); disabling", name, target_date
+            )
+            await pool.execute(
+                """
+                UPDATE scheduled_tasks
+                SET deadline_status = $2, enabled = false
+                WHERE id = $1
+                """,
+                task_id,
+                new_status,
+            )
+            continue
+
+        # Skip terminal states
+        if current_status in ("completed", "expired"):
+            continue
+
+        # Dependency check
+        if depends_on:
+            # Fetch statuses of dependency tasks
+            dep_rows = await pool.fetch(
+                """
+                SELECT id::text, deadline_status FROM scheduled_tasks
+                WHERE id::text = ANY($1::text[])
+                """,
+                depends_on,
+            )
+            dependency_statuses = {r["id"]: r["deadline_status"] or "pending" for r in dep_rows}
+            if is_deadline_blocked(
+                depends_on=depends_on,
+                dependency_statuses=dependency_statuses,
+            ):
+                logger.debug("Deadline task %r is blocked by dependencies; skipping", name)
+                continue
+
+        # Threshold evaluation
+        days_remaining = compute_days_remaining(target_date=target_date)
+        threshold = find_unfired_threshold(
+            days_remaining=days_remaining,
+            alert_thresholds=alert_thresholds,
+            fired_thresholds=fired_thresholds,
+        )
+
+        if threshold is None:
+            continue
+
+        # A threshold is due — dispatch and update
+        dispatch_mode = row["dispatch_mode"]
+        prompt = row["prompt"]
+        job_name = row["job_name"]
+        job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
+        task_complexity = _parse_complexity_from_db_row(row, name)
+
+        try:
+            if dispatch_mode == _DISPATCH_MODE_PROMPT:
+                await dispatch_fn(
+                    prompt=prompt,
+                    trigger_source=f"deadline:{name}",
+                    complexity=task_complexity,
+                )
+            elif dispatch_mode == _DISPATCH_MODE_JOB:
+                await dispatch_fn(
+                    job_name=job_name,
+                    job_args=job_args,
+                    trigger_source=f"deadline:{name}",
+                )
+            logger.info(
+                "Dispatched deadline task: %s (threshold=%d days)",
+                name,
+                threshold["days_before"],
+            )
+        except Exception:
+            logger.exception("Failed to dispatch deadline task: %s", name)
+            continue
+
+        # Update fired_thresholds and deadline_status
+        new_fired = list(fired_thresholds) + [threshold]
+        new_status = compute_next_deadline_status(
+            current_status=current_status,
+            fired_threshold=threshold,
+        )
+        await pool.execute(
+            """
+            UPDATE scheduled_tasks
+            SET fired_thresholds = $2::jsonb,
+                deadline_status = $3,
+                last_run_at = $4
+            WHERE id = $1
+            """,
+            task_id,
+            _json.dumps(new_fired),
+            new_status,
+            now,
+        )
+
+    return evaluated
+
+
+async def _tick_event_chain_pass(
+    pool: asyncpg.Pool,
+    dispatch_fn,
+    now: datetime,
+) -> int:
+    """Detect event chain triggers and materialize actions.
+
+    Currently handles:
+    - calendar_event_end: calendar_projection events that ended before now
+
+    Returns the number of chains fired.
+    """
+    import json as _json
+
+    from butlers.core.temporal.event_chains import materialize_chain_actions, should_fire_chain
+
+    chains_fired = 0
+
+    # Check if calendar_projection table exists (it's optional)
+    table_exists = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = 'calendar_projection'
+        )
+        """
+    )
+    if not table_exists:
+        return 0
+
+    # Find calendar events that ended before now and haven't triggered chains yet
+    ended_events = await pool.fetch(
+        """
+        SELECT event_id, butler_name
+        FROM calendar_projection
+        WHERE end_at <= $1 AND chain_triggered = false
+        """,
+        now,
+    )
+
+    if not ended_events:
+        return 0
+
+    # For each ended event, find active chains triggered by calendar_event_end
+    for event_row in ended_events:
+        event_id = event_row["event_id"]
+        butler_name = event_row["butler_name"]
+
+        chains = await pool.fetch(
+            """
+            SELECT id, name, actions
+            FROM event_chains
+            WHERE trigger_type = 'calendar_event_end'
+              AND trigger_reference = $1
+              AND status = 'active'
+              AND butler_name = $2
+            """,
+            event_id,
+            butler_name,
+        )
+
+        for chain_row in chains:
+            chain_id = chain_row["id"]
+            chain_name = chain_row["name"]
+            actions = chain_row["actions"]
+            if isinstance(actions, str):
+                actions = _json.loads(actions)
+
+            if not should_fire_chain(chain_depth=0, chain_name=chain_name):
+                continue
+
+            # Materialize actions into one-shot tasks
+            tasks = materialize_chain_actions(
+                chain_name=chain_name,
+                actions=actions,
+                fired_at=now,
+            )
+
+            # Insert materialized tasks into scheduled_tasks
+            for task in tasks:
+                try:
+                    await pool.execute(
+                        """
+                        INSERT INTO scheduled_tasks
+                            (name, cron, dispatch_mode, prompt, job_name, job_args,
+                             source, next_run_at, until_at, enabled)
+                        VALUES
+                            ($1, '* * * * *', $2, $3, $4, $5::jsonb,
+                             'chain', $6, $7, true)
+                        ON CONFLICT (name) DO NOTHING
+                        """,
+                        task["name"],
+                        task["dispatch_mode"],
+                        task.get("prompt"),
+                        task.get("job_name"),
+                        _json.dumps(task.get("job_args")) if task.get("job_args") else None,
+                        task["next_run_at"],
+                        task["until_at"],
+                    )
+                except Exception:
+                    logger.exception("Failed to insert chain task %r", task["name"])
+
+            # Mark chain as fired
+            await pool.execute(
+                """
+                UPDATE event_chains SET status = 'fired'
+                WHERE id = $1
+                """,
+                chain_id,
+            )
+            chains_fired += 1
+            logger.info("Fired event chain %r for calendar event %r", chain_name, event_id)
+
+        # Mark calendar event as chain_triggered
+        await pool.execute(
+            """
+            UPDATE calendar_projection SET chain_triggered = true
+            WHERE event_id = $1 AND butler_name = $2
+            """,
+            event_id,
+            butler_name,
+        )
+
+    return chains_fired
+
+
+async def _tick_deferred_notification_pass(
+    pool: asyncpg.Pool,
+    dispatch_fn,
+    now: datetime,
+) -> int:
+    """Flush deferred notifications: expire old ones and deliver due ones.
+
+    - Marks pending notifications > 24h past deliver_at as expired.
+    - Delivers pending notifications with deliver_at <= now.
+
+    Returns the number of notifications delivered.
+    """
+    # Check if deferred_notifications table exists
+    table_exists = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = 'deferred_notifications'
+        )
+        """
+    )
+    if not table_exists:
+        return 0
+
+    import json as _json
+
+    # Expire stale pending notifications (> 24h past deliver_at)
+    await pool.execute(
+        """
+        UPDATE deferred_notifications
+        SET status = 'expired'
+        WHERE status = 'pending'
+          AND deliver_at < $1
+        """,
+        now - timedelta(hours=24),
+    )
+
+    # Fetch due notifications (pending, deliver_at <= now)
+    due_rows = await pool.fetch(
+        """
+        SELECT id, channel, message, priority, envelope
+        FROM deferred_notifications
+        WHERE status = 'pending' AND deliver_at <= $1
+        ORDER BY deliver_at
+        """,
+        now,
+    )
+
+    delivered = 0
+    for row in due_rows:
+        notif_id = row["id"]
+        channel = row["channel"]
+        message = row["message"]
+        envelope = row["envelope"]
+        if isinstance(envelope, str):
+            envelope = _json.loads(envelope)
+
+        try:
+            await dispatch_fn(
+                prompt=message,
+                trigger_source=f"deferred_notification:{notif_id}",
+            )
+            # Mark as delivered
+            await pool.execute(
+                """
+                UPDATE deferred_notifications
+                SET status = 'delivered', delivered_at = $2
+                WHERE id = $1
+                """,
+                notif_id,
+                now,
+            )
+            delivered += 1
+            logger.info("Delivered deferred notification %s on channel %s", notif_id, channel)
+        except Exception:
+            logger.exception("Failed to deliver deferred notification %s", notif_id)
+            # Keep status=pending for next-tick retry
+
+    return delivered
+
+
 async def tick(
     pool: asyncpg.Pool,
     dispatch_fn,
@@ -569,31 +960,57 @@ async def tick(
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
-    Queries ``scheduled_tasks`` WHERE ``enabled=true AND next_run_at <= now()``.
-    For each due task, calls ``dispatch_fn(prompt=..., trigger_source="schedule:<task-name>")``.
-    After dispatch, updates ``next_run_at``, ``last_run_at``, and ``last_result``.
-    If dispatch fails, logs the error and stores the error in ``last_result``,
-    but continues to the next task.
+    Runs three passes on each tick:
+    1. Deadline pass: evaluates deadline tasks, fires due thresholds, expires past deadlines.
+    2. Cron pass: dispatches standard cron-type tasks due for execution.
+    3. Event chain pass: detects trigger conditions and materializes chain actions.
+    4. Deferred notification pass: expires stale and delivers due deferred notifications.
 
-    Creates a ``butler.tick`` span with attributes ``tasks_due`` (count of due tasks)
-    and ``tasks_run`` (count of successfully dispatched tasks).
+    Creates a ``butler.tick`` span with attributes:
+    - ``tasks_due`` / ``tasks_run``: cron task counts
+    - ``deadlines_evaluated``: deadline tasks processed
+    - ``chains_fired``: event chains triggered
+    - ``deferred_flushed``: deferred notifications delivered
 
     Args:
         pool: asyncpg connection pool.
         dispatch_fn: Async callable matching ``Spawner.trigger`` signature.
 
     Returns:
-        The number of tasks successfully dispatched.
+        The number of tasks successfully dispatched (cron pass only).
     """
     tracer = trace.get_tracer("butlers")
     with tracer.start_as_current_span("butler.tick") as span:
         now = datetime.now(UTC)
-        rows = await pool.fetch(
+
+        # ── Pass 1: Deadline evaluation (before cron dispatch) ──────────────
+        deadlines_evaluated = await _tick_deadline_pass(pool, dispatch_fn, now)
+        span.set_attribute("deadlines_evaluated", deadlines_evaluated)
+
+        # ── Pass 2: Cron task dispatch ───────────────────────────────────────
+        # If task_type column exists, filter to cron tasks only (deadline tasks handled above).
+        # Otherwise fall back to all tasks (older schema without temporal intelligence).
+        has_task_type_col = await pool.fetchval(
             """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'scheduled_tasks' AND column_name = 'task_type'
+            )
+            """
+        )
+        if has_task_type_col:
+            cron_filter = "AND (task_type IS NULL OR task_type = 'cron')"
+        else:
+            cron_filter = ""
+
+        rows = await pool.fetch(
+            f"""
             SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
                    complexity, until_at
             FROM scheduled_tasks
             WHERE enabled = true AND next_run_at <= $1
+              {cron_filter}
             ORDER BY next_run_at
             """,
             now,
@@ -690,6 +1107,15 @@ async def tick(
                 )
 
         span.set_attribute("tasks_run", dispatched)
+
+        # ── Pass 3: Event chain trigger detection ────────────────────────────
+        chains_fired = await _tick_event_chain_pass(pool, dispatch_fn, now)
+        span.set_attribute("chains_fired", chains_fired)
+
+        # ── Pass 4: Deferred notification flush ──────────────────────────────
+        deferred_flushed = await _tick_deferred_notification_pass(pool, dispatch_fn, now)
+        span.set_attribute("deferred_flushed", deferred_flushed)
+
         return dispatched
 
 

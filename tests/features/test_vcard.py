@@ -79,7 +79,7 @@ async def pool(postgres_container):
     p = await db.connect()
 
     # Create shared schema and entities BEFORE contacts (contacts references public.entities)
-    # public schema always exists; no need to create it.
+    await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
     await p.execute("""
         CREATE TABLE IF NOT EXISTS public.entities (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
