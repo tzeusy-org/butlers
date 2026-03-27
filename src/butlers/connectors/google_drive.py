@@ -793,7 +793,7 @@ class GDriveAccountLoop:
         self._access_token = data["access_token"]
         expires_in = int(data.get("expires_in", 3600))
         self._token_expires_at = now + timedelta(seconds=expires_in)
-        self._metrics.record_source_api_call(operation="token_refresh", status="success")
+        self._metrics.record_source_api_call(api_method="token_refresh", status="success")
         logger.debug("Drive: token refreshed for email=%s", self.email)
         return self._access_token
 
@@ -862,13 +862,13 @@ class GDriveAccountLoop:
 
         if resp.status_code != 200:
             self._metrics.record_source_api_call(
-                operation="changes.getStartPageToken", status="error"
+                api_method="changes.getStartPageToken", status="error"
             )
             raise RuntimeError(
                 f"Drive: getStartPageToken failed for email={self.email!r}: HTTP {resp.status_code}"
             )
 
-        self._metrics.record_source_api_call(operation="changes.getStartPageToken", status="ok")
+        self._metrics.record_source_api_call(api_method="changes.getStartPageToken", status="ok")
 
         data = resp.json()
         start_token = data.get("startPageToken")
@@ -908,18 +908,18 @@ class GDriveAccountLoop:
             # 401 is intentionally absent from retry_on to prevent infinite loops on revoked creds.
             self._access_token = None
             self._token_expires_at = None
-            self._metrics.record_source_api_call(operation="changes.list", status="error")
+            self._metrics.record_source_api_call(api_method="changes.list", status="error")
             raise RuntimeError(
                 f"Drive: changes.list 401 for email={self.email!r} — will refresh token"
             )
 
         if resp.status_code != 200:
-            self._metrics.record_source_api_call(operation="changes.list", status="error")
+            self._metrics.record_source_api_call(api_method="changes.list", status="error")
             raise RuntimeError(
                 f"Drive: changes.list failed for email={self.email!r}: HTTP {resp.status_code}"
             )
 
-        self._metrics.record_source_api_call(operation="changes.list", status="ok")
+        self._metrics.record_source_api_call(api_method="changes.list", status="ok")
         self._source_api_ok = True
         return resp.json()
 

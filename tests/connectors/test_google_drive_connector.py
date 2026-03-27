@@ -2775,3 +2775,941 @@ class TestRateLimitWithJitterAndMaxDelay:
         # Retry-After of 30 should be used (< max_delay)
         assert len(sleep_calls) == 1
         assert sleep_calls[0] == 30.0
+
+
+# ---------------------------------------------------------------------------
+# Polling orchestration methods: _poll_once, _get_access_token,
+# _get_start_page_token, _fetch_changes_page,
+# _load_cursor/_save_cursor, _load_metadata_cache_from_store/_save_metadata_cache_to_store
+# (bu-5iy8 — PR #857 review follow-up)
+# ---------------------------------------------------------------------------
+
+
+def _make_cursor_pool(
+    *,
+    cursor_value: str | None = None,
+    fetchrow_result: dict[str, Any] | None = None,
+) -> MagicMock:
+    """Build a mock asyncpg pool suitable for cursor_store / metadata_cache calls."""
+    conn = AsyncMock()
+    # load_cursor uses pool.acquire().__aenter__ → conn.fetchrow
+    if fetchrow_result is None and cursor_value is not None:
+        fetchrow_result = {"checkpoint_cursor": cursor_value}
+    conn.fetchrow = AsyncMock(return_value=fetchrow_result)
+    conn.execute = AsyncMock(return_value="INSERT 1")
+
+    pool = MagicMock()
+    pool.acquire = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+    return pool
+
+
+class TestGetAccessToken:
+    """Unit tests for GDriveAccountLoop._get_access_token (task 3.4 / 8.4)."""
+
+    async def test_cache_hit_returns_token_without_refresh(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """If a valid, non-expired token is cached it is returned directly (no HTTP call)."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        # Pre-populate a token that expires far in the future
+        future = datetime.now(UTC).replace(year=2099)
+        loop._access_token = "cached-token"
+        loop._token_expires_at = future
+
+        token = await loop._get_access_token()
+
+        assert token == "cached-token"
+        # No HTTP client should have been created because we returned early
+        assert loop._http_client is None
+
+    async def test_token_within_60s_margin_triggers_refresh(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """Token expiring within 60 seconds is treated as expired and refreshed."""
+        from datetime import timedelta
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        # Set token to expire in 30 seconds — inside the 60s margin
+        loop._access_token = "about-to-expire"
+        loop._token_expires_at = datetime.now(UTC) + timedelta(seconds=30)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"access_token": "new-token", "expires_in": 3600}
+
+        http_mock = AsyncMock()
+        http_mock.post = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+
+        token = await loop._get_access_token()
+
+        assert token == "new-token"
+        assert loop._access_token == "new-token"
+        http_mock.post.assert_called_once()
+
+    async def test_no_cached_token_triggers_refresh(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """With no cached token at all, a refresh is performed immediately."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        # _access_token is None by default
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"access_token": "fresh-token", "expires_in": 3600}
+
+        http_mock = AsyncMock()
+        http_mock.post = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+
+        token = await loop._get_access_token()
+
+        assert token == "fresh-token"
+        http_mock.post.assert_called_once()
+
+    async def test_non_200_refresh_raises_runtime_error(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """A non-200 token refresh response raises RuntimeError."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.json.return_value = {}
+
+        http_mock = AsyncMock()
+        http_mock.post = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+
+        with pytest.raises(RuntimeError, match="token refresh failed"):
+            await loop._get_access_token()
+
+    async def test_network_error_during_refresh_raises_runtime_error(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """A network error during token refresh is wrapped in RuntimeError."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        http_mock = AsyncMock()
+        http_mock.post = AsyncMock(side_effect=OSError("connection refused"))
+        loop._http_client = http_mock
+
+        with pytest.raises(RuntimeError, match="token refresh network error"):
+            await loop._get_access_token()
+
+    async def test_refresh_updates_expiry_timestamp(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """After a successful refresh, _token_expires_at is set ~expires_in seconds ahead."""
+        from datetime import timedelta
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"access_token": "tok", "expires_in": 7200}
+
+        http_mock = AsyncMock()
+        http_mock.post = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+
+        before = datetime.now(UTC)
+        await loop._get_access_token()
+        after = datetime.now(UTC)
+
+        assert loop._token_expires_at is not None
+        assert loop._token_expires_at > before + timedelta(seconds=7100)
+        assert loop._token_expires_at < after + timedelta(seconds=7300)
+
+
+class TestGetStartPageToken:
+    """Unit tests for GDriveAccountLoop._get_start_page_token."""
+
+    async def test_returns_start_token_on_success(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_get_start_page_token returns the startPageToken from the API response."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"startPageToken": "initial-token-abc"}
+
+        http_mock = AsyncMock()
+        http_mock.get = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+
+        # Mock _get_access_token to avoid network call
+        loop._get_access_token = AsyncMock(return_value="fake-access-token")  # type: ignore[method-assign]
+
+        token = await loop._get_start_page_token()
+
+        assert token == "initial-token-abc"
+
+    async def test_non_200_raises_runtime_error(self, account_config: GDriveAccountConfig) -> None:
+        """_get_start_page_token raises RuntimeError when the API returns non-200."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.json.return_value = {}
+        # headers needed for backoff retry logic
+        mock_resp.headers = {}
+
+        http_mock = AsyncMock()
+        http_mock.get = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+        loop._get_access_token = AsyncMock(return_value="fake-access-token")  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="getStartPageToken failed"):
+            await loop._get_start_page_token()
+
+    async def test_missing_start_token_in_response_raises(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_get_start_page_token raises RuntimeError when API response lacks startPageToken."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}  # no startPageToken
+
+        http_mock = AsyncMock()
+        http_mock.get = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+        loop._get_access_token = AsyncMock(return_value="fake-access-token")  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="no startPageToken"):
+            await loop._get_start_page_token()
+
+
+class TestFetchChangesPage:
+    """Unit tests for GDriveAccountLoop._fetch_changes_page."""
+
+    async def test_returns_parsed_json_on_success(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_fetch_changes_page returns parsed JSON dict on 200 response."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        payload = {"changes": [{"fileId": "f1"}], "newStartPageToken": "next-tok"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = payload
+
+        http_mock = AsyncMock()
+        http_mock.get = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+        loop._get_access_token = AsyncMock(return_value="token")  # type: ignore[method-assign]
+
+        result = await loop._fetch_changes_page("some-page-token")
+
+        assert result == payload
+
+    async def test_401_invalidates_cached_token(self, account_config: GDriveAccountConfig) -> None:
+        """_fetch_changes_page clears _access_token/_token_expires_at on 401 and raises."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._access_token = "stale-token"
+        from datetime import timedelta
+
+        loop._token_expires_at = datetime.now(UTC) + timedelta(hours=1)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        # 401 is NOT in retry_on, so backoff retry returns it directly
+        mock_resp.headers = {}
+
+        http_mock = AsyncMock()
+        http_mock.get = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+        loop._get_access_token = AsyncMock(return_value="stale-token")  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="401"):
+            await loop._fetch_changes_page("some-token")
+
+        # Token cache must be cleared so next call forces a fresh refresh
+        assert loop._access_token is None
+        assert loop._token_expires_at is None
+
+    async def test_non_200_non_401_raises_runtime_error(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_fetch_changes_page raises RuntimeError on non-200/non-401 responses."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.headers = {}
+
+        http_mock = AsyncMock()
+        http_mock.get = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+        loop._get_access_token = AsyncMock(return_value="token")  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="changes.list failed"):
+            await loop._fetch_changes_page("some-token")
+
+    async def test_sets_source_api_ok_on_success(self, account_config: GDriveAccountConfig) -> None:
+        """_fetch_changes_page sets _source_api_ok=True on success."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"changes": [], "newStartPageToken": "tok"}
+
+        http_mock = AsyncMock()
+        http_mock.get = AsyncMock(return_value=mock_resp)
+        loop._http_client = http_mock
+        loop._get_access_token = AsyncMock(return_value="token")  # type: ignore[method-assign]
+
+        await loop._fetch_changes_page("tok")
+
+        assert loop._source_api_ok is True
+
+
+class TestLoadSaveCursor:
+    """Unit tests for GDriveAccountLoop._load_cursor and _save_cursor round-trip."""
+
+    async def test_load_cursor_returns_none_when_no_pool(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_load_cursor returns None when no cursor_pool is configured."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        # cursor_pool is None by default
+
+        cursor = await loop._load_cursor()
+
+        assert cursor is None
+
+    async def test_load_cursor_returns_none_when_no_stored_value(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_load_cursor returns None when cursor_store has no row for this account."""
+        pool = _make_cursor_pool(fetchrow_result=None)
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+
+        with patch(
+            "butlers.connectors.google_drive.load_cursor",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            cursor = await loop._load_cursor()
+
+        assert cursor is None
+
+    async def test_load_cursor_deserializes_stored_json(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_load_cursor deserializes JSON from the cursor store into a GDriveCursor."""
+        import json
+
+        stored_dt = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
+        stored_json = json.dumps(
+            {
+                "page_token": "loaded-page-token-xyz",
+                "last_updated_at": stored_dt.isoformat(),
+            }
+        )
+
+        pool = _make_cursor_pool()
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+
+        with patch(
+            "butlers.connectors.google_drive.load_cursor",
+            new_callable=AsyncMock,
+            return_value=stored_json,
+        ):
+            cursor = await loop._load_cursor()
+
+        assert cursor is not None
+        assert cursor.page_token == "loaded-page-token-xyz"
+        assert cursor.last_updated_at == stored_dt
+
+    async def test_load_cursor_returns_none_on_bad_json(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_load_cursor returns None and logs a warning when stored value is not valid JSON."""
+        pool = _make_cursor_pool()
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+
+        with patch(
+            "butlers.connectors.google_drive.load_cursor",
+            new_callable=AsyncMock,
+            return_value="this is not json {",
+        ):
+            cursor = await loop._load_cursor()
+
+        assert cursor is None
+
+    async def test_save_cursor_does_nothing_without_pool(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_save_cursor is a no-op when cursor_pool is None."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        # Should not raise
+        await loop._save_cursor(cursor)
+        assert loop._last_checkpoint_save is None
+
+    async def test_save_cursor_serializes_and_calls_store(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_save_cursor serializes the cursor to JSON and calls save_cursor in cursor_store."""
+        import json
+
+        pool = _make_cursor_pool()
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+
+        saved_values: list[str] = []
+
+        async def _fake_save_cursor(
+            p: Any, connector_type: str, endpoint_identity: str, raw: str
+        ) -> None:
+            saved_values.append(raw)
+
+        cursor = GDriveCursor(
+            page_token="saved-token-abc",
+            last_updated_at=datetime(2026, 3, 27, 10, 0, 0, tzinfo=UTC),
+        )
+
+        with patch(
+            "butlers.connectors.google_drive.save_cursor",
+            side_effect=_fake_save_cursor,
+        ):
+            await loop._save_cursor(cursor)
+
+        assert len(saved_values) == 1
+        data = json.loads(saved_values[0])
+        assert data["page_token"] == "saved-token-abc"
+        assert "last_updated_at" in data
+        assert loop._last_checkpoint_save is not None
+
+    async def test_save_cursor_round_trip(self, account_config: GDriveAccountConfig) -> None:
+        """A cursor saved via _save_cursor can be fully restored by _load_cursor."""
+
+        pool = _make_cursor_pool()
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+
+        original = GDriveCursor(
+            page_token="round-trip-token",
+            last_updated_at=datetime(2026, 3, 27, 12, 0, 0, tzinfo=UTC),
+        )
+        serialized_store: list[str] = []
+
+        async def _fake_save(p: Any, ct: str, ei: str, raw: str) -> None:
+            serialized_store.append(raw)
+
+        with patch("butlers.connectors.google_drive.save_cursor", side_effect=_fake_save):
+            await loop._save_cursor(original)
+
+        # Now restore using the same JSON
+        with patch(
+            "butlers.connectors.google_drive.load_cursor",
+            new_callable=AsyncMock,
+            return_value=serialized_store[0],
+        ):
+            restored = await loop._load_cursor()
+
+        assert restored is not None
+        assert restored.page_token == original.page_token
+        assert restored.last_updated_at == original.last_updated_at
+
+
+class TestMetadataCachePersistence:
+    """Unit tests for _load_metadata_cache_from_store / _save_metadata_cache_to_store."""
+
+    async def test_load_does_nothing_without_cursor_pool(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_load_metadata_cache_from_store is a no-op when cursor_pool is None."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        await loop._load_metadata_cache_from_store()
+        assert loop._metadata_cache == {}
+
+    async def test_save_does_nothing_without_cursor_pool(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_save_metadata_cache_to_store is a no-op when cursor_pool is None."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._metadata_cache["f1"] = _FileMetadata(
+            file_id="f1",
+            name="doc.txt",
+            mime_type="text/plain",
+            parents=[],
+            shared=False,
+            modified_time=None,
+        )
+        # Should not raise
+        await loop._save_metadata_cache_to_store()
+
+    async def test_load_populates_metadata_cache_from_stored_settings(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_load_metadata_cache_from_store restores _FileMetadata entries from DB."""
+        import json
+
+        settings = json.dumps(
+            {
+                "metadata_cache": {
+                    "file-id-1": {
+                        "name": "report.pdf",
+                        "mime_type": "application/pdf",
+                        "parents": ["folder-id-1"],
+                        "shared": True,
+                        "modified_time": "2026-01-01T00:00:00Z",
+                    }
+                }
+            }
+        )
+
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: {"settings": settings}.get(k)
+
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=row)
+
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+
+        await loop._load_metadata_cache_from_store()
+
+        assert "file-id-1" in loop._metadata_cache
+        entry = loop._metadata_cache["file-id-1"]
+        assert entry.name == "report.pdf"
+        assert entry.mime_type == "application/pdf"
+        assert entry.parents == ["folder-id-1"]
+        assert entry.shared is True
+        assert entry.modified_time == "2026-01-01T00:00:00Z"
+
+    async def test_load_skips_when_no_row_in_db(self, account_config: GDriveAccountConfig) -> None:
+        """_load_metadata_cache_from_store leaves cache empty when no DB row exists."""
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)  # no row
+
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+        await loop._load_metadata_cache_from_store()
+
+        assert loop._metadata_cache == {}
+
+    async def test_load_handles_settings_as_dict(self, account_config: GDriveAccountConfig) -> None:
+        """_load_metadata_cache_from_store handles settings already parsed as dict (not str)."""
+        settings_dict = {
+            "metadata_cache": {
+                "file-id-2": {
+                    "name": "sheet.csv",
+                    "mime_type": "text/csv",
+                    "parents": [],
+                    "shared": False,
+                    "modified_time": None,
+                }
+            }
+        }
+
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: {"settings": settings_dict}.get(k)
+
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=row)
+
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+        await loop._load_metadata_cache_from_store()
+
+        assert "file-id-2" in loop._metadata_cache
+        assert loop._metadata_cache["file-id-2"].name == "sheet.csv"
+
+    async def test_load_is_non_fatal_on_db_error(self, account_config: GDriveAccountConfig) -> None:
+        """_load_metadata_cache_from_store does not raise on DB error (non-fatal)."""
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(side_effect=Exception("DB unavailable"))
+
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+        # Must not raise
+        await loop._load_metadata_cache_from_store()
+        assert loop._metadata_cache == {}
+
+    async def test_save_serializes_cache_to_db(self, account_config: GDriveAccountConfig) -> None:
+        """_save_metadata_cache_to_store writes all cache entries to DB as JSONB."""
+        conn = AsyncMock()
+        conn.execute = AsyncMock(return_value="INSERT 1")
+
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+        loop._metadata_cache["file-id-x"] = _FileMetadata(
+            file_id="file-id-x",
+            name="presentation.pptx",
+            mime_type="application/vnd.ms-powerpoint",
+            parents=["parent-folder"],
+            shared=False,
+            modified_time="2026-02-01T00:00:00Z",
+        )
+
+        await loop._save_metadata_cache_to_store()
+
+        conn.execute.assert_called_once()
+        call_args = conn.execute.call_args
+        # The settings_json is the 3rd positional argument (index 2)
+        import json
+
+        settings_json = call_args.args[3]  # $3 parameter
+        settings = json.loads(settings_json)
+        assert "metadata_cache" in settings
+        entry = settings["metadata_cache"]["file-id-x"]
+        assert entry["name"] == "presentation.pptx"
+        assert entry["mime_type"] == "application/vnd.ms-powerpoint"
+        assert entry["parents"] == ["parent-folder"]
+
+    async def test_save_is_non_fatal_on_db_error(self, account_config: GDriveAccountConfig) -> None:
+        """_save_metadata_cache_to_store does not raise on DB error (non-fatal)."""
+        conn = AsyncMock()
+        conn.execute = AsyncMock(side_effect=Exception("Write failed"))
+
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config, cursor_pool=pool)
+        loop._metadata_cache["f1"] = _FileMetadata(
+            file_id="f1",
+            name="doc.txt",
+            mime_type="text/plain",
+            parents=[],
+            shared=False,
+            modified_time=None,
+        )
+        # Must not raise
+        await loop._save_metadata_cache_to_store()
+
+    async def test_metadata_cache_round_trip(self, account_config: GDriveAccountConfig) -> None:
+        """A metadata cache saved via _save_metadata_cache_to_store can be fully
+        restored by _load_metadata_cache_from_store."""
+        import json
+
+        # ---- save phase ----
+        save_conn = AsyncMock()
+        saved_args: list[Any] = []
+
+        async def _capture_execute(*args: Any) -> str:
+            saved_args.extend(args)
+            return "INSERT 1"
+
+        save_conn.execute = _capture_execute
+
+        save_pool = MagicMock()
+        save_pool.acquire = MagicMock()
+        save_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=save_conn)
+        save_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        save_loop = GDriveAccountLoop(
+            email=_FAKE_EMAIL, config=account_config, cursor_pool=save_pool
+        )
+        save_loop._metadata_cache["file-rt-1"] = _FileMetadata(
+            file_id="file-rt-1",
+            name="round-trip.txt",
+            mime_type="text/plain",
+            parents=["folder-rt"],
+            shared=True,
+            modified_time="2026-03-01T00:00:00Z",
+        )
+        await save_loop._save_metadata_cache_to_store()
+
+        # Extract the settings_json that was sent to DB ($3 positional arg)
+        settings_json = saved_args[3]
+        settings_dict = json.loads(settings_json)
+
+        # ---- restore phase ----
+        restore_row = MagicMock()
+        restore_row.__getitem__ = lambda self, k: {"settings": settings_dict}.get(k)
+
+        restore_conn = AsyncMock()
+        restore_conn.fetchrow = AsyncMock(return_value=restore_row)
+
+        restore_pool = MagicMock()
+        restore_pool.acquire = MagicMock()
+        restore_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=restore_conn)
+        restore_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        restore_loop = GDriveAccountLoop(
+            email=_FAKE_EMAIL, config=account_config, cursor_pool=restore_pool
+        )
+        await restore_loop._load_metadata_cache_from_store()
+
+        assert "file-rt-1" in restore_loop._metadata_cache
+        entry = restore_loop._metadata_cache["file-rt-1"]
+        assert entry.name == "round-trip.txt"
+        assert entry.parents == ["folder-rt"]
+        assert entry.shared is True
+
+
+class TestPollOnce:
+    """Unit tests for GDriveAccountLoop._poll_once.
+
+    Covers: checkpoint-after-acceptance, first-run vs resume, metadata cache warm/cold start.
+    """
+
+    def _make_loop_with_mocks(
+        self,
+        account_config: GDriveAccountConfig,
+        *,
+        cursor_json: str | None = None,
+    ) -> GDriveAccountLoop:
+        """Return a GDriveAccountLoop with cursor/metadata infrastructure mocked out."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._http_client = AsyncMock()
+        return loop
+
+    async def test_first_run_fetches_start_page_token(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """On first run (no persisted cursor), _poll_once calls _get_start_page_token."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        start_token_calls: list[int] = []
+
+        async def _fake_get_start(*args: Any, **kwargs: Any) -> str:
+            start_token_calls.append(1)
+            return "initial-token"
+
+        # No cursor saved, empty cache
+        loop._load_cursor = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        loop._get_start_page_token = _fake_get_start  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={"changes": [], "newStartPageToken": "next-token"}
+        )
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._poll_once()
+
+        assert len(start_token_calls) == 1
+
+    async def test_resume_uses_existing_cursor(self, account_config: GDriveAccountConfig) -> None:
+        """On resume (cursor exists), _poll_once does NOT call _get_start_page_token."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        start_token_calls: list[int] = []
+
+        async def _fake_get_start(*args: Any, **kwargs: Any) -> str:
+            start_token_calls.append(1)
+            return "should-not-be-called"
+
+        existing_cursor = GDriveCursor(
+            page_token="existing-cursor-token",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._get_start_page_token = _fake_get_start  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={"changes": [], "newStartPageToken": "next-token"}
+        )
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._poll_once()
+
+        assert len(start_token_calls) == 0
+
+    async def test_checkpoint_saved_after_processing_changes(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """Cursor is saved after changes are processed (checkpoint-after-acceptance)."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        saved_cursors: list[GDriveCursor] = []
+
+        async def _fake_save_cursor(cursor: GDriveCursor) -> None:
+            saved_cursors.append(cursor)
+
+        existing_cursor = GDriveCursor(
+            page_token="old-token",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._save_cursor = _fake_save_cursor  # type: ignore[method-assign]
+
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {"id": _FAKE_FILE_ID, "name": "doc.txt", "mimeType": "text/plain"},
+        }
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "changes": [change],
+                "newStartPageToken": "new-checkpoint-token",
+            }
+        )
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._poll_once()
+
+        # Cursor should have been advanced to the new start token
+        assert len(saved_cursors) >= 1
+        final_cursor = saved_cursors[-1]
+        assert final_cursor.page_token == "new-checkpoint-token"
+
+    async def test_no_changes_does_not_save_metadata_cache(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """When there are no changes, _save_metadata_cache_to_store is NOT called."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        existing_cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={"changes": [], "newStartPageToken": "same-tok"}
+        )
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._poll_once()
+
+        loop._save_metadata_cache_to_store.assert_not_called()
+
+    async def test_metadata_cache_loaded_on_cold_start(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_poll_once restores metadata cache from store on cold start (empty in-memory cache)."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        # Cache is empty → cold start condition
+        assert loop._metadata_cache == {}
+
+        load_cache_calls: list[int] = []
+
+        async def _fake_load_cache() -> None:
+            load_cache_calls.append(1)
+
+        existing_cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = _fake_load_cache  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={"changes": [], "newStartPageToken": "tok2"}
+        )
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._poll_once()
+
+        assert len(load_cache_calls) == 1
+
+    async def test_metadata_cache_not_reloaded_when_warm(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_poll_once skips cache restore when in-memory cache already has entries."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        # Pre-populate cache → warm start
+        loop._metadata_cache["f1"] = _FileMetadata(
+            file_id="f1",
+            name="doc.txt",
+            mime_type="text/plain",
+            parents=[],
+            shared=False,
+            modified_time=None,
+        )
+
+        load_cache_calls: list[int] = []
+
+        async def _fake_load_cache() -> None:
+            load_cache_calls.append(1)
+
+        existing_cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = _fake_load_cache  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={"changes": [], "newStartPageToken": "tok2"}
+        )
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._poll_once()
+
+        # Cache must NOT have been reloaded because it was already warm
+        assert len(load_cache_calls) == 0
+
+    async def test_pagination_collects_all_changes(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_poll_once paginates through all pages before processing changes."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        # Page 1: has nextPageToken → more pages
+        page1 = {
+            "changes": [
+                {"fileId": "f1", "file": {"id": "f1", "name": "a.txt"}},
+            ],
+            "nextPageToken": "page2-token",
+        }
+        # Page 2: has newStartPageToken → last page
+        page2 = {
+            "changes": [
+                {"fileId": "f2", "file": {"id": "f2", "name": "b.txt"}},
+            ],
+            "newStartPageToken": "final-token",
+        }
+
+        pages = [page1, page2]
+        page_idx = 0
+
+        async def _fake_fetch(page_token: str) -> dict[str, Any]:
+            nonlocal page_idx
+            result = pages[page_idx]
+            page_idx += 1
+            return result
+
+        existing_cursor = GDriveCursor(
+            page_token="start-tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._fetch_changes_page = _fake_fetch  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+
+        await loop._poll_once()
+
+        # Both pages fetched
+        assert page_idx == 2
+        # Both files should be in the metadata cache
+        assert "f1" in loop._metadata_cache
+        assert "f2" in loop._metadata_cache
