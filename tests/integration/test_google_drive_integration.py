@@ -202,7 +202,7 @@ class TestDriveScopeOAuthFlow:
             discovered = await manager.discover_drive_accounts()
 
         assert len(discovered) == 1
-        assert discovered[0].email == _FAKE_ACCOUNT_EMAIL
+        assert discovered[0]["email"] == _FAKE_ACCOUNT_EMAIL
 
     async def test_connector_skips_accounts_without_drive_scope(self) -> None:
         """GDriveConnectorManager skips accounts that lack drive scopes."""
