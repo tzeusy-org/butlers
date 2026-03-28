@@ -439,6 +439,7 @@ async def cash_flow(
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
             WHERE table_name = 'transactions' AND column_name = 'deleted_at'
+              AND table_schema = current_schema()
         )
         """
     )
@@ -576,6 +577,7 @@ async def subscription_audit(
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
             WHERE table_name = 'subscriptions'
+              AND table_schema = current_schema()
         )
         """
     )
@@ -631,6 +633,7 @@ async def subscription_audit(
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
             WHERE table_name = 'recurring_groups'
+              AND table_schema = current_schema()
         )
         """
     )
@@ -727,6 +730,7 @@ async def flag_tax_deductible(
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
             WHERE table_name = 'categories'
+              AND table_schema = current_schema()
         )
         """
     )
@@ -736,6 +740,7 @@ async def flag_tax_deductible(
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns
                 WHERE table_name = 'categories' AND column_name = 'is_tax_relevant'
+                  AND table_schema = current_schema()
             )
             """
         )
@@ -762,6 +767,7 @@ async def flag_tax_deductible(
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
             WHERE table_name = 'transactions' AND column_name = 'deleted_at'
+              AND table_schema = current_schema()
         )
         """
     )
