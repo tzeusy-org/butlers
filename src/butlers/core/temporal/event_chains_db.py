@@ -31,7 +31,7 @@ _VALID_TRIGGER_TYPES = frozenset(
         "deadline_threshold",
     }
 )
-_VALID_STATUSES = frozenset({"active", "fired", "disabled"})
+_VALID_STATUSES = frozenset({"active", "paused", "fired", "failed", "disabled"})
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
@@ -142,7 +142,7 @@ async def event_chain_update(
         trigger_type: New trigger_type (optional).
         trigger_reference: New trigger_reference (optional; pass empty string to clear).
         actions: New actions array (optional; triggers status reset to 'active').
-        status: Explicit status override ('active' | 'fired' | 'disabled').
+        status: Explicit status override ('active' | 'paused' | 'fired' | 'failed' | 'disabled').
 
     Returns:
         The updated chain row as a dict.
