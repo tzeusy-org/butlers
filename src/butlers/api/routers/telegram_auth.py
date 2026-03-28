@@ -8,10 +8,12 @@ Flow:
   1. POST /api/telegram/session/send-code
      - Accepts ``api_id``, ``api_hash``, ``phone``.
      - Creates a temporary Telethon client, calls ``send_code_request()``.
+     - Serializes the intermediate session state to the DB.
      - Returns a ``session_token`` (opaque handle) and ``phone_code_hash``.
 
   2. POST /api/telegram/session/verify
      - Accepts ``session_token``, ``code``, and optional ``password`` (2FA).
+     - Reconstructs the Telethon client from the saved session state.
      - Signs in with the OTP code (and 2FA if needed).
      - On success, exports the ``StringSession``, stores ``telegram_api_id``,
        ``telegram_api_hash``, and ``telegram_user_session`` on the owner
@@ -22,26 +24,32 @@ Flow:
        owner entity.
 
 Security:
-  - Pending auth sessions are held in-memory with a 10-minute TTL.
+  - Pending auth state is stored in butler_secrets with a TTL.
   - Session strings are never returned to the frontend.
-  - The Telethon client is disconnected after use.
-  - Phone numbers are not stored.
+  - The Telethon client is created fresh per request and disconnected after.
+  - Phone numbers are stored only in the pending auth blob (deleted after use).
+
+Multi-worker safety:
+  - All state is persisted to the database, not held in-memory.
+  - Any worker can handle any step of the flow.
 """
 
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import secrets
 import time
-from dataclasses import dataclass, field
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
-from butlers.credential_store import resolve_owner_entity_info, upsert_owner_entity_info
+from butlers.credential_store import (
+    CredentialStore,
+    resolve_owner_entity_info,
+    upsert_owner_entity_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,53 +101,70 @@ class SessionStatusResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory pending-auth store (TTL = 10 minutes)
+# Pending auth — DB-persisted state (multi-worker safe)
 # ---------------------------------------------------------------------------
 
-_SESSION_TTL = 1800  # 30 minutes — enough for OTP delivery + 2FA entry
+_PENDING_KEY_PREFIX = "_tg_auth_pending:"
+_SESSION_TTL = 1800  # 30 minutes
 
 
-@dataclass
-class _PendingAuth:
-    """Holds a live Telethon client mid-auth flow."""
-
-    client: Any  # TelegramClient
-    api_id: int
-    api_hash: str
-    phone: str
-    phone_code_hash: str
-    created_at: float = field(default_factory=time.monotonic)
+def _pending_key(token: str) -> str:
+    return f"{_PENDING_KEY_PREFIX}{token}"
 
 
-# token → _PendingAuth
-_pending: dict[str, _PendingAuth] = {}
-_pending_lock = asyncio.Lock()
+def _get_pool(db: DatabaseManager):
+    """Resolve the shared or first available pool."""
+    try:
+        return db.credential_shared_pool()
+    except KeyError:
+        butler_names = list(db.butler_names)
+        if not butler_names:
+            raise HTTPException(
+                status_code=503,
+                detail="No database pool available.",
+            )
+        return db.pool(butler_names[0])
 
 
-async def _cleanup_expired() -> None:
-    """Remove expired pending auth sessions and disconnect their clients."""
-    now = time.monotonic()
-    expired_tokens = [tok for tok, pa in _pending.items() if now - pa.created_at > _SESSION_TTL]
-    for tok in expired_tokens:
-        pa = _pending.pop(tok, None)
-        if pa and pa.client:
-            try:
-                await pa.client.disconnect()
-            except Exception:
-                pass
+async def _save_pending(
+    store: CredentialStore,
+    token: str,
+    data: dict,
+) -> None:
+    """Persist pending auth state as a JSON blob in butler_secrets."""
+    data["created_at"] = time.time()
+    await store.store(
+        _pending_key(token),
+        json.dumps(data),
+        category="_internal",
+        description="Telegram auth pending state (auto-expires)",
+    )
 
 
-def _get_pending(token: str) -> _PendingAuth:
-    """Look up a pending auth session, raising 404 if expired/missing."""
-    pa = _pending.get(token)
-    if pa is None or (time.monotonic() - pa.created_at > _SESSION_TTL):
-        # Clean up if expired
-        _pending.pop(token, None)
+async def _load_pending(store: CredentialStore, token: str) -> dict:
+    """Load and validate pending auth state from butler_secrets."""
+    raw = await store.load(_pending_key(token))
+    if raw is None:
         raise HTTPException(
             status_code=404,
-            detail=("Session token not found or expired. Please restart the Telegram login flow."),
+            detail="Session token not found or expired. Please restart the Telegram login flow.",
         )
-    return pa
+    data = json.loads(raw)
+    if time.time() - data.get("created_at", 0) > _SESSION_TTL:
+        await store.delete(_pending_key(token))
+        raise HTTPException(
+            status_code=404,
+            detail="Session token expired. Please restart the Telegram login flow.",
+        )
+    return data
+
+
+async def _delete_pending(store: CredentialStore, token: str) -> None:
+    """Remove pending auth state from butler_secrets."""
+    try:
+        await store.delete(_pending_key(token))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +173,10 @@ def _get_pending(token: str) -> _PendingAuth:
 
 
 @router.post("/session/send-code", response_model=SendCodeResponse)
-async def send_code(req: SendCodeRequest) -> SendCodeResponse:
+async def send_code(
+    req: SendCodeRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> SendCodeResponse:
     """Start Telegram auth: send OTP code to the user's phone."""
     try:
         from telethon import TelegramClient
@@ -156,34 +184,43 @@ async def send_code(req: SendCodeRequest) -> SendCodeResponse:
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="Telethon is not installed on the server. Install with: uv pip install telethon",
+            detail=(
+                "Telethon is not installed on the server. Install with: uv pip install telethon"
+            ),
         )
 
-    # Clean up old sessions
-    async with _pending_lock:
-        await _cleanup_expired()
+    pool = _get_pool(db)
+    store = CredentialStore(pool)
 
     client = TelegramClient(StringSession(), req.api_id, req.api_hash)
     try:
         await client.connect()
         result = await client.send_code_request(req.phone)
+
+        # Serialize the intermediate session (contains the auth_key needed
+        # to complete sign-in on a subsequent request/worker).
+        intermediate_session = StringSession.save(client.session)
     except Exception as exc:
-        await client.disconnect()
         logger.warning("Telegram send_code_request failed: %s", exc)
         raise HTTPException(
             status_code=400,
             detail=f"Failed to send code: {exc}",
         )
+    finally:
+        await client.disconnect()
 
     token = secrets.token_urlsafe(32)
-    async with _pending_lock:
-        _pending[token] = _PendingAuth(
-            client=client,
-            api_id=req.api_id,
-            api_hash=req.api_hash,
-            phone=req.phone,
-            phone_code_hash=result.phone_code_hash,
-        )
+    await _save_pending(
+        store,
+        token,
+        {
+            "api_id": req.api_id,
+            "api_hash": req.api_hash,
+            "phone": req.phone,
+            "phone_code_hash": result.phone_code_hash,
+            "session": intermediate_session,
+        },
+    )
 
     return SendCodeResponse(
         session_token=token,
@@ -198,60 +235,57 @@ async def verify_code(
 ) -> VerifyCodeResponse:
     """Complete Telegram auth: verify OTP code and persist session."""
     try:
+        from telethon import TelegramClient
         from telethon.errors import SessionPasswordNeededError
         from telethon.sessions import StringSession
     except ImportError:
         raise HTTPException(status_code=503, detail="Telethon is not installed.")
 
-    async with _pending_lock:
-        pa = _get_pending(req.session_token)
+    pool = _get_pool(db)
+    store = CredentialStore(pool)
+    pending = await _load_pending(store, req.session_token)
 
-    client = pa.client
-    needs_2fa = False
+    # Reconstruct the client from the saved intermediate session.
+    session = StringSession(pending["session"])
+    client = TelegramClient(session, pending["api_id"], pending["api_hash"])
 
     try:
-        # Attempt sign-in with OTP code (or 2FA password on second call)
+        await client.connect()
+
         if req.password:
             # Second call: user is providing the 2FA password
             await client.sign_in(password=req.password)
         else:
             try:
                 await client.sign_in(
-                    phone=pa.phone,
+                    phone=pending["phone"],
                     code=req.code,
-                    phone_code_hash=pa.phone_code_hash,
+                    phone_code_hash=pending["phone_code_hash"],
                 )
             except SessionPasswordNeededError:
-                # Signal the frontend to collect the 2FA password.
-                # Keep the pending session alive so the next verify call
-                # can complete sign-in with the password.
-                needs_2fa = True
+                # Save updated session state (auth progressed past OTP)
+                # so the 2FA call can continue from this point.
+                updated_session = StringSession.save(client.session)
+                pending["session"] = updated_session
+                await _save_pending(store, req.session_token, pending)
                 return VerifyCodeResponse(
                     success=False,
                     message="Two-factor authentication is enabled. "
                     "Please provide your 2FA password.",
                 )
 
-        # Auth succeeded — export session string
+        # Auth succeeded — export final session string
         me = await client.get_me()
         session_string = StringSession.save(client.session)
 
-        # Persist credentials to owner entity_info
-        try:
-            pool = db.credential_shared_pool()
-        except KeyError:
-            # Fall back to first available butler pool
-            butler_names = list(db.butler_names)
-            if not butler_names:
-                raise HTTPException(
-                    status_code=503,
-                    detail="No database pool available to store credentials.",
-                )
-            pool = db.pool(butler_names[0])
-
-        await upsert_owner_entity_info(pool, "telegram_api_id", str(pa.api_id), secured=False)
-        await upsert_owner_entity_info(pool, "telegram_api_hash", pa.api_hash, secured=True)
+        await upsert_owner_entity_info(
+            pool, "telegram_api_id", str(pending["api_id"]), secured=False
+        )
+        await upsert_owner_entity_info(pool, "telegram_api_hash", pending["api_hash"], secured=True)
         await upsert_owner_entity_info(pool, "telegram_user_session", session_string, secured=True)
+
+        # Clean up pending state
+        await _delete_pending(store, req.session_token)
 
         user_name = None
         if me:
@@ -270,20 +304,17 @@ async def verify_code(
         raise
     except Exception as exc:
         logger.warning("Telegram sign_in failed: %s", exc)
+        # Clean up on hard failure
+        await _delete_pending(store, req.session_token)
         raise HTTPException(
             status_code=400,
             detail=f"Sign-in failed: {exc}",
         )
     finally:
-        # Only clean up when auth is complete (success or hard failure).
-        # When 2FA is needed, keep the client alive for the next verify call.
-        if not needs_2fa:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            async with _pending_lock:
-                _pending.pop(req.session_token, None)
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 @router.get("/session/status", response_model=SessionStatusResponse)
@@ -291,15 +322,7 @@ async def session_status(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> SessionStatusResponse:
     """Check whether Telegram user credentials are configured on the owner entity."""
-    try:
-        pool = db.credential_shared_pool()
-    except KeyError:
-        butler_names = list(db.butler_names)
-        if not butler_names:
-            return SessionStatusResponse(
-                has_api_id=False, has_api_hash=False, has_session=False, ready=False
-            )
-        pool = db.pool(butler_names[0])
+    pool = _get_pool(db)
 
     has_api_id = await resolve_owner_entity_info(pool, "telegram_api_id") is not None
     has_api_hash = await resolve_owner_entity_info(pool, "telegram_api_hash") is not None
