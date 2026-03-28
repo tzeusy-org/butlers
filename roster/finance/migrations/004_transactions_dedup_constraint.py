@@ -19,8 +19,8 @@ would not catch duplicate unlinked rows.  NULLS NOT DISTINCT (PostgreSQL 15+)
 collapses all NULLs into the same bucket for uniqueness purposes, matching the
 semantics of _check_duplicate() which handles the NULL branch explicitly.
 
-Revision ID: finance_003
-Revises: finance_002
+Revision ID: finance_004
+Revises: finance_003
 Create Date: 2026-03-28 00:00:00.000000
 
 """
@@ -30,8 +30,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "finance_003"
-down_revision = "finance_002"
+revision = "finance_004"
+down_revision = "finance_003"
 branch_labels = None
 depends_on = None
 

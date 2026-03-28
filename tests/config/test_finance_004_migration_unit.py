@@ -1,4 +1,4 @@
-"""Unit tests for the finance_003 transactions dedup constraint migration.
+"""Unit tests for the finance_004 transactions dedup constraint migration.
 
 Validates migration metadata, upgrade SQL (index name, columns, NULLS NOT DISTINCT
 clause), and downgrade SQL — all without requiring a live database connection.
@@ -19,7 +19,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-MIGRATION_FILENAME = "003_transactions_dedup_constraint.py"
+MIGRATION_FILENAME = "004_transactions_dedup_constraint.py"
 
 
 def _finance_migration_dir() -> Path:
@@ -32,11 +32,11 @@ def _finance_migration_dir() -> Path:
 
 
 def _load_migration():
-    """Load the finance_003 migration module."""
+    """Load the finance_004 migration module."""
     migration_path = _finance_migration_dir() / MIGRATION_FILENAME
     assert migration_path.exists(), f"Migration file should exist: {migration_path}"
 
-    spec = importlib.util.spec_from_file_location("finance_003_migration", migration_path)
+    spec = importlib.util.spec_from_file_location("finance_004_migration", migration_path)
     assert spec is not None, "Should be able to load migration spec"
     assert spec.loader is not None, "Should have a loader"
     module = importlib.util.module_from_spec(spec)
@@ -49,7 +49,7 @@ def _load_migration():
 # ---------------------------------------------------------------------------
 
 
-def test_finance_003_file_exists():
+def test_finance_004_file_exists():
     """Migration file must exist in the finance chain directory."""
     migration_path = _finance_migration_dir() / MIGRATION_FILENAME
     assert migration_path.exists(), f"Expected {migration_path}"
@@ -64,14 +64,14 @@ class TestRevisionMetadata:
     """Verify Alembic revision identifiers and callables."""
 
     def test_revision_id(self):
-        assert _load_migration().revision == "finance_003"
+        assert _load_migration().revision == "finance_004"
 
-    def test_down_revision_is_finance_002(self):
-        """finance_003 must chain from finance_002 (intelligence tables migration)."""
-        assert _load_migration().down_revision == "finance_002"
+    def test_down_revision_is_finance_003(self):
+        """finance_004 must chain from finance_003 (merchant_mappings schema correction)."""
+        assert _load_migration().down_revision == "finance_003"
 
     def test_branch_labels_is_none(self):
-        """finance_003 extends the existing finance branch; no new branch label."""
+        """finance_004 extends the existing finance branch; no new branch label."""
         mod = _load_migration()
         bl = getattr(mod, "branch_labels", None)
         assert bl is None
