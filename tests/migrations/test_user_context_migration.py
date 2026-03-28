@@ -6,7 +6,7 @@ Covers:
   - shared.user_context table columns and constraints
   - UNIQUE constraint on (signal_type, set_by_butler)
   - CHECK constraint on confidence (0.0–1.0)
-  - Partial index on signal_type WHERE superseded_at IS NULL AND expires_at > now()
+  - Partial index on signal_type WHERE superseded_at IS NULL
   - Downgrade removes all artifacts
 """
 
@@ -230,11 +230,11 @@ class TestPartialIndex:
         source = inspect.getsource(mod.upgrade)
         assert "superseded_at IS NULL" in source
 
-    def test_partial_index_where_expires_at_gt_now(self) -> None:
-        """Partial index WHERE clause includes expires_at > now()."""
+    def test_partial_index_excludes_now(self) -> None:
+        """Partial index WHERE clause does NOT use now() (not IMMUTABLE)."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "expires_at > now()" in source
+        assert "expires_at > now()" not in source
 
     def test_partial_index_uses_if_not_exists(self) -> None:
         """Partial index creation uses CREATE INDEX IF NOT EXISTS."""

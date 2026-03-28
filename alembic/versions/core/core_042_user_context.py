@@ -30,9 +30,11 @@ Constraints:
     — rejects out-of-range confidence at the DB level.
 
 Index:
-  idx_user_context_active_signals  (signal_type) WHERE superseded_at IS NULL AND expires_at > now()
-    — partial index optimising the common hot-path: queries for currently active
-      signals of a given type.
+  idx_user_context_active_signals  (signal_type) WHERE superseded_at IS NULL
+    — partial index optimising the common hot-path: queries for non-superseded
+      signals of a given type.  Expiry filtering (expires_at > now()) is done
+      at query time because now() is not IMMUTABLE and cannot appear in index
+      predicates.
 """
 
 from __future__ import annotations
@@ -74,14 +76,14 @@ def upgrade() -> None:
     """)
 
     # -------------------------------------------------------------------------
-    # 3. Partial index on signal_type for active-signal queries.
-    #    The WHERE clause mirrors the application-level "is_active" definition:
-    #    superseded_at IS NULL AND expires_at > now().
+    # 3. Partial index on signal_type for non-superseded signal queries.
+    #    expires_at filtering is done at query time (now() is STABLE, not
+    #    IMMUTABLE, so it cannot appear in a partial-index predicate).
     # -------------------------------------------------------------------------
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_user_context_active_signals
             ON shared.user_context (signal_type)
-            WHERE superseded_at IS NULL AND expires_at > now()
+            WHERE superseded_at IS NULL
     """)
 
 

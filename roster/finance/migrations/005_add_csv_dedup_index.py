@@ -1,7 +1,7 @@
 """Add partial unique index for CSV-imported transaction dedup
 
-Revision ID: finance_002
-Revises: finance_001
+Revision ID: finance_005
+Revises: finance_004
 Create Date: 2026-03-28 00:00:00.000000
 
 """
@@ -11,9 +11,9 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "finance_002"
-down_revision = "finance_001"
-branch_labels = ("finance",)
+revision = "finance_005"
+down_revision = "finance_004"
+branch_labels = None
 depends_on = None
 
 

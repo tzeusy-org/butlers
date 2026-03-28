@@ -37,8 +37,13 @@ class TestFinanceMigrationFileLayout:
         assert migration_file.exists(), f"Migration file not found at {migration_file}"
 
     def test_finance_002_migration_file_exists(self) -> None:
+        """The merchant mappings trigram migration file exists on disk."""
+        migration_file = MIGRATION_DIR / "002_merchant_mappings_trigram_index.py"
+        assert migration_file.exists(), f"Migration file not found at {migration_file}"
+
+    def test_finance_005_migration_file_exists(self) -> None:
         """The CSV dedup migration file exists on disk."""
-        migration_file = MIGRATION_DIR / "002_add_csv_dedup_index.py"
+        migration_file = MIGRATION_DIR / "005_add_csv_dedup_index.py"
         assert migration_file.exists(), f"Migration file not found at {migration_file}"
 
     def test_init_file_exists(self) -> None:
@@ -47,15 +52,15 @@ class TestFinanceMigrationFileLayout:
         assert init_file.exists(), f"__init__.py not found at {init_file}"
 
 
-class TestFinance002RevisionMetadata:
-    """Test revision metadata for finance_002 migration."""
+class TestFinance005RevisionMetadata:
+    """Test revision metadata for finance_005 migration."""
 
     def test_revision_identifiers(self) -> None:
         """The migration has correct revision metadata."""
-        mod = _load_migration("002_add_csv_dedup_index.py", "finance_002_migration")
-        assert mod.revision == "finance_002"
-        assert mod.down_revision == "finance_001"
-        assert mod.branch_labels == ("finance",)
+        mod = _load_migration("005_add_csv_dedup_index.py", "finance_005_migration")
+        assert mod.revision == "finance_005"
+        assert mod.down_revision == "finance_004"
+        assert mod.branch_labels is None
         assert mod.depends_on is None
 
 
@@ -64,13 +69,16 @@ async def finance_pool(provisioned_postgres_pool):
     """Provision a fresh database with finance tables and return a pool.
 
     WARNING: This fixture duplicates the schema from the finance migrations
-    (finance_001 and finance_002) to keep tests lightweight and avoid a
-    runtime Alembic dependency.  If either migration changes, this fixture
+    (finance_001 through finance_005) to keep tests lightweight and avoid a
+    runtime Alembic dependency.  If any migration changes, this fixture
     MUST be updated manually to stay in sync.
 
     Relevant migration files:
       - roster/finance/migrations/001_finance_tables.py  (finance_001)
-      - roster/finance/migrations/002_add_csv_dedup_index.py  (finance_002)
+      - roster/finance/migrations/002_merchant_mappings_trigram_index.py  (finance_002)
+      - roster/finance/migrations/003_merchant_mappings_schema_correction.py  (finance_003)
+      - roster/finance/migrations/004_transactions_dedup_constraint.py  (finance_004)
+      - roster/finance/migrations/005_add_csv_dedup_index.py  (finance_005)
     """
     async with provisioned_postgres_pool() as pool:
         # We need to run the migrations through Alembic's op interface,
@@ -147,7 +155,7 @@ async def finance_pool(provisioned_postgres_pool):
                     WHERE source_message_id IS NOT NULL
             """)
 
-            # Create the CSV dedup index from finance_002
+            # Create the CSV dedup index from finance_005
             await pool.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_csv_dedup
                     ON transactions (posted_at, amount, merchant, account_id)
