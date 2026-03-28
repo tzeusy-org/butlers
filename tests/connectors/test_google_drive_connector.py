@@ -3629,6 +3629,7 @@ class TestPollOnce:
         )
         loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
         loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+        loop._submit_to_ingest_api = AsyncMock()  # type: ignore[method-assign]
 
         await loop._poll_once()
 
@@ -3764,6 +3765,7 @@ class TestPollOnce:
         loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
         loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
         loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._submit_to_ingest_api = AsyncMock()  # type: ignore[method-assign]
 
         await loop._poll_once()
 
@@ -3772,3 +3774,241 @@ class TestPollOnce:
         # Both files should be in the metadata cache
         assert "f1" in loop._metadata_cache
         assert "f2" in loop._metadata_cache
+
+
+# ---------------------------------------------------------------------------
+# Switchboard ingest wiring (bu-evyo)
+# ---------------------------------------------------------------------------
+
+
+class TestSubmitToIngestApi:
+    """Tests for GDriveAccountLoop._submit_to_ingest_api MCP wiring."""
+
+    def _make_envelope(self) -> dict[str, Any]:
+        return _build_ingest_envelope(
+            file_id=_FAKE_FILE_ID,
+            change_type="created",
+            change_sequence=1,
+            file_name="test.txt",
+            mime_type="text/plain",
+            endpoint_identity=f"google_drive:user:{_FAKE_EMAIL}",
+            observed_at="2026-03-28T10:00:00Z",
+            normalized_text="file_created: test.txt (text/plain) in root",
+            idempotency_key=f"gdrive:google_drive:user:{_FAKE_EMAIL}:{_FAKE_FILE_ID}:12345",
+        )
+
+    async def test_calls_mcp_ingest_tool(self, account_config: GDriveAccountConfig) -> None:
+        """_submit_to_ingest_api calls the 'ingest' MCP tool with the envelope."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._mcp_client = AsyncMock()
+        loop._mcp_client.call_tool = AsyncMock(return_value={"status": "ok", "request_id": "r1"})
+
+        envelope = self._make_envelope()
+        await loop._submit_to_ingest_api(envelope)
+
+        loop._mcp_client.call_tool.assert_called_once_with("ingest", envelope)
+
+    async def test_records_last_ingest_submit_timestamp(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_submit_to_ingest_api sets _last_ingest_submit on success."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._mcp_client = AsyncMock()
+        loop._mcp_client.call_tool = AsyncMock(return_value={"status": "ok"})
+
+        assert loop._last_ingest_submit is None
+        await loop._submit_to_ingest_api(self._make_envelope())
+        assert loop._last_ingest_submit is not None
+
+    async def test_raises_on_tool_error_response(self, account_config: GDriveAccountConfig) -> None:
+        """_submit_to_ingest_api raises RuntimeError when tool returns status=error."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._mcp_client = AsyncMock()
+        loop._mcp_client.call_tool = AsyncMock(
+            return_value={"status": "error", "error": "ingest rejected"}
+        )
+
+        with pytest.raises(RuntimeError, match="ingest rejected"):
+            await loop._submit_to_ingest_api(self._make_envelope())
+
+    async def test_does_not_set_timestamp_on_error(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_submit_to_ingest_api does NOT set _last_ingest_submit when call_tool raises."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._mcp_client = AsyncMock()
+        loop._mcp_client.call_tool = AsyncMock(side_effect=ConnectionError("no server"))
+
+        assert loop._last_ingest_submit is None
+        with pytest.raises(ConnectionError):
+            await loop._submit_to_ingest_api(self._make_envelope())
+        assert loop._last_ingest_submit is None
+
+    async def test_records_metrics_on_success(self, account_config: GDriveAccountConfig) -> None:
+        """_submit_to_ingest_api records ingest submission metrics on success."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._mcp_client = AsyncMock()
+        loop._mcp_client.call_tool = AsyncMock(return_value={"status": "ok"})
+        loop._metrics = MagicMock()
+
+        await loop._submit_to_ingest_api(self._make_envelope())
+
+        loop._metrics.record_ingest_submission.assert_called_once()
+        call_kwargs = loop._metrics.record_ingest_submission.call_args
+        assert call_kwargs.kwargs.get("status") == "success"
+
+    async def test_records_metrics_on_duplicate(self, account_config: GDriveAccountConfig) -> None:
+        """_submit_to_ingest_api records 'duplicate' status when tool signals duplicate."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+        loop._mcp_client = AsyncMock()
+        loop._mcp_client.call_tool = AsyncMock(return_value={"status": "ok", "duplicate": True})
+        loop._metrics = MagicMock()
+
+        await loop._submit_to_ingest_api(self._make_envelope())
+
+        call_kwargs = loop._metrics.record_ingest_submission.call_args
+        assert call_kwargs.kwargs.get("status") == "duplicate"
+        # _last_ingest_submit is still set for duplicates (contact still reached switchboard)
+        assert loop._last_ingest_submit is not None
+
+
+class TestPollOnceIngestWiring:
+    """Tests that _poll_once calls _submit_to_ingest_api for accepted envelopes."""
+
+    async def test_poll_once_submits_envelope_for_each_accepted_change(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_poll_once calls _submit_to_ingest_api once per accepted change."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        submitted: list[dict[str, Any]] = []
+
+        async def _fake_submit(envelope: dict[str, Any]) -> None:
+            submitted.append(envelope)
+
+        existing_cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._submit_to_ingest_api = _fake_submit  # type: ignore[method-assign]
+
+        changes = [
+            {"fileId": "f1", "file": {"id": "f1", "name": "a.txt", "mimeType": "text/plain"}},
+            {"fileId": "f2", "file": {"id": "f2", "name": "b.txt", "mimeType": "text/plain"}},
+        ]
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={"changes": changes, "newStartPageToken": "new-tok"}
+        )
+
+        await loop._poll_once()
+
+        assert len(submitted) == 2
+        for env in submitted:
+            assert env["schema_version"] == "ingest.v1"
+            assert env["source"]["channel"] == "google_drive"
+
+    async def test_poll_once_does_not_submit_filtered_changes(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_poll_once does not call _submit_to_ingest_api for changes filtered by policy."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        submitted: list[dict[str, Any]] = []
+
+        async def _fake_submit(envelope: dict[str, Any]) -> None:
+            submitted.append(envelope)
+
+        # Mock process_change to always return None (filtered)
+        loop.process_change = MagicMock(return_value=None)  # type: ignore[method-assign]
+
+        existing_cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._submit_to_ingest_api = _fake_submit  # type: ignore[method-assign]
+
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "changes": [{"fileId": "f1", "file": {"id": "f1", "name": "a.txt"}}],
+                "newStartPageToken": "new-tok",
+            }
+        )
+
+        await loop._poll_once()
+
+        assert submitted == []
+
+    async def test_poll_once_ingest_error_propagates(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_poll_once propagates RuntimeError from _submit_to_ingest_api."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        async def _failing_submit(envelope: dict[str, Any]) -> None:
+            raise RuntimeError("switchboard unavailable")
+
+        existing_cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._submit_to_ingest_api = _failing_submit  # type: ignore[method-assign]
+
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "changes": [
+                    {
+                        "fileId": "f1",
+                        "file": {"id": "f1", "name": "a.txt", "mimeType": "text/plain"},
+                    }
+                ],
+                "newStartPageToken": "new-tok",
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="switchboard unavailable"):
+            await loop._poll_once()
+
+
+class TestReplayIngestWiring:
+    """Tests that _submit_envelope_for_replay delegates to _submit_to_ingest_api."""
+
+    async def test_replay_calls_submit_to_ingest_api(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """_submit_envelope_for_replay calls _submit_to_ingest_api with the envelope."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        submitted: list[dict[str, Any]] = []
+
+        async def _fake_submit(envelope: dict[str, Any]) -> None:
+            submitted.append(envelope)
+
+        loop._submit_to_ingest_api = _fake_submit  # type: ignore[method-assign]
+
+        envelope = _build_ingest_envelope(
+            file_id=_FAKE_FILE_ID,
+            change_type="modified",
+            change_sequence=5,
+            file_name="report.pdf",
+            mime_type="application/pdf",
+            endpoint_identity=f"google_drive:user:{_FAKE_EMAIL}",
+            observed_at="2026-03-28T10:00:00Z",
+            normalized_text="file_modified: report.pdf (application/pdf) at 2026-03-28T10:00:00Z",
+            idempotency_key="gdrive:key",
+        )
+        await loop._submit_envelope_for_replay(envelope)
+
+        assert len(submitted) == 1
+        assert submitted[0]["schema_version"] == "ingest.v1"

@@ -57,7 +57,7 @@ from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
-from butlers.connectors.metrics import ConnectorMetrics
+from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.google_credentials import resolve_google_credentials
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
@@ -669,6 +669,11 @@ class GDriveAccountLoop:
         # HTTP client (created lazily or on start)
         self._http_client: httpx.AsyncClient | None = None
 
+        # MCP client for Switchboard ingest submissions
+        self._mcp_client = CachedMCPClient(
+            config.switchboard_mcp_url, client_name="google-drive-connector"
+        )
+
         # Standard connector metrics (task 11.4)
         self._metrics = ConnectorMetrics(
             connector_type=_CONNECTOR_TYPE,
@@ -1096,10 +1101,7 @@ class GDriveAccountLoop:
         for change in all_changes:
             envelope = self.process_change(change, observed_at=observed_at)
             if envelope is not None:
-                # In a real deployment, submit to Switchboard here.
-                # Track last submission time for health reporting.
-                self._last_ingest_submit = time.time()
-                self._metrics.record_ingest_submission(status="success")
+                await self._submit_to_ingest_api(envelope)
                 accepted_count += 1
 
         logger.info(
@@ -1119,6 +1121,49 @@ class GDriveAccountLoop:
 
         # Persist updated metadata cache (task 9.5)
         await self._save_metadata_cache_to_store()
+
+    async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
+        """Submit an ingest.v1 envelope to Switchboard via MCP ingest tool.
+
+        Follows the same pattern as GmailConnectorRuntime._submit_to_ingest_api:
+        calls the ``ingest`` MCP tool, checks for tool-level error responses,
+        records submission metrics, and updates the last-submit timestamp.
+        """
+        start_time = time.perf_counter()
+        status = "error"
+
+        try:
+            result = await self._mcp_client.call_tool("ingest", envelope)
+
+            # Check for tool-level error response
+            if isinstance(result, dict) and result.get("status") == "error":
+                error_msg = result.get("error", "Unknown ingest error")
+                raise RuntimeError(f"Ingest tool error: {error_msg}")
+
+            # Record successful ingest submission
+            self._last_ingest_submit = time.time()
+
+            # Determine status for metrics
+            is_duplicate = isinstance(result, dict) and result.get("duplicate", False)
+            status = "duplicate" if is_duplicate else "success"
+
+            if is_duplicate:
+                logger.debug(
+                    "Drive: duplicate ingestion for %s",
+                    envelope["event"]["external_event_id"],
+                )
+            else:
+                logger.info(
+                    "Drive: ingestion accepted: request_id=%s event_id=%s",
+                    result.get("request_id") if isinstance(result, dict) else None,
+                    envelope["event"]["external_event_id"],
+                )
+        except Exception as exc:
+            self._metrics.record_error(error_type=get_error_type(exc), operation="ingest_submit")
+            raise
+        finally:
+            latency = time.perf_counter() - start_time
+            self._metrics.record_ingest_submission(status=status, latency=latency)
 
     async def _flush_filtered_events(self) -> None:
         """Flush accumulated filtered events to the DB (task 11.2)."""
@@ -1146,18 +1191,13 @@ class GDriveAccountLoop:
             )
 
     async def _submit_envelope_for_replay(self, envelope: dict[str, Any]) -> None:
-        """Submit a replayed ingest.v1 envelope.
-
-        This is a stub used by the replay drain loop.  In a real deployment it
-        would call the Switchboard MCP ingest tool.  It records the submission
-        attempt in ConnectorMetrics so tests can observe replay activity.
-        """
+        """Submit a replayed ingest.v1 envelope via the Switchboard MCP ingest tool."""
         logger.debug(
             "Drive replay: submitting envelope for file_id=%s endpoint=%s",
             (envelope.get("event") or {}).get("external_event_id"),
             self.endpoint_identity,
         )
-        self._metrics.record_ingest_submission(status="success")
+        await self._submit_to_ingest_api(envelope)
 
     def _on_done(self, task: asyncio.Task[None]) -> None:
         if not task.cancelled():
@@ -1173,6 +1213,12 @@ class GDriveAccountLoop:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
+        try:
+            await self._mcp_client.aclose()
+        except Exception as exc:
+            logger.warning(
+                "Drive: error closing MCP client for email=%s: %s", self.email, exc, exc_info=True
+            )
         logger.info("Drive account loop stopped: email=%s", self.email)
 
     @property
