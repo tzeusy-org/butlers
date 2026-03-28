@@ -580,12 +580,25 @@ async def subscription_audit(
         """
     )
     if has_subscriptions:
+        # Batch query: JOIN subscriptions with their latest transaction date
+        # using a single query instead of N+1 queries per subscription.
         sub_rows = await pool.fetch(
             """
-            SELECT service, amount, currency, frequency, status, next_renewal, updated_at
-            FROM subscriptions
-            WHERE status IN ('active', 'paused')
-            ORDER BY service ASC
+            SELECT
+                s.service,
+                s.amount,
+                s.currency,
+                s.frequency,
+                s.status,
+                s.next_renewal,
+                s.updated_at,
+                MAX(t.posted_at) AS last_charge_date
+            FROM subscriptions s
+            LEFT JOIN transactions t
+                ON lower(t.merchant) LIKE lower('%' || s.service || '%')
+            WHERE s.status IN ('active', 'paused')
+            GROUP BY s.id
+            ORDER BY s.service ASC
             """
         )
         for row in sub_rows:
@@ -594,11 +607,8 @@ async def subscription_audit(
             annual_cost = amount * _ANNUAL_MULTIPLIER.get(freq, 12)
             status_label = "tracked_active" if row["status"] == "active" else "tracked_paused"
 
-            # Determine last charge date from transactions.
-            last_charge = await pool.fetchval(
-                "SELECT MAX(posted_at) FROM transactions WHERE lower(merchant) LIKE lower($1)",
-                f"%{row['service']}%",
-            )
+            # last_charge_date is now part of the batch query result
+            last_charge = row["last_charge_date"]
             entry: dict[str, Any] = {
                 "service": row["service"],
                 "amount": str(amount),

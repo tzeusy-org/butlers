@@ -776,6 +776,55 @@ class TestSubscriptionAudit:
         assert "last_audit_date" in result
         assert "as_of" in result
 
+    async def test_last_charge_date_populated_via_batch_query(self, pool):
+        """last_charge_date is correctly fetched via batch JOIN (not N+1 queries)."""
+        from butlers.tools.finance.overview import subscription_audit
+
+        renewal = date.today() + timedelta(days=30)
+
+        # Insert multiple subscriptions to ensure batch query handles multiple rows.
+        await pool.execute(
+            """
+            INSERT INTO subscriptions
+                (service, amount, currency, frequency, next_renewal, status)
+            VALUES
+                ('Netflix', 15.49, 'USD', 'monthly', $1, 'active'),
+                ('Spotify', 9.99, 'USD', 'monthly', $1, 'active')
+            """,
+            renewal,
+        )
+
+        # Insert transactions for both subscriptions, with different dates.
+        t1 = datetime.now(UTC) - timedelta(days=60)
+        t2 = datetime.now(UTC) - timedelta(days=30)
+        t3 = datetime.now(UTC) - timedelta(days=5)
+        await pool.execute(
+            """
+            INSERT INTO transactions
+                (merchant, amount, currency, direction, category, posted_at)
+            VALUES
+                ('Netflix', 15.49, 'USD', 'debit', 'entertainment', $1),
+                ('Spotify', 9.99, 'USD', 'debit', 'entertainment', $2),
+                ('Netflix', 15.49, 'USD', 'debit', 'entertainment', $3)
+            """,
+            t1,
+            t2,
+            t3,
+        )
+
+        result = await subscription_audit(pool)
+        entries = {e["service"]: e for e in result["entries"]}
+
+        # Netflix should have the most recent charge date (5 days ago).
+        netflix_entry = entries["Netflix"]
+        assert netflix_entry["last_charge_date"] is not None
+        assert netflix_entry["last_charge_date"] == t3.isoformat()
+
+        # Spotify should have its charge date (30 days ago).
+        spotify_entry = entries["Spotify"]
+        assert spotify_entry["last_charge_date"] is not None
+        assert spotify_entry["last_charge_date"] == t2.isoformat()
+
 
 # ---------------------------------------------------------------------------
 # flag_tax_deductible
