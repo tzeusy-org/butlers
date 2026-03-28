@@ -84,6 +84,13 @@ def downgrade() -> None:
             DO $$
             BEGIN
                 IF to_regclass('{schema}.event_chains') IS NOT NULL THEN
+                    -- Coerce rows that would violate the old constraint to 'disabled'
+                    -- before re-applying it, to avoid a constraint-violation failure.
+                    -- 'paused' and 'failed' did not exist in the original enum.
+                    UPDATE {schema}.event_chains
+                    SET status = 'disabled'
+                    WHERE status IN ('paused', 'failed');
+
                     IF EXISTS (
                         SELECT 1
                         FROM pg_constraint c
