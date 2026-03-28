@@ -1022,13 +1022,6 @@ class TestDashboardSettingsFlow:
         assert module._token == "test-bearer-token-12345"
         assert module._ws_connected is False  # WS connect was mocked as no-op
 
-    @pytest.mark.xfail(
-        reason=(
-            "POST /api/settings/home-assistant endpoint not yet implemented — "
-            "tracked in bu-syyq (HA: Dashboard settings — connection configuration)"
-        ),
-        strict=False,
-    )
     async def test_settings_api_validates_and_saves_credentials(self) -> None:
         """POST /api/settings/home-assistant validates connection and saves credentials.
 
@@ -1037,12 +1030,11 @@ class TestDashboardSettingsFlow:
         2. Endpoint validates by calling GET /api/ on the HA instance
         3. On success (200 response), credentials are stored in CredentialStore
         4. Connector startup can resolve credentials from CredentialStore
-
-        This test will pass once bu-syyq is implemented.
         """
         import httpx
 
         from butlers.api.app import create_app
+        from butlers.api.routers.home_assistant import _make_credential_store
 
         app = create_app(api_key="")
 
@@ -1054,7 +1046,7 @@ class TestDashboardSettingsFlow:
 
         stored_creds: dict[str, str] = {}
 
-        # Wire a mock credential store
+        # Mock the credential store that the endpoint will use
         mock_cred_store = AsyncMock()
 
         async def _mock_store(key: str, value: str, **_kwargs: Any) -> None:
@@ -1062,12 +1054,20 @@ class TestDashboardSettingsFlow:
 
         mock_cred_store.store = _mock_store
 
+        # Mock the db_manager dependency that returns our credential store
+        mock_db_manager = MagicMock()
+        mock_db_manager.credential_shared_pool = MagicMock(
+            side_effect=AttributeError("Simulate no shared pool")
+        )
+        mock_db_manager.butler_names = ["test_butler"]
+        mock_db_manager.pool = MagicMock(return_value=MagicMock())
+
         # Keep a reference to the real AsyncClient so the ASGI test transport is
         # not affected. Only the outbound HA validation call (inside the endpoint
         # handler) is mocked — not the ASGI client used by the test itself.
         _real_async_client = httpx.AsyncClient
 
-        async def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
+        def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
             if "transport" in kwargs and isinstance(kwargs["transport"], httpx.ASGITransport):
                 return _real_async_client(*args, **kwargs)
             mock_http = AsyncMock()
@@ -1076,7 +1076,13 @@ class TestDashboardSettingsFlow:
             mock_http.__aexit__ = AsyncMock(return_value=None)
             return mock_http
 
-        with patch("httpx.AsyncClient", side_effect=_patched_client_factory):
+        with (
+            patch("httpx.AsyncClient", side_effect=_patched_client_factory),
+            patch(
+                "butlers.api.routers.home_assistant._make_credential_store",
+                return_value=mock_cred_store,
+            ),
+        ):
             async with _real_async_client(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
@@ -1084,8 +1090,8 @@ class TestDashboardSettingsFlow:
                 response = await client.post(
                     "/api/settings/home-assistant",
                     json={
-                        "base_url": "http://homeassistant.local:8123",
-                        "access_token": "test-long-lived-access-token",
+                        "url": "http://homeassistant.local:8123",
+                        "token": "test-long-lived-access-token",
                     },
                 )
 
@@ -1097,12 +1103,6 @@ class TestDashboardSettingsFlow:
         assert "home_assistant:base_url" in stored_creds
         assert "home_assistant:access_token" in stored_creds
 
-    @pytest.mark.xfail(
-        reason=(
-            "POST /api/settings/home-assistant endpoint not yet implemented — tracked in bu-syyq"
-        ),
-        strict=False,
-    )
     async def test_settings_api_rejects_invalid_token(self) -> None:
         """POST /api/settings/home-assistant returns 400 for auth failure (HTTP 401 from HA)."""
         import httpx
@@ -1115,9 +1115,13 @@ class TestDashboardSettingsFlow:
         mock_ha_response.status_code = 401
         mock_ha_response.raise_for_status.side_effect = Exception("401 Unauthorized")
 
+        # Mock the credential store for the endpoint
+        mock_cred_store = AsyncMock()
+        mock_cred_store.store = AsyncMock()
+
         _real_async_client = httpx.AsyncClient
 
-        async def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
+        def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
             if "transport" in kwargs and isinstance(kwargs["transport"], httpx.ASGITransport):
                 return _real_async_client(*args, **kwargs)
             mock_http = AsyncMock()
@@ -1126,7 +1130,13 @@ class TestDashboardSettingsFlow:
             mock_http.__aexit__ = AsyncMock(return_value=None)
             return mock_http
 
-        with patch("httpx.AsyncClient", side_effect=_patched_client_factory):
+        with (
+            patch("httpx.AsyncClient", side_effect=_patched_client_factory),
+            patch(
+                "butlers.api.routers.home_assistant._make_credential_store",
+                return_value=mock_cred_store,
+            ),
+        ):
             async with _real_async_client(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
@@ -1134,37 +1144,35 @@ class TestDashboardSettingsFlow:
                 response = await client.post(
                     "/api/settings/home-assistant",
                     json={
-                        "base_url": "http://homeassistant.local:8123",
-                        "access_token": "wrong-token",
+                        "url": "http://homeassistant.local:8123",
+                        "token": "wrong-token",
                     },
                 )
 
-        # Should return 400 with an actionable error for invalid access token
-        assert response.status_code in (400, 422), (
-            f"Expected 4xx for invalid token, got {response.status_code}"
+        # Should return 502 with an actionable error for invalid access token
+        assert response.status_code == 502, (
+            f"Expected 502 for invalid token, got {response.status_code}"
         )
         detail = response.json().get("detail", "")
         assert "token" in detail.lower() or "auth" in detail.lower(), (
             f"Error detail should mention auth/token: {detail!r}"
         )
 
-    @pytest.mark.xfail(
-        reason=(
-            "POST /api/settings/home-assistant endpoint not yet implemented — tracked in bu-syyq"
-        ),
-        strict=False,
-    )
     async def test_settings_api_rejects_unreachable_host(self) -> None:
-        """POST /api/settings/home-assistant returns 400 for unreachable HA host."""
+        """POST /api/settings/home-assistant returns 502 for unreachable HA host."""
         import httpx
 
         from butlers.api.app import create_app
 
         app = create_app(api_key="")
 
+        # Mock the credential store for the endpoint
+        mock_cred_store = AsyncMock()
+        mock_cred_store.store = AsyncMock()
+
         _real_async_client = httpx.AsyncClient
 
-        async def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
+        def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
             if "transport" in kwargs and isinstance(kwargs["transport"], httpx.ASGITransport):
                 return _real_async_client(*args, **kwargs)
             mock_http = AsyncMock()
@@ -1173,7 +1181,13 @@ class TestDashboardSettingsFlow:
             mock_http.__aexit__ = AsyncMock(return_value=None)
             return mock_http
 
-        with patch("httpx.AsyncClient", side_effect=_patched_client_factory):
+        with (
+            patch("httpx.AsyncClient", side_effect=_patched_client_factory),
+            patch(
+                "butlers.api.routers.home_assistant._make_credential_store",
+                return_value=mock_cred_store,
+            ),
+        ):
             async with _real_async_client(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
@@ -1181,13 +1195,13 @@ class TestDashboardSettingsFlow:
                 response = await client.post(
                     "/api/settings/home-assistant",
                     json={
-                        "base_url": "http://192.168.1.999:8123",
-                        "access_token": "any-token",
+                        "url": "http://192.168.1.999:8123",
+                        "token": "any-token",
                     },
                 )
 
-        assert response.status_code in (400, 503), (
-            f"Expected 4xx/503 for unreachable host, got {response.status_code}"
+        assert response.status_code == 502, (
+            f"Expected 502 for unreachable host, got {response.status_code}"
         )
         detail = response.json().get("detail", "")
         assert "connect" in detail.lower() or "reach" in detail.lower(), (
