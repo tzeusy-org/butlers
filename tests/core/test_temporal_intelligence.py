@@ -1716,6 +1716,361 @@ class TestTickIntegration:
         attrs = dict(tick_span.attributes or {})
         assert "chains_fired" in attrs
 
+    async def test_tick_event_chain_pass_fires_deadline_passed_chain_on_expired(self, pool):
+        """tick() fires a deadline_passed chain when its referenced deadline expires."""
+
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        past_target = _past_date(1)  # yesterday — will expire this tick
+
+        # Insert an expired deadline task (deadline pass runs first and sets expired)
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('tax-filing', '0 0 * * *', 'File taxes', 'prompt', 'deadline', $1,
+                 30, '[{"days_before": 30, "severity": "info"}]',
+                 'alerted', '[{"days_before": 30, "severity": "info"}]', $2, true)
+            RETURNING id
+            """,
+            past_target,
+            now,
+        )
+
+        # Insert an active event chain triggered by this deadline expiring
+        chain_name = "post-tax-filing-archive"
+        _actions = (
+            '[{"action_type": "job", "delay_minutes": 0, "job_name": "archive_tax_documents"}]'
+        )
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES
+                ($1, 'deadline_passed', $2, $3::jsonb, 'active', 'test-butler')
+            """,
+            chain_name,
+            str(deadline_id),
+            _actions,
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        # The deadline should now be expired
+        dl_row = await pool.fetchrow(
+            "SELECT deadline_status FROM scheduled_tasks WHERE name = 'tax-filing'"
+        )
+        assert dl_row["deadline_status"] == "expired", (
+            f"Expected deadline_status='expired', got {dl_row['deadline_status']!r}"
+        )
+
+        # The chain should have been fired
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired", (
+            f"Expected chain status='fired', got {chain_row['status']!r}"
+        )
+
+        # A materialized task should exist
+        task_row = await pool.fetchrow(
+            "SELECT name, source FROM scheduled_tasks WHERE name = $1",
+            f"chain:{chain_name}:0",
+        )
+        assert task_row is not None, "Expected a materialized chain task to be inserted"
+        assert task_row["source"] == "chain"
+
+    async def test_tick_event_chain_pass_fires_deadline_passed_chain_on_completed(self, pool):
+        """tick() fires a deadline_passed chain when its referenced deadline is completed."""
+
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        future_target = _future_date(10)
+
+        # Insert a deadline that has already been manually completed
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('visa-renewal-done', '0 0 * * *', 'Renew visa', 'prompt', 'deadline', $1,
+                 30, '[{"days_before": 30, "severity": "info"}]',
+                 'completed', '[{"days_before": 30, "severity": "info"}]', $2, false)
+            RETURNING id
+            """,
+            future_target,
+            now,
+        )
+
+        chain_name = "post-visa-completed"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES
+                ($1, 'deadline_passed', $2, $3::jsonb, 'active', 'test-butler')
+            """,
+            chain_name,
+            str(deadline_id),
+            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Visa renewed"}]',
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired", (
+            f"Expected chain status='fired', got {chain_row['status']!r}"
+        )
+
+    async def test_tick_event_chain_pass_does_not_refire_fired_deadline_passed_chain(self, pool):
+        """tick() does NOT re-fire a deadline_passed chain that already has status='fired'."""
+
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        past_target = _past_date(1)
+
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('already-expired-dl', '0 0 * * *', 'Some deadline', 'prompt', 'deadline', $1,
+                 30, '[{"days_before": 30, "severity": "info"}]',
+                 'expired', '[{"days_before": 30, "severity": "info"}]', $2, false)
+            RETURNING id
+            """,
+            past_target,
+            now,
+        )
+
+        chain_name = "already-fired-chain"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES
+                ($1, 'deadline_passed', $2,
+                 '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Already done"}]',
+                 'fired', 'test-butler')
+            """,
+            chain_name,
+            str(deadline_id),
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        # Chain should still be 'fired', not re-materialized
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired"
+
+        # No duplicate materialized tasks should exist
+        task_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM scheduled_tasks WHERE name = $1",
+            f"chain:{chain_name}:0",
+        )
+        assert task_count == 0, f"Expected no materialized tasks, found {task_count}"
+
+    async def test_tick_event_chain_pass_fires_deadline_threshold_chain(self, pool):
+        """tick() fires a deadline_threshold chain when matching severity has been fired."""
+
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        future_target = _future_date(5)
+
+        # Insert a deadline that already has a 'critical' threshold fired
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('critical-deadline', '0 0 * * *', 'Critical task', 'prompt', 'deadline', $1,
+                 30,
+                 '[{"days_before": 7, "severity": "critical"}]',
+                 'escalated',
+                 '[{"days_before": 7, "severity": "critical"}]',
+                 $2, true)
+            RETURNING id
+            """,
+            future_target,
+            now,
+        )
+
+        chain_name = "on-critical-escalation"
+        trigger_ref = f"{deadline_id}:critical"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES
+                ($1, 'deadline_threshold', $2, $3::jsonb, 'active', 'test-butler')
+            """,
+            chain_name,
+            trigger_ref,
+            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Escalation alert"}]',
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired", (
+            f"Expected chain status='fired', got {chain_row['status']!r}"
+        )
+
+        task_row = await pool.fetchrow(
+            "SELECT name, source FROM scheduled_tasks WHERE name = $1",
+            f"chain:{chain_name}:0",
+        )
+        assert task_row is not None, "Expected a materialized chain task to be inserted"
+        assert task_row["source"] == "chain"
+
+    async def test_tick_event_chain_pass_does_not_fire_threshold_chain_for_unmatched_severity(
+        self, pool
+    ):
+        """tick() does NOT fire a deadline_threshold chain when a different severity was fired."""
+
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        # Target is 20 days out; critical threshold (days_before=7) is not yet due.
+        # info threshold (days_before=30) is already in fired_thresholds, won't fire again.
+        future_target = _future_date(20)
+        _alert = (
+            '[{"days_before": 30, "severity": "info"}, {"days_before": 7, "severity": "critical"}]'
+        )
+        _fired = '[{"days_before": 30, "severity": "info"}]'
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('info-only-deadline', '0 0 * * *', 'Info only task',
+                 'prompt', 'deadline', $1, 30, $3::jsonb, 'alerted', $4::jsonb, $2, true)
+            RETURNING id
+            """,
+            future_target,
+            now,
+            _alert,
+            _fired,
+        )
+
+        chain_name = "critical-only-chain"
+        trigger_ref = f"{deadline_id}:critical"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES
+                ($1, 'deadline_threshold', $2,
+                 '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Critical alert"}]',
+                 'active', 'test-butler')
+            """,
+            chain_name,
+            trigger_ref,
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "active", (
+            f"Expected chain status='active' (not fired), got {chain_row['status']!r}"
+        )
+
+    async def test_tick_event_chain_pass_fires_threshold_chain_without_calendar_projection(
+        self, pool
+    ):
+        """tick() fires deadline_threshold chains even when calendar_projection doesn't exist."""
+
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        future_target = _future_date(5)
+
+        # Note: calendar_projection is NOT created in this test — it's left absent.
+        # The pool fixture creates the base tables but calendar_projection is optional.
+
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('nocal-deadline', '0 0 * * *', 'No-calendar task', 'prompt', 'deadline', $1,
+                 30,
+                 '[{"days_before": 7, "severity": "warning"}]',
+                 'alerted',
+                 '[{"days_before": 7, "severity": "warning"}]',
+                 $2, true)
+            RETURNING id
+            """,
+            future_target,
+            now,
+        )
+
+        chain_name = "no-calendar-threshold-chain"
+        trigger_ref = f"{deadline_id}:warning"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES
+                ($1, 'deadline_threshold', $2, $3::jsonb, 'active', 'test-butler')
+            """,
+            chain_name,
+            trigger_ref,
+            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Warning hit"}]',
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired", (
+            f"Expected chain status='fired', got {chain_row['status']!r}"
+        )
+
     async def test_tick_cron_tasks_unaffected_by_new_passes(self, pool):
         """Existing cron tasks still dispatch normally after new passes are added."""
         from butlers.core.scheduler import tick
