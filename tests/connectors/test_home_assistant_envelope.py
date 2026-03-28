@@ -433,10 +433,7 @@ class TestBuildStateChangedEnvelope:
     def test_payload_raw_ha_event(self, state_changed_envelope: dict) -> None:
         assert state_changed_envelope["payload"]["raw"]["ha_event"] == _HA_STATE_CHANGED_EVENT
 
-    def test_payload_raw_area_is_present(self, state_changed_envelope: dict) -> None:
-        assert "area" in state_changed_envelope["payload"]["raw"]
-
-    def test_payload_raw_area_value(self, state_changed_envelope: dict) -> None:
+    def test_payload_raw_area(self, state_changed_envelope: dict) -> None:
         assert state_changed_envelope["payload"]["raw"]["area"] == "living_room"
 
     def test_payload_raw_area_is_none_when_not_provided(self) -> None:
@@ -446,7 +443,6 @@ class TestBuildStateChangedEnvelope:
             time_fired=_TIME_FIRED,
             ha_event={},
         )
-        assert "area" in env["payload"]["raw"]
         assert env["payload"]["raw"]["area"] is None
 
     def test_payload_raw_discretion_reason(self, state_changed_envelope: dict) -> None:
@@ -641,10 +637,7 @@ class TestBuildAutomationTriggeredEnvelope:
     def test_payload_raw_ha_event(self, automation_envelope: dict) -> None:
         assert automation_envelope["payload"]["raw"]["ha_event"] == _HA_AUTOMATION_EVENT
 
-    def test_payload_raw_area_is_present(self, automation_envelope: dict) -> None:
-        assert "area" in automation_envelope["payload"]["raw"]
-
-    def test_payload_raw_area_value(self, automation_envelope: dict) -> None:
+    def test_payload_raw_area(self, automation_envelope: dict) -> None:
         assert automation_envelope["payload"]["raw"]["area"] == "bedroom"
 
     def test_payload_raw_area_is_none_when_not_provided(self) -> None:
@@ -654,7 +647,6 @@ class TestBuildAutomationTriggeredEnvelope:
             time_fired=_TIME_FIRED,
             ha_event={},
         )
-        assert "area" in env["payload"]["raw"]
         assert env["payload"]["raw"]["area"] is None
 
     def test_payload_raw_discretion_reason(self, automation_envelope: dict) -> None:
