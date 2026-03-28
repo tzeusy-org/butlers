@@ -94,11 +94,11 @@ _RATE_LIMIT_BASE_DELAY_S = 1.0
 _RATE_LIMIT_MAX_DELAY_S = 60.0
 
 # Change type literals
-_CHANGE_TYPE_CREATED = "created"
-_CHANGE_TYPE_MODIFIED = "modified"
-_CHANGE_TYPE_TRASHED = "trashed"
-_CHANGE_TYPE_RENAMED = "renamed"
-_CHANGE_TYPE_MOVED = "moved"
+_CHANGE_TYPE_CREATED = "file_created"
+_CHANGE_TYPE_MODIFIED = "file_modified"
+_CHANGE_TYPE_TRASHED = "file_trashed"
+_CHANGE_TYPE_RENAMED = "file_renamed"
+_CHANGE_TYPE_MOVED = "file_moved"
 _CHANGE_TYPE_SHARING_CHANGED = "sharing_changed"
 _CHANGE_TYPE_FALLBACK = "file_changed"
 
