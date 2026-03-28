@@ -270,7 +270,7 @@ export function GoogleOAuthSection() {
     credStatus?.client_id_configured && credStatus?.client_secret_configured;
 
   const overallHealth = credStatus?.oauth_health ?? "not_configured";
-  const connectUrl = getGoogleOAuthStartUrl();
+  const connectUrl = getGoogleOAuthStartUrl({ forceConsent: true });
 
   if (isLoading) {
     return (
