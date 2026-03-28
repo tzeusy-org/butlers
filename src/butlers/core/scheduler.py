@@ -899,6 +899,68 @@ async def _tick_deadline_pass(
     return evaluated, dispatched
 
 
+async def _fire_chain(
+    pool: asyncpg.Pool,
+    *,
+    chain_id,
+    chain_name: str,
+    actions,
+    now: datetime,
+    trigger_label: str,
+) -> None:
+    """Materialize chain actions into scheduled_tasks and mark the chain as fired.
+
+    Args:
+        pool: asyncpg connection pool.
+        chain_id: UUID of the event_chains row to fire.
+        chain_name: Human-readable chain name (used in task name generation).
+        actions: Parsed list of action dicts.
+        now: Current tick timestamp.
+        trigger_label: Log label describing what triggered this chain.
+    """
+    import json as _json
+
+    from butlers.core.temporal.event_chains import materialize_chain_actions
+
+    tasks = materialize_chain_actions(
+        chain_name=chain_name,
+        actions=actions,
+        fired_at=now,
+    )
+
+    for task in tasks:
+        try:
+            await pool.execute(
+                """
+                INSERT INTO scheduled_tasks
+                    (name, cron, dispatch_mode, prompt, job_name, job_args,
+                     source, next_run_at, until_at, enabled)
+                VALUES
+                    ($1, '* * * * *', $2, $3, $4, $5::jsonb,
+                     'chain', $6, $7, true)
+                ON CONFLICT (name) DO NOTHING
+                """,
+                task["name"],
+                task["dispatch_mode"],
+                task.get("prompt"),
+                task.get("job_name"),
+                _json.dumps(task.get("job_args")) if task.get("job_args") else None,
+                task["next_run_at"],
+                task["until_at"],
+            )
+        except Exception:
+            logger.exception("Failed to insert chain task %r", task["name"])
+
+    await pool.execute(
+        """
+        UPDATE event_chains SET status = 'fired'
+        WHERE id = $1
+        """,
+        chain_id,
+    )
+    logger.info("Fired event chain %r triggered by %s", chain_name, trigger_label)
+
+
 async def _tick_event_chain_pass(
     pool: asyncpg.Pool,
     dispatch_fn,
@@ -906,19 +968,22 @@ async def _tick_event_chain_pass(
 ) -> int:
     """Detect event chain triggers and materialize actions.
 
-    Currently handles:
+    Handles:
     - calendar_event_end: calendar_projection events that ended before now
+    - deadline_passed: deadline tasks that transitioned to 'expired' or 'completed'
+    - deadline_threshold: deadline tasks where a matching severity threshold has fired
 
     Returns the number of chains fired.
     """
     import json as _json
 
-    from butlers.core.temporal.event_chains import materialize_chain_actions, should_fire_chain
+    from butlers.core.temporal.event_chains import should_fire_chain
 
     chains_fired = 0
 
-    # Check if calendar_projection table exists (it's optional)
-    table_exists = await pool.fetchval(
+    # --- Trigger: calendar_event_end ---
+    # Only evaluated when calendar_projection table exists (it's optional).
+    calendar_table_exists = await pool.fetchval(
         """
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
@@ -927,101 +992,185 @@ async def _tick_event_chain_pass(
         )
         """
     )
-    if not table_exists:
-        return 0
 
-    # Find calendar events that ended before now and haven't triggered chains yet
-    ended_events = await pool.fetch(
-        """
-        SELECT event_id, butler_name
-        FROM calendar_projection
-        WHERE end_at <= $1 AND chain_triggered = false
-        """,
-        now,
-    )
-
-    if not ended_events:
-        return 0
-
-    # For each ended event, find active chains triggered by calendar_event_end
-    for event_row in ended_events:
-        event_id = event_row["event_id"]
-        butler_name = event_row["butler_name"]
-
-        chains = await pool.fetch(
+    if calendar_table_exists:
+        # Find calendar events that ended before now and haven't triggered chains yet
+        ended_events = await pool.fetch(
             """
-            SELECT id, name, actions
-            FROM event_chains
-            WHERE trigger_type = 'calendar_event_end'
-              AND trigger_reference = $1
-              AND status = 'active'
-              AND butler_name = $2
+            SELECT event_id, butler_name
+            FROM calendar_projection
+            WHERE end_at <= $1 AND chain_triggered = false
             """,
-            event_id,
-            butler_name,
+            now,
         )
 
-        for chain_row in chains:
-            chain_id = chain_row["id"]
-            chain_name = chain_row["name"]
-            actions = chain_row["actions"]
+        for event_row in ended_events:
+            event_id = event_row["event_id"]
+            butler_name = event_row["butler_name"]
+
+            chains = await pool.fetch(
+                """
+                SELECT id, name, actions
+                FROM event_chains
+                WHERE trigger_type = 'calendar_event_end'
+                  AND trigger_reference = $1
+                  AND status = 'active'
+                  AND butler_name = $2
+                """,
+                event_id,
+                butler_name,
+            )
+
+            for chain_row in chains:
+                chain_id = chain_row["id"]
+                chain_name = chain_row["name"]
+                actions = chain_row["actions"]
+                if isinstance(actions, str):
+                    actions = _json.loads(actions)
+
+                if not should_fire_chain(chain_depth=0, chain_name=chain_name):
+                    continue
+
+                await _fire_chain(
+                    pool,
+                    chain_id=chain_id,
+                    chain_name=chain_name,
+                    actions=actions,
+                    now=now,
+                    trigger_label=f"calendar event {event_id!r}",
+                )
+                chains_fired += 1
+
+            # Mark calendar event as chain_triggered regardless of whether chains fired
+            await pool.execute(
+                """
+                UPDATE calendar_projection SET chain_triggered = true
+                WHERE event_id = $1 AND butler_name = $2
+                """,
+                event_id,
+                butler_name,
+            )
+
+    # --- Trigger: deadline_passed ---
+    # Detect active chains whose referenced deadline has reached a terminal status
+    # (expired or completed).  The deadline_status was already updated in Pass 1
+    # (_tick_deadline_pass) earlier in the same tick() call.
+    #
+    # Guard: skip if scheduled_tasks lacks deadline columns (pre-migration schema).
+    has_deadline_status_col = await _has_column(pool, "scheduled_tasks", "deadline_status")
+    has_event_chains_table = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = 'event_chains'
+        )
+        """
+    )
+
+    if has_deadline_status_col and has_event_chains_table:
+        # Fetch active deadline_passed chains and join to deadline status in one query.
+        deadline_passed_chains = await pool.fetch(
+            """
+            SELECT ec.id       AS chain_id,
+                   ec.name     AS chain_name,
+                   ec.actions  AS actions,
+                   st.deadline_status AS dl_status
+            FROM event_chains ec
+            JOIN scheduled_tasks st
+              ON st.id = ec.trigger_reference::uuid
+             AND st.task_type = 'deadline'
+            WHERE ec.trigger_type = 'deadline_passed'
+              AND ec.status = 'active'
+              AND st.deadline_status IN ('expired', 'completed')
+            """
+        )
+
+        for row in deadline_passed_chains:
+            chain_id = row["chain_id"]
+            chain_name = row["chain_name"]
+            dl_status = row["dl_status"]
+            actions = row["actions"]
             if isinstance(actions, str):
                 actions = _json.loads(actions)
 
             if not should_fire_chain(chain_depth=0, chain_name=chain_name):
                 continue
 
-            # Materialize actions into one-shot tasks
-            tasks = materialize_chain_actions(
+            await _fire_chain(
+                pool,
+                chain_id=chain_id,
                 chain_name=chain_name,
                 actions=actions,
-                fired_at=now,
-            )
-
-            # Insert materialized tasks into scheduled_tasks
-            for task in tasks:
-                try:
-                    await pool.execute(
-                        """
-                        INSERT INTO scheduled_tasks
-                            (name, cron, dispatch_mode, prompt, job_name, job_args,
-                             source, next_run_at, until_at, enabled)
-                        VALUES
-                            ($1, '* * * * *', $2, $3, $4, $5::jsonb,
-                             'chain', $6, $7, true)
-                        ON CONFLICT (name) DO NOTHING
-                        """,
-                        task["name"],
-                        task["dispatch_mode"],
-                        task.get("prompt"),
-                        task.get("job_name"),
-                        _json.dumps(task.get("job_args")) if task.get("job_args") else None,
-                        task["next_run_at"],
-                        task["until_at"],
-                    )
-                except Exception:
-                    logger.exception("Failed to insert chain task %r", task["name"])
-
-            # Mark chain as fired
-            await pool.execute(
-                """
-                UPDATE event_chains SET status = 'fired'
-                WHERE id = $1
-                """,
-                chain_id,
+                now=now,
+                trigger_label=f"deadline_passed (status={dl_status!r})",
             )
             chains_fired += 1
-            logger.info("Fired event chain %r for calendar event %r", chain_name, event_id)
 
-        # Mark calendar event as chain_triggered
-        await pool.execute(
+        # --- Trigger: deadline_threshold ---
+        # Detect active chains whose referenced deadline has fired the severity in
+        # trigger_reference.  Format: "<deadline-uuid>:<severity>" (e.g. "abc-123:critical").
+        # The chain fires when that severity appears in the deadline's fired_thresholds.
+        deadline_threshold_chains = await pool.fetch(
             """
-            UPDATE calendar_projection SET chain_triggered = true
-            WHERE event_id = $1 AND butler_name = $2
-            """,
-            event_id,
-            butler_name,
+            SELECT ec.id              AS chain_id,
+                   ec.name            AS chain_name,
+                   ec.actions         AS actions,
+                   ec.trigger_reference AS trigger_reference,
+                   st.fired_thresholds AS fired_thresholds
+            FROM event_chains ec
+            JOIN scheduled_tasks st
+              ON st.id = split_part(ec.trigger_reference, ':', 1)::uuid
+             AND st.task_type = 'deadline'
+            WHERE ec.trigger_type = 'deadline_threshold'
+              AND ec.status = 'active'
+              AND st.fired_thresholds IS NOT NULL
+              AND st.fired_thresholds != '[]'::jsonb
+            """
         )
+
+        for row in deadline_threshold_chains:
+            chain_id = row["chain_id"]
+            chain_name = row["chain_name"]
+            trigger_ref = row["trigger_reference"] or ""
+            actions = row["actions"]
+            if isinstance(actions, str):
+                actions = _json.loads(actions)
+
+            # Parse severity from trigger_reference: "<uuid>:<severity>"
+            parts = trigger_ref.split(":", 1)
+            if len(parts) != 2 or not parts[1]:
+                logger.warning(
+                    "Event chain %r has invalid deadline_threshold trigger_reference %r "
+                    "(expected '<deadline-uuid>:<severity>'); skipping",
+                    chain_name,
+                    trigger_ref,
+                )
+                continue
+
+            expected_severity = parts[1]
+
+            # Check if any fired threshold matches the expected severity
+            raw_fired = row["fired_thresholds"]
+            fired_thresholds: list[dict] = (
+                raw_fired if isinstance(raw_fired, list) else _json.loads(raw_fired or "[]")
+            )
+            severity_fired = any(t.get("severity") == expected_severity for t in fired_thresholds)
+            if not severity_fired:
+                continue
+
+            if not should_fire_chain(chain_depth=0, chain_name=chain_name):
+                continue
+
+            await _fire_chain(
+                pool,
+                chain_id=chain_id,
+                chain_name=chain_name,
+                actions=actions,
+                now=now,
+                trigger_label=f"deadline_threshold (severity={expected_severity!r})",
+            )
+            chains_fired += 1
 
     return chains_fired
 
