@@ -255,7 +255,7 @@ class TestSchedulerLoopBehavior:
         """tick() should be called after sleeping for tick_interval_seconds."""
         tick_calls: list[int] = []
 
-        async def mock_tick(pool, dispatch_fn, *, stagger_key=None):
+        async def mock_tick(pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs):
             tick_calls.append(1)
             return 0
 
@@ -297,7 +297,7 @@ class TestSchedulerLoopBehavior:
         """_scheduler_loop should pass butler name as the scheduler stagger key."""
         seen_stagger_keys: list[str | None] = []
 
-        async def mock_tick(pool, dispatch_fn, *, stagger_key=None):
+        async def mock_tick(pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs):
             seen_stagger_keys.append(stagger_key)
             return 0
 
@@ -331,12 +331,52 @@ class TestSchedulerLoopBehavior:
         assert seen_stagger_keys
         assert all(key == "health" for key in seen_stagger_keys)
 
+    async def test_tick_passes_butler_name(self, tmp_path: Path) -> None:
+        """_scheduler_loop should pass butler_name to tick() for seasonal context."""
+        seen_butler_names: list[str | None] = []
+
+        async def mock_tick(pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs):
+            seen_butler_names.append(butler_name)
+            return 0
+
+        butler_dir = _make_butler_toml(tmp_path)
+        daemon = ButlerDaemon(butler_dir)
+        daemon.config = ButlerConfig(name="finance", port=9100)
+        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
+
+        mock_pool = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        daemon.db = mock_db
+
+        mock_spawner = MagicMock()
+        mock_spawner.trigger = AsyncMock()
+        daemon.spawner = mock_spawner
+
+        with (
+            patch("butlers.daemon._tick", side_effect=mock_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
+            task = asyncio.create_task(daemon._scheduler_loop())
+            await _real_sleep(0)
+            await _real_sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert seen_butler_names
+        assert all(name == "finance" for name in seen_butler_names)
+
     async def test_tick_exception_does_not_break_loop(self, tmp_path: Path) -> None:
         """tick() exception should be logged but the loop should continue."""
         tick_call_count = 0
         second_tick_seen = asyncio.Event()
 
-        async def failing_then_ok_tick(pool, dispatch_fn, *, stagger_key=None):
+        async def failing_then_ok_tick(
+            pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs
+        ):
             nonlocal tick_call_count
             tick_call_count += 1
             if tick_call_count == 1:
@@ -378,7 +418,7 @@ class TestSchedulerLoopBehavior:
         tick_started = asyncio.Event()
         tick_unblocked = asyncio.Event()
 
-        async def blocking_tick(pool, dispatch_fn, *, stagger_key=None):
+        async def blocking_tick(pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs):
             tick_started.set()
             await tick_unblocked.wait()
             return 0
@@ -443,7 +483,9 @@ class TestSchedulerLoopBehavior:
         tick_calls: list[int] = []
         sleep_calls: list[float] = []
 
-        async def recording_tick(pool, dispatch_fn, *, stagger_key=None):
+        async def recording_tick(
+            pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs
+        ):
             tick_calls.append(1)
             return 0
 
@@ -488,7 +530,7 @@ class TestSchedulerLoopBehavior:
         tick_completed = asyncio.Event()
         tick_started = asyncio.Event()
 
-        async def slow_tick(pool, dispatch_fn, *, stagger_key=None):
+        async def slow_tick(pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs):
             tick_started.set()
             await asyncio.sleep(0.3)
             tick_completed.set()

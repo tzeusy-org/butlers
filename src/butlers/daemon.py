@@ -2440,7 +2440,12 @@ class ButlerDaemon:
             while True:
                 await asyncio.sleep(interval)
                 tick_task = asyncio.create_task(
-                    _tick(pool, dispatch_fn, stagger_key=self.config.name)
+                    _tick(
+                        pool,
+                        dispatch_fn,
+                        stagger_key=self.config.name,
+                        butler_name=self.config.name,
+                    )
                 )
                 try:
                     dispatched = await asyncio.shield(tick_task)
@@ -4014,6 +4019,7 @@ class ButlerDaemon:
                 pool,
                 daemon._dispatch_scheduled_task,
                 stagger_key=daemon.config.name,
+                butler_name=daemon.config.name,
             )
             return {"dispatched": count}
 
