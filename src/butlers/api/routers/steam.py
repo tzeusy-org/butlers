@@ -2,10 +2,11 @@
 
 Provides ``router`` at ``/api/steam``:
 
-- ``POST   /api/steam/accounts``         — connect a new Steam account (validates API key)
-- ``GET    /api/steam/accounts``         — list all connected Steam accounts
-- ``DELETE /api/steam/accounts/{id}``    — disconnect a Steam account (soft-revoke)
-- ``GET    /api/steam/playtime``         — playtime analytics (top games, recently played)
+- ``POST   /api/steam/accounts``              — connect a new Steam account (validates API key)
+- ``GET    /api/steam/accounts``              — list all connected Steam accounts
+- ``DELETE /api/steam/accounts/{id}``         — disconnect a Steam account (soft-revoke)
+- ``GET    /api/steam/playtime``              — playtime analytics from DB (top games)
+- ``GET    /api/steam/playtime/{app_id}``     — per-game playtime history from DB
 
 API key validation:
   The POST endpoint calls ``ISteamUser/GetPlayerSummaries`` with the provided
@@ -13,14 +14,14 @@ API key validation:
   (HTTP 403), or the steam_id is not found in the response, a 400 is returned.
 
 Playtime analytics:
-  Fetches ``IPlayerService/GetOwnedGames`` and ``IPlayerService/GetRecentlyPlayedGames``
-  from the Steam Web API for the primary account (or a specific account via
-  the ``account_id`` query parameter).
+  Queries ``connectors.steam_play_history`` for aggregated playtime data.
+  The ``days`` parameter limits the window (default: all-time). The
+  ``account_id`` query parameter selects a specific account (default: primary).
 
 Security notes:
   - API keys are stored in ``public.entity_info`` (secured=true) and never
     returned in any response.
-  - Playtime data is fetched live from the Steam API on each request.
+  - Playtime data is served from the local database; no live Steam API calls.
   - The DELETE endpoint soft-revokes (status='revoked') by default; the account
     row and its credentials are retained for audit purposes.
 
@@ -46,6 +47,8 @@ from butlers.api.models.steam import (
     SteamConnectResponse,
     SteamDisconnectResponse,
     SteamGamePlaytime,
+    SteamGamePlaytimeHistory,
+    SteamGamePlaytimeHistoryEntry,
     SteamPlaytimeAnalytics,
     SteamSetPrimaryResponse,
 )
@@ -77,7 +80,6 @@ _ENTITY_INFO_TYPE_API_KEY = "steam_api_key"
 # ---------------------------------------------------------------------------
 
 _VALIDATION_TIMEOUT_S = 10.0
-_PLAYTIME_TIMEOUT_S = 15.0
 
 # ---------------------------------------------------------------------------
 # Dependency injection stub
@@ -503,6 +505,10 @@ async def set_primary_steam_account(
 # GET /api/steam/playtime
 # ---------------------------------------------------------------------------
 
+# Default playtime query window (days). 0 / None means all-time.
+_DEFAULT_PLAYTIME_DAYS = 30
+_MAX_PLAYTIME_DAYS = 3650  # ~10 years
+
 
 @router.get("/playtime", response_model=SteamPlaytimeAnalytics)
 async def get_steam_playtime(
@@ -513,6 +519,15 @@ async def get_steam_playtime(
             "If omitted, uses the primary account."
         ),
     ),
+    days: int | None = Query(
+        default=_DEFAULT_PLAYTIME_DAYS,
+        ge=1,
+        le=_MAX_PLAYTIME_DAYS,
+        description=(
+            "Number of past days to include in the playtime window. "
+            f"Default: {_DEFAULT_PLAYTIME_DAYS}. Set to null for all-time."
+        ),
+    ),
     top_n: int = Query(
         default=10,
         ge=1,
@@ -521,22 +536,22 @@ async def get_steam_playtime(
     ),
     db_manager: Any = Depends(_get_db_manager),
 ) -> SteamPlaytimeAnalytics:
-    """Fetch playtime analytics for a Steam account.
+    """Fetch playtime analytics for a Steam account from the local database.
+
+    Queries ``connectors.steam_play_history`` and returns aggregated playtime
+    statistics for games played within the requested window.
 
     Returns:
-    - ``total_games``: number of games in the library
-    - ``total_playtime_minutes``: sum of all playtime across games
+    - ``total_games``: number of distinct games with playtime in the window
+    - ``total_playtime_minutes``: sum of all playtime in the window
     - ``top_games``: top N games by total playtime (descending)
-    - ``recently_played``: games played in the last 2 weeks
+    - ``days``: the window size used (null = all-time)
 
     The ``account_id`` parameter selects a specific account; when omitted,
     the primary account is used.
 
-    Data is fetched live from the Steam API on each request.
-
     Raises HTTP 404 when the specified account_id is not found.
     Raises HTTP 400 when no Steam account is connected (no primary).
-    Raises HTTP 502 on Steam API errors.
     Raises HTTP 503 when the database is unavailable.
     """
     pool = _get_shared_pool(db_manager)
@@ -569,175 +584,284 @@ async def get_steam_playtime(
             ),
         ) from exc
 
-    # Fetch the API key for this account from entity_info.
-    async with pool.acquire() as conn:
-        key_row = await conn.fetchrow(
-            """
-            SELECT value FROM public.entity_info
-            WHERE entity_id = $1 AND type = $2
-            LIMIT 1
-            """,
-            account.entity_id,
-            _ENTITY_INFO_TYPE_API_KEY,
-        )
+    queried_at = datetime.now(UTC)
 
-    if not key_row:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No API key found for Steam account steam_id={account.steam_id}. "
-                "Reconnect the account via POST /api/steam/accounts to store the API key."
-            ),
-        )
-
-    api_key: str = key_row["value"]
-    fetched_at = datetime.now(UTC)
-
-    # Fetch owned games + recently played in parallel via the Steam API.
     try:
-        async with SteamAPIClient(api_key=api_key) as client:
-            owned_data, recent_data = await _fetch_playtime_data(client, account.steam_id)
-    except _SteamPlaytimeError as exc:
-        logger.warning("Steam playtime fetch failed for steam_id=%s: %s", account.steam_id, exc)
+        rows = await _query_playtime_aggregates(pool, account_id=account.id, days=days)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Failed to query play history for steam_id=%s: %s", account.steam_id, exc, exc_info=True
+        )
         raise HTTPException(
-            status_code=exc.http_status,
-            detail=str(exc),
+            status_code=500,
+            detail=(
+                "Failed to fetch playtime data due to an internal error. "
+                "Check the server logs and retry."
+            ),
         ) from exc
 
-    # Build the top-games list.
-    owned_games = owned_data.get("games", [])
-    total_games = owned_data.get("game_count", len(owned_games))
-
-    # Sort all owned games by playtime_forever descending to get top_n.
-    sorted_games = sorted(
-        owned_games,
-        key=lambda g: g.get("playtime_forever", 0),
-        reverse=True,
-    )
+    # Sort by total playtime descending.
+    rows_sorted = sorted(rows, key=lambda r: r["total_playtime"], reverse=True)
 
     top_games = [
         SteamGamePlaytime(
-            app_id=g["appid"],
-            name=g.get("name"),
-            playtime_forever_minutes=g.get("playtime_forever", 0),
-            playtime_2weeks_minutes=g.get("playtime_2weeks") or None,
-            img_icon_url=g.get("img_icon_url") or None,
+            app_id=r["app_id"],
+            name=r["app_name"],
+            playtime_minutes=r["total_playtime"],
         )
-        for g in sorted_games[:top_n]
+        for r in rows_sorted[:top_n]
     ]
 
-    total_playtime = sum(g.get("playtime_forever", 0) for g in owned_games)
-
-    # Build recently played list (only games with recent playtime > 0).
-    recent_games_raw = recent_data.get("games", [])
-    recently_played = [
-        SteamGamePlaytime(
-            app_id=g["appid"],
-            name=g.get("name"),
-            playtime_forever_minutes=g.get("playtime_forever", 0),
-            playtime_2weeks_minutes=g.get("playtime_2weeks") or None,
-            img_icon_url=g.get("img_icon_url") or None,
-        )
-        for g in recent_games_raw
-        if g.get("playtime_2weeks", 0) > 0
-    ]
+    total_games = len(rows_sorted)
+    total_playtime = sum(r["total_playtime"] for r in rows_sorted)
 
     return SteamPlaytimeAnalytics(
         account_id=account.id,
         steam_id=account.steam_id,
         display_name=account.display_name,
+        days=days,
         total_games=total_games,
         total_playtime_minutes=total_playtime,
         top_games=top_games,
-        recently_played=recently_played,
-        fetched_at=fetched_at,
+        queried_at=queried_at,
     )
 
 
 # ---------------------------------------------------------------------------
-# Playtime fetch helpers
+# GET /api/steam/playtime/{app_id}
 # ---------------------------------------------------------------------------
 
 
-class _SteamPlaytimeError(Exception):
-    """Raised when Steam playtime fetch fails."""
+@router.get("/playtime/{app_id}", response_model=SteamGamePlaytimeHistory)
+async def get_steam_game_playtime(
+    app_id: int,
+    account_id: uuid.UUID | None = Query(
+        default=None,
+        description=(
+            "UUID of the Steam account to fetch history for. If omitted, uses the primary account."
+        ),
+    ),
+    days: int | None = Query(
+        default=_DEFAULT_PLAYTIME_DAYS,
+        ge=1,
+        le=_MAX_PLAYTIME_DAYS,
+        description=(
+            "Number of past days to include in the history window. "
+            f"Default: {_DEFAULT_PLAYTIME_DAYS}. Set to null for all-time."
+        ),
+    ),
+    db_manager: Any = Depends(_get_db_manager),
+) -> SteamGamePlaytimeHistory:
+    """Fetch per-game playtime history from the local database.
 
-    def __init__(self, message: str, http_status: int = 502) -> None:
-        super().__init__(message)
-        self.http_status = http_status
+    Returns individual ``connectors.steam_play_history`` rows for the
+    specified ``app_id``, ordered by date descending.
+
+    Raises HTTP 404 when the specified account_id is not found, or when the
+    game has no recorded playtime in the requested window.
+    Raises HTTP 400 when no Steam account is connected (no primary).
+    Raises HTTP 503 when the database is unavailable.
+    """
+    pool = _get_shared_pool(db_manager)
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Database is unavailable. Ensure the database service is running. "
+                "Cannot fetch Steam game playtime history."
+            ),
+        )
+
+    # Resolve the target account.
+    try:
+        account = await resolve_steam_account(pool, account=account_id)
+    except MissingSteamCredentialsError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No primary Steam account is configured. "
+                "Connect a Steam account via POST /api/steam/accounts first."
+            ),
+        ) from exc
+    except SteamAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Steam account with id={account_id} was not found. "
+                "Verify the account ID via GET /api/steam/accounts."
+            ),
+        ) from exc
+
+    queried_at = datetime.now(UTC)
+
+    try:
+        rows = await _query_game_play_history(pool, account_id=account.id, app_id=app_id, days=days)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Failed to query play history for steam_id=%s app_id=%s: %s",
+            account.steam_id,
+            app_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to fetch game playtime history due to an internal error. "
+                "Check the server logs and retry."
+            ),
+        ) from exc
+
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No playtime history found for app_id={app_id} "
+                f"and account_id={account.id} in the requested window. "
+                "Ensure the connector has polled this account and the game has been played."
+            ),
+        )
+
+    # Derive app_name from the most recent non-null entry.
+    app_name: str | None = next((r["app_name"] for r in rows if r["app_name"]), None)
+
+    history = [
+        SteamGamePlaytimeHistoryEntry(
+            date=r["date"],
+            playtime_minutes=r["playtime_minutes"],
+            recorded_at=r["recorded_at"],
+        )
+        for r in rows
+    ]
+
+    total_playtime = sum(r["playtime_minutes"] for r in rows)
+
+    return SteamGamePlaytimeHistory(
+        account_id=account.id,
+        steam_id=account.steam_id,
+        display_name=account.display_name,
+        app_id=app_id,
+        app_name=app_name,
+        days=days,
+        total_playtime_minutes=total_playtime,
+        history=history,
+        queried_at=queried_at,
+    )
 
 
-async def _fetch_playtime_data(
-    client: SteamAPIClient,
-    steam_id: int,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Fetch owned games and recently played games from Steam in parallel.
+# ---------------------------------------------------------------------------
+# DB query helpers
+# ---------------------------------------------------------------------------
+
+
+async def _query_playtime_aggregates(
+    pool: Any,
+    *,
+    account_id: uuid.UUID,
+    days: int | None,
+) -> list[dict[str, Any]]:
+    """Query connectors.steam_play_history for per-game playtime aggregates.
 
     Parameters
     ----------
-    client:
-        Open SteamAPIClient instance.
-    steam_id:
-        Steam 64-bit account ID.
+    pool:
+        asyncpg connection pool.
+    account_id:
+        UUID of the steam_accounts row.
+    days:
+        Number of past days to include, or None for all-time.
 
     Returns
     -------
-    tuple[dict, dict]
-        (owned_games_response, recently_played_response)
-        Each dict contains a ``games`` list and optionally ``game_count``.
-
-    Raises
-    ------
-    _SteamPlaytimeError
-        On Steam API errors.
+    list of dicts with keys: app_id, app_name, total_playtime
     """
-    import asyncio
+    if days is not None:
+        sql = """
+            SELECT app_id,
+                   MAX(app_name) AS app_name,
+                   SUM(playtime_minutes) AS total_playtime
+            FROM connectors.steam_play_history
+            WHERE steam_account_id = $1
+              AND date >= CURRENT_DATE - ($2::int - 1)
+            GROUP BY app_id
+        """
+        async with pool.acquire() as conn:
+            records = await conn.fetch(sql, account_id, days)
+    else:
+        sql = """
+            SELECT app_id,
+                   MAX(app_name) AS app_name,
+                   SUM(playtime_minutes) AS total_playtime
+            FROM connectors.steam_play_history
+            WHERE steam_account_id = $1
+            GROUP BY app_id
+        """
+        async with pool.acquire() as conn:
+            records = await conn.fetch(sql, account_id)
 
-    owned_params = {
-        "steamid": str(steam_id),
-        "include_appinfo": "1",
-        "include_played_free_games": "1",
-    }
-    recent_params = {
-        "steamid": str(steam_id),
-        "count": "0",  # 0 = all recently played games
-    }
+    return [
+        {
+            "app_id": r["app_id"],
+            "app_name": r["app_name"],
+            "total_playtime": r["total_playtime"] or 0,
+        }
+        for r in records
+    ]
 
-    try:
-        owned_task = client.request("IPlayerService", "GetOwnedGames", params=owned_params)
-        recent_task = client.request(
-            "IPlayerService", "GetRecentlyPlayedGames", params=recent_params
-        )
-        owned_data, recent_data = await asyncio.gather(owned_task, recent_task)
-    except SteamRateLimitError as exc:
-        # HTTP 403 means invalid/unauthorized key; HTTP 429 means genuine rate-limiting.
-        # SteamAPIClient raises SteamRateLimitError for both (see client._RATE_LIMIT_STATUSES).
-        if exc.status_code == 403:
-            raise _SteamPlaytimeError(
-                "Steam API access denied (HTTP 403): API key may be invalid. "
-                "Reconnect the account via POST /api/steam/accounts.",
-                http_status=400,
-            ) from exc
-        raise _SteamPlaytimeError(
-            f"Steam API is rate-limited; retry after {exc.retry_after_s:.0f}s. "
-            "Wait before retrying.",
-            http_status=429,
-        ) from exc
-    except SteamAPIError as exc:
-        if exc.status_code == 401:
-            raise _SteamPlaytimeError(
-                f"Steam API returned HTTP {exc.status_code}: access denied. "
-                "The profile may be private, or the API key may be invalid. "
-                "Reconnect the account via POST /api/steam/accounts.",
-                http_status=400,
-            ) from exc
-        raise _SteamPlaytimeError(
-            f"Steam API returned HTTP {exc.status_code}: {exc.body[:200]}. "
-            "Check Steam API status at https://steamstat.us/ and retry.",
-        ) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise _SteamPlaytimeError(
-            f"Network error contacting Steam API: {exc}. Ensure network connectivity and retry.",
-        ) from exc
 
-    return owned_data, recent_data
+async def _query_game_play_history(
+    pool: Any,
+    *,
+    account_id: uuid.UUID,
+    app_id: int,
+    days: int | None,
+) -> list[dict[str, Any]]:
+    """Query connectors.steam_play_history for individual rows of a specific game.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    account_id:
+        UUID of the steam_accounts row.
+    app_id:
+        Steam application ID.
+    days:
+        Number of past days to include, or None for all-time.
+
+    Returns
+    -------
+    list of dicts with keys: date, playtime_minutes, app_name, recorded_at
+        Ordered by date descending.
+    """
+    if days is not None:
+        sql = """
+            SELECT date, playtime_minutes, app_name, recorded_at
+            FROM connectors.steam_play_history
+            WHERE steam_account_id = $1
+              AND app_id = $2
+              AND date >= CURRENT_DATE - ($3::int - 1)
+            ORDER BY date DESC
+        """
+        async with pool.acquire() as conn:
+            records = await conn.fetch(sql, account_id, app_id, days)
+    else:
+        sql = """
+            SELECT date, playtime_minutes, app_name, recorded_at
+            FROM connectors.steam_play_history
+            WHERE steam_account_id = $1
+              AND app_id = $2
+            ORDER BY date DESC
+        """
+        async with pool.acquire() as conn:
+            records = await conn.fetch(sql, account_id, app_id)
+
+    return [
+        {
+            "date": r["date"],
+            "playtime_minutes": r["playtime_minutes"],
+            "app_name": r["app_name"],
+            "recorded_at": r["recorded_at"],
+        }
+        for r in records
+    ]

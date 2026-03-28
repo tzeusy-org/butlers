@@ -1,11 +1,11 @@
 """Tests for Steam account management and playtime analytics API router.
 
 Covers all endpoints with mocked database (asyncpg pool) and mocked Steam API:
-- POST   /api/steam/accounts    — connect account (validate API key)
-- GET    /api/steam/accounts    — list accounts
-- DELETE /api/steam/accounts/{id} — disconnect account
-- PUT    /api/steam/accounts/{id}/primary — set primary account
-- GET    /api/steam/playtime    — playtime analytics
+- POST   /api/steam/accounts        — connect account (validate API key)
+- GET    /api/steam/accounts        — list accounts
+- DELETE /api/steam/accounts/{id}   — disconnect account
+- GET    /api/steam/playtime        — playtime analytics (DB-backed)
+- GET    /api/steam/playtime/{app}  — per-game playtime history (DB-backed)
 
 DB calls are mocked via patching steam_account_registry functions and pool
 directly. Steam API calls are mocked via SteamAPIClient patches.
@@ -46,7 +46,8 @@ _CREATE_ACCOUNT_PATCH = "butlers.api.routers.steam.create_steam_account"
 _DISCONNECT_ACCOUNT_PATCH = "butlers.api.routers.steam.disconnect_account"
 _SET_PRIMARY_PATCH = "butlers.api.routers.steam.set_primary_account"
 _RESOLVE_ACCOUNT_PATCH = "butlers.api.routers.steam.resolve_steam_account"
-_FETCH_PLAYTIME_PATCH = "butlers.api.routers.steam._fetch_playtime_data"
+_QUERY_PLAYTIME_PATCH = "butlers.api.routers.steam._query_playtime_aggregates"
+_QUERY_GAME_HISTORY_PATCH = "butlers.api.routers.steam._query_game_play_history"
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -92,24 +93,6 @@ def _make_pool_with_key(api_key: str = "A" * 32) -> MagicMock:
     class _FakeAcquire:
         """Async context manager for pool.acquire()."""
 
-        async def __aenter__(self):
-            return conn
-
-        async def __aexit__(self, *_):
-            pass
-
-    pool.acquire = MagicMock(return_value=_FakeAcquire())
-    return pool
-
-
-def _make_pool_no_key() -> MagicMock:
-    """Build a mock pool that returns no API key row."""
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
-
-    pool = MagicMock()
-
-    class _FakeAcquire:
         async def __aenter__(self):
             return conn
 
@@ -642,59 +625,30 @@ class TestSetPrimarySteamAccount:
 # GET /api/steam/playtime
 # ---------------------------------------------------------------------------
 
-_OWNED_GAMES_RESPONSE = {
-    "game_count": 3,
-    "games": [
-        {
-            "appid": 570,
-            "name": "Dota 2",
-            "playtime_forever": 5000,
-            "playtime_2weeks": 120,
-            "img_icon_url": "dota2icon",
-        },
-        {
-            "appid": 730,
-            "name": "CS:GO",
-            "playtime_forever": 3000,
-            "playtime_2weeks": 0,
-            "img_icon_url": "csgoicon",
-        },
-        {
-            "appid": 440,
-            "name": "Team Fortress 2",
-            "playtime_forever": 1000,
-            "playtime_2weeks": None,
-        },
-    ],
-}
+# Simulated rows from connectors.steam_play_history (post-aggregate query).
+_PLAY_HISTORY_AGGREGATES = [
+    {"app_id": 570, "app_name": "Dota 2", "total_playtime": 5000},
+    {"app_id": 730, "app_name": "CS:GO", "total_playtime": 3000},
+    {"app_id": 440, "app_name": "Team Fortress 2", "total_playtime": 1000},
+]
 
-_RECENT_GAMES_RESPONSE = {
-    "total_count": 1,
-    "games": [
-        {
-            "appid": 570,
-            "name": "Dota 2",
-            "playtime_forever": 5000,
-            "playtime_2weeks": 120,
-        },
-    ],
-}
+
+def _make_simple_pool() -> MagicMock:
+    """Build a minimal mock asyncpg pool (no fetchrow needed for playtime DB tests)."""
+    return MagicMock()
 
 
 class TestGetSteamPlaytime:
     async def test_returns_analytics_for_primary_account(self):
-        """GET /api/steam/playtime returns aggregated analytics for the primary account."""
+        """GET /api/steam/playtime returns aggregated analytics from DB for primary account."""
         account = _make_account()
-        pool = _make_pool_with_key()
+        pool = _make_simple_pool()
         app = _build_app(pool)
 
         with (
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
-            patch(
-                _FETCH_PLAYTIME_PATCH,
-                return_value=(_OWNED_GAMES_RESPONSE, _RECENT_GAMES_RESPONSE),
-            ),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=_PLAY_HISTORY_AGGREGATES),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -711,44 +665,18 @@ class TestGetSteamPlaytime:
         # Top game by playtime should be Dota 2
         assert body["top_games"][0]["app_id"] == 570
         assert body["top_games"][0]["name"] == "Dota 2"
-
-    async def test_recently_played_only_includes_games_with_playtime(self):
-        """GET /api/steam/playtime only includes recently played games with playtime > 0."""
-        account = _make_account()
-        pool = _make_pool_with_key()
-        app = _build_app(pool)
-
-        with (
-            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
-            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
-            patch(
-                _FETCH_PLAYTIME_PATCH,
-                return_value=(_OWNED_GAMES_RESPONSE, _RECENT_GAMES_RESPONSE),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get("/api/steam/playtime")
-
-        body = resp.json()
-        # Only Dota 2 has playtime_2weeks > 0
-        assert len(body["recently_played"]) == 1
-        assert body["recently_played"][0]["app_id"] == 570
+        assert body["top_games"][0]["playtime_minutes"] == 5000
 
     async def test_top_n_limits_results(self):
         """GET /api/steam/playtime respects the top_n query parameter."""
         account = _make_account()
-        pool = _make_pool_with_key()
+        pool = _make_simple_pool()
         app = _build_app(pool)
 
         with (
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
-            patch(
-                _FETCH_PLAYTIME_PATCH,
-                return_value=(_OWNED_GAMES_RESPONSE, _RECENT_GAMES_RESPONSE),
-            ),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=_PLAY_HISTORY_AGGREGATES),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -758,20 +686,55 @@ class TestGetSteamPlaytime:
         body = resp.json()
         assert len(body["top_games"]) == 2
 
+    async def test_days_param_passed_to_query(self):
+        """GET /api/steam/playtime passes the days param to the query helper."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=[]) as mock_query,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/steam/playtime?days=7")
+
+        assert resp.status_code == 200
+        mock_query.assert_called_once_with(pool, account_id=account.id, days=7)
+
+    async def test_days_included_in_response(self):
+        """GET /api/steam/playtime includes the days window in the response."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/steam/playtime?days=14")
+
+        assert resp.status_code == 200
+        assert resp.json()["days"] == 14
+
     async def test_account_id_query_selects_specific_account(self):
         """GET /api/steam/playtime uses the account_id query param to select account."""
         second_id = uuid.UUID("99999999-9999-9999-9999-999999999999")
         account = _make_account(account_id=second_id, is_primary=False)
-        pool = _make_pool_with_key()
+        pool = _make_simple_pool()
         app = _build_app(pool)
 
         with (
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account) as mock_resolve,
-            patch(
-                _FETCH_PLAYTIME_PATCH,
-                return_value=(_OWNED_GAMES_RESPONSE, _RECENT_GAMES_RESPONSE),
-            ),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -779,12 +742,11 @@ class TestGetSteamPlaytime:
                 resp = await client.get(f"/api/steam/playtime?account_id={second_id}")
 
         assert resp.status_code == 200
-        # Resolve was called with the specific account_id
         mock_resolve.assert_called_once_with(pool, account=second_id)
 
     async def test_returns_400_when_no_primary_account(self):
         """GET /api/steam/playtime returns 400 when no primary account is configured."""
-        pool = _make_pool_with_key()
+        pool = _make_simple_pool()
         app = _build_app(pool)
 
         with (
@@ -804,7 +766,7 @@ class TestGetSteamPlaytime:
 
     async def test_returns_404_when_account_not_found(self):
         """GET /api/steam/playtime returns 404 for unknown account_id."""
-        pool = _make_pool_with_key()
+        pool = _make_simple_pool()
         app = _build_app(pool)
         missing_id = uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
 
@@ -821,24 +783,6 @@ class TestGetSteamPlaytime:
                 resp = await client.get(f"/api/steam/playtime?account_id={missing_id}")
 
         assert resp.status_code == 404
-
-    async def test_returns_400_when_no_api_key_stored(self):
-        """GET /api/steam/playtime returns 400 when no API key is stored for account."""
-        account = _make_account()
-        pool = _make_pool_no_key()
-        app = _build_app(pool)
-
-        with (
-            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
-            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get("/api/steam/playtime")
-
-        assert resp.status_code == 400
-        assert "api key" in resp.json()["detail"].lower()
 
     async def test_returns_503_when_no_db(self):
         """GET /api/steam/playtime returns 503 when database is unavailable."""
@@ -865,24 +809,21 @@ class TestGetSteamPlaytime:
         assert resp.status_code == 422
 
     async def test_top_games_sorted_by_playtime_descending(self):
-        """GET /api/steam/playtime top_games are sorted by playtime_forever descending."""
+        """GET /api/steam/playtime top_games are sorted by total playtime descending."""
         account = _make_account()
-        pool = _make_pool_with_key()
+        pool = _make_simple_pool()
         app = _build_app(pool)
 
-        owned = {
-            "game_count": 3,
-            "games": [
-                {"appid": 1, "name": "Game A", "playtime_forever": 100},
-                {"appid": 2, "name": "Game B", "playtime_forever": 999},
-                {"appid": 3, "name": "Game C", "playtime_forever": 500},
-            ],
-        }
+        aggregates = [
+            {"app_id": 1, "app_name": "Game A", "total_playtime": 100},
+            {"app_id": 2, "app_name": "Game B", "total_playtime": 999},
+            {"app_id": 3, "app_name": "Game C", "total_playtime": 500},
+        ]
 
         with (
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
-            patch(_FETCH_PLAYTIME_PATCH, return_value=(owned, {"games": []})),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=aggregates),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -890,22 +831,19 @@ class TestGetSteamPlaytime:
                 resp = await client.get("/api/steam/playtime")
 
         body = resp.json()
-        playtimes = [g["playtime_forever_minutes"] for g in body["top_games"]]
+        playtimes = [g["playtime_minutes"] for g in body["top_games"]]
         assert playtimes == sorted(playtimes, reverse=True)
 
-    async def test_fetched_at_is_present(self):
-        """GET /api/steam/playtime response includes a fetched_at timestamp."""
+    async def test_queried_at_is_present(self):
+        """GET /api/steam/playtime response includes a queried_at timestamp."""
         account = _make_account()
-        pool = _make_pool_with_key()
+        pool = _make_simple_pool()
         app = _build_app(pool)
 
         with (
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
-            patch(
-                _FETCH_PLAYTIME_PATCH,
-                return_value=({"game_count": 0, "games": []}, {"games": []}),
-            ),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -914,8 +852,257 @@ class TestGetSteamPlaytime:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert "fetched_at" in body
-        assert body["fetched_at"] is not None
+        assert "queried_at" in body
+        assert body["queried_at"] is not None
+
+    async def test_empty_db_returns_zero_totals(self):
+        """GET /api/steam/playtime returns zero totals when no play history exists."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/steam/playtime")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total_games"] == 0
+        assert body["total_playtime_minutes"] == 0
+        assert body["top_games"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /api/steam/playtime/{app_id}
+# ---------------------------------------------------------------------------
+
+from datetime import date as _date  # noqa: E402  (local alias to avoid shadowing)
+
+_APP_ID = 570
+
+_GAME_HISTORY_ROWS = [
+    {
+        "date": _date(2026, 3, 27),
+        "playtime_minutes": 120,
+        "app_name": "Dota 2",
+        "recorded_at": datetime(2026, 3, 27, 12, 0, 0, tzinfo=UTC),
+    },
+    {
+        "date": _date(2026, 3, 26),
+        "playtime_minutes": 80,
+        "app_name": "Dota 2",
+        "recorded_at": datetime(2026, 3, 26, 12, 0, 0, tzinfo=UTC),
+    },
+]
+
+
+class TestGetSteamGamePlaytime:
+    async def test_returns_history_for_app(self):
+        """GET /api/steam/playtime/{app_id} returns history rows for that game."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_GAME_HISTORY_PATCH, return_value=_GAME_HISTORY_ROWS),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["app_id"] == _APP_ID
+        assert body["app_name"] == "Dota 2"
+        assert body["total_playtime_minutes"] == 200  # 120 + 80
+        assert len(body["history"]) == 2
+        assert body["history"][0]["playtime_minutes"] == 120
+
+    async def test_days_param_passed_to_query(self):
+        """GET /api/steam/playtime/{app_id} passes days to query helper."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_GAME_HISTORY_PATCH, return_value=_GAME_HISTORY_ROWS) as mock_query,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}?days=7")
+
+        assert resp.status_code == 200
+        mock_query.assert_called_once_with(pool, account_id=account.id, app_id=_APP_ID, days=7)
+
+    async def test_days_in_response(self):
+        """GET /api/steam/playtime/{app_id} includes the days window in the response."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_GAME_HISTORY_PATCH, return_value=_GAME_HISTORY_ROWS),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}?days=14")
+
+        assert resp.json()["days"] == 14
+
+    async def test_account_id_query_selects_specific_account(self):
+        """GET /api/steam/playtime/{app_id} uses account_id to select account."""
+        second_id = uuid.UUID("99999999-9999-9999-9999-999999999999")
+        account = _make_account(account_id=second_id, is_primary=False)
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account) as mock_resolve,
+            patch(_QUERY_GAME_HISTORY_PATCH, return_value=_GAME_HISTORY_ROWS),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}?account_id={second_id}")
+
+        assert resp.status_code == 200
+        mock_resolve.assert_called_once_with(pool, account=second_id)
+
+    async def test_returns_404_when_no_history(self):
+        """GET /api/steam/playtime/{app_id} returns 404 when no rows in window."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_GAME_HISTORY_PATCH, return_value=[]),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}")
+
+        assert resp.status_code == 404
+        assert "no playtime history" in resp.json()["detail"].lower()
+
+    async def test_returns_400_when_no_primary_account(self):
+        """GET /api/steam/playtime/{app_id} returns 400 when no primary account configured."""
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(
+                _RESOLVE_ACCOUNT_PATCH,
+                side_effect=MissingSteamCredentialsError("No primary"),
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}")
+
+        assert resp.status_code == 400
+        assert "primary" in resp.json()["detail"].lower()
+
+    async def test_returns_404_when_account_not_found(self):
+        """GET /api/steam/playtime/{app_id} returns 404 for unknown account_id."""
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+        missing_id = uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(
+                _RESOLVE_ACCOUNT_PATCH,
+                side_effect=SteamAccountNotFoundError("Not found"),
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}?account_id={missing_id}")
+
+        assert resp.status_code == 404
+
+    async def test_returns_503_when_no_db(self):
+        """GET /api/steam/playtime/{app_id} returns 503 when database is unavailable."""
+        app = _build_app(None)
+
+        with patch(_GET_SHARED_POOL_PATCH, return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}")
+
+        assert resp.status_code == 503
+        assert "unavailable" in resp.json()["detail"].lower()
+
+    async def test_queried_at_in_response(self):
+        """GET /api/steam/playtime/{app_id} includes queried_at in the response."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_GAME_HISTORY_PATCH, return_value=_GAME_HISTORY_ROWS),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}")
+
+        body = resp.json()
+        assert "queried_at" in body
+        assert body["queried_at"] is not None
+
+    async def test_app_name_null_when_not_recorded(self):
+        """GET /api/steam/playtime/{app_id} returns null app_name when not in history."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        rows_no_name = [
+            {
+                "date": _date(2026, 3, 27),
+                "playtime_minutes": 60,
+                "app_name": None,
+                "recorded_at": datetime(2026, 3, 27, 12, 0, 0, tzinfo=UTC),
+            }
+        ]
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_GAME_HISTORY_PATCH, return_value=rows_no_name),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/steam/playtime/{_APP_ID}")
+
+        assert resp.status_code == 200
+        assert resp.json()["app_name"] is None
 
 
 # ---------------------------------------------------------------------------
