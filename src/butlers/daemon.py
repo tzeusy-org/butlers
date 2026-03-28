@@ -4491,11 +4491,36 @@ class ButlerDaemon:
             deadline_status is explicitly provided).
             """
             try:
+                from datetime import UTC as _UTC
                 from datetime import date as _date
+                from datetime import datetime as _datetime
 
                 parsed_date: _date | None = None
                 if target_date is not None:
                     parsed_date = _date.fromisoformat(target_date)
+                    today = _datetime.now(_UTC).date()
+                    if parsed_date <= today:
+                        raise ValueError(
+                            f"target_date must be in the future (got {parsed_date}; today is {today})"
+                        )
+
+                if lead_time_days is not None and lead_time_days <= 0:
+                    raise ValueError(
+                        f"lead_time_days must be a positive integer (got {lead_time_days})"
+                    )
+
+                if alert_thresholds is not None and not alert_thresholds:
+                    raise ValueError("alert_thresholds must contain at least one threshold")
+
+                if alert_thresholds is not None and lead_time_days is not None:
+                    for t in alert_thresholds:
+                        days_before = t.get("days_before")
+                        if days_before is None:
+                            raise ValueError("Each threshold must have a 'days_before' integer field")
+                        if days_before > lead_time_days:
+                            raise ValueError(
+                                f"Threshold days_before={days_before} cannot exceed lead_time_days={lead_time_days}"
+                            )
 
                 await _deadline_update(
                     pool,

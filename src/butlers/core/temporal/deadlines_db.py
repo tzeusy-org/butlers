@@ -28,18 +28,6 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
-# Sentinel that indicates a column is absent from the DB schema (pre-migration).
-_DEADLINE_COLUMNS = (
-    "task_type",
-    "target_date",
-    "lead_time_days",
-    "alert_thresholds",
-    "deadline_status",
-    "fired_thresholds",
-    "depends_on",
-)
-
-
 def _jsonb_encode(value: Any) -> str | None:
     """Encode a Python value to a JSON string for JSONB binding."""
     if value is None:
@@ -77,18 +65,6 @@ def _row_to_deadline_dict(row: asyncpg.Record) -> dict[str, Any]:
     return d
 
 
-async def _has_deadline_columns(pool: asyncpg.Pool) -> bool:
-    """Return True if the scheduled_tasks table has the deadline columns."""
-    result = await pool.fetchval(
-        """
-        SELECT COUNT(*) FROM information_schema.columns
-        WHERE table_name = 'scheduled_tasks'
-          AND column_name = 'task_type'
-        """
-    )
-    return int(result or 0) > 0
-
-
 async def deadline_create(
     pool: asyncpg.Pool,
     *,
@@ -99,7 +75,6 @@ async def deadline_create(
     alert_thresholds: list[dict[str, Any]],
     depends_on: list[str] | None = None,
     deadline_status: str = "pending",
-    butler_name: str | None = None,
 ) -> uuid.UUID:
     """Create a new deadline task in scheduled_tasks.
 
@@ -120,7 +95,6 @@ async def deadline_create(
         alert_thresholds: List of {days_before: int, severity: str} dicts.
         depends_on: Optional list of task UUIDs that must be 'completed' first.
         deadline_status: Initial status (default: 'pending').
-        butler_name: Optional butler name (stored in stagger_key for reference).
 
     Returns:
         The new task's UUID.
