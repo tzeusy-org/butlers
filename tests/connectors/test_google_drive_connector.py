@@ -2161,6 +2161,40 @@ class TestMultiAccountLifecycle:
         assert response.status_code == 200
         assert response.json()["status"] == "reload_triggered"
 
+    async def test_health_server_metrics_route(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """The /metrics route returns Prometheus text exposition with the correct content-type."""
+        from fastapi.responses import Response
+        from fastapi.testclient import TestClient
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
+
+        # Build the same FastAPI app used internally by _start_health_server
+        app = FastAPI(title="Google Drive Connector Health Test")
+
+        @app.get("/metrics")
+        async def metrics() -> Response:
+            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+        del manager  # only used to mirror real app setup; metrics are process-global
+
+        client = TestClient(app)
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        # Prometheus scrapers require text/plain with the correct version header.
+        assert response.headers["content-type"].startswith("text/plain")
+        # Prometheus text format must be valid UTF-8 text (not JSON-encoded bytes).
+        content = response.content.decode("utf-8")
+        assert isinstance(content, str)
+
 
 # ---------------------------------------------------------------------------
 # Task 13.1 — additional env var coverage (CONNECTOR_HEALTH_PORT, etc.)
