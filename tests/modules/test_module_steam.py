@@ -655,6 +655,7 @@ class TestSteamGetAchievements:
         )
         result = await tools["steam_get_achievements"](app_id=730)
         assert result["error"] == "steam_privacy"
+        assert "hint" in result
 
     async def test_no_achievements_on_400_no_stats(
         self, connected_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
@@ -667,6 +668,7 @@ class TestSteamGetAchievements:
         result = await tools["steam_get_achievements"](app_id=730)
         assert result["error"] == "steam_no_achievements"
         assert "730" in result["message"]
+        assert "hint" in result
 
     async def test_no_achievements_on_400_no_achievements_body(
         self, connected_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
@@ -679,28 +681,6 @@ class TestSteamGetAchievements:
         result = await tools["steam_get_achievements"](app_id=440)
         assert result["error"] == "steam_no_achievements"
         assert "440" in result["message"]
-
-    async def test_privacy_error_has_actionable_hint(
-        self, connected_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
-    ):
-        """Privacy error includes a hint for the LLM to act on."""
-        tools = mock_mcp._registered_tools
-        mock_steam_client.request = AsyncMock(
-            side_effect=SteamAPIError(400, "Profile is not public")
-        )
-        result = await tools["steam_get_achievements"](app_id=730)
-        assert "hint" in result
-
-    async def test_no_achievements_error_has_actionable_hint(
-        self, connected_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
-    ):
-        """No-achievements error includes a hint for the LLM to act on."""
-        tools = mock_mcp._registered_tools
-        mock_steam_client.request = AsyncMock(
-            side_effect=SteamAPIError(400, "Requested app has no stats")
-        )
-        result = await tools["steam_get_achievements"](app_id=730)
-        assert "hint" in result
 
 
 class TestSteamGetFriendList:
