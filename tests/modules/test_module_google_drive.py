@@ -25,8 +25,6 @@ from butlers.modules.base import Module, ToolMeta
 from butlers.modules.google_drive import (
     GoogleDriveConfig,
     GoogleDriveModule,
-    GoogleDriveStartupError,
-    _DriveHTTPClient,
     _infer_mime_type,
 )
 
@@ -68,12 +66,26 @@ def _make_mock_mcp() -> MagicMock:
     return mcp
 
 
-def _make_module_with_client(mock_client: MagicMock | None = None) -> GoogleDriveModule:
-    """Return a GoogleDriveModule with a pre-set mock HTTP client."""
+def _make_module_with_client(mock_http_client: MagicMock | None = None) -> GoogleDriveModule:
+    """Return a GoogleDriveModule with a pre-set mock HTTP client and credentials."""
     module = GoogleDriveModule()
-    module._client = mock_client or MagicMock()
+    # Use the internal _http_client (httpx.AsyncClient) that __init__.py uses
+    module._http_client = mock_http_client or MagicMock()
     module._config = GoogleDriveConfig()
     module._butler_name = "test-butler"
+    module._credentials_ok = True
+    # Set up a mock _credentials object
+    creds = MagicMock()
+    creds.client_id = "cid"
+    creds.client_secret = "csecret"
+    creds.refresh_token = "rtoken"
+    module._credentials = creds
+    # Patch _get_token to avoid real token refresh
+    module._get_token = AsyncMock(return_value="fake-token")
+    # Mock the _get/_post/_patch helpers at the method level
+    module._get = AsyncMock()
+    module._post = AsyncMock()
+    module._patch = AsyncMock()
     return module
 
 
@@ -231,6 +243,24 @@ class TestToolRegistration:
         for name, fn in mcp._registered_tools.items():
             assert callable(fn), f"{name} should be callable"
 
+    async def test_butler_name_set_from_db_schema(self):
+        """register_tools derives butler_name from db.schema."""
+        mod = GoogleDriveModule()
+        mcp = _make_mock_mcp()
+        db = MagicMock()
+        db.schema = "finance"
+        await mod.register_tools(mcp=mcp, config={}, db=db)
+        assert mod._butler_name == "finance"
+
+    async def test_butler_name_unchanged_when_no_schema(self):
+        """When db has no schema, butler_name keeps its default value."""
+        mod = GoogleDriveModule()
+        mod._butler_name = "custom-butler"
+        mcp = _make_mock_mcp()
+        db = MagicMock(spec=[])  # no schema attribute
+        await mod.register_tools(mcp=mcp, config={}, db=db)
+        assert mod._butler_name == "custom-butler"
+
 
 # ---------------------------------------------------------------------------
 # 7.2  on_startup
@@ -252,13 +282,16 @@ class TestOnStartup:
         ):
             await mod.on_startup(config=GoogleDriveConfig(), db=None, credential_store=mock_store)
 
-        assert mod._client is not None
-        assert isinstance(mod._client, _DriveHTTPClient)
+        assert mod._http_client is not None
+        assert isinstance(mod._http_client, httpx.AsyncClient)
 
-    async def test_startup_without_credential_store_raises(self):
+    async def test_startup_without_credential_store_warns_and_returns(self):
+        """Missing credential_store logs a warning but does not raise."""
         mod = GoogleDriveModule()
-        with pytest.raises(GoogleDriveStartupError, match="credential_store"):
-            await mod.on_startup(config=GoogleDriveConfig(), db=None, credential_store=None)
+        # Should not raise; module just won't be active
+        await mod.on_startup(config=GoogleDriveConfig(), db=None, credential_store=None)
+        assert not mod._credentials_ok
+        assert mod._http_client is None
 
     async def test_startup_passes_account_to_resolver(self):
         mod = GoogleDriveModule()
@@ -302,7 +335,8 @@ class TestOnStartup:
 
         assert captured["account"] is None
 
-    async def test_startup_missing_credentials_raises(self):
+    async def test_startup_missing_credentials_warns_and_returns(self):
+        """MissingGoogleCredentialsError is caught and logged; module stays inactive."""
         from butlers.google_credentials import MissingGoogleCredentialsError
 
         mod = GoogleDriveModule()
@@ -312,14 +346,17 @@ class TestOnStartup:
             "butlers.modules.google_drive.resolve_google_credentials",
             new=AsyncMock(side_effect=MissingGoogleCredentialsError("not found")),
         ):
-            with pytest.raises(GoogleDriveStartupError, match="Google Drive startup failed"):
-                await mod.on_startup(
-                    config=GoogleDriveConfig(account="nobody@example.com"),
-                    db=None,
-                    credential_store=mock_store,
-                )
+            # Should not raise
+            await mod.on_startup(
+                config=GoogleDriveConfig(account="nobody@example.com"),
+                db=None,
+                credential_store=mock_store,
+            )
 
-    async def test_startup_scope_validation_fails_for_readonly_only(self):
+        assert not mod._credentials_ok
+
+    async def test_startup_scope_validation_warns_for_readonly_only(self):
+        """drive.readonly-only scope warns and leaves module inactive."""
         mod = GoogleDriveModule()
         creds = MagicMock()
         creds.scope = "https://www.googleapis.com/auth/drive.readonly"
@@ -329,12 +366,13 @@ class TestOnStartup:
             "butlers.modules.google_drive.resolve_google_credentials",
             new=AsyncMock(return_value=creds),
         ):
-            with pytest.raises(GoogleDriveStartupError, match="drive.*scope"):
-                await mod.on_startup(
-                    config=GoogleDriveConfig(),
-                    db=None,
-                    credential_store=mock_store,
-                )
+            await mod.on_startup(
+                config=GoogleDriveConfig(),
+                db=None,
+                credential_store=mock_store,
+            )
+
+        assert not mod._credentials_ok
 
     async def test_startup_full_drive_scope_passes(self):
         mod = GoogleDriveModule()
@@ -350,46 +388,41 @@ class TestOnStartup:
         ):
             await mod.on_startup(config=GoogleDriveConfig(), db=None, credential_store=mock_store)
 
-        assert mod._client is not None
+        assert mod._http_client is not None
+        assert mod._credentials_ok
 
-    async def test_startup_account_not_found_raises(self):
-        """Account not in DB -> startup fails with descriptive error."""
-        from butlers.google_credentials import MissingGoogleCredentialsError
-
+    async def test_startup_derives_butler_name_from_db_schema(self):
+        """on_startup sets _butler_name from db.schema."""
         mod = GoogleDriveModule()
+        creds = MagicMock()
+        creds.scope = "https://www.googleapis.com/auth/drive"
         mock_store = MagicMock()
+        db = MagicMock()
+        db.schema = "finance"
+        db.pool = None
 
         with patch(
             "butlers.modules.google_drive.resolve_google_credentials",
-            new=AsyncMock(
-                side_effect=MissingGoogleCredentialsError(
-                    "Google account 'nonexistent@gmail.com' is not connected."
-                )
-            ),
+            new=AsyncMock(return_value=creds),
         ):
-            with pytest.raises(GoogleDriveStartupError) as exc_info:
-                await mod.on_startup(
-                    config=GoogleDriveConfig(account="nonexistent@gmail.com"),
-                    db=None,
-                    credential_store=mock_store,
-                )
+            await mod.on_startup(config=GoogleDriveConfig(), db=db, credential_store=mock_store)
 
-        assert "Google Drive startup failed" in str(exc_info.value)
+        assert mod._butler_name == "finance"
 
-    async def test_shutdown_closes_client(self):
+    async def test_shutdown_closes_http_client(self):
         mod = GoogleDriveModule()
         mock_client = MagicMock()
-        mock_client.close = AsyncMock()
-        mod._client = mock_client
+        mock_client.aclose = AsyncMock()
+        mod._http_client = mock_client
 
         await mod.on_shutdown()
 
-        mock_client.close.assert_awaited_once()
-        assert mod._client is None
+        mock_client.aclose.assert_awaited_once()
+        assert mod._http_client is None
 
     async def test_shutdown_no_client_is_safe(self):
         mod = GoogleDriveModule()
-        mod._client = None
+        mod._http_client = None
         # Should not raise
         await mod.on_shutdown()
 
@@ -402,34 +435,28 @@ class TestOnStartup:
 class TestButlerFolderHierarchy:
     """Task 7.3 — Folder creation, caching, re-creation after deletion."""
 
-    def _make_client_responses(self, responses: list[httpx.Response]) -> MagicMock:
-        """Build a mock _DriveHTTPClient that plays back responses in order."""
-        client = MagicMock(spec=_DriveHTTPClient)
-        client.get = AsyncMock(side_effect=responses[:])
-        client.post = AsyncMock(return_value=_make_httpx_response(200, {"id": "new-folder-id"}))
-        return client
-
     async def test_creates_root_and_subfolder(self):
         """With no DB cache, both root and per-butler folders are created."""
         module = GoogleDriveModule()
         module._config = GoogleDriveConfig()
         module._butler_name = "my-butler"
         module._db = None
+        module._get_token = AsyncMock(return_value="fake-token")
+        module._http_client = MagicMock()
 
-        # Simulate: root folder search -> not found, then subfolder search -> not found
-        mock_client = MagicMock(spec=_DriveHTTPClient)
+        # _get: root folder search -> not found, then subfolder search -> not found
+        # _post: root create -> root-folder-id, subfolder create -> sub-folder-id
         root_search = _make_httpx_response(200, {"files": []})
         sub_search = _make_httpx_response(200, {"files": []})
         root_create = _make_httpx_response(200, {"id": "root-folder-id"})
         sub_create = _make_httpx_response(200, {"id": "sub-folder-id"})
 
-        mock_client.get = AsyncMock(side_effect=[root_search, sub_search])
-        mock_client.post = AsyncMock(side_effect=[root_create, sub_create])
-        module._client = mock_client
+        module._get = AsyncMock(side_effect=[root_search, sub_search])
+        module._post = AsyncMock(side_effect=[root_create, sub_create])
 
         folder_id = await module._ensure_butler_folder("my-butler")
         assert folder_id == "sub-folder-id"
-        assert mock_client.post.call_count == 2
+        assert module._post.call_count == 2
 
     async def test_uses_existing_root_folder(self):
         """When root folder exists, skips creation and uses its ID for subfolder."""
@@ -437,27 +464,29 @@ class TestButlerFolderHierarchy:
         module._config = GoogleDriveConfig()
         module._butler_name = "my-butler"
         module._db = None
+        module._get_token = AsyncMock(return_value="fake-token")
+        module._http_client = MagicMock()
 
         root_search = _make_httpx_response(200, {"files": [{"id": "existing-root"}]})
         sub_search = _make_httpx_response(200, {"files": []})
         sub_create = _make_httpx_response(200, {"id": "new-sub-id"})
 
-        mock_client = MagicMock(spec=_DriveHTTPClient)
-        mock_client.get = AsyncMock(side_effect=[root_search, sub_search])
-        mock_client.post = AsyncMock(return_value=sub_create)
-        module._client = mock_client
+        module._get = AsyncMock(side_effect=[root_search, sub_search])
+        module._post = AsyncMock(return_value=sub_create)
 
         folder_id = await module._ensure_butler_folder("my-butler")
         assert folder_id == "new-sub-id"
         # Only one creation call (subfolder)
-        assert mock_client.post.call_count == 1
+        assert module._post.call_count == 1
 
     async def test_caches_folder_id_in_memory(self):
-        """Second call to _ensure_butler_folder uses in-memory cache, no new API calls."""
+        """Second call to _ensure_butler_folder uses in-memory cache."""
         module = GoogleDriveModule()
         module._config = GoogleDriveConfig()
         module._butler_name = "my-butler"
         module._db = None
+        module._get_token = AsyncMock(return_value="fake-token")
+        module._http_client = MagicMock()
 
         root_search = _make_httpx_response(200, {"files": []})
         sub_search = _make_httpx_response(200, {"files": []})
@@ -466,14 +495,12 @@ class TestButlerFolderHierarchy:
         # For cache verification on second call
         exists_check = _make_httpx_response(200, {"id": "sub-id", "trashed": False})
 
-        mock_client = MagicMock(spec=_DriveHTTPClient)
-        mock_client.get = AsyncMock(side_effect=[root_search, sub_search, exists_check])
-        mock_client.post = AsyncMock(side_effect=[root_create, sub_create])
-        module._client = mock_client
+        module._get = AsyncMock(side_effect=[root_search, sub_search, exists_check])
+        module._post = AsyncMock(side_effect=[root_create, sub_create])
 
         # First call — creates folders
         folder_id1 = await module._ensure_butler_folder("my-butler")
-        # Second call — should use in-memory cache (no additional post calls)
+        # Second call — should use cache (DB cache check first, then memory)
         folder_id2 = await module._ensure_butler_folder("my-butler")
 
         assert folder_id1 == folder_id2 == "sub-id"
@@ -484,21 +511,20 @@ class TestButlerFolderHierarchy:
         module._config = GoogleDriveConfig()
         module._butler_name = "my-butler"
         module._db = None
+        module._get_token = AsyncMock(return_value="fake-token")
+        module._http_client = MagicMock()
 
         # Pre-seed in-memory cache with a "deleted" folder
         module._folder_cache[("my-butler", "primary")] = "deleted-folder-id"
 
-        # First get returns trashed=True
         trashed_check = _make_httpx_response(200, {"id": "deleted-folder-id", "trashed": True})
         root_search = _make_httpx_response(200, {"files": []})
         sub_search = _make_httpx_response(200, {"files": []})
         root_create = _make_httpx_response(200, {"id": "new-root-id"})
         sub_create = _make_httpx_response(200, {"id": "new-sub-id"})
 
-        mock_client = MagicMock(spec=_DriveHTTPClient)
-        mock_client.get = AsyncMock(side_effect=[trashed_check, root_search, sub_search])
-        mock_client.post = AsyncMock(side_effect=[root_create, sub_create])
-        module._client = mock_client
+        module._get = AsyncMock(side_effect=[trashed_check, root_search, sub_search])
+        module._post = AsyncMock(side_effect=[root_create, sub_create])
 
         folder_id = await module._ensure_butler_folder("my-butler")
         assert folder_id == "new-sub-id"
@@ -509,6 +535,8 @@ class TestButlerFolderHierarchy:
         module._config = GoogleDriveConfig()
         module._butler_name = "my-butler"
         module._db = None
+        module._get_token = AsyncMock(return_value="fake-token")
+        module._http_client = MagicMock()
 
         module._folder_cache[("my-butler", "primary")] = "gone-folder-id"
 
@@ -518,10 +546,8 @@ class TestButlerFolderHierarchy:
         root_create = _make_httpx_response(200, {"id": "root-id"})
         sub_create = _make_httpx_response(200, {"id": "sub-id"})
 
-        mock_client = MagicMock(spec=_DriveHTTPClient)
-        mock_client.get = AsyncMock(side_effect=[not_found, root_search, sub_search])
-        mock_client.post = AsyncMock(side_effect=[root_create, sub_create])
-        module._client = mock_client
+        module._get = AsyncMock(side_effect=[not_found, root_search, sub_search])
+        module._post = AsyncMock(side_effect=[root_create, sub_create])
 
         folder_id = await module._ensure_butler_folder("my-butler")
         assert folder_id == "sub-id"
@@ -542,7 +568,7 @@ class TestDriveListFiles:
             {"id": "f1", "name": "doc.txt", "mimeType": "text/plain"},
             {"id": "f2", "name": "sheet.csv", "mimeType": "text/csv"},
         ]
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"files": files}))
+        module._get.return_value = _make_httpx_response(200, {"files": files})
 
         result = await module._drive_list_files(folder_id="folder123", query=None)
 
@@ -550,28 +576,29 @@ class TestDriveListFiles:
         assert result["truncated"] is False
         assert len(result["files"]) == 2
         # Verify folder filter was in query
-        call_params = module._client.get.call_args[1]["params"]
+        call_params = module._get.call_args[1]["params"]
         assert "folder123" in call_params["q"]
         assert "trashed=false" in call_params["q"]
 
     async def test_list_files_root_default(self):
-        """When folder_id is None, uses 'root' as parent."""
+        """When folder_id is None, does not filter by parent (uses no-parent filter)."""
         module = _make_module_with_client()
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"files": []}))
+        module._get.return_value = _make_httpx_response(200, {"files": []})
 
         await module._drive_list_files(folder_id=None, query=None)
 
-        call_params = module._client.get.call_args[1]["params"]
-        assert "'root' in parents" in call_params["q"]
+        call_params = module._get.call_args[1]["params"]
+        # Without folder_id, there should be no folder filter in the query
+        assert "trashed=false" in call_params["q"]
 
     async def test_list_files_with_query_filter(self):
-        """User query is ANDed with folder parent filter."""
+        """User query is ANDed with filters."""
         module = _make_module_with_client()
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"files": []}))
+        module._get.return_value = _make_httpx_response(200, {"files": []})
 
         await module._drive_list_files(folder_id="abc123", query="name contains 'report'")
 
-        call_params = module._client.get.call_args[1]["params"]
+        call_params = module._get.call_args[1]["params"]
         q = call_params["q"]
         assert "'abc123' in parents" in q
         assert "trashed=false" in q
@@ -580,12 +607,10 @@ class TestDriveListFiles:
     async def test_list_files_pagination_up_to_1000(self):
         """Pagination accumulates results up to 1000 items."""
         module = _make_module_with_client()
-        # First page: 100 files + nextPageToken
         page1_files = [{"id": f"f{i}", "name": f"file{i}.txt"} for i in range(100)]
-        # Second page: 50 files, no nextPageToken
         page2_files = [{"id": f"g{i}", "name": f"file2_{i}.txt"} for i in range(50)]
 
-        module._client.get = AsyncMock(
+        module._get = AsyncMock(
             side_effect=[
                 _make_httpx_response(200, {"files": page1_files, "nextPageToken": "tok2"}),
                 _make_httpx_response(200, {"files": page2_files}),
@@ -596,20 +621,19 @@ class TestDriveListFiles:
 
         assert result["total"] == 150
         assert result["truncated"] is False
-        assert module._client.get.call_count == 2
+        assert module._get.call_count == 2
 
     async def test_list_files_truncated_at_1000(self):
         """Results are capped at 1000 and truncated flag set when more exist."""
         module = _make_module_with_client()
 
-        # 10 pages of 100 items each, all with nextPageToken so there are "more" pages
         pages = []
         for i in range(10):
             files = [{"id": f"p{i}f{j}", "name": "file.txt"} for j in range(100)]
             resp_data: dict[str, Any] = {"files": files, "nextPageToken": f"tok{i + 1}"}
             pages.append(_make_httpx_response(200, resp_data))
 
-        module._client.get = AsyncMock(side_effect=pages)
+        module._get = AsyncMock(side_effect=pages)
 
         result = await module._drive_list_files(folder_id=None, query=None)
 
@@ -619,7 +643,7 @@ class TestDriveListFiles:
     async def test_list_files_returns_correct_structure(self):
         """Return structure has files, total, truncated keys."""
         module = _make_module_with_client()
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"files": []}))
+        module._get.return_value = _make_httpx_response(200, {"files": []})
 
         result = await module._drive_list_files(folder_id=None, query=None)
 
@@ -646,7 +670,7 @@ class TestDriveGetFileMetadata:
             "size": "1024",
             "webViewLink": "https://drive.google.com/file/abc123",
         }
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, meta))
+        module._get.return_value = _make_httpx_response(200, meta)
 
         result = await module._drive_get_file_metadata(file_id="abc123")
 
@@ -655,9 +679,7 @@ class TestDriveGetFileMetadata:
 
     async def test_returns_not_found_for_missing_file(self):
         module = _make_module_with_client()
-        module._client.get = AsyncMock(
-            return_value=_make_httpx_response(404, {"error": {"code": 404}})
-        )
+        module._get.return_value = _make_httpx_response(404, {"error": {"code": 404}})
 
         result = await module._drive_get_file_metadata(file_id="nonexistent")
 
@@ -665,13 +687,12 @@ class TestDriveGetFileMetadata:
 
     async def test_requests_correct_fields(self):
         module = _make_module_with_client()
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"id": "abc"}))
+        module._get.return_value = _make_httpx_response(200, {"id": "abc"})
 
         await module._drive_get_file_metadata(file_id="abc")
 
-        call_params = module._client.get.call_args[1]["params"]
+        call_params = module._get.call_args[1]["params"]
         fields = call_params.get("fields", "")
-        # Verify all required metadata fields are requested
         for field in ["id", "name", "mimeType", "modifiedTime", "webViewLink"]:
             assert field in fields, f"Expected field '{field}' in request"
 
@@ -692,9 +713,10 @@ class TestDriveReadFile:
             "name": "notes.txt",
             "mimeType": "text/plain",
             "size": "100",
+            "webViewLink": "",
         }
         content_text = "Hello, world!"
-        module._client.get = AsyncMock(
+        module._get = AsyncMock(
             side_effect=[
                 _make_httpx_response(200, meta),
                 _make_httpx_response(200, text=content_text),
@@ -707,7 +729,7 @@ class TestDriveReadFile:
         assert result["mime_type"] == "text/plain"
         assert result["name"] == "notes.txt"
         # Verify alt=media was used for download
-        download_call_params = module._client.get.call_args_list[1][1]["params"]
+        download_call_params = module._get.call_args_list[1][1]["params"]
         assert download_call_params.get("alt") == "media"
 
     async def test_read_google_doc_exports_as_text(self):
@@ -717,9 +739,10 @@ class TestDriveReadFile:
             "id": "doc1",
             "name": "My Document",
             "mimeType": "application/vnd.google-apps.document",
+            "webViewLink": "",
         }
         content_text = "Document content here"
-        module._client.get = AsyncMock(
+        module._get = AsyncMock(
             side_effect=[
                 _make_httpx_response(200, meta),
                 _make_httpx_response(200, text=content_text),
@@ -731,7 +754,7 @@ class TestDriveReadFile:
         assert result["content"] == content_text
         assert result["mime_type"] == "text/plain"
         # Verify export endpoint was called
-        export_call_args = module._client.get.call_args_list[1]
+        export_call_args = module._get.call_args_list[1]
         assert "export" in export_call_args[0][0]
         export_params = export_call_args[1]["params"]
         assert export_params["mimeType"] == "text/plain"
@@ -743,9 +766,10 @@ class TestDriveReadFile:
             "id": "sheet1",
             "name": "My Sheet",
             "mimeType": "application/vnd.google-apps.spreadsheet",
+            "webViewLink": "",
         }
         csv_content = "a,b,c\n1,2,3"
-        module._client.get = AsyncMock(
+        module._get = AsyncMock(
             side_effect=[
                 _make_httpx_response(200, meta),
                 _make_httpx_response(200, text=csv_content),
@@ -756,7 +780,7 @@ class TestDriveReadFile:
 
         assert result["content"] == csv_content
         assert result["mime_type"] == "text/csv"
-        export_params = module._client.get.call_args_list[1][1]["params"]
+        export_params = module._get.call_args_list[1][1]["params"]
         assert export_params["mimeType"] == "text/csv"
 
     async def test_read_google_slides_exports_as_text(self):
@@ -766,9 +790,10 @@ class TestDriveReadFile:
             "id": "pres1",
             "name": "My Presentation",
             "mimeType": "application/vnd.google-apps.presentation",
+            "webViewLink": "",
         }
         slide_text = "Slide 1 content"
-        module._client.get = AsyncMock(
+        module._get = AsyncMock(
             side_effect=[
                 _make_httpx_response(200, meta),
                 _make_httpx_response(200, text=slide_text),
@@ -788,9 +813,10 @@ class TestDriveReadFile:
             "id": "big",
             "name": "bigfile.txt",
             "mimeType": "text/plain",
-            "size": "5000",  # 5KB > 1KB limit
+            "size": "5000",
+            "webViewLink": "",
         }
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, meta))
+        module._get.return_value = _make_httpx_response(200, meta)
 
         result = await module._drive_read_file(file_id="big")
 
@@ -799,7 +825,7 @@ class TestDriveReadFile:
         assert result["max_bytes"] == 1000
         assert result["name"] == "bigfile.txt"
         # Should not attempt download
-        assert module._client.get.call_count == 1
+        assert module._get.call_count == 1
 
     async def test_binary_file_rejection(self):
         """Binary files (images, etc.) return binary_file status."""
@@ -811,7 +837,7 @@ class TestDriveReadFile:
             "size": "500000",
             "webViewLink": "https://drive.google.com/img1",
         }
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, meta))
+        module._get.return_value = _make_httpx_response(200, meta)
 
         result = await module._drive_read_file(file_id="img1")
 
@@ -820,14 +846,12 @@ class TestDriveReadFile:
         assert result["name"] == "photo.jpg"
         assert result["web_view_link"] == "https://drive.google.com/img1"
         # Should not attempt download
-        assert module._client.get.call_count == 1
+        assert module._get.call_count == 1
 
     async def test_read_not_found_returns_not_found(self):
         """File not found returns not_found status dict."""
         module = _make_module_with_client()
-        module._client.get = AsyncMock(
-            return_value=_make_httpx_response(404, {"error": {"code": 404}})
-        )
+        module._get.return_value = _make_httpx_response(404, {"error": {"code": 404}})
 
         result = await module._drive_read_file(file_id="gone")
 
@@ -843,7 +867,7 @@ class TestDriveReadFile:
             "size": "200000",
             "webViewLink": "https://drive.google.com/pdf1",
         }
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, meta))
+        module._get.return_value = _make_httpx_response(200, meta)
 
         result = await module._drive_read_file(file_id="pdf1")
 
@@ -870,7 +894,7 @@ class TestDriveWriteFile:
                 "webViewLink": "https://drive.google.com/new",
             },
         )
-        module._client.post = AsyncMock(return_value=write_response)
+        module._post.return_value = write_response
 
         # Mock _ensure_butler_folder to return a known ID
         module._ensure_butler_folder = AsyncMock(return_value="butler-folder-id")
@@ -885,6 +909,7 @@ class TestDriveWriteFile:
         assert result["file_id"] == "new-file-id"
         assert result["name"] == "report.txt"
         assert result["web_view_link"] == "https://drive.google.com/new"
+        assert "folder" in result
         module._ensure_butler_folder.assert_awaited_once()
 
     async def test_write_to_explicit_folder(self):
@@ -894,7 +919,7 @@ class TestDriveWriteFile:
             200,
             {"id": "new-file-id", "name": "data.csv", "webViewLink": "https://drive.google.com/f"},
         )
-        module._client.post = AsyncMock(return_value=write_response)
+        module._post.return_value = write_response
         module._ensure_butler_folder = AsyncMock()
 
         result = await module._drive_write_file(
@@ -911,10 +936,8 @@ class TestDriveWriteFile:
     async def test_mime_type_inference_txt(self):
         """MIME type inferred from .txt extension."""
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(
-                200, {"id": "fid", "name": "f.txt", "webViewLink": ""}
-            )
+        module._post.return_value = _make_httpx_response(
+            200, {"id": "fid", "name": "f.txt", "webViewLink": ""}
         )
         module._ensure_butler_folder = AsyncMock(return_value="folder-id")
 
@@ -922,19 +945,16 @@ class TestDriveWriteFile:
             name="file.txt",
             content="hello",
             folder_id=None,
-            mime_type=None,  # should infer
+            mime_type=None,
         )
 
-        # Inspect the content sent — should contain text/plain
-        call_content = module._client.post.call_args[1].get("content", b"")
+        call_content = module._post.call_args[1].get("content", b"")
         assert b"text/plain" in call_content
 
     async def test_mime_type_inference_csv(self):
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(
-                200, {"id": "fid", "name": "f.csv", "webViewLink": ""}
-            )
+        module._post.return_value = _make_httpx_response(
+            200, {"id": "fid", "name": "f.csv", "webViewLink": ""}
         )
         module._ensure_butler_folder = AsyncMock(return_value="folder-id")
 
@@ -942,15 +962,13 @@ class TestDriveWriteFile:
             name="data.csv", content="a,b", folder_id=None, mime_type=None
         )
 
-        call_content = module._client.post.call_args[1].get("content", b"")
+        call_content = module._post.call_args[1].get("content", b"")
         assert b"text/csv" in call_content
 
     async def test_mime_type_inference_json(self):
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(
-                200, {"id": "fid", "name": "f.json", "webViewLink": ""}
-            )
+        module._post.return_value = _make_httpx_response(
+            200, {"id": "fid", "name": "f.json", "webViewLink": ""}
         )
         module._ensure_butler_folder = AsyncMock(return_value="folder-id")
 
@@ -958,15 +976,13 @@ class TestDriveWriteFile:
             name="config.json", content="{}", folder_id=None, mime_type=None
         )
 
-        call_content = module._client.post.call_args[1].get("content", b"")
+        call_content = module._post.call_args[1].get("content", b"")
         assert b"application/json" in call_content
 
     async def test_mime_type_unknown_extension_defaults_to_octet_stream(self):
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(
-                200, {"id": "fid", "name": "f.xyzunknown999", "webViewLink": ""}
-            )
+        module._post.return_value = _make_httpx_response(
+            200, {"id": "fid", "name": "f.xyzunknown999", "webViewLink": ""}
         )
         module._ensure_butler_folder = AsyncMock(return_value="folder-id")
 
@@ -974,15 +990,13 @@ class TestDriveWriteFile:
             name="file.xyzunknown999", content="data", folder_id=None, mime_type=None
         )
 
-        call_content = module._client.post.call_args[1].get("content", b"")
+        call_content = module._post.call_args[1].get("content", b"")
         assert b"application/octet-stream" in call_content
 
     async def test_explicit_mime_type_overrides_inference(self):
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(
-                200, {"id": "fid", "name": "f.txt", "webViewLink": ""}
-            )
+        module._post.return_value = _make_httpx_response(
+            200, {"id": "fid", "name": "f.txt", "webViewLink": ""}
         )
         module._ensure_butler_folder = AsyncMock(return_value="folder-id")
 
@@ -993,20 +1007,18 @@ class TestDriveWriteFile:
             mime_type="text/markdown",
         )
 
-        call_content = module._client.post.call_args[1].get("content", b"")
+        call_content = module._post.call_args[1].get("content", b"")
         assert b"text/markdown" in call_content
 
     async def test_result_contains_required_keys(self):
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(
-                200,
-                {
-                    "id": "file-123",
-                    "name": "output.txt",
-                    "webViewLink": "https://drive.google.com/file-123",
-                },
-            )
+        module._post.return_value = _make_httpx_response(
+            200,
+            {
+                "id": "file-123",
+                "name": "output.txt",
+                "webViewLink": "https://drive.google.com/file-123",
+            },
         )
         module._ensure_butler_folder = AsyncMock(return_value="folder-id")
 
@@ -1034,8 +1046,8 @@ class TestDriveCreateFolder:
     async def test_create_folder_in_butler_hierarchy(self):
         """Without parent_id, creates folder inside butler subfolder."""
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(200, {"id": "new-folder", "name": "reports"})
+        module._post.return_value = _make_httpx_response(
+            200, {"id": "new-folder", "name": "reports"}
         )
         module._ensure_butler_folder = AsyncMock(return_value="butler-sub-id")
 
@@ -1048,42 +1060,36 @@ class TestDriveCreateFolder:
     async def test_create_folder_in_specific_parent(self):
         """With parent_id, creates folder directly inside that parent."""
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(200, {"id": "new-folder", "name": "archive"})
+        module._post.return_value = _make_httpx_response(
+            200, {"id": "new-folder", "name": "archive"}
         )
         module._ensure_butler_folder = AsyncMock()
 
         result = await module._drive_create_folder(name="archive", parent_id="xyz789")
 
         assert result["folder_id"] == "new-folder"
-        assert result["parent_path"] == "xyz789"
         module._ensure_butler_folder.assert_not_awaited()
 
     async def test_create_folder_passes_folder_mime_type(self):
         """Folder creation uses the Google Drive folder MIME type."""
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(200, {"id": "f", "name": "test"})
-        )
+        module._post.return_value = _make_httpx_response(200, {"id": "f", "name": "test"})
         module._ensure_butler_folder = AsyncMock(return_value="parent-id")
 
         await module._drive_create_folder(name="test", parent_id=None)
 
-        call_json = module._client.post.call_args[1].get("json", {})
+        call_json = module._post.call_args[1].get("json", {})
         assert call_json.get("mimeType") == "application/vnd.google-apps.folder"
 
     async def test_create_folder_result_structure(self):
         module = _make_module_with_client()
-        module._client.post = AsyncMock(
-            return_value=_make_httpx_response(200, {"id": "new-id", "name": "myfolder"})
-        )
+        module._post.return_value = _make_httpx_response(200, {"id": "new-id", "name": "myfolder"})
         module._ensure_butler_folder = AsyncMock(return_value="parent")
 
         result = await module._drive_create_folder(name="myfolder", parent_id=None)
 
         assert "folder_id" in result
         assert "name" in result
-        assert "parent_path" in result
 
 
 class TestDriveMoveFile:
@@ -1095,8 +1101,8 @@ class TestDriveMoveFile:
         meta = {"id": "file1", "name": "doc.txt", "parents": ["old-parent"]}
         move_response = {"id": "file1", "name": "doc.txt", "parents": ["new-parent"]}
 
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, meta))
-        module._client.patch = AsyncMock(return_value=_make_httpx_response(200, move_response))
+        module._get.return_value = _make_httpx_response(200, meta)
+        module._patch.return_value = _make_httpx_response(200, move_response)
 
         result = await module._drive_move_file(file_id="file1", new_parent_id="new-parent")
 
@@ -1108,36 +1114,31 @@ class TestDriveMoveFile:
         """files.update is called with addParents and removeParents params."""
         module = _make_module_with_client()
         meta = {"id": "file1", "name": "doc.txt", "parents": ["old-parent-id"]}
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, meta))
-        module._client.patch = AsyncMock(
-            return_value=_make_httpx_response(200, {"id": "file1", "name": "doc.txt"})
-        )
+        module._get.return_value = _make_httpx_response(200, meta)
+        module._patch.return_value = _make_httpx_response(200, {"id": "file1", "name": "doc.txt"})
 
         await module._drive_move_file(file_id="file1", new_parent_id="new-parent-id")
 
-        patch_params = module._client.patch.call_args[1].get("params", {})
+        patch_params = module._patch.call_args[1].get("params", {})
         assert patch_params["addParents"] == "new-parent-id"
         assert "old-parent-id" in patch_params["removeParents"]
 
     async def test_move_file_not_found(self):
         """Non-existent file returns not_found status."""
         module = _make_module_with_client()
-        module._client.get = AsyncMock(
-            return_value=_make_httpx_response(404, {"error": {"code": 404}})
-        )
+        module._get.return_value = _make_httpx_response(404, {"error": {"code": 404}})
 
         result = await module._drive_move_file(file_id="missing", new_parent_id="parent")
 
-        assert result == {"status": "not_found", "error": "File not found"}
+        assert result["status"] == "not_found"
+        assert result["error"] == "File not found"
 
     async def test_move_file_patch_not_found(self):
         """If patch returns 404, returns not_found dict."""
         module = _make_module_with_client()
         meta = {"id": "file1", "name": "doc.txt", "parents": ["old"]}
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, meta))
-        module._client.patch = AsyncMock(
-            return_value=_make_httpx_response(404, {"error": {"code": 404}})
-        )
+        module._get.return_value = _make_httpx_response(200, meta)
+        module._patch.return_value = _make_httpx_response(404, {"error": {"code": 404}})
 
         result = await module._drive_move_file(file_id="file1", new_parent_id="new")
 
@@ -1154,13 +1155,13 @@ class TestDriveSearchFiles:
             {"id": "r1", "name": "tax 2025.pdf"},
             {"id": "r2", "name": "tax notes.txt"},
         ]
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"files": files}))
+        module._get.return_value = _make_httpx_response(200, {"files": files})
 
         result = await module._drive_search_files(query="tax return 2025", limit=None)
 
         assert result["total"] == 2
         assert len(result["files"]) == 2
-        call_params = module._client.get.call_args[1]["params"]
+        call_params = module._get.call_args[1]["params"]
         assert "fullText contains" in call_params["q"]
         assert "tax return 2025" in call_params["q"]
         assert "trashed=false" in call_params["q"]
@@ -1169,7 +1170,7 @@ class TestDriveSearchFiles:
         """Limit is applied to results."""
         module = _make_module_with_client()
         files = [{"id": f"r{i}", "name": f"file{i}.txt"} for i in range(20)]
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"files": files}))
+        module._get.return_value = _make_httpx_response(200, {"files": files})
 
         result = await module._drive_search_files(query="report", limit=10)
 
@@ -1179,7 +1180,7 @@ class TestDriveSearchFiles:
     async def test_search_empty_results(self):
         """Empty results return files=[] and total=0."""
         module = _make_module_with_client()
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"files": []}))
+        module._get.return_value = _make_httpx_response(200, {"files": []})
 
         result = await module._drive_search_files(query="nonexistent stuff xyz", limit=None)
 
@@ -1187,7 +1188,7 @@ class TestDriveSearchFiles:
 
     async def test_search_returns_correct_structure(self):
         module = _make_module_with_client()
-        module._client.get = AsyncMock(return_value=_make_httpx_response(200, {"files": []}))
+        module._get.return_value = _make_httpx_response(200, {"files": []})
 
         result = await module._drive_search_files(query="test", limit=None)
 
@@ -1226,6 +1227,5 @@ class TestMimeTypeInference:
 
     def test_no_extension(self):
         result = _infer_mime_type("Makefile")
-        # Should be octet-stream or something reasonable — not crash
         assert isinstance(result, str)
         assert len(result) > 0

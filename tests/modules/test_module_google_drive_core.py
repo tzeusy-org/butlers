@@ -676,11 +676,20 @@ class TestRateLimitRetry:
         assert resp.status_code == 200
         assert mock_client.request.await_count == 3
 
-    async def test_retries_on_403(self):
-        """Retries on 403 (quota exceeded) up to max retries."""
+    async def test_retries_on_403_rate_limited(self):
+        """Retries on 403 only when the error body contains rateLimitExceeded reason."""
         mock_client = AsyncMock(spec=httpx.AsyncClient)
+        rate_limit_403 = _make_response(
+            403,
+            json_body={
+                "error": {
+                    "code": 403,
+                    "errors": [{"reason": "rateLimitExceeded", "domain": "usageLimits"}],
+                }
+            },
+        )
         responses = [
-            _make_response(403, text="quota"),
+            rate_limit_403,
             _make_response(200, json_body={"ok": True}),
         ]
         mock_client.request = AsyncMock(side_effect=responses)
@@ -694,6 +703,55 @@ class TestRateLimitRetry:
             )
 
         assert resp.status_code == 200
+        assert mock_client.request.await_count == 2
+
+    async def test_403_permission_denied_not_retried(self):
+        """Permission-denied 403 (no rate-limit reason) is returned immediately."""
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        permission_denied_403 = _make_response(
+            403,
+            json_body={
+                "error": {
+                    "code": 403,
+                    "errors": [{"reason": "forbidden", "domain": "global"}],
+                }
+            },
+        )
+        mock_client.request = AsyncMock(return_value=permission_denied_403)
+
+        with patch("butlers.modules.google_drive.asyncio.sleep", AsyncMock()) as mock_sleep:
+            resp = await _drive_request(
+                mock_client,
+                "GET",
+                "https://example.com",
+                token="t",
+            )
+
+        # Must return immediately without retry
+        assert resp.status_code == 403
+        assert mock_client.request.await_count == 1
+        mock_sleep.assert_not_awaited()
+
+    async def test_403_no_json_body_not_retried(self):
+        """403 with non-JSON body (e.g. text/html error page) is returned immediately."""
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        responses = [
+            _make_response(403, text="<html>Forbidden</html>"),
+            _make_response(200, json_body={"ok": True}),
+        ]
+        mock_client.request = AsyncMock(side_effect=responses)
+
+        with patch("butlers.modules.google_drive.asyncio.sleep", AsyncMock()) as mock_sleep:
+            resp = await _drive_request(
+                mock_client,
+                "GET",
+                "https://example.com",
+                token="t",
+            )
+
+        assert resp.status_code == 403
+        assert mock_client.request.await_count == 1
+        mock_sleep.assert_not_awaited()
 
     async def test_retries_on_503(self):
         """Retries on 503 (Service Unavailable)."""

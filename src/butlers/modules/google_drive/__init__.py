@@ -57,8 +57,12 @@ _GOOGLE_EXPORT_MAP: dict[str, str] = {
     _GSLIDES_MIME: "text/plain",
 }
 
-# Rate-limit retry config (spec §3.5): retry on 403 (rate limit), 429, 503
-_RATE_LIMIT_STATUS_CODES = {403, 429, 503}
+# Rate-limit retry config (spec §3.5): retry on rate-limited 403, 429, and 503.
+# NOTE: 403 can mean either rate-limited or permission-denied. Only retry when
+# the error body contains a quota/rate-limit reason; permission denials must not
+# be retried as they will never succeed.
+_RATE_LIMIT_RETRY_STATUS_CODES = {429, 503}
+_RATE_LIMIT_403_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY_S = 1.0
 
@@ -235,6 +239,26 @@ class _DriveTokenCache:
 # ---------------------------------------------------------------------------
 
 
+def _is_rate_limit_response(response: httpx.Response) -> bool:
+    """Return True only for genuine rate-limit responses that should be retried.
+
+    429 and 503 are always retried. 403 is retried only when the error body
+    contains a rate-limit reason (``rateLimitExceeded`` or
+    ``userRateLimitExceeded``). Permission-denied 403s (``forbidden``,
+    ``accessNotConfigured``, etc.) must not be retried.
+    """
+    if response.status_code in _RATE_LIMIT_RETRY_STATUS_CODES:
+        return True
+    if response.status_code == 403:
+        try:
+            body = response.json()
+            errors = body.get("error", {}).get("errors", [])
+            return any(e.get("reason") in _RATE_LIMIT_403_REASONS for e in errors)
+        except Exception:
+            return False
+    return False
+
+
 async def _drive_request(
     http_client: httpx.AsyncClient,
     method: str,
@@ -245,8 +269,12 @@ async def _drive_request(
 ) -> httpx.Response:
     """Make a Drive API request with rate-limit retry (exponential backoff).
 
-    Retries on 403 (quota), 429, and 503 up to _RATE_LIMIT_MAX_RETRIES times
-    with base-1s exponential backoff (1s, 2s, 4s).
+    Retries on 429, 503, and rate-limited 403 (``rateLimitExceeded`` /
+    ``userRateLimitExceeded``) up to _RATE_LIMIT_MAX_RETRIES times with
+    base-1s exponential backoff (1s, 2s, 4s).
+
+    Permission-denied 403s (``forbidden``, ``accessNotConfigured``, etc.)
+    are returned immediately without retrying.
     """
     headers = {**kwargs.pop("headers", {}), "Authorization": f"Bearer {token}"}
     last_exc: Exception | None = None
@@ -259,7 +287,7 @@ async def _drive_request(
                 f"Google Drive API network error: {_redact_creds(str(exc))}"
             ) from exc
 
-        if response.status_code not in _RATE_LIMIT_STATUS_CODES:
+        if not _is_rate_limit_response(response):
             return response
 
         delay = _RATE_LIMIT_BASE_DELAY_S * (2**attempt)
@@ -784,10 +812,10 @@ class GoogleDriveModule(Module):
             return self._not_configured_error()
 
         try:
-            # Get metadata first
+            # Get metadata first (include webViewLink for binary_file response)
             meta_resp = await self._get(
                 f"files/{file_id}",
-                params={"fields": "id,name,mimeType,size"},
+                params={"fields": "id,name,mimeType,size,webViewLink"},
             )
             if meta_resp.status_code == 404:
                 return {"status": "not_found", "file": None}
@@ -800,20 +828,17 @@ class GoogleDriveModule(Module):
             meta = meta_resp.json()
             mime_type = meta.get("mimeType", "")
             name = meta.get("name", "")
-            size_bytes = int(meta.get("size", 0))
+            size_bytes = int(meta.get("size", 0) or 0)
+            web_view_link = meta.get("webViewLink", "")
 
             # Size check for non-Google-Workspace files
             if mime_type not in _GOOGLE_EXPORT_MAP:
                 if size_bytes > self._config.max_read_size_bytes:
                     return {
-                        "status": "error",
-                        "error": (
-                            f"File too large: {size_bytes} bytes exceeds limit "
-                            f"{self._config.max_read_size_bytes} bytes"
-                        ),
-                        "file_id": file_id,
+                        "status": "too_large",
+                        "size_bytes": size_bytes,
+                        "max_bytes": self._config.max_read_size_bytes,
                         "name": name,
-                        "mime_type": mime_type,
                     }
 
             # Fetch content
@@ -852,12 +877,11 @@ class GoogleDriveModule(Module):
                 }
             else:
                 return {
-                    "status": "error",
-                    "error": f"Binary file cannot be read as text (mimeType={mime_type!r})",
-                    "file_id": file_id,
-                    "name": name,
+                    "status": "binary_file",
                     "mime_type": mime_type,
+                    "name": name,
                     "size_bytes": size_bytes,
+                    "web_view_link": web_view_link,
                 }
         except Exception as exc:
             logger.error("drive_read_file failed: %s", exc, exc_info=True)
@@ -874,8 +898,12 @@ class GoogleDriveModule(Module):
             return self._not_configured_error()
 
         try:
+            folder_path: str
             if folder_id is None:
                 folder_id = await self._ensure_butler_folder(self._butler_name)
+                folder_path = f"{self._config.butler_folder_name}/{self._butler_name}"
+            else:
+                folder_path = folder_id
 
             inferred_mime = mime_type or _infer_mime_type(name)
             content_bytes = content.encode()
@@ -902,7 +930,7 @@ class GoogleDriveModule(Module):
             resp = await self._post(
                 "https://www.googleapis.com/upload/drive/v3/files",
                 content=body,
-                params={"uploadType": "multipart", "fields": "id,webViewLink"},
+                params={"uploadType": "multipart", "fields": "id,name,webViewLink"},
                 headers={
                     "Content-Type": f"multipart/related; boundary={boundary}",
                 },
@@ -917,9 +945,9 @@ class GoogleDriveModule(Module):
             data = resp.json()
             return {
                 "file_id": data["id"],
+                "name": data.get("name", name),
+                "folder": folder_path,
                 "web_view_link": data.get("webViewLink"),
-                "name": name,
-                "mime_type": inferred_mime,
             }
         except Exception as exc:
             logger.error("drive_write_file failed: %s", exc, exc_info=True)
@@ -974,13 +1002,13 @@ class GoogleDriveModule(Module):
             return self._not_configured_error()
 
         try:
-            # Get current parents
+            # Get current parents and name
             meta_resp = await self._get(
                 f"files/{file_id}",
-                params={"fields": "id,parents"},
+                params={"fields": "id,name,parents"},
             )
             if meta_resp.status_code == 404:
-                return {"status": "not_found", "file_id": file_id}
+                return {"status": "not_found", "error": "File not found"}
             if meta_resp.status_code != 200:
                 return {
                     "status": "error",
@@ -988,6 +1016,7 @@ class GoogleDriveModule(Module):
                 }
 
             meta = meta_resp.json()
+            name = meta.get("name", "")
             old_parents = ",".join(meta.get("parents", []))
 
             resp = await self._patch(
@@ -995,19 +1024,19 @@ class GoogleDriveModule(Module):
                 params={
                     "addParents": new_parent_id,
                     "removeParents": old_parents,
-                    "fields": "id,parents",
+                    "fields": "id,name,parents",
                 },
             )
 
             if resp.status_code == 404:
-                return {"status": "not_found", "file_id": file_id}
+                return {"status": "not_found", "error": "File not found"}
             if resp.status_code != 200:
                 return {
                     "status": "error",
                     "error": f"Move failed (HTTP {resp.status_code}): {resp.text[:200]}",
                 }
 
-            return {"status": "ok", "file_id": file_id, "new_parent_id": new_parent_id}
+            return {"file_id": file_id, "name": name, "new_parent_id": new_parent_id}
         except Exception as exc:
             logger.error("drive_move_file failed: %s", exc, exc_info=True)
             return {"status": "error", "error": str(exc)}
@@ -1057,6 +1086,13 @@ class GoogleDriveModule(Module):
         if isinstance(config, GoogleDriveConfig):
             self._config = config
         self._db = db
+
+        # Derive butler name from DB schema when available (same pattern as on_startup).
+        # This ensures _butler_name is consistent whether the module is started via
+        # on_startup or only registered via register_tools.
+        schema: str | None = getattr(db, "schema", None)
+        if schema:
+            self._butler_name = schema
 
         module = self
 
