@@ -8,7 +8,7 @@ Provides ``router`` at ``/api/steam``:
   (soft-revoke by default; ``?hard_delete=true`` to permanently purge)
 - ``GET    /api/steam/accounts/{id}/status``  — per-account credential + poll health status
 - ``GET    /api/steam/connector/health``      — proxy the Steam connector health endpoint
-- ``GET    /api/steam/playtime``              — playtime analytics from DB (top games)
+- ``GET    /api/steam/playtime``              — playtime analytics from DB (games list)
 - ``GET    /api/steam/playtime/{app_id}``     — per-game playtime history from DB
 
 API key validation:
@@ -789,8 +789,8 @@ async def get_steam_playtime(
 
     Returns:
     - ``total_games``: number of distinct games with playtime in the window
-    - ``total_playtime_minutes``: sum of all playtime in the window
-    - ``top_games``: top N games by total playtime (descending)
+    - ``total_minutes``: sum of all playtime in the window
+    - ``games``: top N games by total playtime (descending)
     - ``days``: the window size used (null = all-time)
 
     The ``account_id`` parameter selects a specific account; when omitted,
@@ -849,11 +849,11 @@ async def get_steam_playtime(
     # Sort by total playtime descending.
     rows_sorted = sorted(rows, key=lambda r: r["total_playtime"], reverse=True)
 
-    top_games = [
+    games = [
         SteamGamePlaytime(
             app_id=r["app_id"],
-            name=r["app_name"],
-            playtime_minutes=r["total_playtime"],
+            app_name=r["app_name"],
+            total_minutes=r["total_playtime"],
         )
         for r in rows_sorted[:top_n]
     ]
@@ -867,8 +867,8 @@ async def get_steam_playtime(
         display_name=account.display_name,
         days=days,
         total_games=total_games,
-        total_playtime_minutes=total_playtime,
-        top_games=top_games,
+        total_minutes=total_playtime,
+        games=games,
         queried_at=queried_at,
     )
 
@@ -989,7 +989,7 @@ async def get_steam_game_playtime(
         app_id=app_id,
         app_name=app_name,
         days=days,
-        total_playtime_minutes=total_playtime,
+        total_minutes=total_playtime,
         history=history,
         queried_at=queried_at,
     )

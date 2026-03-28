@@ -725,12 +725,12 @@ class TestGetSteamPlaytime:
         assert body["steam_id"] == _STEAM_ID
         assert body["display_name"] == "GamerDude"
         assert body["total_games"] == 3
-        assert body["total_playtime_minutes"] == 9000  # 5000+3000+1000
-        assert len(body["top_games"]) == 3
+        assert body["total_minutes"] == 9000  # 5000+3000+1000
+        assert len(body["games"]) == 3
         # Top game by playtime should be Dota 2
-        assert body["top_games"][0]["app_id"] == 570
-        assert body["top_games"][0]["name"] == "Dota 2"
-        assert body["top_games"][0]["playtime_minutes"] == 5000
+        assert body["games"][0]["app_id"] == 570
+        assert body["games"][0]["app_name"] == "Dota 2"
+        assert body["games"][0]["total_minutes"] == 5000
 
     async def test_top_n_limits_results(self):
         """GET /api/steam/playtime respects the top_n query parameter."""
@@ -749,7 +749,7 @@ class TestGetSteamPlaytime:
                 resp = await client.get("/api/steam/playtime?top_n=2")
 
         body = resp.json()
-        assert len(body["top_games"]) == 2
+        assert len(body["games"]) == 2
 
     async def test_days_param_passed_to_query(self):
         """GET /api/steam/playtime passes the days param to the query helper."""
@@ -873,8 +873,8 @@ class TestGetSteamPlaytime:
 
         assert resp.status_code == 422
 
-    async def test_top_games_sorted_by_playtime_descending(self):
-        """GET /api/steam/playtime top_games are sorted by total playtime descending."""
+    async def test_games_sorted_by_playtime_descending(self):
+        """GET /api/steam/playtime games are sorted by total playtime descending."""
         account = _make_account()
         pool = _make_simple_pool()
         app = _build_app(pool)
@@ -896,7 +896,7 @@ class TestGetSteamPlaytime:
                 resp = await client.get("/api/steam/playtime")
 
         body = resp.json()
-        playtimes = [g["playtime_minutes"] for g in body["top_games"]]
+        playtimes = [g["total_minutes"] for g in body["games"]]
         assert playtimes == sorted(playtimes, reverse=True)
 
     async def test_queried_at_is_present(self):
@@ -939,8 +939,8 @@ class TestGetSteamPlaytime:
         assert resp.status_code == 200
         body = resp.json()
         assert body["total_games"] == 0
-        assert body["total_playtime_minutes"] == 0
-        assert body["top_games"] == []
+        assert body["total_minutes"] == 0
+        assert body["games"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -988,7 +988,7 @@ class TestGetSteamGamePlaytime:
         body = resp.json()
         assert body["app_id"] == _APP_ID
         assert body["app_name"] == "Dota 2"
-        assert body["total_playtime_minutes"] == 200  # 120 + 80
+        assert body["total_minutes"] == 200  # 120 + 80
         assert len(body["history"]) == 2
         assert body["history"][0]["playtime_minutes"] == 120
 

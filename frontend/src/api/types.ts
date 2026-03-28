@@ -2802,8 +2802,8 @@ export interface SteamDisconnectResponse {
 /** Playtime record for a single game. */
 export interface SteamGamePlaytime {
   app_id: number;
-  name: string | null;
-  playtime_minutes: number;
+  app_name: string | null;
+  total_minutes: number;
 }
 
 /** Response from GET /api/steam/playtime */
@@ -2813,7 +2813,7 @@ export interface SteamPlaytimeAnalytics {
   display_name: string | null;
   days: number | null;
   total_games: number;
-  total_playtime_minutes: number;
-  top_games: SteamGamePlaytime[];
+  total_minutes: number;
+  games: SteamGamePlaytime[];
   queried_at: string;
 }
