@@ -23,7 +23,22 @@ from uuid import uuid4
 
 import pytest
 
+import butlers.tools.finance.transactions as _txn_module
+from butlers.tools.finance.transactions import _deduplicate
+
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def clear_column_cache():
+    """Clear the _has_column module-level cache before each test.
+
+    Prevents cross-test contamination: without this, a test that caches
+    column existence as False would cause later tests to skip P1 silently.
+    """
+    _txn_module._column_existence_cache.clear()
+    yield
+    _txn_module._column_existence_cache.clear()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -59,8 +74,6 @@ def _make_row(txn_id: str) -> MagicMock:
 
 def test_deduplicate_importable():
     """_deduplicate must be importable from the finance transactions module."""
-    from butlers.tools.finance.transactions import _deduplicate
-
     assert callable(_deduplicate)
 
 
@@ -74,8 +87,6 @@ class TestPriority1ExternalId:
 
     async def test_returns_existing_id_when_match(self):
         """Returns existing transaction ID when external_id + account_id match."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(
             fetchval_return=1,  # _has_column → column exists
             fetchrow_return=_make_row(_TXN_ID),
@@ -92,8 +103,6 @@ class TestPriority1ExternalId:
 
     async def test_no_match_returns_none(self):
         """Returns None when external_id + account_id combination is not found."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(
             fetchval_return=1,  # column exists
             fetchrow_return=None,  # no match
@@ -109,8 +118,6 @@ class TestPriority1ExternalId:
 
     async def test_skips_p1_when_external_id_column_absent(self):
         """Falls through to lower tiers when external_id column doesn't exist in schema."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         # _has_column returns 0 (column absent); source_message_id also absent
         # → composite fallback also absent → None
         pool = _mock_pool(
@@ -133,8 +140,6 @@ class TestPriority1ExternalId:
 
     async def test_skips_p1_when_external_id_is_none(self):
         """Priority 1 is not attempted when external_id is None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchval_return=1, fetchrow_return=None)
 
         txn = {
@@ -150,8 +155,6 @@ class TestPriority1ExternalId:
 
     async def test_skips_p1_when_account_id_is_none(self):
         """Priority 1 is not attempted when account_id is None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchval_return=1, fetchrow_return=None)
 
         txn = {
@@ -166,8 +169,6 @@ class TestPriority1ExternalId:
 
     async def test_p1_does_not_fall_through_when_matched(self):
         """Once P1 returns a match, P2 and P3 are NOT queried."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(
             fetchval_return=1,
             fetchrow_return=_make_row(_TXN_ID),
@@ -198,8 +199,6 @@ class TestPriority2SourceMessageId:
 
     async def test_returns_existing_id_when_match(self):
         """Returns existing transaction ID when source_message_id matches."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
@@ -213,8 +212,6 @@ class TestPriority2SourceMessageId:
 
     async def test_no_match_returns_none(self):
         """Returns None when source_message_id is not found."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -228,8 +225,6 @@ class TestPriority2SourceMessageId:
 
     async def test_skips_p2_when_source_message_id_is_none(self):
         """Priority 2 is skipped when source_message_id is None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -244,8 +239,6 @@ class TestPriority2SourceMessageId:
 
     async def test_p2_does_not_fall_through_when_matched(self):
         """Once P2 returns a match, P3 is NOT queried."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
@@ -262,10 +255,8 @@ class TestPriority2SourceMessageId:
         # fetchrow called exactly once — for P2 SELECT
         assert pool.fetchrow.call_count == 1
 
-    async def test_p2_falls_through_to_p3_when_no_match(self):
-        """When P2 returns no match, P3 is attempted if composite keys present."""
-        from butlers.tools.finance.transactions import _deduplicate
-
+    async def test_p2_no_match_does_not_fall_through_to_p3(self):
+        """When P2 finds no match, P3 is NOT attempted if source_message_id was present."""
         p3_txn_id = str(uuid4())
 
         # P2 returns None on first call, P3 returns a match on second call
@@ -299,8 +290,6 @@ class TestPriority3CompositeFallback:
 
     async def test_returns_existing_id_when_match(self):
         """Returns existing transaction ID on composite key match."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
@@ -317,8 +306,6 @@ class TestPriority3CompositeFallback:
 
     async def test_no_match_returns_none(self):
         """Returns None when no composite match found."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -335,8 +322,6 @@ class TestPriority3CompositeFallback:
 
     async def test_skips_p3_when_account_id_missing(self):
         """Priority 3 is skipped when account_id is None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -354,8 +339,6 @@ class TestPriority3CompositeFallback:
 
     async def test_skips_p3_when_posted_at_missing(self):
         """Priority 3 is skipped when posted_at is None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -373,8 +356,6 @@ class TestPriority3CompositeFallback:
 
     async def test_skips_p3_when_merchant_missing(self):
         """Priority 3 is skipped when merchant is None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -392,8 +373,6 @@ class TestPriority3CompositeFallback:
 
     async def test_skips_p3_when_amount_missing(self):
         """Priority 3 is skipped when amount is None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -411,8 +390,6 @@ class TestPriority3CompositeFallback:
 
     async def test_skips_p3_when_source_message_id_present(self):
         """Priority 3 is not attempted when source_message_id is non-None (even if P2 missed)."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         # P2 returns None (no source_message_id match)
         pool = _mock_pool(fetchrow_return=None)
 
@@ -432,8 +409,6 @@ class TestPriority3CompositeFallback:
 
     async def test_normalizes_negative_amount(self):
         """Negative amounts are stored as absolute values; dedup must compare correctly."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
@@ -462,8 +437,6 @@ class TestNoMatch:
 
     async def test_all_none_fields_returns_none(self):
         """Returns None when all dedup fields are None (no tier attempted)."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {}  # empty dict — all keys missing
@@ -474,8 +447,6 @@ class TestNoMatch:
 
     async def test_only_merchant_and_amount_no_ids(self):
         """Returns None when only merchant/amount present (no account_id, no source_msg)."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -500,8 +471,6 @@ class TestNullFieldEdgeCases:
 
     async def test_p1_both_fields_null_no_db_call(self):
         """No DB call when both external_id and account_id are None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {"external_id": None, "account_id": None, "source_message_id": None}
@@ -511,8 +480,6 @@ class TestNullFieldEdgeCases:
 
     async def test_p1_only_external_id_null(self):
         """P1 skipped when external_id is None even if account_id is present."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -526,8 +493,6 @@ class TestNullFieldEdgeCases:
 
     async def test_p1_only_account_id_null(self):
         """P1 skipped when account_id is None even if external_id is present."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -541,8 +506,6 @@ class TestNullFieldEdgeCases:
 
     async def test_p2_null_source_message_id_no_db_call(self):
         """No P2 DB call when source_message_id is None."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {"external_id": None, "account_id": None, "source_message_id": None}
@@ -552,8 +515,6 @@ class TestNullFieldEdgeCases:
 
     async def test_p3_partial_composite_key_missing_posted_at(self):
         """P3 skipped when posted_at is absent from the txn dict."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -570,8 +531,6 @@ class TestNullFieldEdgeCases:
 
     async def test_p3_partial_composite_key_missing_merchant(self):
         """P3 skipped when merchant is absent from the txn dict."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=None)
 
         txn = {
@@ -597,8 +556,6 @@ class TestPartialKeyAvailability:
 
     async def test_only_source_message_id_uses_p2(self):
         """When only source_message_id is available, P2 is used (not P3)."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
@@ -612,8 +569,6 @@ class TestPartialKeyAvailability:
 
     async def test_external_id_and_account_id_uses_p1_ignores_source_msg(self):
         """P1 is used when external_id + account_id present, even if source_msg also present."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchval_return=1, fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
@@ -632,8 +587,6 @@ class TestPartialKeyAvailability:
 
     async def test_all_p3_keys_no_higher_priority_uses_p3(self):
         """P3 used when all composite keys are available and P1/P2 fields are absent."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
@@ -651,8 +604,6 @@ class TestPartialKeyAvailability:
 
     async def test_float_amount_normalised_for_p3(self):
         """Float amounts are normalised to Decimal for the P3 composite query."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
@@ -675,8 +626,6 @@ class TestPartialKeyAvailability:
 
     async def test_integer_amount_normalised_for_p3(self):
         """Integer amounts are also normalised to Decimal."""
-        from butlers.tools.finance.transactions import _deduplicate
-
         pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
 
         txn = {
