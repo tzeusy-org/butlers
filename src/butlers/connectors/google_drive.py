@@ -99,7 +99,7 @@ _CHANGE_TYPE_TRASHED = "trashed"
 _CHANGE_TYPE_RENAMED = "renamed"
 _CHANGE_TYPE_MOVED = "moved"
 _CHANGE_TYPE_SHARING_CHANGED = "sharing_changed"
-_CHANGE_TYPE_FALLBACK = "updated"
+_CHANGE_TYPE_FALLBACK = "file_changed"
 
 
 # ---------------------------------------------------------------------------
