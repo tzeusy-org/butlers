@@ -23,6 +23,7 @@ They test the temporal logic functions expected to be implemented in:
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
@@ -1518,6 +1519,56 @@ class TestTickIntegration:
         assert tick_span is not None, "butler.tick span not found"
         attrs = dict(tick_span.attributes or {})
         assert "deadlines_evaluated" in attrs
+
+    async def test_tick_deadline_dispatched_span_attribute(self, pool):
+        """tick() sets 'scheduler.deadline_dispatched' span attribute."""
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        from butlers.core.scheduler import tick
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+
+        # Create a deadline task due now to dispatch
+        now = datetime.now(UTC)
+        target_date = now.date() + timedelta(days=7)
+        alert_thresholds = json.dumps([{"days_before": 7, "severity": "info"}])
+        await pool.execute(
+            """
+            INSERT INTO scheduled_tasks
+            (name, task_type, dispatch_mode, prompt, target_date, lead_time_days,
+             alert_thresholds, enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            "test-deadline",
+            "deadline",
+            "prompt",
+            "Test deadline dispatch",
+            target_date,
+            7,
+            alert_thresholds,
+            True,
+        )
+
+        dispatched_calls = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched_calls.append(kwargs)
+
+        await tick(pool, capture_dispatch)
+
+        spans = exporter.get_finished_spans()
+        tick_span = next((s for s in spans if s.name == "butler.tick"), None)
+        assert tick_span is not None, "butler.tick span not found"
+        attrs = dict(tick_span.attributes or {})
+        assert "scheduler.deadline_dispatched" in attrs
+        # Should be > 0 since we have a due deadline
+        assert attrs["scheduler.deadline_dispatched"] > 0
 
     async def test_tick_deferred_notification_pass_delivers_due_notifications(self, pool):
         """tick() deferred notification pass delivers pending notifications past deliver_at."""

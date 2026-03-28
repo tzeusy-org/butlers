@@ -1178,6 +1178,7 @@ async def tick(
             metrics=metrics,
         )
         span.set_attribute("deadlines_evaluated", deadlines_evaluated)
+        span.set_attribute("scheduler.deadline_dispatched", deadline_dispatched)
 
         # --- Pass 2: Cron dispatch ---
         # If task_type column doesn't exist (legacy schema), treat all rows as cron.
@@ -1239,9 +1240,7 @@ async def tick(
                     dispatched_prompt = prompt
                     if active_seasons:
                         season_names = ", ".join(s["name"] for s in active_seasons)
-                        seasonal_prefix = (
-                            f"[Seasonal context: active periods: {season_names}]"
-                        )
+                        seasonal_prefix = f"[Seasonal context: active periods: {season_names}]"
                         dispatched_prompt = f"{seasonal_prefix}\n\n{prompt}"
                     result = await dispatch_fn(
                         prompt=dispatched_prompt,
