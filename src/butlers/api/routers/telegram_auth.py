@@ -133,30 +133,18 @@ async def _save_pending(
 ) -> None:
     """Persist pending auth state as a JSON blob in butler_secrets."""
     data["created_at"] = time.time()
-    key = _pending_key(token)
-    blob = json.dumps(data)
-    logger.info("Saving pending Telegram auth: key=%s len=%d", key, len(blob))
     await store.store(
-        key,
-        blob,
+        _pending_key(token),
+        json.dumps(data),
         category="_internal",
         description="Telegram auth pending state (auto-expires)",
     )
-    # Verify write succeeded by reading back
-    verify = await store.load(key)
-    if verify is None:
-        logger.error("WRITE VERIFICATION FAILED: key=%s not found after store()", key)
-    else:
-        logger.info("Write verified OK: key=%s len=%d", key, len(verify))
 
 
 async def _load_pending(store: CredentialStore, token: str) -> dict:
     """Load and validate pending auth state from butler_secrets."""
-    key = _pending_key(token)
-    logger.info("Loading pending Telegram auth: key=%s pool=%r", key, store.pool)
-    raw = await store.load(key)
+    raw = await store.load(_pending_key(token))
     if raw is None:
-        logger.error("Pending Telegram auth NOT FOUND: key=%s", key)
         raise HTTPException(
             status_code=404,
             detail="Session token not found or expired. Please restart the Telegram login flow.",
