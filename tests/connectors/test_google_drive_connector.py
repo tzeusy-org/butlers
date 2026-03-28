@@ -3800,10 +3800,7 @@ class TestSubmitToIngestApi:
     def _make_envelope(self) -> dict[str, Any]:
         return _build_ingest_envelope(
             file_id=_FAKE_FILE_ID,
-            change_type="created",
             change_sequence=1,
-            file_name="test.txt",
-            mime_type="text/plain",
             endpoint_identity=f"google_drive:user:{_FAKE_EMAIL}",
             observed_at="2026-03-28T10:00:00Z",
             normalized_text="file_created: test.txt (text/plain) in root",
@@ -4012,10 +4009,7 @@ class TestReplayIngestWiring:
 
         envelope = _build_ingest_envelope(
             file_id=_FAKE_FILE_ID,
-            change_type="modified",
             change_sequence=5,
-            file_name="report.pdf",
-            mime_type="application/pdf",
             endpoint_identity=f"google_drive:user:{_FAKE_EMAIL}",
             observed_at="2026-03-28T10:00:00Z",
             normalized_text="file_modified: report.pdf (application/pdf) at 2026-03-28T10:00:00Z",
