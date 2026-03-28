@@ -483,9 +483,15 @@ function EntityInfoSection({
 // Telegram session setup — interactive auth flow
 // ---------------------------------------------------------------------------
 
-type TelegramStep = "idle" | "credentials" | "phone" | "code" | "two_fa" | "success";
+type TelegramStep = "idle" | "loading_creds" | "credentials" | "phone" | "code" | "two_fa" | "success";
 
-function TelegramSessionSetup({ entityId }: { entityId: string }) {
+function TelegramSessionSetup({
+  entityId,
+  entries,
+}: {
+  entityId: string;
+  entries: EntityInfoEntry[];
+}) {
   const queryClient = useQueryClient();
   const { data: status, isLoading } = useQuery({
     queryKey: ["telegram-session-status"],
@@ -493,8 +499,15 @@ function TelegramSessionSetup({ entityId }: { entityId: string }) {
     refetchInterval: 30_000,
   });
 
+  // Pre-fill from existing entity_info entries
+  const existingApiId = entries.find((e) => e.type === "telegram_api_id")?.value ?? "";
+  const existingApiHash = entries.find((e) => e.type === "telegram_api_hash");
+
+  const revealMutation = useRevealEntitySecret();
+  const hasExistingCreds = !!existingApiId && !!existingApiHash;
+
   const [step, setStep] = useState<TelegramStep>("idle");
-  const [apiId, setApiId] = useState("");
+  const [apiId, setApiId] = useState(existingApiId);
   const [apiHash, setApiHash] = useState("");
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
@@ -502,6 +515,31 @@ function TelegramSessionSetup({ entityId }: { entityId: string }) {
   const [sessionToken, setSessionToken] = useState("");
   const [userName, setUserName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  function handleStart() {
+    if (hasExistingCreds) {
+      // Reveal the secured API hash, then skip to phone step
+      setStep("loading_creds");
+      setApiId(existingApiId);
+      revealMutation.mutate(
+        { entityId, infoId: existingApiHash.id },
+        {
+          onSuccess: (data) => {
+            setApiHash(data.value ?? "");
+            setStep("phone");
+            setError(null);
+          },
+          onError: () => {
+            // Fall back to manual entry if reveal fails
+            setStep("credentials");
+            setError("Could not load existing API Hash. Please re-enter it.");
+          },
+        },
+      );
+    } else {
+      setStep("credentials");
+    }
+  }
 
   const sendCodeMutation = useMutation({
     mutationFn: telegramSendCode,
@@ -586,7 +624,7 @@ function TelegramSessionSetup({ entityId }: { entityId: string }) {
 
   function handleReset() {
     setStep("idle");
-    setApiId("");
+    setApiId(existingApiId);
     setApiHash("");
     setPhone("");
     setCode("");
@@ -647,10 +685,18 @@ function TelegramSessionSetup({ entityId }: { entityId: string }) {
           <Button
             variant={status?.ready ? "outline" : "default"}
             size="sm"
-            onClick={() => setStep("credentials")}
+            onClick={handleStart}
           >
             {status?.ready ? "Re-generate Session" : "Set Up Telegram Session"}
           </Button>
+        )}
+
+        {/* Step: loading_creds — revealing existing API hash */}
+        {step === "loading_creds" && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading existing credentials...
+          </div>
         )}
 
         {/* Step: credentials — enter API ID + Hash + Phone */}
@@ -701,6 +747,40 @@ function TelegramSessionSetup({ entityId }: { entityId: string }) {
                   onKeyDown={(e) => { if (e.key === "Enter") handleSendCode(); }}
                 />
               </div>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                onClick={handleSendCode}
+                disabled={isPending}
+              >
+                {sendCodeMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+                Send Code
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleReset} disabled={isPending}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Step: phone — API creds pre-filled, just need phone */}
+        {step === "phone" && (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Using existing API credentials. Enter your phone number to receive a verification code.
+            </p>
+            <div className="space-y-1">
+              <Label className="text-xs">Phone Number</Label>
+              <Input
+                className="h-8 w-56 text-sm"
+                placeholder="+1234567890"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                disabled={isPending}
+                autoFocus
+                onKeyDown={(e) => { if (e.key === "Enter") handleSendCode(); }}
+              />
             </div>
             <div className="flex gap-2">
               <Button
@@ -1390,7 +1470,7 @@ export default function EntityDetailPage() {
 
           {/* Telegram session setup — owner only */}
           {entity.roles?.includes("owner") && (
-            <TelegramSessionSetup entityId={entity.id} />
+            <TelegramSessionSetup entityId={entity.id} entries={entity.entity_info ?? []} />
           )}
 
           {/* Facts tab */}
