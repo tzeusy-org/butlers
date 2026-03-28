@@ -1305,10 +1305,12 @@ class GDriveAccountLoop:
         )
 
         # Build policy envelope for ingestion policy evaluation (task 11.1)
+        # sender_address = file owner's email (falls back to endpoint_identity when unavailable)
+        # raw_key = filename (enables substring rule matching against file names)
         policy_envelope = IngestionEnvelope(
-            sender_address=self.endpoint_identity,
+            sender_address=owner_email or self.endpoint_identity,
             source_channel=_CONNECTOR_CHANNEL,
-            raw_key=file_id,
+            raw_key=name,
         )
 
         # Evaluate connector-scoped ingestion policy (synchronous — TTL refresh is background)

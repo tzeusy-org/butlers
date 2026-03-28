@@ -2382,6 +2382,98 @@ class TestIngestionPolicyEvaluatorIntegration:
         # fail-open: envelope is returned even when policy evaluation raises
         assert result is not None
 
+    def test_policy_envelope_sender_address_uses_owner_email(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """IngestionEnvelope.sender_address is set to file owner email, not endpoint_identity."""
+        from butlers.ingestion_policy import IngestionEnvelope
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        captured: list[IngestionEnvelope] = []
+        mock_policy = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.allowed = True
+        mock_policy.evaluate.side_effect = lambda env: (captured.append(env), mock_decision)[1]
+        loop._ingestion_policy = mock_policy
+
+        owner_email = "owner@example.com"
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "report.pdf",
+                "mimeType": "application/pdf",
+                "owners": [{"emailAddress": owner_email}],
+            },
+        }
+        loop.process_change(change)
+
+        assert len(captured) == 1
+        assert captured[0].sender_address == owner_email
+
+    def test_policy_envelope_sender_address_falls_back_to_endpoint_identity(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """IngestionEnvelope.sender_address falls back to endpoint_identity when no owner."""
+        from butlers.ingestion_policy import IngestionEnvelope
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        captured: list[IngestionEnvelope] = []
+        mock_policy = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.allowed = True
+        mock_policy.evaluate.side_effect = lambda env: (captured.append(env), mock_decision)[1]
+        loop._ingestion_policy = mock_policy
+
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": "no-owner.pdf",
+                "mimeType": "application/pdf",
+                # no "owners" key
+            },
+        }
+        loop.process_change(change)
+
+        assert len(captured) == 1
+        assert captured[0].sender_address == loop.endpoint_identity
+
+    def test_policy_envelope_raw_key_uses_filename(
+        self,
+        account_config: GDriveAccountConfig,
+    ) -> None:
+        """IngestionEnvelope.raw_key is set to the filename, not the file_id."""
+        from butlers.ingestion_policy import IngestionEnvelope
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        captured: list[IngestionEnvelope] = []
+        mock_policy = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.allowed = True
+        mock_policy.evaluate.side_effect = lambda env: (captured.append(env), mock_decision)[1]
+        loop._ingestion_policy = mock_policy
+
+        filename = "quarterly-report.xlsx"
+        change = {
+            "fileId": _FAKE_FILE_ID,
+            "file": {
+                "id": _FAKE_FILE_ID,
+                "name": filename,
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            },
+        }
+        loop.process_change(change)
+
+        assert len(captured) == 1
+        assert captured[0].raw_key == filename
+        assert captured[0].raw_key != _FAKE_FILE_ID
+
 
 class TestFilteredEventBatchFlush:
     """Task 11.2: Filtered event buffer population and batch flush."""
