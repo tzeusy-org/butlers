@@ -57,8 +57,11 @@ _GOOGLE_EXPORT_MAP: dict[str, str] = {
     _GSLIDES_MIME: "text/plain",
 }
 
-# Rate-limit retry config (spec §3.5): retry on 403 (rate limit), 429, 503
-_RATE_LIMIT_STATUS_CODES = {403, 429, 503}
+# Transient status codes eligible for rate-limit retry (spec §3.5).
+# NOTE: 403 requires additional inspection — only quota-related 403s are retried;
+# permission-denied 403s are returned immediately (see _is_retryable_403).
+_RATE_LIMIT_STATUS_CODES = {429, 503}
+_RATE_LIMIT_403_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY_S = 1.0
 
@@ -94,6 +97,27 @@ _CRED_REDACT_RE = re.compile(
 def _redact_creds(msg: str) -> str:
     """Redact OAuth credential values from error messages."""
     return _CRED_REDACT_RE.sub(r"\1=<REDACTED>", msg)
+
+
+def _is_retryable_403(response: httpx.Response) -> bool:
+    """Return True only if this 403 is a quota/rate-limit error, not a permission denial.
+
+    Google Drive returns 403 for two distinct conditions:
+    - Rate limiting: ``reason`` in {``rateLimitExceeded``, ``userRateLimitExceeded``}
+    - Permission denied: ``reason`` in {``forbidden``, ``domainPolicy``, etc.}
+
+    Only rate-limit 403s should be retried; permission denials will never succeed.
+    """
+    try:
+        body = response.json()
+        errors = body.get("error", {}).get("errors", [])
+        if errors:
+            reason = errors[0].get("reason", "")
+            return reason in _RATE_LIMIT_403_REASONS
+    except Exception:
+        pass
+    # If we can't parse the body, assume it's not a rate-limit (conservative).
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +269,12 @@ async def _drive_request(
 ) -> httpx.Response:
     """Make a Drive API request with rate-limit retry (exponential backoff).
 
-    Retries on 403 (quota), 429, and 503 up to _RATE_LIMIT_MAX_RETRIES times
-    with base-1s exponential backoff (1s, 2s, 4s).
+    Retries on 429 and 503, and on quota-related 403s (``rateLimitExceeded`` /
+    ``userRateLimitExceeded``), up to _RATE_LIMIT_MAX_RETRIES times with base-1s
+    exponential backoff (1s, 2s, 4s).
+
+    Permission-denied 403s are returned immediately without retry — they will
+    never succeed and wasting retries on them only masks the real error.
     """
     headers = {**kwargs.pop("headers", {}), "Authorization": f"Bearer {token}"}
     last_exc: Exception | None = None
@@ -259,7 +287,16 @@ async def _drive_request(
                 f"Google Drive API network error: {_redact_creds(str(exc))}"
             ) from exc
 
-        if response.status_code not in _RATE_LIMIT_STATUS_CODES:
+        # Determine if this response should be retried.
+        if response.status_code in _RATE_LIMIT_STATUS_CODES:
+            should_retry = True
+        elif response.status_code == 403:
+            # Only retry quota-related 403s; return permission-denied 403s immediately.
+            should_retry = _is_retryable_403(response)
+        else:
+            should_retry = False
+
+        if not should_retry:
             return response
 
         delay = _RATE_LIMIT_BASE_DELAY_S * (2**attempt)
@@ -1057,6 +1094,12 @@ class GoogleDriveModule(Module):
         if isinstance(config, GoogleDriveConfig):
             self._config = config
         self._db = db
+
+        # Derive butler name from DB schema, mirroring on_startup so the name
+        # is consistent regardless of call order.
+        schema: str | None = getattr(db, "schema", None) if db is not None else None
+        if schema:
+            self._butler_name = schema
 
         module = self
 
