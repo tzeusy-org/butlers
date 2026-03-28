@@ -149,6 +149,9 @@ export function WhatsAppPairModal({
   /* eslint-disable react-hooks/set-state-in-effect -- polling responses intentionally drive local modal state transitions. */
   useEffect(() => {
     if (!pollQuery.data) return;
+    // Guard: once we've transitioned to "paired", ignore further poll results.
+    // Without this, late-arriving poll ticks re-fire the success toast.
+    if (modalState !== "qr_ready") return;
 
     const { status, phone } = pollQuery.data;
 
