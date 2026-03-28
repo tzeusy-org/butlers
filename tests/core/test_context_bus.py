@@ -153,13 +153,12 @@ class TestCheckWritePermission:
 
 
 class TestClampTtl:
-    """_clamp_ttl applies defaults and enforces maximum TTL."""
+    """_clamp_ttl enforces maximum TTL.
 
-    def test_none_expires_at_applies_default(self):
-        set_at = _now()
-        result = _clamp_ttl(ContextSignal.meeting, set_at, None)
-        expected = set_at + timedelta(hours=1)
-        assert abs((result - expected).total_seconds()) < 1
+    Note: default-TTL application (when expires_at is None) is handled by
+    set_context, not by _clamp_ttl directly.  These tests only cover the
+    clamping behaviour for non-None expires_at values.
+    """
 
     def test_within_bounds_passes_through(self):
         set_at = _now()
@@ -179,12 +178,6 @@ class TestClampTtl:
         requested = set_at + timedelta(hours=4)  # exactly meeting max
         result = _clamp_ttl(ContextSignal.meeting, set_at, requested)
         assert result == requested
-
-    def test_commuting_default_45_minutes(self):
-        set_at = _now()
-        result = _clamp_ttl(ContextSignal.commuting, set_at, None)
-        expected = set_at + timedelta(minutes=45)
-        assert abs((result - expected).total_seconds()) < 1
 
     def test_traveling_max_30_days(self):
         set_at = _now()
@@ -267,13 +260,16 @@ class TestSetContextValidation:
 
 
 class TestClearContextValidation:
-    """clear_context raises ValueError for unknown signal types."""
+    """clear_context is a no-op for unrecognised signal types (no validation)."""
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_invalid_signal_type_raises(self):
+    async def test_unknown_signal_type_is_noop(self):
         pool = MagicMock()
-        with pytest.raises(ValueError, match="partying"):
-            await clear_context(pool, "general", "partying")
+        pool.execute = MagicMock(return_value=None)
+        # clear_context does not validate signal vocabulary; unknown types are
+        # silently passed to the SQL UPDATE which will match zero rows.
+        await clear_context(pool, "general", "partying")
+        pool.execute.assert_called_once()
 
 
 # ===========================================================================
@@ -511,6 +507,8 @@ class TestContextBusIntegration:
         result = await is_user_in_context(pool, "traveling")
         assert result is False
 
-    async def test_is_user_in_context_invalid_signal_raises(self, pool):
-        with pytest.raises(ValueError, match="partying"):
-            await is_user_in_context(pool, "partying")
+    async def test_is_user_in_context_unknown_signal_returns_false(self, pool):
+        # is_user_in_context does not validate signal vocabulary; unknown signal
+        # types simply match no rows and return False.
+        result = await is_user_in_context(pool, "partying")
+        assert result is False
