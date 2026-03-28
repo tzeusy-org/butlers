@@ -251,13 +251,15 @@ def _compose_system_prompt(
     base_system_prompt: str,
     memory_context: str | None,
     routing_instructions: str | None = None,
+    context_preamble: str | None = None,
 ) -> str:
     """Compose the runtime system prompt from base instructions, routing instructions, and memory.
 
     Layering order (stable for token-cache efficiency):
     1. Base system prompt (CLAUDE.md — static)
-    2. Owner routing instructions (semi-static, sorted by priority)
-    3. Memory context (dynamic per-request)
+    2. Situational context preamble (dynamic, from context bus)
+    3. Owner routing instructions (semi-static, sorted by priority)
+    4. Memory context (dynamic per-request)
 
     Contract:
     - Runtime always receives the raw CLAUDE.md-derived system prompt when no
@@ -266,6 +268,8 @@ def _compose_system_prompt(
       one blank line.
     """
     prompt = base_system_prompt
+    if context_preamble:
+        prompt = f"{prompt}\n\n{context_preamble}"
     if routing_instructions:
         prompt = f"{prompt}\n\n{routing_instructions}"
     if memory_context:
@@ -450,6 +454,50 @@ async def fetch_routing_instructions(
         "The following routing directives have been set by the owner."
         " Follow these exactly when classifying and routing messages:\n\n" + "\n".join(lines)
     )
+
+
+async def fetch_situational_context_preamble(
+    pool: asyncpg.Pool | None,
+    butler_name: str,
+) -> str | None:
+    """Fetch the situational context preamble from the context bus.
+
+    Calls ``get_active_context()`` and formats the result via
+    ``format_context_preamble()``.  Returns ``None`` when there are no active
+    signals, the pool is absent, or the query fails.
+
+    This function is **fail-open**: any exception is logged at WARNING level
+    and the caller proceeds without a context preamble.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool for the shared database.
+    butler_name:
+        Name of the calling butler (used for log messages).
+
+    Returns
+    -------
+    str | None
+        Formatted preamble string, or ``None`` when no active signals exist
+        or the query fails.
+    """
+    if pool is None:
+        return None
+
+    try:
+        from butlers.context_bus import format_context_preamble, get_active_context
+
+        signals = await get_active_context(pool)
+        preamble = format_context_preamble(signals)
+        return preamble if preamble else None
+    except Exception:
+        logger.warning(
+            "Failed to fetch situational context preamble for butler %s",
+            butler_name,
+            exc_info=True,
+        )
+        return None
 
 
 async def store_session_episode(
@@ -1140,6 +1188,11 @@ class Spawner:
             # Read system prompt
             system_prompt = read_system_prompt(self._config_dir, self._config.name)
 
+            # Fetch situational context preamble (fail-open)
+            context_preamble_ctx = await fetch_situational_context_preamble(
+                self._pool, self._config.name
+            )
+
             # Fetch owner routing instructions (switchboard only)
             routing_ctx: str | None = None
             if self._config.name == "switchboard":
@@ -1155,7 +1208,10 @@ class Spawner:
                     token_budget=_memory_context_token_budget(self._config),
                 )
             system_prompt = _compose_system_prompt(
-                system_prompt, memory_ctx, routing_instructions=routing_ctx
+                system_prompt,
+                memory_ctx,
+                routing_instructions=routing_ctx,
+                context_preamble=context_preamble_ctx,
             )
 
             # Build credential env.
