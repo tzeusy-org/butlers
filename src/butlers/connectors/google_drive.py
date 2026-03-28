@@ -396,10 +396,7 @@ def _build_normalized_text(
 def _build_ingest_envelope(
     *,
     file_id: str,
-    change_type: str,
     change_sequence: int,
-    file_name: str,
-    mime_type: str,
     endpoint_identity: str,
     observed_at: str,
     normalized_text: str,
@@ -434,7 +431,6 @@ def _build_ingest_envelope(
             "external_event_id": f"gdrive:{file_id}:{change_sequence}",
             "external_thread_id": file_id,
             "observed_at": observed_at,
-            "event_type": f"drive.file.{change_type}",
         },
         "sender": {
             "identity": owner_email or endpoint_identity,
@@ -442,8 +438,6 @@ def _build_ingest_envelope(
         "payload": {
             "raw": None,
             "normalized_text": normalized_text,
-            "file_name": file_name,
-            "mime_type": mime_type,
         },
         "control": {
             "policy_tier": "default",
@@ -1362,10 +1356,7 @@ class GDriveAccountLoop:
 
         return _build_ingest_envelope(
             file_id=file_id,
-            change_type=change_type,
             change_sequence=change_sequence,
-            file_name=name,
-            mime_type=mime_type,
             endpoint_identity=self.endpoint_identity,
             observed_at=observed_at,
             normalized_text=normalized_text,

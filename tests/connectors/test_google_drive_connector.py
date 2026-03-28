@@ -941,10 +941,7 @@ class TestIngestV1EnvelopeConstruction:
     def _build_test_envelope(self, **overrides: Any) -> dict[str, Any]:
         defaults: dict[str, Any] = {
             "file_id": _FAKE_FILE_ID,
-            "change_type": _CHANGE_TYPE_CREATED,
             "change_sequence": 1,
-            "file_name": "report.pdf",
-            "mime_type": "application/pdf",
             "endpoint_identity": f"google_drive:user:{_FAKE_EMAIL}",
             "observed_at": "2026-03-26T10:00:00+00:00",
             "normalized_text": "file_created: report.pdf (application/pdf) in root",
@@ -986,18 +983,34 @@ class TestIngestV1EnvelopeConstruction:
         envelope = self._build_test_envelope(file_id=_FAKE_FILE_ID)
         assert envelope["event"]["external_thread_id"] == _FAKE_FILE_ID
 
-    def test_event_type_includes_change_type(self) -> None:
-        """event.event_type follows drive.file.<change_type> format."""
-        for change_type in (
-            _CHANGE_TYPE_CREATED,
-            _CHANGE_TYPE_MODIFIED,
-            _CHANGE_TYPE_TRASHED,
-            _CHANGE_TYPE_RENAMED,
-            _CHANGE_TYPE_MOVED,
-            _CHANGE_TYPE_SHARING_CHANGED,
-        ):
-            envelope = self._build_test_envelope(change_type=change_type)
-            assert envelope["event"]["event_type"] == f"drive.file.{change_type}"
+    def test_event_no_extra_fields(self) -> None:
+        """event dict must not contain extra fields rejected by IngestEventV1 (extra=forbid)."""
+        envelope = self._build_test_envelope()
+        assert "event_type" not in envelope["event"], (
+            "event_type must not appear in the event dict — IngestEventV1 has extra=forbid"
+        )
+
+    def test_payload_no_extra_fields(self) -> None:
+        """payload dict must not contain extra fields rejected by IngestPayloadV1 (extra=forbid)."""
+        envelope = self._build_test_envelope()
+        assert "file_name" not in envelope["payload"], (
+            "file_name must not appear in the payload dict — IngestPayloadV1 has extra=forbid"
+        )
+        assert "mime_type" not in envelope["payload"], (
+            "mime_type must not appear in the payload dict — IngestPayloadV1 has extra=forbid"
+        )
+
+    def test_envelope_passes_parse_ingest_envelope(self) -> None:
+        """Envelope built by _build_ingest_envelope must validate against parse_ingest_envelope."""
+        from pydantic import ValidationError
+
+        from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+        envelope = self._build_test_envelope()
+        try:
+            parse_ingest_envelope(envelope)
+        except ValidationError as exc:
+            pytest.fail(f"parse_ingest_envelope raised ValidationError: {exc}")
 
     def test_payload_raw_is_null(self) -> None:
         """payload.raw must be null (metadata-only ingestion per spec)."""
@@ -3787,10 +3800,7 @@ class TestSubmitToIngestApi:
     def _make_envelope(self) -> dict[str, Any]:
         return _build_ingest_envelope(
             file_id=_FAKE_FILE_ID,
-            change_type="created",
             change_sequence=1,
-            file_name="test.txt",
-            mime_type="text/plain",
             endpoint_identity=f"google_drive:user:{_FAKE_EMAIL}",
             observed_at="2026-03-28T10:00:00Z",
             normalized_text="file_created: test.txt (text/plain) in root",
@@ -3999,10 +4009,7 @@ class TestReplayIngestWiring:
 
         envelope = _build_ingest_envelope(
             file_id=_FAKE_FILE_ID,
-            change_type="modified",
             change_sequence=5,
-            file_name="report.pdf",
-            mime_type="application/pdf",
             endpoint_identity=f"google_drive:user:{_FAKE_EMAIL}",
             observed_at="2026-03-28T10:00:00Z",
             normalized_text="file_modified: report.pdf (application/pdf) at 2026-03-28T10:00:00Z",
