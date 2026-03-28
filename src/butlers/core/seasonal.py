@@ -105,8 +105,7 @@ SEASONAL_PRESETS: dict[str, dict[str, Any]] = {
         "end_day": 15,
         "metadata": {
             "context_hint": (
-                "Fall academic semester. Expect academic deadlines, "
-                "exams, and end-of-term reviews."
+                "Fall academic semester. Expect academic deadlines, exams, and end-of-term reviews."
             ),
         },
     },
@@ -174,8 +173,7 @@ def validate_month_day(month: int, day: int) -> None:
     if day > max_day:
         month_name = _MONTH_NAMES[month]
         raise ValueError(
-            f"{month_name} {day} is not a valid date "
-            f"({month_name} has at most {max_day} days)"
+            f"{month_name} {day} is not a valid date ({month_name} has at most {max_day} days)"
         )
 
 
@@ -450,8 +448,7 @@ async def seasonal_period_update(
         period_type = period_type.strip().lower()
         if period_type not in _ALLOWED_PERIOD_TYPES:
             raise ValueError(
-                f"period_type must be one of {sorted(_ALLOWED_PERIOD_TYPES)!r}, "
-                f"got {period_type!r}"
+                f"period_type must be one of {sorted(_ALLOWED_PERIOD_TYPES)!r}, got {period_type!r}"
             )
 
     if name is not None:
@@ -551,16 +548,13 @@ async def seasonal_period_list(
     result: list[dict[str, Any]] = []
     for row in rows:
         period = _row_to_dict(row)
-        period["is_active"] = (
-            row["enabled"]
-            and _is_date_in_range(
-                today.month,
-                today.day,
-                row["start_month"],
-                row["start_day"],
-                row["end_month"],
-                row["end_day"],
-            )
+        period["is_active"] = row["enabled"] and _is_date_in_range(
+            today.month,
+            today.day,
+            row["start_month"],
+            row["start_day"],
+            row["end_month"],
+            row["end_day"],
         )
         result.append(period)
 
@@ -619,9 +613,7 @@ async def seasonal_period_create_preset(
     preset = preset.strip()
     if preset not in SEASONAL_PRESETS:
         available = sorted(SEASONAL_PRESETS.keys())
-        raise ValueError(
-            f"Unknown preset {preset!r}. Available presets: {available!r}"
-        )
+        raise ValueError(f"Unknown preset {preset!r}. Available presets: {available!r}")
 
     definition = SEASONAL_PRESETS[preset]
     return await seasonal_period_create(
