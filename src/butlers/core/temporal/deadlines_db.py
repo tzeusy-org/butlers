@@ -28,6 +28,7 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
+
 def _jsonb_encode(value: Any) -> str | None:
     """Encode a Python value to a JSON string for JSONB binding."""
     if value is None:

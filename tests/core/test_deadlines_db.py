@@ -116,7 +116,7 @@ async def pool(postgres_container):
 def _future_date(days: int = 30):
     from datetime import date as _date
 
-    return (_date.today() + timedelta(days=days))
+    return _date.today() + timedelta(days=days)
 
 
 def _threshold(days_before: int, severity: str = "info") -> dict[str, Any]:

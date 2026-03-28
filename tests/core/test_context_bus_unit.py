@@ -282,9 +282,7 @@ class TestFormatContextPreamble:
             _entry("meeting", value="standup", confidence=0.8),
         ]
         result = format_context_preamble(signals)
-        expected = (
-            "[User Context: traveling (Paris, explicit), meeting (standup, high confidence)]"
-        )
+        expected = "[User Context: traveling (Paris, explicit), meeting (standup, high confidence)]"
         assert result == expected
 
     def test_starts_with_bracket_tag(self):

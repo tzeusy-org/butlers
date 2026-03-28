@@ -650,10 +650,7 @@ async def _check_duplicates_batch(
         return set()
 
     # Build a list of (posted_at, amount, merchant) tuples for all rows.
-    tuples = [
-        (txn["posted_at"], txn["amount"], txn["merchant"])
-        for txn in batch
-    ]
+    tuples = [(txn["posted_at"], txn["amount"], txn["merchant"]) for txn in batch]
 
     if account_id is not None:
         # Query with account_id as part of the key.
