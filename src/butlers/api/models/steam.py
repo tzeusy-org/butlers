@@ -113,6 +113,19 @@ class SteamDisconnectResponse(BaseModel):
     """Human-readable status message."""
 
 
+class SteamSetPrimaryResponse(BaseModel):
+    """Response for PUT /api/steam/accounts/{id}/primary."""
+
+    success: bool = True
+    """Whether the primary account was successfully updated."""
+
+    message: str
+    """Human-readable status message."""
+
+    account: SteamAccountResponse
+    """The account that was set as primary."""
+
+
 # ---------------------------------------------------------------------------
 # Playtime analytics models
 # ---------------------------------------------------------------------------

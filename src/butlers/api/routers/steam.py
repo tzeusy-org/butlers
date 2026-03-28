@@ -47,6 +47,7 @@ from butlers.api.models.steam import (
     SteamDisconnectResponse,
     SteamGamePlaytime,
     SteamPlaytimeAnalytics,
+    SteamSetPrimaryResponse,
 )
 from butlers.steam.client import SteamAPIClient, SteamAPIError, SteamRateLimitError
 from butlers.steam_account_registry import (
@@ -58,6 +59,7 @@ from butlers.steam_account_registry import (
     disconnect_account,
     list_steam_accounts,
     resolve_steam_account,
+    set_primary_account,
 )
 
 logger = logging.getLogger(__name__)
@@ -435,6 +437,65 @@ async def disconnect_steam_account(
     return SteamDisconnectResponse(
         success=True,
         message=f"Steam account {account_id} disconnected (status set to 'revoked')",
+    )
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/steam/accounts/{id}/primary
+# ---------------------------------------------------------------------------
+
+
+@router.put("/accounts/{account_id}/primary", response_model=SteamSetPrimaryResponse)
+async def set_primary_steam_account(
+    account_id: uuid.UUID,
+    db_manager: Any = Depends(_get_db_manager),
+) -> SteamSetPrimaryResponse:
+    """Set a Steam account as the primary account.
+
+    Atomically clears the current primary (if any) and sets the specified
+    account as primary within a single database transaction.  The partial
+    unique index on ``public.steam_accounts`` enforces the singleton constraint
+    at the DB level.
+
+    Raises HTTP 404 when the account ID is not found.
+    Raises HTTP 503 when the database is unavailable.
+    """
+    pool = _get_shared_pool(db_manager)
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Database is unavailable. Ensure the database service is running. "
+                "Cannot update the primary Steam account."
+            ),
+        )
+
+    try:
+        account = await set_primary_account(pool, account_id)
+    except SteamAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Steam account with id={account_id} was not found. "
+                "Verify the account ID via GET /api/steam/accounts."
+            ),
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to set primary Steam account %s: %s", account_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to update the primary Steam account due to an internal error. "
+                "Check the server logs and retry."
+            ),
+        ) from exc
+
+    logger.info("Primary Steam account updated: id=%s steam_id=%s", account.id, account.steam_id)
+
+    return SteamSetPrimaryResponse(
+        success=True,
+        message=f"Steam account '{account.display_name or account.steam_id}' set as primary",
+        account=_account_to_response(account),
     )
 
 
