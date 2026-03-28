@@ -1089,6 +1089,7 @@ async def tick(
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     metrics: ButlerMetrics | None = None,
+    butler_name: str | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
@@ -1113,13 +1114,25 @@ async def tick(
       - ``chains_fired`` — count of event chains fired
       - ``deferred_flushed`` — count of deferred notifications delivered/expired
 
+    When *butler_name* is provided, ``get_active_seasons()`` is queried once
+    per tick.  If active seasonal periods exist, their names are prepended to
+    the prompt text as a ``[Seasonal context: ...]`` prefix for every
+    prompt-mode dispatch.  This allows butlers to adjust behaviour based on
+    which seasonal periods are currently active without requiring any change to
+    the ``dispatch_fn`` signature.  Job-mode dispatches are unaffected (prompt
+    is not used for job dispatch).
+
     Args:
         pool: asyncpg connection pool.
         dispatch_fn: Async callable matching ``Spawner.trigger`` signature.
+        butler_name: Butler instance name used to query ``seasonal_periods``.
+            When ``None`` (default), seasonal context injection is skipped.
 
     Returns:
         The number of tasks successfully dispatched (cron + deadline).
     """
+    from butlers.core.seasonal import get_active_seasons as _get_active_seasons
+
     tracer = trace.get_tracer("butlers")
     with tracer.start_as_current_span("butler.tick") as span:
         now = datetime.now(UTC)
@@ -1163,6 +1176,20 @@ async def tick(
         tasks_due = len(rows)
         span.set_attribute("tasks_due", tasks_due)
 
+        # ------------------------------------------------------------------
+        # Seasonal context — queried once per tick, injected into dispatches.
+        # ------------------------------------------------------------------
+        active_seasons: list[dict[str, Any]] = []
+        if butler_name:
+            try:
+                active_seasons = await _get_active_seasons(pool, butler_name)
+            except Exception:
+                logger.warning(
+                    "Failed to query active seasons for butler %r; skipping seasonal context",
+                    butler_name,
+                    exc_info=True,
+                )
+
         dispatched = 0
         for row in rows:
             task_id = row["id"]
@@ -1179,8 +1206,19 @@ async def tick(
             result_json: str | None = None
             try:
                 if dispatch_mode == _DISPATCH_MODE_PROMPT:
+                    # Prepend seasonal context to the prompt when active seasons exist.
+                    # We prepend as a prompt prefix rather than passing a separate kwarg
+                    # so that dispatch_fn (Spawner.trigger / _dispatch_scheduled_task)
+                    # does not need to be aware of seasonal periods.
+                    dispatched_prompt = prompt
+                    if active_seasons:
+                        season_names = ", ".join(s["name"] for s in active_seasons)
+                        seasonal_prefix = (
+                            f"[Seasonal context: active periods: {season_names}]"
+                        )
+                        dispatched_prompt = f"{seasonal_prefix}\n\n{prompt}"
                     result = await dispatch_fn(
-                        prompt=prompt,
+                        prompt=dispatched_prompt,
                         trigger_source=f"schedule:{name}",
                         complexity=task_complexity,
                     )
