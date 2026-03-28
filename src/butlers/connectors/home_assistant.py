@@ -1312,22 +1312,37 @@ async def _main() -> None:
 
     if not ha_base_url or not ha_access_token:
         try:
+            import asyncpg
+
             from butlers.credential_store import CredentialStore, shared_db_name_from_env
             from butlers.db import db_params_from_env
 
             db_params = db_params_from_env()
             shared_db_name = shared_db_name_from_env()
-            async with CredentialStore(
-                db_params=db_params,
-                schema="shared",
-                db_name=shared_db_name,
-            ) as cred_store:
+            pool: asyncpg.Pool = await asyncpg.create_pool(
+                host=db_params["host"],
+                port=db_params["port"],
+                user=db_params["user"],
+                password=db_params["password"],
+                database=shared_db_name,
+                ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+                min_size=1,
+                max_size=2,
+                command_timeout=5,
+                server_settings={"search_path": "shared,public"},
+            )
+            try:
+                cred_store = CredentialStore(pool)
                 if not ha_base_url:
-                    ha_base_url = await cred_store.get("home_assistant:base_url") or ""
+                    ha_base_url = await cred_store.load("home_assistant:base_url") or ""
                 if not ha_access_token:
-                    ha_access_token = await cred_store.get("home_assistant:access_token") or ""
-        except Exception as exc:
-            logger.error("HAConnector: failed to load credentials from CredentialStore: %s", exc)
+                    ha_access_token = await cred_store.load("home_assistant:access_token") or ""
+            finally:
+                await pool.close()
+        except Exception:
+            logger.error(
+                "HAConnector: failed to load credentials from CredentialStore", exc_info=True
+            )
 
     if not ha_base_url:
         logger.error(

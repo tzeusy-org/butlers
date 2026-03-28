@@ -1193,3 +1193,184 @@ class TestDashboardSettingsFlow:
         assert "connect" in detail.lower() or "reach" in detail.lower(), (
             f"Error detail should mention connectivity: {detail!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 13: _main() credential resolution via current CredentialStore API
+# ---------------------------------------------------------------------------
+
+
+class TestMainCredentialResolution:
+    """Verify that _main() uses the current CredentialStore API correctly.
+
+    The old code used CredentialStore(db_params=..., schema=..., db_name=...) as an
+    async context manager and called .get() — none of which exist on the current API.
+    The fix creates an asyncpg pool, passes it to CredentialStore(pool), and calls
+    .load() to retrieve credentials.
+    """
+
+    async def test_main_resolves_credentials_from_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_main() creates a pool, instantiates CredentialStore(pool), calls load()."""
+        import asyncio
+
+        from butlers.connectors.home_assistant import _main
+
+        # Track calls to verify correct API usage
+        load_calls: list[str] = []
+        pool_closed = False
+
+        class _MockConn:
+            async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+                key = args[0] if args else ""
+                if key == "home_assistant:base_url":
+                    return {"secret_value": "http://ha.local:8123"}
+                if key == "home_assistant:access_token":
+                    return {"secret_value": "test-token-abc"}
+                return None
+
+        class _MockAcquire:
+            async def __aenter__(self) -> _MockConn:
+                return _MockConn()
+
+            async def __aexit__(self, *_: Any) -> None:
+                pass
+
+        class _MockPool:
+            def acquire(self) -> _MockAcquire:
+                return _MockAcquire()
+
+            async def close(self) -> None:
+                nonlocal pool_closed
+                pool_closed = True
+
+        async def _mock_create_pool(**_kwargs: Any) -> _MockPool:
+            return _MockPool()
+
+        # Track CredentialStore instantiation and load calls
+        from butlers import credential_store as cs_module
+
+        original_cls = cs_module.CredentialStore
+
+        class _TrackingCredentialStore(original_cls):  # type: ignore[misc]
+            def __init__(self, pool: Any, **kwargs: Any) -> None:
+                # Must be called with a pool (not db_params/schema/db_name)
+                super().__init__(pool, **kwargs)
+
+            async def load(self, key: str) -> str | None:
+                load_calls.append(key)
+                return await super().load(key)
+
+        # Monkeypatch: asyncpg.create_pool and CredentialStore
+        import asyncpg  # type: ignore[import]
+
+        monkeypatch.setattr(asyncpg, "create_pool", _mock_create_pool)
+        monkeypatch.setattr(cs_module, "CredentialStore", _TrackingCredentialStore)
+
+        # Env: clear env-override vars so the DB path is exercised
+        monkeypatch.delenv("HA_BASE_URL", raising=False)
+        monkeypatch.delenv("HA_ACCESS_TOKEN", raising=False)
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.local/mcp/sse")
+
+        # Stub out connector startup side effects so _main() doesn't hang
+        with (
+            patch("butlers.connectors.home_assistant.HAConnector.start_health_server"),
+            patch("butlers.connectors.home_assistant.HAConnector.start_heartbeat"),
+            patch(
+                "butlers.connectors.home_assistant.HAConnector.stop_heartbeat",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "butlers.connectors.home_assistant.HAWebSocketClient.run",
+                new_callable=lambda: lambda self: asyncio.sleep(0),
+            ),
+        ):
+            # Trigger stop_event immediately so _main() exits the wait loop
+            with patch("butlers.connectors.home_assistant.asyncio.Event") as mock_event_cls:
+                mock_event = MagicMock()
+                mock_event.wait = AsyncMock(return_value=None)
+                mock_event.set = MagicMock()
+                mock_event_cls.return_value = mock_event
+                await _main()
+
+        # Verify correct credential keys were requested via load()
+        assert "home_assistant:base_url" in load_calls, (
+            f"Expected load('home_assistant:base_url') to be called; got: {load_calls}"
+        )
+        assert "home_assistant:access_token" in load_calls, (
+            f"Expected load('home_assistant:access_token') to be called; got: {load_calls}"
+        )
+        # Verify pool was properly closed after credential resolution
+        assert pool_closed, "Pool must be closed after credential resolution"
+
+    async def test_main_falls_back_to_env_when_db_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_main() continues when DB is unavailable if env vars provide credentials."""
+        import asyncio
+
+        from butlers.connectors.home_assistant import _main
+
+        # Provide env-override credentials so no DB is needed
+        monkeypatch.setenv("HA_BASE_URL", "http://ha.local:8123")
+        monkeypatch.setenv("HA_ACCESS_TOKEN", "env-token-xyz")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.local/mcp/sse")
+
+        with (
+            patch("butlers.connectors.home_assistant.HAConnector.start_health_server"),
+            patch("butlers.connectors.home_assistant.HAConnector.start_heartbeat"),
+            patch(
+                "butlers.connectors.home_assistant.HAConnector.stop_heartbeat",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "butlers.connectors.home_assistant.HAWebSocketClient.run",
+                new_callable=lambda: lambda self: asyncio.sleep(0),
+            ),
+        ):
+            with patch("butlers.connectors.home_assistant.asyncio.Event") as mock_event_cls:
+                mock_event = MagicMock()
+                mock_event.wait = AsyncMock(return_value=None)
+                mock_event.set = MagicMock()
+                mock_event_cls.return_value = mock_event
+                # Should succeed without touching CredentialStore at all
+                await _main()
+
+    async def test_main_exits_when_no_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_main() raises SystemExit(1) when credentials cannot be resolved."""
+        import asyncpg  # type: ignore[import]
+
+        from butlers.connectors.home_assistant import _main
+
+        monkeypatch.delenv("HA_BASE_URL", raising=False)
+        monkeypatch.delenv("HA_ACCESS_TOKEN", raising=False)
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.local/mcp/sse")
+
+        class _EmptyConn:
+            async def fetchrow(self, query: str, *args: Any) -> None:
+                return None
+
+        class _EmptyAcquire:
+            async def __aenter__(self) -> _EmptyConn:
+                return _EmptyConn()
+
+            async def __aexit__(self, *_: Any) -> None:
+                pass
+
+        class _EmptyPool:
+            def acquire(self) -> _EmptyAcquire:
+                return _EmptyAcquire()
+
+            async def close(self) -> None:
+                pass
+
+        async def _mock_create_pool(**_kwargs: Any) -> _EmptyPool:
+            return _EmptyPool()
+
+        monkeypatch.setattr(asyncpg, "create_pool", _mock_create_pool)
+
+        with pytest.raises(SystemExit) as exc_info:
+            await _main()
+
+        assert exc_info.value.code == 1
