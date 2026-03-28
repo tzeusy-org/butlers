@@ -1795,6 +1795,7 @@ async def test_sync_detects_target_date_change(pool_with_temporal):
     original = [
         {
             "name": "deadline-target-date-change",
+            "task_type": "deadline",
             "cron": "0 9 * * *",
             "prompt": "check deadline",
             "target_date": future1,
@@ -1815,6 +1816,7 @@ async def test_sync_detects_target_date_change(pool_with_temporal):
     updated = [
         {
             "name": "deadline-target-date-change",
+            "task_type": "deadline",
             "cron": "0 9 * * *",
             "prompt": "check deadline",
             "target_date": future2,
@@ -1843,6 +1845,7 @@ async def test_sync_detects_lead_time_days_change(pool_with_temporal):
     original = [
         {
             "name": "deadline-lead-time-change",
+            "task_type": "deadline",
             "cron": "0 9 * * *",
             "prompt": "check deadline",
             "target_date": future,
@@ -1863,6 +1866,7 @@ async def test_sync_detects_lead_time_days_change(pool_with_temporal):
     updated = [
         {
             "name": "deadline-lead-time-change",
+            "task_type": "deadline",
             "cron": "0 9 * * *",
             "prompt": "check deadline",
             "target_date": future,
@@ -1898,6 +1902,7 @@ async def test_sync_detects_alert_thresholds_change(pool_with_temporal):
     original = [
         {
             "name": "deadline-alert-thresholds-change",
+            "task_type": "deadline",
             "cron": "0 9 * * *",
             "prompt": "check deadline",
             "target_date": future,
@@ -1921,6 +1926,7 @@ async def test_sync_detects_alert_thresholds_change(pool_with_temporal):
     updated = [
         {
             "name": "deadline-alert-thresholds-change",
+            "task_type": "deadline",
             "cron": "0 9 * * *",
             "prompt": "check deadline",
             "target_date": future,
