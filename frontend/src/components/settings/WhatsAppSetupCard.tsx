@@ -236,8 +236,9 @@ export function WhatsAppSection() {
         onOpenChange={setPairModalOpen}
         onPaired={() => {
           setPairModalOpen(false);
-          statusQuery.refetch();
-          healthQuery.refetch();
+          // The bridge transitions PairSuccess → Connected asynchronously.
+          // Retry refetch a few times so we don't land on a stale "connecting" state.
+          refetchUntilConnected(statusQuery, healthQuery);
         }}
       />
 
@@ -249,6 +250,39 @@ export function WhatsAppSection() {
       />
     </>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Post-pairing refetch helper
+// ---------------------------------------------------------------------------
+
+/**
+ * After pairing succeeds the Go bridge needs a moment to transition from
+ * "connecting" to "connected".  Refetch status+health up to 5 times with a
+ * 2-second gap so the card updates without waiting for the 30-second health
+ * poll cycle.
+ */
+function refetchUntilConnected(
+  statusQuery: { refetch: () => Promise<unknown>; data?: { state?: string } },
+  healthQuery: { refetch: () => Promise<unknown>; data?: { state?: string } },
+) {
+  let attempts = 0;
+  const MAX = 5;
+  const INTERVAL = 2_000;
+
+  function tick() {
+    Promise.all([statusQuery.refetch(), healthQuery.refetch()]).then(() => {
+      attempts += 1;
+      const resolved =
+        healthQuery.data?.state === "connected" || statusQuery.data?.state === "connected";
+      if (!resolved && attempts < MAX) {
+        setTimeout(tick, INTERVAL);
+      }
+    });
+  }
+
+  // First attempt immediately, then retry on interval
+  tick();
 }
 
 // ---------------------------------------------------------------------------
@@ -377,8 +411,7 @@ export function WhatsAppSetupCard() {
         onOpenChange={setPairModalOpen}
         onPaired={() => {
           setPairModalOpen(false);
-          statusQuery.refetch();
-          healthQuery.refetch();
+          refetchUntilConnected(statusQuery, healthQuery);
         }}
       />
 
