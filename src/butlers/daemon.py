@@ -4501,7 +4501,8 @@ class ButlerDaemon:
                     today = _datetime.now(_UTC).date()
                     if parsed_date <= today:
                         raise ValueError(
-                            f"target_date must be in the future (got {parsed_date}; today is {today})"
+                            f"target_date must be in the future"
+                            f" (got {parsed_date}; today is {today})"
                         )
 
                 if lead_time_days is not None and lead_time_days <= 0:
@@ -4516,10 +4517,13 @@ class ButlerDaemon:
                     for t in alert_thresholds:
                         days_before = t.get("days_before")
                         if days_before is None:
-                            raise ValueError("Each threshold must have a 'days_before' integer field")
+                            raise ValueError(
+                                "Each threshold must have a 'days_before' integer field"
+                            )
                         if days_before > lead_time_days:
                             raise ValueError(
-                                f"Threshold days_before={days_before} cannot exceed lead_time_days={lead_time_days}"
+                                f"Threshold days_before={days_before} cannot"
+                                f" exceed lead_time_days={lead_time_days}"
                             )
 
                 await _deadline_update(
