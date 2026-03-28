@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -163,8 +164,6 @@ class TestSteamModuleConfig:
         assert config.default_account == "76561198000000001"
 
     def test_default_account_accepts_uuid_string(self):
-        import uuid
-
         uid = str(uuid.uuid4())
         config = SteamModuleConfig(default_account=uid)
         assert config.default_account == uid
@@ -372,7 +371,6 @@ class TestStartup:
     async def test_startup_no_api_key_graceful(
         self, steam_module: SteamModule, mock_steam_client: MagicMock
     ):
-        import uuid
         from datetime import UTC, datetime
 
         from butlers.steam_account_registry import SteamAccount
@@ -410,7 +408,6 @@ class TestStartup:
         assert not steam_module._credentials_ok
 
     async def test_startup_success(self, steam_module: SteamModule, mock_steam_client: MagicMock):
-        import uuid
         from datetime import UTC, datetime
 
         from butlers.steam_account_registry import SteamAccount
