@@ -156,6 +156,10 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "notify",
         "remind",
         "get_attachment",
+        "delivery_preferences_set",
+        "delivery_preferences_get",
+        "deferred_notifications_list",
+        "deferred_notification_cancel",
         "module.states",
         "module.set_enabled",
         "correct",
@@ -4498,6 +4502,18 @@ class ButlerDaemon:
                     )
                 ),
             ] = None,
+            priority: Annotated[
+                Literal["high", "medium", "low"],
+                Field(
+                    description=(
+                        "Notification priority for quiet-hours enforcement. "
+                        "Allowed values: high | medium | low. Default: medium. "
+                        "high — always delivers immediately (bypasses quiet hours). "
+                        "medium — deferred during quiet hours. "
+                        "low — deferred during quiet hours."
+                    )
+                ),
+            ] = "medium",
         ) -> dict:
             """Send a `notify.v1` envelope through Switchboard `deliver()`.
 
@@ -4600,6 +4616,104 @@ class ButlerDaemon:
                             "React intent requires request_context with source_thread_identity."
                         ),
                     }
+
+            # Priority validation
+            from butlers.core.temporal.delivery_db import _VALID_PRIORITIES as _VP
+            if priority not in _VP:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Invalid priority {priority!r}. "
+                        f"Allowed values: {', '.join(sorted(_VP))}"
+                    ),
+                }
+
+            # Quiet-hours gate: check delivery preferences and defer if needed
+            _notify_pool = daemon.db.pool if daemon.db is not None else None
+            if _notify_pool is not None and intent in {"send", "insight"}:
+                from datetime import UTC as _UTC
+                from datetime import datetime as _datetime
+                from zoneinfo import ZoneInfo as _ZoneInfo
+
+                from butlers.core.temporal.delivery import (
+                    compute_deliver_at,
+                    should_defer_notification,
+                )
+                from butlers.core.temporal.delivery_db import (
+                    get_delivery_preferences,
+                    insert_deferred_notification,
+                )
+
+                try:
+                    _prefs = await get_delivery_preferences(_notify_pool, butler_name)
+                except Exception:
+                    # Table may not exist yet or pool unavailable; deliver immediately
+                    logger.exception(
+                        "notify() failed to fetch delivery preferences; delivering immediately"
+                    )
+                    _prefs = None
+                if _prefs is not None:
+                    _tz_name = _prefs.get("timezone", "UTC")
+                    try:
+                        _tz = _ZoneInfo(_tz_name)
+                    except Exception:
+                        _tz = _ZoneInfo("UTC")
+                    _now_utc = _datetime.now(_UTC)
+                    _now_local = _now_utc.astimezone(_tz).time()
+
+                    if should_defer_notification(
+                        priority=priority,
+                        current_time=_now_local,
+                        prefs=_prefs,
+                        channel=channel,
+                    ):
+                        # Build notify.v1 envelope to persist
+                        _envelope: dict[str, Any] = {
+                            "schema_version": "notify.v1",
+                            "origin_butler": butler_name,
+                            "delivery": {
+                                "intent": intent,
+                                "channel": channel,
+                                "message": message or "",
+                            },
+                        }
+                        if subject is not None:
+                            _envelope["delivery"]["subject"] = subject
+                        if recipient is not None:
+                            _envelope["delivery"]["recipient"] = recipient
+                        if request_context is not None:
+                            _envelope["request_context"] = request_context
+
+                        _deliver_at = compute_deliver_at(prefs=_prefs, now=_now_utc)
+                        try:
+                            _notif_id = await insert_deferred_notification(
+                                _notify_pool,
+                                butler_name=butler_name,
+                                channel=channel,
+                                message=message or "",
+                                priority=priority,
+                                envelope=_envelope,
+                                deliver_at=_deliver_at,
+                                deferred_at=_now_utc,
+                            )
+                            logger.info(
+                                "notify() deferred notification %s (priority=%s) to %s",
+                                _notif_id,
+                                priority,
+                                _deliver_at.isoformat(),
+                            )
+                            return {
+                                "status": "deferred",
+                                "notification_id": _notif_id,
+                                "deliver_at": _deliver_at.isoformat(),
+                                "channel": channel,
+                                "priority": priority,
+                            }
+                        except Exception:
+                            # If we can't persist, fall through to immediate delivery
+                            logger.exception(
+                                "notify() failed to defer notification; delivering immediately"
+                            )
 
             client = daemon.switchboard_client
             if client is None and butler_name != "switchboard":
@@ -4909,6 +5023,159 @@ class ButlerDaemon:
                     ),
                     "retryable": False,
                 }
+
+        # Delivery preferences and deferred notification tools
+        @mcp.tool()
+        async def delivery_preferences_set(
+            timezone: str,
+            quiet_hours_start: str | None = None,
+            quiet_hours_end: str | None = None,
+            batch_low_priority: bool | None = None,
+            batch_delivery_time: str | None = None,
+            override_channels: dict[str, Any] | None = None,
+        ) -> dict:
+            """Configure delivery preferences for quiet hours and batching.
+
+            Sets the butler's delivery preferences, which control when notifications
+            are delivered vs deferred. On first call, a row is created with defaults
+            for any unspecified fields.
+
+            Args:
+                timezone: IANA timezone string (required). Used to evaluate quiet hours
+                    in the user's local time. Example: 'America/New_York'.
+                quiet_hours_start: Quiet hours start in 'HH:MM' format (default '22:00').
+                quiet_hours_end: Quiet hours end in 'HH:MM' format (default '07:00').
+                batch_low_priority: If True, batch medium/low notifications during quiet
+                    hours and deliver at batch_delivery_time (default True).
+                batch_delivery_time: Time in 'HH:MM' format to flush deferred
+                    notifications (default '07:00').
+                override_channels: Per-channel quiet hours overrides as a dict mapping
+                    channel names to {quiet_hours_start, quiet_hours_end} dicts.
+                    Example: {'email': {'quiet_hours_start': '20:00', 'quiet_hours_end': '09:00'}}
+
+            Returns:
+                The upserted delivery preferences row.
+            """
+            from butlers.core.temporal.delivery_db import upsert_delivery_preferences
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                result = await upsert_delivery_preferences(
+                    _db_pool,
+                    butler_name=butler_name,
+                    timezone=timezone,
+                    quiet_hours_start=quiet_hours_start,
+                    quiet_hours_end=quiet_hours_end,
+                    batch_low_priority=batch_low_priority,
+                    batch_delivery_time=batch_delivery_time,
+                    override_channels=override_channels,
+                )
+                return {"status": "ok", "preferences": result}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def delivery_preferences_get() -> dict:
+            """Get the current delivery preferences for this butler.
+
+            Returns the current delivery preferences, or a response indicating that
+            no preferences are configured (in which case no quiet hours enforcement
+            applies and all notifications deliver immediately).
+
+            Returns:
+                Dict with 'preferences' key containing the current row, or
+                'preferences': None if no preferences are configured.
+            """
+            from butlers.core.temporal.delivery_db import get_delivery_preferences
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            prefs = await get_delivery_preferences(_db_pool, butler_name)
+            if prefs is None:
+                return {
+                    "status": "ok",
+                    "preferences": None,
+                    "message": (
+                        "No delivery preferences configured. "
+                        "All notifications deliver immediately (no quiet hours)."
+                    ),
+                }
+            return {"status": "ok", "preferences": prefs}
+
+        @mcp.tool()
+        async def deferred_notifications_list(
+            status: str | None = None,
+            limit: int = 100,
+        ) -> dict:
+            """List deferred notifications for this butler.
+
+            Args:
+                status: Optional filter. One of: pending | delivered | expired | cancelled.
+                    If omitted, all statuses are returned.
+                limit: Maximum number of rows to return (default 100).
+
+            Returns:
+                Dict with 'notifications' list ordered by deliver_at ascending.
+            """
+            from butlers.core.temporal.delivery_db import list_deferred_notifications
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                notifications = await list_deferred_notifications(
+                    _db_pool,
+                    butler_name=butler_name,
+                    status=status,
+                    limit=limit,
+                )
+                return {
+                    "status": "ok",
+                    "notifications": notifications,
+                    "count": len(notifications),
+                }
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def deferred_notification_cancel(notification_id: str) -> dict:
+            """Cancel a pending deferred notification.
+
+            Only notifications with status='pending' can be cancelled. Delivered
+            or expired notifications cannot be cancelled.
+
+            Args:
+                notification_id: UUID of the deferred notification to cancel.
+
+            Returns:
+                Dict with status='cancelled' if successful, or an error if not found
+                or already delivered/expired.
+            """
+            from butlers.core.temporal.delivery_db import cancel_deferred_notification
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                cancelled = await cancel_deferred_notification(
+                    _db_pool,
+                    notification_id,
+                    butler_name=butler_name,
+                )
+                if cancelled:
+                    return {"status": "cancelled", "notification_id": notification_id}
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Notification {notification_id!r} not found, not owned by this butler, "
+                        "or already delivered/expired."
+                    ),
+                }
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
 
         # Messenger-specific operational domain tools
         if butler_name == "messenger":

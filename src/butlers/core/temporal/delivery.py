@@ -94,7 +94,9 @@ def should_defer_notification(
     """Determine if a notification should be deferred based on quiet hours.
 
     High-priority notifications always deliver immediately (never deferred).
-    Medium/low-priority notifications are deferred if current_time falls within quiet hours.
+    Medium/low-priority notifications are deferred if current_time falls within quiet hours,
+    unless ``batch_low_priority`` is False in prefs (immediate delivery regardless of
+    quiet hours for medium/low priority).
     If prefs is None (no delivery preferences configured), notifications always deliver.
 
     Args:
@@ -111,6 +113,10 @@ def should_defer_notification(
 
     if priority == "high":
         return False  # High priority always bypasses quiet hours
+
+    # batch_low_priority=False means deliver immediately regardless of quiet hours
+    if not prefs.get("batch_low_priority", True):
+        return False
 
     # Resolve effective quiet hours (channel override or default)
     effective = resolve_effective_quiet_hours(channel=channel, prefs=prefs)
