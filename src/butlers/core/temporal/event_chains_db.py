@@ -179,8 +179,8 @@ async def event_chain_update(
 
     # Build SET clause
     set_clauses = ["updated_at = now()"]
-    params: list[Any] = [chain_uuid]
-    idx = 2
+    params: list[Any] = [chain_uuid, butler_name]
+    idx = 3
 
     if name is not None:
         name = name.strip()
@@ -219,7 +219,7 @@ async def event_chain_update(
             f"""
             UPDATE event_chains
             SET {", ".join(set_clauses)}
-            WHERE id = $1
+            WHERE id = $1 AND butler_name = $2
             RETURNING id, name, trigger_type, trigger_reference, actions,
                       status, butler_name, created_at, updated_at
             """,

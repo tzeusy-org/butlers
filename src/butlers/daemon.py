@@ -5276,7 +5276,7 @@ class ButlerDaemon:
                     status=status,
                 )
                 return {"status": "updated", "chain": chain}
-            except (ValueError, Exception) as exc:
+            except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
 
         @mcp.tool()
@@ -5343,7 +5343,7 @@ class ButlerDaemon:
                     "status": "not_found",
                     "error": (f"Event chain {chain_id!r} not found for this butler."),
                 }
-            except (ValueError, Exception) as exc:
+            except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
 
         # Messenger-specific operational domain tools

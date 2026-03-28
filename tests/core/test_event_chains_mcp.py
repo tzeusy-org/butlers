@@ -51,28 +51,9 @@ class TestEventChainCreateValidation:
 
     def test_row_to_dict_normalises_uuid(self):
         """_row_to_dict converts UUID id field to string."""
-        from unittest.mock import MagicMock
-
         from butlers.core.temporal.event_chains_db import _row_to_dict
 
         row_id = uuid.uuid4()
-        mock_row = MagicMock()
-        mock_row.__iter__ = MagicMock(
-            return_value=iter(
-                [
-                    ("id", row_id),
-                    ("name", "test-chain"),
-                    ("trigger_type", "calendar_event_end"),
-                    ("trigger_reference", None),
-                    ("actions", '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Hi"}]'),
-                    ("status", "active"),
-                    ("butler_name", "general"),
-                    ("created_at", datetime.now(UTC)),
-                    ("updated_at", datetime.now(UTC)),
-                ]
-            )
-        )
-        # Simulate dict() on a mock by using a real dict instead
         result = _row_to_dict(
             {  # type: ignore[arg-type]
                 "id": row_id,
