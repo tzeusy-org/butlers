@@ -7,6 +7,7 @@ Provides pure functions for:
   - compute_next_deadline_status  — State machine for deadline_status transitions
   - compute_expiry_transition     — Check if deadline should be marked expired
   - is_deadline_blocked           — Check if deadline depends_on blocks evaluation
+  - build_deadline_prompt_context — Build prompt context string for deadline dispatch
 
 These functions are pure (no I/O) and are called by the scheduler's tick() pass
 and the deadline_create/update MCP tools.
@@ -170,3 +171,39 @@ def is_deadline_blocked(
             return True
 
     return False
+
+
+def build_deadline_prompt_context(
+    *,
+    original_prompt: str,
+    target_date: date,
+    days_remaining: int,
+    fired_threshold: dict[str, Any],
+    deadline_status: str,
+    all_thresholds: list[dict[str, Any]],
+) -> str:
+    """Build an augmented prompt string for deadline dispatch.
+
+    Appends structured deadline context to the original prompt so the LLM
+    can understand the urgency, target date, and alert timeline.
+
+    Args:
+        original_prompt: The butler's configured prompt text.
+        target_date: The deadline's target date.
+        days_remaining: Number of days until the deadline.
+        fired_threshold: The threshold dict that triggered this dispatch.
+        deadline_status: Current status of the deadline (pending/alerted/escalated/...).
+        all_thresholds: Full list of alert thresholds for timeline context.
+
+    Returns:
+        Augmented prompt string with appended deadline context block.
+    """
+    context_lines = [
+        f"target_date={target_date}",
+        f"days_remaining={days_remaining}",
+        f"fired_threshold={fired_threshold}",
+        f"deadline_status={deadline_status}",
+        f"all_thresholds={all_thresholds}",
+    ]
+    context_block = "[Deadline context: " + ", ".join(context_lines) + "]"
+    return f"{original_prompt}\n\n{context_block}"
