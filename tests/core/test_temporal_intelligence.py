@@ -1419,7 +1419,9 @@ class TestTickIntegration:
             timezone TEXT NOT NULL DEFAULT 'UTC',
             metadata JSONB,
             butler_name TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT true
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """
 
@@ -2241,3 +2243,104 @@ class TestTickIntegration:
         assert row is not None
         # task_type column exists in this test DDL so it should be 'cron'
         assert row["task_type"] == "cron"
+
+    async def test_tick_deadline_dispatch_receives_seasonal_context(self, pool):
+        """tick() injects active_seasons context into deadline task dispatches.
+
+        Regression test for bu-9h74: active_seasons was queried AFTER
+        _tick_deadline_pass, so deadline dispatches never received the seasonal
+        prefix.  The fix moves the query before Pass 1.
+        """
+        from butlers.core.scheduler import tick
+
+        butler = "seasonal-deadline-butler"
+
+        # Insert an active seasonal period (year-round so always active)
+        await pool.execute(
+            """
+            INSERT INTO seasonal_periods
+                (name, period_type, start_month, start_day, end_month, end_day,
+                 butler_name, enabled)
+            VALUES ('peak-season', 'annual', 1, 1, 12, 31, $1, true)
+            """,
+            butler,
+        )
+
+        # Insert a deadline task with a 30-day threshold that fires today
+        now = datetime.now(UTC)
+        target = _future_date(30)
+        await pool.execute(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ($1, '* * * * *', $2, 'prompt', 'deadline', $3, 30,
+                 '[{"days_before": 30, "severity": "info"}]',
+                 'pending', '[]', $4, true)
+            """,
+            "seasonal-deadline-task",
+            "Check your deadlines",
+            target,
+            now,
+        )
+
+        dispatched_calls: list[dict] = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched_calls.append(kwargs)
+
+        await tick(pool, capture_dispatch, butler_name=butler)
+
+        # The deadline task must have been dispatched
+        deadline_calls = [c for c in dispatched_calls if "deadline:" in c.get("trigger_source", "")]
+        assert deadline_calls, f"No deadline dispatch found; all calls: {dispatched_calls}"
+
+        prompt = deadline_calls[0]["prompt"]
+        # Seasonal context prefix must be present in the deadline prompt
+        assert "Seasonal context" in prompt, f"Expected seasonal prefix in prompt; got: {prompt!r}"
+        assert "peak-season" in prompt, f"Expected season name in prompt; got: {prompt!r}"
+        # Original prompt content must still be present
+        assert "Check your deadlines" in prompt
+
+    async def test_tick_deadline_no_butler_name_no_seasonal_injection(self, pool):
+        """tick() without butler_name does not inject seasonal context into deadline dispatch."""
+        from butlers.core.scheduler import tick
+
+        # Insert a deadline task with a 7-day threshold that fires today
+        now = datetime.now(UTC)
+        target = _future_date(7)
+        await pool.execute(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ($1, '* * * * *', $2, 'prompt', 'deadline', $3, 7,
+                 '[{"days_before": 7, "severity": "info"}]',
+                 'pending', '[]', $4, true)
+            """,
+            "no-season-deadline-task",
+            "Unadorned deadline prompt",
+            target,
+            now,
+        )
+
+        dispatched_calls: list[dict] = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched_calls.append(kwargs)
+
+        # No butler_name — seasonal query is skipped
+        await tick(pool, capture_dispatch)
+
+        deadline_calls = [c for c in dispatched_calls if "deadline:" in c.get("trigger_source", "")]
+        assert deadline_calls, f"No deadline dispatch found; all calls: {dispatched_calls}"
+
+        prompt = deadline_calls[0]["prompt"]
+        assert "Seasonal context" not in prompt, (
+            f"Unexpected seasonal prefix in prompt without butler_name; got: {prompt!r}"
+        )
+        assert "Unadorned deadline prompt" in prompt
