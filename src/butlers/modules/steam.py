@@ -71,6 +71,17 @@ def _privacy_error(detail: str) -> dict[str, Any]:
     }
 
 
+def _no_achievements_error(app_id: int) -> dict[str, Any]:
+    return {
+        "error": "steam_no_achievements",
+        "message": f"Game {app_id} has no achievements or stats.",
+        "hint": (
+            "Not all games on Steam have achievement support. "
+            "Check the game's store page to confirm whether achievements exist."
+        ),
+    }
+
+
 def _api_error(status_code: int, body: str) -> dict[str, Any]:
     return {
         "error": "steam_api_error",
@@ -426,8 +437,14 @@ class SteamModule(Module):
                 return result
             except SteamAPIError as exc:
                 if exc.status_code == 400:
+                    # Steam returns 400 for two distinct cases:
+                    # 1. No stats: body contains "no stats" / "no achievements"
+                    # 2. Privacy: body indicates profile is not public
+                    body_lower = exc.body.lower()
+                    if "no stats" in body_lower or "no achievements" in body_lower:
+                        return _no_achievements_error(app_id)
                     return _privacy_error(
-                        f"Achievements are private or the game ({app_id}) has none."
+                        f"Achievements for game {app_id} are private for SteamID {sid}."
                     )
                 return _handle_steam_error(exc)
             except Exception as exc:  # noqa: BLE001

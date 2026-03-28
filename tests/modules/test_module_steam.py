@@ -13,6 +13,7 @@ from butlers.modules.steam import (
     SteamModule,
     SteamModuleConfig,
     _handle_steam_error,
+    _no_achievements_error,
     _no_credentials_error,
     _privacy_error,
     _rate_limited_error,
@@ -497,6 +498,12 @@ class TestErrorHelpers:
         assert "private" in err["message"]
         assert "hint" in err
 
+    def test_no_achievements_error_structure(self):
+        err = _no_achievements_error(730)
+        assert err["error"] == "steam_no_achievements"
+        assert "730" in err["message"]
+        assert "hint" in err
+
     def test_handle_rate_limit_error(self):
         exc = SteamRateLimitError(retry_after_s=60.0)
         result = _handle_steam_error(exc)
@@ -638,15 +645,42 @@ class TestSteamGetAchievements:
         result = await tools["steam_get_achievements"](app_id=730)
         assert "playerstats" in result
 
-    async def test_privacy_on_400(
+    async def test_privacy_on_400_private_profile(
         self, connected_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
     ):
+        """400 with a privacy-related body returns steam_privacy, not steam_no_achievements."""
         tools = mock_mcp._registered_tools
         mock_steam_client.request = AsyncMock(
             side_effect=SteamAPIError(400, "Profile is not public")
         )
         result = await tools["steam_get_achievements"](app_id=730)
         assert result["error"] == "steam_privacy"
+        assert "hint" in result
+
+    async def test_no_achievements_on_400_no_stats(
+        self, connected_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
+    ):
+        """400 with 'Requested app has no stats' body returns steam_no_achievements."""
+        tools = mock_mcp._registered_tools
+        mock_steam_client.request = AsyncMock(
+            side_effect=SteamAPIError(400, "Requested app has no stats")
+        )
+        result = await tools["steam_get_achievements"](app_id=730)
+        assert result["error"] == "steam_no_achievements"
+        assert "730" in result["message"]
+        assert "hint" in result
+
+    async def test_no_achievements_on_400_no_achievements_body(
+        self, connected_module: SteamModule, mock_mcp: MagicMock, mock_steam_client: MagicMock
+    ):
+        """400 with 'no achievements' in body returns steam_no_achievements."""
+        tools = mock_mcp._registered_tools
+        mock_steam_client.request = AsyncMock(
+            side_effect=SteamAPIError(400, "This game has no achievements")
+        )
+        result = await tools["steam_get_achievements"](app_id=440)
+        assert result["error"] == "steam_no_achievements"
+        assert "440" in result["message"]
 
 
 class TestSteamGetFriendList:
