@@ -2166,23 +2166,32 @@ class TestMultiAccountLifecycle:
         mock_db_pool: MagicMock,
         mock_credential_store: MagicMock,
     ) -> None:
-        """The /metrics FastAPI route returns Prometheus text exposition."""
+        """The /metrics route returns Prometheus text exposition with the correct content-type."""
+        from fastapi.responses import Response
         from fastapi.testclient import TestClient
-        from prometheus_client import generate_latest
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        manager = GDriveConnectorManager(
+            db_pool=mock_db_pool,
+            credential_store=mock_credential_store,
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+        )
 
         # Build the same FastAPI app used internally by _start_health_server
-        app = FastAPI(title="Google Drive Connector Metrics Test")
+        app = FastAPI(title="Google Drive Connector Health Test")
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest()
+        async def metrics() -> Response:
+            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+        del manager  # only used to mirror real app setup; metrics are process-global
 
         client = TestClient(app)
         response = client.get("/metrics")
         assert response.status_code == 200
-        # Prometheus text format starts with "# HELP" or "# TYPE" lines,
-        # or is empty when no metrics are registered. Either way the response
-        # must be valid UTF-8 text (not an error body).
+        # Prometheus scrapers require text/plain with the correct version header.
+        assert response.headers["content-type"].startswith("text/plain")
+        # Prometheus text format must be valid UTF-8 text (not JSON-encoded bytes).
         content = response.content.decode("utf-8")
         assert isinstance(content, str)
 

@@ -50,7 +50,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import Counter, Gauge, generate_latest
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 from pydantic import BaseModel
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
@@ -1681,9 +1682,9 @@ class GDriveConnectorManager:
             return self.get_health()
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
+        async def metrics() -> Response:
             """Prometheus metrics endpoint."""
-            return generate_latest()
+            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
         @app.post("/reload")
         async def reload() -> dict[str, Any]:
