@@ -177,6 +177,8 @@ import type {
   TelegramVerifyCodeRequest,
   TelegramVerifyCodeResponse,
   TelegramSessionStatusResponse,
+  BlobStorageStatus,
+  BlobStorageTestResult,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2941,4 +2943,20 @@ export function telegramVerifyCode(
 /** GET /api/telegram/session/status — check if Telegram credentials are configured */
 export function getTelegramSessionStatus(): Promise<TelegramSessionStatusResponse> {
   return apiFetch<TelegramSessionStatusResponse>("/telegram/session/status");
+}
+
+// ---------------------------------------------------------------------------
+// Blob storage settings
+// ---------------------------------------------------------------------------
+
+/** GET /api/settings/blob-storage — current configuration status */
+export function getBlobStorageStatus(): Promise<ApiResponse<BlobStorageStatus>> {
+  return apiFetch<ApiResponse<BlobStorageStatus>>("/settings/blob-storage");
+}
+
+/** POST /api/settings/blob-storage/test — test S3 connectivity */
+export function testBlobStorage(): Promise<ApiResponse<BlobStorageTestResult>> {
+  return apiFetch<ApiResponse<BlobStorageTestResult>>("/settings/blob-storage/test", {
+    method: "POST",
+  });
 }

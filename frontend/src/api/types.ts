@@ -2689,3 +2689,26 @@ export interface TelegramSessionStatusResponse {
   has_session: boolean;
   ready: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Blob storage (S3-compatible)
+// ---------------------------------------------------------------------------
+
+/** Response from GET /api/settings/blob-storage — configuration status. */
+export interface BlobStorageStatus {
+  endpoint_url: string | null;
+  bucket: string | null;
+  region: string | null;
+  has_access_key: boolean;
+  has_secret_key: boolean;
+  configured: boolean;
+}
+
+/** Response from POST /api/settings/blob-storage/test — connectivity probe. */
+export interface BlobStorageTestResult {
+  success: boolean;
+  error: string | null;
+  latency_ms: number;
+  endpoint_url: string | null;
+  bucket: string | null;
+}
