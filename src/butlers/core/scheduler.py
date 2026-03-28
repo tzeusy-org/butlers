@@ -1558,9 +1558,10 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 async def schedule_create(
     pool: asyncpg.Pool,
     name: str,
-    cron: str,
+    cron: str | None = None,
     prompt: str | None = None,
     *,
+    task_type: str = "cron",
     dispatch_mode: str = _DISPATCH_MODE_PROMPT,
     job_name: str | None = None,
     job_args: dict[str, Any] | None = None,
@@ -1573,17 +1574,37 @@ async def schedule_create(
     calendar_event_id: str | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    # deadline-specific fields (required when task_type='deadline')
+    target_date: Any | None = None,
+    lead_time_days: int | None = None,
+    alert_thresholds: list[dict[str, Any]] | None = None,
+    depends_on: list[str] | None = None,
 ) -> uuid.UUID:
     """Create a runtime scheduled task.
 
     Validates cron syntax via croniter. Sets ``source='db'``.
     Computes initial ``next_run_at``.
 
+    When ``task_type='deadline'``, deadline-specific fields (``target_date``,
+    ``lead_time_days``, ``alert_thresholds``) are required and the call is
+    delegated to the deadline_create helper. A cron expression is not required
+    for deadline tasks (the deadline evaluation pass drives dispatch).
+
     Args:
         pool: asyncpg connection pool.
         name: Human-readable task name.
-        cron: Cron expression (5-field).
+        cron: Cron expression (5-field). Required for cron tasks; ignored for
+            deadline tasks (a default daily cron is used internally).
         prompt: Prompt text for prompt-mode schedules.
+        task_type: ``'cron'`` (default) or ``'deadline'``.
+        target_date: Due date (``datetime.date`` or ISO string). Required when
+            ``task_type='deadline'``.
+        lead_time_days: Days before target to begin alerting. Required when
+            ``task_type='deadline'``.
+        alert_thresholds: List of ``{days_before, severity}`` dicts. Required
+            when ``task_type='deadline'``.
+        depends_on: Optional list of deadline task UUID strings that must reach
+            ``'completed'`` before this deadline's thresholds are evaluated.
 
     Returns:
         The new task's UUID.
@@ -1591,6 +1612,44 @@ async def schedule_create(
     Raises:
         ValueError: If the cron expression is invalid or if the name already exists.
     """
+    if task_type not in ("cron", "deadline"):
+        raise ValueError(f"task_type must be 'cron' or 'deadline' (got {task_type!r})")
+
+    # --- Deadline branch: delegate to deadline_create -----------------------
+    if task_type == "deadline":
+        from datetime import date as _date
+
+        from butlers.core.temporal.deadlines import validate_deadline_input
+        from butlers.core.temporal.deadlines_db import deadline_create as _dl_create
+
+        if target_date is None:
+            raise ValueError("target_date is required when task_type='deadline'")
+        if lead_time_days is None:
+            raise ValueError("lead_time_days is required when task_type='deadline'")
+        if alert_thresholds is None:
+            raise ValueError("alert_thresholds is required when task_type='deadline'")
+
+        parsed_date = (
+            _date.fromisoformat(target_date) if isinstance(target_date, str) else target_date
+        )
+        validate_deadline_input(
+            target_date=parsed_date,
+            lead_time_days=lead_time_days,
+            alert_thresholds=alert_thresholds,
+        )
+        return await _dl_create(
+            pool,
+            name=name,
+            prompt=prompt,
+            target_date=parsed_date,
+            lead_time_days=lead_time_days,
+            alert_thresholds=alert_thresholds,
+            depends_on=depends_on,
+        )
+
+    # --- Cron branch --------------------------------------------------------
+    if cron is None:
+        raise ValueError("cron is required when task_type='cron'")
     if not croniter.is_valid(cron):
         raise ValueError(f"Invalid cron expression: {cron!r}")
     dispatch_mode, prompt, job_name, job_args, complexity = _normalize_schedule_dispatch(

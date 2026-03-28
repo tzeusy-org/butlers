@@ -4148,8 +4148,9 @@ class ButlerDaemon:
         @mcp.tool()
         async def schedule_create(
             name: str,
-            cron: str,
+            cron: str | None = None,
             prompt: str | None = None,
+            task_type: str = "cron",
             dispatch_mode: str = "prompt",
             job_name: str | None = None,
             job_args: dict[str, Any] | None = None,
@@ -4159,47 +4160,85 @@ class ButlerDaemon:
             until_at: datetime | None = None,
             display_title: str | None = None,
             calendar_event_id: str | None = None,
+            target_date: str | None = None,
+            lead_time_days: int | None = None,
+            alert_thresholds: list[dict[str, Any]] | None = None,
+            depends_on: list[str] | None = None,
         ) -> dict:
-            """Create a new runtime scheduled task."""
-            create_kwargs: dict[str, Any] = {
-                "dispatch_mode": dispatch_mode,
-                "job_name": job_name,
-                "job_args": job_args,
-                "stagger_key": daemon.config.name,
-            }
-            if timezone is not None:
-                create_kwargs["timezone"] = timezone
-            if start_at is not None:
-                create_kwargs["start_at"] = start_at
-            if end_at is not None:
-                create_kwargs["end_at"] = end_at
-            if until_at is not None:
-                create_kwargs["until_at"] = until_at
-            if display_title is not None:
-                create_kwargs["display_title"] = display_title
-            if calendar_event_id is not None:
-                create_kwargs["calendar_event_id"] = calendar_event_id
-            task_id = await _schedule_create(
-                pool,
-                name,
-                cron,
-                prompt,
-                **create_kwargs,
-            )
-            return {
-                "id": str(task_id),
-                "status": "created",
-                "dispatch_mode": dispatch_mode,
-                "prompt": prompt,
-                "job_name": job_name,
-                "job_args": job_args,
-                "timezone": timezone,
-                "start_at": start_at.isoformat() if start_at else None,
-                "end_at": end_at.isoformat() if end_at else None,
-                "until_at": until_at.isoformat() if until_at else None,
-                "display_title": display_title,
-                "calendar_event_id": calendar_event_id,
-            }
+            """Create a new runtime scheduled task (cron or deadline).
+
+            For cron tasks, ``cron`` is required. For deadline tasks, set
+            ``task_type='deadline'`` and provide ``target_date`` (YYYY-MM-DD),
+            ``lead_time_days``, and ``alert_thresholds`` instead.
+            """
+            try:
+                create_kwargs: dict[str, Any] = {
+                    "task_type": task_type,
+                    "dispatch_mode": dispatch_mode,
+                    "job_name": job_name,
+                    "job_args": job_args,
+                    "stagger_key": daemon.config.name,
+                }
+                if timezone is not None:
+                    create_kwargs["timezone"] = timezone
+                if start_at is not None:
+                    create_kwargs["start_at"] = start_at
+                if end_at is not None:
+                    create_kwargs["end_at"] = end_at
+                if until_at is not None:
+                    create_kwargs["until_at"] = until_at
+                if display_title is not None:
+                    create_kwargs["display_title"] = display_title
+                if calendar_event_id is not None:
+                    create_kwargs["calendar_event_id"] = calendar_event_id
+                if target_date is not None:
+                    create_kwargs["target_date"] = target_date
+                if lead_time_days is not None:
+                    create_kwargs["lead_time_days"] = lead_time_days
+                if alert_thresholds is not None:
+                    create_kwargs["alert_thresholds"] = alert_thresholds
+                if depends_on is not None:
+                    create_kwargs["depends_on"] = depends_on
+                task_id = await _schedule_create(
+                    pool,
+                    name,
+                    cron,
+                    prompt,
+                    **create_kwargs,
+                )
+                result: dict[str, Any] = {
+                    "id": str(task_id),
+                    "status": "created",
+                    "task_type": task_type,
+                }
+                if task_type == "deadline":
+                    result.update(
+                        {
+                            "name": name,
+                            "target_date": target_date,
+                            "lead_time_days": lead_time_days,
+                            "alert_thresholds": alert_thresholds,
+                            "depends_on": depends_on,
+                        }
+                    )
+                else:
+                    result.update(
+                        {
+                            "dispatch_mode": dispatch_mode,
+                            "prompt": prompt,
+                            "job_name": job_name,
+                            "job_args": job_args,
+                            "timezone": timezone,
+                            "start_at": start_at.isoformat() if start_at else None,
+                            "end_at": end_at.isoformat() if end_at else None,
+                            "until_at": until_at.isoformat() if until_at else None,
+                            "display_title": display_title,
+                            "calendar_event_id": calendar_event_id,
+                        }
+                    )
+                return result
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
 
         @mcp.tool()
         async def remind(
