@@ -160,6 +160,10 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "delivery_preferences_get",
         "deferred_notifications_list",
         "deferred_notification_cancel",
+        "event_chain_create",
+        "event_chain_update",
+        "event_chain_list",
+        "event_chain_delete",
         "module.states",
         "module.set_enabled",
         "correct",
@@ -4619,12 +4623,12 @@ class ButlerDaemon:
 
             # Priority validation
             from butlers.core.temporal.delivery_db import _VALID_PRIORITIES as _VP
+
             if priority not in _VP:
                 return {
                     "status": "error",
                     "error": (
-                        f"Invalid priority {priority!r}. "
-                        f"Allowed values: {', '.join(sorted(_VP))}"
+                        f"Invalid priority {priority!r}. Allowed values: {', '.join(sorted(_VP))}"
                     ),
                 }
 
@@ -5173,6 +5177,171 @@ class ButlerDaemon:
                         f"Notification {notification_id!r} not found, not owned by this butler, "
                         "or already delivered/expired."
                     ),
+                }
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        # Event chain tools
+        @mcp.tool()
+        async def event_chain_create(
+            name: str,
+            trigger_type: str,
+            actions: list[dict[str, Any]],
+            trigger_reference: str | None = None,
+        ) -> dict:
+            """Create a new event chain.
+
+            An event chain defines an automated sequence of actions that fires
+            when a trigger event occurs (calendar event end, deadline expiry, or
+            deadline threshold alert).
+
+            Args:
+                name: Unique name for this chain (scoped to this butler).
+                trigger_type: When to fire. One of:
+                    - 'calendar_event_end': fires when a calendar event ends.
+                    - 'deadline_passed': fires when a deadline task expires/completes.
+                    - 'deadline_threshold': fires when a deadline alert threshold fires.
+                actions: Ordered list of action dicts. Each action must have:
+                    - action_type: 'prompt' or 'job'
+                    - delay_minutes: non-negative integer (cumulative offset from trigger)
+                    - For prompt actions: 'prompt' (non-empty string)
+                    - For job actions: 'job_name' (non-empty string);
+                        optionally 'job_args' (dict)
+                trigger_reference: Optional event_id or task_id this chain fires for.
+                    When omitted, the chain fires for all events of the given type.
+
+            Returns:
+                The created event chain record.
+            """
+            from butlers.core.temporal.event_chains_db import event_chain_create as _ec_create
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                chain = await _ec_create(
+                    _db_pool,
+                    name=name,
+                    trigger_type=trigger_type,
+                    actions=actions,
+                    butler_name=butler_name,
+                    trigger_reference=trigger_reference,
+                )
+                return {"status": "created", "chain": chain}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def event_chain_update(
+            chain_id: str,
+            name: str | None = None,
+            trigger_type: str | None = None,
+            trigger_reference: str | None = None,
+            actions: list[dict[str, Any]] | None = None,
+            status: str | None = None,
+        ) -> dict:
+            """Update fields on an existing event chain.
+
+            When *actions* is updated, status is automatically reset to 'active'
+            (re-arms the chain) unless *status* is explicitly provided.
+
+            Args:
+                chain_id: UUID of the event chain to update.
+                name: New name (optional).
+                trigger_type: New trigger_type (optional).
+                trigger_reference: New trigger_reference (optional; pass empty string
+                    to clear the reference so the chain fires for all events).
+                actions: New actions array (optional). Updating actions resets
+                    status to 'active' so the chain can fire again.
+                status: Explicit status override: 'active' | 'fired' | 'disabled'.
+                    Use 'active' to re-arm a fired chain, 'disabled' to pause it.
+
+            Returns:
+                The updated event chain record.
+            """
+            from butlers.core.temporal.event_chains_db import event_chain_update as _ec_update
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                chain = await _ec_update(
+                    _db_pool,
+                    chain_id,
+                    butler_name=butler_name,
+                    name=name,
+                    trigger_type=trigger_type,
+                    trigger_reference=trigger_reference,
+                    actions=actions,
+                    status=status,
+                )
+                return {"status": "updated", "chain": chain}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def event_chain_list(
+            trigger_type: str | None = None,
+            status: str | None = None,
+            limit: int = 100,
+        ) -> dict:
+            """List event chains for this butler.
+
+            Args:
+                trigger_type: Optional filter. One of: calendar_event_end |
+                    deadline_passed | deadline_threshold. If omitted, all
+                    trigger types are returned.
+                status: Optional filter. One of: active | fired | disabled.
+                    If omitted, all statuses are returned.
+                limit: Maximum number of rows to return (default 100).
+
+            Returns:
+                Dict with 'chains' list ordered by created_at ascending.
+            """
+            from butlers.core.temporal.event_chains_db import event_chain_list as _ec_list
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                chains = await _ec_list(
+                    _db_pool,
+                    butler_name,
+                    trigger_type=trigger_type,
+                    status=status,
+                    limit=limit,
+                )
+                return {"status": "ok", "chains": chains, "count": len(chains)}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def event_chain_delete(chain_id: str) -> dict:
+            """Delete an event chain.
+
+            Permanently removes the event chain. This action cannot be undone.
+            To temporarily disable a chain without deleting it, use
+            event_chain_update with status='disabled' instead.
+
+            Args:
+                chain_id: UUID of the event chain to delete.
+
+            Returns:
+                Dict with status='deleted' if successful, or 'not_found' if
+                the chain was not found for this butler.
+            """
+            from butlers.core.temporal.event_chains_db import event_chain_delete as _ec_delete
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                deleted = await _ec_delete(_db_pool, chain_id, butler_name=butler_name)
+                if deleted:
+                    return {"status": "deleted", "chain_id": chain_id}
+                return {
+                    "status": "not_found",
+                    "error": (f"Event chain {chain_id!r} not found for this butler."),
                 }
             except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
