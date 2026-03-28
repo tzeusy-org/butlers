@@ -1,7 +1,7 @@
 """steam_cursor_cleanup: add revoked_at to steam_accounts for 30-day cursor retention.
 
-Revision ID: core_044
-Revises: core_043
+Revision ID: core_045
+Revises: core_044
 Create Date: 2026-03-28 00:00:00.000000
 
 Adds a ``revoked_at`` column to ``public.steam_accounts`` so that the Steam
@@ -30,8 +30,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_044"
-down_revision = "core_043"
+revision = "core_045"
+down_revision = "core_044"
 branch_labels = None
 depends_on = None
 
