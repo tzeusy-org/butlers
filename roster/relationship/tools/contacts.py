@@ -433,7 +433,11 @@ async def contact_update(
 async def contact_get(
     pool: asyncpg.Pool, contact_id: uuid.UUID, *, allow_missing: bool = False
 ) -> dict[str, Any] | None:
-    """Get a contact by ID, enriched with Dunbar tier and decay score."""
+    """Get a contact by ID, enriched with Dunbar tier and decay score.
+
+    For archived contacts, returns last known dunbar_tier and dunbar_score with
+    dunbar_stale=True to indicate the data is from before archival.
+    """
     row = await pool.fetchrow("SELECT * FROM contacts WHERE id = $1", contact_id)
     if row is None:
         if allow_missing:
@@ -444,15 +448,16 @@ async def contact_get(
         )
     result = _parse_contact(row)
     try:
-        from butlers.tools.relationship.dunbar import get_contact_dunbar
+        from butlers.tools.relationship.dunbar import get_contact_dunbar_with_stale_flag
 
-        dunbar = await get_contact_dunbar(pool, contact_id)
+        dunbar = await get_contact_dunbar_with_stale_flag(pool, contact_id)
         result.update(dunbar)
     except Exception:
         logger.exception("Failed to compute Dunbar fields for contact %s", contact_id)
         result.setdefault("dunbar_tier", 1500)
         result.setdefault("dunbar_score", 0.0)
         result.setdefault("dunbar_tier_override", False)
+        result.setdefault("dunbar_stale", True)
     return result
 
 
