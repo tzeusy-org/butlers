@@ -372,6 +372,12 @@ async def trigger_contacts_sync(
     payload = _parse_mcp_result_payload(raw_text)
     is_error = bool(getattr(result, "is_error", False))
 
+    # The MCP tool may return a normal (non-error) result that contains an
+    # "error" key when the sync engine catches an exception internally.
+    # Detect this so it isn't silently swallowed as a success.
+    if not is_error and isinstance(payload, dict) and "error" in payload:
+        is_error = True
+
     if is_error:
         if provider == "google" and _is_credential_error(payload, raw_text):
             raise HTTPException(
