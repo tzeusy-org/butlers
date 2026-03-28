@@ -179,24 +179,20 @@ class TestHACredentialRoundTrip:
         # Step 1 — Simulate router writing credentials via CredentialStore.store()
         storage: dict[str, str] = {}
         mock_pool = MagicMock()
+        mock_conn = AsyncMock()
 
-        class _MockConn:
-            async def execute(self, query: str, *args: Any) -> None:
-                if "butler_secrets" in query and args:
-                    storage[args[0]] = args[1]  # positional: key, value, ...
+        def _mock_execute(query: str, *args: Any) -> None:
+            if "butler_secrets" in query and args:
+                storage[args[0]] = args[1]  # positional: key, value, ...
 
-            async def fetchrow(self, query: str, key: str) -> dict[str, str] | None:
-                val = storage.get(key)
-                return {"secret_value": val} if val is not None else None
+        def _mock_fetchrow(query: str, key: str) -> dict[str, str] | None:
+            val = storage.get(key)
+            return {"secret_value": val} if val is not None else None
 
-        class _MockAcquire:
-            async def __aenter__(self) -> _MockConn:
-                return _MockConn()
+        mock_conn.execute.side_effect = _mock_execute
+        mock_conn.fetchrow.side_effect = _mock_fetchrow
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
 
-            async def __aexit__(self, *_: Any) -> None:
-                pass
-
-        mock_pool.acquire = lambda: _MockAcquire()
         cred_store = CredentialStore(mock_pool)
 
         await cred_store.store(
