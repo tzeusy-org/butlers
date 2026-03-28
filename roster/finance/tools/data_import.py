@@ -580,6 +580,9 @@ async def _check_duplicate(
 
     Uses the same composite key as dedup Priority 3:
     (account_id, posted_at, amount, merchant).
+
+    Used by _check_duplicates_for_preview for per-row dry-run dedup checks.
+    For batch inserts use _check_duplicates_batch instead.
     """
     if account_id is not None:
         row = await pool.fetchrow(
@@ -656,7 +659,7 @@ async def _check_duplicates_batch(
         # Query with account_id as part of the key.
         rows = await pool.fetch(
             """
-            SELECT (posted_at, amount, merchant)::text AS key
+            SELECT posted_at, amount, merchant
             FROM transactions
             WHERE account_id = $1::uuid
               AND (posted_at, amount, merchant) = ANY($2)
@@ -668,7 +671,7 @@ async def _check_duplicates_batch(
         # Query without account_id constraint.
         rows = await pool.fetch(
             """
-            SELECT (posted_at, amount, merchant)::text AS key
+            SELECT posted_at, amount, merchant
             FROM transactions
             WHERE account_id IS NULL
               AND (posted_at, amount, merchant) = ANY($1)
@@ -676,16 +679,12 @@ async def _check_duplicates_batch(
             tuples,
         )
 
-    # Build a set of duplicate keys found in the database.
-    dup_keys = {row["key"] for row in rows}
+    # Build a set of duplicate tuples using native Python types returned by
+    # asyncpg, avoiding string-serialization mismatches (e.g. timezone format
+    # differences between Python's datetime and PostgreSQL's ::text cast).
+    dup_tuples = {(row["posted_at"], row["amount"], row["merchant"]) for row in rows}
 
-    # Map each batch index to its key; return indices of rows whose keys appear
-    # in the duplicate set.
-    dup_indices = set()
-    for i, (posted_at, amount, merchant) in enumerate(tuples):
-        key = f"({posted_at},{amount},{merchant})"
-        if key in dup_keys:
-            dup_indices.add(i)
+    dup_indices = {i for i, tpl in enumerate(tuples) if tpl in dup_tuples}
 
     return dup_indices
 

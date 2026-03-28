@@ -611,27 +611,40 @@ class TestDeduplication:
 
         Now uses batch dedup: pool.fetch returns all matching rows at once.
         """
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
         from roster.finance.tools.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
 
-        # Pool.fetch returns all matching rows for the batch query.
-        # When the batch dedup query finds matches, _check_duplicates_batch
-        # returns a set of matching indices. The merchants are normalized,
-        # and amounts/dates are parsed before building keys.
-        # For CHASE_CSV, we expect these normalized values and UTC datetimes.
+        # Pool.fetch returns native-type column values for matching rows.
+        # _check_duplicates_batch compares (posted_at, amount, merchant) tuples
+        # using native Python types (datetime, Decimal, str) to avoid string
+        # serialization mismatches with PostgreSQL's ::text cast.
         pool = MagicMock()
-
-        # Return rows that match the tuples built by _check_duplicates_batch.
-        # The key format is f"({posted_at},{amount},{merchant})" where
-        # posted_at is a UTC datetime, amount is a Decimal, merchant is normalized.
-        # We return these keys so that _check_duplicates_batch can match them.
         pool.fetch = AsyncMock(
             return_value=[
-                {"key": "(2024-01-15 00:00:00+00:00,45.32,Whole Foods Market)"},
-                {"key": "(2024-01-16 00:00:00+00:00,32.00,Shell Oil)"},
-                {"key": "(2024-01-18 00:00:00+00:00,15.49,Netflix.Com)"},
-                {"key": "(2024-01-20 00:00:00+00:00,1200.00,Direct Deposit)"},
+                {
+                    "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                    "amount": Decimal("45.32"),
+                    "merchant": "Whole Foods Market",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                    "amount": Decimal("32.00"),
+                    "merchant": "Shell Oil",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 18, tzinfo=UTC),
+                    "amount": Decimal("15.49"),
+                    "merchant": "Netflix.Com",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 20, tzinfo=UTC),
+                    "amount": Decimal("1200.00"),
+                    "merchant": "Direct Deposit",
+                },
             ]
         )
         pool.execute = AsyncMock()
@@ -692,18 +705,27 @@ class TestDeduplication:
         ]
 
         pool = MagicMock()
-        # Simulate: all rows are duplicates.
+        # Simulate: all rows are duplicates. Return native column values to
+        # match the tuple comparison in _check_duplicates_batch.
         pool.fetch = AsyncMock(
             return_value=[
-                {"key": "(2024-01-15 00:00:00+00:00,45.32,Whole Foods)"},
-                {"key": "(2024-01-16 00:00:00+00:00,32.00,Shell Oil)"},
+                {
+                    "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                    "amount": Decimal("45.32"),
+                    "merchant": "Whole Foods",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                    "amount": Decimal("32.00"),
+                    "merchant": "Shell Oil",
+                },
             ]
         )
 
         dup_indices = await _check_duplicates_batch(pool, batch, account_id=None)
-        # This test checks that the batch query was called (mocked).
-        # The actual key matching logic is tested below.
         assert pool.fetch.called
+        assert 0 in dup_indices
+        assert 1 in dup_indices
 
     async def test_batch_dedup_no_duplicates(self):
         """_check_duplicates_batch returns empty set when pool.fetch returns no rows."""
@@ -756,8 +778,16 @@ class TestDeduplication:
         # Only first two rows are duplicates; third is new.
         pool.fetch = AsyncMock(
             return_value=[
-                {"key": "(2024-01-15 00:00:00+00:00,45.32,Whole Foods)"},
-                {"key": "(2024-01-16 00:00:00+00:00,32.00,Shell Oil)"},
+                {
+                    "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                    "amount": Decimal("45.32"),
+                    "merchant": "Whole Foods",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                    "amount": Decimal("32.00"),
+                    "merchant": "Shell Oil",
+                },
             ]
         )
 
