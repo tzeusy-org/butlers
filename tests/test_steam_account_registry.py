@@ -352,7 +352,7 @@ class TestCreateSteamAccount:
         conn.fetchrow = AsyncMock(
             side_effect=[
                 revoked_existing,  # duplicate check → revoked existing
-                reactivated_row,   # UPDATE … RETURNING
+                reactivated_row,  # UPDATE … RETURNING
             ]
         )
 
