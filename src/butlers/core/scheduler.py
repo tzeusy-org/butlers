@@ -480,19 +480,30 @@ async def sync_schedules(
                 "job_name": job_name,
                 "job_args": job_args,
                 "complexity": complexity,
-                **deadline_fields,
+                # Deadline-specific fields — validated above for deadline tasks,
+                # None for cron tasks; always present so the needs_update check
+                # can compare them without KeyError.
+                "target_date": deadline_fields.get("target_date"),
+                "lead_time_days": deadline_fields.get("lead_time_days"),
+                "alert_thresholds": deadline_fields.get("alert_thresholds"),
             }
         )
 
     toml_names = {s["name"] for s in normalized_schedules}
 
+    # When the schema includes temporal intelligence columns, fetch them so the
+    # needs_update check can detect changes to deadline-specific fields.
+    _temporal_select = (
+        ", task_type, target_date, lead_time_days, alert_thresholds" if _has_task_type else ""
+    )
+
     # Fetch existing tasks whose names match any TOML schedule (regardless of source).
     # A runtime-created task (source='db') may share a name with a TOML schedule;
     # TOML takes ownership on next startup to avoid unique-constraint violations.
     rows = await pool.fetch(
-        """
+        f"""
         SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled
+               complexity, enabled{_temporal_select}
         FROM scheduled_tasks
         WHERE name = ANY($1::text[])
         """,
@@ -500,9 +511,9 @@ async def sync_schedules(
     )
     # Also fetch all remaining toml-sourced tasks (for the disable-removed-tasks pass below).
     toml_only_rows = await pool.fetch(
-        """
+        f"""
         SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled
+               complexity, enabled{_temporal_select}
         FROM scheduled_tasks
         WHERE source = 'toml' AND name != ALL($1::text[])
         """,
@@ -522,6 +533,9 @@ async def sync_schedules(
         job_name = entry["job_name"]
         job_args = entry["job_args"]
         complexity = entry["complexity"]
+        target_date = entry["target_date"]
+        lead_time_days = entry["lead_time_days"]
+        alert_thresholds = entry["alert_thresholds"]
         next_run_at = _next_run(
             cron,
             stagger_key=stagger_key,
@@ -546,6 +560,18 @@ async def sync_schedules(
                 or existing_complexity != complexity
                 or not existing["enabled"]
             )
+            # Also detect changes to deadline-specific fields when schema supports them.
+            # Restrict to deadline tasks to avoid spurious updates on cron tasks that
+            # may carry stale deadline-column values from a prior task_type migration.
+            if not needs_update and _has_task_type and task_type == "deadline":
+                existing_alert_thresholds = existing.get("alert_thresholds")
+                if isinstance(existing_alert_thresholds, str):
+                    existing_alert_thresholds = json.loads(existing_alert_thresholds)
+                needs_update = (
+                    existing.get("target_date") != target_date
+                    or existing.get("lead_time_days") != lead_time_days
+                    or existing_alert_thresholds != alert_thresholds
+                )
             if needs_update:
                 if _has_task_type and task_type == "deadline":
                     await pool.execute(
@@ -576,9 +602,9 @@ async def sync_schedules(
                         complexity,
                         next_run_at,
                         task_type,
-                        entry.get("target_date"),
-                        entry.get("lead_time_days"),
-                        json.dumps(entry.get("alert_thresholds")),
+                        target_date,
+                        lead_time_days,
+                        json.dumps(alert_thresholds) if alert_thresholds is not None else None,
                     )
                 else:
                     await pool.execute(
@@ -639,9 +665,9 @@ async def sync_schedules(
                     complexity,
                     next_run_at,
                     task_type,
-                    entry.get("target_date"),
-                    entry.get("lead_time_days"),
-                    json.dumps(entry.get("alert_thresholds")),
+                    target_date,
+                    lead_time_days,
+                    json.dumps(alert_thresholds) if alert_thresholds is not None else None,
                 )
             else:
                 await pool.execute(

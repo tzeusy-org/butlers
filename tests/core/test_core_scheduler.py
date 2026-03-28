@@ -1693,3 +1693,255 @@ async def test_schedule_list_includes_complexity(pool):
 
     assert high_task["complexity"] == "high"
     assert default_task["complexity"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# sync_schedules — deadline-specific field change detection (bu-ocvm)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pool_with_temporal(postgres_container):
+    """Like pool, but with temporal intelligence columns added to scheduled_tasks."""
+    db_name = _unique_db_name()
+
+    admin_conn = await asyncpg.connect(
+        host=postgres_container.get_container_host_ip(),
+        port=int(postgres_container.get_exposed_port(5432)),
+        user=postgres_container.username,
+        password=postgres_container.password,
+        database="postgres",
+    )
+    try:
+        safe_name = db_name.replace('"', '""')
+        await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
+    finally:
+        await admin_conn.close()
+
+    p = await asyncpg.create_pool(
+        host=postgres_container.get_container_host_ip(),
+        port=int(postgres_container.get_exposed_port(5432)),
+        user=postgres_container.username,
+        password=postgres_container.password,
+        database=db_name,
+        min_size=1,
+        max_size=3,
+    )
+
+    await p.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled_tasks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name TEXT UNIQUE NOT NULL,
+            cron TEXT NOT NULL,
+            prompt TEXT,
+            dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
+            job_name TEXT,
+            job_args JSONB,
+            complexity TEXT DEFAULT 'medium',
+            timezone TEXT NOT NULL DEFAULT 'UTC',
+            start_at TIMESTAMPTZ,
+            end_at TIMESTAMPTZ,
+            until_at TIMESTAMPTZ,
+            display_title TEXT,
+            calendar_event_id TEXT,
+            source TEXT NOT NULL DEFAULT 'db',
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            next_run_at TIMESTAMPTZ,
+            last_run_at TIMESTAMPTZ,
+            last_result JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            task_type TEXT DEFAULT 'cron',
+            target_date DATE,
+            lead_time_days INTEGER,
+            alert_thresholds JSONB,
+            deadline_status TEXT,
+            fired_thresholds JSONB,
+            depends_on JSONB,
+            CONSTRAINT scheduled_tasks_dispatch_mode_check
+                CHECK (dispatch_mode IN ('prompt', 'job')),
+            CONSTRAINT scheduled_tasks_dispatch_payload_check
+                CHECK (
+                    (dispatch_mode = 'prompt' AND prompt IS NOT NULL AND job_name IS NULL)
+                    OR (dispatch_mode = 'job' AND job_name IS NOT NULL)
+                ),
+            CONSTRAINT scheduled_tasks_window_bounds_check
+                CHECK (start_at IS NULL OR end_at IS NULL OR end_at > start_at),
+            CONSTRAINT scheduled_tasks_until_bounds_check
+                CHECK (until_at IS NULL OR start_at IS NULL OR until_at >= start_at)
+        )
+    """)
+    await p.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_scheduled_tasks_calendar_event_id
+        ON scheduled_tasks (calendar_event_id)
+        WHERE calendar_event_id IS NOT NULL
+        """
+    )
+
+    yield p
+    await p.close()
+
+
+async def test_sync_detects_target_date_change(pool_with_temporal):
+    """sync_schedules triggers update when only target_date changes."""
+    import datetime as _dt
+
+    from butlers.core.scheduler import sync_schedules
+
+    future1 = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(days=60)).date()
+    future2 = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(days=90)).date()
+
+    original = [
+        {
+            "name": "deadline-target-date-change",
+            "task_type": "deadline",
+            "cron": "0 9 * * *",
+            "prompt": "check deadline",
+            "target_date": future1,
+            "lead_time_days": 30,
+            "alert_thresholds": [{"days_before": 7, "severity": "warning"}],
+        }
+    ]
+    await sync_schedules(pool_with_temporal, original)
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT target_date, updated_at FROM scheduled_tasks"
+        " WHERE name = 'deadline-target-date-change'"
+    )
+    assert row["target_date"] == future1
+    original_updated_at = row["updated_at"]
+
+    # Re-sync with only target_date changed; all other fields identical.
+    updated = [
+        {
+            "name": "deadline-target-date-change",
+            "task_type": "deadline",
+            "cron": "0 9 * * *",
+            "prompt": "check deadline",
+            "target_date": future2,
+            "lead_time_days": 30,
+            "alert_thresholds": [{"days_before": 7, "severity": "warning"}],
+        }
+    ]
+    await sync_schedules(pool_with_temporal, updated)
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT target_date, updated_at FROM scheduled_tasks"
+        " WHERE name = 'deadline-target-date-change'"
+    )
+    assert row["target_date"] == future2
+    assert row["updated_at"] > original_updated_at
+
+
+async def test_sync_detects_lead_time_days_change(pool_with_temporal):
+    """sync_schedules triggers update when only lead_time_days changes."""
+    import datetime as _dt
+
+    from butlers.core.scheduler import sync_schedules
+
+    future = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(days=60)).date()
+
+    original = [
+        {
+            "name": "deadline-lead-time-change",
+            "task_type": "deadline",
+            "cron": "0 9 * * *",
+            "prompt": "check deadline",
+            "target_date": future,
+            "lead_time_days": 30,
+            "alert_thresholds": [{"days_before": 7, "severity": "warning"}],
+        }
+    ]
+    await sync_schedules(pool_with_temporal, original)
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT lead_time_days, updated_at FROM scheduled_tasks"
+        " WHERE name = 'deadline-lead-time-change'"
+    )
+    assert row["lead_time_days"] == 30
+    original_updated_at = row["updated_at"]
+
+    # Re-sync with only lead_time_days changed.
+    updated = [
+        {
+            "name": "deadline-lead-time-change",
+            "task_type": "deadline",
+            "cron": "0 9 * * *",
+            "prompt": "check deadline",
+            "target_date": future,
+            "lead_time_days": 45,
+            "alert_thresholds": [{"days_before": 7, "severity": "warning"}],
+        }
+    ]
+    await sync_schedules(pool_with_temporal, updated)
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT lead_time_days, updated_at FROM scheduled_tasks"
+        " WHERE name = 'deadline-lead-time-change'"
+    )
+    assert row["lead_time_days"] == 45
+    assert row["updated_at"] > original_updated_at
+
+
+async def test_sync_detects_alert_thresholds_change(pool_with_temporal):
+    """sync_schedules triggers update when only alert_thresholds changes."""
+    import datetime as _dt
+    import json
+
+    from butlers.core.scheduler import sync_schedules
+
+    future = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(days=60)).date()
+
+    original_thresholds = [{"days_before": 7, "severity": "warning"}]
+    updated_thresholds = [
+        {"days_before": 14, "severity": "info"},
+        {"days_before": 3, "severity": "critical"},
+    ]
+
+    original = [
+        {
+            "name": "deadline-alert-thresholds-change",
+            "task_type": "deadline",
+            "cron": "0 9 * * *",
+            "prompt": "check deadline",
+            "target_date": future,
+            "lead_time_days": 30,
+            "alert_thresholds": original_thresholds,
+        }
+    ]
+    await sync_schedules(pool_with_temporal, original)
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT alert_thresholds, updated_at FROM scheduled_tasks"
+        " WHERE name = 'deadline-alert-thresholds-change'"
+    )
+    stored = row["alert_thresholds"]
+    if isinstance(stored, str):
+        stored = json.loads(stored)
+    assert stored == original_thresholds
+    original_updated_at = row["updated_at"]
+
+    # Re-sync with only alert_thresholds changed.
+    updated = [
+        {
+            "name": "deadline-alert-thresholds-change",
+            "task_type": "deadline",
+            "cron": "0 9 * * *",
+            "prompt": "check deadline",
+            "target_date": future,
+            "lead_time_days": 30,
+            "alert_thresholds": updated_thresholds,
+        }
+    ]
+    await sync_schedules(pool_with_temporal, updated)
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT alert_thresholds, updated_at FROM scheduled_tasks"
+        " WHERE name = 'deadline-alert-thresholds-change'"
+    )
+    stored = row["alert_thresholds"]
+    if isinstance(stored, str):
+        stored = json.loads(stored)
+    assert stored == updated_thresholds
+    assert row["updated_at"] > original_updated_at
