@@ -43,14 +43,58 @@ def upgrade() -> None:
             ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1
     """)
 
+    # Add CHECK constraints for domain-bounded TEXT columns on transactions
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'transactions_type_check'
+                  AND conrelid = 'transactions'::regclass
+            ) THEN
+                ALTER TABLE transactions
+                    ADD CONSTRAINT transactions_type_check
+                        CHECK (type IN ('purchase', 'refund', 'transfer', 'fee', 'adjustment', 'other'));
+            END IF;
+        END $$
+    """)
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'transactions_category_source_check'
+                  AND conrelid = 'transactions'::regclass
+            ) THEN
+                ALTER TABLE transactions
+                    ADD CONSTRAINT transactions_category_source_check
+                        CHECK (category_source IN ('auto', 'manual', 'ml', 'rule'));
+            END IF;
+        END $$
+    """)
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'transactions_source_check'
+                  AND conrelid = 'transactions'::regclass
+            ) THEN
+                ALTER TABLE transactions
+                    ADD CONSTRAINT transactions_source_check
+                        CHECK (source IN ('manual', 'csv_import', 'email', 'api', 'bank_sync'));
+            END IF;
+        END $$
+    """)
+
     # -------------------------------------------------------------------------
     # Task 1.3 — Add new columns to finance.accounts
     # -------------------------------------------------------------------------
+    # Note: accounts.updated_at was already added in finance_001 — not re-added here.
     op.execute("""
         ALTER TABLE accounts
             ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true,
-            ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ,
-            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ
     """)
 
     # Expand accounts.type CHECK constraint to include 'loan' and 'other'
@@ -59,9 +103,18 @@ def upgrade() -> None:
             DROP CONSTRAINT IF EXISTS accounts_type_check
     """)
     op.execute("""
-        ALTER TABLE accounts
-            ADD CONSTRAINT accounts_type_check
-                CHECK (type IN ('checking', 'savings', 'credit', 'investment', 'loan', 'other'))
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'accounts_type_check'
+                  AND conrelid = 'accounts'::regclass
+            ) THEN
+                ALTER TABLE accounts
+                    ADD CONSTRAINT accounts_type_check
+                        CHECK (type IN ('checking', 'savings', 'credit', 'investment', 'loan', 'other'));
+            END IF;
+        END $$
     """)
 
     # -------------------------------------------------------------------------
@@ -126,6 +179,20 @@ def upgrade() -> None:
         )
     """)
     op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'merchant_mappings_source_check'
+                  AND conrelid = 'merchant_mappings'::regclass
+            ) THEN
+                ALTER TABLE merchant_mappings
+                    ADD CONSTRAINT merchant_mappings_source_check
+                        CHECK (source IN ('manual', 'learned'));
+            END IF;
+        END $$
+    """)
+    op.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_merchant_mapping_pattern
             ON merchant_mappings (lower(raw_pattern))
             WHERE is_active = true
@@ -154,6 +221,20 @@ def upgrade() -> None:
             updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'recurring_groups_status_check'
+                  AND conrelid = 'recurring_groups'::regclass
+            ) THEN
+                ALTER TABLE recurring_groups
+                    ADD CONSTRAINT recurring_groups_status_check
+                        CHECK (status IN ('active', 'inactive', 'paused'));
+            END IF;
+        END $$
+    """)
 
     # -------------------------------------------------------------------------
     # Task 1.7 — Create finance.import_batches table
@@ -177,6 +258,20 @@ def upgrade() -> None:
             created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
         )
+    """)
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'import_batches_status_check'
+                  AND conrelid = 'import_batches'::regclass
+            ) THEN
+                ALTER TABLE import_batches
+                    ADD CONSTRAINT import_batches_status_check
+                        CHECK (status IN ('pending', 'running', 'completed', 'failed'));
+            END IF;
+        END $$
     """)
 
     # -------------------------------------------------------------------------
@@ -218,6 +313,20 @@ def upgrade() -> None:
         )
     """)
     op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'budgets_period_check'
+                  AND conrelid = 'budgets'::regclass
+            ) THEN
+                ALTER TABLE budgets
+                    ADD CONSTRAINT budgets_period_check
+                        CHECK (period IN ('monthly', 'weekly', 'yearly', 'daily'));
+            END IF;
+        END $$
+    """)
+    op.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_budget_category_period
             ON budgets (category, period)
             WHERE is_active = true
@@ -250,89 +359,120 @@ def upgrade() -> None:
 
     # -------------------------------------------------------------------------
     # Task 1.11 — Create new indexes on finance.transactions
+    #
+    # All indexes on the transactions table are created CONCURRENTLY to avoid
+    # AccessShareLock + ShareLock that would block writes on a production table.
+    # CONCURRENTLY cannot run inside a transaction, so each index creation runs
+    # in its own autocommit_block.
     # -------------------------------------------------------------------------
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_posted_at
-            ON transactions (posted_at DESC)
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_transaction_date
-            ON transactions (transaction_date DESC)
-            WHERE transaction_date IS NOT NULL
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_category_posted
-            ON transactions (category, posted_at DESC)
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_normalized_merchant
-            ON transactions (normalized_merchant)
-            WHERE normalized_merchant IS NOT NULL
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_direction_posted
-            ON transactions (direction, posted_at DESC)
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_amount
-            ON transactions (amount)
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_active
-            ON transactions (posted_at DESC)
-            WHERE deleted_at IS NULL
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_recurring_group
-            ON transactions (recurring_group_id)
-            WHERE recurring_group_id IS NOT NULL
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_import_batch
-            ON transactions (import_batch_id)
-            WHERE import_batch_id IS NOT NULL
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_tags_gin
-            ON transactions USING GIN (tags)
-    """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_txn_debit_category_posted
-            ON transactions (category, posted_at DESC)
-            WHERE direction = 'debit' AND deleted_at IS NULL
-    """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_posted_at
+                ON transactions (posted_at DESC)
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_transaction_date
+                ON transactions (transaction_date DESC)
+                WHERE transaction_date IS NOT NULL
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_category_posted
+                ON transactions (category, posted_at DESC)
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_normalized_merchant
+                ON transactions (normalized_merchant)
+                WHERE normalized_merchant IS NOT NULL
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_direction_posted
+                ON transactions (direction, posted_at DESC)
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_amount
+                ON transactions (amount)
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_active
+                ON transactions (posted_at DESC)
+                WHERE deleted_at IS NULL
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_recurring_group
+                ON transactions (recurring_group_id)
+                WHERE recurring_group_id IS NOT NULL
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_import_batch
+                ON transactions (import_batch_id)
+                WHERE import_batch_id IS NOT NULL
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_tags_gin
+                ON transactions USING GIN (tags)
+        """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_txn_debit_category_posted
+                ON transactions (category, posted_at DESC)
+                WHERE direction = 'debit' AND deleted_at IS NULL
+        """)
 
     # -------------------------------------------------------------------------
     # Task 1.12 — Tiered deduplication UNIQUE partial indexes
+    #
+    # Also created CONCURRENTLY to avoid write locks on transactions.
     # -------------------------------------------------------------------------
     # Drop old dedup index from finance_001 that is superseded by the new tiered indexes
-    op.execute("""
-        DROP INDEX IF EXISTS uq_transactions_dedupe
-    """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            DROP INDEX CONCURRENTLY IF EXISTS uq_transactions_dedupe
+        """)
 
     # Priority 1: Bank-provided external ID (highest confidence)
-    op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_txn_external_id_account
-            ON transactions (account_id, external_id)
-            WHERE external_id IS NOT NULL
-    """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_txn_external_id_account
+                ON transactions (account_id, external_id)
+                WHERE external_id IS NOT NULL
+        """)
 
     # Priority 2: Source message dedup (email ingestion dedup — replaces old uq_transactions_dedupe)
-    op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_txn_source_dedupe
-            ON transactions (source_message_id, merchant, amount, posted_at)
-            WHERE source_message_id IS NOT NULL
-    """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_txn_source_dedupe
+                ON transactions (source_message_id, merchant, amount, posted_at)
+                WHERE source_message_id IS NOT NULL
+        """)
 
     # Priority 3: Composite fallback (only for rows without higher-priority keys)
-    op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_txn_composite_dedupe
-            ON transactions (account_id, posted_at, amount, merchant)
-            WHERE external_id IS NULL AND source_message_id IS NULL
-    """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_txn_composite_dedupe
+                ON transactions (account_id, posted_at, amount, merchant)
+                WHERE external_id IS NULL AND source_message_id IS NULL
+        """)
 
     # -------------------------------------------------------------------------
     # Task 1.13 — Create finance.spending_summaries materialized view
+    #
+    # This view is a snapshot populated once at migration time. It does NOT
+    # update automatically — PostgreSQL materialized views require explicit
+    # REFRESH MATERIALIZED VIEW calls. The unique index uq_spending_summary_key
+    # enables REFRESH MATERIALIZED VIEW CONCURRENTLY (non-blocking).
+    #
+    # Refresh cadence: the `anomaly-digest` scheduled task (daily 21:00) calls
+    # REFRESH MATERIALIZED VIEW CONCURRENTLY spending_summaries after scanning
+    # for anomalies. The monthly-spending-summary task also triggers a refresh.
     # -------------------------------------------------------------------------
     op.execute("""
         CREATE MATERIALIZED VIEW IF NOT EXISTS spending_summaries AS
@@ -386,9 +526,76 @@ def upgrade() -> None:
                 ON DELETE SET NULL
     """)
 
+    # -------------------------------------------------------------------------
+    # Task 1.15 — Add FK constraints from category TEXT columns to categories.name
+    #
+    # transactions.category, merchant_mappings.category, and budgets.category
+    # reference the canonical categories table by name. ON UPDATE CASCADE keeps
+    # records consistent when a category is renamed; ON DELETE RESTRICT prevents
+    # orphaned rows when a category is removed.
+    #
+    # Note: These FKs are applied after category seeding so all pre-existing
+    # transactions with a NULL category are unaffected (FK allows NULLs).
+    # -------------------------------------------------------------------------
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'fk_txn_category'
+                  AND conrelid = 'transactions'::regclass
+            ) THEN
+                ALTER TABLE transactions
+                    ADD CONSTRAINT fk_txn_category
+                        FOREIGN KEY (category)
+                        REFERENCES categories(name)
+                        ON UPDATE CASCADE ON DELETE RESTRICT;
+            END IF;
+        END $$
+    """)
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'fk_merchant_mappings_category'
+                  AND conrelid = 'merchant_mappings'::regclass
+            ) THEN
+                ALTER TABLE merchant_mappings
+                    ADD CONSTRAINT fk_merchant_mappings_category
+                        FOREIGN KEY (category)
+                        REFERENCES categories(name)
+                        ON UPDATE CASCADE ON DELETE RESTRICT;
+            END IF;
+        END $$
+    """)
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'fk_budgets_category'
+                  AND conrelid = 'budgets'::regclass
+            ) THEN
+                ALTER TABLE budgets
+                    ADD CONSTRAINT fk_budgets_category
+                        FOREIGN KEY (category)
+                        REFERENCES categories(name)
+                        ON UPDATE CASCADE ON DELETE RESTRICT;
+            END IF;
+        END $$
+    """)
+
 
 def downgrade() -> None:
-    # Drop FK constraints on transactions first
+    # Drop FK constraints from category columns first
+    op.execute("ALTER TABLE budgets DROP CONSTRAINT IF EXISTS fk_budgets_category")
+    op.execute(
+        "ALTER TABLE merchant_mappings DROP CONSTRAINT IF EXISTS fk_merchant_mappings_category"
+    )
+    op.execute("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS fk_txn_category")
+
+    # Drop FK constraints on transactions
     op.execute("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS fk_txn_import_batch")
     op.execute("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS fk_txn_duplicate_of")
     op.execute("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS fk_txn_recurring_group")
@@ -396,30 +603,45 @@ def downgrade() -> None:
     # Drop materialized view (no downstream FK dependencies)
     op.execute("DROP MATERIALIZED VIEW IF EXISTS spending_summaries")
 
-    # Drop tiered dedup indexes (replace with original uq_transactions_dedupe)
-    op.execute("DROP INDEX IF EXISTS uq_txn_composite_dedupe")
-    op.execute("DROP INDEX IF EXISTS uq_txn_source_dedupe")
-    op.execute("DROP INDEX IF EXISTS uq_txn_external_id_account")
+    # Drop tiered dedup indexes CONCURRENTLY (replace with original uq_transactions_dedupe)
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS uq_txn_composite_dedupe")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS uq_txn_source_dedupe")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS uq_txn_external_id_account")
 
-    # Restore original dedup index from finance_001
-    op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_dedupe
-            ON transactions (source_message_id, merchant, amount, posted_at)
-            WHERE source_message_id IS NOT NULL
-    """)
+    # Restore original dedup index from finance_001 (CONCURRENTLY to avoid write locks)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_transactions_dedupe
+                ON transactions (source_message_id, merchant, amount, posted_at)
+                WHERE source_message_id IS NOT NULL
+        """)
 
-    # Drop new transaction indexes
-    op.execute("DROP INDEX IF EXISTS idx_txn_debit_category_posted")
-    op.execute("DROP INDEX IF EXISTS idx_txn_tags_gin")
-    op.execute("DROP INDEX IF EXISTS idx_txn_import_batch")
-    op.execute("DROP INDEX IF EXISTS idx_txn_recurring_group")
-    op.execute("DROP INDEX IF EXISTS idx_txn_active")
-    op.execute("DROP INDEX IF EXISTS idx_txn_amount")
-    op.execute("DROP INDEX IF EXISTS idx_txn_direction_posted")
-    op.execute("DROP INDEX IF EXISTS idx_txn_normalized_merchant")
-    op.execute("DROP INDEX IF EXISTS idx_txn_category_posted")
-    op.execute("DROP INDEX IF EXISTS idx_txn_transaction_date")
-    op.execute("DROP INDEX IF EXISTS idx_txn_posted_at")
+    # Drop new transaction indexes CONCURRENTLY to avoid write locks
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_debit_category_posted")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_tags_gin")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_import_batch")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_recurring_group")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_active")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_amount")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_direction_posted")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_normalized_merchant")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_category_posted")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_transaction_date")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_txn_posted_at")
 
     # Drop tables with FKs to other tables first (dependency order)
     op.execute("DROP TABLE IF EXISTS transaction_corrections")
@@ -454,9 +676,9 @@ def downgrade() -> None:
     """)
 
     # Drop new columns from accounts
+    # Note: accounts.updated_at was introduced in finance_001 — NOT dropped here.
     op.execute("""
         ALTER TABLE accounts
-            DROP COLUMN IF EXISTS updated_at,
             DROP COLUMN IF EXISTS last_synced_at,
             DROP COLUMN IF EXISTS is_active
     """)

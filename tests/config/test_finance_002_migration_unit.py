@@ -86,7 +86,7 @@ class TestRevisionMetadata:
 
 
 class TestTransactionNewColumns:
-    """upgrade() must add all 16 intelligence columns to finance.transactions."""
+    """upgrade() must add all 18 intelligence columns to finance.transactions."""
 
     def _src(self) -> str:
         return inspect.getsource(_load_migration().upgrade)
@@ -616,12 +616,23 @@ class TestTransactionNewIndexes:
         assert "deleted_at IS NULL" in block
 
     def test_all_new_indexes_use_if_not_exists(self):
-        """All CREATE INDEX / CREATE UNIQUE INDEX must use IF NOT EXISTS."""
+        """All CREATE INDEX / CREATE UNIQUE INDEX must use IF NOT EXISTS.
+
+        Indexes on the transactions table use CONCURRENTLY to avoid write locks,
+        so we accept both 'CREATE INDEX IF NOT EXISTS' and
+        'CREATE INDEX CONCURRENTLY IF NOT EXISTS' forms.
+        """
         src = self._src()
         index_creations = src.count("CREATE INDEX") + src.count("CREATE UNIQUE INDEX")
-        if_not_exists_count = src.count("CREATE INDEX IF NOT EXISTS") + src.count(
-            "CREATE UNIQUE INDEX IF NOT EXISTS"
+        # Count both plain IF NOT EXISTS and CONCURRENTLY IF NOT EXISTS
+        if_not_exists_count = (
+            src.count("CREATE INDEX IF NOT EXISTS")
+            + src.count("CREATE UNIQUE INDEX IF NOT EXISTS")
+            + src.count("CREATE INDEX CONCURRENTLY IF NOT EXISTS")
+            + src.count("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS")
         )
+        # Subtract overcounting: CONCURRENTLY forms also contain "CREATE INDEX"
+        # but not "CREATE INDEX IF NOT EXISTS", so the raw counts are distinct.
         assert index_creations == if_not_exists_count, (
             f"All index creations must use IF NOT EXISTS: "
             f"found {index_creations} but only {if_not_exists_count} with IF NOT EXISTS"
@@ -951,9 +962,13 @@ class TestSpendingSummariesMaterializedView:
 
     def test_uq_spending_summary_key_covers_period_account_category_direction_currency(self):
         src = self._src()
-        idx_pos = src.find("uq_spending_summary_key")
+        # Find the CREATE INDEX statement for uq_spending_summary_key specifically.
+        # We search for the ON clause that follows the index name rather than using a
+        # fixed window, because a preceding comment may push the definition further away.
+        idx_pos = src.find("uq_spending_summary_key\n")
         assert idx_pos != -1
-        block = src[idx_pos : idx_pos + 350]
+        # Use a larger window to skip past any comment block before the CREATE INDEX SQL
+        block = src[idx_pos : idx_pos + 800]
         for col in ("period", "account_id", "category", "direction", "currency"):
             assert col in block, f"uq_spending_summary_key missing column: {col}"
 
@@ -1046,10 +1061,18 @@ class TestDowngrade:
         )
 
     def test_all_index_drops_use_if_exists(self):
-        """All DROP INDEX statements must use IF EXISTS."""
+        """All DROP INDEX statements must use IF EXISTS.
+
+        Indexes on the transactions table are dropped CONCURRENTLY to avoid write
+        locks, so we accept both 'DROP INDEX IF EXISTS' and
+        'DROP INDEX CONCURRENTLY IF EXISTS' forms.
+        """
         src = self._src()
         drop_idx_count = src.count("DROP INDEX")
-        if_exists_idx_count = src.count("DROP INDEX IF EXISTS")
+        # Count both plain IF EXISTS and CONCURRENTLY IF EXISTS
+        if_exists_idx_count = src.count("DROP INDEX IF EXISTS") + src.count(
+            "DROP INDEX CONCURRENTLY IF EXISTS"
+        )
         assert drop_idx_count == if_exists_idx_count, (
             f"All DROP INDEX must use IF EXISTS: found {drop_idx_count}, "
             f"only {if_exists_idx_count} with IF EXISTS"
