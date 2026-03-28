@@ -5,6 +5,8 @@ Provides ``router`` at ``/api/steam``:
 - ``POST   /api/steam/accounts``              — connect a new Steam account (validates API key)
 - ``GET    /api/steam/accounts``              — list all connected Steam accounts
 - ``DELETE /api/steam/accounts/{id}``         — disconnect a Steam account (soft-revoke)
+- ``GET    /api/steam/accounts/{id}/status``  — per-account credential + poll health status
+- ``GET    /api/steam/connector/health``      — proxy the Steam connector health endpoint
 - ``GET    /api/steam/playtime``              — playtime analytics from DB (top games)
 - ``GET    /api/steam/playtime/{app_id}``     — per-game playtime history from DB
 
@@ -12,6 +14,17 @@ API key validation:
   The POST endpoint calls ``ISteamUser/GetPlayerSummaries`` with the provided
   API key and steam_id before storing credentials. If the API key is invalid
   (HTTP 403), or the steam_id is not found in the response, a 400 is returned.
+
+Account status (GET /api/steam/accounts/{id}/status):
+  Returns ``has_api_key`` (key present in entity_info), ``key_valid`` (null = not
+  yet checked, true/false = last validation result), ``last_poll_at`` (from the
+  steam_accounts table), and ``connector_health`` (effective health string for this
+  account from the connector's health report, null if connector unreachable).
+
+Connector health proxy (GET /api/steam/connector/health):
+  Proxies the Steam connector's ``/health`` HTTP endpoint (port configured via
+  ``STEAM_CONNECTOR_HEALTH_PORT``, default 40089).  Returns a structured response
+  with ``status='not_running'`` when the connector is unreachable.
 
 Playtime analytics:
   Queries ``connectors.steam_play_history`` for aggregated playtime data.
@@ -34,15 +47,21 @@ Connection validation error categories:
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.models.steam import (
     SteamAccountListResponse,
     SteamAccountResponse,
+    SteamAccountStatusResponse,
+    SteamConnectorAccountHealth,
+    SteamConnectorDataTypeHealth,
+    SteamConnectorHealthResponse,
     SteamConnectRequest,
     SteamConnectResponse,
     SteamDisconnectResponse,
@@ -80,6 +99,10 @@ _ENTITY_INFO_TYPE_API_KEY = "steam_api_key"
 # ---------------------------------------------------------------------------
 
 _VALIDATION_TIMEOUT_S = 10.0
+
+# Default connector health endpoint port (matches _DEFAULT_HEALTH_PORT in steam connector).
+_DEFAULT_CONNECTOR_HEALTH_PORT = 40089
+_CONNECTOR_HEALTH_TIMEOUT_S = 3.0
 
 # ---------------------------------------------------------------------------
 # Dependency injection stub
@@ -499,6 +522,201 @@ async def set_primary_steam_account(
         message=f"Steam account '{account.display_name or account.steam_id}' set as primary",
         account=_account_to_response(account),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/steam/accounts/{id}/status
+# ---------------------------------------------------------------------------
+
+
+@router.get("/accounts/{account_id}/status", response_model=SteamAccountStatusResponse)
+async def get_steam_account_status(
+    account_id: uuid.UUID,
+    db_manager: Any = Depends(_get_db_manager),
+) -> SteamAccountStatusResponse:
+    """Return credential and poll health status for a single Steam account.
+
+    Inspects the account row and its stored API key without making any live
+    Steam API call. Also probes the Steam connector health endpoint (if running)
+    to report the connector-side health for this account.
+
+    Fields returned:
+    - ``has_api_key``      — whether an API key is stored in entity_info
+    - ``key_valid``        — None (not yet validated), True, or False
+    - ``last_poll_at``     — timestamp of the last successful connector poll
+    - ``connector_health`` — connector-reported health ('healthy', 'degraded',
+                             'error') or null when connector is unreachable
+
+    Raises HTTP 404 when the account ID is not found.
+    Raises HTTP 503 when the database is unavailable.
+    """
+    pool = _get_shared_pool(db_manager)
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Database is unavailable. Ensure the database service is running. "
+                "Cannot retrieve Steam account status."
+            ),
+        )
+
+    # Fetch the account row.
+    try:
+        account = await resolve_steam_account(pool, account=account_id)
+    except SteamAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Steam account with id={account_id} was not found. "
+                "Verify the account ID via GET /api/steam/accounts."
+            ),
+        ) from exc
+
+    # Check whether an API key is stored for this account.
+    async with pool.acquire() as conn:
+        key_row = await conn.fetchrow(
+            """
+            SELECT value FROM public.entity_info
+            WHERE entity_id = $1 AND type = $2
+            LIMIT 1
+            """,
+            account.entity_id,
+            _ENTITY_INFO_TYPE_API_KEY,
+        )
+    has_api_key = key_row is not None
+
+    # Probe the connector health to get per-account health status.
+    connector_health: str | None = await _probe_connector_account_health(account.steam_id)
+
+    return SteamAccountStatusResponse(
+        id=account.id,
+        steam_id=account.steam_id,
+        status=account.status,
+        has_api_key=has_api_key,
+        key_valid=None,  # Validation is only done at connect time; no cached result stored
+        last_poll_at=account.last_poll_at,
+        connector_health=connector_health,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/steam/connector/health
+# ---------------------------------------------------------------------------
+
+
+@router.get("/connector/health", response_model=SteamConnectorHealthResponse)
+async def get_steam_connector_health() -> SteamConnectorHealthResponse:
+    """Proxy the Steam connector's /health endpoint.
+
+    Fetches the health report from the connector process running on
+    ``STEAM_CONNECTOR_HEALTH_PORT`` (default: 40089).  Returns a structured
+    response with ``status='not_running'`` when the connector is unreachable
+    (e.g. not started, crashing).
+
+    No database access is required for this endpoint.
+
+    Returns HTTP 200 in all cases — callers should inspect ``status`` to
+    determine connector health.
+    """
+    health_port = int(
+        os.environ.get("STEAM_CONNECTOR_HEALTH_PORT", str(_DEFAULT_CONNECTOR_HEALTH_PORT))
+    )
+    connector_url = f"http://127.0.0.1:{health_port}/health"
+
+    raw = await _fetch_connector_health(connector_url)
+    if raw is None:
+        return SteamConnectorHealthResponse(
+            status="not_running",
+            connector_url=connector_url,
+        )
+
+    # Parse the connector health payload into the response model.
+    overall_status = raw.get("status", "unknown")
+    uptime_seconds = raw.get("uptime_seconds")
+    active_accounts = raw.get("active_accounts")
+
+    account_health_list: list[SteamConnectorAccountHealth] = []
+    for acct in raw.get("account_health", []):
+        data_types: dict[str, SteamConnectorDataTypeHealth] = {}
+        for dt_name, dt_info in acct.get("data_types", {}).items():
+            last_poll_raw = dt_info.get("last_poll_at")
+            last_poll: datetime | None = None
+            if last_poll_raw:
+                try:
+                    last_poll = datetime.fromisoformat(last_poll_raw)
+                except (ValueError, TypeError):
+                    pass
+            data_types[dt_name] = SteamConnectorDataTypeHealth(
+                status=dt_info.get("status", "unknown"),
+                last_poll_at=last_poll,
+            )
+
+        account_health_list.append(
+            SteamConnectorAccountHealth(
+                steam_id=acct.get("steam_id", ""),
+                endpoint_identity=acct.get("endpoint_identity", ""),
+                status=acct.get("status", "unknown"),
+                error=acct.get("error"),
+                data_types=data_types,
+            )
+        )
+
+    return SteamConnectorHealthResponse(
+        status=overall_status,
+        uptime_seconds=uptime_seconds,
+        active_accounts=active_accounts,
+        account_health=account_health_list,
+        connector_url=connector_url,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Connector health helpers
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_connector_health(url: str) -> dict[str, Any] | None:
+    """Fetch the raw health JSON from the connector HTTP endpoint.
+
+    Returns the parsed dict on success, or None when the connector is
+    unreachable (connection refused, timeout, or unexpected response).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_CONNECTOR_HEALTH_TIMEOUT_S) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:  # noqa: BLE001
+        logger.debug("Steam connector health probe failed at %s", url, exc_info=True)
+        return None
+
+
+async def _probe_connector_account_health(steam_id: int) -> str | None:
+    """Probe the connector health endpoint and return health for a specific steam_id.
+
+    The connector redacts steam IDs in the health report (last 4 digits), so
+    matching is done by the suffix of the steam_id string representation.
+
+    Returns the effective health string for the account, or None when the
+    connector is unreachable or the account is not tracked.
+    """
+    health_port = int(
+        os.environ.get("STEAM_CONNECTOR_HEALTH_PORT", str(_DEFAULT_CONNECTOR_HEALTH_PORT))
+    )
+    connector_url = f"http://127.0.0.1:{health_port}/health"
+
+    raw = await _fetch_connector_health(connector_url)
+    if raw is None:
+        return None
+
+    steam_id_str = str(steam_id)
+    for acct in raw.get("account_health", []):
+        # The connector redacts steam IDs to "****<last4>". Match by suffix.
+        reported_id: str = acct.get("steam_id", "")
+        if reported_id.endswith(steam_id_str[-4:]):
+            return acct.get("status")
+
+    return None
 
 
 # ---------------------------------------------------------------------------
