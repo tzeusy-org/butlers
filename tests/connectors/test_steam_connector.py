@@ -12,6 +12,7 @@ Covers:
   - game_library: new game detection, first-poll baseline
 - SteamConnector: account discovery, health report, idle mode
 - Error handling: rate limits, transient errors, privacy errors
+- purge_revoked_cursors: 30-day retention enforcement
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from butlers.connectors.steam import (
     build_game_purchase_envelope,
     build_play_session_envelope,
     build_status_change_envelope,
+    purge_revoked_cursors,
 )
 from butlers.steam.client import SteamAPIError
 
@@ -1306,3 +1308,94 @@ class TestRecentlyPlayedPlayHistoryUpsert:
         mcp.call_tool.assert_not_called()
         calls_sql = [str(call.args[0]) for call in conn_execute_calls.call_args_list]
         assert not any("steam_play_history" in sql for sql in calls_sql)
+
+
+# ---------------------------------------------------------------------------
+# purge_revoked_cursors — 30-day cursor retention
+# ---------------------------------------------------------------------------
+
+
+class TestPurgeRevokedCursors:
+    """Unit tests for purge_revoked_cursors().
+
+    All tests use asyncpg pool/connection mocks (no live DB).
+    """
+
+    def _make_pool(self, execute_return: str = "DELETE 0") -> tuple[AsyncMock, AsyncMock]:
+        """Return (pool, conn_mock) where conn.execute returns execute_return."""
+        pool = AsyncMock()
+        conn = AsyncMock()
+        conn.execute = AsyncMock(return_value=execute_return)
+        pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=conn),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
+        return pool, conn
+
+    async def test_executes_delete_query(self) -> None:
+        """purge_revoked_cursors must issue a DELETE against connectors.steam_cursors."""
+        pool, conn = self._make_pool("DELETE 0")
+
+        await purge_revoked_cursors(pool)
+
+        conn.execute.assert_called_once()
+        sql = conn.execute.call_args[0][0]
+        assert "DELETE" in sql
+        assert "steam_cursors" in sql
+
+    async def test_filters_by_revoked_status_and_retention_window(self) -> None:
+        """The DELETE must reference public.steam_accounts with status='revoked'
+        and a 30-day interval check on revoked_at."""
+        pool, conn = self._make_pool("DELETE 0")
+
+        await purge_revoked_cursors(pool)
+
+        sql = conn.execute.call_args[0][0]
+        assert "status = 'revoked'" in sql
+        assert "revoked_at IS NOT NULL" in sql
+        assert "30 days" in sql
+
+    async def test_returns_deleted_count(self) -> None:
+        """purge_revoked_cursors must return the number of rows deleted."""
+        pool, conn = self._make_pool("DELETE 7")
+
+        result = await purge_revoked_cursors(pool)
+
+        assert result == 7
+
+    async def test_returns_zero_when_nothing_deleted(self) -> None:
+        pool, conn = self._make_pool("DELETE 0")
+
+        result = await purge_revoked_cursors(pool)
+
+        assert result == 0
+
+    async def test_returns_zero_on_db_error(self) -> None:
+        """Database errors must be swallowed and 0 returned (non-fatal)."""
+        pool = AsyncMock()
+        conn = AsyncMock()
+        conn.execute = AsyncMock(side_effect=Exception("connection refused"))
+        pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=conn),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
+
+        result = await purge_revoked_cursors(pool)
+
+        assert result == 0
+
+    async def test_uses_endpoint_identity_format(self) -> None:
+        """Cursor endpoint_identity is 'steam:user:<steam_id>' — the SQL must
+        construct this format from steam_accounts.steam_id."""
+        pool, conn = self._make_pool("DELETE 0")
+
+        await purge_revoked_cursors(pool)
+
+        sql = conn.execute.call_args[0][0]
+        # The SQL must construct the endpoint_identity by concatenating steam_id.
+        # Use USING form: c.endpoint_identity = 'steam:user:' || sa.steam_id::text
+        assert "'steam:user:' || sa.steam_id::text" in sql

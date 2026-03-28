@@ -592,9 +592,13 @@ async def disconnect_account(
                 )
                 logger.info("Steam account hard-deleted: id=%s", account_id)
             else:
-                # Soft disconnect: mark status revoked, retain credentials.
+                # Soft disconnect: mark status revoked, stamp revoked_at, retain credentials.
                 await conn.execute(
-                    "UPDATE public.steam_accounts SET status = 'revoked' WHERE id = $1",
+                    """
+                    UPDATE public.steam_accounts
+                    SET status = 'revoked', revoked_at = now()
+                    WHERE id = $1
+                    """,
                     account_id,
                 )
                 logger.info("Steam account disconnected (revoked): id=%s", account_id)
