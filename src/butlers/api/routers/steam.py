@@ -481,7 +481,7 @@ async def set_primary_steam_account(
             ),
         ) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to set primary Steam account %s: %s", account_id, exc, exc_info=True)
+        logger.error("Failed to set primary Steam account %s", account_id, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=(
