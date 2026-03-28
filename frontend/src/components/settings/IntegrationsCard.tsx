@@ -17,6 +17,7 @@ import { GoogleOAuthSection } from "./GoogleOAuthSection";
 import { HomeAssistantSection } from "./HomeAssistantSetupCard";
 import { OwnTracksSection } from "./OwnTracksSetupCard";
 import { SpotifySection } from "./SpotifySetupCard";
+import { SteamSection } from "./SteamSetupCard";
 import { WhatsAppSection } from "./WhatsAppSetupCard";
 
 export function IntegrationsCard() {
@@ -40,6 +41,9 @@ export function IntegrationsCard() {
             <SpotifySection />
           </div>
           <div className="py-6">
+            <SteamSection />
+          </div>
+          <div className="pt-6">
             <OwnTracksSection />
           </div>
           <div className="pt-6">

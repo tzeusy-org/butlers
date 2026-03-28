@@ -2752,3 +2752,69 @@ export interface BlobStorageTestResult {
   endpoint_url: string | null;
   bucket: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Steam connector types
+// ---------------------------------------------------------------------------
+
+/** Account status for a connected Steam account. */
+export type SteamAccountStatus = "active" | "suspended" | "revoked";
+
+/** A single connected Steam account. */
+export interface SteamAccountResponse {
+  id: string;
+  steam_id: string;
+  display_name: string | null;
+  profile_url: string | null;
+  avatar_url: string | null;
+  is_primary: boolean;
+  status: SteamAccountStatus;
+  connected_at: string;
+  last_poll_at: string | null;
+}
+
+/** Response from GET /api/steam/accounts */
+export interface SteamAccountListResponse {
+  accounts: SteamAccountResponse[];
+}
+
+/** Request body for POST /api/steam/accounts */
+export interface SteamConnectRequest {
+  steam_id: string;
+  api_key: string;
+  display_name?: string | null;
+}
+
+/** Response from POST /api/steam/accounts */
+export interface SteamConnectResponse {
+  success: boolean;
+  message: string;
+  account: SteamAccountResponse;
+}
+
+/** Response from DELETE /api/steam/accounts/{id} */
+export interface SteamDisconnectResponse {
+  success: boolean;
+  message: string;
+}
+
+/** Playtime record for a single game. */
+export interface SteamGamePlaytime {
+  app_id: number;
+  name: string | null;
+  playtime_forever_minutes: number;
+  playtime_2weeks_minutes: number | null;
+  img_icon_url: string | null;
+}
+
+/** Response from GET /api/steam/playtime */
+export interface SteamPlaytimeAnalytics {
+  account_id: string;
+  steam_id: string;
+  display_name: string | null;
+  total_games: number;
+  total_playtime_minutes: number;
+  top_games: SteamGamePlaytime[];
+  recently_played: SteamGamePlaytime[];
+  fetched_at: string;
+}

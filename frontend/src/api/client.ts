@@ -183,6 +183,11 @@ import type {
   TelegramSessionStatusResponse,
   BlobStorageStatus,
   BlobStorageTestResult,
+  SteamAccountListResponse,
+  SteamConnectRequest,
+  SteamConnectResponse,
+  SteamDisconnectResponse,
+  SteamPlaytimeAnalytics,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -2995,4 +3000,41 @@ export function testBlobStorage(): Promise<ApiResponse<BlobStorageTestResult>> {
   return apiFetch<ApiResponse<BlobStorageTestResult>>("/settings/blob-storage/test", {
     method: "POST",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Steam connector API
+// ---------------------------------------------------------------------------
+
+/** GET /api/steam/accounts — list all connected Steam accounts */
+export function listSteamAccounts(): Promise<SteamAccountListResponse> {
+  return apiFetch<SteamAccountListResponse>("/steam/accounts");
+}
+
+/** POST /api/steam/accounts — connect a new Steam account */
+export function connectSteamAccount(data: SteamConnectRequest): Promise<SteamConnectResponse> {
+  return apiFetch<SteamConnectResponse>("/steam/accounts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+/** DELETE /api/steam/accounts/{id} — disconnect (soft-revoke) a Steam account */
+export function disconnectSteamAccount(accountId: string): Promise<SteamDisconnectResponse> {
+  return apiFetch<SteamDisconnectResponse>(`/steam/accounts/${encodeURIComponent(accountId)}`, {
+    method: "DELETE",
+  });
+}
+
+/** GET /api/steam/playtime — playtime analytics for a Steam account */
+export function getSteamPlaytime(params?: {
+  account_id?: string;
+  top_n?: number;
+}): Promise<SteamPlaytimeAnalytics> {
+  const query = new URLSearchParams();
+  if (params?.account_id) query.set("account_id", params.account_id);
+  if (params?.top_n !== undefined) query.set("top_n", String(params.top_n));
+  const qs = query.toString();
+  return apiFetch<SteamPlaytimeAnalytics>(`/steam/playtime${qs ? `?${qs}` : ""}`);
 }

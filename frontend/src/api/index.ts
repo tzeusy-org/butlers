@@ -601,3 +601,21 @@ export type {
   TelegramVerifyCodeResponse,
   TelegramSessionStatusResponse,
 } from "./types.ts";
+
+export {
+  connectSteamAccount,
+  disconnectSteamAccount,
+  getSteamPlaytime,
+  listSteamAccounts,
+} from "./client.ts";
+
+export type {
+  SteamAccountListResponse,
+  SteamAccountResponse,
+  SteamAccountStatus,
+  SteamConnectRequest,
+  SteamConnectResponse,
+  SteamDisconnectResponse,
+  SteamGamePlaytime,
+  SteamPlaytimeAnalytics,
+} from "./types.ts";
