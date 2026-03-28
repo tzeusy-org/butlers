@@ -377,14 +377,12 @@ async def _load_steam_cursors(pool: asyncpg.Pool, endpoint_identity: str) -> dic
 _REVOKED_CURSOR_RETENTION_DAYS = 30
 
 _CURSOR_PURGE_SQL = f"""
-DELETE FROM {_CURSOR_SCHEMA}.{_CURSOR_TABLE}
-WHERE endpoint_identity IN (
-    SELECT 'steam:user:' || steam_id::text
-    FROM public.steam_accounts
-    WHERE status = 'revoked'
-      AND revoked_at IS NOT NULL
-      AND revoked_at < now() - INTERVAL '{_REVOKED_CURSOR_RETENTION_DAYS} days'
-)
+DELETE FROM {_CURSOR_SCHEMA}.{_CURSOR_TABLE} c
+USING public.steam_accounts sa
+WHERE c.endpoint_identity = 'steam:user:' || sa.steam_id::text
+  AND sa.status = 'revoked'
+  AND sa.revoked_at IS NOT NULL
+  AND sa.revoked_at < now() - INTERVAL '{_REVOKED_CURSOR_RETENTION_DAYS} days'
 """
 
 

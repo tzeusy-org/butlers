@@ -1396,5 +1396,6 @@ class TestPurgeRevokedCursors:
         await purge_revoked_cursors(pool)
 
         sql = conn.execute.call_args[0][0]
-        # The subquery must join steam_id into the endpoint_identity format.
-        assert "steam:user:" in sql or "steam_id" in sql
+        # The SQL must construct the endpoint_identity by concatenating steam_id.
+        # Use USING form: c.endpoint_identity = 'steam:user:' || sa.steam_id::text
+        assert "'steam:user:' || sa.steam_id::text" in sql
