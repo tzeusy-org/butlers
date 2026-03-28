@@ -1121,3 +1121,56 @@ def test_unsupported_intent_rejected():
     }
     with pytest.raises(ValidationError):
         parse_notify_request(payload)
+
+
+# ---------------------------------------------------------------------------
+# Google Drive channel/provider extensions (bu-0gli)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_google_drive_channel_provider_accepted():
+    """IngestEnvelopeV1 accepts google_drive channel with google_drive provider."""
+    envelope = _build_valid_ingest_envelope(
+        channel="google_drive",
+        provider="google_drive",
+        endpoint_identity="google_drive:user:user@example.com",
+        sender_identity="google_drive:user:user@example.com",
+    )
+    parsed = parse_ingest_envelope(envelope)
+    assert parsed.source.channel == "google_drive"
+    assert parsed.source.provider == "google_drive"
+
+
+@pytest.mark.unit
+def test_google_drive_channel_rejects_invalid_provider():
+    """google_drive channel rejects non-google_drive providers."""
+    envelope = _build_valid_ingest_envelope(
+        channel="google_drive",
+        provider="internal",  # wrong provider
+        endpoint_identity="google_drive:user:user@example.com",
+        sender_identity="google_drive:user:user@example.com",
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        parse_ingest_envelope(envelope)
+    assert "google_drive" in str(exc_info.value) or "internal" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_google_drive_provider_rejected_for_telegram_channel():
+    """google_drive provider is invalid for telegram_bot channel."""
+    envelope = _build_valid_ingest_envelope(
+        channel="telegram_bot",
+        provider="google_drive",  # wrong provider for telegram_bot
+    )
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(envelope)
+
+
+@pytest.mark.unit
+def test_google_drive_in_allowed_providers_by_channel():
+    """google_drive is registered in _ALLOWED_PROVIDERS_BY_CHANNEL with google_drive provider."""
+    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
+
+    assert "google_drive" in _ALLOWED_PROVIDERS_BY_CHANNEL
+    assert _ALLOWED_PROVIDERS_BY_CHANNEL["google_drive"] == frozenset({"google_drive"})
