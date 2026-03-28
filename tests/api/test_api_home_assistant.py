@@ -46,8 +46,8 @@ def _make_cred_store(
     store = MagicMock()
 
     creds: dict[str, str | None] = {
-        "HA_URL": ha_url,
-        "HA_TOKEN": ha_token,
+        "home_assistant:base_url": ha_url,
+        "home_assistant:access_token": ha_token,
     }
 
     async def _resolve(key: str, **_kwargs) -> str | None:
@@ -379,7 +379,7 @@ class TestConfigureHA:
         # Both credentials stored
         assert cred_store.store.call_count == 2
         stored_keys = {call.args[0] for call in cred_store.store.call_args_list}
-        assert stored_keys == {"HA_URL", "HA_TOKEN"}
+        assert stored_keys == {"home_assistant:base_url", "home_assistant:access_token"}
 
     async def test_token_stored_as_sensitive(self):
         """Token is stored with is_sensitive=True."""
@@ -398,8 +398,10 @@ class TestConfigureHA:
                     json={"url": "http://ha.local:8123", "token": "token123"},
                 )
 
-        # Find the call that stored HA_TOKEN
-        token_call = next(c for c in cred_store.store.call_args_list if c.args[0] == "HA_TOKEN")
+        # Find the call that stored home_assistant:access_token
+        token_call = next(
+            c for c in cred_store.store.call_args_list if c.args[0] == "home_assistant:access_token"
+        )
         assert token_call.kwargs.get("is_sensitive", True) is True
 
     async def test_url_stored_as_not_sensitive(self):
@@ -419,7 +421,9 @@ class TestConfigureHA:
                     json={"url": "http://ha.local:8123", "token": "token123"},
                 )
 
-        url_call = next(c for c in cred_store.store.call_args_list if c.args[0] == "HA_URL")
+        url_call = next(
+            c for c in cred_store.store.call_args_list if c.args[0] == "home_assistant:base_url"
+        )
         assert url_call.kwargs.get("is_sensitive", True) is False
 
     async def test_returns_502_on_unreachable(self):
@@ -591,7 +595,7 @@ class TestDeleteHAConfig:
 
         # Both credential keys were deleted
         deleted_keys = {call.args[0] for call in cred_store.delete.call_args_list}
-        assert deleted_keys == {"HA_URL", "HA_TOKEN"}
+        assert deleted_keys == {"home_assistant:base_url", "home_assistant:access_token"}
 
     async def test_idempotent_when_no_credentials(self):
         """DELETE succeeds even when no credentials are stored (idempotent)."""

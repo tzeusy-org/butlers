@@ -45,8 +45,8 @@ router = APIRouter(prefix="/api/settings/home-assistant", tags=["home-assistant-
 # Credential key constants
 # ---------------------------------------------------------------------------
 
-_CRED_HA_URL = "HA_URL"
-_CRED_HA_TOKEN = "HA_TOKEN"
+_CRED_HA_URL = "home_assistant:base_url"
+_CRED_HA_TOKEN = "home_assistant:access_token"
 
 _ALL_CRED_KEYS = (_CRED_HA_URL, _CRED_HA_TOKEN)
 
@@ -312,7 +312,7 @@ async def delete_ha_config(
 ) -> HADeleteResponse:
     """Remove stored Home Assistant credentials from CredentialStore.
 
-    Deletes both ``HA_URL`` and ``HA_TOKEN``.
+    Deletes both ``home_assistant:base_url`` and ``home_assistant:access_token``.
     Returns success=True even when no credentials were stored (idempotent).
     """
     cred_store = _make_credential_store(db_manager)
