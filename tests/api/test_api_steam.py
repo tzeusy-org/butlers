@@ -16,6 +16,7 @@ directly. Steam API calls are mocked via SteamAPIClient patches.
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1541,8 +1542,6 @@ class TestGetSteamConnectorHealth:
 
     async def test_health_endpoint_uses_env_port(self):
         """GET /api/steam/connector/health uses STEAM_CONNECTOR_HEALTH_PORT env var."""
-        import os
-
         app = _build_app()
         captured_urls: list[str] = []
 

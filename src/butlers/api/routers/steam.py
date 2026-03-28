@@ -618,10 +618,7 @@ async def get_steam_connector_health() -> SteamConnectorHealthResponse:
     Returns HTTP 200 in all cases — callers should inspect ``status`` to
     determine connector health.
     """
-    health_port = int(
-        os.environ.get("STEAM_CONNECTOR_HEALTH_PORT", str(_DEFAULT_CONNECTOR_HEALTH_PORT))
-    )
-    connector_url = f"http://127.0.0.1:{health_port}/health"
+    connector_url = _build_connector_health_url()
 
     raw = await _fetch_connector_health(connector_url)
     if raw is None:
@@ -645,7 +642,10 @@ async def get_steam_connector_health() -> SteamConnectorHealthResponse:
                 try:
                     last_poll = datetime.fromisoformat(last_poll_raw)
                 except (ValueError, TypeError):
-                    pass
+                    logger.warning(
+                        "Failed to parse last_poll_at from connector health: %r",
+                        last_poll_raw,
+                    )
             data_types[dt_name] = SteamConnectorDataTypeHealth(
                 status=dt_info.get("status", "unknown"),
                 last_poll_at=last_poll,
@@ -675,6 +675,18 @@ async def get_steam_connector_health() -> SteamConnectorHealthResponse:
 # ---------------------------------------------------------------------------
 
 
+def _build_connector_health_url() -> str:
+    """Return the Steam connector health URL for the configured port.
+
+    Uses ``STEAM_CONNECTOR_HEALTH_PORT`` env var (default: 40089).
+    Centralised here to avoid repeating the port-resolution logic in each caller.
+    """
+    health_port = int(
+        os.environ.get("STEAM_CONNECTOR_HEALTH_PORT", str(_DEFAULT_CONNECTOR_HEALTH_PORT))
+    )
+    return f"http://127.0.0.1:{health_port}/health"
+
+
 async def _fetch_connector_health(url: str) -> dict[str, Any] | None:
     """Fetch the raw health JSON from the connector HTTP endpoint.
 
@@ -700,10 +712,7 @@ async def _probe_connector_account_health(steam_id: int) -> str | None:
     Returns the effective health string for the account, or None when the
     connector is unreachable or the account is not tracked.
     """
-    health_port = int(
-        os.environ.get("STEAM_CONNECTOR_HEALTH_PORT", str(_DEFAULT_CONNECTOR_HEALTH_PORT))
-    )
-    connector_url = f"http://127.0.0.1:{health_port}/health"
+    connector_url = _build_connector_health_url()
 
     raw = await _fetch_connector_health(connector_url)
     if raw is None:
