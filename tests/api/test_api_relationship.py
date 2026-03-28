@@ -896,3 +896,148 @@ def test_list_upcoming_dates(app):
     # Note: This test will pass only when run near Feb 20
     # In a real test, you'd mock datetime.date.today()
     assert isinstance(data, list)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/relationship/dunbar/ranking
+# ---------------------------------------------------------------------------
+
+
+def _app_with_dunbar_mock(
+    app,
+    *,
+    ranked_rows: list,
+    entity_name_rows: list,
+    avatar_rows: list,
+    owner_row: dict | None,
+):
+    """Set up app with a mock pool for the dunbar ranking endpoint.
+
+    ``compute_tier_ranking`` is patched on the already-imported
+    ``butlers.tools.relationship`` module object so the endpoint's local
+    ``from butlers.tools.relationship import dunbar`` picks up the mock.
+    """
+    import sys
+
+    mock_pool = AsyncMock()
+
+    # The endpoint calls pool.fetch() twice (entity names + avatar urls) and
+    # pool.fetchrow() once (owner lookup) via asyncio.gather.
+    mock_pool.fetch = AsyncMock(side_effect=[entity_name_rows, avatar_rows])
+    mock_pool.fetchrow = AsyncMock(return_value=owner_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    @asynccontextmanager
+    async def _null_lifespan(_a):
+        yield
+
+    app.router.lifespan_context = _null_lifespan
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    # Patch the dunbar module so compute_tier_ranking returns our test rows.
+    # We must set the attribute on the parent package object because the handler
+    # uses ``from butlers.tools.relationship import dunbar``, which resolves
+    # through the already-cached parent module.
+    mock_dunbar = MagicMock()
+    mock_dunbar.compute_tier_ranking = AsyncMock(return_value=ranked_rows)
+    rel_pkg = sys.modules.get("butlers.tools.relationship")
+    if rel_pkg is not None:
+        original_dunbar = getattr(rel_pkg, "dunbar", None)
+        rel_pkg.dunbar = mock_dunbar
+    sys.modules["butlers.tools.relationship.dunbar"] = mock_dunbar
+
+    return app, mock_dunbar, rel_pkg, original_dunbar if rel_pkg else None
+
+
+def test_dunbar_ranking_includes_avatar_url(app):
+    """GET /dunbar/ranking returns avatar_url from contacts table."""
+    import sys
+
+    contact_id = uuid4()
+    entity_id = uuid4()
+
+    ranked_rows = [
+        {
+            "contact_id": contact_id,
+            "entity_id": entity_id,
+            "dunbar_tier": 5,
+            "dunbar_score": 8.5,
+            "dunbar_tier_override": False,
+        }
+    ]
+    entity_name_rows = [{"id": entity_id, "canonical_name": "Alice Smith"}]
+    avatar_rows = [{"id": contact_id, "avatar_url": "https://example.com/alice.jpg"}]
+    owner_row = None
+
+    app, _, rel_pkg, orig = _app_with_dunbar_mock(
+        app,
+        ranked_rows=ranked_rows,
+        entity_name_rows=entity_name_rows,
+        avatar_rows=avatar_rows,
+        owner_row=owner_row,
+    )
+
+    try:
+        with TestClient(app=app) as client:
+            resp = client.get("/api/relationship/dunbar/ranking")
+    finally:
+        # Restore original dunbar module to avoid state leakage
+        if rel_pkg is not None and orig is not None:
+            rel_pkg.dunbar = orig
+        if orig is not None:
+            sys.modules["butlers.tools.relationship.dunbar"] = orig
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["owner_entity_id"] is None
+    assert len(data["entries"]) == 1
+    entry = data["entries"][0]
+    assert entry["canonical_name"] == "Alice Smith"
+    assert entry["dunbar_tier"] == 5
+    assert entry["avatar_url"] == "https://example.com/alice.jpg"
+
+
+def test_dunbar_ranking_avatar_url_null_when_not_set(app):
+    """GET /dunbar/ranking returns null avatar_url for contacts without an avatar."""
+    import sys
+
+    contact_id = uuid4()
+    entity_id = uuid4()
+
+    ranked_rows = [
+        {
+            "contact_id": contact_id,
+            "entity_id": entity_id,
+            "dunbar_tier": 15,
+            "dunbar_score": 4.2,
+            "dunbar_tier_override": False,
+        }
+    ]
+    entity_name_rows = [{"id": entity_id, "canonical_name": "Bob Jones"}]
+    # Contact has no avatar set (avatar_url is None in DB)
+    avatar_rows = [{"id": contact_id, "avatar_url": None}]
+    owner_row = {"entity_id": entity_id}
+
+    app, _, rel_pkg, orig = _app_with_dunbar_mock(
+        app,
+        ranked_rows=ranked_rows,
+        entity_name_rows=entity_name_rows,
+        avatar_rows=avatar_rows,
+        owner_row=owner_row,
+    )
+
+    try:
+        with TestClient(app=app) as client:
+            resp = client.get("/api/relationship/dunbar/ranking")
+    finally:
+        if rel_pkg is not None and orig is not None:
+            rel_pkg.dunbar = orig
+        if orig is not None:
+            sys.modules["butlers.tools.relationship.dunbar"] = orig
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["entries"]) == 1
+    assert data["entries"][0]["avatar_url"] is None

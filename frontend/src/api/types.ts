@@ -2608,6 +2608,7 @@ export interface DunbarEntry {
   dunbar_tier: number;
   dunbar_score: number;
   dunbar_tier_override: boolean;
+  avatar_url?: string | null;
 }
 
 /** Response from GET /api/relationship/dunbar/ranking */

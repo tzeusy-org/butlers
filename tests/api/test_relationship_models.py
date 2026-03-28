@@ -23,6 +23,8 @@ spec.loader.exec_module(relationship_models)
 ContactDetail = relationship_models.ContactDetail
 ContactListResponse = relationship_models.ContactListResponse
 ContactSummary = relationship_models.ContactSummary
+DunbarEntry = relationship_models.DunbarEntry
+DunbarRankingResponse = relationship_models.DunbarRankingResponse
 Gift = relationship_models.Gift
 Group = relationship_models.Group
 GroupListResponse = relationship_models.GroupListResponse
@@ -288,3 +290,73 @@ def test_group_list_response():
     response = GroupListResponse(groups=groups, total=1)
     assert len(response.groups) == 1
     assert response.total == 1
+
+
+# ---------------------------------------------------------------------------
+# DunbarEntry / DunbarRankingResponse
+# ---------------------------------------------------------------------------
+
+
+def test_dunbar_entry_minimal():
+    """DunbarEntry with no avatar_url defaults to None."""
+    entry = DunbarEntry(
+        contact_id=uuid4(),
+        entity_id=uuid4(),
+        canonical_name="Alice Smith",
+        dunbar_tier=5,
+        dunbar_score=8.5,
+        dunbar_tier_override=False,
+    )
+    assert entry.canonical_name == "Alice Smith"
+    assert entry.dunbar_tier == 5
+    assert entry.dunbar_score == 8.5
+    assert entry.dunbar_tier_override is False
+    assert entry.avatar_url is None
+
+
+def test_dunbar_entry_with_avatar_url():
+    """DunbarEntry with avatar_url is set correctly."""
+    url = "https://example.com/avatars/alice.jpg"
+    entry = DunbarEntry(
+        contact_id=uuid4(),
+        entity_id=uuid4(),
+        canonical_name="Alice Smith",
+        dunbar_tier=5,
+        dunbar_score=8.5,
+        dunbar_tier_override=False,
+        avatar_url=url,
+    )
+    assert entry.avatar_url == url
+
+
+def test_dunbar_entry_avatar_url_can_be_none():
+    """DunbarEntry with explicit None avatar_url is accepted."""
+    entry = DunbarEntry(
+        contact_id=uuid4(),
+        entity_id=uuid4(),
+        canonical_name="Bob Jones",
+        dunbar_tier=15,
+        dunbar_score=3.2,
+        dunbar_tier_override=True,
+        avatar_url=None,
+    )
+    assert entry.avatar_url is None
+    assert entry.dunbar_tier_override is True
+
+
+def test_dunbar_ranking_response():
+    """DunbarRankingResponse wraps entries and owner_entity_id."""
+    eid = uuid4()
+    entry = DunbarEntry(
+        contact_id=uuid4(),
+        entity_id=eid,
+        canonical_name="Carol White",
+        dunbar_tier=5,
+        dunbar_score=9.0,
+        dunbar_tier_override=False,
+        avatar_url="https://cdn.example.com/carol.png",
+    )
+    response = DunbarRankingResponse(entries=[entry], owner_entity_id=eid)
+    assert len(response.entries) == 1
+    assert response.owner_entity_id == eid
+    assert response.entries[0].avatar_url == "https://cdn.example.com/carol.png"

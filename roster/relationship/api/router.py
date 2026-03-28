@@ -2358,7 +2358,8 @@ async def get_dunbar_ranking(
 
     # Fetch canonical names for all entity IDs returned by the ranking.
     entity_ids = [r["entity_id"] for r in ranked if r["entity_id"] is not None]
-    entity_name_rows, owner_row = await asyncio.gather(
+    contact_ids = [r["contact_id"] for r in ranked if r["entity_id"] is not None]
+    entity_name_rows, avatar_rows, owner_row = await asyncio.gather(
         pool.fetch(
             """
             SELECT e.id, e.canonical_name
@@ -2366,6 +2367,14 @@ async def get_dunbar_ranking(
             WHERE e.id = ANY($1::uuid[])
             """,
             entity_ids,
+        ),
+        pool.fetch(
+            """
+            SELECT id, avatar_url
+            FROM public.contacts
+            WHERE id = ANY($1::uuid[])
+            """,
+            contact_ids,
         ),
         pool.fetchrow(
             """
@@ -2377,6 +2386,7 @@ async def get_dunbar_ranking(
     )
 
     entity_names: dict[UUID, str] = {row["id"]: row["canonical_name"] for row in entity_name_rows}
+    contact_avatars: dict[UUID, str | None] = {row["id"]: row["avatar_url"] for row in avatar_rows}
 
     entries: list[DunbarEntry] = [
         DunbarEntry(
@@ -2386,6 +2396,7 @@ async def get_dunbar_ranking(
             dunbar_tier=r["dunbar_tier"],
             dunbar_score=r["dunbar_score"],
             dunbar_tier_override=r.get("dunbar_tier_override", False),
+            avatar_url=contact_avatars.get(r["contact_id"]),
         )
         for r in ranked
         if r["entity_id"] is not None

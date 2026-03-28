@@ -117,6 +117,9 @@ interface TierNodeProps {
 function TierNode({ entry, x, y, tier, showName, radius, onNavigate }: TierNodeProps) {
   const initials = getInitials(entry.canonical_name);
   const color = TIER_RING_COLORS[tier];
+  // Show avatar image for tier 5/15 when available; fall back to initials.
+  const showAvatar = showName && !!entry.avatar_url;
+  const clipId = `avatar-clip-${entry.entity_id}`;
 
   return (
     <TooltipProvider key={entry.entity_id}>
@@ -126,6 +129,14 @@ function TierNode({ entry, x, y, tier, showName, radius, onNavigate }: TierNodeP
             style={{ cursor: "pointer" }}
             onClick={() => onNavigate(entry.entity_id)}
           >
+            {/* Clip path so avatar image is masked to the circle */}
+            {showAvatar && (
+              <defs>
+                <clipPath id={clipId}>
+                  <circle cx={x} cy={y} r={radius} />
+                </clipPath>
+              </defs>
+            )}
             {/* Background circle */}
             <circle
               cx={x}
@@ -137,7 +148,7 @@ function TierNode({ entry, x, y, tier, showName, radius, onNavigate }: TierNodeP
               strokeWidth={entry.dunbar_tier_override ? 2 : 1}
               strokeDasharray={entry.dunbar_tier_override ? "3,2" : undefined}
             />
-            {/* Initials text */}
+            {/* Initials text — always rendered; avatar overlays it when loaded */}
             <text
               x={x}
               y={y}
@@ -149,6 +160,18 @@ function TierNode({ entry, x, y, tier, showName, radius, onNavigate }: TierNodeP
             >
               {initials}
             </text>
+            {/* Avatar image — overlaid on top of initials so initials show on load failure */}
+            {showAvatar && (
+              <image
+                href={entry.avatar_url!}
+                x={x - radius}
+                y={y - radius}
+                width={radius * 2}
+                height={radius * 2}
+                clipPath={`url(#${clipId})`}
+                preserveAspectRatio="xMidYMid slice"
+              />
+            )}
             {/* Pin icon indicator for overrides */}
             {entry.dunbar_tier_override && (
               <circle

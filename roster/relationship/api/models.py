@@ -402,6 +402,7 @@ class DunbarEntry(BaseModel):
     dunbar_tier: int
     dunbar_score: float
     dunbar_tier_override: bool
+    avatar_url: str | None = None
 
 
 class DunbarRankingResponse(BaseModel):
