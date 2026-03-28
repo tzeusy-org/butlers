@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 # Maximum rows accepted by bulk_record_transactions in a single call.
 _MAX_BULK_TRANSACTIONS = 500
 
+# Module-level cache for _has_column results: (table, column) -> bool
+# Avoids repeated information_schema queries within a process lifetime.
+_column_existence_cache: dict[tuple[str, str], bool] = {}
+
 
 async def _mirror_to_spo(
     pool: asyncpg.Pool,
@@ -84,8 +88,139 @@ def _normalize_amount(amount: Decimal | float | int) -> Decimal:
     return abs(Decimal(str(amount)))
 
 
+async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
+    """Check whether *txn* already exists in ``finance.transactions``.
+
+    Applies a three-tier deduplication strategy in strict priority order:
+
+    **Priority 1 — external_id + account_id** (most reliable)
+        Used when a bank API supplies a stable, bank-assigned transaction ID.
+        Requires both ``external_id`` and ``account_id`` to be non-None in *txn*,
+        and the ``external_id`` column must exist in the schema (added in
+        ``finance_002``).
+
+    **Priority 2 — source_message_id** (email / notification provenance)
+        Used when a transaction was extracted from a single source message
+        (e.g. an email receipt).  A match on ``source_message_id`` alone is
+        sufficient to identify a duplicate because the same message should never
+        produce two distinct transactions in the ledger.
+        Requires ``source_message_id`` to be non-None in *txn*.
+
+    **Priority 3 — composite fallback** (CSV / manual entry)
+        Used when neither higher-priority key is available.  Matches on the
+        combination of (``account_id``, ``posted_at``, ``amount``, ``merchant``).
+        Only attempted when both ``external_id`` and ``source_message_id`` are
+        absent *and* ``account_id`` is present.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool (must be connected to the schema that contains
+        ``finance.transactions``).
+    txn:
+        A dict-like object whose keys map to transaction fields.  Expected keys
+        (all optional; missing or ``None`` values are treated as absent):
+
+        - ``external_id`` (*str*) — bank-assigned stable ID
+        - ``account_id`` (*str | UUID*) — FK to ``finance.accounts``
+        - ``source_message_id`` (*str*) — originating email/message ID
+        - ``posted_at`` (*datetime*) — transaction post timestamp
+        - ``amount`` (*Decimal | float | int*) — raw amount (sign ignored;
+          stored absolute value is compared)
+        - ``merchant`` (*str*) — merchant / payee name
+
+    Returns
+    -------
+    str | None
+        The ``id`` of the existing transaction as a string if a duplicate is
+        found, or ``None`` if the transaction appears to be new.
+    """
+    external_id: str | None = txn.get("external_id")
+    account_id: str | None = txn.get("account_id")
+    source_message_id: str | None = txn.get("source_message_id")
+    posted_at: datetime | None = txn.get("posted_at")
+    raw_amount = txn.get("amount")
+    merchant: str | None = txn.get("merchant")
+
+    # Normalise amount only when provided — guards against None / missing keys.
+    stored_amount: Decimal | None = None
+    if raw_amount is not None:
+        try:
+            stored_amount = _normalize_amount(raw_amount)
+        except (InvalidOperation, TypeError):
+            stored_amount = None
+
+    # ------------------------------------------------------------------
+    # Priority 1: (account_id, external_id)
+    # ------------------------------------------------------------------
+    if external_id is not None and account_id is not None:
+        has_ext_id = await _has_column(pool, "transactions", "external_id")
+        if has_ext_id:
+            row = await pool.fetchrow(
+                """
+                SELECT id FROM transactions
+                WHERE account_id = $1::uuid
+                  AND external_id = $2
+                """,
+                str(account_id),
+                external_id,
+            )
+            if row is not None:
+                return str(row["id"])
+
+    # ------------------------------------------------------------------
+    # Priority 2: source_message_id
+    # ------------------------------------------------------------------
+    if source_message_id is not None:
+        row = await pool.fetchrow(
+            """
+            SELECT id FROM transactions
+            WHERE source_message_id = $1
+            """,
+            source_message_id,
+        )
+        if row is not None:
+            return str(row["id"])
+
+    # ------------------------------------------------------------------
+    # Priority 3: composite fallback (account_id + posted_at + amount + merchant)
+    # ------------------------------------------------------------------
+    if (
+        external_id is None
+        and source_message_id is None
+        and account_id is not None
+        and posted_at is not None
+        and stored_amount is not None
+        and merchant is not None
+    ):
+        row = await pool.fetchrow(
+            """
+            SELECT id FROM transactions
+            WHERE account_id = $1::uuid
+              AND posted_at = $2
+              AND amount = $3
+              AND merchant = $4
+            """,
+            str(account_id),
+            posted_at,
+            stored_amount,
+            merchant,
+        )
+        if row is not None:
+            return str(row["id"])
+
+    return None
+
+
 async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
-    """Return True if the given table has the named column in the current schema."""
+    """Return True if the given table has the named column in the current schema.
+
+    Results are cached for the lifetime of the process to avoid repeated
+    ``information_schema`` queries on every deduplication call.
+    """
+    cache_key = (table, column)
+    if cache_key in _column_existence_cache:
+        return _column_existence_cache[cache_key]
     count = await pool.fetchval(
         """
         SELECT COUNT(*) FROM information_schema.columns
@@ -95,7 +230,9 @@ async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
         table,
         column,
     )
-    return bool(count)
+    result = bool(count)
+    _column_existence_cache[cache_key] = result
+    return result
 
 
 async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
@@ -245,58 +382,25 @@ async def record_transaction(
     direction = _infer_direction(amount)
     stored_amount = _normalize_amount(amount)
 
-    # --- Tiered deduplication ---
-    # Priority 1: (account_id, external_id) — requires external_id column
+    # --- Tiered deduplication via _deduplicate() ---
+    txn_dict: dict[str, Any] = {
+        "external_id": external_id,
+        "account_id": account_id,
+        "source_message_id": source_message_id,
+        "posted_at": posted_at,
+        "amount": amount,
+        "merchant": merchant,
+    }
+    existing_id = await _deduplicate(pool, txn_dict)
+    if existing_id is not None:
+        existing = await pool.fetchrow(
+            "SELECT * FROM transactions WHERE id = $1::uuid",
+            existing_id,
+        )
+        if existing is not None:
+            return _row_to_dict(existing)
+
     has_external_id = await _has_column(pool, "transactions", "external_id")
-    if has_external_id and external_id is not None and account_id is not None:
-        existing = await pool.fetchrow(
-            """
-            SELECT * FROM transactions
-            WHERE account_id = $1::uuid
-              AND external_id = $2
-            """,
-            account_id,
-            external_id,
-        )
-        if existing is not None:
-            return _row_to_dict(existing)
-
-    # Priority 2: (source_message_id, merchant, amount, posted_at)
-    if source_message_id is not None:
-        existing = await pool.fetchrow(
-            """
-            SELECT * FROM transactions
-            WHERE source_message_id = $1
-              AND merchant = $2
-              AND amount = $3
-              AND posted_at = $4
-            """,
-            source_message_id,
-            merchant,
-            stored_amount,
-            posted_at,
-        )
-        if existing is not None:
-            return _row_to_dict(existing)
-
-    # Priority 3: composite fallback (account_id, posted_at, amount, merchant)
-    # Only when both external_id and source_message_id are absent and account_id is given
-    if external_id is None and source_message_id is None and account_id is not None:
-        existing = await pool.fetchrow(
-            """
-            SELECT * FROM transactions
-            WHERE account_id = $1::uuid
-              AND posted_at = $2
-              AND amount = $3
-              AND merchant = $4
-            """,
-            account_id,
-            posted_at,
-            stored_amount,
-            merchant,
-        )
-        if existing is not None:
-            return _row_to_dict(existing)
 
     # --- Auto-categorization via merchant mappings ---
     effective_category = category
