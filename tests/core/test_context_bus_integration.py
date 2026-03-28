@@ -116,8 +116,7 @@ class TestSetContext:
         await set_context(pool, butler_name="general", signal_type="meeting")
         # Manually supersede it
         await pool.execute(
-            "UPDATE shared.user_context SET superseded_at = NOW() "
-            "WHERE signal_type = 'meeting'"
+            "UPDATE shared.user_context SET superseded_at = NOW() WHERE signal_type = 'meeting'"
         )
         # Verify it's superseded
         row = await pool.fetchrow(
@@ -405,15 +404,9 @@ class TestGetActiveContext:
         """Results are ordered by confidence descending."""
         from butlers.context_bus import get_active_context, set_context
 
-        await set_context(
-            pool, butler_name="general", signal_type="meeting", confidence=0.6
-        )
-        await set_context(
-            pool, butler_name="travel", signal_type="traveling", confidence=1.0
-        )
-        await set_context(
-            pool, butler_name="health", signal_type="sick", confidence=0.8
-        )
+        await set_context(pool, butler_name="general", signal_type="meeting", confidence=0.6)
+        await set_context(pool, butler_name="travel", signal_type="traveling", confidence=1.0)
+        await set_context(pool, butler_name="health", signal_type="sick", confidence=0.8)
 
         result = await get_active_context(pool)
         confidences = [s.confidence for s in result]
@@ -474,9 +467,7 @@ class TestIsUserInContext:
         """Returns True when there is an active signal meeting the confidence threshold."""
         from butlers.context_bus import is_user_in_context, set_context
 
-        await set_context(
-            pool, butler_name="travel", signal_type="traveling", confidence=0.9
-        )
+        await set_context(pool, butler_name="travel", signal_type="traveling", confidence=0.9)
 
         assert await is_user_in_context(pool, "traveling") is True
 
@@ -515,9 +506,7 @@ class TestIsUserInContext:
         """Signal with confidence below default 0.5 threshold returns False."""
         from butlers.context_bus import is_user_in_context, set_context
 
-        await set_context(
-            pool, butler_name="general", signal_type="meeting", confidence=0.3
-        )
+        await set_context(pool, butler_name="general", signal_type="meeting", confidence=0.3)
 
         # Default min_confidence = 0.5
         assert await is_user_in_context(pool, "meeting") is False
@@ -526,9 +515,7 @@ class TestIsUserInContext:
         """Signal with confidence 0.3 returns True when min_confidence=0.2."""
         from butlers.context_bus import is_user_in_context, set_context
 
-        await set_context(
-            pool, butler_name="general", signal_type="meeting", confidence=0.3
-        )
+        await set_context(pool, butler_name="general", signal_type="meeting", confidence=0.3)
 
         assert await is_user_in_context(pool, "meeting", min_confidence=0.2) is True
 
@@ -536,9 +523,7 @@ class TestIsUserInContext:
         """Signal with confidence 0.7 returns False when min_confidence=0.9."""
         from butlers.context_bus import is_user_in_context, set_context
 
-        await set_context(
-            pool, butler_name="general", signal_type="meeting", confidence=0.7
-        )
+        await set_context(pool, butler_name="general", signal_type="meeting", confidence=0.7)
 
         assert await is_user_in_context(pool, "meeting", min_confidence=0.9) is False
 
@@ -554,9 +539,7 @@ class TestIsUserInContext:
         """Signal is included when confidence exactly equals min_confidence."""
         from butlers.context_bus import is_user_in_context, set_context
 
-        await set_context(
-            pool, butler_name="general", signal_type="meeting", confidence=0.5
-        )
+        await set_context(pool, butler_name="general", signal_type="meeting", confidence=0.5)
 
         assert await is_user_in_context(pool, "meeting", min_confidence=0.5) is True
 

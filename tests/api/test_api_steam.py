@@ -501,9 +501,7 @@ class TestDisconnectSteamAccount:
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.delete(
-                    f"/api/steam/accounts/{_ACCOUNT_ID}?hard_delete=true"
-                )
+                resp = await client.delete(f"/api/steam/accounts/{_ACCOUNT_ID}?hard_delete=true")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -525,9 +523,7 @@ class TestDisconnectSteamAccount:
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.delete(
-                    f"/api/steam/accounts/{_ACCOUNT_ID}?hard_delete=false"
-                )
+                resp = await client.delete(f"/api/steam/accounts/{_ACCOUNT_ID}?hard_delete=false")
 
         assert resp.status_code == 200
         body = resp.json()
