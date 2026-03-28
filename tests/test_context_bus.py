@@ -469,12 +469,15 @@ class TestSetContext:
         assert 0.7 in args
 
     async def test_passes_metadata_to_pool(self):
+        import json as _json
+
         pool = AsyncMock()
         pool.execute = AsyncMock()
         meta = {"source": "calendar"}
         await set_context(pool, "general", "meeting", metadata=meta)
         args = pool.execute.call_args[0]
-        assert meta in args
+        # metadata is JSON-serialized before being passed to asyncpg (JSONB $7 arg)
+        assert _json.dumps(meta) in args
 
     async def test_general_butler_can_write_most_signal_types(self):
         """general butler should succeed for all types except exercising (health-only per spec)."""

@@ -1,6 +1,6 @@
 """Situational Context Bus.
 
-Provides shared situational awareness via a ``public.user_context`` table.
+Provides shared situational awareness via a ``shared.user_context`` table.
 Butlers read and write context signals (traveling, sleeping, meeting, etc.)
 with TTL-based expiry, confidence scoring, and per-signal write permissions.
 
@@ -11,13 +11,14 @@ Helpers: ``_check_write_permission``, ``_clamp_ttl``
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class ContextSignal(Enum):
+class ContextSignal(StrEnum):
     """Vocabulary of context signal types."""
 
     traveling = "traveling"
@@ -35,7 +36,7 @@ class ContextSignal(Enum):
 
 @dataclass
 class ContextEntry:
-    """A single active context signal from the public.user_context table."""
+    """A single active context signal from the shared.user_context table."""
 
     signal_type: str
     value: str | None
@@ -157,12 +158,12 @@ async def get_active_context(pool: Any) -> list[ContextEntry]:
     -------
     list[ContextEntry]
         Active signals, highest confidence first. Empty list when none exist or
-        the ``public.user_context`` table is absent.
+        the ``shared.user_context`` table is absent.
     """
     rows = await pool.fetch(
         """
         SELECT signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata
-        FROM public.user_context
+        FROM shared.user_context
         WHERE superseded_at IS NULL AND expires_at > now()
         ORDER BY confidence DESC, set_at DESC
         """
@@ -206,7 +207,7 @@ async def is_user_in_context(
     row = await pool.fetchrow(
         """
         SELECT 1
-        FROM public.user_context
+        FROM shared.user_context
         WHERE signal_type = $1
           AND superseded_at IS NULL
           AND expires_at > now()
@@ -286,9 +287,12 @@ async def set_context(
     # Clamp to maximum TTL
     expires_at = _clamp_ttl(signal_type, now, expires_at)
 
+    # asyncpg does not auto-serialize dicts to JSONB; pass as JSON string.
+    metadata_json: str | None = json.dumps(metadata) if metadata is not None else None
+
     await pool.execute(
         """
-        INSERT INTO public.user_context
+        INSERT INTO shared.user_context
             (signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata,
              superseded_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
@@ -306,7 +310,7 @@ async def set_context(
         now,
         expires_at,
         confidence,
-        metadata,
+        metadata_json,
     )
 
 
@@ -333,7 +337,7 @@ async def clear_context(
     """
     await pool.execute(
         """
-        UPDATE public.user_context
+        UPDATE shared.user_context
         SET superseded_at = now()
         WHERE signal_type = $1
           AND set_by_butler = $2
