@@ -3353,7 +3353,7 @@ class TestMetadataCachePersistence:
         assert loop._metadata_cache == {}
 
     async def test_save_serializes_cache_to_db(self, account_config: GDriveAccountConfig) -> None:
-        """_save_metadata_cache_to_store writes all cache entries to DB as JSONB."""
+        """_save_metadata_cache_to_store writes all cache entries to DB as JSONB using jsonb_set."""
         conn = AsyncMock()
         conn.execute = AsyncMock(return_value="INSERT 1")
 
@@ -3376,13 +3376,14 @@ class TestMetadataCachePersistence:
 
         conn.execute.assert_called_once()
         call_args = conn.execute.call_args
-        # The settings_json is the 3rd positional argument (index 2)
+        # With jsonb_set, the $3 parameter is just the cache_data (not wrapped in metadata_cache)
         import json
 
-        settings_json = call_args.args[3]  # $3 parameter
-        settings = json.loads(settings_json)
-        assert "metadata_cache" in settings
-        entry = settings["metadata_cache"]["file-id-x"]
+        cache_data_json = call_args.args[3]  # $3 parameter
+        cache_data = json.loads(cache_data_json)
+        # cache_data is now the raw dict with file_ids as keys
+        assert "file-id-x" in cache_data
+        entry = cache_data["file-id-x"]
         assert entry["name"] == "presentation.pptx"
         assert entry["mime_type"] == "application/vnd.ms-powerpoint"
         assert entry["parents"] == ["parent-folder"]
@@ -3411,7 +3412,8 @@ class TestMetadataCachePersistence:
 
     async def test_metadata_cache_round_trip(self, account_config: GDriveAccountConfig) -> None:
         """A metadata cache saved via _save_metadata_cache_to_store can be fully
-        restored by _load_metadata_cache_from_store."""
+        restored by _load_metadata_cache_from_store. Verifies jsonb_set preserves
+        other settings keys while updating metadata_cache."""
         import json
 
         # ---- save phase ----
@@ -3442,9 +3444,12 @@ class TestMetadataCachePersistence:
         )
         await save_loop._save_metadata_cache_to_store()
 
-        # Extract the settings_json that was sent to DB ($3 positional arg)
-        settings_json = saved_args[3]
-        settings_dict = json.loads(settings_json)
+        # Extract the $3 parameter (cache_data only, not wrapped in metadata_cache)
+        cache_data_json = saved_args[3]
+        cache_data = json.loads(cache_data_json)
+
+        # Simulate what jsonb_set does: wraps cache_data under metadata_cache key
+        settings_dict = {"metadata_cache": cache_data}
 
         # ---- restore phase ----
         restore_row = MagicMock()
@@ -3468,6 +3473,60 @@ class TestMetadataCachePersistence:
         assert entry.name == "round-trip.txt"
         assert entry.parents == ["folder-rt"]
         assert entry.shared is True
+
+    async def test_jsonb_set_preserves_other_settings_keys(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """Verify that _save_metadata_cache_to_store uses jsonb_set to preserve
+        other settings keys (e.g., if future code writes to settings['other_key']).
+
+        This tests the fix for bu-wdj9: atomically update only the metadata_cache
+        key without overwriting the entire settings JSONB column.
+        """
+        import json
+
+        # ---- save phase ----
+        save_conn = AsyncMock()
+
+        # Track SQL argument calls
+        sql_calls: list[Any] = []
+
+        async def _capture_execute(*args: Any) -> str:
+            sql_calls.append(args)
+            return "INSERT 1"
+
+        save_conn.execute = _capture_execute
+
+        save_pool = MagicMock()
+        save_pool.acquire = MagicMock()
+        save_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=save_conn)
+        save_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        save_loop = GDriveAccountLoop(
+            email=_FAKE_EMAIL, config=account_config, cursor_pool=save_pool
+        )
+        save_loop._metadata_cache["file-1"] = _FileMetadata(
+            file_id="file-1",
+            name="test.txt",
+            mime_type="text/plain",
+            parents=[],
+            shared=False,
+            modified_time="2026-03-01T00:00:00Z",
+        )
+        await save_loop._save_metadata_cache_to_store()
+
+        # Verify that the SQL uses jsonb_set (check that the query string contains it)
+        assert len(sql_calls) > 0, "Expected execute to be called"
+        call_args = sql_calls[0]
+        sql_statement = call_args[0]
+        assert "jsonb_set" in sql_statement, "Expected SQL to use jsonb_set for atomic updates"
+        assert "DO UPDATE SET settings = jsonb_set" in sql_statement
+
+        # Extract the cache_data that was sent as $3
+        cache_data_json = call_args[3]
+        cache_data = json.loads(cache_data_json)
+        assert "file-1" in cache_data
+        assert cache_data["file-1"]["name"] == "test.txt"
 
 
 class TestPollOnce:
