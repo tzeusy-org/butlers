@@ -499,15 +499,18 @@ function TelegramSessionSetup({
     refetchInterval: 30_000,
   });
 
-  // Pre-fill from existing entity_info entries
-  const existingApiId = entries.find((e) => e.type === "telegram_api_id")?.value ?? "";
-  const existingApiHash = entries.find((e) => e.type === "telegram_api_hash");
+  // Check for existing entity_info entries (entries, not values — secured values are null)
+  const apiIdEntry = entries.find((e) => e.type === "telegram_api_id");
+  const apiHashEntry = entries.find((e) => e.type === "telegram_api_hash");
 
   const revealMutation = useRevealEntitySecret();
-  const hasExistingCreds = !!existingApiId && !!existingApiHash;
+  const hasExistingCreds = !!apiIdEntry && !!apiHashEntry;
+
+  // Use the value directly if visible, otherwise empty (will be revealed)
+  const visibleApiId = apiIdEntry?.value ?? "";
 
   const [step, setStep] = useState<TelegramStep>("idle");
-  const [apiId, setApiId] = useState(existingApiId);
+  const [apiId, setApiId] = useState(visibleApiId);
   const [apiHash, setApiHash] = useState("");
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
@@ -516,28 +519,51 @@ function TelegramSessionSetup({
   const [userName, setUserName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  function handleStart() {
-    if (hasExistingCreds) {
-      // Reveal the secured API hash, then skip to phone step
-      setStep("loading_creds");
-      setApiId(existingApiId);
-      revealMutation.mutate(
-        { entityId, infoId: existingApiHash.id },
-        {
-          onSuccess: (data) => {
-            setApiHash(data.value ?? "");
-            setStep("phone");
-            setError(null);
-          },
-          onError: () => {
-            // Fall back to manual entry if reveal fails
-            setStep("credentials");
-            setError("Could not load existing API Hash. Please re-enter it.");
-          },
-        },
-      );
-    } else {
+  async function handleStart() {
+    if (!hasExistingCreds) {
       setStep("credentials");
+      return;
+    }
+
+    // Both entries exist — reveal their actual values, then skip to phone step
+    setStep("loading_creds");
+    setError(null);
+
+    try {
+      // Reveal API ID if secured (value is null), otherwise use visible value
+      let resolvedApiId = apiIdEntry.value;
+      if (!resolvedApiId && apiIdEntry.secured) {
+        const revealed = await new Promise<string>((resolve, reject) => {
+          revealMutation.mutate(
+            { entityId, infoId: apiIdEntry.id },
+            {
+              onSuccess: (data) => resolve(data.value ?? ""),
+              onError: reject,
+            },
+          );
+        });
+        resolvedApiId = revealed;
+      }
+
+      // Reveal API Hash (always secured)
+      const resolvedApiHash = await new Promise<string>((resolve, reject) => {
+        revealMutation.mutate(
+          { entityId, infoId: apiHashEntry.id },
+          {
+            onSuccess: (data) => resolve(data.value ?? ""),
+            onError: reject,
+          },
+        );
+      });
+
+      setApiId(resolvedApiId ?? "");
+      setApiHash(resolvedApiHash);
+      setStep("phone");
+    } catch {
+      // Fall back to manual entry if reveals fail
+      setApiId(visibleApiId);
+      setStep("credentials");
+      setError("Could not load existing credentials. Please re-enter them.");
     }
   }
 
@@ -624,7 +650,7 @@ function TelegramSessionSetup({
 
   function handleReset() {
     setStep("idle");
-    setApiId(existingApiId);
+    setApiId(visibleApiId);
     setApiHash("");
     setPhone("");
     setCode("");
