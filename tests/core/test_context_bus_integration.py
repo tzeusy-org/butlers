@@ -24,7 +24,7 @@ pytestmark = [
 ]
 
 # ---------------------------------------------------------------------------
-# DDL — mirrors alembic/versions/core/core_041_shared_user_context.py
+# DDL — mirrors alembic/versions/core/core_042_user_context.py (PR #884 / bu-mft2)
 # ---------------------------------------------------------------------------
 
 _DDL = """

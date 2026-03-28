@@ -121,7 +121,10 @@ def _clamp_ttl(signal_type: str, set_at: datetime, expires_at: datetime) -> date
     Parameters
     ----------
     signal_type:
-        The signal type string (used to look up the max TTL).
+        The signal type string (used to look up the max TTL).  Must be a key
+        in ``_TTL_CONFIG``; otherwise ``KeyError`` is raised.  In practice this
+        is always satisfied because ``set_context`` validates *signal_type*
+        against ``ContextSignal`` before calling this helper.
     set_at:
         The timestamp the signal is being set (now).
     expires_at:
@@ -131,6 +134,13 @@ def _clamp_ttl(signal_type: str, set_at: datetime, expires_at: datetime) -> date
     -------
     datetime
         The (possibly clamped) expiry timestamp.
+
+    Raises
+    ------
+    KeyError
+        If *signal_type* is not present in ``_TTL_CONFIG``.  This is a
+        programmer error; callers must ensure the signal type is valid before
+        invoking this helper.
     """
     _default_ttl, max_ttl = _TTL_CONFIG[signal_type]
     max_expires_at = set_at + max_ttl
@@ -157,8 +167,8 @@ async def get_active_context(pool: Any) -> list[ContextEntry]:
     Returns
     -------
     list[ContextEntry]
-        Active signals, highest confidence first. Empty list when none exist or
-        the ``shared.user_context`` table is absent.
+        Active signals, highest confidence first. Empty list when no active
+        signals exist.
     """
     rows = await pool.fetch(
         """

@@ -410,7 +410,6 @@ class TestSetContext:
         after = _now()
 
         args = pool.execute.call_args[0]
-        expires_at_arg = args[5]  # position: signal_type, value, butler, set_at, expires_at, ...
         # find the datetime arg that is expires_at (not set_at)
         # The function sets expires_at = now() + 1h for meeting
         # Locate it in positional args
