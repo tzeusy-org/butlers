@@ -1,7 +1,7 @@
 """deadline_columns: add deadline fields to scheduled_tasks table.
 
-Revision ID: core_042
-Revises: core_041
+Revision ID: core_043
+Revises: core_042
 Create Date: 2026-03-28 00:00:00.000000
 
 Extends the ``scheduled_tasks`` table with nullable columns for
@@ -30,8 +30,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_042"
-down_revision = "core_041"
+revision = "core_043"
+down_revision = "core_042"
 branch_labels = None
 depends_on = None
 
