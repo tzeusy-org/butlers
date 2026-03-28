@@ -2803,19 +2803,17 @@ export interface SteamDisconnectResponse {
 export interface SteamGamePlaytime {
   app_id: number;
   name: string | null;
-  playtime_forever_minutes: number;
-  playtime_2weeks_minutes: number | null;
-  img_icon_url: string | null;
+  playtime_minutes: number;
 }
 
 /** Response from GET /api/steam/playtime */
 export interface SteamPlaytimeAnalytics {
   account_id: string;
-  steam_id: string;
+  steam_id: number;
   display_name: string | null;
+  days: number | null;
   total_games: number;
   total_playtime_minutes: number;
   top_games: SteamGamePlaytime[];
-  recently_played: SteamGamePlaytime[];
-  fetched_at: string;
+  queried_at: string;
 }

@@ -348,7 +348,7 @@ function PlaytimePanel({ primaryAccountId }: { primaryAccountId?: string }) {
               <div key={game.app_id} className="flex items-center justify-between gap-2 text-sm">
                 <span className="truncate">{game.name ?? `App ${game.app_id}`}</span>
                 <span className="text-muted-foreground shrink-0 font-mono text-xs">
-                  {formatMinutes(game.playtime_forever_minutes)}
+                  {formatMinutes(game.playtime_minutes)}
                 </span>
               </div>
             ))}
@@ -356,27 +356,7 @@ function PlaytimePanel({ primaryAccountId }: { primaryAccountId?: string }) {
         </div>
       )}
 
-      {data.recently_played.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            Recently played (last 2 weeks)
-          </p>
-          <div className="space-y-1">
-            {data.recently_played.map((game) => (
-              <div key={game.app_id} className="flex items-center justify-between gap-2 text-sm">
-                <span className="truncate">{game.name ?? `App ${game.app_id}`}</span>
-                <span className="text-muted-foreground shrink-0 font-mono text-xs">
-                  {game.playtime_2weeks_minutes != null
-                    ? formatMinutes(game.playtime_2weeks_minutes)
-                    : "—"}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {data.top_games.length === 0 && data.recently_played.length === 0 && (
+      {data.top_games.length === 0 && (
         <p className="text-sm text-muted-foreground">
           No game playtime data available. The Steam profile may be set to private.
         </p>
