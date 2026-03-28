@@ -142,6 +142,9 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Finance overview N+1 query optimization pattern
+- The subscription_audit function in `roster/finance/tools/overview.py` implements batched query optimization for fetching subscription charge dates: use single LEFT JOIN with GROUP BY instead of per-subscription queries. This pattern should be replicated for any overview/analytics tool that needs to correlate multiple parent entities with their most recent related transactions or events. The key is `COALESCE(MAX(CASE WHEN condition THEN field END), fallback)` to handle entities with no related rows.
+
 ### Beads sync command drift
 - The current `bd` CLI in this repo/worktree no longer exposes `bd sync`; session close flows should use `bd export -o .beads/issues.jsonl` and regular git push semantics (or the project-approved replacement command when available) instead of assuming `bd sync` exists.
 
