@@ -167,6 +167,9 @@ class SteamModule(Module):
         self._public_client: SteamAPIClient | None = None
         self._primary_steam_id: str | None = None
         self._credentials_ok: bool = False
+        # Config-driven values (populated in on_startup)
+        self._default_account: str | None = None
+        self._max_batch_size: int = _FRIEND_ENRICH_BATCH
 
     @property
     def name(self) -> str:
@@ -199,8 +202,9 @@ class SteamModule(Module):
         Parameters
         ----------
         config:
-            Module configuration (``SteamModuleConfig`` or raw dict — ignored,
-            no module-level settings yet).
+            Module configuration (``SteamModuleConfig`` or raw dict).
+            Recognised fields: ``default_account``, ``cache_ttl_seconds``,
+            ``max_batch_size``.
         db:
             Butler database instance providing ``db.pool`` for asyncpg queries.
         credential_store:
@@ -214,11 +218,23 @@ class SteamModule(Module):
         self._client = None
         self._public_client = None
 
+        # Extract config values (support both SteamModuleConfig and raw dict).
+        if isinstance(config, SteamModuleConfig):
+            cfg = config
+        elif isinstance(config, dict):
+            cfg = SteamModuleConfig(**config) if config else SteamModuleConfig()
+        else:
+            cfg = SteamModuleConfig()
+
+        self._default_account = cfg.default_account
+        self._max_batch_size = cfg.max_batch_size
+        cache_ttl_s = float(cfg.cache_ttl_seconds)
+
         # Always open a public client so that unauthenticated endpoints
         # (steam_get_game_news, steam_get_current_players) work even when
         # no Steam account is connected.  Steam's public API endpoints accept
         # requests with an empty key.
-        public_client = SteamAPIClient(api_key="")
+        public_client = SteamAPIClient(api_key="", cache_ttl_s=cache_ttl_s)
         await public_client.open()
         self._public_client = public_client
 
@@ -259,7 +275,7 @@ class SteamModule(Module):
             return
 
         self._primary_steam_id = str(account.steam_id)
-        client = SteamAPIClient(api_key=api_key)
+        client = SteamAPIClient(api_key=api_key, cache_ttl_s=cache_ttl_s)
         await client.open()
         self._client = client
         self._credentials_ok = True
@@ -301,8 +317,8 @@ class SteamModule(Module):
     # ------------------------------------------------------------------
 
     def _resolve_steam_id(self, steam_id: str | None) -> str | None:
-        """Return steam_id if given, else fall back to the primary account's SteamID."""
-        return steam_id or self._primary_steam_id
+        """Return steam_id if given, else fall back to default_account config, then primary."""
+        return steam_id or self._default_account or self._primary_steam_id
 
     # ------------------------------------------------------------------
     # register_tools
@@ -481,12 +497,11 @@ class SteamModule(Module):
                 friends = result.get("friendslist", {}).get("friends", [])
                 if enrich and friends:
                     friend_ids = [f["steamid"] for f in friends]
-                    # Fetch all batches concurrently (100 SteamIDs per call).
+                    batch_size = module._max_batch_size
+                    # Fetch all batches concurrently (max_batch_size SteamIDs per call).
                     tasks = [
-                        module._client.get_player_summaries(
-                            friend_ids[i : i + _FRIEND_ENRICH_BATCH]
-                        )
-                        for i in range(0, len(friend_ids), _FRIEND_ENRICH_BATCH)
+                        module._client.get_player_summaries(friend_ids[i : i + batch_size])
+                        for i in range(0, len(friend_ids), batch_size)
                     ]
                     batch_results = await asyncio.gather(*tasks)
                     summaries: list[dict[str, Any]] = [

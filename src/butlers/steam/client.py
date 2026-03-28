@@ -167,6 +167,9 @@ class SteamAPIClient:
         Initial back-off delay in seconds on rate limit responses. Default: 60.
     backoff_max_s:
         Maximum back-off ceiling in seconds. Default: 3600.
+    cache_ttl_s:
+        How long (in seconds) to cache API responses. Stored for future use by
+        caching layers. Set to 0 to disable caching. Default: 300.
 
     Usage (async context manager — preferred)::
 
@@ -190,12 +193,14 @@ class SteamAPIClient:
         http_client: httpx.AsyncClient | None = None,
         backoff_initial_s: float = _BACKOFF_INITIAL_S,
         backoff_max_s: float = _BACKOFF_MAX_S,
+        cache_ttl_s: float = 300.0,
     ) -> None:
         self._api_key = api_key
         self._http_client = http_client
         self._owns_client = http_client is None
         self._backoff_initial_s = backoff_initial_s
         self._backoff_max_s = backoff_max_s
+        self._cache_ttl_s = cache_ttl_s
         self._rate_limit_attempt: int = 0  # tracks consecutive rate-limit hits
 
     # ------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -163,8 +164,6 @@ class TestSteamModuleConfig:
         assert config.default_account == "76561198000000001"
 
     def test_default_account_accepts_uuid_string(self):
-        import uuid
-
         uid = str(uuid.uuid4())
         config = SteamModuleConfig(default_account=uid)
         assert config.default_account == uid
@@ -372,7 +371,6 @@ class TestStartup:
     async def test_startup_no_api_key_graceful(
         self, steam_module: SteamModule, mock_steam_client: MagicMock
     ):
-        import uuid
         from datetime import UTC, datetime
 
         from butlers.steam_account_registry import SteamAccount
@@ -410,7 +408,6 @@ class TestStartup:
         assert not steam_module._credentials_ok
 
     async def test_startup_success(self, steam_module: SteamModule, mock_steam_client: MagicMock):
-        import uuid
         from datetime import UTC, datetime
 
         from butlers.steam_account_registry import SteamAccount
@@ -472,6 +469,155 @@ class TestStartup:
     async def test_shutdown_noop_when_not_connected(self, steam_module: SteamModule):
         # Should not raise
         await steam_module.on_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Config wiring: default_account, cache_ttl_seconds, max_batch_size
+# ---------------------------------------------------------------------------
+
+
+class TestConfigWiring:
+    """Verify that SteamModuleConfig fields are wired into SteamModule logic."""
+
+    # --- default_account wired into _resolve_steam_id ---
+
+    def test_resolve_steam_id_uses_explicit_id(self, steam_module: SteamModule):
+        """Explicit steam_id always wins over default_account and primary."""
+        steam_module._default_account = "76561198000000002"
+        steam_module._primary_steam_id = "76561198000000003"
+        assert steam_module._resolve_steam_id("76561198000000001") == "76561198000000001"
+
+    def test_resolve_steam_id_falls_back_to_default_account(self, steam_module: SteamModule):
+        """When no explicit steam_id, default_account is used before primary."""
+        steam_module._default_account = "76561198000000002"
+        steam_module._primary_steam_id = "76561198000000003"
+        assert steam_module._resolve_steam_id(None) == "76561198000000002"
+
+    def test_resolve_steam_id_falls_back_to_primary_when_no_default(
+        self, steam_module: SteamModule
+    ):
+        """When default_account is None and no explicit id, primary is used."""
+        steam_module._default_account = None
+        steam_module._primary_steam_id = "76561198000000003"
+        assert steam_module._resolve_steam_id(None) == "76561198000000003"
+
+    def test_resolve_steam_id_returns_none_when_no_ids(self, steam_module: SteamModule):
+        """Returns None when all sources are unset."""
+        steam_module._default_account = None
+        steam_module._primary_steam_id = None
+        assert steam_module._resolve_steam_id(None) is None
+
+    async def test_startup_wires_default_account(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
+        """on_startup extracts default_account from config and stores it on the module."""
+        with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client):
+            await steam_module.on_startup(
+                config=SteamModuleConfig(default_account="76561198000000007"),
+                db=None,
+            )
+        assert steam_module._default_account == "76561198000000007"
+
+    async def test_startup_default_account_from_dict_config(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
+        """on_startup also parses default_account when config is a plain dict."""
+        with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client):
+            await steam_module.on_startup(
+                config={"default_account": "76561198000000099"},
+                db=None,
+            )
+        assert steam_module._default_account == "76561198000000099"
+
+    # --- cache_ttl_seconds passed to SteamAPIClient ---
+
+    async def test_startup_passes_cache_ttl_to_client(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
+        """on_startup passes cache_ttl_seconds as cache_ttl_s to SteamAPIClient."""
+        with patch(
+            "butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client
+        ) as MockClient:
+            await steam_module.on_startup(
+                config=SteamModuleConfig(cache_ttl_seconds=60),
+                db=None,
+            )
+        MockClient.assert_called_once_with(api_key="", cache_ttl_s=60.0)
+
+    async def test_startup_passes_zero_cache_ttl_to_client(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
+        """cache_ttl_seconds=0 disables caching — passed through as 0.0."""
+        with patch(
+            "butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client
+        ) as MockClient:
+            await steam_module.on_startup(
+                config=SteamModuleConfig(cache_ttl_seconds=0),
+                db=None,
+            )
+        MockClient.assert_called_once_with(api_key="", cache_ttl_s=0.0)
+
+    # --- max_batch_size replaces _FRIEND_ENRICH_BATCH in steam_get_friend_list ---
+
+    async def test_startup_wires_max_batch_size(
+        self, steam_module: SteamModule, mock_steam_client: MagicMock
+    ):
+        """on_startup stores max_batch_size from config on the module."""
+        with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_steam_client):
+            await steam_module.on_startup(
+                config=SteamModuleConfig(max_batch_size=50),
+                db=None,
+            )
+        assert steam_module._max_batch_size == 50
+
+    async def test_friend_list_enrich_uses_max_batch_size(
+        self,
+        steam_module: SteamModule,
+        mock_mcp: MagicMock,
+        mock_steam_client: MagicMock,
+    ):
+        """steam_get_friend_list respects max_batch_size when batching enrich calls."""
+        # 30 friends with max_batch_size=10 → 3 batch calls
+        steam_module._client = mock_steam_client
+        steam_module._credentials_ok = True
+        steam_module._primary_steam_id = "76561198000000001"
+        steam_module._max_batch_size = 10
+
+        friends = [
+            {"steamid": f"76561198000000{i:03d}", "relationship": "friend"} for i in range(30)
+        ]
+        mock_steam_client.request = AsyncMock(return_value={"friendslist": {"friends": friends}})
+        mock_steam_client.get_player_summaries = AsyncMock(return_value=[])
+
+        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        tools = mock_mcp._registered_tools
+
+        await tools["steam_get_friend_list"](enrich=True)
+        assert mock_steam_client.get_player_summaries.call_count == 3
+
+    async def test_friend_list_enrich_default_batch_size_100(
+        self,
+        steam_module: SteamModule,
+        mock_mcp: MagicMock,
+        mock_steam_client: MagicMock,
+    ):
+        """Default max_batch_size=100: 150 friends → 2 batch calls."""
+        steam_module._client = mock_steam_client
+        steam_module._credentials_ok = True
+        steam_module._primary_steam_id = "76561198000000001"
+        # default _max_batch_size is 100
+
+        friends = [
+            {"steamid": f"765611980000{i:05d}", "relationship": "friend"} for i in range(150)
+        ]
+        mock_steam_client.request = AsyncMock(return_value={"friendslist": {"friends": friends}})
+        mock_steam_client.get_player_summaries = AsyncMock(return_value=[])
+
+        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        tools = mock_mcp._registered_tools
+
+        await tools["steam_get_friend_list"](enrich=True)
+        assert mock_steam_client.get_player_summaries.call_count == 2
 
 
 # ---------------------------------------------------------------------------
