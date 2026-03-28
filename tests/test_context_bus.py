@@ -223,6 +223,30 @@ class TestClampTtl:
         result = _clamp_ttl("exercising", now, expires_at)
         assert result == expires_at
 
+    def test_naive_expires_at_treated_as_utc(self):
+        """A naive (no tzinfo) expires_at should be treated as UTC without raising."""
+        now = _now()  # timezone-aware UTC
+        # Build a naive datetime 2 hours from now (within exercising 3h max).
+        # Strip tzinfo from an aware datetime to get a proper naive datetime.
+        naive_expires = (now + timedelta(hours=2)).replace(tzinfo=None)
+        assert naive_expires.tzinfo is None
+        result = _clamp_ttl("exercising", now, naive_expires)
+        # Result must be UTC-aware
+        assert result.tzinfo is not None
+        # Should not be clamped (2h < 3h max)
+        expected = now + timedelta(hours=2)
+        assert abs((result - expected).total_seconds()) < 2
+
+    def test_naive_expires_at_clamped_correctly(self):
+        """A naive expires_at that exceeds the max is still clamped."""
+        now = _now()
+        # meeting max = 4h; naive expires 10h from now -> clamped to 4h
+        naive_expires = (now + timedelta(hours=10)).replace(tzinfo=None)
+        assert naive_expires.tzinfo is None
+        result = _clamp_ttl("meeting", now, naive_expires)
+        expected = now + timedelta(hours=4)
+        assert abs((result - expected).total_seconds()) < 2
+
 
 # ---------------------------------------------------------------------------
 # get_active_context (unit: mock pool)
@@ -509,6 +533,34 @@ class TestSetContext:
         # Use a butler that would otherwise fail permission check too
         with pytest.raises(ValueError):
             await set_context(pool, "finance", "invalidtype")
+
+    async def test_confidence_below_zero_raises_value_error(self):
+        """confidence < 0.0 must raise ValueError."""
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="confidence must be in"):
+            await set_context(pool, "general", "meeting", confidence=-0.1)
+        pool.execute.assert_not_called()
+
+    async def test_confidence_above_one_raises_value_error(self):
+        """confidence > 1.0 must raise ValueError."""
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="confidence must be in"):
+            await set_context(pool, "general", "meeting", confidence=1.1)
+        pool.execute.assert_not_called()
+
+    async def test_confidence_zero_is_valid(self):
+        """confidence = 0.0 is at the boundary and must succeed."""
+        pool = AsyncMock()
+        pool.execute = AsyncMock()
+        await set_context(pool, "general", "meeting", confidence=0.0)
+        pool.execute.assert_called_once()
+
+    async def test_confidence_one_is_valid(self):
+        """confidence = 1.0 (default) is at the boundary and must succeed."""
+        pool = AsyncMock()
+        pool.execute = AsyncMock()
+        await set_context(pool, "general", "meeting", confidence=1.0)
+        pool.execute.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -118,6 +118,9 @@ def _clamp_ttl(signal_type: str, set_at: datetime, expires_at: datetime) -> date
     If the requested TTL exceeds the maximum, ``expires_at`` is returned as
     ``set_at + max_ttl``.  Otherwise *expires_at* is returned unchanged.
 
+    Naive ``expires_at`` values (no ``tzinfo``) are treated as UTC by attaching
+    ``UTC`` before comparison and are returned as UTC-aware datetimes.
+
     Parameters
     ----------
     signal_type:
@@ -126,14 +129,15 @@ def _clamp_ttl(signal_type: str, set_at: datetime, expires_at: datetime) -> date
         is always satisfied because ``set_context`` validates *signal_type*
         against ``ContextSignal`` before calling this helper.
     set_at:
-        The timestamp the signal is being set (now).
+        The timestamp the signal is being set (now).  Must be timezone-aware.
     expires_at:
-        The requested expiry timestamp.
+        The requested expiry timestamp.  May be naive (tzinfo=None), in which
+        case it is interpreted as UTC.
 
     Returns
     -------
     datetime
-        The (possibly clamped) expiry timestamp.
+        The (possibly clamped) expiry timestamp, always UTC-aware.
 
     Raises
     ------
@@ -142,6 +146,10 @@ def _clamp_ttl(signal_type: str, set_at: datetime, expires_at: datetime) -> date
         programmer error; callers must ensure the signal type is valid before
         invoking this helper.
     """
+    # Normalise naive expires_at to UTC so the comparison is always safe.
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+
     _default_ttl, max_ttl = _TTL_CONFIG[signal_type]
     max_expires_at = set_at + max_ttl
     if expires_at > max_expires_at:
@@ -273,7 +281,8 @@ async def set_context(
     Raises
     ------
     ValueError
-        If *signal_type* is not a valid ``ContextSignal`` member.
+        If *signal_type* is not a valid ``ContextSignal`` member, or if
+        *confidence* is outside [0.0, 1.0].
     PermissionError
         If *butler_name* is not authorized to write *signal_type*.
     """
@@ -283,6 +292,10 @@ async def set_context(
     except ValueError:
         valid = [s.value for s in ContextSignal]
         raise ValueError(f"Invalid signal type '{signal_type}'. Valid types: {valid}")
+
+    # Validate confidence range
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError(f"confidence must be in [0.0, 1.0], got {confidence!r}")
 
     # Check write permission
     _check_write_permission(butler_name, signal_type)
