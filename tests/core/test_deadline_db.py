@@ -285,7 +285,7 @@ class TestDeadlineCreate:
                    enabled, source, dispatch_mode, prompt
             FROM scheduled_tasks WHERE id = $1
             """,
-            uuid.UUID(task_id),
+            uuid.UUID(str(task_id)),
         )
         assert row is not None
         assert row["task_type"] == "deadline"
@@ -310,7 +310,7 @@ class TestDeadlineCreate:
             prompt="Test deadline notify",
         )
         # Should be parseable as UUID
-        assert uuid.UUID(task_id)
+        assert uuid.UUID(str(task_id))
 
     async def test_deadline_create_rejects_past_target_date(self, pool):
         """deadline_create raises ValueError when target_date is in the past."""
@@ -392,7 +392,7 @@ class TestDeadlineCreate:
         )
         row = await pool.fetchrow(
             "SELECT depends_on FROM scheduled_tasks WHERE id = $1",
-            uuid.UUID(task_id),
+            uuid.UUID(str(task_id)),
         )
         import json
 
@@ -499,7 +499,7 @@ class TestDeadlineUpdate:
         row = await pool.fetchrow(
             "SELECT target_date, deadline_status, fired_thresholds"
             " FROM scheduled_tasks WHERE id = $1",
-            uuid.UUID(task_id),
+            uuid.UUID(str(task_id)),
         )
         assert row["target_date"] == new_target
         assert row["deadline_status"] == "pending"
@@ -518,7 +518,7 @@ class TestDeadlineUpdate:
 
         row = await pool.fetchrow(
             "SELECT deadline_status, enabled FROM scheduled_tasks WHERE id = $1",
-            uuid.UUID(task_id),
+            uuid.UUID(str(task_id)),
         )
         assert row["deadline_status"] == "completed"
         assert row["enabled"] is False
@@ -533,7 +533,7 @@ class TestDeadlineUpdate:
 
         row = await pool.fetchrow(
             "SELECT deadline_status, enabled FROM scheduled_tasks WHERE id = $1",
-            uuid.UUID(task_id),
+            uuid.UUID(str(task_id)),
         )
         assert row["deadline_status"] == "expired"
         assert row["enabled"] is False
@@ -588,7 +588,7 @@ class TestDeadlineUpdate:
 
         row = await pool.fetchrow(
             "SELECT prompt FROM scheduled_tasks WHERE id = $1",
-            uuid.UUID(task_id),
+            uuid.UUID(str(task_id)),
         )
         assert row["prompt"] == "New prompt with notify call"
 
@@ -868,7 +868,7 @@ class TestDeadlineDelete:
 
         row = await pool.fetchrow(
             "SELECT id FROM scheduled_tasks WHERE id = $1",
-            uuid.UUID(task_id),
+            uuid.UUID(str(task_id)),
         )
         assert row is None, "Row should have been deleted"
 
@@ -884,7 +884,7 @@ class TestDeadlineDelete:
         # Row should still exist
         row = await pool.fetchrow(
             "SELECT id FROM scheduled_tasks WHERE id = $1",
-            uuid.UUID(task_id),
+            uuid.UUID(str(task_id)),
         )
         assert row is not None, "TOML-sourced row should not be deleted"
 
