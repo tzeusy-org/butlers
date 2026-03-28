@@ -628,7 +628,7 @@ class TestConfigWiring:
 class TestErrorHelpers:
     def test_no_credentials_error_structure(self):
         err = _no_credentials_error()
-        assert err["error"] == "steam_not_connected"
+        assert err["error"] == "no_steam_account"
         assert "message" in err
         assert "hint" in err
 

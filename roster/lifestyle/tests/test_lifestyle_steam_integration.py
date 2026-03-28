@@ -245,49 +245,49 @@ class TestDegradedMode:
         _, mcp = await self._build_degraded_module()
         result = await mcp._registered_tools["steam_get_player_summary"]()
         assert "error" in result
-        assert result["error"] == "steam_not_connected"
+        assert result["error"] == "no_steam_account"
 
     async def test_owned_games_returns_no_credentials_error(self) -> None:
         """steam_get_owned_games returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
         result = await mcp._registered_tools["steam_get_owned_games"]()
         assert "error" in result
-        assert result["error"] == "steam_not_connected"
+        assert result["error"] == "no_steam_account"
 
     async def test_recently_played_returns_no_credentials_error(self) -> None:
         """steam_get_recently_played returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
         result = await mcp._registered_tools["steam_get_recently_played"]()
         assert "error" in result
-        assert result["error"] == "steam_not_connected"
+        assert result["error"] == "no_steam_account"
 
     async def test_achievements_returns_no_credentials_error(self) -> None:
         """steam_get_achievements returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
         result = await mcp._registered_tools["steam_get_achievements"](app_id=730)
         assert "error" in result
-        assert result["error"] == "steam_not_connected"
+        assert result["error"] == "no_steam_account"
 
     async def test_friend_list_returns_no_credentials_error(self) -> None:
         """steam_get_friend_list returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
         result = await mcp._registered_tools["steam_get_friend_list"]()
         assert "error" in result
-        assert result["error"] == "steam_not_connected"
+        assert result["error"] == "no_steam_account"
 
     async def test_player_level_returns_no_credentials_error(self) -> None:
         """steam_get_player_level returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
         result = await mcp._registered_tools["steam_get_player_level"]()
         assert "error" in result
-        assert result["error"] == "steam_not_connected"
+        assert result["error"] == "no_steam_account"
 
     async def test_resolve_vanity_url_returns_no_credentials_error(self) -> None:
         """steam_resolve_vanity_url returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
         result = await mcp._registered_tools["steam_resolve_vanity_url"](vanity_url="gaben")
         assert "error" in result
-        assert result["error"] == "steam_not_connected"
+        assert result["error"] == "no_steam_account"
 
     async def test_no_credentials_error_includes_hint(self) -> None:
         """The no-credentials error message includes a hint directing to dashboard settings."""

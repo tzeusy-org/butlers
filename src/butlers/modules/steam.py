@@ -46,7 +46,7 @@ _FRIEND_ENRICH_BATCH = 100
 
 def _no_credentials_error() -> dict[str, Any]:
     return {
-        "error": "steam_not_connected",
+        "error": "no_steam_account",
         "message": "No Steam account is connected.",
         "hint": "Connect a Steam account via the dashboard settings and set it as primary.",
     }
