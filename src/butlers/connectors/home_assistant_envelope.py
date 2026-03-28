@@ -13,7 +13,7 @@ Implements the field mapping from the connector-home-assistant spec §6:
         event.observed_at        = time_fired (ISO-8601)
         sender.identity          = entity_id  (e.g. "sensor.living_room_temperature")
         payload.raw              = {entity_id, event_type, domain, device_class,
-                                    friendly_name, old_state, new_state, ha_event}
+                                    friendly_name, area, old_state, new_state, ha_event}
         payload.normalized_text  = "<friendly_name>: <old> -> <new>[ <unit>]"
                                    or "<entity_id>: <old> -> <new>[ <unit>]"
         control.idempotency_key  = "ha:<endpoint_identity>:<entity_id>:<time_fired_unix_ms>"
@@ -26,7 +26,7 @@ Implements the field mapping from the connector-home-assistant spec §6:
         event.observed_at        = time_fired (ISO-8601)
         sender.identity          = entity_id  (e.g. "automation.morning_lights")
         payload.raw              = {entity_id, event_type, domain, friendly_name,
-                                    automation_id, ha_event}
+                                    area, automation_id, ha_event}
         payload.normalized_text  = "Automation triggered: <friendly_name or entity_id>"
         control.idempotency_key  = "ha:<endpoint_identity>:<entity_id>:<time_fired_unix_ms>"
         control.policy_tier      = "default"
@@ -201,6 +201,7 @@ def build_state_changed_envelope(
     domain: str | None = None,
     device_class: str | None = None,
     unit_of_measurement: str | None = None,
+    area_id: str | None = None,
     discretion_reason: str | None = None,
 ) -> dict[str, Any]:
     """Build a complete ``ingest.v1`` envelope for a ``state_changed`` HA event.
@@ -220,6 +221,9 @@ def build_state_changed_envelope(
             if not provided.
         device_class: Entity device class from attributes (optional).
         unit_of_measurement: Unit from entity attributes (optional).
+        area_id: HA area ID for the entity from the entity registry (optional).
+            Included in ``payload.raw`` as ``area``; ``None`` when the entity
+            has no area assignment.
         discretion_reason: One-line reason from the discretion evaluator (optional).
 
     Returns:
@@ -245,6 +249,7 @@ def build_state_changed_envelope(
         "domain": domain,
         "device_class": device_class,
         "friendly_name": friendly_name,
+        "area": area_id,
     }
     if old_state is not None:
         raw["old_state"] = old_state
@@ -304,6 +309,7 @@ def build_automation_triggered_envelope(
     friendly_name: str | None = None,
     automation_id: str | None = None,
     domain: str | None = None,
+    area_id: str | None = None,
     discretion_reason: str | None = None,
 ) -> dict[str, Any]:
     """Build a complete ``ingest.v1`` envelope for an ``automation_triggered`` HA event.
@@ -325,6 +331,9 @@ def build_automation_triggered_envelope(
         automation_id: HA internal automation ID (optional; distinct from ``entity_id``).
         domain: Entity domain.  Defaults to ``"automation"`` if not provided and
             not derivable from ``entity_id``.
+        area_id: HA area ID for the entity from the entity registry (optional).
+            Included in ``payload.raw`` as ``area``; ``None`` when the entity
+            has no area assignment.
         discretion_reason: One-line reason from the discretion evaluator (optional).
 
     Returns:
@@ -347,6 +356,7 @@ def build_automation_triggered_envelope(
         "event_type": "automation_triggered",
         "domain": domain,
         "friendly_name": friendly_name,
+        "area": area_id,
     }
     if automation_id is not None:
         raw["automation_id"] = automation_id
