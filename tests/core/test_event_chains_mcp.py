@@ -141,17 +141,26 @@ class TestEventChainUpdateValidation:
     """Unit tests for event_chain_update field validation logic."""
 
     def test_valid_statuses_set(self):
-        """_VALID_STATUSES contains exactly the expected values."""
+        """_VALID_STATUSES contains exactly the spec-mandated values plus disabled."""
         from butlers.core.temporal.event_chains_db import _VALID_STATUSES
 
-        assert _VALID_STATUSES == frozenset({"active", "fired", "disabled"})
+        # Spec defines: active | paused | fired | failed
+        # disabled is retained for backward compatibility
+        assert _VALID_STATUSES == frozenset({"active", "paused", "fired", "failed", "disabled"})
 
     def test_invalid_status_not_in_valid_set(self):
-        """'paused' is not a valid status."""
+        """Arbitrary statuses are not valid."""
         from butlers.core.temporal.event_chains_db import _VALID_STATUSES
 
-        assert "paused" not in _VALID_STATUSES
         assert "pending" not in _VALID_STATUSES
+        assert "completed" not in _VALID_STATUSES
+
+    def test_spec_statuses_in_valid_set(self):
+        """All spec-defined statuses (active, paused, fired, failed) are in _VALID_STATUSES."""
+        from butlers.core.temporal.event_chains_db import _VALID_STATUSES
+
+        for status in ("active", "paused", "fired", "failed"):
+            assert status in _VALID_STATUSES, f"Spec status {status!r} missing from _VALID_STATUSES"
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +185,7 @@ _EVENT_CHAINS_DDL = """
                 'deadline_threshold'
             )),
         CONSTRAINT chk_event_chains_status
-            CHECK (status IN ('active', 'fired', 'disabled'))
+            CHECK (status IN ('active', 'paused', 'fired', 'failed', 'disabled'))
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_event_chains_name_butler
         ON event_chains (name, butler_name);
@@ -432,6 +441,90 @@ class TestEventChainsDB:
 
         chains = await event_chain_list(pool, "nonexistent-butler")
         assert chains == []
+
+    async def test_update_status_to_paused(self, pool):
+        """event_chain_update accepts status='paused' per spec."""
+        from butlers.core.temporal.event_chains_db import event_chain_create, event_chain_update
+
+        actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Do it"}]
+        butler = f"paused-test-{uuid.uuid4().hex[:8]}"
+        chain = await event_chain_create(
+            pool,
+            name="pausable-chain",
+            trigger_type="calendar_event_end",
+            actions=actions,
+            butler_name=butler,
+        )
+        updated = await event_chain_update(pool, chain["id"], butler_name=butler, status="paused")
+        assert updated["status"] == "paused"
+
+    async def test_update_status_to_failed(self, pool):
+        """event_chain_update accepts status='failed' per spec."""
+        from butlers.core.temporal.event_chains_db import event_chain_create, event_chain_update
+
+        actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Do it"}]
+        butler = f"failed-test-{uuid.uuid4().hex[:8]}"
+        chain = await event_chain_create(
+            pool,
+            name="failable-chain",
+            trigger_type="deadline_passed",
+            actions=actions,
+            butler_name=butler,
+        )
+        updated = await event_chain_update(pool, chain["id"], butler_name=butler, status="failed")
+        assert updated["status"] == "failed"
+
+    async def test_paused_chain_can_be_resumed(self, pool):
+        """A paused chain can be resumed by setting status='active'."""
+        from butlers.core.temporal.event_chains_db import event_chain_create, event_chain_update
+
+        actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Do it"}]
+        butler = f"resume-test-{uuid.uuid4().hex[:8]}"
+        chain = await event_chain_create(
+            pool,
+            name="pause-resume-chain",
+            trigger_type="calendar_event_end",
+            actions=actions,
+            butler_name=butler,
+        )
+        paused = await event_chain_update(pool, chain["id"], butler_name=butler, status="paused")
+        assert paused["status"] == "paused"
+
+        resumed = await event_chain_update(pool, chain["id"], butler_name=butler, status="active")
+        assert resumed["status"] == "active"
+
+    async def test_list_filters_by_paused_status(self, pool):
+        """event_chain_list with status='paused' returns only paused chains."""
+        from butlers.core.temporal.event_chains_db import (
+            event_chain_create,
+            event_chain_list,
+            event_chain_update,
+        )
+
+        butler = f"paused-filter-{uuid.uuid4().hex[:8]}"
+        actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Do it"}]
+        chain = await event_chain_create(
+            pool,
+            name="chain-to-pause",
+            trigger_type="calendar_event_end",
+            actions=actions,
+            butler_name=butler,
+        )
+        await event_chain_create(
+            pool,
+            name="chain-active-2",
+            trigger_type="calendar_event_end",
+            actions=actions,
+            butler_name=butler,
+        )
+        await event_chain_update(pool, chain["id"], butler_name=butler, status="paused")
+
+        paused = await event_chain_list(pool, butler, status="paused")
+        active = await event_chain_list(pool, butler, status="active")
+        assert len(paused) == 1
+        assert paused[0]["name"] == "chain-to-pause"
+        assert len(active) == 1
+        assert active[0]["name"] == "chain-active-2"
 
     # §5.2 — event_chain_update
     async def test_update_name(self, pool):
