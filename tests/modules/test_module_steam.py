@@ -145,6 +145,41 @@ class TestSteamModuleConfig:
         config = SteamModuleConfig()
         assert config is not None
 
+    def test_default_account_is_none(self):
+        config = SteamModuleConfig()
+        assert config.default_account is None
+
+    def test_cache_ttl_seconds_default(self):
+        config = SteamModuleConfig()
+        assert config.cache_ttl_seconds == 300
+
+    def test_max_batch_size_default(self):
+        config = SteamModuleConfig()
+        assert config.max_batch_size == 100
+
+    def test_default_account_accepts_steam_id(self):
+        config = SteamModuleConfig(default_account="76561198000000001")
+        assert config.default_account == "76561198000000001"
+
+    def test_default_account_accepts_uuid_string(self):
+        import uuid
+
+        uid = str(uuid.uuid4())
+        config = SteamModuleConfig(default_account=uid)
+        assert config.default_account == uid
+
+    def test_cache_ttl_seconds_custom(self):
+        config = SteamModuleConfig(cache_ttl_seconds=60)
+        assert config.cache_ttl_seconds == 60
+
+    def test_cache_ttl_seconds_zero_disables_cache(self):
+        config = SteamModuleConfig(cache_ttl_seconds=0)
+        assert config.cache_ttl_seconds == 0
+
+    def test_max_batch_size_custom(self):
+        config = SteamModuleConfig(max_batch_size=50)
+        assert config.max_batch_size == 50
+
     def test_extra_fields_rejected(self):
         with pytest.raises(Exception):
             SteamModuleConfig(**{"unknown_key": "value"})
