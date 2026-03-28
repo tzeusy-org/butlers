@@ -212,6 +212,10 @@ async def net_worth_history(
     requested period.  When an account has no snapshot for a month, the most
     recent prior snapshot is carried forward (marked ``carried_forward=True``).
 
+    Time complexity: O(accounts*months) instead of O(accounts*months^2) by
+    using a running balance tracker that carries forward per-account state
+    as we iterate forward through months.
+
     Parameters
     ----------
     pool:
@@ -318,7 +322,14 @@ async def net_worth_history(
             "carried_forward": True,
         }
 
-    # Apply carry-forward logic per account, building the history.
+    # Apply carry-forward logic with O(accounts*months) complexity.
+    # Track the last known balance for each account as we iterate forward.
+    last_balance_by_account: dict[str, dict[str, Any]] = {}
+
+    # Initialize with seed values (pre-range snapshots).
+    for account_id, entry in seed_by_account.items():
+        last_balance_by_account[account_id] = dict(entry)
+
     result_snapshots: list[dict[str, Any]] = []
     for period in periods:
         period_accounts: list[dict[str, Any]] = []
@@ -327,25 +338,19 @@ async def net_worth_history(
 
         for account_id in sorted(account_ids):
             acct_periods = snapshots_by_account_period.get(account_id, {})
+
+            # If we have a snapshot for this period, use it.
             if period in acct_periods:
                 entry = dict(acct_periods[period])
+                last_balance_by_account[account_id] = entry
             else:
-                # Carry forward the most recent prior snapshot in this period list.
-                # Look backwards through earlier periods for this account.
-                carried = None
-                for earlier in reversed(periods[: periods.index(period)]):
-                    if account_id in snapshots_by_account_period:
-                        if earlier in snapshots_by_account_period[account_id]:
-                            carried = dict(snapshots_by_account_period[account_id][earlier])
-                            carried["carried_forward"] = True
-                            break
-                if carried is None:
-                    # Use pre-range seed if available.
-                    if account_id in seed_by_account:
-                        carried = dict(seed_by_account[account_id])
-                    else:
-                        continue  # No data for this account yet; skip.
-                entry = carried
+                # No snapshot this period. Use the last known balance (carry forward).
+                if account_id in last_balance_by_account:
+                    entry = dict(last_balance_by_account[account_id])
+                    entry["carried_forward"] = True
+                else:
+                    # No prior data for this account at all; skip.
+                    continue
 
             balance = entry["balance"]
             if balance >= 0:
