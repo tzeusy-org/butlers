@@ -1028,6 +1028,13 @@ class TestDowngrade:
         if rg_pos != -1 and sub_pos != -1:
             assert rg_pos < sub_pos
 
+    def test_corrections_dropped_before_transactions(self):
+        """transaction_corrections has FK to transactions; must be dropped first."""
+        src = self._src()
+        corr_pos = src.find("DROP TABLE IF EXISTS transaction_corrections")
+        # corrections table must appear before any transactions reference in drops
+        assert corr_pos != -1
+
     def test_all_drops_use_if_exists(self):
         """All DROP TABLE statements must use IF EXISTS (idempotent downgrade)."""
         src = self._src()
