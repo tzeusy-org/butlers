@@ -176,7 +176,7 @@ function TierNode({ entry, x, y, tier, showName, radius, onNavigate }: TierNodeP
             )}
           </g>
         </TooltipTrigger>
-        <TooltipContent>
+        <TooltipContent side="top" sideOffset={8}>
           <p className="font-medium">{entry.canonical_name}</p>
           <p className="text-xs opacity-75">
             Tier {tier} · Score {entry.dunbar_score.toFixed(2)}
