@@ -825,6 +825,107 @@ class TestSubscriptionAudit:
         assert spotify_entry["last_charge_date"] is not None
         assert spotify_entry["last_charge_date"] == t2.isoformat()
 
+    async def test_merchant_match_is_case_insensitive(self, pool):
+        """Merchant matching is case-insensitive (e.g. 'netflix' matches 'NETFLIX INC')."""
+        from butlers.tools.finance.overview import subscription_audit
+
+        renewal = date.today() + timedelta(days=30)
+        await pool.execute(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ('Netflix', 15.49, 'USD', 'monthly', $1, 'active')
+            """,
+            renewal,
+        )
+
+        t1 = datetime.now(UTC) - timedelta(days=10)
+        # Merchant name uses different capitalisation.
+        await pool.execute(
+            """
+            INSERT INTO transactions
+                (merchant, amount, currency, direction, category, posted_at)
+            VALUES ('NETFLIX INC', 15.49, 'USD', 'debit', 'entertainment', $1)
+            """,
+            t1,
+        )
+
+        result = await subscription_audit(pool)
+        entry = result["entries"][0]
+        assert entry["last_charge_date"] is not None
+        assert entry["last_charge_date"] == t1.isoformat()
+
+    async def test_short_service_name_not_matched_against_transactions(self, pool):
+        """Service names shorter than _MIN_MERCHANT_MATCH_LEN are not matched.
+
+        Prevents false positives from very short names like 'TV' or 'Go'
+        matching unrelated merchant names.
+        """
+        from butlers.tools.finance.overview import _MIN_MERCHANT_MATCH_LEN, subscription_audit
+
+        # This test assumes _MIN_MERCHANT_MATCH_LEN > 2 (currently 3).
+        assert _MIN_MERCHANT_MATCH_LEN > 2, "constant changed; update test accordingly"
+
+        renewal = date.today() + timedelta(days=30)
+        # Service name is shorter than _MIN_MERCHANT_MATCH_LEN (e.g., "TV" = 2 chars).
+        short_name = "TV"
+        assert len(short_name) < _MIN_MERCHANT_MATCH_LEN
+        await pool.execute(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ($1, 9.99, 'USD', 'monthly', $2, 'active')
+            """,
+            short_name,
+            renewal,
+        )
+
+        # Insert a transaction whose merchant contains "tv" — should NOT match.
+        t1 = datetime.now(UTC) - timedelta(days=5)
+        await pool.execute(
+            """
+            INSERT INTO transactions
+                (merchant, amount, currency, direction, category, posted_at)
+            VALUES ('DIRECTV SPORTS', 9.99, 'USD', 'debit', 'entertainment', $1)
+            """,
+            t1,
+        )
+
+        result = await subscription_audit(pool)
+        entry = result["entries"][0]
+        # last_charge_date must be None: "TV" is too short to match.
+        assert entry["last_charge_date"] is None
+
+    async def test_unrelated_transaction_not_matched(self, pool):
+        """A transaction for a different merchant is not matched to a subscription.
+
+        Ensures merchant matching uses substring containment (service in merchant),
+        not the reverse, so 'Netflix' does not match 'Spotify Annual'.
+        """
+        from butlers.tools.finance.overview import subscription_audit
+
+        renewal = date.today() + timedelta(days=30)
+        await pool.execute(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ('Netflix', 15.49, 'USD', 'monthly', $1, 'active')
+            """,
+            renewal,
+        )
+
+        # Insert a transaction that does NOT contain "netflix".
+        t1 = datetime.now(UTC) - timedelta(days=10)
+        await pool.execute(
+            """
+            INSERT INTO transactions
+                (merchant, amount, currency, direction, category, posted_at)
+            VALUES ('Spotify Premium', 9.99, 'USD', 'debit', 'entertainment', $1)
+            """,
+            t1,
+        )
+
+        result = await subscription_audit(pool)
+        entry = result["entries"][0]
+        assert entry["last_charge_date"] is None
+
 
 # ---------------------------------------------------------------------------
 # flag_tax_deductible

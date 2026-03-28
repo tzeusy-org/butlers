@@ -23,6 +23,11 @@ from butlers.tools.finance._helpers import _row_to_dict
 
 logger = logging.getLogger(__name__)
 
+# Minimum number of characters a subscription service name must have to be
+# considered for merchant matching.  Names shorter than this are skipped to
+# avoid false positives (e.g. "TV" matching "DIRECT TV SPORTS", "FX Cable").
+_MIN_MERCHANT_MATCH_LEN: int = 3
+
 # Frequency-to-annual multiplier for annual cost projection.
 _ANNUAL_MULTIPLIER: dict[str, int] = {
     "weekly": 52,
@@ -582,35 +587,60 @@ async def subscription_audit(
         """
     )
     if has_subscriptions:
-        # Batch query: JOIN subscriptions with their latest transaction date
-        # using a single query instead of N+1 queries per subscription.
+        # Fetch all active/paused subscriptions in one query.
         sub_rows = await pool.fetch(
             """
-            SELECT
-                s.service,
-                s.amount,
-                s.currency,
-                s.frequency,
-                s.status,
-                s.next_renewal,
-                s.updated_at,
-                MAX(t.posted_at) AS last_charge_date
-            FROM subscriptions s
-            LEFT JOIN transactions t
-                ON lower(t.merchant) LIKE lower('%' || s.service || '%')
-            WHERE s.status IN ('active', 'paused')
-            GROUP BY s.id
-            ORDER BY s.service ASC
+            SELECT service, amount, currency, frequency, status, next_renewal, updated_at
+            FROM subscriptions
+            WHERE status IN ('active', 'paused')
+            ORDER BY service ASC
             """
         )
+
+        # Pre-fetch one row per unique lower-case merchant (the latest posted_at)
+        # using a window function.  This avoids:
+        #   1. The N+1 pattern (one query per subscription).
+        #   2. A non-SARGable SQL LIKE with a leading wildcard that cannot use
+        #      a btree index on the merchant column.
+        #   3. False-positive matches from very short service names (e.g. "TV").
+        # We also enforce _MIN_MERCHANT_MATCH_LEN: service names shorter than
+        # this are not matched against transactions to reduce false positives.
+        txn_rows = await pool.fetch(
+            """
+            SELECT merchant_lower, posted_at
+            FROM (
+                SELECT lower(merchant) AS merchant_lower, posted_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY lower(merchant)
+                           ORDER BY posted_at DESC
+                       ) AS rn
+                FROM transactions
+            ) t
+            WHERE rn = 1
+            """
+        )
+        # Build a dict mapping lower-case merchant name → latest posted_at.
+        latest_txn_by_merchant: dict[str, Any] = {
+            row["merchant_lower"]: row["posted_at"] for row in txn_rows
+        }
+
         for row in sub_rows:
             freq = row["frequency"]
             amount = Decimal(str(row["amount"]))
             annual_cost = amount * _ANNUAL_MULTIPLIER.get(freq, 12)
             status_label = "tracked_active" if row["status"] == "active" else "tracked_paused"
 
-            # last_charge_date is now part of the batch query result
-            last_charge = row["last_charge_date"]
+            # Merchant matching: find the latest transaction whose merchant
+            # contains the service name as a substring (case-insensitive).
+            # Skip matching for very short service names to avoid false positives.
+            service_lower = row["service"].lower()
+            last_charge = None
+            if len(service_lower) >= _MIN_MERCHANT_MATCH_LEN:
+                for merchant_lower, posted_at in latest_txn_by_merchant.items():
+                    if service_lower in merchant_lower:
+                        if last_charge is None or posted_at > last_charge:
+                            last_charge = posted_at
+
             entry: dict[str, Any] = {
                 "service": row["service"],
                 "amount": str(amount),
