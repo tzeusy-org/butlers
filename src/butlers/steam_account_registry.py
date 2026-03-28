@@ -268,11 +268,18 @@ async def create_steam_account(
     api_key: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> SteamAccount:
-    """Register a new Steam account.
+    """Register a new Steam account, or reactivate a previously revoked one.
 
     Creates a companion entity in public.entities and inserts a row in
     public.steam_accounts.  If no other accounts exist, the new account
     is automatically set as primary.
+
+    If the steam_id already exists with status='revoked', the account is
+    reactivated: status is set back to 'active', display info is refreshed,
+    and the API key is updated if provided.  This covers the reconnect flow.
+
+    If the steam_id already exists with status='active' or 'suspended',
+    :exc:`SteamAccountAlreadyExistsError` is raised.
 
     If api_key is provided, it is stored in public.entity_info on the
     companion entity (type='steam_api_key', secured=true).
@@ -297,27 +304,73 @@ async def create_steam_account(
     Returns
     -------
     SteamAccount
-        The newly created account record.
+        The newly created or reactivated account record.
 
     Raises
     ------
     SteamAccountAlreadyExistsError
-        If an account with the given steam_id already exists.
+        If an account with the given steam_id already exists and is not revoked
+        (i.e., status is 'active' or 'suspended').
     """
     account_metadata = metadata or {}
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Duplicate steam_id check.
+            # Duplicate steam_id check — also fetch status to handle revoked reconnects.
             existing = await conn.fetchrow(
-                "SELECT id FROM public.steam_accounts WHERE steam_id = $1",
+                "SELECT id, entity_id, status FROM public.steam_accounts WHERE steam_id = $1",
                 steam_id,
             )
             if existing is not None:
-                raise SteamAccountAlreadyExistsError(
-                    f"A Steam account with steam_id={steam_id} is already connected. "
-                    "Use disconnect_account + create or reconnect the existing account."
+                existing_status: str = existing["status"]
+                if existing_status != "revoked":
+                    raise SteamAccountAlreadyExistsError(
+                        f"A Steam account with steam_id={steam_id} is already connected "
+                        f"(status={existing_status!r}). "
+                        "Use disconnect_account + create or reconnect the existing account."
+                    )
+
+                # Reactivate the revoked account: refresh display info and status.
+                entity_id: uuid.UUID = existing["entity_id"]
+                row = await conn.fetchrow(
+                    """
+                    UPDATE public.steam_accounts
+                    SET status = 'active',
+                        display_name = $2,
+                        profile_url = $3,
+                        avatar_url = $4
+                    WHERE steam_id = $1
+                    RETURNING
+                        id, entity_id, steam_id, display_name, profile_url, avatar_url,
+                        is_primary, status, connected_at, last_poll_at, metadata
+                    """,
+                    steam_id,
+                    display_name,
+                    profile_url,
+                    avatar_url,
                 )
+
+                # Update API key on the companion entity if provided.
+                if api_key:
+                    await conn.execute(
+                        """
+                        INSERT INTO public.entity_info (entity_id, type, value, secured, is_primary)
+                        VALUES ($1, 'steam_api_key', $2, true, true)
+                        ON CONFLICT (entity_id, type) DO UPDATE SET
+                            value = EXCLUDED.value,
+                            secured = EXCLUDED.secured
+                        """,
+                        entity_id,
+                        api_key,
+                    )
+
+                account = SteamAccount._from_row(row)
+                logger.info(
+                    "Steam account reactivated: id=%s steam_id=%s",
+                    account.id,
+                    steam_id,
+                )
+                return account
 
             # Determine primary flag: first account wins.
             is_primary = not await _has_primary_account(conn)
