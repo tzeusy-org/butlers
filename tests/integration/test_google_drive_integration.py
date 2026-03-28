@@ -648,9 +648,7 @@ class TestDriveButlerFolderHierarchy:
         search_empty.status_code = 200
         search_empty.json.return_value = {"files": []}
 
-        mock_client.get = AsyncMock(
-            side_effect=[not_found_response, search_empty, search_empty]
-        )
+        mock_client.get = AsyncMock(side_effect=[not_found_response, search_empty, search_empty])
         mock_client.post = AsyncMock(
             side_effect=[new_folder_response, new_sub_folder_response, file_create_response]
         )

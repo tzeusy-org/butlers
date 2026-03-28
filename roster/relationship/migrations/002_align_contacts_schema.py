@@ -127,7 +127,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_rel_contacts_first_last")
-    op.execute("ALTER TABLE contacts DROP CONSTRAINT IF EXISTS rel_contacts_preferred_channel_check")
+    op.execute(
+        "ALTER TABLE contacts DROP CONSTRAINT IF EXISTS rel_contacts_preferred_channel_check"
+    )
     op.execute("ALTER TABLE contacts DROP CONSTRAINT IF EXISTS rel_contacts_entity_id_fkey")
     op.execute("DROP INDEX IF EXISTS ix_rel_contacts_entity_id")
     op.execute("ALTER TABLE contacts DROP COLUMN IF EXISTS entity_id")
