@@ -2557,6 +2557,46 @@ export interface OwnTracksTokenResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Home Assistant settings types
+// ---------------------------------------------------------------------------
+
+/** Connection state for the Home Assistant integration. */
+export type HomeAssistantState = "connected" | "disconnected" | "not_configured";
+
+/** Response from GET /api/settings/home-assistant */
+export interface HomeAssistantStatusResponse {
+  state: HomeAssistantState;
+  /** Whether a HA URL is stored in CredentialStore. */
+  url_configured: boolean;
+  /** Whether a HA access token is stored in CredentialStore. */
+  token_configured: boolean;
+  /** Base origin of the HA URL (e.g. 'http://homeassistant.local:8123'), or null. */
+  masked_url: string | null;
+}
+
+/** Request body for POST /api/settings/home-assistant */
+export interface HomeAssistantConfigRequest {
+  /** Home Assistant base URL (e.g. http://homeassistant.local:8123). */
+  url: string;
+  /** Long-lived access token from Home Assistant. */
+  token: string;
+}
+
+/** Response from POST /api/settings/home-assistant */
+export interface HomeAssistantConfigResponse {
+  success: boolean;
+  message: string;
+  /** Base origin of the stored HA URL, or null on failure. */
+  masked_url: string | null;
+}
+
+/** Response from DELETE /api/settings/home-assistant */
+export interface HomeAssistantDeleteResponse {
+  success: boolean;
+  message: string;
+}
+
+// ---------------------------------------------------------------------------
 // Dunbar tier ranking
 // ---------------------------------------------------------------------------
 
