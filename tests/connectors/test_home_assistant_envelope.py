@@ -360,6 +360,7 @@ def state_changed_envelope() -> dict[str, Any]:
         domain="sensor",
         device_class="temperature",
         unit_of_measurement="°C",
+        area_id="living_room",
         discretion_reason="Temperature crossed threshold.",
     )
 
@@ -431,6 +432,22 @@ class TestBuildStateChangedEnvelope:
 
     def test_payload_raw_ha_event(self, state_changed_envelope: dict) -> None:
         assert state_changed_envelope["payload"]["raw"]["ha_event"] == _HA_STATE_CHANGED_EVENT
+
+    def test_payload_raw_area_is_present(self, state_changed_envelope: dict) -> None:
+        assert "area" in state_changed_envelope["payload"]["raw"]
+
+    def test_payload_raw_area_value(self, state_changed_envelope: dict) -> None:
+        assert state_changed_envelope["payload"]["raw"]["area"] == "living_room"
+
+    def test_payload_raw_area_is_none_when_not_provided(self) -> None:
+        env = build_state_changed_envelope(
+            endpoint_identity=_ENDPOINT_IDENTITY,
+            entity_id=_ENTITY_ID_TEMP,
+            time_fired=_TIME_FIRED,
+            ha_event={},
+        )
+        assert "area" in env["payload"]["raw"]
+        assert env["payload"]["raw"]["area"] is None
 
     def test_payload_raw_discretion_reason(self, state_changed_envelope: dict) -> None:
         assert (
@@ -569,6 +586,7 @@ def automation_envelope() -> dict[str, Any]:
         ha_event=_HA_AUTOMATION_EVENT,
         friendly_name="Morning Lights",
         automation_id="aaabbbccc111",
+        area_id="bedroom",
         discretion_reason="Automation fires every morning — routine acknowledgment.",
     )
 
@@ -622,6 +640,22 @@ class TestBuildAutomationTriggeredEnvelope:
 
     def test_payload_raw_ha_event(self, automation_envelope: dict) -> None:
         assert automation_envelope["payload"]["raw"]["ha_event"] == _HA_AUTOMATION_EVENT
+
+    def test_payload_raw_area_is_present(self, automation_envelope: dict) -> None:
+        assert "area" in automation_envelope["payload"]["raw"]
+
+    def test_payload_raw_area_value(self, automation_envelope: dict) -> None:
+        assert automation_envelope["payload"]["raw"]["area"] == "bedroom"
+
+    def test_payload_raw_area_is_none_when_not_provided(self) -> None:
+        env = build_automation_triggered_envelope(
+            endpoint_identity=_ENDPOINT_IDENTITY,
+            entity_id=_ENTITY_ID_AUTOMATION,
+            time_fired=_TIME_FIRED,
+            ha_event={},
+        )
+        assert "area" in env["payload"]["raw"]
+        assert env["payload"]["raw"]["area"] is None
 
     def test_payload_raw_discretion_reason(self, automation_envelope: dict) -> None:
         assert "discretion_reason" in automation_envelope["payload"]["raw"]
