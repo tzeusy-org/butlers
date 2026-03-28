@@ -1531,8 +1531,8 @@ class TestTickIntegration:
 
         # The dispatched prompt must contain deadline_status
         dispatched_prompts = [c.get("prompt", "") for c in dispatched_calls]
-        assert any("alerted" in p for p in dispatched_prompts), (
-            f"Expected deadline_status='alerted' in prompt context, got: {dispatched_calls}"
+        assert any("deadline_status=alerted" in p for p in dispatched_prompts), (
+            f"Expected 'deadline_status=alerted' in prompt context, got: {dispatched_calls}"
         )
 
     async def test_tick_deadline_pass_sets_span_attribute(self, pool):
