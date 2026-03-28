@@ -334,6 +334,139 @@ def _infer_mime_type(filename: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Exception types
+# ---------------------------------------------------------------------------
+
+
+class GoogleDriveStartupError(Exception):
+    """Raised when GoogleDriveModule.on_startup encounters a fatal error.
+
+    Not currently raised by on_startup itself (which stays degraded instead),
+    but exported for use by callers that want strict startup semantics.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Drive HTTP client wrapper (spec §3.5)
+# ---------------------------------------------------------------------------
+
+
+class _DriveHTTPClient:
+    """Thin wrapper around httpx.AsyncClient that provides Drive API convenience methods.
+
+    Exposes ``get(url, *, params=None, headers=None, **kwargs)``,
+    ``post(url, *, json=None, content=None, params=None, headers=None, **kwargs)``,
+    and ``patch(url, *, json=None, params=None, headers=None, **kwargs)`` — each
+    forwards to ``_drive_request`` with the configured token, handling rate-limit
+    retry automatically.
+
+    Token management is delegated to a ``_DriveTokenCache`` and the associated
+    credentials, so callers never need to manage the Bearer token directly.
+    """
+
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient,
+        token_cache: _DriveTokenCache,
+        credentials: Any,
+        api_base: str = _DRIVE_API_BASE,
+    ) -> None:
+        self._http_client = http_client
+        self._token_cache = token_cache
+        self._credentials = credentials
+        self._api_base = api_base
+
+    async def _token(self) -> str:
+        return await self._token_cache.get_token(
+            client_id=self._credentials.client_id,
+            client_secret=self._credentials.client_secret,
+            refresh_token=self._credentials.refresh_token,
+            http_client=self._http_client,
+        )
+
+    def _url(self, path: str) -> str:
+        """Resolve path against API base if not already absolute."""
+        if path.startswith("http://") or path.startswith("https://"):
+            return path
+        return f"{self._api_base}/{path}"
+
+    async def get(
+        self, path: str, *, params: dict[str, Any] | None = None, **kwargs: Any
+    ) -> httpx.Response:
+        """Send a GET request to the Drive API."""
+        token = await self._token()
+        return await _drive_request(
+            self._http_client,
+            "GET",
+            self._url(path),
+            token=token,
+            params=params,
+            **kwargs,
+        )
+
+    async def post(
+        self,
+        url: str,
+        *,
+        json: Any | None = None,
+        content: bytes | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Send a POST request to the Drive API."""
+        token = await self._token()
+        extra: dict[str, Any] = {}
+        if json is not None:
+            extra["json"] = json
+        if content is not None:
+            extra["content"] = content
+        if params is not None:
+            extra["params"] = params
+        if headers is not None:
+            extra["headers"] = headers
+        extra.update(kwargs)
+        return await _drive_request(
+            self._http_client,
+            "POST",
+            self._url(url),
+            token=token,
+            **extra,
+        )
+
+    async def patch(
+        self,
+        path: str,
+        *,
+        json: Any | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Send a PATCH request to the Drive API."""
+        token = await self._token()
+        extra: dict[str, Any] = {}
+        if json is not None:
+            extra["json"] = json
+        if params is not None:
+            extra["params"] = params
+        if headers is not None:
+            extra["headers"] = headers
+        extra.update(kwargs)
+        return await _drive_request(
+            self._http_client,
+            "PATCH",
+            self._url(path),
+            token=token,
+            **extra,
+        )
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._http_client.aclose()
+
+
+# ---------------------------------------------------------------------------
 # Module implementation (spec §3.1)
 # ---------------------------------------------------------------------------
 
@@ -352,6 +485,7 @@ class GoogleDriveModule(Module):
     def __init__(self) -> None:
         self._config: GoogleDriveConfig = GoogleDriveConfig()
         self._http_client: httpx.AsyncClient | None = None
+        self._client: _DriveHTTPClient | None = None
         self._token_cache: _DriveTokenCache = _DriveTokenCache()
         self._credentials: Any | None = None
         self._credentials_ok: bool = False
@@ -473,10 +607,15 @@ class GoogleDriveModule(Module):
         self._credentials = creds
         self._credentials_ok = True
 
-        # Create persistent HTTP client (spec §3.2)
+        # Create persistent HTTP client and Drive client wrapper (spec §3.2)
         if self._http_client is not None:
             await self._http_client.aclose()
         self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._client = _DriveHTTPClient(
+            http_client=self._http_client,
+            token_cache=self._token_cache,
+            credentials=creds,
+        )
 
         logger.info(
             "GoogleDriveModule: started (account=%s)",
@@ -485,7 +624,12 @@ class GoogleDriveModule(Module):
 
     async def on_shutdown(self) -> None:
         """Close HTTP client (spec §3.3)."""
-        if self._http_client is not None:
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
+            # _http_client is closed via _client.close() above; just clear the reference.
+            self._http_client = None
+        elif self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
 
@@ -596,7 +740,7 @@ class GoogleDriveModule(Module):
         memory. Re-creates the folder if the cached ID refers to a deleted
         folder (spec §4.4).
         """
-        assert self._http_client is not None
+        assert self._client is not None
 
         account_email = self._config.account or "primary"
         cache_key = (butler_name, account_email)
@@ -604,7 +748,7 @@ class GoogleDriveModule(Module):
         # --- DB cache check ---
         cached_id = await self._get_cached_folder_id(butler_name, account_email)
         if cached_id:
-            resp = await self._get(f"files/{cached_id}", params={"fields": "id,trashed"})
+            resp = await self._client.get(f"files/{cached_id}", params={"fields": "id,trashed"})
             if resp.status_code == 200:
                 data = resp.json()
                 if not data.get("trashed", False):
@@ -620,7 +764,7 @@ class GoogleDriveModule(Module):
         # --- In-memory cache check ---
         if cache_key in self._folder_cache:
             folder_id = self._folder_cache[cache_key]
-            resp = await self._get(f"files/{folder_id}", params={"fields": "id,trashed"})
+            resp = await self._client.get(f"files/{folder_id}", params={"fields": "id,trashed"})
             if resp.status_code == 200 and not resp.json().get("trashed", False):
                 return folder_id
             del self._folder_cache[cache_key]
@@ -649,7 +793,7 @@ class GoogleDriveModule(Module):
         parent_id: str | None,
     ) -> str:
         """Find an existing folder by name+parent, or create it."""
-        assert self._http_client is not None
+        assert self._client is not None
 
         escaped_name = name.replace("\\", "\\\\").replace("'", "\\'")
         parent_filter = f"'{parent_id}' in parents" if parent_id else "'root' in parents"
@@ -658,7 +802,7 @@ class GoogleDriveModule(Module):
             f"and {parent_filter} and trashed=false"
         )
 
-        resp = await self._get("files", params={"q": q, "fields": "files(id,name)"})
+        resp = await self._client.get("files", params={"q": q, "fields": "files(id,name)"})
         if resp.status_code == 200:
             files = resp.json().get("files", [])
             if files:
@@ -669,7 +813,7 @@ class GoogleDriveModule(Module):
         if parent_id:
             body["parents"] = [parent_id]
 
-        resp = await self._post(
+        resp = await self._client.post(
             f"{_DRIVE_API_BASE}/files",
             json=body,
             params={"fields": "id"},
@@ -750,13 +894,14 @@ class GoogleDriveModule(Module):
         folder_id: str | None = None,
         query: str | None = None,
     ) -> dict[str, Any]:
-        if not self._credentials_ok or self._http_client is None:
+        if self._client is None:
             return self._not_configured_error()
 
         try:
             q_parts = []
-            if folder_id:
-                q_parts.append(f"'{folder_id}' in parents")
+            # Always add a parent filter — default to 'root' if no folder_id given
+            parent = folder_id or "root"
+            q_parts.append(f"'{parent}' in parents")
             if query:
                 q_parts.append(query)
             q_parts.append("trashed=false")
@@ -774,7 +919,7 @@ class GoogleDriveModule(Module):
                 if next_page_token:
                     params["pageToken"] = next_page_token
 
-                resp = await self._get("files", params=params)
+                resp = await self._client.get("files", params=params)
                 if resp.status_code != 200:
                     return {
                         "status": "error",
@@ -799,11 +944,11 @@ class GoogleDriveModule(Module):
             return {"status": "error", "error": str(exc)}
 
     async def _drive_get_file_metadata(self, file_id: str) -> dict[str, Any]:
-        if not self._credentials_ok or self._http_client is None:
+        if self._client is None:
             return self._not_configured_error()
 
         try:
-            resp = await self._get(f"files/{file_id}", params={"fields": _META_FIELDS})
+            resp = await self._client.get(f"files/{file_id}", params={"fields": _META_FIELDS})
             if resp.status_code == 404:
                 return {"status": "not_found", "file": None}
             if resp.status_code != 200:
@@ -817,14 +962,14 @@ class GoogleDriveModule(Module):
             return {"status": "error", "error": str(exc)}
 
     async def _drive_read_file(self, file_id: str) -> dict[str, Any]:
-        if not self._credentials_ok or self._http_client is None:
+        if self._client is None:
             return self._not_configured_error()
 
         try:
             # Get metadata first
-            meta_resp = await self._get(
+            meta_resp = await self._client.get(
                 f"files/{file_id}",
-                params={"fields": "id,name,mimeType,size"},
+                params={"fields": "id,name,mimeType,size,webViewLink"},
             )
             if meta_resp.status_code == 404:
                 return {"status": "not_found", "file": None}
@@ -837,26 +982,40 @@ class GoogleDriveModule(Module):
             meta = meta_resp.json()
             mime_type = meta.get("mimeType", "")
             name = meta.get("name", "")
-            size_bytes = int(meta.get("size", 0))
+            size_bytes = int(meta.get("size", 0) or 0)
+            web_view_link = meta.get("webViewLink")
+
+            # Reject binary files (non-text, non-Google-Workspace)
+            is_google_workspace = mime_type in _GOOGLE_EXPORT_MAP
+            is_text_readable = mime_type.startswith("text/") or mime_type in {
+                "application/json",
+                "application/xml",
+            }
+            if not is_google_workspace and not is_text_readable:
+                return {
+                    "status": "binary_file",
+                    "file_id": file_id,
+                    "name": name,
+                    "mime_type": mime_type,
+                    "size_bytes": size_bytes,
+                    "web_view_link": web_view_link,
+                }
 
             # Size check for non-Google-Workspace files
-            if mime_type not in _GOOGLE_EXPORT_MAP:
-                if size_bytes > self._config.max_read_size_bytes:
-                    return {
-                        "status": "error",
-                        "error": (
-                            f"File too large: {size_bytes} bytes exceeds limit "
-                            f"{self._config.max_read_size_bytes} bytes"
-                        ),
-                        "file_id": file_id,
-                        "name": name,
-                        "mime_type": mime_type,
-                    }
+            if not is_google_workspace and size_bytes > self._config.max_read_size_bytes:
+                return {
+                    "status": "too_large",
+                    "file_id": file_id,
+                    "name": name,
+                    "mime_type": mime_type,
+                    "size_bytes": size_bytes,
+                    "max_bytes": self._config.max_read_size_bytes,
+                }
 
             # Fetch content
-            if mime_type in _GOOGLE_EXPORT_MAP:
+            if is_google_workspace:
                 export_mime = _GOOGLE_EXPORT_MAP[mime_type]
-                resp = await self._get(
+                resp = await self._client.get(
                     f"files/{file_id}/export",
                     params={"mimeType": export_mime},
                 )
@@ -871,11 +1030,8 @@ class GoogleDriveModule(Module):
                     "name": name,
                     "size_bytes": len(resp.content),
                 }
-            elif mime_type.startswith("text/") or mime_type in {
-                "application/json",
-                "application/xml",
-            }:
-                resp = await self._get(f"files/{file_id}", params={"alt": "media"})
+            else:
+                resp = await self._client.get(f"files/{file_id}", params={"alt": "media"})
                 if resp.status_code != 200:
                     return {
                         "status": "error",
@@ -886,15 +1042,6 @@ class GoogleDriveModule(Module):
                     "mime_type": mime_type,
                     "name": name,
                     "size_bytes": len(resp.content),
-                }
-            else:
-                return {
-                    "status": "error",
-                    "error": f"Binary file cannot be read as text (mimeType={mime_type!r})",
-                    "file_id": file_id,
-                    "name": name,
-                    "mime_type": mime_type,
-                    "size_bytes": size_bytes,
                 }
         except Exception as exc:
             logger.error("drive_read_file failed: %s", exc, exc_info=True)
@@ -907,12 +1054,13 @@ class GoogleDriveModule(Module):
         folder_id: str | None = None,
         mime_type: str | None = None,
     ) -> dict[str, Any]:
-        if not self._credentials_ok or self._http_client is None:
+        if self._client is None:
             return self._not_configured_error()
 
         try:
-            if folder_id is None:
-                folder_id = await self._ensure_butler_folder(self._butler_name)
+            resolved_folder_id = folder_id
+            if resolved_folder_id is None:
+                resolved_folder_id = await self._ensure_butler_folder(self._butler_name)
 
             inferred_mime = mime_type or _infer_mime_type(name)
             content_bytes = content.encode()
@@ -920,7 +1068,7 @@ class GoogleDriveModule(Module):
             # Multipart upload
             metadata: dict[str, Any] = {
                 "name": name,
-                "parents": [folder_id],
+                "parents": [resolved_folder_id],
             }
 
             boundary = "butlers_drive_boundary"
@@ -936,10 +1084,10 @@ class GoogleDriveModule(Module):
                 + f"\r\n--{boundary}--".encode()
             )
 
-            resp = await self._post(
+            resp = await self._client.post(
                 "https://www.googleapis.com/upload/drive/v3/files",
                 content=body,
-                params={"uploadType": "multipart", "fields": "id,webViewLink"},
+                params={"uploadType": "multipart", "fields": "id,name,webViewLink"},
                 headers={
                     "Content-Type": f"multipart/related; boundary={boundary}",
                 },
@@ -954,8 +1102,9 @@ class GoogleDriveModule(Module):
             data = resp.json()
             return {
                 "file_id": data["id"],
+                "name": data.get("name", name),
+                "folder": resolved_folder_id,
                 "web_view_link": data.get("webViewLink"),
-                "name": name,
                 "mime_type": inferred_mime,
             }
         except Exception as exc:
@@ -967,20 +1116,21 @@ class GoogleDriveModule(Module):
         name: str,
         parent_id: str | None = None,
     ) -> dict[str, Any]:
-        if not self._credentials_ok or self._http_client is None:
+        if self._client is None:
             return self._not_configured_error()
 
         try:
-            if parent_id is None:
-                parent_id = await self._ensure_butler_folder(self._butler_name)
+            resolved_parent_id = parent_id
+            if resolved_parent_id is None:
+                resolved_parent_id = await self._ensure_butler_folder(self._butler_name)
 
             body: dict[str, Any] = {
                 "name": name,
                 "mimeType": _FOLDER_MIME_TYPE,
-                "parents": [parent_id],
+                "parents": [resolved_parent_id],
             }
 
-            resp = await self._post(
+            resp = await self._client.post(
                 f"{_DRIVE_API_BASE}/files",
                 json=body,
                 params={"fields": "id,name,webViewLink"},
@@ -996,6 +1146,7 @@ class GoogleDriveModule(Module):
             return {
                 "folder_id": data["id"],
                 "name": data["name"],
+                "parent_path": resolved_parent_id,
                 "web_view_link": data.get("webViewLink"),
             }
         except Exception as exc:
@@ -1007,17 +1158,17 @@ class GoogleDriveModule(Module):
         file_id: str,
         new_parent_id: str,
     ) -> dict[str, Any]:
-        if not self._credentials_ok or self._http_client is None:
+        if self._client is None:
             return self._not_configured_error()
 
         try:
-            # Get current parents
-            meta_resp = await self._get(
+            # Get current parents and file name
+            meta_resp = await self._client.get(
                 f"files/{file_id}",
-                params={"fields": "id,parents"},
+                params={"fields": "id,name,parents"},
             )
             if meta_resp.status_code == 404:
-                return {"status": "not_found", "file_id": file_id}
+                return {"status": "not_found", "error": "File not found"}
             if meta_resp.status_code != 200:
                 return {
                     "status": "error",
@@ -1026,25 +1177,31 @@ class GoogleDriveModule(Module):
 
             meta = meta_resp.json()
             old_parents = ",".join(meta.get("parents", []))
+            name = meta.get("name", "")
 
-            resp = await self._patch(
+            resp = await self._client.patch(
                 f"files/{file_id}",
                 params={
                     "addParents": new_parent_id,
                     "removeParents": old_parents,
-                    "fields": "id,parents",
+                    "fields": "id,name,parents",
                 },
             )
 
             if resp.status_code == 404:
-                return {"status": "not_found", "file_id": file_id}
+                return {"status": "not_found", "error": "File not found"}
             if resp.status_code != 200:
                 return {
                     "status": "error",
                     "error": f"Move failed (HTTP {resp.status_code}): {resp.text[:200]}",
                 }
 
-            return {"status": "ok", "file_id": file_id, "new_parent_id": new_parent_id}
+            return {
+                "status": "ok",
+                "file_id": file_id,
+                "name": name,
+                "new_parent_id": new_parent_id,
+            }
         except Exception as exc:
             logger.error("drive_move_file failed: %s", exc, exc_info=True)
             return {"status": "error", "error": str(exc)}
@@ -1054,7 +1211,7 @@ class GoogleDriveModule(Module):
         query: str,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        if not self._credentials_ok or self._http_client is None:
+        if self._client is None:
             return self._not_configured_error()
 
         try:
@@ -1067,7 +1224,7 @@ class GoogleDriveModule(Module):
                 "pageSize": min(limit or 100, 100),
             }
 
-            resp = await self._get("files", params=params)
+            resp = await self._client.get("files", params=params)
             if resp.status_code != 200:
                 return {
                     "status": "error",
