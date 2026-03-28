@@ -1,8 +1,8 @@
 /**
  * IntegrationsCard — consolidated card for all external service integrations.
  *
- * Renders Google OAuth, WhatsApp, Spotify, and OwnTracks as sections
- * within a single card on the settings page.
+ * Renders Google OAuth, WhatsApp, Spotify, OwnTracks, and Home Assistant as
+ * sections within a single card on the settings page.
  */
 
 import {
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/card";
 
 import { GoogleOAuthSection } from "./GoogleOAuthSection";
+import { HomeAssistantSection } from "./HomeAssistantSetupCard";
 import { OwnTracksSection } from "./OwnTracksSetupCard";
 import { SpotifySection } from "./SpotifySetupCard";
 import { WhatsAppSection } from "./WhatsAppSetupCard";
@@ -38,8 +39,11 @@ export function IntegrationsCard() {
           <div className="py-6">
             <SpotifySection />
           </div>
-          <div className="pt-6">
+          <div className="py-6">
             <OwnTracksSection />
+          </div>
+          <div className="pt-6">
+            <HomeAssistantSection />
           </div>
         </div>
       </CardContent>

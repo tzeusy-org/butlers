@@ -526,6 +526,20 @@ export type {
 } from "./types.ts";
 
 export {
+  configureHomeAssistant,
+  deleteHomeAssistantConfig,
+  getHomeAssistantStatus,
+} from "./client.ts";
+
+export type {
+  HomeAssistantConfigRequest,
+  HomeAssistantConfigResponse,
+  HomeAssistantDeleteResponse,
+  HomeAssistantState,
+  HomeAssistantStatusResponse,
+} from "./types.ts";
+
+export {
   getEducationCrossTopicAnalytics,
   getEducationFlows,
   getEducationMasterySummary,

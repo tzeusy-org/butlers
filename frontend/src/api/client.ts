@@ -166,6 +166,10 @@ import type {
   OwnTracksConfigResponse,
   OwnTracksStatusResponse,
   OwnTracksTokenResponse,
+  HomeAssistantConfigRequest,
+  HomeAssistantConfigResponse,
+  HomeAssistantDeleteResponse,
+  HomeAssistantStatusResponse,
   DunbarRankingResponse,
   ConversationSummary,
   ConversationListParams,
@@ -2833,6 +2837,33 @@ export function getOwnTracksConfig(): Promise<OwnTracksConfigResponse> {
 export function generateOwnTracksToken(): Promise<OwnTracksTokenResponse> {
   return apiFetch<OwnTracksTokenResponse>("/connectors/owntracks/token/generate", {
     method: "POST",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Home Assistant settings API
+// ---------------------------------------------------------------------------
+
+/** GET /api/settings/home-assistant — current HA connection state */
+export function getHomeAssistantStatus(): Promise<HomeAssistantStatusResponse> {
+  return apiFetch<HomeAssistantStatusResponse>("/settings/home-assistant");
+}
+
+/** POST /api/settings/home-assistant — validate and save HA URL + token */
+export function configureHomeAssistant(
+  data: HomeAssistantConfigRequest,
+): Promise<HomeAssistantConfigResponse> {
+  return apiFetch<HomeAssistantConfigResponse>("/settings/home-assistant", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+/** DELETE /api/settings/home-assistant — remove stored HA credentials */
+export function deleteHomeAssistantConfig(): Promise<HomeAssistantDeleteResponse> {
+  return apiFetch<HomeAssistantDeleteResponse>("/settings/home-assistant", {
+    method: "DELETE",
   });
 }
 
