@@ -79,7 +79,7 @@ DEFAULT_SIGNIFICANCE_THRESHOLDS: dict[str, float] = {
     "humidity": 2.0,
     "energy": 0.1,
     "illuminance": 50.0,
-    "power": 5.0,
+    "power": 10.0,
     "voltage": 1.0,
     "current": 0.1,
     "pressure": 1.0,
