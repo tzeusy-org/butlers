@@ -1078,7 +1078,7 @@ async def _tick_event_chain_pass(
                    st.deadline_status AS dl_status
             FROM event_chains ec
             JOIN scheduled_tasks st
-              ON st.id::text = ec.trigger_reference
+              ON st.id = ec.trigger_reference::uuid
              AND st.task_type = 'deadline'
             WHERE ec.trigger_type = 'deadline_passed'
               AND ec.status = 'active'
@@ -1120,7 +1120,7 @@ async def _tick_event_chain_pass(
                    st.fired_thresholds AS fired_thresholds
             FROM event_chains ec
             JOIN scheduled_tasks st
-              ON st.id::text = split_part(ec.trigger_reference, ':', 1)
+              ON st.id = split_part(ec.trigger_reference, ':', 1)::uuid
              AND st.task_type = 'deadline'
             WHERE ec.trigger_type = 'deadline_threshold'
               AND ec.status = 'active'
