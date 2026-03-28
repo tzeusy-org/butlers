@@ -544,7 +544,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         parsed_txns = _json.loads(transactions)
         if not isinstance(parsed_txns, list):
             raise ValueError("transactions must be a JSON array")
-        return await _facts.bulk_record_transactions(
+        return await _transactions.bulk_record_transactions(
             module._get_pool(),
             parsed_txns,
             account_id=account_id,
