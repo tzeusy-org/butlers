@@ -588,6 +588,79 @@ async def test_contact_archive_not_found(pool):
         await contact_archive(pool, uuid.uuid4())
 
 
+async def test_contact_get_archived_returns_stale_dunbar(pool):
+    """contact_get returns archived contact with dunbar_stale=True flag."""
+    from butlers.tools.relationship import contact_get
+
+    # Directly create contact and entity rows to avoid entity_create issues
+    entity_row = await pool.fetchrow(
+        "INSERT INTO shared.entities (name, tenant_id) VALUES ($1, $2) RETURNING id",
+        "Archived Contact",
+        "relationship",
+    )
+    entity_id = entity_row["id"]
+
+    contact_row = await pool.fetchrow(
+        """
+        INSERT INTO contacts (first_name, entity_id, listed)
+        VALUES ($1, $2, $3)
+        RETURNING id, listed
+        """,
+        "Archived",
+        entity_id,
+        False,  # listed=false (archived)
+    )
+    contact_id = contact_row["id"]
+    assert contact_row["listed"] is False
+
+    # Get the archived contact directly
+    fetched = await contact_get(pool, contact_id)
+    assert fetched["id"] == contact_id
+    assert fetched["listed"] is False
+    # Archived contacts should have dunbar_stale=True
+    assert fetched.get("dunbar_stale") is True
+    # Should have default Dunbar values since contact has no interactions
+    assert fetched.get("dunbar_tier") == 1500
+    assert fetched.get("dunbar_score") == 0.0
+    assert fetched.get("dunbar_tier_override") is False
+
+
+async def test_contact_get_active_returns_not_stale_dunbar(pool):
+    """contact_get returns active contact with dunbar_stale=False flag."""
+    from butlers.tools.relationship import contact_get
+
+    # Directly create contact and entity rows
+    entity_row = await pool.fetchrow(
+        "INSERT INTO shared.entities (name, tenant_id) VALUES ($1, $2) RETURNING id",
+        "Active Contact",
+        "relationship",
+    )
+    entity_id = entity_row["id"]
+
+    contact_row = await pool.fetchrow(
+        """
+        INSERT INTO contacts (first_name, entity_id, listed)
+        VALUES ($1, $2, $3)
+        RETURNING id, listed
+        """,
+        "Active",
+        entity_id,
+        True,  # listed=true (active)
+    )
+    contact_id = contact_row["id"]
+    assert contact_row["listed"] is True
+
+    # Get the active contact
+    fetched = await contact_get(pool, contact_id)
+    assert fetched["id"] == contact_id
+    assert fetched["listed"] is True
+    # Active contacts should have dunbar_stale=False
+    assert fetched.get("dunbar_stale") is False
+    # Should have default Dunbar values since contact has no interactions
+    assert fetched.get("dunbar_tier") == 1500
+    assert fetched.get("dunbar_score") == 0.0
+
+
 # ------------------------------------------------------------------
 # Bidirectional relationships
 # ------------------------------------------------------------------

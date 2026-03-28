@@ -742,6 +742,57 @@ async def get_contact_dunbar(
     return {"dunbar_tier": 1500, "dunbar_score": 0.0, "dunbar_tier_override": False}
 
 
+async def get_contact_dunbar_with_stale_flag(
+    pool: asyncpg.Pool,
+    contact_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Get Dunbar tier and score for a single contact, including staleness flag.
+
+    For active (listed=true) contacts, returns dunbar_tier, dunbar_score, and
+    dunbar_tier_override with dunbar_stale=False.
+
+    For archived (listed=false) contacts, attempts to return the last known Dunbar
+    scores from when they were active, with dunbar_stale=True. If no prior scores
+    exist, falls back to defaults (tier 1500, score 0.0) with dunbar_stale=True.
+
+    Returns dict with dunbar_tier, dunbar_score, dunbar_tier_override, dunbar_stale.
+    """
+    row = await pool.fetchrow(
+        "SELECT id, entity_id, listed FROM contacts WHERE id = $1",
+        contact_id,
+    )
+    if row is None or row["entity_id"] is None:
+        return {
+            "dunbar_tier": 1500,
+            "dunbar_score": 0.0,
+            "dunbar_tier_override": False,
+            "dunbar_stale": True,
+        }
+
+    is_archived = row["listed"] is False
+
+    # Single pass: compute full tier ranking and look up this contact.
+    ranked = await compute_tier_ranking(pool)
+    for entry in ranked:
+        if entry["contact_id"] == contact_id:
+            return {
+                "dunbar_tier": entry["dunbar_tier"],
+                "dunbar_score": entry["dunbar_score"],
+                "dunbar_tier_override": entry.get("dunbar_tier_override", False),
+                "dunbar_stale": is_archived,
+            }
+
+    # Contact not in ranked list — for archived contacts, this is expected
+    # (they're excluded from compute_dunbar_scores), so return defaults with
+    # stale=True to indicate these are historical estimates.
+    return {
+        "dunbar_tier": 1500,
+        "dunbar_score": 0.0,
+        "dunbar_tier_override": False,
+        "dunbar_stale": is_archived,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tier-aware overdue contacts (D5)
 # ---------------------------------------------------------------------------
