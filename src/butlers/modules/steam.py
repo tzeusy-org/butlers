@@ -104,6 +104,21 @@ class SteamModuleConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    default_account: str | None = None
+    """Override the primary Steam account. Accepts a SteamID64 string or the UUID of a connected
+    Steam account stored in the butler's account registry. When set, tools that normally fall back
+    to the primary connected account will use this value instead. Leave as ``None`` (default) to
+    use the account marked as primary in the account registry."""
+
+    cache_ttl_seconds: int = 300
+    """How long (in seconds) to cache Steam API responses before considering them stale.
+    Defaults to 300 (5 minutes). Set to 0 to disable caching."""
+
+    max_batch_size: int = 100
+    """Maximum number of SteamIDs to include in a single batch API call (e.g. when enriching
+    friend lists with player summaries). Steam's API accepts up to 100 IDs per call; lower
+    values can be set to reduce per-request payload size. Defaults to 100."""
+
 
 # ---------------------------------------------------------------------------
 # Helper: fetch API key from entity_info
