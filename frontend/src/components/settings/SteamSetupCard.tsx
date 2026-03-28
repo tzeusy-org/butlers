@@ -330,7 +330,7 @@ function PlaytimePanel({ primaryAccountId }: { primaryAccountId?: string }) {
             Playtime for {data.display_name ?? `SteamID ${data.steam_id}`}
           </p>
           <p className="text-xs text-muted-foreground">
-            {data.total_games} games · {formatMinutes(data.total_playtime_minutes)} total
+            {data.total_games} games · {formatMinutes(data.total_minutes)} total
           </p>
         </div>
         <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setExpanded(false)}>
@@ -338,17 +338,17 @@ function PlaytimePanel({ primaryAccountId }: { primaryAccountId?: string }) {
         </Button>
       </div>
 
-      {data.top_games.length > 0 && (
+      {data.games.length > 0 && (
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
             Top games
           </p>
           <div className="space-y-1">
-            {data.top_games.map((game) => (
+            {data.games.map((game) => (
               <div key={game.app_id} className="flex items-center justify-between gap-2 text-sm">
-                <span className="truncate">{game.name ?? `App ${game.app_id}`}</span>
+                <span className="truncate">{game.app_name ?? `App ${game.app_id}`}</span>
                 <span className="text-muted-foreground shrink-0 font-mono text-xs">
-                  {formatMinutes(game.playtime_minutes)}
+                  {formatMinutes(game.total_minutes)}
                 </span>
               </div>
             ))}
@@ -356,9 +356,9 @@ function PlaytimePanel({ primaryAccountId }: { primaryAccountId?: string }) {
         </div>
       )}
 
-      {data.top_games.length === 0 && (
+      {data.games.length === 0 && (
         <p className="text-sm text-muted-foreground">
-          No game playtime data available. The Steam profile may be set to private.
+          No game playtime data available yet.
         </p>
       )}
     </div>

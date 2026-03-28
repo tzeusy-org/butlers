@@ -237,16 +237,16 @@ class SteamConnectorHealthResponse(BaseModel):
 class SteamGamePlaytime(BaseModel):
     """Playtime record for a single game.
 
-    Used in the top_games list of SteamPlaytimeAnalytics.
+    Used in the games list of SteamPlaytimeAnalytics.
     """
 
     app_id: int
     """Steam application ID."""
 
-    name: str | None = None
+    app_name: str | None = None
     """Game name, or null if not available."""
 
-    playtime_minutes: int
+    total_minutes: int
     """Total playtime in the requested window, in minutes."""
 
 
@@ -272,10 +272,10 @@ class SteamPlaytimeAnalytics(BaseModel):
     total_games: int
     """Total number of distinct games with playtime in the requested window."""
 
-    total_playtime_minutes: int
-    """Sum of playtime_minutes across all games in the requested window."""
+    total_minutes: int
+    """Sum of playtime minutes across all games in the requested window."""
 
-    top_games: list[SteamGamePlaytime]
+    games: list[SteamGamePlaytime]
     """Top games by total playtime in the requested window, limited to top_n."""
 
     queried_at: datetime
@@ -322,8 +322,8 @@ class SteamGamePlaytimeHistory(BaseModel):
     days: int | None = None
     """Number of days of history included, or null for all-time."""
 
-    total_playtime_minutes: int
-    """Sum of playtime_minutes across all rows in the requested window."""
+    total_minutes: int
+    """Sum of playtime minutes across all rows in the requested window."""
 
     history: list[SteamGamePlaytimeHistoryEntry]
     """Individual daily playtime records, ordered by date descending."""
