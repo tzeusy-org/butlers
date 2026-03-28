@@ -480,7 +480,7 @@ def build_changes_list_url(
     *,
     include_removed: bool = True,
     fields: str = (
-        "changes(fileId,file(id,name,mimeType,parents,shared,modifiedTime,trashed,owners),"
+        "changes(fileId,file(id,name,mimeType,parents,shared,modifiedTime,trashed,owners,sharingUser),"
         "removed,type),nextPageToken,newStartPageToken"
     ),
 ) -> str:
