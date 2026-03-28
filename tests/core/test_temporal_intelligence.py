@@ -1614,10 +1614,15 @@ class TestTickIntegration:
         assert attrs["deadline_dispatched"] > 0
 
     async def test_tick_deferred_notification_pass_delivers_due_notifications(self, pool):
-        """tick() deferred notification pass delivers pending notifications past deliver_at."""
+        """tick() deferred notification pass delivers pending notifications past deliver_at.
+
+        The flush pass must call notify_fn with the stored notify.v1 envelope —
+        not dispatch_fn — to match the standard notify pipeline semantics.
+        """
         from butlers.core.scheduler import tick
 
         now = datetime.now(UTC)
+        stored_envelope = {"schema_version": "notify.v1", "delivery": {"channel": "telegram"}}
         # Insert a deferred notification that should be delivered
         notif_id = await pool.fetchval(
             """
@@ -1625,18 +1630,23 @@ class TestTickIntegration:
                 (butler_name, channel, message, priority, envelope, deliver_at, status)
             VALUES
                 ('test-butler', 'telegram', 'Queued message', 'medium',
-                 '{"schema_version": "notify.v1"}'::jsonb, $1, 'pending')
+                 $2::jsonb, $1, 'pending')
             RETURNING id
             """,
             now - timedelta(minutes=5),  # 5 minutes ago — past deliver_at
+            json.dumps(stored_envelope),
         )
 
-        deliver_calls = []
+        notify_calls = []
+        dispatch_calls = []
+
+        async def capture_notify_fn(envelope: dict) -> None:
+            notify_calls.append(envelope)
 
         async def capture_dispatch(**kwargs):
-            deliver_calls.append(kwargs)
+            dispatch_calls.append(kwargs)
 
-        await tick(pool, capture_dispatch)
+        await tick(pool, capture_dispatch, notify_fn=capture_notify_fn)
 
         # The deferred notification should be marked delivered
         row = await pool.fetchrow(
@@ -1644,6 +1654,15 @@ class TestTickIntegration:
         )
         assert row["status"] == "delivered", f"Expected 'delivered', got {row['status']!r}"
         assert row["delivered_at"] is not None
+
+        # notify_fn was called with the stored envelope, not dispatch_fn
+        assert len(notify_calls) == 1, "notify_fn must be called exactly once"
+        assert notify_calls[0]["schema_version"] == "notify.v1"
+        # dispatch_fn (LLM spawner) must NOT be called for deferred notification flush
+        assert dispatch_calls == [], (
+            "dispatch_fn (LLM spawner) must not be called for deferred notification delivery; "
+            "use notify_fn (standard notify pipeline) instead"
+        )
 
     async def test_tick_deferred_notification_pass_sets_span_attribute(self, pool):
         """tick() sets 'deferred_flushed' span attribute."""
@@ -2196,6 +2215,68 @@ class TestTickIntegration:
             "SELECT status FROM deferred_notifications WHERE id = $1", notif_id
         )
         assert row["status"] == "expired"
+
+    async def test_tick_deferred_notification_retry_on_notify_fn_failure(self, pool):
+        """tick() keeps deferred notification pending when notify_fn raises (retry on next tick)."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        notif_id = await pool.fetchval(
+            """
+            INSERT INTO deferred_notifications
+                (butler_name, channel, message, priority, envelope, deliver_at, status)
+            VALUES
+                ('test-butler', 'telegram', 'Will fail', 'medium',
+                 '{"schema_version": "notify.v1"}'::jsonb, $1, 'pending')
+            RETURNING id
+            """,
+            now - timedelta(minutes=5),
+        )
+
+        async def failing_notify_fn(envelope: dict) -> None:
+            raise RuntimeError("Switchboard unavailable")
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch, notify_fn=failing_notify_fn)
+
+        row = await pool.fetchrow(
+            "SELECT status FROM deferred_notifications WHERE id = $1", notif_id
+        )
+        assert row["status"] == "pending", (
+            "Notification should remain pending when notify_fn fails, not be lost"
+        )
+
+    async def test_tick_deferred_notification_stays_pending_without_notify_fn(self, pool):
+        """tick() leaves due notifications pending when notify_fn is not wired."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        notif_id = await pool.fetchval(
+            """
+            INSERT INTO deferred_notifications
+                (butler_name, channel, message, priority, envelope, deliver_at, status)
+            VALUES
+                ('test-butler', 'telegram', 'No notify_fn', 'medium',
+                 '{"schema_version": "notify.v1"}'::jsonb, $1, 'pending')
+            RETURNING id
+            """,
+            now - timedelta(minutes=5),
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        # notify_fn=None (default) — notification should stay pending
+        await tick(pool, noop_dispatch)
+
+        row = await pool.fetchrow(
+            "SELECT status FROM deferred_notifications WHERE id = $1", notif_id
+        )
+        assert row["status"] == "pending", (
+            "Notification should remain pending when notify_fn is not configured"
+        )
 
     async def test_sync_schedules_inserts_deadline_task(self, pool):
         """sync_schedules inserts a deadline entry with all temporal fields."""
