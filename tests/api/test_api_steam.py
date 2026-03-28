@@ -4,6 +4,7 @@ Covers all endpoints with mocked database (asyncpg pool) and mocked Steam API:
 - POST   /api/steam/accounts    — connect account (validate API key)
 - GET    /api/steam/accounts    — list accounts
 - DELETE /api/steam/accounts/{id} — disconnect account
+- PUT    /api/steam/accounts/{id}/primary — set primary account
 - GET    /api/steam/playtime    — playtime analytics
 
 DB calls are mocked via patching steam_account_registry functions and pool
@@ -43,6 +44,7 @@ _GET_SHARED_POOL_PATCH = "butlers.api.routers.steam._get_shared_pool"
 _LIST_ACCOUNTS_PATCH = "butlers.api.routers.steam.list_steam_accounts"
 _CREATE_ACCOUNT_PATCH = "butlers.api.routers.steam.create_steam_account"
 _DISCONNECT_ACCOUNT_PATCH = "butlers.api.routers.steam.disconnect_account"
+_SET_PRIMARY_PATCH = "butlers.api.routers.steam.set_primary_account"
 _RESOLVE_ACCOUNT_PATCH = "butlers.api.routers.steam.resolve_steam_account"
 _FETCH_PLAYTIME_PATCH = "butlers.api.routers.steam._fetch_playtime_data"
 
@@ -523,6 +525,117 @@ class TestDisconnectSteamAccount:
             resp = await client.delete("/api/steam/accounts/not-a-valid-uuid")
 
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/steam/accounts/{id}/primary
+# ---------------------------------------------------------------------------
+
+
+class TestSetPrimarySteamAccount:
+    async def test_success_sets_primary_account(self):
+        """PUT /api/steam/accounts/{id}/primary returns 200 with updated account."""
+        account = _make_account(is_primary=True)
+        pool = _make_pool_with_key()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_SET_PRIMARY_PATCH, return_value=account) as mock_set_primary,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(f"/api/steam/accounts/{_ACCOUNT_ID}/primary")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert "primary" in body["message"].lower()
+        assert body["account"]["id"] == str(_ACCOUNT_ID)
+        assert body["account"]["is_primary"] is True
+
+        # Verify the registry function was called with correct args.
+        mock_set_primary.assert_called_once_with(pool, _ACCOUNT_ID)
+
+    async def test_response_includes_display_name_in_message(self):
+        """PUT /api/steam/accounts/{id}/primary message includes the display name."""
+        account = _make_account(display_name="GamerDude", is_primary=True)
+        pool = _make_pool_with_key()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_SET_PRIMARY_PATCH, return_value=account),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(f"/api/steam/accounts/{_ACCOUNT_ID}/primary")
+
+        assert resp.status_code == 200
+        assert "GamerDude" in resp.json()["message"]
+
+    async def test_returns_404_when_account_not_found(self):
+        """PUT /api/steam/accounts/{id}/primary returns 404 for unknown account ID."""
+        pool = _make_pool_with_key()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(
+                _SET_PRIMARY_PATCH,
+                side_effect=SteamAccountNotFoundError("Not found"),
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(f"/api/steam/accounts/{_ACCOUNT_ID}/primary")
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+    async def test_returns_503_when_no_db(self):
+        """PUT /api/steam/accounts/{id}/primary returns 503 when database is unavailable."""
+        app = _build_app(None)
+
+        with patch(_GET_SHARED_POOL_PATCH, return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(f"/api/steam/accounts/{_ACCOUNT_ID}/primary")
+
+        assert resp.status_code == 503
+        assert "unavailable" in resp.json()["detail"].lower()
+
+    async def test_returns_422_for_invalid_uuid(self):
+        """PUT /api/steam/accounts/{id}/primary returns 422 for non-UUID account_id."""
+        app = _build_app()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put("/api/steam/accounts/not-a-valid-uuid/primary")
+
+        assert resp.status_code == 422
+
+    async def test_api_key_not_in_response(self):
+        """PUT /api/steam/accounts/{id}/primary must never expose API keys."""
+        account = _make_account(is_primary=True)
+        pool = _make_pool_with_key(api_key="D" * 32)
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_SET_PRIMARY_PATCH, return_value=account),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(f"/api/steam/accounts/{_ACCOUNT_ID}/primary")
+
+        assert "D" * 32 not in resp.text
 
 
 # ---------------------------------------------------------------------------
