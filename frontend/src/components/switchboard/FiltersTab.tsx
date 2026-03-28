@@ -68,7 +68,6 @@ import {
   useCreateIngestionRule,
   useDeleteIngestionRule,
   useIngestionRules,
-  useTestIngestionRule,
   useUpdateIngestionRule,
 } from "@/hooks/use-ingestion-rules";
 import {
@@ -268,6 +267,73 @@ function extractUniqueScopes(rules: IngestionRule[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Local rule matching (mirrors backend _match_sender_domain / _match_sender_address)
+// ---------------------------------------------------------------------------
+
+function testRuleLocally(
+  ruleType: string,
+  condition: Record<string, unknown>,
+  testInput: string,
+): { matched: boolean; reason: string } {
+  const input = testInput.toLowerCase().trim();
+
+  switch (ruleType) {
+    case "sender_domain": {
+      const domain = String(condition.domain ?? "").toLowerCase();
+      const matchType = String(condition.match ?? "exact");
+      if (!domain) return { matched: false, reason: "No domain configured in rule." };
+
+      // Extract domain from email address (or treat bare input as domain)
+      const atIdx = input.indexOf("@");
+      const senderDomain = atIdx >= 0 ? input.slice(atIdx + 1) : input;
+
+      if (matchType === "exact") {
+        const matched = senderDomain === domain;
+        return {
+          matched,
+          reason: matched
+            ? `Domain "${senderDomain}" exactly matches "${domain}".`
+            : `Domain "${senderDomain}" does not exactly match "${domain}".`,
+        };
+      }
+      if (matchType === "suffix") {
+        const matched = senderDomain === domain || senderDomain.endsWith(`.${domain}`);
+        return {
+          matched,
+          reason: matched
+            ? `Domain "${senderDomain}" matches suffix "${domain}".`
+            : `Domain "${senderDomain}" does not match suffix "${domain}".`,
+        };
+      }
+      return { matched: false, reason: `Unknown match type: ${matchType}` };
+    }
+    case "sender_address": {
+      const address = String(condition.address ?? "").toLowerCase();
+      if (!address) return { matched: false, reason: "No address configured in rule." };
+      const matched = input === address;
+      return {
+        matched,
+        reason: matched
+          ? `Address matches "${address}".`
+          : `"${input}" does not match "${address}".`,
+      };
+    }
+    case "header_condition":
+      return {
+        matched: false,
+        reason: "Header conditions can only be tested against real messages.",
+      };
+    case "mime_type":
+      return {
+        matched: false,
+        reason: "MIME conditions can only be tested against real messages.",
+      };
+    default:
+      return { matched: false, reason: `Rule type "${ruleType}" cannot be tested locally.` };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Condition field editors by rule_type
 // ---------------------------------------------------------------------------
 
@@ -462,10 +528,8 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
 
   const createRule = useCreateIngestionRule();
   const updateRule = useUpdateIngestionRule();
-  const testRule = useTestIngestionRule();
 
   const isSaving = createRule.isPending || updateRule.isPending;
-  const isTesting = testRule.isPending;
 
   const isConnector = scopeType === "connector";
 
@@ -555,22 +619,19 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
     }
   }
 
-  async function handleTest() {
+  function handleTest() {
     setError(null);
     setTestResult(null);
     if (!testSender.trim()) {
       setError("Enter a sender address or domain to test against.");
       return;
     }
-    try {
-      const result = await testRule.mutateAsync({
-        envelope: { sender_address: testSender.trim() },
-        scope: resolvedScope(),
-      });
-      setTestResult(result.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Test failed.");
-    }
+    const result = testRuleLocally(ruleType, condition, testSender.trim());
+    setTestResult({
+      matched: result.matched,
+      reason: result.reason,
+      decision: result.matched ? resolvedAction() : null,
+    });
   }
 
   function handleClose(open: boolean) {
@@ -786,14 +847,9 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
               variant="outline"
               size="sm"
               onClick={handleTest}
-              disabled={isTesting}
               data-testid="test-rule-btn"
             >
-              {isTesting ? (
-                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-              ) : (
-                <FlaskConical className="mr-2 h-3 w-3" />
-              )}
+              <FlaskConical className="mr-2 h-3 w-3" />
               Test
             </Button>
             {testResult && (

@@ -242,6 +242,11 @@ export async function apiFetch<T>(
       } else if (typeof body.detail === "string") {
         // FastAPI HTTPException format: { "detail": "..." }
         message = body.detail;
+      } else if (Array.isArray(body.detail) && body.detail.length > 0) {
+        // Pydantic ValidationError format: { "detail": [{ "msg": "..." }, ...] }
+        message = body.detail
+          .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
+          .join("; ");
       }
     } catch {
       // Response body is not valid JSON — fall through to defaults.
