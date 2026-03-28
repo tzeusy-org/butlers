@@ -176,6 +176,11 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "deadline_update",
         "deadline_list",
         "deadline_delete",
+        "seasonal_period_create",
+        "seasonal_period_update",
+        "seasonal_period_list",
+        "seasonal_period_delete",
+        "seasonal_period_create_preset",
     }
 )
 
@@ -5629,6 +5634,204 @@ class ButlerDaemon:
                     "status": "not_found",
                     "error": (f"Event chain {chain_id!r} not found for this butler."),
                 }
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        # Seasonal tools (temporal-intelligence spec §4)
+        @mcp.tool()
+        async def seasonal_period_create(
+            name: str,
+            period_type: str = "annual",
+            start_month: int = 1,
+            start_day: int = 1,
+            end_month: int = 12,
+            end_day: int = 31,
+            timezone: str = "UTC",
+            metadata: dict[str, Any] | None = None,
+            enabled: bool = True,
+        ) -> dict[str, Any]:
+            """Create a new seasonal period for this butler.
+
+            Seasonal periods define recurring calendar windows (e.g., tax season,
+            academic terms) that inject context into task dispatch prompts.
+
+            Args:
+                name: Unique name for this period (per butler).
+                period_type: One of 'annual', 'academic', 'fiscal', 'custom'.
+                start_month: Period start month (1-12).
+                start_day: Period start day (1-31).
+                end_month: Period end month (1-12).
+                end_day: Period end day (1-31).
+                timezone: IANA timezone string (default 'UTC').
+                metadata: Optional dict with context hints and priority modifiers.
+                enabled: Whether the period is active immediately (default true).
+
+            Returns:
+                Dict with 'id' (UUID string) of the created period.
+            """
+            from butlers.core.seasonal import seasonal_period_create as _sp_create
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                period_id = await _sp_create(
+                    _db_pool,
+                    butler_name,
+                    name=name,
+                    period_type=period_type,
+                    start_month=start_month,
+                    start_day=start_day,
+                    end_month=end_month,
+                    end_day=end_day,
+                    timezone=timezone,
+                    metadata=metadata,
+                    enabled=enabled,
+                )
+                return {"id": str(period_id), "status": "created"}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def seasonal_period_update(
+            period_id: str,
+            name: str | None = None,
+            period_type: str | None = None,
+            start_month: int | None = None,
+            start_day: int | None = None,
+            end_month: int | None = None,
+            end_day: int | None = None,
+            timezone: str | None = None,
+            metadata: dict[str, Any] | None = None,
+            enabled: bool | None = None,
+        ) -> dict[str, Any]:
+            """Update an existing seasonal period.
+
+            Only provided (non-null) fields are updated.  Month/day combinations
+            are validated against the resulting final state.
+
+            Args:
+                period_id: UUID of the period to update.
+                name: New name (must be unique per butler).
+                period_type: New type ('annual', 'academic', 'fiscal', 'custom').
+                start_month: New start month (1-12).
+                start_day: New start day (1-31).
+                end_month: New end month (1-12).
+                end_day: New end day (1-31).
+                timezone: New IANA timezone string.
+                metadata: New metadata dict (replaces existing).
+                enabled: New enabled flag.
+
+            Returns:
+                Dict with 'found' boolean.
+            """
+            from butlers.core.seasonal import seasonal_period_update as _sp_update
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                found = await _sp_update(
+                    _db_pool,
+                    butler_name,
+                    period_id=period_id,
+                    name=name,
+                    period_type=period_type,
+                    start_month=start_month,
+                    start_day=start_day,
+                    end_month=end_month,
+                    end_day=end_day,
+                    timezone=timezone,
+                    metadata=metadata,
+                    enabled=enabled,
+                )
+                return {"found": found, "status": "updated" if found else "not_found"}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def seasonal_period_list(
+            include_disabled: bool = True,
+        ) -> dict[str, Any]:
+            """List all seasonal periods for this butler.
+
+            Returns all seasonal periods with their current active status
+            (whether today's date falls within each period's range).
+
+            Args:
+                include_disabled: If False, only return enabled periods
+                    (default True — return all).
+
+            Returns:
+                Dict with 'periods' list, each entry including 'is_active' field.
+            """
+            from butlers.core.seasonal import seasonal_period_list as _sp_list
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                periods = await _sp_list(_db_pool, butler_name)
+                if not include_disabled:
+                    periods = [p for p in periods if p.get("enabled")]
+                return {"periods": periods, "count": len(periods)}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def seasonal_period_delete(
+            period_id: str,
+        ) -> dict[str, Any]:
+            """Delete a seasonal period.
+
+            Args:
+                period_id: UUID of the period to delete.
+
+            Returns:
+                Dict with 'found' boolean.
+            """
+            from butlers.core.seasonal import seasonal_period_delete as _sp_delete
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                found = await _sp_delete(_db_pool, butler_name, period_id=period_id)
+                return {"found": found, "status": "deleted" if found else "not_found"}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def seasonal_period_create_preset(
+            preset: str,
+            timezone: str = "UTC",
+        ) -> dict[str, Any]:
+            """Create a seasonal period from a built-in preset.
+
+            Available presets:
+            - 'us-tax-season': Jan 1 - Apr 15 (US tax filing season)
+            - 'year-end-holidays': Dec 15 - Jan 5 (year-end holiday season)
+            - 'back-to-school': Aug 1 - Sep 15 (back-to-school season)
+            - 'spring-semester': Jan 15 - May 15 (spring academic semester)
+            - 'fall-semester': Aug 25 - Dec 15 (fall academic semester)
+
+            Args:
+                preset: Preset name (e.g., 'us-tax-season').
+                timezone: IANA timezone string (default 'UTC').
+
+            Returns:
+                Dict with 'id' (UUID string) of the created period.
+            """
+            from butlers.core.seasonal import seasonal_period_create_preset as _sp_preset
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                period_id = await _sp_preset(
+                    _db_pool, butler_name, preset=preset, timezone=timezone
+                )
+                return {"id": str(period_id), "status": "created", "preset": preset}
             except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
 
