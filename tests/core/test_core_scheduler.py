@@ -1945,3 +1945,126 @@ async def test_sync_detects_alert_thresholds_change(pool_with_temporal):
         stored = json.loads(stored)
     assert stored == updated_thresholds
     assert row["updated_at"] > original_updated_at
+
+
+# ---------------------------------------------------------------------------
+# schedule_create with task_type='deadline' — spec §CRUD API (bu-fpko)
+# ---------------------------------------------------------------------------
+
+
+async def test_schedule_create_deadline_returns_uuid(pool_with_temporal):
+    """schedule_create(task_type='deadline') returns a UUID and stores a deadline row."""
+    import datetime as _dt
+    import uuid as _uuid
+
+    from butlers.core.scheduler import schedule_create
+
+    target = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(days=60)).date()
+    task_id = await schedule_create(
+        pool_with_temporal,
+        "sc-deadline-basic",
+        task_type="deadline",
+        prompt="Alert about visa renewal",
+        target_date=target,
+        lead_time_days=42,
+        alert_thresholds=[{"days_before": 42, "severity": "info"}],
+    )
+    assert isinstance(task_id, _uuid.UUID)
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT task_type, target_date, lead_time_days, deadline_status, enabled "
+        "FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row is not None
+    assert row["task_type"] == "deadline"
+    assert row["target_date"].isoformat() == target.isoformat()
+    assert row["lead_time_days"] == 42
+    assert row["deadline_status"] == "pending"
+    assert row["enabled"] is True
+
+
+async def test_schedule_create_deadline_with_iso_date_string(pool_with_temporal):
+    """schedule_create accepts target_date as an ISO string."""
+    import datetime as _dt
+
+    from butlers.core.scheduler import schedule_create
+
+    target_str = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(days=90)).date().isoformat()
+    task_id = await schedule_create(
+        pool_with_temporal,
+        "sc-deadline-iso-string",
+        task_type="deadline",
+        prompt="Check expiry",
+        target_date=target_str,
+        lead_time_days=30,
+        alert_thresholds=[{"days_before": 30, "severity": "warning"}],
+    )
+    row = await pool_with_temporal.fetchrow(
+        "SELECT task_type, target_date FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["task_type"] == "deadline"
+    assert row["target_date"].isoformat() == target_str
+
+
+async def test_schedule_create_deadline_missing_target_date_raises(pool_with_temporal):
+    """schedule_create(task_type='deadline') raises ValueError when target_date is missing."""
+    import pytest
+
+    from butlers.core.scheduler import schedule_create
+
+    with pytest.raises(ValueError, match="target_date"):
+        await schedule_create(
+            pool_with_temporal,
+            "sc-deadline-no-target",
+            task_type="deadline",
+            prompt="Missing target",
+            lead_time_days=14,
+            alert_thresholds=[{"days_before": 14, "severity": "info"}],
+        )
+
+
+async def test_schedule_create_deadline_missing_alert_thresholds_raises(pool_with_temporal):
+    """schedule_create(task_type='deadline') raises ValueError when alert_thresholds is missing."""
+    import datetime as _dt
+
+    from butlers.core.scheduler import schedule_create
+
+    target = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(days=60)).date()
+    with pytest.raises(ValueError, match="alert_thresholds"):
+        await schedule_create(
+            pool_with_temporal,
+            "sc-deadline-no-thresholds",
+            task_type="deadline",
+            prompt="Missing thresholds",
+            target_date=target,
+            lead_time_days=30,
+        )
+
+
+async def test_schedule_create_invalid_task_type_raises(pool_with_temporal):
+    """schedule_create raises ValueError for unknown task_type."""
+    from butlers.core.scheduler import schedule_create
+
+    with pytest.raises(ValueError, match="task_type"):
+        await schedule_create(
+            pool_with_temporal,
+            "sc-bad-type",
+            cron="0 9 * * *",
+            prompt="test",
+            task_type="unknown",
+        )
+
+
+async def test_schedule_create_cron_missing_cron_raises(pool_with_temporal):
+    """schedule_create(task_type='cron') raises ValueError when cron is None."""
+    from butlers.core.scheduler import schedule_create
+
+    with pytest.raises(ValueError, match="cron"):
+        await schedule_create(
+            pool_with_temporal,
+            "sc-cron-no-cron",
+            prompt="test",
+            task_type="cron",
+        )
