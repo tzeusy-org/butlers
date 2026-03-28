@@ -1569,9 +1569,9 @@ class TestTickIntegration:
         tick_span = next((s for s in spans if s.name == "butler.tick"), None)
         assert tick_span is not None, "butler.tick span not found"
         attrs = dict(tick_span.attributes or {})
-        assert "scheduler.deadline_dispatched" in attrs
+        assert "deadline_dispatched" in attrs
         # Should be > 0 since we have a due deadline
-        assert attrs["scheduler.deadline_dispatched"] > 0
+        assert attrs["deadline_dispatched"] > 0
 
     async def test_tick_deferred_notification_pass_delivers_due_notifications(self, pool):
         """tick() deferred notification pass delivers pending notifications past deliver_at."""

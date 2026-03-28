@@ -1178,7 +1178,7 @@ async def tick(
             metrics=metrics,
         )
         span.set_attribute("deadlines_evaluated", deadlines_evaluated)
-        span.set_attribute("scheduler.deadline_dispatched", deadline_dispatched)
+        span.set_attribute("deadline_dispatched", deadline_dispatched)
 
         # --- Pass 2: Cron dispatch ---
         # If task_type column doesn't exist (legacy schema), treat all rows as cron.
