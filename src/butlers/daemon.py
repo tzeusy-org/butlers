@@ -100,6 +100,11 @@ from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_list as _state_list
 from butlers.core.state import state_set as _state_set
 from butlers.core.telemetry import extract_trace_context, init_telemetry, tag_butler_span, tool_span
+from butlers.core.temporal.deadlines import validate_deadline_input
+from butlers.core.temporal.deadlines_db import deadline_create as _deadline_create
+from butlers.core.temporal.deadlines_db import deadline_delete as _deadline_delete
+from butlers.core.temporal.deadlines_db import deadline_list as _deadline_list
+from butlers.core.temporal.deadlines_db import deadline_update as _deadline_update
 from butlers.core.tool_call_capture import (
     capture_tool_call,
     get_current_runtime_session_id,
@@ -156,6 +161,10 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "notify",
         "remind",
         "get_attachment",
+        "deadline_create",
+        "deadline_update",
+        "deadline_list",
+        "deadline_delete",
         "module.states",
         "module.set_enabled",
         "correct",
@@ -4332,6 +4341,230 @@ class ButlerDaemon:
             resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_delete")
             await _schedule_delete(pool, uuid.UUID(resolved_id))
             return {"id": resolved_id, "status": "deleted"}
+
+        # Deadline tools (temporal-intelligence spec §3)
+        @mcp.tool()
+        async def deadline_create(
+            name: Annotated[str, Field(description="Unique deadline name.")],
+            prompt: Annotated[
+                str,
+                Field(
+                    description=(
+                        "Prompt dispatched when a threshold fires. "
+                        "Should instruct the butler to notify the user about the deadline."
+                    )
+                ),
+            ],
+            target_date: Annotated[
+                str,
+                Field(description="Target due date in YYYY-MM-DD format. Must be in the future."),
+            ],
+            lead_time_days: Annotated[
+                int,
+                Field(
+                    description=(
+                        "Number of days before target_date to begin alerting. "
+                        "All alert_thresholds.days_before must be <= lead_time_days."
+                    )
+                ),
+            ],
+            alert_thresholds: Annotated[
+                list[dict[str, Any]],
+                Field(
+                    description=(
+                        "Non-empty list of threshold dicts: "
+                        '[{"days_before": int, "severity": "info|warning|critical"}, ...]. '
+                        "Each days_before must be <= lead_time_days."
+                    )
+                ),
+            ],
+            depends_on: Annotated[
+                list[str] | None,
+                Field(
+                    description=(
+                        "Optional list of deadline task UUIDs that must reach 'completed' "
+                        "status before this deadline's thresholds are evaluated."
+                    )
+                ),
+            ] = None,
+        ) -> dict:
+            """Create a countdown-based deadline task.
+
+            Deadlines alert the butler at configurable thresholds before a target date
+            (e.g., 6 weeks, 2 weeks, 3 days before). Unlike cron schedules, deadlines
+            count down from a fixed target date and fire once per threshold crossing.
+
+            Returns the new deadline's UUID and creation status.
+            """
+            try:
+                from datetime import date as _date
+
+                parsed_date = _date.fromisoformat(target_date)
+                validate_deadline_input(
+                    target_date=parsed_date,
+                    lead_time_days=lead_time_days,
+                    alert_thresholds=alert_thresholds,
+                )
+                task_id = await _deadline_create(
+                    pool,
+                    name=name,
+                    prompt=prompt,
+                    target_date=parsed_date,
+                    lead_time_days=lead_time_days,
+                    alert_thresholds=alert_thresholds,
+                    depends_on=depends_on,
+                )
+                return {
+                    "id": str(task_id),
+                    "status": "created",
+                    "name": name,
+                    "target_date": target_date,
+                    "lead_time_days": lead_time_days,
+                    "alert_thresholds": alert_thresholds,
+                    "depends_on": depends_on,
+                }
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def deadline_update(
+            task_id: Annotated[str, Field(description="UUID of the deadline task to update.")],
+            name: Annotated[str | None, Field(description="New name (optional).")] = None,
+            prompt: Annotated[
+                str | None,
+                Field(description="New prompt template (optional)."),
+            ] = None,
+            target_date: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "New target date in YYYY-MM-DD format (optional). "
+                        "Changing target_date resets fired_thresholds and "
+                        "deadline_status to 'pending'."
+                    )
+                ),
+            ] = None,
+            lead_time_days: Annotated[
+                int | None,
+                Field(description="New lead time in days (optional)."),
+            ] = None,
+            alert_thresholds: Annotated[
+                list[dict[str, Any]] | None,
+                Field(description="New alert thresholds list (optional)."),
+            ] = None,
+            depends_on: Annotated[
+                list[str] | None,
+                Field(description="New dependency task UUID list (optional)."),
+            ] = None,
+            deadline_status: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Explicit new status (optional). "
+                        "Valid values: pending, alerted, escalated, completed, expired."
+                    )
+                ),
+            ] = None,
+            enabled: Annotated[
+                bool | None,
+                Field(description="Enable or disable the deadline (optional)."),
+            ] = None,
+        ) -> dict:
+            """Update fields on an existing deadline task.
+
+            Only provided fields are changed. Changing target_date automatically resets
+            fired_thresholds to [] and deadline_status to 'pending' (unless
+            deadline_status is explicitly provided).
+            """
+            try:
+                from datetime import UTC as _UTC
+                from datetime import date as _date
+                from datetime import datetime as _datetime
+
+                parsed_date: _date | None = None
+                if target_date is not None:
+                    parsed_date = _date.fromisoformat(target_date)
+                    today = _datetime.now(_UTC).date()
+                    if parsed_date <= today:
+                        raise ValueError(
+                            f"target_date must be in the future"
+                            f" (got {parsed_date}; today is {today})"
+                        )
+
+                if lead_time_days is not None and lead_time_days <= 0:
+                    raise ValueError(
+                        f"lead_time_days must be a positive integer (got {lead_time_days})"
+                    )
+
+                if alert_thresholds is not None and not alert_thresholds:
+                    raise ValueError("alert_thresholds must contain at least one threshold")
+
+                if alert_thresholds is not None and lead_time_days is not None:
+                    for t in alert_thresholds:
+                        days_before = t.get("days_before")
+                        if days_before is None:
+                            raise ValueError(
+                                "Each threshold must have a 'days_before' integer field"
+                            )
+                        if days_before > lead_time_days:
+                            raise ValueError(
+                                f"Threshold days_before={days_before} cannot"
+                                f" exceed lead_time_days={lead_time_days}"
+                            )
+
+                await _deadline_update(
+                    pool,
+                    uuid.UUID(task_id),
+                    name=name,
+                    prompt=prompt,
+                    target_date=parsed_date,
+                    lead_time_days=lead_time_days,
+                    alert_thresholds=alert_thresholds,
+                    depends_on=depends_on,
+                    deadline_status=deadline_status,
+                    enabled=enabled,
+                )
+                return {
+                    "id": task_id,
+                    "status": "updated",
+                }
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def deadline_list(
+            status_filter: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional status filter. "
+                        "Valid values: pending, alerted, escalated, completed, expired. "
+                        "Omit to list all deadlines."
+                    )
+                ),
+            ] = None,
+        ) -> list[dict]:
+            """List all deadline tasks, optionally filtered by status.
+
+            Returns deadlines sorted by target_date (soonest first).
+            """
+            deadlines = await _deadline_list(pool, status_filter=status_filter)
+            return deadlines
+
+        @mcp.tool()
+        async def deadline_delete(
+            task_id: Annotated[str, Field(description="UUID of the deadline task to delete.")],
+        ) -> dict:
+            """Delete a runtime deadline task.
+
+            TOML-sourced deadlines cannot be deleted via this tool — remove them
+            from butler.toml instead.
+            """
+            try:
+                await _deadline_delete(pool, uuid.UUID(task_id))
+                return {"id": task_id, "status": "deleted"}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
 
         @mcp.tool()
         async def schedule_trigger(task_id: str | None = None, id: str | None = None) -> dict:

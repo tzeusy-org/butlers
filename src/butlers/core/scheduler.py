@@ -576,6 +576,7 @@ async def _tick_deadline_pass(
     import json as _json
 
     from butlers.core.temporal.deadlines import (
+        build_deadline_prompt_context,
         compute_days_remaining,
         compute_expiry_transition,
         compute_next_deadline_status,
@@ -698,8 +699,16 @@ async def _tick_deadline_pass(
 
         try:
             if dispatch_mode == _DISPATCH_MODE_PROMPT:
+                augmented_prompt = build_deadline_prompt_context(
+                    original_prompt=prompt or "",
+                    target_date=target_date,
+                    days_remaining=days_remaining,
+                    fired_threshold=threshold,
+                    deadline_status=current_status,
+                    all_thresholds=alert_thresholds,
+                )
                 await dispatch_fn(
-                    prompt=prompt,
+                    prompt=augmented_prompt,
                     trigger_source=f"deadline:{name}",
                     complexity=task_complexity,
                 )
