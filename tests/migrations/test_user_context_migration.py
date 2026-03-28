@@ -1,8 +1,8 @@
-"""Tests for the core_041_user_context Alembic migration.
+"""Tests for the core_042_user_context Alembic migration.
 
 Covers:
   - File layout and module loadability
-  - Revision chain (core_041 revises core_040)
+  - Revision chain (core_042 revises core_041)
   - shared.user_context table columns and constraints
   - UNIQUE constraint on (signal_type, set_by_butler)
   - CHECK constraint on confidence (0.0–1.0)
@@ -21,12 +21,12 @@ import pytest
 pytestmark = pytest.mark.unit
 
 VERSIONS_DIR = Path(__file__).resolve().parent.parent.parent / "alembic" / "versions" / "core"
-MIGRATION_FILE = VERSIONS_DIR / "core_041_user_context.py"
+MIGRATION_FILE = VERSIONS_DIR / "core_042_user_context.py"
 
 
 def _load_migration():
-    """Dynamically load the core_041 migration module."""
-    spec = importlib.util.spec_from_file_location("core_041_user_context", MIGRATION_FILE)
+    """Dynamically load the core_042 migration module."""
+    spec = importlib.util.spec_from_file_location("core_042_user_context", MIGRATION_FILE)
     assert spec is not None, f"Cannot locate migration at {MIGRATION_FILE}"
     assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -41,11 +41,11 @@ def _load_migration():
 
 class TestMigrationFileLayout:
     def test_migration_file_exists(self) -> None:
-        """core_041_user_context.py exists on disk."""
+        """core_042_user_context.py exists on disk."""
         assert MIGRATION_FILE.exists(), f"Migration not found at {MIGRATION_FILE}"
 
     def test_migration_file_loadable(self) -> None:
-        """core_041_user_context.py can be imported without errors."""
+        """core_042_user_context.py can be imported without errors."""
         mod = _load_migration()
         assert mod is not None
 
@@ -57,14 +57,14 @@ class TestMigrationFileLayout:
 
 class TestRevisionMetadata:
     def test_revision_id(self) -> None:
-        """Migration revision is 'core_041'."""
+        """Migration revision is 'core_042'."""
         mod = _load_migration()
-        assert mod.revision == "core_041"
+        assert mod.revision == "core_042"
 
     def test_down_revision(self) -> None:
-        """Migration revises core_040."""
+        """Migration revises core_041."""
         mod = _load_migration()
-        assert mod.down_revision == "core_040"
+        assert mod.down_revision == "core_041"
 
     def test_branch_labels_none(self) -> None:
         """Migration has no branch label (belongs to linear core chain)."""

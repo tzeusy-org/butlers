@@ -1,7 +1,7 @@
 """user_context: create shared.user_context table for situational context bus
 
-Revision ID: core_041
-Revises: core_040
+Revision ID: core_042
+Revises: core_041
 Create Date: 2026-03-28 00:00:00.000000
 
 Creates ``shared.user_context`` as a shared situational-awareness store used
@@ -40,8 +40,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_041"
-down_revision = "core_040"
+revision = "core_042"
+down_revision = "core_041"
 branch_labels = None
 depends_on = None
 
