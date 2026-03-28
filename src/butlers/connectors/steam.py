@@ -373,6 +373,52 @@ async def _load_steam_cursors(pool: asyncpg.Pool, endpoint_identity: str) -> dic
     return cursors
 
 
+# Retention period for cursors belonging to revoked accounts (30 days).
+_REVOKED_CURSOR_RETENTION_DAYS = 30
+
+_CURSOR_PURGE_SQL = f"""
+DELETE FROM {_CURSOR_SCHEMA}.{_CURSOR_TABLE}
+WHERE endpoint_identity IN (
+    SELECT 'steam:user:' || steam_id::text
+    FROM public.steam_accounts
+    WHERE status = 'revoked'
+      AND revoked_at IS NOT NULL
+      AND revoked_at < now() - INTERVAL '{_REVOKED_CURSOR_RETENTION_DAYS} days'
+)
+"""
+
+
+async def purge_revoked_cursors(pool: asyncpg.Pool) -> int:
+    """Delete cursors for Steam accounts revoked more than 30 days ago.
+
+    Cursors are keyed by ``endpoint_identity`` (``steam:user:<steam_id>``).
+    Only accounts with a non-NULL ``revoked_at`` are considered — accounts
+    revoked before migration core_044 (which added the column) are excluded
+    unless they are re-revoked after the migration runs.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg pool connected to the shared database.
+
+    Returns
+    -------
+    int
+        Number of cursor rows deleted.
+    """
+    try:
+        async with pool.acquire() as conn:
+            result = await conn.execute(_CURSOR_PURGE_SQL)
+        # asyncpg returns a status string like "DELETE N"
+        deleted = int(result.split()[-1]) if result else 0
+        if deleted:
+            logger.info("Steam cursor cleanup: purged %d cursor rows for revoked accounts", deleted)
+        return deleted
+    except Exception:
+        logger.warning("Failed to purge revoked Steam cursors", exc_info=True)
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Delta detection helpers
 # ---------------------------------------------------------------------------
@@ -1645,6 +1691,9 @@ class SteamConnector:
 
         if not self._pollers:
             logger.info("Steam connector: no active accounts — running in idle/degraded mode")
+
+        # Purge cursors for accounts revoked more than 30 days ago.
+        await purge_revoked_cursors(self._db_pool)
 
     async def _rescan_loop(self) -> None:
         """Periodically re-discover accounts while running."""

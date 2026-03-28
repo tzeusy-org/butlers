@@ -631,6 +631,29 @@ class TestDisconnectAccount:
         execute_calls = [str(call[0][0]) for call in conn.execute.call_args_list]
         assert any("status = 'revoked'" in c for c in execute_calls)
 
+    async def test_soft_disconnect_stamps_revoked_at(self) -> None:
+        """Soft disconnect must set revoked_at = now() for 30-day cursor retention."""
+        conn = _FakeConn()
+        conn.fetchrow = AsyncMock(return_value=self._make_account_data_row())
+        pool = _make_pool(conn)
+
+        await disconnect_account(pool, _ACCOUNT_ID)
+
+        execute_calls = [str(call[0][0]) for call in conn.execute.call_args_list]
+        assert any("revoked_at" in c for c in execute_calls)
+
+    async def test_hard_delete_does_not_stamp_revoked_at(self) -> None:
+        """Hard delete removes the entity entirely — no revoked_at stamp needed."""
+        conn = _FakeConn()
+        conn.fetchrow = AsyncMock(return_value=self._make_account_data_row())
+        pool = _make_pool(conn)
+
+        await disconnect_account(pool, _ACCOUNT_ID, hard_delete=True)
+
+        execute_calls = [str(call[0][0]) for call in conn.execute.call_args_list]
+        # Hard delete goes straight to DELETE — no UPDATE with revoked_at
+        assert not any("revoked_at" in c for c in execute_calls)
+
     async def test_soft_disconnect_does_not_delete_entity(self) -> None:
         """Soft disconnect retains companion entity and credentials."""
         conn = _FakeConn()
