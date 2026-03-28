@@ -490,13 +490,13 @@ export function ConcentricCirclesDialog() {
       <DialogTrigger asChild>
         <Button variant="outline" size="sm">
           <CrosshairIcon className="h-4 w-4 mr-1.5" />
-          Social Map
+          Concentric Circles
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            Social Map
+            Concentric Circles
           </DialogTitle>
           <DialogDescription>
             Your contacts arranged by Dunbar tier — rings represent intimacy
