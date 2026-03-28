@@ -5,12 +5,13 @@ Provides request/response models for:
 - Account listing (GET /api/steam/accounts)
 - Account disconnection (DELETE /api/steam/accounts/{id})
 - Playtime analytics (GET /api/steam/playtime)
+- Per-game playtime history (GET /api/steam/playtime/{app_id})
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -132,7 +133,10 @@ class SteamSetPrimaryResponse(BaseModel):
 
 
 class SteamGamePlaytime(BaseModel):
-    """Playtime record for a single game."""
+    """Playtime record for a single game.
+
+    Used in the top_games and recently_played lists of SteamPlaytimeAnalytics.
+    """
 
     app_id: int
     """Steam application ID."""
@@ -140,11 +144,8 @@ class SteamGamePlaytime(BaseModel):
     name: str | None = None
     """Game name, or null if not available."""
 
-    playtime_forever_minutes: int
-    """Total playtime across all time in minutes."""
-
-    playtime_2weeks_minutes: int | None = None
-    """Playtime in the last 2 weeks in minutes, or null if none."""
+    playtime_minutes: int
+    """Total playtime in the requested window, in minutes."""
 
     img_icon_url: str | None = None
     """Icon URL suffix for the game icon (relative to steam CDN), or null."""
@@ -154,6 +155,7 @@ class SteamPlaytimeAnalytics(BaseModel):
     """Aggregated playtime analytics for a Steam account.
 
     Returned by GET /api/steam/playtime.
+    Data is sourced from the connectors.steam_play_history table.
     """
 
     account_id: uuid.UUID
@@ -165,17 +167,67 @@ class SteamPlaytimeAnalytics(BaseModel):
     display_name: str | None = None
     """Steam persona name, or null."""
 
+    days: int | None = None
+    """Number of days of history included, or null for all-time."""
+
     total_games: int
-    """Total number of games in the library."""
+    """Total number of distinct games with playtime in the requested window."""
 
     total_playtime_minutes: int
-    """Sum of playtime_forever across all games."""
+    """Sum of playtime_minutes across all games in the requested window."""
 
     top_games: list[SteamGamePlaytime]
-    """Top games by total playtime, limited to the requested count."""
+    """Top games by total playtime in the requested window, limited to top_n."""
 
-    recently_played: list[SteamGamePlaytime]
-    """Games played in the last 2 weeks with playtime > 0."""
+    queried_at: datetime
+    """Timestamp when this data was queried from the database."""
 
-    fetched_at: datetime
-    """Timestamp when this data was fetched from the Steam API."""
+
+class SteamGamePlaytimeHistoryEntry(BaseModel):
+    """A single daily playtime entry for a specific game.
+
+    Used in SteamGamePlaytimeHistory.
+    """
+
+    date: date
+    """Date of the playtime record."""
+
+    playtime_minutes: int
+    """Playtime recorded on this date, in minutes."""
+
+    recorded_at: datetime
+    """Timestamp when this record was written to the database."""
+
+
+class SteamGamePlaytimeHistory(BaseModel):
+    """Per-game playtime history from the connectors.steam_play_history table.
+
+    Returned by GET /api/steam/playtime/{app_id}.
+    """
+
+    account_id: uuid.UUID
+    """UUID of the Steam account these analytics are for."""
+
+    steam_id: int
+    """Steam 64-bit account ID."""
+
+    display_name: str | None = None
+    """Steam persona name, or null."""
+
+    app_id: int
+    """Steam application ID."""
+
+    app_name: str | None = None
+    """Game name from the play history table, or null if not recorded."""
+
+    days: int | None = None
+    """Number of days of history included, or null for all-time."""
+
+    total_playtime_minutes: int
+    """Sum of playtime_minutes across all rows in the requested window."""
+
+    history: list[SteamGamePlaytimeHistoryEntry]
+    """Individual daily playtime records, ordered by date descending."""
+
+    queried_at: datetime
+    """Timestamp when this data was queried from the database."""
