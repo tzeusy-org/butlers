@@ -14,7 +14,7 @@
  * 4. Specific error messages for unreachable / auth failure / unexpected errors
  */
 
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 
 import { Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
@@ -269,12 +269,15 @@ export function HomeAssistantSection() {
   const status = statusQuery.data;
   const displayState: HomeAssistantState = status?.state ?? "not_configured";
 
-  // Reset form visibility when status transitions to connected
-  useEffect(() => {
-    if (displayState === "connected") {
+  // Reset form visibility when status transitions to connected (during render,
+  // not in an effect, to avoid the set-state-in-effect lint error).
+  const prevDisplayStateRef = useRef(displayState);
+  if (prevDisplayStateRef.current !== displayState) {
+    prevDisplayStateRef.current = displayState;
+    if (displayState === "connected" && showConfigForm) {
       setShowConfigForm(false);
     }
-  }, [displayState]);
+  }
 
   async function handleDelete() {
     try {
@@ -390,12 +393,15 @@ export function HomeAssistantSetupCard() {
   const status = statusQuery.data;
   const displayState: HomeAssistantState = status?.state ?? "not_configured";
 
-  // Reset form visibility when status transitions to connected
-  useEffect(() => {
-    if (displayState === "connected") {
+  // Reset form visibility when status transitions to connected (during render,
+  // not in an effect, to avoid the set-state-in-effect lint error).
+  const prevDisplayStateRef = useRef(displayState);
+  if (prevDisplayStateRef.current !== displayState) {
+    prevDisplayStateRef.current = displayState;
+    if (displayState === "connected" && showConfigForm) {
       setShowConfigForm(false);
     }
-  }, [displayState]);
+  }
 
   async function handleDelete() {
     try {
