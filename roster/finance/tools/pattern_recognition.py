@@ -200,16 +200,26 @@ async def detect_recurring(
     )
     deleted_filter = "AND deleted_at IS NULL" if has_deleted_at else ""
 
-    # Fetch all debit transactions grouped by merchant, ordered by date.
-    # We need the individual posted_at dates and amounts to compute intervals.
+    # Fetch debit transactions only for merchants that already meet min_occurrences.
+    # The HAVING clause pre-filters at the SQL level, avoiding expensive transfer of
+    # all transactions for merchants that will never qualify.
     rows = await pool.fetch(
         f"""
         SELECT merchant, posted_at, amount, currency
         FROM transactions
         WHERE direction = 'debit'
           {deleted_filter}
+          AND merchant IN (
+              SELECT merchant
+              FROM transactions
+              WHERE direction = 'debit'
+                {deleted_filter}
+              GROUP BY merchant
+              HAVING COUNT(*) >= $1
+          )
         ORDER BY merchant ASC, posted_at ASC
-        """
+        """,
+        min_occurrences,
     )
 
     if not rows:

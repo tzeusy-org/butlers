@@ -510,6 +510,47 @@ class TestDetectRecurringEdgeCases:
         assert "SvcAlpha" in pattern_names
         assert "SvcBeta" in pattern_names
 
+    async def test_having_clause_pre_filters_merchants(self, pool):
+        """SQL HAVING clause pre-filters merchants below threshold (not fetched)."""
+        from butlers.tools.finance.pattern_recognition import detect_recurring
+
+        base = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
+
+        # Insert 100 merchants each with only 2 charges (below min_occurrences=3)
+        for merchant_idx in range(100):
+            for i in range(2):
+                await _insert_transaction(
+                    pool,
+                    merchant=f"BelowThreshold_{merchant_idx}",
+                    amount="10.00",
+                    posted_at=base + timedelta(days=30 * i),
+                )
+
+        # Insert 2 qualifying merchants with 3 charges each
+        for i in range(3):
+            await _insert_transaction(
+                pool,
+                merchant="QualifyingA",
+                amount="15.99",
+                posted_at=base + timedelta(days=30 * i),
+            )
+            await _insert_transaction(
+                pool,
+                merchant="QualifyingB",
+                amount="12.99",
+                posted_at=base + timedelta(days=30 * i),
+            )
+
+        result = await detect_recurring(pool, min_occurrences=3)
+
+        # Only the 2 qualifying merchants should be returned
+        pattern_names = {p["merchant"] for p in result["patterns"]}
+        assert "QualifyingA" in pattern_names
+        assert "QualifyingB" in pattern_names
+        # None of the below-threshold merchants should appear
+        for idx in range(100):
+            assert f"BelowThreshold_{idx}" not in pattern_names
+
 
 # ---------------------------------------------------------------------------
 # TestDetectRecurringSubscriptionCrossReference
