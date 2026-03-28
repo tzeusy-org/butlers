@@ -597,8 +597,8 @@ async def subscription_audit(
             """
         )
 
-        # Pre-fetch all (merchant, posted_at) pairs from transactions in a
-        # single query and perform merchant matching in Python.  This avoids:
+        # Pre-fetch one row per unique lower-case merchant (the latest posted_at)
+        # using a window function.  This avoids:
         #   1. The N+1 pattern (one query per subscription).
         #   2. A non-SARGable SQL LIKE with a leading wildcard that cannot use
         #      a btree index on the merchant column.
@@ -606,14 +606,23 @@ async def subscription_audit(
         # We also enforce _MIN_MERCHANT_MATCH_LEN: service names shorter than
         # this are not matched against transactions to reduce false positives.
         txn_rows = await pool.fetch(
-            "SELECT lower(merchant) AS merchant_lower, posted_at FROM transactions"
+            """
+            SELECT merchant_lower, posted_at
+            FROM (
+                SELECT lower(merchant) AS merchant_lower, posted_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY lower(merchant)
+                           ORDER BY posted_at DESC
+                       ) AS rn
+                FROM transactions
+            ) t
+            WHERE rn = 1
+            """
         )
         # Build a dict mapping lower-case merchant name → latest posted_at.
-        latest_txn_by_merchant: dict[str, Any] = {}
-        for txn in txn_rows:
-            m = txn["merchant_lower"]
-            if m not in latest_txn_by_merchant or txn["posted_at"] > latest_txn_by_merchant[m]:
-                latest_txn_by_merchant[m] = txn["posted_at"]
+        latest_txn_by_merchant: dict[str, Any] = {
+            row["merchant_lower"]: row["posted_at"] for row in txn_rows
+        }
 
         for row in sub_rows:
             freq = row["frequency"]
