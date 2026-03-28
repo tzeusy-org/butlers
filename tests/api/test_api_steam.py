@@ -108,6 +108,24 @@ def _make_pool_with_key(api_key: str = "A" * 32) -> MagicMock:
     return pool
 
 
+def _make_pool_no_key() -> MagicMock:
+    """Build a mock pool that returns no API key row."""
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+
+    pool = MagicMock()
+
+    class _FakeAcquire:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *_):
+            pass
+
+    pool.acquire = MagicMock(return_value=_FakeAcquire())
+    return pool
+
+
 def _build_app(pool: MagicMock | None = None) -> httpx.AsyncClient:
     """Return a test httpx.AsyncClient wired to the app with mocked DB pool."""
     from butlers.api.app import create_app
