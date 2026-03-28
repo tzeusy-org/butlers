@@ -142,9 +142,7 @@ async def test_spo_mirror_failure_does_not_raise_or_rollback_primary():
     async def _failing_fact(*args, **kwargs):
         raise RuntimeError("Simulated SPO mirror failure")
 
-    with patch(
-        "butlers.tools.finance.facts.record_transaction_fact", side_effect=_failing_fact
-    ):
+    with patch("butlers.tools.finance.facts.record_transaction_fact", side_effect=_failing_fact):
         result = await record_transaction(
             pool=pool,
             posted_at=_utcnow(),

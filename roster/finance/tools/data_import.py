@@ -1081,7 +1081,6 @@ async def _apply_merchant_mappings(
 # ---------------------------------------------------------------------------
 
 
-
 async def _refresh_spending_summaries(pool: asyncpg.Pool) -> bool:
     """Attempt to refresh the spending_summaries materialized view.
 
