@@ -4,8 +4,10 @@ Provides request/response models for:
 - Account connection (POST /api/steam/accounts)
 - Account listing (GET /api/steam/accounts)
 - Account disconnection (DELETE /api/steam/accounts/{id})
+- Account status (GET /api/steam/accounts/{id}/status)
 - Playtime analytics (GET /api/steam/playtime)
 - Per-game playtime history (GET /api/steam/playtime/{app_id})
+- Connector health proxy (GET /api/steam/connector/health)
 """
 
 from __future__ import annotations
@@ -125,6 +127,106 @@ class SteamSetPrimaryResponse(BaseModel):
 
     account: SteamAccountResponse
     """The account that was set as primary."""
+
+
+# ---------------------------------------------------------------------------
+# Account status model
+# ---------------------------------------------------------------------------
+
+
+class SteamAccountStatusResponse(BaseModel):
+    """Per-account status response for GET /api/steam/accounts/{id}/status.
+
+    Provides credential health, poll recency, and connector health summary
+    for a single Steam account without exposing the API key.
+    """
+
+    id: uuid.UUID
+    """UUID primary key of the steam_accounts row."""
+
+    steam_id: int
+    """Steam 64-bit account ID."""
+
+    status: str
+    """Account status: one of 'active', 'suspended', 'revoked'."""
+
+    has_api_key: bool
+    """Whether an API key is stored in entity_info for this account."""
+
+    key_valid: bool | None = None
+    """Whether the stored API key has been validated successfully.
+
+    - ``True``  — most recent validation passed.
+    - ``False`` — most recent validation failed.
+    - ``None``  — no validation has been performed yet.
+    """
+
+    last_poll_at: datetime | None = None
+    """Timestamp of the last successful connector poll, or null if never polled."""
+
+    connector_health: str | None = None
+    """Health status reported by the connector for this account.
+
+    One of 'healthy', 'degraded', 'error', or null when the connector is
+    not running or this account is not tracked.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Connector health proxy models
+# ---------------------------------------------------------------------------
+
+
+class SteamConnectorDataTypeHealth(BaseModel):
+    """Health snapshot for a single data-type poller within an account."""
+
+    status: str
+    """Poller status: 'healthy', 'degraded', or 'error'."""
+
+    last_poll_at: datetime | None = None
+    """Timestamp of the last successful poll for this data type, or null."""
+
+
+class SteamConnectorAccountHealth(BaseModel):
+    """Health summary for a single Steam account tracked by the connector."""
+
+    steam_id: str
+    """Redacted Steam 64-bit account ID (last 4 digits only, prefixed with ****)."""
+
+    endpoint_identity: str
+    """Endpoint identity label used in connector metrics."""
+
+    status: str
+    """Effective health: 'healthy', 'degraded', or 'error'."""
+
+    error: str | None = None
+    """Latest error message for this account, or null."""
+
+    data_types: dict[str, SteamConnectorDataTypeHealth]
+    """Per-data-type health keyed by data type name."""
+
+
+class SteamConnectorHealthResponse(BaseModel):
+    """Response for GET /api/steam/connector/health.
+
+    Proxied directly from the connector's ``/health`` HTTP endpoint.
+    Returns a degraded response when the connector is not running.
+    """
+
+    status: str
+    """Overall connector status: 'healthy', 'degraded', 'error', or 'not_running'."""
+
+    uptime_seconds: int | None = None
+    """Connector uptime in seconds, or null when not running."""
+
+    active_accounts: int | None = None
+    """Number of accounts actively polled, or null when not running."""
+
+    account_health: list[SteamConnectorAccountHealth] = []
+    """Per-account health snapshots (empty when not running)."""
+
+    connector_url: str | None = None
+    """URL that was probed for the health check, or null."""
 
 
 # ---------------------------------------------------------------------------
