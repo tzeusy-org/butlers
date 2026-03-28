@@ -1324,20 +1324,18 @@ class TestTickIntegration:
 
     @pytest.fixture(autouse=True)
     def reset_otel_state(self):
-        """Reset OpenTelemetry global tracer provider state before and after each test.
+        """Isolate OpenTelemetry tracer state for each test.
 
-        This ensures each test that sets its own TracerProvider can do so cleanly,
-        regardless of test execution order in the same worker process.
+        Patches ``opentelemetry.trace.get_tracer`` to return a NoOpTracer by
+        default so that span-attribute tests can install their own provider via
+        a nested patch without touching the private ``_TRACER_PROVIDER*`` globals.
         """
-        from opentelemetry import trace
+        from unittest.mock import patch
 
-        def _reset():
-            trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
-            trace._TRACER_PROVIDER = None
+        from opentelemetry.trace import NoOpTracer
 
-        _reset()
-        yield
-        _reset()
+        with patch("opentelemetry.trace.get_tracer", return_value=NoOpTracer()):
+            yield
 
     # DDL for temporal intelligence tables
     _SCHEDULED_TASKS_DDL = """
@@ -1493,7 +1491,8 @@ class TestTickIntegration:
 
     async def test_tick_deadline_pass_sets_span_attribute(self, pool):
         """tick() sets 'deadlines_evaluated' span attribute."""
-        from opentelemetry import trace
+        from unittest.mock import patch
+
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -1503,12 +1502,12 @@ class TestTickIntegration:
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
 
         async def noop_dispatch(**kwargs):
             pass
 
-        await tick(pool, noop_dispatch)
+        with patch("opentelemetry.trace.get_tracer", side_effect=provider.get_tracer):
+            await tick(pool, noop_dispatch)
 
         spans = exporter.get_finished_spans()
         tick_span = next((s for s in spans if s.name == "butler.tick"), None)
@@ -1550,7 +1549,8 @@ class TestTickIntegration:
 
     async def test_tick_deferred_notification_pass_sets_span_attribute(self, pool):
         """tick() sets 'deferred_flushed' span attribute."""
-        from opentelemetry import trace
+        from unittest.mock import patch
+
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -1560,12 +1560,12 @@ class TestTickIntegration:
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
 
         async def noop_dispatch(**kwargs):
             pass
 
-        await tick(pool, noop_dispatch)
+        with patch("opentelemetry.trace.get_tracer", side_effect=provider.get_tracer):
+            await tick(pool, noop_dispatch)
 
         spans = exporter.get_finished_spans()
         tick_span = next((s for s in spans if s.name == "butler.tick"), None)
@@ -1636,7 +1636,8 @@ class TestTickIntegration:
 
     async def test_tick_event_chain_pass_sets_span_attribute(self, pool):
         """tick() sets 'chains_fired' span attribute."""
-        from opentelemetry import trace
+        from unittest.mock import patch
+
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -1646,12 +1647,12 @@ class TestTickIntegration:
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
 
         async def noop_dispatch(**kwargs):
             pass
 
-        await tick(pool, noop_dispatch)
+        with patch("opentelemetry.trace.get_tracer", side_effect=provider.get_tracer):
+            await tick(pool, noop_dispatch)
 
         spans = exporter.get_finished_spans()
         tick_span = next((s for s in spans if s.name == "butler.tick"), None)

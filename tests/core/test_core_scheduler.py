@@ -1339,32 +1339,30 @@ async def test_tick_auto_disables_on_dispatch_failure_with_until_at(pool):
 # ---------------------------------------------------------------------------
 
 
-def _reset_otel_global_state():
-    """Fully reset the OpenTelemetry global tracer provider state."""
-    from opentelemetry import trace
-
-    trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
-    trace._TRACER_PROVIDER = None
-
-
 @pytest.fixture
 def otel_provider():
-    """Set up an in-memory TracerProvider for tick span tests, then tear down."""
-    from opentelemetry import trace
+    """Set up an in-memory TracerProvider for tick span tests, then tear down.
+
+    Injects a fresh TracerProvider by patching ``opentelemetry.trace.get_tracer``
+    rather than mutating the global ``_TRACER_PROVIDER`` internals, making the
+    fixture stable across opentelemetry-sdk version upgrades.
+    """
+    from unittest.mock import patch
+
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    _reset_otel_global_state()
     exporter = InMemorySpanExporter()
     resource = Resource.create({"service.name": "butler-test"})
     provider = TracerProvider(resource=resource)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
-    yield exporter
+
+    with patch("opentelemetry.trace.get_tracer", side_effect=provider.get_tracer):
+        yield exporter
+
     provider.shutdown()
-    _reset_otel_global_state()
 
 
 async def test_tick_creates_span_with_tasks_due_and_tasks_run(pool, otel_provider):
@@ -1693,3 +1691,231 @@ async def test_schedule_list_includes_complexity(pool):
 
     assert high_task["complexity"] == "high"
     assert default_task["complexity"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# _has_column helper
+# ---------------------------------------------------------------------------
+
+
+async def test_has_column_returns_true_for_existing_column(pool):
+    """_has_column returns True when the column exists in the given table."""
+    from butlers.core.scheduler import _has_column
+
+    result = await _has_column(pool, "scheduled_tasks", "name")
+    assert result is True
+
+
+async def test_has_column_returns_false_for_missing_column(pool):
+    """_has_column returns False when the column does not exist."""
+    from butlers.core.scheduler import _has_column
+
+    result = await _has_column(pool, "scheduled_tasks", "nonexistent_column_xyz")
+    assert result is False
+
+
+async def test_has_column_returns_false_for_missing_table(pool):
+    """_has_column returns False when the table itself does not exist."""
+    from butlers.core.scheduler import _has_column
+
+    result = await _has_column(pool, "nonexistent_table_xyz", "name")
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# sync_schedules — deadline task_type TOML support
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pool_with_temporal(postgres_container):
+    """Like pool but includes temporal intelligence columns for deadline sync tests."""
+    db_name = _unique_db_name()
+
+    admin_conn = await asyncpg.connect(
+        host=postgres_container.get_container_host_ip(),
+        port=int(postgres_container.get_exposed_port(5432)),
+        user=postgres_container.username,
+        password=postgres_container.password,
+        database="postgres",
+    )
+    try:
+        safe_name = db_name.replace('"', '""')
+        await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
+    finally:
+        await admin_conn.close()
+
+    p = await asyncpg.create_pool(
+        host=postgres_container.get_container_host_ip(),
+        port=int(postgres_container.get_exposed_port(5432)),
+        user=postgres_container.username,
+        password=postgres_container.password,
+        database=db_name,
+        min_size=1,
+        max_size=3,
+    )
+
+    await p.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled_tasks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name TEXT UNIQUE NOT NULL,
+            cron TEXT NOT NULL,
+            prompt TEXT,
+            dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
+            job_name TEXT,
+            job_args JSONB,
+            complexity TEXT DEFAULT 'medium',
+            timezone TEXT NOT NULL DEFAULT 'UTC',
+            start_at TIMESTAMPTZ,
+            end_at TIMESTAMPTZ,
+            until_at TIMESTAMPTZ,
+            display_title TEXT,
+            calendar_event_id TEXT,
+            source TEXT NOT NULL DEFAULT 'db',
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            next_run_at TIMESTAMPTZ,
+            last_run_at TIMESTAMPTZ,
+            last_result JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            task_type TEXT NOT NULL DEFAULT 'cron',
+            target_date DATE,
+            lead_time_days INTEGER,
+            alert_thresholds JSONB,
+            deadline_status TEXT,
+            fired_thresholds JSONB,
+            depends_on JSONB
+        )
+    """)
+
+    yield p
+    await p.close()
+
+
+async def test_sync_schedules_rejects_invalid_task_type(pool_with_temporal):
+    """sync_schedules raises ValueError for an unknown task_type value."""
+    from butlers.core.scheduler import sync_schedules
+
+    with pytest.raises(ValueError, match="task_type"):
+        await sync_schedules(
+            pool_with_temporal,
+            [{"name": "bad-type", "cron": "0 9 * * *", "prompt": "x", "task_type": "unknown"}],
+        )
+
+
+async def test_sync_schedules_deadline_requires_target_date(pool_with_temporal):
+    """sync_schedules raises ValueError when task_type='deadline' lacks target_date."""
+    from butlers.core.scheduler import sync_schedules
+
+    with pytest.raises(ValueError, match="target_date"):
+        await sync_schedules(
+            pool_with_temporal,
+            [
+                {
+                    "name": "no-target",
+                    "cron": "0 9 * * *",
+                    "prompt": "check",
+                    "task_type": "deadline",
+                    "lead_time_days": 30,
+                    "alert_thresholds": [{"days_before": 30, "severity": "info"}],
+                }
+            ],
+        )
+
+
+async def test_sync_schedules_inserts_deadline_task(pool_with_temporal):
+    """sync_schedules inserts a deadline task with temporal columns when schema supports it."""
+    from datetime import date
+
+    from butlers.core.scheduler import sync_schedules
+
+    target = date(2030, 12, 31)
+    await sync_schedules(
+        pool_with_temporal,
+        [
+            {
+                "name": "visa-deadline",
+                "cron": "0 9 * * *",
+                "prompt": "Check visa renewal",
+                "task_type": "deadline",
+                "target_date": target,
+                "lead_time_days": 90,
+                "alert_thresholds": [
+                    {"days_before": 90, "severity": "warning"},
+                    {"days_before": 30, "severity": "critical"},
+                ],
+            }
+        ],
+    )
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT task_type, target_date, lead_time_days, alert_thresholds "
+        "FROM scheduled_tasks WHERE name = 'visa-deadline'"
+    )
+    assert row is not None, "deadline task not inserted"
+    assert row["task_type"] == "deadline"
+    assert row["target_date"] == target
+    assert row["lead_time_days"] == 90
+    thresholds = row["alert_thresholds"]
+    if isinstance(thresholds, str):
+        thresholds = json.loads(thresholds)
+    assert len(thresholds) == 2
+    assert thresholds[0]["days_before"] == 90
+
+
+async def test_sync_schedules_updates_deadline_task(pool_with_temporal):
+    """sync_schedules updates an existing deadline task's temporal columns."""
+    from datetime import date
+
+    from butlers.core.scheduler import sync_schedules
+
+    base_entry = {
+        "name": "project-deadline",
+        "cron": "0 9 * * *",
+        "prompt": "Check project status",
+        "task_type": "deadline",
+        "target_date": date(2030, 6, 1),
+        "lead_time_days": 30,
+        "alert_thresholds": [{"days_before": 30, "severity": "info"}],
+    }
+    await sync_schedules(pool_with_temporal, [base_entry])
+
+    # Update the target date
+    updated_entry = {**base_entry, "target_date": date(2030, 9, 1), "lead_time_days": 60}
+    await sync_schedules(pool_with_temporal, [updated_entry])
+
+    row = await pool_with_temporal.fetchrow(
+        "SELECT target_date, lead_time_days FROM scheduled_tasks WHERE name = 'project-deadline'"
+    )
+    assert row["target_date"] == date(2030, 9, 1)
+    assert row["lead_time_days"] == 60
+
+
+async def test_sync_schedules_deadline_degrades_without_temporal_columns(pool):
+    """sync_schedules inserts deadline tasks as plain cron when schema lacks temporal columns."""
+    from datetime import date
+
+    from butlers.core.scheduler import sync_schedules
+
+    # The base `pool` fixture does NOT have task_type column.
+    # sync_schedules should fall back to the plain INSERT path.
+    await sync_schedules(
+        pool,
+        [
+            {
+                "name": "legacy-deadline",
+                "cron": "0 9 * * *",
+                "prompt": "Check deadline",
+                "task_type": "deadline",
+                "target_date": date(2030, 12, 31),
+                "lead_time_days": 30,
+                "alert_thresholds": [{"days_before": 30, "severity": "info"}],
+            }
+        ],
+    )
+
+    row = await pool.fetchrow(
+        "SELECT name, enabled FROM scheduled_tasks WHERE name = 'legacy-deadline'"
+    )
+    assert row is not None, "task should be inserted even without temporal columns"
+    assert row["enabled"] is True

@@ -385,6 +385,9 @@ async def sync_schedules(
             reference checking.  When provided, SKILL.md files for any
             kebab-case skill names found in the prompt are also inspected.
     """
+    # Determine whether the DB schema includes temporal intelligence columns.
+    _has_task_type = await _has_column(pool, "scheduled_tasks", "task_type")
+
     normalized_schedules: list[dict[str, Any]] = []
     for i, schedule in enumerate(schedules):
         schedule_path = f"schedules[{i}]"
@@ -400,6 +403,12 @@ async def sync_schedules(
             raise ValueError(f"{schedule_path}.cron must be a non-empty string")
         if not croniter.is_valid(cron):
             raise ValueError(f"Invalid {schedule_path}.cron: {cron!r}")
+
+        task_type = schedule.get("task_type", "cron")
+        if task_type not in ("cron", "deadline"):
+            raise ValueError(
+                f"{schedule_path}.task_type must be 'cron' or 'deadline' (got {task_type!r})"
+            )
 
         dispatch_mode, prompt, job_name, job_args, complexity = _normalize_schedule_dispatch(
             dispatch_mode=schedule.get("dispatch_mode", _DISPATCH_MODE_PROMPT),
@@ -418,15 +427,58 @@ async def sync_schedules(
                 skills_dir=skills_dir,
             )
 
+        # Deadline-specific fields
+        deadline_fields: dict[str, Any] = {}
+        if task_type == "deadline":
+            from datetime import date as _date
+
+            raw_target = schedule.get("target_date")
+            if raw_target is None:
+                raise ValueError(
+                    f"{schedule_path}.target_date is required when task_type='deadline'"
+                )
+            if isinstance(raw_target, str):
+                try:
+                    raw_target = _date.fromisoformat(raw_target)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{schedule_path}.target_date must be a YYYY-MM-DD date string"
+                    ) from exc
+            if not isinstance(raw_target, _date):
+                raise ValueError(
+                    f"{schedule_path}.target_date must be a date value (got {raw_target!r})"
+                )
+
+            lead_time_days = schedule.get("lead_time_days")
+            if not isinstance(lead_time_days, int) or lead_time_days <= 0:
+                raise ValueError(
+                    f"{schedule_path}.lead_time_days must be a positive integer "
+                    f"(got {lead_time_days!r})"
+                )
+
+            alert_thresholds = schedule.get("alert_thresholds")
+            if not isinstance(alert_thresholds, list) or not alert_thresholds:
+                raise ValueError(
+                    f"{schedule_path}.alert_thresholds must be a non-empty list of threshold dicts"
+                )
+
+            deadline_fields = {
+                "target_date": raw_target,
+                "lead_time_days": lead_time_days,
+                "alert_thresholds": alert_thresholds,
+            }
+
         normalized_schedules.append(
             {
                 "name": name,
                 "cron": cron,
+                "task_type": task_type,
                 "dispatch_mode": dispatch_mode,
                 "prompt": prompt,
                 "job_name": job_name,
                 "job_args": job_args,
                 "complexity": complexity,
+                **deadline_fields,
             }
         )
 
@@ -435,10 +487,16 @@ async def sync_schedules(
     # Fetch existing tasks whose names match any TOML schedule (regardless of source).
     # A runtime-created task (source='db') may share a name with a TOML schedule;
     # TOML takes ownership on next startup to avoid unique-constraint violations.
+    #
+    # When the schema includes temporal intelligence columns, also fetch them so
+    # the needs_update check can detect changes to deadline-specific fields.
+    _temporal_select = (
+        ", task_type, target_date, lead_time_days, alert_thresholds" if _has_task_type else ""
+    )
     rows = await pool.fetch(
-        """
+        f"""
         SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled
+               complexity, enabled{_temporal_select}
         FROM scheduled_tasks
         WHERE name = ANY($1::text[])
         """,
@@ -446,9 +504,9 @@ async def sync_schedules(
     )
     # Also fetch all remaining toml-sourced tasks (for the disable-removed-tasks pass below).
     toml_only_rows = await pool.fetch(
-        """
+        f"""
         SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled
+               complexity, enabled{_temporal_select}
         FROM scheduled_tasks
         WHERE source = 'toml' AND name != ALL($1::text[])
         """,
@@ -462,6 +520,7 @@ async def sync_schedules(
     for entry in normalized_schedules:
         name = entry["name"]
         cron = entry["cron"]
+        task_type = entry["task_type"]
         prompt = entry["prompt"]
         dispatch_mode = entry["dispatch_mode"]
         job_name = entry["job_name"]
@@ -491,23 +550,126 @@ async def sync_schedules(
                 or existing_complexity != complexity
                 or not existing["enabled"]
             )
+            # Also trigger update if deadline-specific fields changed
+            if not needs_update and _has_task_type and task_type == "deadline":
+                needs_update = existing.get("target_date") != entry.get(
+                    "target_date"
+                ) or existing.get("lead_time_days") != entry.get("lead_time_days")
             if needs_update:
+                if _has_task_type and task_type == "deadline":
+                    await pool.execute(
+                        """
+                        UPDATE scheduled_tasks
+                        SET cron = $2,
+                            dispatch_mode = $3,
+                            prompt = $4,
+                            job_name = $5,
+                            job_args = $6,
+                            complexity = $7,
+                            next_run_at = $8,
+                            source = 'toml',
+                            enabled = true,
+                            task_type = $9,
+                            target_date = $10,
+                            lead_time_days = $11,
+                            alert_thresholds = $12::jsonb,
+                            updated_at = now()
+                        WHERE id = $1
+                        """,
+                        existing["id"],
+                        cron,
+                        dispatch_mode,
+                        prompt,
+                        job_name,
+                        _dict_to_jsonb(job_args),
+                        complexity,
+                        next_run_at,
+                        task_type,
+                        entry.get("target_date"),
+                        entry.get("lead_time_days"),
+                        json.dumps(entry.get("alert_thresholds")),
+                    )
+                else:
+                    await pool.execute(
+                        """
+                        UPDATE scheduled_tasks
+                        SET cron = $2,
+                            dispatch_mode = $3,
+                            prompt = $4,
+                            job_name = $5,
+                            job_args = $6,
+                            complexity = $7,
+                            next_run_at = $8,
+                            source = 'toml',
+                            enabled = true,
+                            updated_at = now()
+                        WHERE id = $1
+                        """,
+                        existing["id"],
+                        cron,
+                        dispatch_mode,
+                        prompt,
+                        job_name,
+                        _dict_to_jsonb(job_args),
+                        complexity,
+                        next_run_at,
+                    )
+                logger.info("Updated TOML schedule: %s", name)
+        else:
+            # Insert new TOML task
+            if _has_task_type and task_type == "deadline":
                 await pool.execute(
                     """
-                    UPDATE scheduled_tasks
-                    SET cron = $2,
-                        dispatch_mode = $3,
-                        prompt = $4,
-                        job_name = $5,
-                        job_args = $6,
-                        complexity = $7,
-                        next_run_at = $8,
-                        source = 'toml',
-                        enabled = true,
-                        updated_at = now()
-                    WHERE id = $1
+                    INSERT INTO scheduled_tasks (
+                        name,
+                        cron,
+                        dispatch_mode,
+                        prompt,
+                        job_name,
+                        job_args,
+                        complexity,
+                        source,
+                        enabled,
+                        next_run_at,
+                        task_type,
+                        target_date,
+                        lead_time_days,
+                        alert_thresholds
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8,
+                            $9, $10, $11, $12::jsonb)
                     """,
-                    existing["id"],
+                    name,
+                    cron,
+                    dispatch_mode,
+                    prompt,
+                    job_name,
+                    _dict_to_jsonb(job_args),
+                    complexity,
+                    next_run_at,
+                    task_type,
+                    entry.get("target_date"),
+                    entry.get("lead_time_days"),
+                    json.dumps(entry.get("alert_thresholds")),
+                )
+            else:
+                await pool.execute(
+                    """
+                    INSERT INTO scheduled_tasks (
+                        name,
+                        cron,
+                        dispatch_mode,
+                        prompt,
+                        job_name,
+                        job_args,
+                        complexity,
+                        source,
+                        enabled,
+                        next_run_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8)
+                    """,
+                    name,
                     cron,
                     dispatch_mode,
                     prompt,
@@ -516,34 +678,6 @@ async def sync_schedules(
                     complexity,
                     next_run_at,
                 )
-                logger.info("Updated TOML schedule: %s", name)
-        else:
-            # Insert new TOML task
-            await pool.execute(
-                """
-                INSERT INTO scheduled_tasks (
-                    name,
-                    cron,
-                    dispatch_mode,
-                    prompt,
-                    job_name,
-                    job_args,
-                    complexity,
-                    source,
-                    enabled,
-                    next_run_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8)
-                """,
-                name,
-                cron,
-                dispatch_mode,
-                prompt,
-                job_name,
-                _dict_to_jsonb(job_args),
-                complexity,
-                next_run_at,
-            )
             logger.info("Inserted TOML schedule: %s", name)
 
     # Disable TOML tasks no longer present in config
@@ -559,19 +693,42 @@ async def sync_schedules(
             logger.info("Disabled removed TOML schedule: %s", name)
 
 
+async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
+    """Return True if *column* exists in *table* in the connected schema."""
+    result = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = $1 AND column_name = $2
+        )
+        """,
+        table,
+        column,
+    )
+    return bool(result)
+
+
 async def _tick_deadline_pass(
     pool: asyncpg.Pool,
     dispatch_fn,
     now: datetime,
-) -> int:
+    *,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    metrics: ButlerMetrics | None = None,
+) -> tuple[int, int]:
     """Evaluate deadline tasks: check expiry and fire due thresholds.
 
-    - Marks tasks past their target_date as expired and disables them.
-    - For tasks with a newly due threshold, dispatches and updates fired_thresholds
-      and deadline_status.
+    Runs before the cron dispatch pass.  For each enabled deadline task:
+      1. If target_date < today → transition to 'expired', disable the task.
+      2. Otherwise → compute days_remaining, check for unfired thresholds,
+         dispatch a prompt if a threshold fires, record it.
 
-    Returns the number of deadline tasks evaluated.
-    Returns 0 if the temporal intelligence columns do not exist yet (graceful degradation).
+    Returns:
+        (deadlines_evaluated, deadlines_dispatched) counts.
+        Returns (0, 0) if the temporal intelligence columns do not exist yet
+        (graceful degradation).
     """
     import json as _json
 
@@ -584,17 +741,8 @@ async def _tick_deadline_pass(
     )
 
     # Check if temporal intelligence columns exist (graceful degradation for older schemas)
-    has_temporal_cols = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = current_schema()
-              AND table_name = 'scheduled_tasks' AND column_name = 'task_type'
-        )
-        """
-    )
-    if not has_temporal_cols:
-        return 0
+    if not await _has_column(pool, "scheduled_tasks", "task_type"):
+        return 0, 0
 
     deadline_rows = await pool.fetch(
         """
@@ -608,6 +756,7 @@ async def _tick_deadline_pass(
     )
 
     evaluated = 0
+    dispatched = 0
 
     for row in deadline_rows:
         evaluated += 1
@@ -709,6 +858,13 @@ async def _tick_deadline_pass(
                     job_args=job_args,
                     trigger_source=f"deadline:{name}",
                 )
+            dispatched += 1
+            if metrics is not None:
+                metrics.record_task_dispatched(
+                    butler=stagger_key or "unknown",
+                    task_name=name,
+                    outcome="success",
+                )
             logger.info(
                 "Dispatched deadline task: %s (threshold=%d days)",
                 name,
@@ -716,6 +872,13 @@ async def _tick_deadline_pass(
             )
         except Exception:
             logger.exception("Failed to dispatch deadline task: %s", name)
+            if metrics is not None:
+                metrics.record_task_dispatched(
+                    butler=stagger_key or "unknown",
+                    task_name=name,
+                    outcome="failure",
+                )
+            # Skip threshold recording — preserve retry semantics on next tick
             continue
 
         # Update fired_thresholds and deadline_status
@@ -738,7 +901,7 @@ async def _tick_deadline_pass(
             now,
         )
 
-    return evaluated
+    return evaluated, dispatched
 
 
 async def _tick_event_chain_pass(
@@ -984,21 +1147,20 @@ async def tick(
         now = datetime.now(UTC)
 
         # ── Pass 1: Deadline evaluation (before cron dispatch) ──────────────
-        deadlines_evaluated = await _tick_deadline_pass(pool, dispatch_fn, now)
+        deadlines_evaluated, deadline_dispatched = await _tick_deadline_pass(
+            pool,
+            dispatch_fn,
+            now,
+            stagger_key=stagger_key,
+            max_stagger_seconds=max_stagger_seconds,
+            metrics=metrics,
+        )
         span.set_attribute("deadlines_evaluated", deadlines_evaluated)
 
         # ── Pass 2: Cron task dispatch ───────────────────────────────────────
         # If task_type column exists, filter to cron tasks only (deadline tasks handled above).
         # Otherwise fall back to all tasks (older schema without temporal intelligence).
-        has_task_type_col = await pool.fetchval(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema = current_schema()
-                  AND table_name = 'scheduled_tasks' AND column_name = 'task_type'
-            )
-            """
-        )
+        has_task_type_col = await _has_column(pool, "scheduled_tasks", "task_type")
         if has_task_type_col:
             cron_filter = "AND (task_type IS NULL OR task_type = 'cron')"
         else:
@@ -1116,7 +1278,7 @@ async def tick(
         deferred_flushed = await _tick_deferred_notification_pass(pool, dispatch_fn, now)
         span.set_attribute("deferred_flushed", deferred_flushed)
 
-        return dispatched
+        return dispatched + deadline_dispatched
 
 
 async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
