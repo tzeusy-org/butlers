@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import butlers.core.spawner as _spawner_module
 from butlers.config import ButlerConfig
 from butlers.context_bus import ContextEntry, format_context_preamble
 from butlers.core.runtimes.base import RuntimeAdapter
@@ -96,9 +97,7 @@ class TestFetchSituationalContextPreamble:
             result = await fetch_situational_context_preamble(AsyncMock(), "general")
 
         assert result is None
-        assert any(
-            "situational context preamble" in r.getMessage() for r in caplog.records
-        )
+        assert any("situational context preamble" in r.getMessage() for r in caplog.records)
 
     async def test_warning_log_includes_butler_name(self, caplog: pytest.LogCaptureFixture):
         """Warning log message contains the butler name for debuggability."""
@@ -112,10 +111,55 @@ class TestFetchSituationalContextPreamble:
         ):
             await fetch_situational_context_preamble(AsyncMock(), "my-butler")
 
-        warning_messages = [
-            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
-        ]
+        warning_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("my-butler" in m for m in warning_messages)
+
+    async def test_missing_table_logs_warning_once(self, caplog: pytest.LogCaptureFixture):
+        """Missing shared.user_context table logs WARNING only on first call per butler."""
+        _spawner_module._missing_context_table_logged.discard("once-butler")
+        missing_table_err = RuntimeError('relation "shared.user_context" does not exist')
+
+        with (
+            patch(
+                "butlers.context_bus.get_active_context",
+                new_callable=AsyncMock,
+                side_effect=missing_table_err,
+            ),
+            caplog.at_level(logging.DEBUG, logger="butlers.core.spawner"),
+        ):
+            result1 = await fetch_situational_context_preamble(AsyncMock(), "once-butler")
+            result2 = await fetch_situational_context_preamble(AsyncMock(), "once-butler")
+
+        assert result1 is None
+        assert result2 is None
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert len(warning_records) == 1, "Expected exactly one WARNING for missing table"
+        assert "user_context" in warning_records[0].getMessage().lower()
+        assert any("still missing" in r.getMessage() for r in debug_records)
+
+    async def test_missing_table_different_butlers_each_warn_once(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """Each butler gets its own once-per-warning for missing table."""
+        _spawner_module._missing_context_table_logged.discard("butler-a")
+        _spawner_module._missing_context_table_logged.discard("butler-b")
+        missing_table_err = RuntimeError('relation "shared.user_context" does not exist')
+
+        with (
+            patch(
+                "butlers.context_bus.get_active_context",
+                new_callable=AsyncMock,
+                side_effect=missing_table_err,
+            ),
+            caplog.at_level(logging.WARNING, logger="butlers.core.spawner"),
+        ):
+            await fetch_situational_context_preamble(AsyncMock(), "butler-a")
+            await fetch_situational_context_preamble(AsyncMock(), "butler-b")
+
+        warning_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert sum(1 for m in warning_messages if "butler-a" in m) == 1
+        assert sum(1 for m in warning_messages if "butler-b" in m) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +282,7 @@ class TestSpawnerSituationalContextInjection:
 
         result = adapter.captured_system_prompts[-1]
         assert result == (
-            "Identity.\n\n"
-            "[User Context: dnd (explicit)]\n\n"
-            "Memory: user prefers short answers."
+            "Identity.\n\n[User Context: dnd (explicit)]\n\nMemory: user prefers short answers."
         )
 
     async def test_invocation_proceeds_on_context_query_failure(self, tmp_path: Path):
@@ -324,9 +366,7 @@ class TestFormatContextPreamble:
                 confidence=0.8,
             ),
         ]
-        expected = (
-            "[User Context: traveling (Paris, explicit), meeting (standup, high confidence)]"
-        )
+        expected = "[User Context: traveling (Paris, explicit), meeting (standup, high confidence)]"
         assert format_context_preamble(signals) == expected
 
     def test_empty_signals_returns_empty_string(self):

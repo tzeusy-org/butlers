@@ -124,6 +124,7 @@ def _reset_global_semaphore() -> None:
 
 _MEMORY_TABLE_NAMES = ("episodes", "facts", "rules", "memory_links", "memory_events")
 _missing_memory_table_warnings: set[tuple[str, str]] = set()
+_missing_context_table_logged: set[str] = set()
 
 
 def _is_missing_memory_table_error(exc: Exception) -> bool:
@@ -491,12 +492,31 @@ async def fetch_situational_context_preamble(
         signals = await get_active_context(pool)
         preamble = format_context_preamble(signals)
         return preamble if preamble else None
-    except Exception:
-        logger.warning(
-            "Failed to fetch situational context preamble for butler %s",
-            butler_name,
-            exc_info=True,
+    except Exception as exc:
+        msg = str(exc).lower()
+        is_missing_table = exc.__class__.__name__ == "UndefinedTableError" or (
+            "relation" in msg and "does not exist" in msg and "user_context" in msg
         )
+        if is_missing_table:
+            if butler_name not in _missing_context_table_logged:
+                _missing_context_table_logged.add(butler_name)
+                logger.warning(
+                    "Skipping situational context preamble for butler %s: "
+                    "shared.user_context table is missing. Run migrations (bu-1e2p).",
+                    butler_name,
+                )
+            else:
+                logger.debug(
+                    "Skipping situational context preamble for butler %s; "
+                    "shared.user_context table is still missing",
+                    butler_name,
+                )
+        else:
+            logger.warning(
+                "Failed to fetch situational context preamble for butler %s",
+                butler_name,
+                exc_info=True,
+            )
         return None
 
 
