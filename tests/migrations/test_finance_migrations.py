@@ -61,7 +61,17 @@ class TestFinance002RevisionMetadata:
 
 @pytest.fixture
 async def finance_pool(provisioned_postgres_pool):
-    """Provision a fresh database with finance tables and return a pool."""
+    """Provision a fresh database with finance tables and return a pool.
+
+    WARNING: This fixture duplicates the schema from the finance migrations
+    (finance_001 and finance_002) to keep tests lightweight and avoid a
+    runtime Alembic dependency.  If either migration changes, this fixture
+    MUST be updated manually to stay in sync.
+
+    Relevant migration files:
+      - roster/finance/migrations/001_finance_tables.py  (finance_001)
+      - roster/finance/migrations/002_add_csv_dedup_index.py  (finance_002)
+    """
     async with provisioned_postgres_pool() as pool:
         # We need to run the migrations through Alembic's op interface,
         # but for testing we can directly execute the SQL
@@ -288,7 +298,7 @@ class TestCSVDedupIndexIntegration:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_csv_dedup_index_query_plan_uses_index(self, finance_pool: asyncpg.Pool) -> None:
+    async def test_csv_dedup_index_is_defined_correctly(self, finance_pool: asyncpg.Pool) -> None:
         """Verify that CSV dedup index exists and is properly defined."""
         pool = finance_pool
         # Check that the index exists
