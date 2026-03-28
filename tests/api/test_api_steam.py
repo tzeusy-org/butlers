@@ -486,7 +486,52 @@ class TestDisconnectSteamAccount:
         assert body["success"] is True
         assert "revoked" in body["message"].lower()
 
-        # Must call disconnect with hard_delete=False
+        # Must call disconnect with hard_delete=False by default
+        mock_disconnect.assert_called_once_with(pool, _ACCOUNT_ID, hard_delete=False)
+
+    async def test_hard_delete_true_passes_flag(self):
+        """DELETE /api/steam/accounts/{id}?hard_delete=true passes hard_delete=True."""
+        pool = _make_pool_with_key()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_DISCONNECT_ACCOUNT_PATCH) as mock_disconnect,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.delete(
+                    f"/api/steam/accounts/{_ACCOUNT_ID}?hard_delete=true"
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert "deleted" in body["message"].lower()
+
+        # Must call disconnect with hard_delete=True
+        mock_disconnect.assert_called_once_with(pool, _ACCOUNT_ID, hard_delete=True)
+
+    async def test_hard_delete_false_explicit_same_as_default(self):
+        """DELETE /api/steam/accounts/{id}?hard_delete=false behaves like default."""
+        pool = _make_pool_with_key()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_DISCONNECT_ACCOUNT_PATCH) as mock_disconnect,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.delete(
+                    f"/api/steam/accounts/{_ACCOUNT_ID}?hard_delete=false"
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "revoked" in body["message"].lower()
         mock_disconnect.assert_called_once_with(pool, _ACCOUNT_ID, hard_delete=False)
 
     async def test_returns_404_when_account_not_found(self):

@@ -4,7 +4,8 @@ Provides ``router`` at ``/api/steam``:
 
 - ``POST   /api/steam/accounts``              — connect a new Steam account (validates API key)
 - ``GET    /api/steam/accounts``              — list all connected Steam accounts
-- ``DELETE /api/steam/accounts/{id}``         — disconnect a Steam account (soft-revoke)
+- ``DELETE /api/steam/accounts/{id}``         — disconnect a Steam account
+  (soft-revoke by default; ``?hard_delete=true`` to permanently purge)
 - ``GET    /api/steam/accounts/{id}/status``  — per-account credential + poll health status
 - ``GET    /api/steam/connector/health``      — proxy the Steam connector health endpoint
 - ``GET    /api/steam/playtime``              — playtime analytics from DB (top games)
@@ -36,7 +37,8 @@ Security notes:
     returned in any response.
   - Playtime data is served from the local database; no live Steam API calls.
   - The DELETE endpoint soft-revokes (status='revoked') by default; the account
-    row and its credentials are retained for audit purposes.
+    row and its credentials are retained for audit purposes.  Pass
+    ``?hard_delete=true`` to permanently delete the account and its credentials.
 
 Connection validation error categories:
   - ``invalid_api_key``   — Steam returned 403 (bad or unauthorized key)
@@ -416,13 +418,24 @@ async def list_connected_steam_accounts(
 @router.delete("/accounts/{account_id}", response_model=SteamDisconnectResponse)
 async def disconnect_steam_account(
     account_id: uuid.UUID,
+    hard_delete: bool = Query(
+        default=False,
+        description=(
+            "When true, permanently deletes the account row and its credentials. "
+            "When false (default), soft-revokes by setting status to 'revoked' "
+            "and retains credentials for audit purposes."
+        ),
+    ),
     db_manager: Any = Depends(_get_db_manager),
 ) -> SteamDisconnectResponse:
-    """Disconnect a Steam account by soft-revoking it.
+    """Disconnect a Steam account.
 
-    Sets the account status to 'revoked'. The connector stops polling this
-    account on its next discovery cycle. Credentials are retained for audit
-    purposes (no hard-delete).
+    By default (``?hard_delete=false``) soft-revokes the account: sets the
+    status to 'revoked'. The connector stops polling this account on its next
+    discovery cycle. Credentials are retained for audit purposes.
+
+    When ``?hard_delete=true``, the account row and companion entity are
+    permanently deleted (CASCADE removes credentials from entity_info).
 
     Raises HTTP 404 when the account ID is not found.
     Raises HTTP 503 when the database is unavailable.
@@ -438,7 +451,7 @@ async def disconnect_steam_account(
         )
 
     try:
-        await disconnect_account(pool, account_id, hard_delete=False)
+        await disconnect_account(pool, account_id, hard_delete=hard_delete)
     except SteamAccountNotFoundError as exc:
         raise HTTPException(
             status_code=404,
@@ -457,8 +470,14 @@ async def disconnect_steam_account(
             ),
         ) from exc
 
-    logger.info("Steam account disconnected (soft-revoke): id=%s", account_id)
+    if hard_delete:
+        logger.info("Steam account hard-deleted via API: id=%s", account_id)
+        return SteamDisconnectResponse(
+            success=True,
+            message=f"Steam account {account_id} permanently deleted",
+        )
 
+    logger.info("Steam account disconnected (soft-revoke): id=%s", account_id)
     return SteamDisconnectResponse(
         success=True,
         message=f"Steam account {account_id} disconnected (status set to 'revoked')",
