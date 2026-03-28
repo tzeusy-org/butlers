@@ -1534,24 +1534,27 @@ class TestTickIntegration:
         provider.add_span_processor(SimpleSpanProcessor(exporter))
         trace.set_tracer_provider(provider)
 
-        # Create a deadline task due now to dispatch
+        # Create a deadline task whose 7-day threshold is due now
         now = datetime.now(UTC)
-        target_date = now.date() + timedelta(days=7)
+        target = _future_date(7)
         alert_thresholds = json.dumps([{"days_before": 7, "severity": "info"}])
         await pool.execute(
             """
             INSERT INTO scheduled_tasks
             (name, task_type, dispatch_mode, prompt, target_date, lead_time_days,
-             alert_thresholds, enabled)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             alert_thresholds, deadline_status, fired_thresholds, next_run_at, enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             """,
             "test-deadline",
             "deadline",
             "prompt",
             "Test deadline dispatch",
-            target_date,
+            target,
             7,
             alert_thresholds,
+            "pending",
+            json.dumps([]),
+            now,
             True,
         )
 
