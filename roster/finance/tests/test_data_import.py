@@ -607,15 +607,46 @@ class TestDeduplication:
         return blob_store
 
     async def test_duplicate_row_is_skipped(self):
-        """A row that matches an existing transaction is counted as skipped."""
+        """A row that matches an existing transaction is counted as skipped.
+
+        Now uses batch dedup: pool.fetch returns all matching rows at once.
+        """
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
         from roster.finance.tools.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
 
-        # Pool.fetchrow returns a row (duplicate found) for every check.
+        # Pool.fetch returns native-type column values for matching rows.
+        # _check_duplicates_batch compares (posted_at, amount, merchant) tuples
+        # using native Python types (datetime, Decimal, str) to avoid string
+        # serialization mismatches with PostgreSQL's ::text cast.
         pool = MagicMock()
-        existing_row = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=existing_row)
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                    "amount": Decimal("45.32"),
+                    "merchant": "Whole Foods Market",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                    "amount": Decimal("32.00"),
+                    "merchant": "Shell Oil",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 18, tzinfo=UTC),
+                    "amount": Decimal("15.49"),
+                    "merchant": "Netflix.Com",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 20, tzinfo=UTC),
+                    "amount": Decimal("1200.00"),
+                    "merchant": "Direct Deposit",
+                },
+            ]
+        )
         pool.execute = AsyncMock()
 
         result = await import_transactions(
@@ -630,13 +661,16 @@ class TestDeduplication:
         assert result["imported"] == 0
 
     async def test_no_duplicates_all_imported(self):
-        """When pool.fetchrow returns None (no dup), all rows are inserted."""
+        """When pool.fetch returns no rows (no dups), all rows are inserted.
+
+        Now uses batch dedup: pool.fetch returns empty list when no duplicates.
+        """
         from roster.finance.tools.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
 
         pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)  # no duplicates
+        pool.fetch = AsyncMock(return_value=[])  # no duplicates found
         pool.execute = AsyncMock()
 
         result = await import_transactions(
@@ -649,6 +683,155 @@ class TestDeduplication:
         assert result["errors"] == 0
         assert result["skipped"] == 0
         assert result["imported"] == 4  # 4 data rows in CHASE_CSV
+
+    async def test_batch_dedup_all_duplicates(self):
+        """_check_duplicates_batch identifies all rows as duplicates."""
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from roster.finance.tools.data_import import _check_duplicates_batch
+
+        batch = [
+            {
+                "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                "amount": Decimal("45.32"),
+                "merchant": "Whole Foods",
+            },
+            {
+                "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                "amount": Decimal("32.00"),
+                "merchant": "Shell Oil",
+            },
+        ]
+
+        pool = MagicMock()
+        # Simulate: all rows are duplicates. Return native column values to
+        # match the tuple comparison in _check_duplicates_batch.
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                    "amount": Decimal("45.32"),
+                    "merchant": "Whole Foods",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                    "amount": Decimal("32.00"),
+                    "merchant": "Shell Oil",
+                },
+            ]
+        )
+
+        dup_indices = await _check_duplicates_batch(pool, batch, account_id=None)
+        assert pool.fetch.called
+        assert 0 in dup_indices
+        assert 1 in dup_indices
+
+    async def test_batch_dedup_no_duplicates(self):
+        """_check_duplicates_batch returns empty set when pool.fetch returns no rows."""
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from roster.finance.tools.data_import import _check_duplicates_batch
+
+        batch = [
+            {
+                "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                "amount": Decimal("45.32"),
+                "merchant": "Whole Foods",
+            },
+        ]
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])  # no matches
+
+        dup_indices = await _check_duplicates_batch(pool, batch, account_id=None)
+        assert dup_indices == set()
+        assert pool.fetch.called
+
+    async def test_batch_dedup_mixed_duplicates(self):
+        """_check_duplicates_batch identifies some rows as duplicates."""
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from roster.finance.tools.data_import import _check_duplicates_batch
+
+        batch = [
+            {
+                "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                "amount": Decimal("45.32"),
+                "merchant": "Whole Foods",
+            },
+            {
+                "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                "amount": Decimal("32.00"),
+                "merchant": "Shell Oil",
+            },
+            {
+                "posted_at": datetime(2024, 1, 18, tzinfo=UTC),
+                "amount": Decimal("15.49"),
+                "merchant": "Netflix",
+            },
+        ]
+
+        pool = MagicMock()
+        # Only first two rows are duplicates; third is new.
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                    "amount": Decimal("45.32"),
+                    "merchant": "Whole Foods",
+                },
+                {
+                    "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                    "amount": Decimal("32.00"),
+                    "merchant": "Shell Oil",
+                },
+            ]
+        )
+
+        dup_indices = await _check_duplicates_batch(pool, batch, account_id=None)
+        # Indices 0 and 1 should be marked as duplicates.
+        assert 0 in dup_indices
+        assert 1 in dup_indices
+        assert 2 not in dup_indices
+
+    async def test_batch_dedup_with_account_id(self):
+        """_check_duplicates_batch uses account_id in query when provided."""
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from roster.finance.tools.data_import import _check_duplicates_batch
+
+        account_id = "12345678-1234-5678-1234-567812345678"
+        batch = [
+            {
+                "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                "amount": Decimal("45.32"),
+                "merchant": "Whole Foods",
+            },
+        ]
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        await _check_duplicates_batch(pool, batch, account_id=account_id)
+        # Verify the query includes account_id in WHERE clause.
+        call_args = pool.fetch.call_args
+        assert call_args is not None
+        query = call_args[0][0]
+        assert "account_id = $1" in query
+
+    async def test_batch_dedup_empty_batch(self):
+        """_check_duplicates_batch returns empty set for empty batch."""
+        from roster.finance.tools.data_import import _check_duplicates_batch
+
+        pool = MagicMock()
+        dup_indices = await _check_duplicates_batch(pool, [], account_id=None)
+        assert dup_indices == set()
+        # Should not call pool.fetch for empty batch.
+        assert not pool.fetch.called
 
 
 # ---------------------------------------------------------------------------
@@ -676,7 +859,7 @@ class TestBatchProcessing:
         content = self._build_large_csv(1000)
         blob_store = self._make_blob_store(content)
         pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetch = AsyncMock(return_value=[])  # no duplicates in batch query
         pool.execute = AsyncMock()
 
         result = await import_transactions(
@@ -697,7 +880,7 @@ class TestBatchProcessing:
         content = self._build_large_csv(501)
         blob_store = self._make_blob_store(content)
         pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetch = AsyncMock(return_value=[])  # no duplicates
         pool.execute = AsyncMock()
 
         result = await import_transactions(

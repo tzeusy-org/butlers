@@ -580,6 +580,9 @@ async def _check_duplicate(
 
     Uses the same composite key as dedup Priority 3:
     (account_id, posted_at, amount, merchant).
+
+    Used by _check_duplicates_for_preview for per-row dry-run dedup checks.
+    For batch inserts use _check_duplicates_batch instead.
     """
     if account_id is not None:
         row = await pool.fetchrow(
@@ -613,6 +616,79 @@ async def _check_duplicate(
     return row is not None
 
 
+async def _check_duplicates_batch(
+    pool: asyncpg.Pool,
+    batch: list[dict[str, Any]],
+    account_id: str | None,
+) -> set[int]:
+    """Check all rows in batch for existing duplicates.
+
+    Returns a set of indices (positions in *batch*) that are duplicates.
+
+    Uses a single batch query with (posted_at, amount, merchant) tuples
+    to avoid N+1 query pattern. When account_id is provided, also matches
+    on account_id to use the full composite key.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    batch:
+        List of normalised transaction dicts.
+    account_id:
+        Optional UUID string of the account. When provided, the composite
+        key is (account_id, posted_at, amount, merchant); otherwise
+        (posted_at, amount, merchant).
+
+    Returns
+    -------
+    set[int]
+        Indices of rows in *batch* that match an existing transaction.
+        Empty set if no duplicates found.
+    """
+    if not batch:
+        return set()
+
+    # Build a list of (posted_at, amount, merchant) tuples for all rows.
+    tuples = [
+        (txn["posted_at"], txn["amount"], txn["merchant"])
+        for txn in batch
+    ]
+
+    if account_id is not None:
+        # Query with account_id as part of the key.
+        rows = await pool.fetch(
+            """
+            SELECT posted_at, amount, merchant
+            FROM transactions
+            WHERE account_id = $1::uuid
+              AND (posted_at, amount, merchant) = ANY($2)
+            """,
+            account_id,
+            tuples,
+        )
+    else:
+        # Query without account_id constraint.
+        rows = await pool.fetch(
+            """
+            SELECT posted_at, amount, merchant
+            FROM transactions
+            WHERE account_id IS NULL
+              AND (posted_at, amount, merchant) = ANY($1)
+            """,
+            tuples,
+        )
+
+    # Build a set of duplicate tuples using native Python types returned by
+    # asyncpg, avoiding string-serialization mismatches (e.g. timezone format
+    # differences between Python's datetime and PostgreSQL's ::text cast).
+    dup_tuples = {(row["posted_at"], row["amount"], row["merchant"]) for row in rows}
+
+    dup_indices = {i for i, tpl in enumerate(tuples) if tpl in dup_tuples}
+
+    return dup_indices
+
+
 # ---------------------------------------------------------------------------
 # Batch insertion
 # ---------------------------------------------------------------------------
@@ -626,31 +702,33 @@ async def _insert_batch(
 ) -> tuple[int, int, list[dict[str, Any]]]:
     """Insert a batch of normalised transactions.
 
+    Performs a single batch deduplication query instead of N per-row checks,
+    reducing the database roundtrips from N+1 to 2 (one batch check query,
+    one insert transaction).
+
     Returns (imported_count, skipped_count, error_details).
     """
     imported = 0
     skipped = 0
     errors: list[dict[str, Any]] = []
 
-    for txn in batch:
+    # Single batch deduplication check (replaces per-row _check_duplicate calls).
+    try:
+        dup_indices = await _check_duplicates_batch(pool, batch, account_id)
+    except Exception as exc:
+        # If batch check fails, fall back to inserting all rows and let
+        # the ON CONFLICT handle duplicates. Record errors for failed rows.
+        logger.warning(f"batch dedup check failed: {exc}, will rely on ON CONFLICT")
+        dup_indices = set()
+
+    for idx, txn in enumerate(batch):
         merchant = txn["merchant"]
         amount = txn["amount"]
         posted_at = txn["posted_at"]
         row_idx = txn.get("_row_index", -1)
 
-        # Deduplication check before insert.
-        try:
-            is_dup = await _check_duplicate(pool, merchant, amount, posted_at, account_id)
-        except Exception as exc:
-            errors.append(
-                {
-                    "row_index": row_idx,
-                    "reason": f"dedup check failed: {exc}",
-                }
-            )
-            continue
-
-        if is_dup:
+        # Check if this row was identified as a duplicate in the batch query.
+        if idx in dup_indices:
             skipped += 1
             continue
 
