@@ -44,7 +44,7 @@ type Tier = (typeof TIERS)[number];
 const TIER_NAMES: Record<Tier, string> = {
   5: "Support Clique",
   15: "Sympathy Group",
-  50: "Active Network",
+  50: "Good Friends",
   150: "Dunbar's Number",
   500: "Acquaintances",
   1500: "Recognizable",
