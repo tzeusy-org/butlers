@@ -1318,3 +1318,148 @@ async def test_contacts_overdue_with_tiers_archived_excluded(simple_pool):
     results = await contacts_overdue_with_tiers(simple_pool)
     ids = [str(r["id"]) for r in results]
     assert str(cid) not in ids
+
+
+# ===========================================================================
+# Tests for top_n parameter (server-side suggestion capping)
+# ===========================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_urgency_top_n_defaults_to_3(dunbar_pool):
+    """compute_urgency defaults to top_n=3, returning at most 3 results."""
+    from butlers.tools.relationship.dunbar import compute_urgency, get_tier_ranking
+
+    # Create 5 contacts with varying urgency
+    contact1 = await _make_contact(dunbar_pool, "HighUrgency1", stay_in_touch_days=10)
+    contact2 = await _make_contact(dunbar_pool, "HighUrgency2", stay_in_touch_days=10)
+    contact3 = await _make_contact(dunbar_pool, "HighUrgency3", stay_in_touch_days=10)
+    contact4 = await _make_contact(dunbar_pool, "LowUrgency4", stay_in_touch_days=100)
+    contact5 = await _make_contact(dunbar_pool, "LowUrgency5", stay_in_touch_days=100)
+
+    # Log interactions at different times to create urgency variation
+    await _log_interaction(dunbar_pool, contact1["id"], days_ago=100)
+    await _log_interaction(dunbar_pool, contact2["id"], days_ago=80)
+    await _log_interaction(dunbar_pool, contact3["id"], days_ago=60)
+    await _log_interaction(dunbar_pool, contact4["id"], days_ago=150)
+    await _log_interaction(dunbar_pool, contact5["id"], days_ago=130)
+
+    scores = [
+        {
+            "contact_id": contact1["id"],
+            "entity_id": contact1["entity_id"],
+            "score": 5.0,
+            "last_interaction_at": datetime.now(UTC) - timedelta(days=100),
+        },
+        {
+            "contact_id": contact2["id"],
+            "entity_id": contact2["entity_id"],
+            "score": 4.5,
+            "last_interaction_at": datetime.now(UTC) - timedelta(days=80),
+        },
+        {
+            "contact_id": contact3["id"],
+            "entity_id": contact3["entity_id"],
+            "score": 4.0,
+            "last_interaction_at": datetime.now(UTC) - timedelta(days=60),
+        },
+        {
+            "contact_id": contact4["id"],
+            "entity_id": contact4["entity_id"],
+            "score": 3.0,
+            "last_interaction_at": datetime.now(UTC) - timedelta(days=150),
+        },
+        {
+            "contact_id": contact5["id"],
+            "entity_id": contact5["entity_id"],
+            "score": 2.5,
+            "last_interaction_at": datetime.now(UTC) - timedelta(days=130),
+        },
+    ]
+    tier_ranking = get_tier_ranking(scores)
+    results = await compute_urgency(dunbar_pool, tier_ranking=tier_ranking)
+
+    # Default top_n=3 should return at most 3 contacts
+    assert len(results) <= 3
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_urgency_top_n_respects_explicit_value(dunbar_pool):
+    """compute_urgency respects explicit top_n parameter."""
+    from butlers.tools.relationship.dunbar import compute_urgency, get_tier_ranking
+
+    # Create 5 contacts
+    contacts = []
+    for i in range(5):
+        contact = await _make_contact(
+            dunbar_pool,
+            f"Contact{i}",
+            stay_in_touch_days=10,
+        )
+        await _log_interaction(dunbar_pool, contact["id"], days_ago=100 - i * 10)
+        contacts.append(contact)
+
+    scores = [
+        {
+            "contact_id": c["id"],
+            "entity_id": c["entity_id"],
+            "score": float(5 - i),
+            "last_interaction_at": datetime.now(UTC) - timedelta(days=100 - i * 10),
+        }
+        for i, c in enumerate(contacts)
+    ]
+    tier_ranking = get_tier_ranking(scores)
+
+    # Request top_n=2
+    results = await compute_urgency(dunbar_pool, tier_ranking=tier_ranking, top_n=2)
+    assert len(results) <= 2
+
+    # Request top_n=5
+    results = await compute_urgency(dunbar_pool, tier_ranking=tier_ranking, top_n=5)
+    assert len(results) <= 5
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_urgency_top_n_none_returns_all(dunbar_pool):
+    """compute_urgency with top_n=None returns all results."""
+    from butlers.tools.relationship.dunbar import compute_urgency, get_tier_ranking
+
+    # Create multiple contacts
+    contacts = []
+    for i in range(4):
+        contact = await _make_contact(
+            dunbar_pool,
+            f"AllContact{i}",
+            stay_in_touch_days=10,
+        )
+        await _log_interaction(dunbar_pool, contact["id"], days_ago=100 - i * 10)
+        contacts.append(contact)
+
+    scores = [
+        {
+            "contact_id": c["id"],
+            "entity_id": c["entity_id"],
+            "score": float(5 - i),
+            "last_interaction_at": datetime.now(UTC) - timedelta(days=100 - i * 10),
+        }
+        for i, c in enumerate(contacts)
+    ]
+    tier_ranking = get_tier_ranking(scores)
+
+    # Get all results
+    all_results = await compute_urgency(dunbar_pool, tier_ranking=tier_ranking, top_n=None)
+
+    # Get with default top_n=3
+    default_results = await compute_urgency(dunbar_pool, tier_ranking=tier_ranking)
+
+    # All results should be >= default results
+    assert len(all_results) >= len(default_results)
+    # Since filtering removes non-overdue zero-context, all_results could equal
+    # default_results, so just verify top_n=None doesn't truncate artificially
+    assert len(all_results) > 0

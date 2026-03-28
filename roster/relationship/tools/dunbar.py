@@ -331,6 +331,7 @@ async def compute_tier_ranking(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 async def compute_urgency(
     pool: asyncpg.Pool,
     tier_ranking: list[dict[str, Any]] | None = None,
+    top_n: int | None = 3,
 ) -> list[dict[str, Any]]:
     """Compute urgency scores for all contacts eligible for reach-out suggestions.
 
@@ -351,6 +352,8 @@ async def compute_urgency(
         pool: asyncpg pool connected to the relationship schema.
         tier_ranking: Pre-computed tier ranking from ``compute_tier_ranking``.
             If None, will be computed internally.
+        top_n: Maximum number of results to return, sorted by urgency descending.
+            Defaults to 3. Pass None to return all results.
 
     Returns:
         List of dicts ordered by ``urgency`` descending.  Each entry includes:
@@ -464,6 +467,10 @@ async def compute_urgency(
 
     # Sort by urgency descending
     results.sort(key=lambda r: r["urgency"], reverse=True)
+
+    # Cap results to top_n if specified
+    if top_n is not None:
+        return results[:top_n]
     return results
 
 
