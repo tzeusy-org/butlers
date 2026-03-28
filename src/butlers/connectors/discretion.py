@@ -405,6 +405,15 @@ class DiscretionEvaluator:
 
         prompt = _build_user_prompt(context_snapshot, entry)
 
+        _MAX_PROMPT_LOG = 500
+        _MAX_RESPONSE_LOG = 200
+        logger.info(
+            "Discretion LLM input for source=%s (weight=%.2f):\n%s",
+            self._source,
+            weight,
+            prompt[:_MAX_PROMPT_LOG] + ("…" if len(prompt) > _MAX_PROMPT_LOG else ""),
+        )
+
         try:
             raw = await self._dispatcher.call(prompt, system_prompt=self._system_prompt)
         except TimeoutError:
@@ -432,6 +441,13 @@ class DiscretionEvaluator:
                 reason=f"{fail_label}: {type(exc).__name__}",
                 is_fail_open=fail_open,
             )
+
+        logger.info(
+            "Discretion LLM result for source=%s (weight=%.2f): %s",
+            self._source,
+            weight,
+            raw[:_MAX_RESPONSE_LOG] + ("…" if len(raw) > _MAX_RESPONSE_LOG else ""),
+        )
 
         try:
             verdict, reason = _parse_verdict(raw)

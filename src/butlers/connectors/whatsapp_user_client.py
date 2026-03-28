@@ -597,6 +597,11 @@ class WhatsAppUserClientConnector:
         Routes to the appropriate chat buffer. Updates _last_event_id for
         checkpoint tracking.
         """
+        # Keepalive frames have {"type": "keepalive", "chat_jid": "", ...} —
+        # filter them before the chat_jid check to avoid warning-level noise.
+        if event.get("type") == "keepalive":
+            return
+
         event_type = event.get("event_type", "message")
 
         # We only care about message events for ingestion
