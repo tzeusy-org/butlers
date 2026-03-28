@@ -244,19 +244,19 @@ DO UPDATE SET
     recorded_at  = now()
 """
 
-# Fallback upsert for the legacy pre-core_011 schema (missing steam_account_id / app_name columns,
-# play_date column not yet renamed). Used when the new schema columns are absent.
+# Fallback upsert for rows where steam_account_id is NULL (backfill failures or
+# pre-core_011 schema). The old unique constraint on (steam_id, app_id, play_date)
+# was dropped by migration core_011, so we cannot name it as a conflict target.
+# We use ON CONFLICT DO NOTHING to avoid duplicates via the partial unique index
+# uq_steam_play_history_steam_id_app_date_null_account added by core_011 on
+# (steam_id, app_id, date) WHERE steam_account_id IS NULL.
+# NOTE: the column was renamed from play_date → date by core_011, so post-migration
+# this path uses the 'date' column via the renamed schema.
 _PLAY_HISTORY_UPSERT_SQL_LEGACY = f"""
 INSERT INTO {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}
-    (steam_id, app_id, play_date, playtime_minutes, recorded_at)
+    (steam_id, app_id, date, playtime_minutes, recorded_at)
 VALUES ($1, $2, $3, $4, now())
-ON CONFLICT (steam_id, app_id, play_date)
-DO UPDATE SET
-    playtime_minutes = GREATEST(
-        {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}.playtime_minutes,
-        EXCLUDED.playtime_minutes
-    ),
-    recorded_at = now()
+ON CONFLICT DO NOTHING
 """
 
 
@@ -991,6 +991,12 @@ class SteamAccountPoller:
             return
 
         poll_ts = _now_iso()
+        # poll_dt is the wall-clock time at which this poll ran, not an actual
+        # play-session date. Steam's GetRecentlyPlayedGames API only returns a
+        # rolling 14-day aggregate (playtime_2weeks); it does not expose
+        # per-session timestamps. The 'date' column in steam_play_history
+        # therefore records when the poller detected the playtime, not when the
+        # user actually played. Do not use this column for per-day analytics.
         poll_dt = datetime.now(UTC)
         events_emitted = 0
 

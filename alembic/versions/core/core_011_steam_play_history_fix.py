@@ -135,6 +135,39 @@ def upgrade() -> None:
     """)
 
     # -------------------------------------------------------------------------
+    # 6b. Add partial unique index for rows where steam_account_id IS NULL.
+    #
+    #     PostgreSQL UNIQUE treats each NULL as distinct from all other NULLs,
+    #     so the constraint uq_steam_play_history_account_app_date_v2 on
+    #     (steam_account_id, app_id, date) does NOT deduplicate rows where
+    #     steam_account_id IS NULL (backfill failures, legacy rows).
+    #
+    #     PG 15+ supports UNIQUE NULLS NOT DISTINCT, but for compatibility we
+    #     add a partial unique index covering only the NULL case.  The legacy
+    #     connector path (ON CONFLICT DO NOTHING) relies on this index.
+    # -------------------------------------------------------------------------
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'connectors'
+                  AND c.relname = 'uq_steam_play_history_steam_id_app_date_null_account'
+                  AND c.relkind = 'i'
+            ) THEN
+                CREATE UNIQUE INDEX uq_steam_play_history_steam_id_app_date_null_account
+                    ON connectors.steam_play_history (steam_id, app_id, date)
+                    WHERE steam_account_id IS NULL;
+            END IF;
+        EXCEPTION
+            WHEN undefined_column THEN NULL;
+            WHEN undefined_table THEN NULL;
+        END
+        $$;
+    """)
+
+    # -------------------------------------------------------------------------
     # 7. Add FK steam_account_id → public.steam_accounts(id) ON DELETE CASCADE.
     # -------------------------------------------------------------------------
     op.execute("""
@@ -171,6 +204,11 @@ def downgrade() -> None:
     op.execute("""
         ALTER TABLE connectors.steam_play_history
             DROP CONSTRAINT IF EXISTS uq_steam_play_history_account_app_date_v2
+    """)
+
+    # Drop partial unique index for NULL steam_account_id rows
+    op.execute("""
+        DROP INDEX IF EXISTS connectors.uq_steam_play_history_steam_id_app_date_null_account
     """)
 
     # Rename date → play_date

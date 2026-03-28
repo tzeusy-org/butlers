@@ -1107,7 +1107,17 @@ class TestUpsertPlayHistory:
         assert args[5] == 120  # playtime_minutes
 
     async def test_upsert_without_account_uuid_uses_legacy_schema(self) -> None:
-        """When steam_account_id is None, the legacy SQL path is used."""
+        """When steam_account_id is None, the legacy (NULL-account) SQL path is used.
+
+        Post-core_011 the legacy path uses the renamed 'date' column (not 'play_date')
+        and ON CONFLICT DO NOTHING (the old constraint on steam_id/app_id/play_date was
+        dropped by core_011; deduplication is handled by the partial unique index
+        uq_steam_play_history_steam_id_app_date_null_account).
+
+        This test validates the correct SQL branch is selected when steam_account_id is
+        None; it does NOT execute against a real DB.  A live test would require the
+        partial unique index created by core_011 to be present.
+        """
         from datetime import UTC, datetime
 
         pool, executed = self._make_pool_capture()
@@ -1125,8 +1135,10 @@ class TestUpsertPlayHistory:
 
         assert len(executed) == 1
         sql, args = executed[0]
-        # Legacy path uses play_date column name
-        assert "play_date" in sql
+        # Post-core_011 legacy path uses 'date' column (renamed from play_date)
+        # and ON CONFLICT DO NOTHING (no explicit conflict target).
+        assert "date" in sql
+        assert "ON CONFLICT DO NOTHING" in sql
         # Does NOT include steam_account_id
         assert "steam_account_id" not in sql
 
