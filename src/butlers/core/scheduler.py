@@ -561,7 +561,9 @@ async def sync_schedules(
                 or not existing["enabled"]
             )
             # Also detect changes to deadline-specific fields when schema supports them.
-            if not needs_update and _has_task_type:
+            # Restrict to deadline tasks to avoid spurious updates on cron tasks that
+            # may carry stale deadline-column values from a prior task_type migration.
+            if not needs_update and _has_task_type and task_type == "deadline":
                 existing_alert_thresholds = existing.get("alert_thresholds")
                 if isinstance(existing_alert_thresholds, str):
                     existing_alert_thresholds = json.loads(existing_alert_thresholds)
