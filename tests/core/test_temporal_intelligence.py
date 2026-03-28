@@ -1497,6 +1497,44 @@ class TestTickIntegration:
             f"Expected deadline dispatch, got: {dispatched_calls}"
         )
 
+    async def test_tick_deadline_pass_includes_deadline_status_in_prompt(self, pool):
+        """tick() deadline pass includes deadline_status in the dispatched prompt context."""
+        from butlers.core.scheduler import tick
+
+        # Insert a deadline task with deadline_status='alerted'
+        now = datetime.now(UTC)
+        target = _future_date(14)
+        await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ($1, '* * * * *', $2, 'prompt', 'deadline', $3, 30,
+                 '[{"days_before": 14, "severity": "warning"}]',
+                 'alerted', '[]', $4, true)
+            RETURNING id
+            """,
+            "status-deadline",
+            "Submit final report",
+            target,
+            now,
+        )
+
+        dispatched_calls = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched_calls.append(kwargs)
+
+        await tick(pool, capture_dispatch)
+
+        # The dispatched prompt must contain deadline_status
+        dispatched_prompts = [c.get("prompt", "") for c in dispatched_calls]
+        assert any("deadline_status=alerted" in p for p in dispatched_prompts), (
+            f"Expected 'deadline_status=alerted' in prompt context, got: {dispatched_calls}"
+        )
+
     async def test_tick_deadline_pass_sets_span_attribute(self, pool):
         """tick() sets 'deadlines_evaluated' span attribute."""
         from opentelemetry import trace

@@ -765,6 +765,7 @@ async def _tick_deadline_pass(
         (deadlines_evaluated, deadlines_dispatched) counts.
     """
     from butlers.core.temporal.deadlines import (
+        build_deadline_prompt_context,
         compute_days_remaining,
         compute_expiry_transition,
         compute_next_deadline_status,
@@ -860,12 +861,13 @@ async def _tick_deadline_pass(
         # Step 4: dispatch the deadline prompt
         prompt = row["prompt"] or f"Deadline approaching: {name}"
         task_complexity = _parse_complexity_from_db_row(row, name)
-        augmented_prompt = (
-            f"{prompt}\n\n"
-            f"[Deadline context: target_date={target_date}, "
-            f"days_remaining={days_remaining}, "
-            f"fired_threshold={threshold}, "
-            f"all_thresholds={alert_thresholds}]"
+        augmented_prompt = build_deadline_prompt_context(
+            original_prompt=prompt,
+            target_date=target_date,
+            days_remaining=days_remaining,
+            fired_threshold=threshold,
+            deadline_status=current_status,
+            all_thresholds=alert_thresholds,
         )
         # Prepend seasonal context when active seasons exist (mirrors cron pass behaviour).
         augmented_prompt = _prepend_seasonal_context(augmented_prompt, active_seasons)
