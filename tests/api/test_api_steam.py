@@ -51,6 +51,7 @@ _DISCONNECT_ACCOUNT_PATCH = "butlers.api.routers.steam.disconnect_account"
 _SET_PRIMARY_PATCH = "butlers.api.routers.steam.set_primary_account"
 _RESOLVE_ACCOUNT_PATCH = "butlers.api.routers.steam.resolve_steam_account"
 _QUERY_PLAYTIME_PATCH = "butlers.api.routers.steam._query_playtime_aggregates"
+_QUERY_DAILY_TOTALS_PATCH = "butlers.api.routers.steam._query_daily_playtime_totals"
 _QUERY_GAME_HISTORY_PATCH = "butlers.api.routers.steam._query_game_play_history"
 _FETCH_CONNECTOR_HEALTH_PATCH = "butlers.api.routers.steam._fetch_connector_health"
 _PROBE_CONNECTOR_ACCOUNT_HEALTH_PATCH = "butlers.api.routers.steam._probe_connector_account_health"
@@ -714,6 +715,7 @@ class TestGetSteamPlaytime:
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
             patch(_QUERY_PLAYTIME_PATCH, return_value=_PLAY_HISTORY_AGGREGATES),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -742,6 +744,7 @@ class TestGetSteamPlaytime:
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
             patch(_QUERY_PLAYTIME_PATCH, return_value=_PLAY_HISTORY_AGGREGATES),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -752,7 +755,7 @@ class TestGetSteamPlaytime:
         assert len(body["games"]) == 2
 
     async def test_days_param_passed_to_query(self):
-        """GET /api/steam/playtime passes the days param to the query helper."""
+        """GET /api/steam/playtime passes the days param to both query helpers."""
         account = _make_account()
         pool = _make_simple_pool()
         app = _build_app(pool)
@@ -761,6 +764,7 @@ class TestGetSteamPlaytime:
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
             patch(_QUERY_PLAYTIME_PATCH, return_value=[]) as mock_query,
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]) as mock_daily,
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -769,6 +773,7 @@ class TestGetSteamPlaytime:
 
         assert resp.status_code == 200
         mock_query.assert_called_once_with(pool, account_id=account.id, days=7)
+        mock_daily.assert_called_once_with(pool, account_id=account.id, days=7)
 
     async def test_days_included_in_response(self):
         """GET /api/steam/playtime includes the days window in the response."""
@@ -780,6 +785,7 @@ class TestGetSteamPlaytime:
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
             patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -800,6 +806,7 @@ class TestGetSteamPlaytime:
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account) as mock_resolve,
             patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -889,6 +896,7 @@ class TestGetSteamPlaytime:
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
             patch(_QUERY_PLAYTIME_PATCH, return_value=aggregates),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -909,6 +917,7 @@ class TestGetSteamPlaytime:
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
             patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -930,6 +939,7 @@ class TestGetSteamPlaytime:
             patch(_GET_SHARED_POOL_PATCH, return_value=pool),
             patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
             patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -941,6 +951,63 @@ class TestGetSteamPlaytime:
         assert body["total_games"] == 0
         assert body["total_minutes"] == 0
         assert body["games"] == []
+        assert body["daily"] == []
+
+    async def test_daily_rollup_present_in_response(self):
+        """GET /api/steam/playtime includes daily rollup array in the response."""
+        from datetime import date as _date
+
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        daily_rows = [
+            {"date": _date(2026, 3, 27), "total_minutes": 120},
+            {"date": _date(2026, 3, 28), "total_minutes": 80},
+            {"date": _date(2026, 3, 29), "total_minutes": 200},
+        ]
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=daily_rows),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/steam/playtime")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "daily" in body
+        assert len(body["daily"]) == 3
+        assert body["daily"][0]["date"] == "2026-03-27"
+        assert body["daily"][0]["total_minutes"] == 120
+        assert body["daily"][1]["date"] == "2026-03-28"
+        assert body["daily"][1]["total_minutes"] == 80
+        assert body["daily"][2]["date"] == "2026-03-29"
+        assert body["daily"][2]["total_minutes"] == 200
+
+    async def test_daily_query_receives_correct_args(self):
+        """GET /api/steam/playtime passes account_id and days to daily totals query."""
+        account = _make_account()
+        pool = _make_simple_pool()
+        app = _build_app(pool)
+
+        with (
+            patch(_GET_SHARED_POOL_PATCH, return_value=pool),
+            patch(_RESOLVE_ACCOUNT_PATCH, return_value=account),
+            patch(_QUERY_PLAYTIME_PATCH, return_value=[]),
+            patch(_QUERY_DAILY_TOTALS_PATCH, return_value=[]) as mock_daily,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/steam/playtime?days=14")
+
+        assert resp.status_code == 200
+        mock_daily.assert_called_once_with(pool, account_id=account.id, days=14)
 
 
 # ---------------------------------------------------------------------------

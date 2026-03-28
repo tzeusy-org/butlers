@@ -234,6 +234,19 @@ class SteamConnectorHealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SteamDailyPlaytimeSummary(BaseModel):
+    """Aggregated playtime for a single calendar day across all games.
+
+    Used in the daily rollup array of SteamPlaytimeAnalytics.
+    """
+
+    date: date
+    """Calendar date of the playtime record."""
+
+    total_minutes: int
+    """Total playtime across all games on this date, in minutes."""
+
+
 class SteamGamePlaytime(BaseModel):
     """Playtime record for a single game.
 
@@ -277,6 +290,9 @@ class SteamPlaytimeAnalytics(BaseModel):
 
     games: list[SteamGamePlaytime]
     """Top games by total playtime in the requested window, limited to top_n."""
+
+    daily: list[SteamDailyPlaytimeSummary]
+    """Daily rollup of total playtime across all games, ordered by date ascending."""
 
     queried_at: datetime
     """Timestamp when this data was queried from the database."""
