@@ -182,84 +182,89 @@ def normalize_message_text(event: dict[str, Any]) -> str:
     Applies the ingest.v1 field mapping spec for message type normalization:
     - Conversation / ExtendedTextMessage → text verbatim
     - ImageMessage → caption if present, else [image]
-    - VideoMessage → caption if present, else [video]
-    - AudioMessage / PTTMessage → [voice message] or [audio]
-    - DocumentMessage → FileName and caption
-    - StickerMessage → [sticker]
-    - LocationMessage → [location: lat, lon, name]
-    - ContactMessage → [contact: DisplayName]
-    - ReactionMessage → [reaction: emoji to message_id]
-    - PollCreationMessage → [poll: question — option1, option2, ...]
-    - ProtocolMessage (revoke) → [message deleted]
+    - video → caption if present, else [video]
+    - audio / voice_note → [voice message] or [audio]
+    - document → filename and caption
+    - sticker → [sticker]
+    - location → [location: lat, lon, name]
+    - contact → [contact: display_name]
+    - reaction → [reaction: emoji to message_id]
+    - poll → [poll: question — option1, option2, ...]
+    - message_deleted → [message deleted]
+    - group_invite → [group invite: group_name]
+
+    Bridge type names are lowercase (e.g. "text", "image") as emitted by
+    the Go whatsapp-bridge mapper (internal/events/mapper.go).
     """
     msg_type = event.get("type", "")
     content = event.get("content", {}) or {}
 
-    if msg_type in ("Conversation", "ExtendedTextMessage"):
+    if msg_type == "text":
         return content.get("text", "") or event.get("text", "")
 
-    if msg_type == "ImageMessage":
+    if msg_type == "image":
         caption = content.get("caption", "")
         return caption if caption else "[image]"
 
-    if msg_type == "VideoMessage":
+    if msg_type == "video":
         caption = content.get("caption", "")
         return caption if caption else "[video]"
 
-    if msg_type == "AudioMessage":
+    if msg_type == "audio":
         return "[audio]"
 
-    if msg_type == "PTTMessage":
+    if msg_type == "voice_note":
         return "[voice message]"
 
-    if msg_type == "DocumentMessage":
-        filename = content.get("fileName", "")
+    if msg_type == "document":
+        filename = content.get("filename", "")
         caption = content.get("caption", "")
         parts = [p for p in [filename, caption] if p]
         return " — ".join(parts) if parts else "[document]"
 
-    if msg_type == "StickerMessage":
+    if msg_type == "sticker":
         return "[sticker]"
 
-    if msg_type == "LocationMessage":
-        lat = content.get("degreesLatitude", "")
-        lon = content.get("degreesLongitude", "")
+    if msg_type == "location":
+        lat = content.get("latitude", "")
+        lon = content.get("longitude", "")
         name = content.get("name", "")
         if name:
             return f"[location: {lat}, {lon}, {name}]"
         return f"[location: {lat}, {lon}]"
 
-    if msg_type == "ContactMessage":
-        display_name = content.get("displayName", "")
+    if msg_type == "contact":
+        display_name = content.get("display_name", "")
         return f"[contact: {display_name}]" if display_name else "[contact]"
 
-    if msg_type == "ReactionMessage":
-        emoji = content.get("text", "")
-        key_obj = content.get("key")
-        target_id = key_obj.get("id", "") if isinstance(key_obj, dict) else ""
+    if msg_type == "reaction":
+        emoji = content.get("emoji", "")
+        target_id = content.get("target_message_id", "")
         if emoji and target_id:
             return f"[reaction: {emoji} to {target_id}]"
         return f"[reaction: {emoji}]" if emoji else "[reaction]"
 
-    if msg_type == "PollCreationMessage":
-        question = content.get("name", "")
+    if msg_type == "poll":
+        question = content.get("question", "")
         options = content.get("options", []) or []
-        option_texts = [o.get("optionName", "") if isinstance(o, dict) else str(o) for o in options]
-        opts_str = ", ".join(o for o in option_texts if o)
+        option_texts = [str(o) for o in options if o]
+        opts_str = ", ".join(option_texts)
         return f"[poll: {question} — {opts_str}]" if question else "[poll]"
 
-    if msg_type == "ProtocolMessage":
-        proto_type = content.get("type", "")
-        if proto_type == "REVOKE" or proto_type == 0:
-            return "[message deleted]"
-        return f"[protocol: {proto_type}]"
+    if msg_type == "message_deleted":
+        deleted_id = content.get("deleted_message_id", "")
+        return f"[message deleted: {deleted_id}]" if deleted_id else "[message deleted]"
+
+    if msg_type == "group_invite":
+        group_name = content.get("group_name", "")
+        return f"[group invite: {group_name}]" if group_name else "[group invite]"
 
     # Fallback: try to extract any text field
     text = event.get("text", "") or content.get("text", "") or content.get("caption", "")
     if text:
         return str(text)
 
-    return f"[{msg_type.lower()}]" if msg_type else "[unknown]"
+    return f"[{msg_type}]" if msg_type else "[unknown]"
 
 
 # ---------------------------------------------------------------------------
@@ -597,14 +602,23 @@ class WhatsAppUserClientConnector:
         Routes to the appropriate chat buffer. Updates _last_event_id for
         checkpoint tracking.
         """
-        # Keepalive frames have {"type": "keepalive", "chat_jid": "", ...} —
-        # filter them before the chat_jid check to avoid warning-level noise.
-        if event.get("type") == "keepalive":
+        bridge_type = event.get("type", "")
+
+        # Keepalive frames: silent drop.
+        if bridge_type == "keepalive":
             return
 
-        event_type = event.get("event_type", "message")
+        # Session invalidated: the WhatsApp session was logged out.
+        if bridge_type == "session_invalidated":
+            logger.warning(
+                "WhatsApp session invalidated (logged out): %s",
+                str(event.get("content", ""))[:200],
+            )
+            return
 
-        # We only care about message events for ingestion
+        # Legacy filter: some callers may set event_type to distinguish
+        # presence/status updates from messages.
+        event_type = event.get("event_type", "message")
         if event_type not in ("message", ""):
             logger.debug("Ignoring bridge event type: %r", event_type)
             return
@@ -790,7 +804,8 @@ class WhatsAppUserClientConnector:
                     )
 
                 # Resolve sender weight from last event in batch
-                sender_jid = buffered_events[-1].get("sender_jid", "") if buffered_events else ""
+                _last = buffered_events[-1] if buffered_events else {}
+                sender_jid = _last.get("sender_jid") or _last.get("from_jid") or ""
                 sender_weight = 1.0
                 if self._weight_resolver and sender_jid:
                     sender_weight = await self._weight_resolver.resolve("whatsapp_jid", sender_jid)
@@ -929,7 +944,7 @@ class WhatsAppUserClientConnector:
         # Build message lines
         text_parts: list[str] = []
         for event in buffered_events:
-            sender_jid = event.get("sender_jid", "unknown")
+            sender_jid = event.get("sender_jid") or event.get("from_jid") or "unknown"
             msg_text = normalize_message_text(event)
             text_parts.append(f"[{sender_jid}]: {msg_text}")
 

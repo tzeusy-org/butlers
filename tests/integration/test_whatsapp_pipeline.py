@@ -83,7 +83,7 @@ def _make_bridge_sse_event(
     chat_jid: str = "1234567890@s.whatsapp.net",
     sender_jid: str = "1234567890@s.whatsapp.net",
     text: str = "Hello from WhatsApp",
-    msg_type: str = "Conversation",
+    msg_type: str = "text",
 ) -> dict[str, Any]:
     """Return a minimal bridge SSE event dict matching bridge JSON schema."""
     return {
@@ -790,32 +790,28 @@ class TestDashboardPairAPI:
 class TestMessageNormalization:
     """Verify normalize_message_text maps bridge event types to correct text."""
 
-    def test_conversation_message_returns_text(self):
-        event = {"type": "Conversation", "content": {"text": "Hello there!"}}
+    def test_text_message_returns_text(self):
+        event = {"type": "text", "content": {"text": "Hello there!"}}
         assert normalize_message_text(event) == "Hello there!"
 
-    def test_extended_text_message(self):
-        event = {"type": "ExtendedTextMessage", "content": {"text": "Bold text"}}
-        assert normalize_message_text(event) == "Bold text"
-
     def test_image_with_caption(self):
-        event = {"type": "ImageMessage", "content": {"caption": "Check this out"}}
+        event = {"type": "image", "content": {"caption": "Check this out"}}
         assert normalize_message_text(event) == "Check this out"
 
     def test_image_without_caption(self):
-        event = {"type": "ImageMessage", "content": {}}
+        event = {"type": "image", "content": {}}
         assert normalize_message_text(event) == "[image]"
 
     def test_voice_message(self):
-        event = {"type": "PTTMessage", "content": {}}
+        event = {"type": "voice_note", "content": {}}
         assert normalize_message_text(event) == "[voice message]"
 
     def test_location_with_name(self):
         event = {
-            "type": "LocationMessage",
+            "type": "location",
             "content": {
-                "degreesLatitude": 37.7749,
-                "degreesLongitude": -122.4194,
+                "latitude": 37.7749,
+                "longitude": -122.4194,
                 "name": "San Francisco",
             },
         }
@@ -825,10 +821,10 @@ class TestMessageNormalization:
 
     def test_reaction_message(self):
         event = {
-            "type": "ReactionMessage",
+            "type": "reaction",
             "content": {
-                "text": "👍",
-                "key": {"id": "orig-msg-id"},
+                "emoji": "👍",
+                "target_message_id": "orig-msg-id",
             },
         }
         result = normalize_message_text(event)
@@ -836,9 +832,9 @@ class TestMessageNormalization:
         assert "orig-msg-id" in result
 
     def test_deleted_message(self):
-        event = {"type": "ProtocolMessage", "content": {"type": "REVOKE"}}
-        assert normalize_message_text(event) == "[message deleted]"
+        event = {"type": "message_deleted", "content": {"deleted_message_id": "msg-789"}}
+        assert normalize_message_text(event) == "[message deleted: msg-789]"
 
     def test_unknown_type_falls_back_to_bracketed_type(self):
         event = {"type": "SomeNewType", "content": {}}
-        assert normalize_message_text(event) == "[somenewtype]"
+        assert normalize_message_text(event) == "[SomeNewType]"

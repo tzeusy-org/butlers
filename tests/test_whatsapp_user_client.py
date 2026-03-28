@@ -75,65 +75,65 @@ def connector(
 class TestNormalizeMessageText:
     """Tests for the message type normalization function."""
 
-    def test_conversation_returns_text_verbatim(self) -> None:
-        event = {"type": "Conversation", "content": {"text": "Hello world"}}
+    def test_text_returns_text_verbatim(self) -> None:
+        event = {"type": "text", "content": {"text": "Hello world"}}
         assert normalize_message_text(event) == "Hello world"
 
-    def test_extended_text_returns_text_verbatim(self) -> None:
-        event = {"type": "ExtendedTextMessage", "content": {"text": "What's up?"}}
+    def test_text_with_quoted(self) -> None:
+        event = {"type": "text", "content": {"text": "What's up?", "quoted_message_id": "q1"}}
         assert normalize_message_text(event) == "What's up?"
 
     def test_image_with_caption(self) -> None:
-        event = {"type": "ImageMessage", "content": {"caption": "Nice view!"}}
+        event = {"type": "image", "content": {"caption": "Nice view!"}}
         assert normalize_message_text(event) == "Nice view!"
 
     def test_image_without_caption(self) -> None:
-        event = {"type": "ImageMessage", "content": {}}
+        event = {"type": "image", "content": {}}
         assert normalize_message_text(event) == "[image]"
 
     def test_video_with_caption(self) -> None:
-        event = {"type": "VideoMessage", "content": {"caption": "Watch this"}}
+        event = {"type": "video", "content": {"caption": "Watch this"}}
         assert normalize_message_text(event) == "Watch this"
 
     def test_video_without_caption(self) -> None:
-        event = {"type": "VideoMessage", "content": {}}
+        event = {"type": "video", "content": {}}
         assert normalize_message_text(event) == "[video]"
 
     def test_audio_message(self) -> None:
-        event = {"type": "AudioMessage", "content": {}}
+        event = {"type": "audio", "content": {}}
         assert normalize_message_text(event) == "[audio]"
 
-    def test_ptt_message(self) -> None:
-        event = {"type": "PTTMessage", "content": {}}
+    def test_voice_note(self) -> None:
+        event = {"type": "voice_note", "content": {}}
         assert normalize_message_text(event) == "[voice message]"
 
     def test_document_with_filename_and_caption(self) -> None:
         event = {
-            "type": "DocumentMessage",
-            "content": {"fileName": "report.pdf", "caption": "Q3 Report"},
+            "type": "document",
+            "content": {"filename": "report.pdf", "caption": "Q3 Report"},
         }
         result = normalize_message_text(event)
         assert "report.pdf" in result
         assert "Q3 Report" in result
 
     def test_document_with_only_filename(self) -> None:
-        event = {"type": "DocumentMessage", "content": {"fileName": "contract.docx"}}
+        event = {"type": "document", "content": {"filename": "contract.docx"}}
         assert normalize_message_text(event) == "contract.docx"
 
     def test_document_empty(self) -> None:
-        event = {"type": "DocumentMessage", "content": {}}
+        event = {"type": "document", "content": {}}
         assert normalize_message_text(event) == "[document]"
 
     def test_sticker_message(self) -> None:
-        event = {"type": "StickerMessage", "content": {}}
+        event = {"type": "sticker", "content": {}}
         assert normalize_message_text(event) == "[sticker]"
 
     def test_location_with_name(self) -> None:
         event = {
-            "type": "LocationMessage",
+            "type": "location",
             "content": {
-                "degreesLatitude": 37.7749,
-                "degreesLongitude": -122.4194,
+                "latitude": 37.7749,
+                "longitude": -122.4194,
                 "name": "San Francisco",
             },
         }
@@ -144,44 +144,40 @@ class TestNormalizeMessageText:
 
     def test_location_without_name(self) -> None:
         event = {
-            "type": "LocationMessage",
-            "content": {"degreesLatitude": 0.0, "degreesLongitude": 0.0},
+            "type": "location",
+            "content": {"latitude": 0.0, "longitude": 0.0},
         }
         result = normalize_message_text(event)
         assert "[location:" in result
 
     def test_contact_message(self) -> None:
-        event = {"type": "ContactMessage", "content": {"displayName": "Alice Smith"}}
+        event = {"type": "contact", "content": {"display_name": "Alice Smith"}}
         assert normalize_message_text(event) == "[contact: Alice Smith]"
 
     def test_contact_message_empty(self) -> None:
-        event = {"type": "ContactMessage", "content": {}}
+        event = {"type": "contact", "content": {}}
         assert normalize_message_text(event) == "[contact]"
 
     def test_reaction_with_emoji_and_target(self) -> None:
         event = {
-            "type": "ReactionMessage",
-            "content": {"text": "👍", "key": {"id": "msg-123"}},
+            "type": "reaction",
+            "content": {"emoji": "👍", "target_message_id": "msg-123"},
         }
         result = normalize_message_text(event)
         assert "👍" in result
         assert "msg-123" in result
 
     def test_reaction_with_only_emoji(self) -> None:
-        event = {"type": "ReactionMessage", "content": {"text": "❤️"}}
+        event = {"type": "reaction", "content": {"emoji": "❤️"}}
         result = normalize_message_text(event)
         assert "❤️" in result
 
     def test_poll_creation_message(self) -> None:
         event = {
-            "type": "PollCreationMessage",
+            "type": "poll",
             "content": {
-                "name": "What's for lunch?",
-                "options": [
-                    {"optionName": "Pizza"},
-                    {"optionName": "Salad"},
-                    {"optionName": "Tacos"},
-                ],
+                "question": "What's for lunch?",
+                "options": ["Pizza", "Salad", "Tacos"],
             },
         }
         result = normalize_message_text(event)
@@ -189,14 +185,18 @@ class TestNormalizeMessageText:
         assert "Pizza" in result
         assert "Salad" in result
 
-    def test_protocol_message_revoke(self) -> None:
-        event = {"type": "ProtocolMessage", "content": {"type": "REVOKE"}}
-        assert normalize_message_text(event) == "[message deleted]"
+    def test_message_deleted(self) -> None:
+        event = {"type": "message_deleted", "content": {"deleted_message_id": "msg-456"}}
+        assert normalize_message_text(event) == "[message deleted: msg-456]"
+
+    def test_group_invite(self) -> None:
+        event = {"type": "group_invite", "content": {"group_name": "Family Chat"}}
+        assert normalize_message_text(event) == "[group invite: Family Chat]"
 
     def test_unknown_type_falls_back_to_type_label(self) -> None:
         event = {"type": "FutureMessageType", "content": {}}
         result = normalize_message_text(event)
-        assert "futuremessagetype" in result.lower()
+        assert "FutureMessageType" in result
 
     def test_empty_event_returns_unknown(self) -> None:
         event: dict[str, Any] = {}
@@ -311,7 +311,7 @@ class TestConnectorBuffering:
         event = {
             "message_id": "msg-1",
             "chat_jid": "chat1@g.us",
-            "type": "Conversation",
+            "type": "text",
             "content": {"text": "hi"},
         }
         await connector._buffer_event(event, "chat1@g.us")
@@ -328,7 +328,7 @@ class TestConnectorBuffering:
             event = {
                 "message_id": f"msg-{i}",
                 "chat_jid": jid,
-                "type": "Conversation",
+                "type": "text",
                 "content": {"text": f"message {i}"},
             }
             await connector._buffer_event(event, jid)
@@ -358,7 +358,7 @@ class TestConnectorBuffering:
             event = {
                 "message_id": f"msg-{i}",
                 "chat_jid": jid,
-                "type": "Conversation",
+                "type": "text",
                 "content": {"text": f"msg {i}"},
             }
             await connector._buffer_event(event, jid)
@@ -408,7 +408,7 @@ class TestEnvelopeBuilding:
             "chat_jid": "5551234567@s.whatsapp.net",
             "sender_jid": "5559876543@s.whatsapp.net",
             "timestamp": 1700000000,
-            "type": "Conversation",
+            "type": "text",
             "content": {"text": "Hello"},
         }
         envelope = connector._normalize_single_event_to_ingest_v1(event)
@@ -431,7 +431,7 @@ class TestEnvelopeBuilding:
         """Idempotency key format: whatsapp:<endpoint>:<msg_id>."""
         event = {
             "message_id": "XYZ999",
-            "type": "Conversation",
+            "type": "text",
             "content": {"text": "test"},
         }
         envelope = connector._normalize_single_event_to_ingest_v1(event)
@@ -445,7 +445,7 @@ class TestEnvelopeBuilding:
                 "message_id": f"msg-{i}",
                 "chat_jid": "chat1@g.us",
                 "sender_jid": f"sender{i}@s.whatsapp.net",
-                "type": "Conversation",
+                "type": "text",
                 "content": {"text": f"Message {i}"},
             }
             for i in range(3)
@@ -478,7 +478,7 @@ class TestEnvelopeBuilding:
         event = {
             "message_id": "ts-test",
             "timestamp": 1700000000,
-            "type": "Conversation",
+            "type": "text",
             "content": {"text": "hi"},
         }
         envelope = connector._normalize_single_event_to_ingest_v1(event)
@@ -565,7 +565,7 @@ class TestDiscretionIntegration:
                 "message_id": "msg-1",
                 "chat_jid": chat_jid,
                 "sender_jid": "somebody@s.whatsapp.net",
-                "type": "Conversation",
+                "type": "text",
                 "content": {"text": "just chatting"},
             }
         ]
@@ -613,7 +613,7 @@ class TestDiscretionIntegration:
                 "message_id": "msg-2",
                 "chat_jid": chat_jid,
                 "sender_jid": "friend@s.whatsapp.net",
-                "type": "Conversation",
+                "type": "text",
                 "content": {"text": "can you help me?"},
             }
         ]
@@ -711,7 +711,7 @@ class TestHandleBridgeEvent:
             "message_id": "abc123",
             "chat_jid": "5551234567@s.whatsapp.net",
             "sender_jid": "5559876543@s.whatsapp.net",
-            "type": "Conversation",
+            "type": "text",
             "content": {"text": "Hello"},
         }
         await connector._handle_bridge_event(event)
@@ -726,7 +726,7 @@ class TestHandleBridgeEvent:
         event = {
             "message_id": "EVENT-ID-999",
             "chat_jid": "group@g.us",
-            "type": "Conversation",
+            "type": "text",
             "content": {"text": "test"},
         }
         await connector._handle_bridge_event(event)
@@ -752,7 +752,7 @@ class TestHandleBridgeEvent:
         event = {
             "event_type": "message",
             "message_id": "no-jid",
-            "type": "Conversation",
+            "type": "text",
             "content": {"text": "orphan"},
         }
         await connector._handle_bridge_event(event)
