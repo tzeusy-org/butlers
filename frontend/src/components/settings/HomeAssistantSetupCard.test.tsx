@@ -93,7 +93,7 @@ describe("HomeAssistantSetupCard", () => {
     expect(html).toContain("Disconnect");
   });
 
-  it("does not leak token in connected state", () => {
+  it("does not render token input in connected state (no credential leak)", () => {
     mockStatus({
       data: {
         state: "connected",
@@ -103,9 +103,11 @@ describe("HomeAssistantSetupCard", () => {
       },
     });
     const html = renderToStaticMarkup(<HomeAssistantSetupCard />);
-    // Masked URL should show but not any token
-    expect(html).not.toContain("secret");
-    expect(html).not.toContain("token_value");
+    // Connected state should NOT render the token input field
+    expect(html).not.toContain("ha-token");
+    expect(html).not.toContain("Long-lived access token");
+    // Masked URL is shown but no password input
+    expect(html).toContain("http://homeassistant.local:8123");
   });
 
   it("renders disconnected state with form", () => {

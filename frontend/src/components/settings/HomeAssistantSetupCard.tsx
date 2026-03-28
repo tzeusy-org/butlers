@@ -338,9 +338,10 @@ export function HomeAssistantSection() {
           </div>
         )}
 
-        {/* Configuration form */}
+        {/* Configuration form — key forces remount when initialUrl changes */}
         {(displayState === "not_configured" || displayState === "disconnected" || showConfigForm) && (
           <HAConfigForm
+            key={displayState === "connected" ? (status?.masked_url ?? "") : displayState}
             initialUrl={displayState === "connected" ? (status?.masked_url ?? "") : ""}
             onCancel={showConfigForm && displayState === "connected" ? () => setShowConfigForm(false) : undefined}
             isEdit={displayState === "connected" || displayState === "disconnected"}
@@ -474,9 +475,10 @@ export function HomeAssistantSetupCard() {
             </div>
           )}
 
-          {/* Configuration form */}
+          {/* Configuration form — key forces remount when initialUrl changes */}
           {(displayState === "not_configured" || displayState === "disconnected" || showConfigForm) && (
             <HAConfigForm
+              key={displayState === "connected" ? (status?.masked_url ?? "") : displayState}
               initialUrl={displayState === "connected" ? (status?.masked_url ?? "") : ""}
               onCancel={showConfigForm && displayState === "connected" ? () => setShowConfigForm(false) : undefined}
               isEdit={displayState === "connected" || displayState === "disconnected"}
