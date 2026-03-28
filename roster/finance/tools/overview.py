@@ -13,6 +13,7 @@ Provides five high-level analytical functions:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -59,9 +60,73 @@ _TAX_DISCLAIMER = (
     "with a qualified tax professional before claiming any deductions."
 )
 
+# Pre-compiled patterns for _infer_account_type — module-level to avoid per-call overhead.
+_CHECKING_RE = re.compile(r"\bchecking\b")
+# Credit-card and payment-network markers; bare "credit" is intentionally excluded
+# to avoid misclassifying "credit union" accounts.
+_CREDIT_RE = re.compile(
+    r"\bcard\b"  # "Credit Card", "Debit Card"
+    r"|\bcc\b"  # common abbreviation for credit card
+    r"|\bvisa\b"
+    r"|\bmastercard\b"
+    r"|\bamex\b"
+    r"|\bcredit\s+card\b"  # explicit two-word phrase
+)
+_SAVINGS_RE = re.compile(r"\bsavings\b|\bsave\b|\bhsa\b")
+_INVESTMENT_RE = re.compile(
+    r"\binvest(?:ment|ing)?\b"  # "investment", "investing" — bounded to avoid "investigation"
+    r"|\bira\b"
+    r"|\b401k\b"
+    r"|\bbrokerage\b"
+    r"|\broth\b"
+    r"|\bfidelity\b"
+)
+
 
 def _today() -> date:
     return datetime.now(UTC).date()
+
+
+def _infer_account_type(name: str, default: str = "checking") -> str:
+    """Infer the account type from an account name using word-boundary heuristics.
+
+    Rules are applied in priority order (most-specific first) to avoid
+    substring false-positives.  For example, "Credit Union Checking" contains
+    the substring "credit" but should be classified as "checking", not "credit".
+
+    Parameters
+    ----------
+    name:
+        Account name string (e.g. "Credit Union Checking", "Chase Visa Card").
+    default:
+        Fallback type when no keyword matches (default ``"checking"``).
+
+    Returns
+    -------
+    str
+        One of: ``"checking"``, ``"credit"``, ``"savings"``, ``"investment"``,
+        or *default*.
+    """
+    lower = name.lower()
+
+    # 1. "checking" — checked first so that "Credit Union Checking" resolves
+    #    to checking before the credit-card patterns fire.
+    if _CHECKING_RE.search(lower):
+        return "checking"
+
+    # 2. Credit-card and payment-network markers.
+    if _CREDIT_RE.search(lower):
+        return "credit"
+
+    # 3. Savings / HSA.
+    if _SAVINGS_RE.search(lower):
+        return "savings"
+
+    # 4. Investment / brokerage.
+    if _INVESTMENT_RE.search(lower):
+        return "investment"
+
+    return default
 
 
 def _as_of_date_or_today(as_of_date: str | date | None) -> date:
@@ -108,15 +173,10 @@ async def _get_or_create_account(
     if row is not None:
         return str(row["id"])
 
-    # Infer type from name heuristics if not provided by caller.
-    lower_name = name.lower()
-    inferred_type = account_type
-    if any(kw in lower_name for kw in ("credit", "card", "cc", "visa", "mastercard", "amex")):
-        inferred_type = "credit"
-    elif any(kw in lower_name for kw in ("savings", "save", "hsa")):
-        inferred_type = "savings"
-    elif any(kw in lower_name for kw in ("invest", "ira", "401k", "brokerage", "roth", "fidelity")):
-        inferred_type = "investment"
+    # Infer type from name when the caller did not supply an explicit type.
+    # Delegates to _infer_account_type() which uses word-boundary regex to
+    # avoid substring false-positives (e.g. "credit union" != credit card).
+    inferred_type = _infer_account_type(name, default=account_type)
 
     new_row = await pool.fetchrow(
         """
