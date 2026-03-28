@@ -96,7 +96,7 @@ class SessionStatusResponse(BaseModel):
 # In-memory pending-auth store (TTL = 10 minutes)
 # ---------------------------------------------------------------------------
 
-_SESSION_TTL = 600  # seconds
+_SESSION_TTL = 1800  # 30 minutes — enough for OTP delivery + 2FA entry
 
 
 @dataclass
@@ -207,23 +207,30 @@ async def verify_code(
         pa = _get_pending(req.session_token)
 
     client = pa.client
+    needs_2fa = False
 
     try:
-        # Attempt sign-in with OTP code
-        try:
-            await client.sign_in(
-                phone=pa.phone,
-                code=req.code,
-                phone_code_hash=pa.phone_code_hash,
-            )
-        except SessionPasswordNeededError:
-            if not req.password:
+        # Attempt sign-in with OTP code (or 2FA password on second call)
+        if req.password:
+            # Second call: user is providing the 2FA password
+            await client.sign_in(password=req.password)
+        else:
+            try:
+                await client.sign_in(
+                    phone=pa.phone,
+                    code=req.code,
+                    phone_code_hash=pa.phone_code_hash,
+                )
+            except SessionPasswordNeededError:
+                # Signal the frontend to collect the 2FA password.
+                # Keep the pending session alive so the next verify call
+                # can complete sign-in with the password.
+                needs_2fa = True
                 return VerifyCodeResponse(
                     success=False,
                     message="Two-factor authentication is enabled. "
                     "Please provide your 2FA password.",
                 )
-            await client.sign_in(password=req.password)
 
         # Auth succeeded — export session string
         me = await client.get_me()
@@ -268,13 +275,15 @@ async def verify_code(
             detail=f"Sign-in failed: {exc}",
         )
     finally:
-        # Clean up: disconnect client and remove from pending
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-        async with _pending_lock:
-            _pending.pop(req.session_token, None)
+        # Only clean up when auth is complete (success or hard failure).
+        # When 2FA is needed, keep the client alive for the next verify call.
+        if not needs_2fa:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            async with _pending_lock:
+                _pending.pop(req.session_token, None)
 
 
 @router.get("/session/status", response_model=SessionStatusResponse)
