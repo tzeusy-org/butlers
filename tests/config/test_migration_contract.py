@@ -35,6 +35,9 @@ _MIGRATION_SPECS = [
     MigrationSpec("core", "core_007_connectors.py", "core_007", "core_006", None),
     MigrationSpec("core", "core_008_external_accounts.py", "core_008", "core_007", None),
     MigrationSpec("core", "core_009_memory_catalog.py", "core_009", "core_008", None),
+    MigrationSpec("core", "core_041_seasonal_periods.py", "core_041", "core_013", None),
+    MigrationSpec("core", "core_042_user_context.py", "core_042", "core_041", None),
+    MigrationSpec("core", "core_043_deadline_columns.py", "core_043", "core_042", None),
     # Switchboard consolidated chain
     MigrationSpec("switchboard", "001_switchboard_messaging.py", "sw_001", None, ("switchboard",)),
     MigrationSpec("switchboard", "002_switchboard_operations.py", "sw_002", "sw_001", None),

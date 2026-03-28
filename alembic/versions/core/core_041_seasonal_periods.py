@@ -1,7 +1,7 @@
 """seasonal_periods: create per-butler seasonal period configuration table.
 
 Revision ID: core_041
-Revises: core_040
+Revises: core_013
 Create Date: 2026-03-28 00:00:00.000000
 
 Creates the ``seasonal_periods`` table in each butler's own schema (accessed
@@ -40,7 +40,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "core_041"
-down_revision = "core_040"
+down_revision = "core_013"
 branch_labels = None
 depends_on = None
 
