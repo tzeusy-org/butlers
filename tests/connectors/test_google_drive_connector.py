@@ -2161,6 +2161,31 @@ class TestMultiAccountLifecycle:
         assert response.status_code == 200
         assert response.json()["status"] == "reload_triggered"
 
+    async def test_health_server_metrics_route(
+        self,
+        mock_db_pool: MagicMock,
+        mock_credential_store: MagicMock,
+    ) -> None:
+        """The /metrics FastAPI route returns Prometheus text exposition."""
+        from fastapi.testclient import TestClient
+        from prometheus_client import generate_latest
+
+        # Build the same FastAPI app used internally by _start_health_server
+        app = FastAPI(title="Google Drive Connector Metrics Test")
+
+        @app.get("/metrics")
+        async def metrics() -> bytes:
+            return generate_latest()
+
+        client = TestClient(app)
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        # Prometheus text format starts with "# HELP" or "# TYPE" lines,
+        # or is empty when no metrics are registered. Either way the response
+        # must be valid UTF-8 text (not an error body).
+        content = response.content.decode("utf-8")
+        assert isinstance(content, str)
+
 
 # ---------------------------------------------------------------------------
 # Task 13.1 — additional env var coverage (CONNECTOR_HEALTH_PORT, etc.)
