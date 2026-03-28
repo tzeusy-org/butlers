@@ -82,11 +82,20 @@ def _entry(
 class TestContextSignalEnum:
     """ContextSignal enum sanity checks."""
 
-    def test_all_ten_signal_types_present(self):
+    def test_all_eleven_signal_types_present(self):
         values = {s.value for s in ContextSignal}
         expected = {
-            "traveling", "sleeping", "meeting", "focused", "exercising",
-            "sick", "socializing", "commuting", "at_home", "away", "dnd",
+            "traveling",
+            "sleeping",
+            "meeting",
+            "focused",
+            "exercising",
+            "sick",
+            "socializing",
+            "commuting",
+            "at_home",
+            "away",
+            "dnd",
         }
         assert values == expected
 
@@ -113,9 +122,15 @@ class TestCheckWritePermission:
         # Per spec, general is authorized for: traveling, sleeping, meeting, focused,
         # sick, socializing, commuting, at_home, away, dnd — but NOT exercising.
         general_allowed = {
-            ContextSignal.traveling, ContextSignal.sleeping, ContextSignal.meeting,
-            ContextSignal.focused, ContextSignal.sick, ContextSignal.socializing,
-            ContextSignal.commuting, ContextSignal.at_home, ContextSignal.away,
+            ContextSignal.traveling,
+            ContextSignal.sleeping,
+            ContextSignal.meeting,
+            ContextSignal.focused,
+            ContextSignal.sick,
+            ContextSignal.socializing,
+            ContextSignal.commuting,
+            ContextSignal.at_home,
+            ContextSignal.away,
             ContextSignal.dnd,
         }
         for signal in general_allowed:
@@ -348,8 +363,7 @@ class TestContextBusIntegration:
         # Re-set should clear superseded_at
         await set_context(pool, butler_name="health", signal_type="exercising")
         row = await pool.fetchrow(
-            "SELECT superseded_at FROM shared.user_context "
-            "WHERE signal_type = 'exercising'"
+            "SELECT superseded_at FROM shared.user_context WHERE signal_type = 'exercising'"
         )
         assert row["superseded_at"] is None
 
@@ -365,9 +379,7 @@ class TestContextBusIntegration:
     async def test_set_context_clamps_ttl_to_max(self, pool):
         now = datetime.now(tz=UTC)
         far_future = now + timedelta(hours=100)  # far beyond meeting max (4h)
-        await set_context(
-            pool, butler_name="general", signal_type="meeting", expires_at=far_future
-        )
+        await set_context(pool, butler_name="general", signal_type="meeting", expires_at=far_future)
         row = await pool.fetchrow(
             "SELECT set_at, expires_at FROM shared.user_context WHERE signal_type = 'meeting'"
         )
@@ -376,9 +388,7 @@ class TestContextBusIntegration:
 
     async def test_set_context_stores_metadata(self, pool):
         payload = {"location": "gym", "activity": "weights"}
-        await set_context(
-            pool, butler_name="health", signal_type="exercising", metadata=payload
-        )
+        await set_context(pool, butler_name="health", signal_type="exercising", metadata=payload)
         row = await pool.fetchrow(
             "SELECT metadata FROM shared.user_context WHERE signal_type = 'exercising'"
         )
@@ -450,8 +460,7 @@ class TestContextBusIntegration:
     async def test_get_active_context_excludes_superseded(self, pool):
         await set_context(pool, butler_name="general", signal_type="meeting")
         await pool.execute(
-            "UPDATE shared.user_context SET superseded_at = now() "
-            "WHERE signal_type = 'meeting'"
+            "UPDATE shared.user_context SET superseded_at = now() WHERE signal_type = 'meeting'"
         )
         results = await get_active_context(pool)
         assert not any(e.signal_type == "meeting" for e in results)
