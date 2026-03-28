@@ -299,18 +299,126 @@ class TestCreateSteamAccount:
 
         assert account.is_primary is False
 
-    async def test_raises_on_duplicate_steam_id(self) -> None:
+    async def test_raises_on_duplicate_active_steam_id(self) -> None:
         conn = _FakeConn()
         pool = _make_pool(conn)
 
-        conn.fetchrow = AsyncMock(
-            side_effect=[
-                _make_id_row(_ACCOUNT_ID),  # duplicate steam_id check → existing row
-            ]
+        # existing row with status='active' — should still raise
+        existing_row = MagicMock()
+        existing_row.__getitem__ = MagicMock(
+            side_effect=lambda k: {
+                "id": _ACCOUNT_ID,
+                "entity_id": _ENTITY_ID,
+                "status": "active",
+            }[k]
         )
+        conn.fetchrow = AsyncMock(side_effect=[existing_row])
 
         with pytest.raises(SteamAccountAlreadyExistsError, match="already connected"):
             await create_steam_account(pool, steam_id=_STEAM_ID)
+
+    async def test_raises_on_duplicate_suspended_steam_id(self) -> None:
+        conn = _FakeConn()
+        pool = _make_pool(conn)
+
+        existing_row = MagicMock()
+        existing_row.__getitem__ = MagicMock(
+            side_effect=lambda k: {
+                "id": _ACCOUNT_ID,
+                "entity_id": _ENTITY_ID,
+                "status": "suspended",
+            }[k]
+        )
+        conn.fetchrow = AsyncMock(side_effect=[existing_row])
+
+        with pytest.raises(SteamAccountAlreadyExistsError, match="already connected"):
+            await create_steam_account(pool, steam_id=_STEAM_ID)
+
+    async def test_reactivates_revoked_account(self) -> None:
+        """Reconnecting a revoked account reactivates it instead of raising."""
+        conn = _FakeConn()
+        pool = _make_pool(conn)
+
+        revoked_existing = MagicMock()
+        revoked_existing.__getitem__ = MagicMock(
+            side_effect=lambda k: {
+                "id": _ACCOUNT_ID,
+                "entity_id": _ENTITY_ID,
+                "status": "revoked",
+            }[k]
+        )
+        reactivated_row = _make_account_row(status="active")
+
+        conn.fetchrow = AsyncMock(
+            side_effect=[
+                revoked_existing,  # duplicate check → revoked existing
+                reactivated_row,   # UPDATE … RETURNING
+            ]
+        )
+
+        account = await create_steam_account(pool, steam_id=_STEAM_ID)
+
+        assert account.status == "active"
+        # Ensure an UPDATE was issued, not an INSERT
+        execute_calls = [str(call[0][0]) for call in conn.execute.call_args_list]
+        assert not any("INSERT INTO public.steam_accounts" in c for c in execute_calls)
+        update_sqls = [str(call[0][0]) for call in conn.fetchrow.call_args_list]
+        assert any("UPDATE public.steam_accounts" in s for s in update_sqls)
+
+    async def test_reactivates_revoked_account_and_updates_api_key(self) -> None:
+        """Reactivating a revoked account also refreshes the API key."""
+        conn = _FakeConn()
+        pool = _make_pool(conn)
+
+        revoked_existing = MagicMock()
+        revoked_existing.__getitem__ = MagicMock(
+            side_effect=lambda k: {
+                "id": _ACCOUNT_ID,
+                "entity_id": _ENTITY_ID,
+                "status": "revoked",
+            }[k]
+        )
+        reactivated_row = _make_account_row(status="active")
+
+        conn.fetchrow = AsyncMock(
+            side_effect=[
+                revoked_existing,
+                reactivated_row,
+            ]
+        )
+
+        await create_steam_account(pool, steam_id=_STEAM_ID, api_key="NEWKEY456")
+
+        execute_calls = [str(call[0][0]) for call in conn.execute.call_args_list]
+        assert any("entity_info" in c for c in execute_calls)
+        assert any("steam_api_key" in c for c in execute_calls)
+
+    async def test_reactivates_revoked_account_without_api_key(self) -> None:
+        """Reactivating without an API key does not write to entity_info."""
+        conn = _FakeConn()
+        pool = _make_pool(conn)
+
+        revoked_existing = MagicMock()
+        revoked_existing.__getitem__ = MagicMock(
+            side_effect=lambda k: {
+                "id": _ACCOUNT_ID,
+                "entity_id": _ENTITY_ID,
+                "status": "revoked",
+            }[k]
+        )
+        reactivated_row = _make_account_row(status="active")
+
+        conn.fetchrow = AsyncMock(
+            side_effect=[
+                revoked_existing,
+                reactivated_row,
+            ]
+        )
+
+        await create_steam_account(pool, steam_id=_STEAM_ID)
+
+        execute_calls = [str(call[0][0]) for call in conn.execute.call_args_list]
+        assert not any("entity_info" in c for c in execute_calls)
 
     async def test_persists_api_key_when_provided(self) -> None:
         conn = _FakeConn()
