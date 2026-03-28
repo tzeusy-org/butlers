@@ -135,7 +135,7 @@ class SteamSetPrimaryResponse(BaseModel):
 class SteamGamePlaytime(BaseModel):
     """Playtime record for a single game.
 
-    Used in the top_games and recently_played lists of SteamPlaytimeAnalytics.
+    Used in the top_games list of SteamPlaytimeAnalytics.
     """
 
     app_id: int
@@ -146,9 +146,6 @@ class SteamGamePlaytime(BaseModel):
 
     playtime_minutes: int
     """Total playtime in the requested window, in minutes."""
-
-    img_icon_url: str | None = None
-    """Icon URL suffix for the game icon (relative to steam CDN), or null."""
 
 
 class SteamPlaytimeAnalytics(BaseModel):
