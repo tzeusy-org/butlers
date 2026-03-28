@@ -39,8 +39,8 @@ function mockMutations(opts: { isPending?: boolean; isError?: boolean; error?: E
     isError: opts.isError ?? false,
     error: opts.error ?? null,
   };
-  vi.mocked(useConfigureHomeAssistant).mockReturnValue(mutation as ReturnType<typeof useConfigureHomeAssistant>);
-  vi.mocked(useDeleteHomeAssistantConfig).mockReturnValue(mutation as ReturnType<typeof useDeleteHomeAssistantConfig>);
+  vi.mocked(useConfigureHomeAssistant).mockReturnValue(mutation as unknown as ReturnType<typeof useConfigureHomeAssistant>);
+  vi.mocked(useDeleteHomeAssistantConfig).mockReturnValue(mutation as unknown as ReturnType<typeof useDeleteHomeAssistantConfig>);
 }
 
 describe("HomeAssistantSetupCard", () => {
