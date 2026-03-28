@@ -66,6 +66,7 @@ from butlers.api.models.steam import (
     SteamConnectorHealthResponse,
     SteamConnectRequest,
     SteamConnectResponse,
+    SteamDailyPlaytimeSummary,
     SteamDisconnectResponse,
     SteamGamePlaytime,
     SteamGamePlaytimeHistory,
@@ -791,6 +792,7 @@ async def get_steam_playtime(
     - ``total_games``: number of distinct games with playtime in the window
     - ``total_minutes``: sum of all playtime in the window
     - ``games``: top N games by total playtime (descending)
+    - ``daily``: per-day rollup of total playtime across all games (ascending date)
     - ``days``: the window size used (null = all-time)
 
     The ``account_id`` parameter selects a specific account; when omitted,
@@ -834,6 +836,7 @@ async def get_steam_playtime(
 
     try:
         rows = await _query_playtime_aggregates(pool, account_id=account.id, days=days)
+        daily_rows = await _query_daily_playtime_totals(pool, account_id=account.id, days=days)
     except Exception as exc:  # noqa: BLE001
         logger.error(
             "Failed to query play history for steam_id=%s: %s", account.steam_id, exc, exc_info=True
@@ -861,14 +864,24 @@ async def get_steam_playtime(
     total_games = len(rows_sorted)
     total_playtime = sum(r["total_playtime"] for r in rows_sorted)
 
+    daily = [
+        SteamDailyPlaytimeSummary(
+            date=r["date"],
+            total_minutes=r["total_minutes"],
+        )
+        for r in daily_rows
+    ]
+
     return SteamPlaytimeAnalytics(
         account_id=account.id,
         steam_id=account.steam_id,
         display_name=account.display_name,
         days=days,
         total_games=total_games,
+<<<<<<< HEAD
         total_minutes=total_playtime,
         games=games,
+        daily=daily,
         queried_at=queried_at,
     )
 
@@ -1050,6 +1063,61 @@ async def _query_playtime_aggregates(
             "app_id": r["app_id"],
             "app_name": r["app_name"],
             "total_playtime": r["total_playtime"] or 0,
+        }
+        for r in records
+    ]
+
+
+async def _query_daily_playtime_totals(
+    pool: Any,
+    *,
+    account_id: uuid.UUID,
+    days: int | None,
+) -> list[dict[str, Any]]:
+    """Query connectors.steam_play_history for per-day playtime totals across all games.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    account_id:
+        UUID of the steam_accounts row.
+    days:
+        Number of past days to include, or None for all-time.
+
+    Returns
+    -------
+    list of dicts with keys: date, total_minutes
+        Ordered by date ascending.
+    """
+    if days is not None:
+        sql = """
+            SELECT date,
+                   SUM(playtime_minutes) AS total_minutes
+            FROM connectors.steam_play_history
+            WHERE steam_account_id = $1
+              AND date >= CURRENT_DATE - ($2::int - 1)
+            GROUP BY date
+            ORDER BY date ASC
+        """
+        async with pool.acquire() as conn:
+            records = await conn.fetch(sql, account_id, days)
+    else:
+        sql = """
+            SELECT date,
+                   SUM(playtime_minutes) AS total_minutes
+            FROM connectors.steam_play_history
+            WHERE steam_account_id = $1
+            GROUP BY date
+            ORDER BY date ASC
+        """
+        async with pool.acquire() as conn:
+            records = await conn.fetch(sql, account_id)
+
+    return [
+        {
+            "date": r["date"],
+            "total_minutes": r["total_minutes"] or 0,
         }
         for r in records
     ]
