@@ -1196,13 +1196,26 @@ async def _tick_event_chain_pass(
 
 async def _tick_deferred_notification_pass(
     pool: asyncpg.Pool,
-    dispatch_fn,
     now: datetime,
+    *,
+    notify_fn=None,
 ) -> int:
     """Flush deferred notifications: expire old ones and deliver due ones.
 
     - Marks pending notifications > 24h past deliver_at as expired.
-    - Delivers pending notifications with deliver_at <= now.
+    - Delivers pending notifications with deliver_at <= now via the standard
+      notify pipeline (``notify_fn``), re-using the stored ``notify.v1``
+      envelope rather than re-prompting the LLM spawner.
+
+    ``notify_fn`` must be an async callable that accepts a single positional
+    argument — the ``notify.v1`` envelope dict — and raises on failure.
+    Example signature::
+
+        async def notify_fn(envelope: dict) -> None: ...
+
+    When ``notify_fn`` is ``None`` (e.g., unit tests that don't need real
+    delivery), due notifications are counted but left ``pending`` so they are
+    retried on the next tick once a real ``notify_fn`` is wired in.
 
     Returns the number of notifications delivered.
     """
@@ -1243,20 +1256,30 @@ async def _tick_deferred_notification_pass(
         now,
     )
 
+    if not due_rows:
+        return 0
+
+    if notify_fn is None:
+        # No delivery callable wired — leave rows pending for next tick.
+        logger.warning(
+            "_tick_deferred_notification_pass: %d due notification(s) skipped"
+            " because notify_fn is not configured; will retry on next tick.",
+            len(due_rows),
+        )
+        return 0
+
     delivered = 0
     for row in due_rows:
         notif_id = row["id"]
         channel = row["channel"]
-        message = row["message"]
         envelope = row["envelope"]
         if isinstance(envelope, str):
             envelope = _json.loads(envelope)
 
         try:
-            await dispatch_fn(
-                prompt=message,
-                trigger_source=f"deferred_notification:{notif_id}",
-            )
+            # Deliver via the standard notify pipeline using the stored
+            # notify.v1 envelope, NOT via the LLM spawner.
+            await notify_fn(envelope)
             # Mark as delivered
             await pool.execute(
                 """
@@ -1284,6 +1307,7 @@ async def tick(
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     metrics: ButlerMetrics | None = None,
     butler_name: str | None = None,
+    notify_fn=None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
@@ -1321,6 +1345,15 @@ async def tick(
         dispatch_fn: Async callable matching ``Spawner.trigger`` signature.
         butler_name: Butler instance name used to query ``seasonal_periods``.
             When ``None`` (default), seasonal context injection is skipped.
+        notify_fn: Optional async callable used by the deferred notification
+            flush pass to deliver stored ``notify.v1`` envelopes via the
+            standard notify pipeline.  Signature::
+
+                async def notify_fn(envelope: dict) -> None: ...
+
+            When ``None``, due notifications are left ``pending`` and retried
+            on the next tick.  The scheduler loop in the daemon wires this to
+            the butler's own notify delivery path.
 
     Returns:
         The number of tasks successfully dispatched (cron + deadline).
@@ -1487,7 +1520,7 @@ async def tick(
         span.set_attribute("chains_fired", chains_fired)
 
         # --- Pass 4: Deferred notification flush (after chain detection) ---
-        deferred_flushed = await _tick_deferred_notification_pass(pool, dispatch_fn, now)
+        deferred_flushed = await _tick_deferred_notification_pass(pool, now, notify_fn=notify_fn)
         span.set_attribute("deferred_flushed", deferred_flushed)
 
         return dispatched + deadline_dispatched

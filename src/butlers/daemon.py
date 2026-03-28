@@ -2439,6 +2439,52 @@ class ButlerDaemon:
         dispatch_fn = self._dispatch_scheduled_task
         interval = self.config.scheduler.tick_interval_seconds
 
+        # Build a notify_fn for the deferred notification flush pass.
+        # This delivers stored notify.v1 envelopes via the standard notify
+        # pipeline (Switchboard deliver() call), matching the spec requirement
+        # that deferred notifications are re-delivered through the same path
+        # used by the notify() MCP tool — NOT re-prompted through the LLM spawner.
+        _butler_name_for_notify = self.config.name
+        _daemon_ref = self
+
+        async def _scheduler_notify_fn(envelope: dict) -> None:
+            """Deliver a deferred notify.v1 envelope via the standard notify pipeline."""
+            _client = _daemon_ref.switchboard_client
+            _db = _daemon_ref.db
+            if _client is None and _butler_name_for_notify != "switchboard":
+                raise RuntimeError(
+                    "Switchboard client not connected; cannot deliver deferred notification"
+                )
+            deliver_args: dict = {
+                "source_butler": _butler_name_for_notify,
+                "notify_request": envelope,
+            }
+            if _client is None and _butler_name_for_notify == "switchboard":
+                if _db is None or _db.pool is None:
+                    raise RuntimeError("Database not available for deferred notification delivery")
+                from butlers.tools.switchboard.notification.deliver import (
+                    deliver as _sw_deliver,
+                )
+
+                result = await _sw_deliver(
+                    _db.pool,
+                    source_butler=_butler_name_for_notify,
+                    notify_request=envelope,
+                )
+                if result.get("status") == "failed":
+                    raise RuntimeError(
+                        f"Deferred notification delivery failed: {result.get('error')}"
+                    )
+            else:
+                _DEFERRED_NOTIFY_TIMEOUT_S = 30
+                result = await asyncio.wait_for(
+                    _client.call_tool("deliver", deliver_args),
+                    timeout=_DEFERRED_NOTIFY_TIMEOUT_S,
+                )
+                if result.is_error:
+                    error_text = str(result.content[0].text) if result.content else "Unknown error"
+                    raise RuntimeError(f"Deferred notification delivery failed: {error_text}")
+
         logger.info(
             "Scheduler loop started (tick_interval_seconds=%d) for butler %s",
             interval,
@@ -2454,6 +2500,7 @@ class ButlerDaemon:
                         dispatch_fn,
                         stagger_key=self.config.name,
                         butler_name=self.config.name,
+                        notify_fn=_scheduler_notify_fn,
                     )
                 )
                 try:
@@ -4387,7 +4434,7 @@ class ButlerDaemon:
                 Field(
                     description=(
                         "Non-empty list of threshold dicts: "
-                        "[{\"days_before\": int, \"severity\": \"info|warning|critical\"}, ...]. "
+                        '[{"days_before": int, "severity": "info|warning|critical"}, ...]. '
                         "Each days_before must be <= lead_time_days."
                     )
                 ),
