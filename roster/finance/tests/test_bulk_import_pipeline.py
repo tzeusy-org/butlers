@@ -76,12 +76,21 @@ def _write_tmp_csv(content: str) -> str:
     return path
 
 
-def _make_pool(*, fetchrow_return=None, fetchval_return=None, execute_return=None):
-    """Build a minimal async mock pool."""
+def _make_pool(
+    *, fetchrow_return=None, fetchval_return=None, execute_return=None, fetch_return=None
+):
+    """Build a minimal async mock pool.
+
+    fetch_return: return value for pool.fetch() (used by _check_duplicates_batch).
+      - None (default) → empty list, meaning no duplicates found.
+      - A non-empty list of rows → those (merchant, amount, posted_at) tuples are
+        treated as existing duplicates and the corresponding batch rows are skipped.
+    """
     pool = MagicMock()
     pool.fetchrow = AsyncMock(return_value=fetchrow_return)
     pool.fetchval = AsyncMock(return_value=fetchval_return)
     pool.execute = AsyncMock(return_value=execute_return or "INSERT 0 1")
+    pool.fetch = AsyncMock(return_value=fetch_return if fetch_return is not None else [])
     return pool
 
 
@@ -255,12 +264,18 @@ class TestImportDeduplication:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            # pool.fetchrow returns a row (duplicate found)
-            existing = MagicMock()
-            pool = _make_pool(fetchrow_return=existing, fetchval_return=False)
+            pool = _make_pool(fetchval_return=False)
             pool.execute = AsyncMock()
 
-            result = await import_transactions_from_file(pool, file_path=path)
+            # Patch _check_duplicates_batch to report all rows as duplicates.
+            async def all_duplicates(p, batch, account_id):
+                return set(range(len(batch)))
+
+            with patch(
+                "roster.finance.tools.data_import._check_duplicates_batch",
+                side_effect=all_duplicates,
+            ):
+                result = await import_transactions_from_file(pool, file_path=path)
             assert result["skipped"] > 0
             assert result["imported"] == 0
         finally:
@@ -515,11 +530,18 @@ class TestPostImportTriggers:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            existing = MagicMock()
-            pool = _make_pool(fetchrow_return=existing, fetchval_return=False)
+            pool = _make_pool(fetchval_return=False)
             pool.execute = AsyncMock()
 
+            # Report all batch rows as duplicates so imported == 0.
+            async def all_duplicates(p, batch, account_id):
+                return set(range(len(batch)))
+
             with (
+                patch(
+                    "roster.finance.tools.data_import._check_duplicates_batch",
+                    side_effect=all_duplicates,
+                ),
                 patch(
                     "roster.finance.tools.data_import._refresh_spending_summaries",
                     new=AsyncMock(return_value=True),
