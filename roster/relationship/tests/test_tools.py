@@ -2710,3 +2710,161 @@ async def test_contact_resolve_salience_only_when_multiple_candidates(pool):
     assert result["contact_id"] == sarah["id"]
     # salience is only added when disambiguating
     # For single exact match, we don't run _compute_salience
+
+
+# ------------------------------------------------------------------
+# Task 4.4: Enriched contact responses — Dunbar tier/score fields
+# ------------------------------------------------------------------
+
+
+async def test_contact_get_includes_dunbar_fields(pool):
+    """contact_get always returns dunbar_tier, dunbar_score, and dunbar_tier_override fields."""
+    from butlers.tools.relationship import contact_create, contact_get
+
+    contact = await contact_create(pool, "Dunbar Test Person")
+    fetched = await contact_get(pool, contact["id"])
+
+    assert "dunbar_tier" in fetched, "contact_get must include dunbar_tier"
+    assert "dunbar_score" in fetched, "contact_get must include dunbar_score"
+    assert "dunbar_tier_override" in fetched, "contact_get must include dunbar_tier_override"
+
+
+async def test_contact_get_no_interactions_defaults_to_tier_1500(pool):
+    """contact_get returns tier 1500, score 0.0 for contacts with no interactions."""
+    from butlers.tools.relationship import contact_create, contact_get
+
+    contact = await contact_create(pool, "No Interactions Person")
+    fetched = await contact_get(pool, contact["id"])
+
+    assert fetched["dunbar_tier"] == 1500
+    assert fetched["dunbar_score"] == 0.0
+    assert fetched["dunbar_tier_override"] is False
+
+
+async def test_contact_get_with_interactions_shows_nonzero_score(pool):
+    """contact_get returns dunbar_score > 0 for a contact with recent interactions."""
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.tools.relationship import contact_create, contact_get
+
+    contact = await contact_create(pool, "Active Person")
+    cid = contact["id"]
+
+    # Insert an active interaction fact directly
+    occurred = datetime.now(UTC) - timedelta(days=3)
+    await pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
+        VALUES ($1, 'interaction', 'chat', 'relationship', 'active', $2)
+        """,
+        f"contact:{cid}",
+        occurred,
+    )
+
+    fetched = await contact_get(pool, cid)
+
+    assert fetched["dunbar_score"] > 0.0, "Contact with recent interactions should have score > 0"
+    assert fetched["dunbar_tier"] != 1500, "Contact with interactions should not be tier 1500"
+
+
+async def test_contact_search_includes_dunbar_fields(pool):
+    """contact_search returns dunbar_tier and dunbar_score for each result."""
+    from butlers.tools.relationship import contact_create, contact_search
+
+    await contact_create(pool, first_name="Dunbar", last_name="Search Person")
+    results = await contact_search(pool, "Dunbar")
+
+    assert len(results) >= 1
+    for result in results:
+        assert "dunbar_tier" in result, "contact_search result must include dunbar_tier"
+        assert "dunbar_score" in result, "contact_search result must include dunbar_score"
+        assert "dunbar_tier_override" in result, (
+            "contact_search result must include dunbar_tier_override"
+        )
+
+
+async def test_contact_search_no_interactions_defaults_to_tier_1500(pool):
+    """contact_search returns tier 1500 / score 0.0 for contacts with no interactions."""
+    from butlers.tools.relationship import contact_create, contact_search
+
+    await contact_create(pool, first_name="ZeroScore", last_name="SearchResult")
+    results = await contact_search(pool, "ZeroScore")
+
+    assert len(results) >= 1
+    for result in results:
+        assert result["dunbar_tier"] == 1500
+        assert result["dunbar_score"] == 0.0
+        assert result["dunbar_tier_override"] is False
+
+
+async def test_contacts_overdue_includes_dunbar_fields(pool_with_cadence):
+    """contacts_overdue returns dunbar_tier, dunbar_score, effective_cadence fields."""
+    from butlers.tools.relationship import contact_create, contacts_overdue, stay_in_touch_set
+
+    pool = pool_with_cadence
+    contact = await contact_create(pool, "Overdue With Dunbar")
+    cid = contact["id"]
+
+    # Set cadence so contact is in overdue list (no interactions → immediately overdue)
+    await stay_in_touch_set(pool, cid, 7)
+
+    overdue = await contacts_overdue(pool)
+    overdue_ids = [c["id"] for c in overdue]
+    assert cid in overdue_ids, "Contact with cadence and no interactions should be overdue"
+
+    overdue_contact = next(c for c in overdue if c["id"] == cid)
+    assert "dunbar_tier" in overdue_contact, "contacts_overdue result must include dunbar_tier"
+    assert "dunbar_score" in overdue_contact, "contacts_overdue result must include dunbar_score"
+    assert "effective_cadence" in overdue_contact, (
+        "contacts_overdue result must include effective_cadence"
+    )
+    assert overdue_contact["effective_cadence"] == 7
+
+
+async def test_contacts_overdue_uses_tier_cadence_when_no_stay_in_touch(pool_with_cadence):
+    """contacts_overdue uses Dunbar tier cadence when contact has no stay_in_touch_days."""
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.tools.relationship import contact_create, contacts_overdue
+
+    pool = pool_with_cadence
+    contact = await contact_create(pool, "Tier Cadence Person")
+    cid = contact["id"]
+
+    # Give contact a recent interaction to establish a non-1500 tier
+    # Use a high score (multiple interactions) so it lands in a lower tier
+    for days_ago in range(1, 6):
+        occurred = datetime.now(UTC) - timedelta(days=days_ago)
+        await pool.execute(
+            """
+            INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
+            VALUES ($1, 'interaction', 'chat', 'relationship', 'active', $2)
+            """,
+            f"contact:{cid}",
+            occurred,
+        )
+
+    # No stay_in_touch_days set — should use tier-based cadence
+    overdue = await contacts_overdue(pool)
+
+    # Contact has recent interactions, should NOT be overdue with tier cadence
+    overdue_ids = [c["id"] for c in overdue]
+    assert cid not in overdue_ids, (
+        "Contact with recent interactions and no stay_in_touch_days should not be overdue"
+    )
+
+
+async def test_contacts_overdue_tier_1500_excluded_without_stay_in_touch(pool_with_cadence):
+    """contacts_overdue excludes tier 1500 contacts that have no stay_in_touch_days."""
+    from butlers.tools.relationship import contact_create, contacts_overdue
+
+    pool = pool_with_cadence
+    # Contact with no interactions → tier 1500; no stay_in_touch_days
+    contact = await contact_create(pool, "Outer Circle No Cadence")
+    cid = contact["id"]
+
+    overdue = await contacts_overdue(pool)
+    overdue_ids = [c["id"] for c in overdue]
+    assert cid not in overdue_ids, (
+        "Tier 1500 contact with no stay_in_touch_days must not appear in overdue list"
+    )
