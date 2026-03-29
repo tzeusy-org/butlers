@@ -1430,8 +1430,8 @@ class GDriveConnectorManager:
     def __init__(
         self,
         db_pool: asyncpg.Pool,
-        credential_store: Any,
-        switchboard_mcp_url: str,
+        credential_store: Any = None,
+        switchboard_mcp_url: str = "",
         poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S,
         account_rescan_interval_s: int = _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S,
         cursor_pool: asyncpg.Pool | None = None,
@@ -1461,6 +1461,12 @@ class GDriveConnectorManager:
         # Health server (started in background thread)
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
+
+        # Credential store (shared across accounts for app creds)
+        if self._credential_store is None and self._db_pool is not None:
+            from butlers.credential_store import CredentialStore
+
+            self._credential_store = CredentialStore(self._db_pool)
 
         # Rescan task
         self._rescan_task: asyncio.Task[None] | None = None

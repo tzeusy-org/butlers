@@ -1735,7 +1735,7 @@ async def run_owntracks_connector() -> None:
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)
         except Exception as exc:
-            if should_retry_with_ssl_disable(exc):
+            if should_retry_with_ssl_disable(exc, pool_kwargs.get("ssl")):
                 logger.debug("OwnTracksConnector: retrying DB pool without SSL")
                 pool_kwargs["ssl"] = False
                 db_pool = await asyncpg.create_pool(**pool_kwargs)
