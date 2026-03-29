@@ -680,7 +680,7 @@ class TestRateLimitRetry:
         """Retries on 403 (quota exceeded) up to max retries."""
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         responses = [
-            _make_response(403, text="quota"),
+            _make_response(403, json_body={"error": {"errors": [{"reason": "rateLimitExceeded"}]}}),
             _make_response(200, json_body={"ok": True}),
         ]
         mock_client.request = AsyncMock(side_effect=responses)

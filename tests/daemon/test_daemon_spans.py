@@ -423,6 +423,7 @@ class TestCoreToolSpans:
             "eligibility_sweep",
             "*/5 * * * *",
             None,
+            task_type="cron",
             dispatch_mode="job",
             job_name="eligibility_sweep",
             job_args={"dry_run": True},

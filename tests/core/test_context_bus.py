@@ -21,7 +21,7 @@ import json
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -265,7 +265,7 @@ class TestClearContextValidation:
     @pytest.mark.asyncio(loop_scope="session")
     async def test_unknown_signal_type_is_noop(self):
         pool = MagicMock()
-        pool.execute = MagicMock(return_value=None)
+        pool.execute = AsyncMock(return_value=None)
         # clear_context does not validate signal vocabulary; unknown types are
         # silently passed to the SQL UPDATE which will match zero rows.
         await clear_context(pool, "general", "partying")

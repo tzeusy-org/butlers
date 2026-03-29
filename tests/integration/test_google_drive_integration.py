@@ -286,11 +286,8 @@ class TestDriveScopeOAuthFlow:
         call_kwargs = mock_resolve.call_args[1]
         assert call_kwargs.get("account") == _FAKE_ACCOUNT_EMAIL
 
-    async def test_module_startup_fails_missing_drive_scope(self) -> None:
-        """Module on_startup raises when 'drive' scope is absent from granted_scopes."""
-        from butlers.google_credentials import MissingGoogleCredentialsError  # noqa: PLC0415
-        from butlers.modules.google_drive import GoogleDriveStartupError  # noqa: PLC0415
-
+    async def test_module_startup_degrades_missing_drive_scope(self) -> None:
+        """Module on_startup warns and skips when 'drive' scope is absent."""
         mock_store = _make_mock_credential_store()
 
         # Credentials with only read-only scope — insufficient for the module (needs write).
@@ -309,14 +306,13 @@ class TestDriveScopeOAuthFlow:
             return_value=readonly_creds,
         ):
             module = GoogleDriveModule()
-            with pytest.raises(
-                (MissingGoogleCredentialsError, GoogleDriveStartupError, RuntimeError, ValueError)
-            ):
-                await module.on_startup(
-                    config=config,
-                    db=None,
-                    credential_store=mock_store,
-                )
+            await module.on_startup(
+                config=config,
+                db=None,
+                credential_store=mock_store,
+            )
+            # Module degrades gracefully — no credentials stored.
+            assert not getattr(module, "_credentials_ok", False)
 
 
 # ---------------------------------------------------------------------------

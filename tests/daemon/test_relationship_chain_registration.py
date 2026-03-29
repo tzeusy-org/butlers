@@ -18,6 +18,7 @@ RELATIONSHIP_MIGRATIONS_DIR = ROSTER_DIR / "relationship" / "migrations"
 
 EXPECTED_CHAIN = [
     ("001_relationship_tables.py", "rel_001", None),
+    ("002_align_contacts_schema.py", "rel_002", "rel_001"),
 ]
 
 
@@ -44,9 +45,9 @@ def test_relationship_chain_directory_resolves() -> None:
     assert chain_dir == RELATIONSHIP_MIGRATIONS_DIR
 
 
-def test_relationship_chain_has_no_legacy_duplicate_002_prefix_files() -> None:
-    legacy_files = sorted(p.name for p in RELATIONSHIP_MIGRATIONS_DIR.glob("002_*.py"))
-    assert legacy_files == []
+def test_relationship_chain_002_file_is_canonical() -> None:
+    files_002 = sorted(p.name for p in RELATIONSHIP_MIGRATIONS_DIR.glob("002_*.py"))
+    assert files_002 == ["002_align_contacts_schema.py"]
 
 
 def test_relationship_chain_expected_files_and_links() -> None:
@@ -75,11 +76,11 @@ def test_relationship_chain_has_unique_revisions_and_is_linear() -> None:
 
     assert len(revisions) == len(set(revisions))
 
-    current = "rel_001"
+    current = "rel_002"
     path = [current]
     while chain_map.get(current) is not None:
         current = chain_map[current]
         path.append(current)
 
     path.reverse()
-    assert path == ["rel_001"]
+    assert path == ["rel_001", "rel_002"]

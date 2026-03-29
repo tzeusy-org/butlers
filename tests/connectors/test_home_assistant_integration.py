@@ -1034,7 +1034,6 @@ class TestDashboardSettingsFlow:
         import httpx
 
         from butlers.api.app import create_app
-        from butlers.api.routers.home_assistant import _make_credential_store
 
         app = create_app(api_key="")
 
