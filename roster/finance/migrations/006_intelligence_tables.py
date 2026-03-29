@@ -1,7 +1,7 @@
 """finance_intelligence_tables
 
-Revision ID: finance_002
-Revises: finance_001
+Revision ID: finance_006
+Revises: finance_005
 Create Date: 2026-03-28 00:00:00.000000
 
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "finance_002"
-down_revision = "finance_001"
+revision = "finance_006"
+down_revision = "finance_005"
 branch_labels = None
 depends_on = None
 

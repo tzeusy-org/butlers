@@ -42,8 +42,7 @@ def _check_token() -> bool:
                     """
                     SELECT COUNT(*) FROM public.entity_info ei
                     JOIN public.entities e ON e.id = ei.entity_id
-                    WHERE 'owner' = ANY(e.roles)
-                      AND ei.type = 'google_oauth_refresh'
+                    WHERE ei.type = 'google_oauth_refresh'
                       AND ei.value IS NOT NULL
                       AND length(ei.value) > 0
                     """

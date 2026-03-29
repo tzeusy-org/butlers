@@ -1,4 +1,4 @@
-"""Unit tests for the finance butler intelligence tables migration (finance_002).
+"""Unit tests for the finance butler intelligence tables migration (finance_006).
 
 Tests validate migration metadata, new columns on finance.transactions and
 finance.accounts, all 8 new tables, indexes (including partial index conditions),
@@ -18,7 +18,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-MIGRATION_FILENAME = "002_intelligence_tables.py"
+MIGRATION_FILENAME = "006_intelligence_tables.py"
 
 
 def _finance_migration_dir() -> Path:
@@ -35,7 +35,7 @@ def _load_migration():
     migration_path = _finance_migration_dir() / MIGRATION_FILENAME
     assert migration_path.exists(), f"Migration file should exist: {migration_path}"
 
-    spec = importlib.util.spec_from_file_location("finance_002_migration", migration_path)
+    spec = importlib.util.spec_from_file_location("finance_006_migration", migration_path)
     assert spec is not None, "Should be able to load migration spec"
     assert spec.loader is not None, "Should have a loader"
     module = importlib.util.module_from_spec(spec)
@@ -48,7 +48,7 @@ def _load_migration():
 # ---------------------------------------------------------------------------
 
 
-def test_finance_002_file_exists():
+def test_finance_006_file_exists():
     """Migration file must exist in the finance chain directory."""
     migration_path = _finance_migration_dir() / MIGRATION_FILENAME
     assert migration_path.exists(), f"Expected {migration_path}"
@@ -58,13 +58,13 @@ class TestRevisionMetadata:
     """Verify Alembic revision identifiers and callables."""
 
     def test_revision_id(self):
-        assert _load_migration().revision == "finance_002"
+        assert _load_migration().revision == "finance_006"
 
-    def test_down_revision_is_finance_001(self):
-        assert _load_migration().down_revision == "finance_001"
+    def test_down_revision_is_finance_005(self):
+        assert _load_migration().down_revision == "finance_005"
 
     def test_branch_labels_is_none(self):
-        """finance_002 extends the existing finance branch; no new label."""
+        """finance_006 extends the existing finance branch; no new label."""
         mod = _load_migration()
         # branch_labels should be None or absent (not a new branch root)
         bl = getattr(mod, "branch_labels", None)

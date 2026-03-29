@@ -878,7 +878,6 @@ async def get_steam_playtime(
         display_name=account.display_name,
         days=days,
         total_games=total_games,
-<<<<<<< HEAD
         total_minutes=total_playtime,
         games=games,
         daily=daily,
