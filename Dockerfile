@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # Butlers application image.
 #
 # Requires butlers-base image (built from Dockerfile.base).
@@ -6,9 +8,29 @@
 #
 # This image rebuilds in ~30s (Python deps + source copy only).
 
+# --- Optional: Go builder (whatsapp-bridge) --------------------------------
+# Only runs when whatsapp-bridge/ exists in context. The binary is small (~15MB)
+# so we always include it rather than maintaining a separate Dockerfile.
+FROM golang:1.25-bookworm AS go-builder
+
+WORKDIR /build
+
+COPY whatsapp-bridge/go.mod whatsapp-bridge/go.sum ./
+RUN go mod download
+
+COPY whatsapp-bridge/ ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go mod tidy && CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w" \
+    -o /out/whatsapp-bridge \
+    ./cmd/bridge
+
+# --- App image --------------------------------------------------------------
 FROM butlers-base:latest
 
-# Optional: extra dependency groups (e.g. "live-listener", "whatsapp")
+COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
+
+# Optional: extra dependency groups (e.g. "live-listener")
 ARG EXTRAS=""
 
 # Extra system deps for optional features
@@ -23,14 +45,15 @@ COPY pyproject.toml uv.lock ./
 # 2. Source code (must be present before uv sync — local editable package)
 COPY src/ src/
 
-# 3. Install production dependencies
+# 3. Install production dependencies (always include whatsapp extra — just qrcode)
 #    UV_TORCH_BACKEND=cpu: use CPU-only PyTorch wheels — avoids pulling
 #    NVIDIA CUDA packages that can't install in slim containers.
 ENV UV_TORCH_BACKEND=cpu
-RUN if [ -n "$EXTRAS" ]; then \
-      uv sync --no-dev --extra "$EXTRAS"; \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ -n "$EXTRAS" ]; then \
+      uv sync --no-dev --extra whatsapp --extra "$EXTRAS"; \
     else \
-      uv sync --no-dev; \
+      uv sync --no-dev --extra whatsapp; \
     fi
 
 # 4. Supporting files (alembic, scripts — change rarely)

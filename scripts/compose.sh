@@ -275,16 +275,34 @@ for p in peers.values():
   fi
 fi
 
-# ── Build images while existing stack keeps running ────────────────────
-# This means zero downtime during rebuilds — old containers serve traffic
-# until the new images are ready, then we swap.
-echo "Building images (existing stack stays up)..."
-"${CMD[@]}" build --scale connector-whatsapp-user=0 2>/dev/null || true
+# ── Cap build cache to prevent unbounded growth ──────────────────────
+# Docker build cache grows ~500MB+ per rebuild across all services.
+# Without a cap, it consumed 717GB. Keep it under 20GB.
+docker builder prune --keep-storage=20g -f 2>/dev/null || true
+
+# ── Build shared app image (used by all services) ────────────────────
+# All services reference butlers-app:latest — includes Go whatsapp-bridge
+# binary and whatsapp extra (just qrcode). One image for everything.
+echo "Building butlers-app image (existing stack stays up)..."
+DOCKER_BUILDKIT=1 docker build -t butlers-app:latest . || {
+  echo "ERROR: Failed to build butlers-app image" >&2
+  exit 1
+}
+
+# Build profile-specific images (live-listener if audio profile active)
+if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
+  echo "Building butlers-app-audio image (live-listener)..."
+  DOCKER_BUILDKIT=1 docker build --build-arg EXTRAS=live-listener \
+    -t butlers-app-audio:latest . || {
+    echo "ERROR: Failed to build butlers-app-audio image" >&2
+    exit 1
+  }
+fi
 
 # ── Swap: stop old containers, start new ones ─────────────────────────
 # --remove-orphans clears containers from renamed/removed services.
 "${CMD[@]}" down --remove-orphans 2>/dev/null || true
-"${CMD[@]}" up -d "${SCALE_ARGS[@]}" --scale connector-whatsapp-user=0
+"${CMD[@]}" up -d "${SCALE_ARGS[@]}"
 
 # ── Apply egress firewall (blocks private subnet access from containers) ─
 if sudo -n true 2>/dev/null; then
@@ -295,7 +313,3 @@ else
   echo "  to block container access to LAN/Tailscale (sudo requires a password)."
   echo ""
 fi
-
-# ── Whatsapp connector (slow Go build, non-blocking) ──────────────────
-echo "Building whatsapp connector in background (Go stage, ~5 min first time)..."
-"${CMD[@]}" up -d --build connector-whatsapp-user 2>/dev/null &

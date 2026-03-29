@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # Butlers base image — system deps, LLM runtime CLIs, uv.
 #
 # This image changes infrequently (only when system deps or npm packages
@@ -24,7 +26,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # LLM runtime CLIs — each butler can use any of these via butler.toml
-RUN npm install -g \
+RUN --mount=type=cache,target=/root/.npm \
+    npm install -g \
     @anthropic-ai/claude-code \
     @google/gemini-cli \
     @openai/codex \

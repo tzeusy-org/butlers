@@ -2,13 +2,13 @@
 #
 # USAGE:
 #
-#   docker compose up                              # full stack
-#   docker compose --profile dev up                # + frontend dev server
-#   docker compose --profile hotreload up          # + live source code reload
-#   docker compose --profile audio up              # + live-listener connector
 #   ./scripts/compose.sh                            # recommended dev launcher
 #   ./scripts/compose.sh --hotreload               # with live code reload
 #   ./scripts/compose.sh --prod                    # production database
+#
+# NOTE: compose.sh pre-builds the shared butlers-app image. If running
+# docker compose directly, build it first:
+#   docker build -t butlers-app:latest .
 #
 # PROFILES:
 #   (default)  — all core services: migrations, butlers-up, connectors,
@@ -87,9 +87,7 @@ services:
   # ── Layer 0.5: Migrations + Log Init ──────────────────────────────────
 
   migrations:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     command: ["db", "migrate"]
     environment:
       <<: *postgres-env
@@ -114,9 +112,7 @@ services:
   # ── Layer 1a: Dashboard + Frontend ────────────────────────────────────
 
   dashboard-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     ports:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-41200}:41200"
     volumes:
@@ -171,9 +167,7 @@ services:
   # ── Layer 1b: Connectors ──────────────────────────────────────────────
 
   connector-telegram-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.telegram_bot"]
     command: []
     environment:
@@ -193,9 +187,7 @@ services:
     restart: unless-stopped
 
   connector-telegram-user:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.telegram_user_client"]
     command: []
     environment:
@@ -215,9 +207,7 @@ services:
     restart: unless-stopped
 
   connector-whatsapp-user:
-    build:
-      context: .
-      dockerfile: Dockerfile.whatsapp
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/whatsapp_user", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.whatsapp_user_client"]
     command: []
     environment:
@@ -240,9 +230,7 @@ services:
     restart: unless-stopped
 
   connector-google-calendar:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_calendar", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_calendar"]
     command: []
     environment:
@@ -266,9 +254,7 @@ services:
     restart: unless-stopped
 
   connector-spotify:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/spotify", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.spotify"]
     command: []
     environment:
@@ -296,6 +282,7 @@ services:
       dockerfile: Dockerfile
       args:
         EXTRAS: live-listener
+    image: butlers-app-audio:latest
     profiles: [audio]
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.live_listener"]
     command: []
@@ -320,9 +307,7 @@ services:
     restart: unless-stopped
 
   connector-owntracks:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/owntracks", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.owntracks"]
     command: []
     environment:
@@ -345,9 +330,7 @@ services:
     restart: unless-stopped
 
   connector-home-assistant:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/home_assistant", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.home_assistant"]
     command: []
     environment:
@@ -391,9 +374,7 @@ services:
   # ── Layer 2: OAuth Gate ───────────────────────────────────────────────
 
   oauth-gate:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/oauth_gate.py"]
     command: []
     environment:
@@ -413,9 +394,7 @@ services:
   # server listens on its configured port (switchboard on 41100, etc.).
   # LLM runtime CLIs are spawned as subprocesses.
   butlers-up:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "uv", "run", "--frozen", "--no-dev", "butlers", "up"]
     command: []
     ports:
@@ -449,9 +428,7 @@ services:
     restart: unless-stopped
 
   connector-gmail:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.gmail"]
     command: []
     environment:
@@ -475,9 +452,7 @@ services:
     restart: unless-stopped
 
   connector-google-drive:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_drive", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_drive"]
     command: []
     environment:
@@ -513,9 +488,7 @@ services:
   # --scale dashboard-api=0 to prevent conflicts (handled by dev-compose.sh).
 
   butlers-up-hotreload:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     profiles: [hotreload]
     entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers up"]
     command: []
@@ -545,9 +518,7 @@ services:
     restart: unless-stopped
 
   dashboard-api-hotreload:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: butlers-app:latest
     profiles: [hotreload]
     entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers dashboard --host 0.0.0.0 --port 41200"]
     command: []
