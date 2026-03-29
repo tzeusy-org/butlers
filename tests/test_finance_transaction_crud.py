@@ -88,7 +88,7 @@ def _make_txn_row(
     deleted_at: datetime | None = None,
     version: int = 1,
     updated_at: datetime = _NOW,
-    category_source: str = "explicit",
+    category_source: str = "manual",
     is_category_locked: bool = False,
     is_duplicate: bool = False,
     duplicate_of: str | None = None,
@@ -722,7 +722,7 @@ class TestUpdateTransaction:
             "description": "Test",
             "metadata": "{}",
             "version": 1,
-            "category_source": "explicit",
+            "category_source": "manual",
             "is_category_locked": False,
         }
         data.update(overrides)

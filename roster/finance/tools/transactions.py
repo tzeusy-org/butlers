@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid as _uuid_mod
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -17,6 +18,65 @@ logger = logging.getLogger(__name__)
 
 # Maximum rows accepted by bulk_record_transactions in a single call.
 _MAX_BULK_TRANSACTIONS = 500
+
+
+def _is_uuid(value: str) -> bool:
+    """Return True if *value* is a valid UUID string."""
+    try:
+        _uuid_mod.UUID(value)
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
+async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None:
+    """Resolve a human-readable account identifier to its UUID.
+
+    Accepts a UUID string (returned as-is) or a fuzzy identifier that is
+    matched against ``accounts.name``, ``accounts.institution``, or
+    ``accounts.last_four``.  Returns ``None`` when *raw* is ``None`` or
+    when no matching account is found.
+
+    Raises :class:`ValueError` with an actionable hint when a non-UUID
+    identifier matches zero or multiple accounts.
+    """
+    if raw is None:
+        return None
+    if _is_uuid(raw):
+        return raw
+
+    # Try exact match on name, then institution, then last_four.
+    row = await pool.fetchrow(
+        """
+        SELECT id FROM accounts
+        WHERE name = $1 OR institution = $1 OR last_four = $1
+        LIMIT 2
+        """,
+        raw,
+    )
+    if row is None:
+        # Try case-insensitive ILIKE on name and institution.
+        rows = await pool.fetch(
+            """
+            SELECT id FROM accounts
+            WHERE name ILIKE $1 OR institution ILIKE $1
+            LIMIT 2
+            """,
+            f"%{raw}%",
+        )
+        if len(rows) == 1:
+            return str(rows[0]["id"])
+        if len(rows) > 1:
+            raise ValueError(
+                f"account_id '{raw}' is ambiguous — matched multiple accounts. "
+                "Pass the account UUID instead. List accounts with list_accounts()."
+            )
+        raise ValueError(
+            f"account_id '{raw}' is not a valid UUID and no matching account was "
+            "found by name, institution, or last_four. "
+            "List accounts with list_accounts() and pass the UUID."
+        )
+    return str(row["id"])
 
 # Module-level cache for _has_column results: (table, column) -> bool
 # Avoids repeated information_schema queries within a process lifetime.
@@ -379,6 +439,9 @@ async def record_transaction(
     dict
         Full TransactionRecord dict.
     """
+    # Resolve human-readable account identifiers to UUID.
+    account_id = await _resolve_account_id(pool, account_id)
+
     direction = _infer_direction(amount)
     stored_amount = _normalize_amount(amount)
 
@@ -404,7 +467,7 @@ async def record_transaction(
 
     # --- Auto-categorization via merchant mappings ---
     effective_category = category
-    category_source = "explicit"
+    category_source = "manual"
     if category in ("uncategorized", "") or category is None:
         mapped_category = await _lookup_merchant_category(pool, merchant)
         if mapped_category is not None:
@@ -412,7 +475,7 @@ async def record_transaction(
             category_source = "auto"
         else:
             effective_category = "uncategorized"
-            category_source = "explicit"
+            category_source = "manual"
 
     meta_dict = dict(metadata or {})
     meta_json = json.dumps(meta_dict)
@@ -597,6 +660,9 @@ async def list_transactions(
     dict
         TransactionListResponse with keys: items, total, limit, offset.
     """
+    # Resolve human-readable account identifiers to UUID.
+    account_id = await _resolve_account_id(pool, account_id)
+
     limit = min(max(1, limit), 500)
     offset = max(0, offset)
 

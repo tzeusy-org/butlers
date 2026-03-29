@@ -617,7 +617,8 @@ async def pool_v2(provisioned_postgres_pool):
                 currency          CHAR(3) NOT NULL,
                 direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
                 category          TEXT NOT NULL,
-                category_source   TEXT NOT NULL DEFAULT 'explicit',
+                category_source   TEXT NOT NULL DEFAULT 'manual'
+                    CHECK (category_source IN ('auto', 'manual', 'ml', 'rule')),
                 is_category_locked BOOLEAN NOT NULL DEFAULT false,
                 payment_method    TEXT,
                 receipt_url       TEXT,
