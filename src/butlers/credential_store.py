@@ -194,9 +194,10 @@ class CredentialStore:
             If *key* or *value* is an empty string.
         """
         key = key.strip()
+        value = value.strip().strip('"').strip("'")
         if not key:
             raise ValueError("key must be a non-empty string")
-        if value == "":
+        if not value:
             raise ValueError("value must be a non-empty string")
 
         async with self.pool.acquire() as conn:
@@ -252,9 +253,10 @@ class CredentialStore:
             return False
 
         key = key.strip()
+        value = value.strip().strip('"').strip("'")
         if not key:
             raise ValueError("key must be a non-empty string")
-        if value == "":
+        if not value:
             raise ValueError("value must be a non-empty string")
 
         async with pool.acquire() as conn:
