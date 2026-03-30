@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from alembic.config import Config
+from sqlalchemy import create_engine, text
 
 from alembic import command
 
@@ -225,6 +226,23 @@ def _upgrade_chain(config: Config, chain: str, schema: str | None) -> None:
     command.upgrade(config, f"{chain}@head")
 
 
+def _bootstrap_extensions(db_url: str) -> None:
+    """Install required PostgreSQL extensions before running migrations.
+
+    Uses ``CREATE EXTENSION IF NOT EXISTS`` so the call is idempotent and safe
+    to run on every migration invocation.  Must be called **after** the target
+    database exists and **before** any Alembic ``upgrade`` that references
+    extension-provided types (e.g. ``vector``, ``tsvector``).
+    """
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            for ext in ("vector", "pgcrypto", "uuid-ossp", "pg_trgm"):
+                conn.execute(text(f'CREATE EXTENSION IF NOT EXISTS "{ext}"'))
+    finally:
+        engine.dispose()
+
+
 async def run_migrations(db_url: str, chain: str = "core", schema: str | None = None) -> None:
     """Run Alembic migrations programmatically for a specific chain.
 
@@ -241,6 +259,12 @@ async def run_migrations(db_url: str, chain: str = "core", schema: str | None = 
         schema: Optional target schema for one-db/multi-schema topology.
     """
     chains = _resolve_target_chains(chain)
+
+    # Extensions must exist before any migration that uses extension-provided
+    # types (e.g. pgvector's ``vector``).  The call is idempotent.
+    if "core" in chains or chain == "core":
+        _bootstrap_extensions(db_url)
+
     normalized_schema = _normalize_schema(schema)
     config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
     for resolved_chain in chains:

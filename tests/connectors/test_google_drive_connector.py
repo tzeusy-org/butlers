@@ -1397,9 +1397,7 @@ class TestRateLimitHandlingAndErrorIsolation:
             "error": {
                 "code": 403,
                 "message": "Google Drive API has not been used in project 12345",
-                "errors": [
-                    {"reason": "accessNotConfigured", "domain": "usageLimits"}
-                ],
+                "errors": [{"reason": "accessNotConfigured", "domain": "usageLimits"}],
                 "details": [
                     {
                         "@type": "type.googleapis.com/google.rpc.ErrorInfo",
@@ -1430,9 +1428,7 @@ class TestRateLimitHandlingAndErrorIsolation:
             "error": {
                 "code": 403,
                 "message": "Insufficient Permission",
-                "errors": [
-                    {"reason": "insufficientPermissions", "domain": "global"}
-                ],
+                "errors": [{"reason": "insufficientPermissions", "domain": "global"}],
             }
         }
 
@@ -1547,9 +1543,7 @@ class TestRateLimitHandlingAndErrorIsolation:
     async def test_is_retryable_403_rate_limit(self) -> None:
         """_is_retryable_403 returns True for rateLimitExceeded."""
         resp = MagicMock()
-        resp.json.return_value = {
-            "error": {"errors": [{"reason": "rateLimitExceeded"}]}
-        }
+        resp.json.return_value = {"error": {"errors": [{"reason": "rateLimitExceeded"}]}}
         assert _is_retryable_403(resp) is True
 
     async def test_is_retryable_403_service_disabled(self) -> None:
@@ -2166,18 +2160,17 @@ class TestMultiAccountLifecycle:
         assert "reload_accounts" in caps
         assert caps["multi_account"] is True
 
-    def test_start_heartbeat_without_mcp_client_is_noop(
+    def test_start_heartbeat_without_switchboard_url_is_noop(
         self,
         mock_db_pool: MagicMock,
         mock_credential_store: MagicMock,
     ) -> None:
-        """_start_heartbeat is a no-op when no MCP client is wired (non-fatal)."""
+        """_start_heartbeat is a no-op when no switchboard URL is configured (non-fatal)."""
         manager = GDriveConnectorManager(
             db_pool=mock_db_pool,
             credential_store=mock_credential_store,
-            switchboard_mcp_url=_SWITCHBOARD_URL,
+            switchboard_mcp_url="",
         )
-        # No mcp_client set — should not raise
         manager._start_heartbeat()
         assert manager._heartbeat is None
 

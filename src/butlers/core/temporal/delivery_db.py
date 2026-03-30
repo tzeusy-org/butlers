@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -119,33 +119,47 @@ async def upsert_delivery_preferences(
     if timezone is not None:
         validate_timezone(timezone)
 
-    # Build SET clause dynamically for provided fields only.
-    updates: list[str] = ["updated_at = now()"]
-    params: list[Any] = [butler_name]  # $1 = butler_name
+    def _parse_time(hhmm: str) -> time:
+        """Parse 'HH:MM' string to datetime.time for asyncpg TIME columns."""
+        parts = hhmm.split(":")
+        return time(int(parts[0]), int(parts[1]))
 
-    def _add(col: str, value: Any) -> None:
-        params.append(value)
-        updates.append(f"{col} = ${len(params)}")
-
+    # Collect provided fields — used for both INSERT and ON CONFLICT UPDATE.
+    fields: dict[str, Any] = {}
     if timezone is not None:
-        _add("timezone", timezone)
+        fields["timezone"] = timezone
     if quiet_hours_start is not None:
-        _add("quiet_hours_start", quiet_hours_start)
+        fields["quiet_hours_start"] = _parse_time(quiet_hours_start)
     if quiet_hours_end is not None:
-        _add("quiet_hours_end", quiet_hours_end)
+        fields["quiet_hours_end"] = _parse_time(quiet_hours_end)
     if batch_low_priority is not None:
-        _add("batch_low_priority", batch_low_priority)
+        fields["batch_low_priority"] = batch_low_priority
     if batch_delivery_time is not None:
-        _add("batch_delivery_time", batch_delivery_time)
+        fields["batch_delivery_time"] = _parse_time(batch_delivery_time)
     if override_channels is not None:
-        _add("override_channels", json.dumps(override_channels))
+        fields["override_channels"] = json.dumps(override_channels)
 
-    set_clause = ", ".join(updates)
+    # Build INSERT with all provided columns so first-upsert sets values.
+    insert_cols = ["butler_name"] + list(fields.keys())
+    params: list[Any] = [butler_name] + list(fields.values())
+    placeholders = ", ".join(f"${i}" for i in range(1, len(params) + 1))
+    # JSONB columns need explicit casts in the VALUES clause
+    jsonb_cols = {"override_channels"}
+    cast_placeholders = []
+    for i, col in enumerate(insert_cols, 1):
+        cast_placeholders.append(f"${i}::jsonb" if col in jsonb_cols else f"${i}")
+    placeholders = ", ".join(cast_placeholders)
+
+    update_parts = ["updated_at = now()"]
+    for col in fields:
+        cast = "::jsonb" if col in jsonb_cols else ""
+        update_parts.append(f"{col} = EXCLUDED.{col}{cast}")
+    set_clause = ", ".join(update_parts)
 
     row = await pool.fetchrow(
         f"""
-        INSERT INTO delivery_preferences (butler_name)
-        VALUES ($1)
+        INSERT INTO delivery_preferences ({", ".join(insert_cols)})
+        VALUES ({placeholders})
         ON CONFLICT (butler_name) DO UPDATE
             SET {set_clause}
         RETURNING id, butler_name, quiet_hours_start, quiet_hours_end, timezone,

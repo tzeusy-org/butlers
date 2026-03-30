@@ -3748,9 +3748,7 @@ class ButlerDaemon:
                     # identity resolution maps to the correct contact/entity.
                     _participants: dict[str, str] = sender.get("participants") or {}
                     _owner_sid = sender.get("owner_sender_id")
-                    _non_owner = [
-                        sid for sid in _participants if sid != _owner_sid
-                    ]
+                    _non_owner = [sid for sid in _participants if sid != _owner_sid]
                     if _non_owner:
                         _source_id = str(_non_owner[0])
                         _sender_name = _participants.get(_non_owner[0])

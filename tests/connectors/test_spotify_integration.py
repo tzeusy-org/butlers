@@ -574,11 +574,11 @@ class TestSessionAggregationLifecycle:
             await conn._handle_active_playback(payload2, payload2["item"], t3, t3.isoformat())
 
         summaries = [
-            e for e in submitted
-            if e["event"]["external_event_id"].startswith("spotify:session:")
+            e for e in submitted if e["event"]["external_event_id"].startswith("spotify:session:")
         ]
         track_changes = [
-            e for e in submitted
+            e
+            for e in submitted
             if not e["event"]["external_event_id"].startswith("spotify:session:")
         ]
         assert len(summaries) >= 1

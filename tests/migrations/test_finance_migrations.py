@@ -168,11 +168,11 @@ async def finance_pool(provisioned_postgres_pool):
         yield pool
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestCSVDedupIndexIntegration:
     """Integration tests for CSV dedup index creation and behavior."""
 
     @pytest.mark.integration
-    @pytest.mark.asyncio
     async def test_csv_dedup_index_prevents_duplicate_csv_imports(
         self, finance_pool: asyncpg.Pool
     ) -> None:
@@ -240,7 +240,6 @@ class TestCSVDedupIndexIntegration:
             )
 
     @pytest.mark.integration
-    @pytest.mark.asyncio
     async def test_csv_dedup_index_allows_different_merchants(
         self, finance_pool: asyncpg.Pool
     ) -> None:
@@ -305,7 +304,6 @@ class TestCSVDedupIndexIntegration:
         assert result1["id"] != result2["id"]
 
     @pytest.mark.integration
-    @pytest.mark.asyncio
     async def test_csv_dedup_index_is_defined_correctly(self, finance_pool: asyncpg.Pool) -> None:
         """Verify that CSV dedup index exists and is properly defined."""
         pool = finance_pool
@@ -325,4 +323,4 @@ class TestCSVDedupIndexIntegration:
         assert "amount" in index_def, "Index should include amount"
         assert "merchant" in index_def, "Index should include merchant"
         assert "account_id" in index_def, "Index should include account_id"
-        assert "WHERE source_message_id IS NULL" in index_def, "Index should be partial"
+        assert "source_message_id IS NULL" in index_def, "Index should be partial"

@@ -13,6 +13,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
+from butlers.testing.migration import bootstrap_extensions
+
 # Skip all tests if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -110,6 +112,7 @@ def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
     from butlers.migrations import run_migrations
 
     db_url = _create_db(postgres_container, _unique_db_name())
+    bootstrap_extensions(db_url)
     asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
@@ -172,6 +175,7 @@ def test_privileged_cross_schema_aggregate_reads_are_allowed(postgres_container)
     from butlers.migrations import run_migrations
 
     db_url = _create_db(postgres_container, _unique_db_name())
+    bootstrap_extensions(db_url)
     asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 

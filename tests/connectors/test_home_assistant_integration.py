@@ -1226,9 +1226,7 @@ class TestMainCredentialResolution:
         async def _mock_create_pool(**_kwargs: Any) -> _MockPool:
             return _MockPool()
 
-        async def _mock_resolve_owner_entity_info(
-            _pool: Any, info_type: str
-        ) -> str | None:
+        async def _mock_resolve_owner_entity_info(_pool: Any, info_type: str) -> str | None:
             resolve_calls.append(info_type)
             if info_type == "home_assistant_url":
                 return "http://ha.local:8123"

@@ -35,6 +35,7 @@ VALID_CONNECTOR_TYPES = {
     "discord_user",
     "gmail",
     "google_calendar",
+    "google_drive",
     "live_listener",
     "owntracks",
     "spotify",

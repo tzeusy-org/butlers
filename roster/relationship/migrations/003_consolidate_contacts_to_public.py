@@ -20,6 +20,8 @@ Create Date: 2026-03-31 00:00:00.000000
 
 from __future__ import annotations
 
+from sqlalchemy import text
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -36,7 +38,12 @@ _CHILD_FKS = [
     ("important_dates", "important_dates_contact_id_fkey", "contact_id", "CASCADE"),
     ("notes", "notes_contact_id_fkey", "contact_id", "CASCADE"),
     ("interactions", "interactions_contact_id_fkey", "contact_id", "CASCADE"),
-    ("contacts_source_links", "contacts_source_links_local_contact_id_fkey", "local_contact_id", "CASCADE"),
+    (
+        "contacts_source_links",
+        "contacts_source_links_local_contact_id_fkey",
+        "local_contact_id",
+        "CASCADE",
+    ),
     ("reminders", "reminders_contact_id_fkey", "contact_id", "CASCADE"),
     ("gifts", "gifts_contact_id_fkey", "contact_id", "CASCADE"),
     ("loans", "loans_contact_id_fkey", "contact_id", "CASCADE"),
@@ -51,15 +58,14 @@ def upgrade() -> None:
     conn = op.get_bind()
 
     # Guard: if relationship.contacts doesn't exist, nothing to do.
-    exists = conn.execute(
-        "SELECT to_regclass('relationship.contacts')"
-    ).scalar()
+    exists = conn.execute(text("SELECT to_regclass('relationship.contacts')")).scalar()
     if exists is None:
         return
 
     # Step 1: Copy contacts from relationship.contacts → public.contacts.
     # No ID overlap (verified), so INSERT without conflict handling.
-    conn.execute("""
+    conn.execute(
+        text("""
         INSERT INTO public.contacts (
             id, name, details, first_name, last_name, nickname,
             company, job_title, gender, pronouns, avatar_url,
@@ -77,39 +83,43 @@ def upgrade() -> None:
         FROM relationship.contacts
         ON CONFLICT (id) DO NOTHING
     """)
+    )
 
     # Step 2: Drop all FK constraints referencing relationship.contacts.
     for table, constraint, _col, _on_delete in _CHILD_FKS:
         conn.execute(
-            f"ALTER TABLE relationship.{table} "
-            f"DROP CONSTRAINT IF EXISTS {constraint}"
+            text(f"ALTER TABLE relationship.{table} DROP CONSTRAINT IF EXISTS {constraint}")
         )
 
     # Step 3: Recreate FK constraints pointing to public.contacts.
     for table, constraint, col, on_delete in _CHILD_FKS:
         conn.execute(
-            f"ALTER TABLE relationship.{table} "
-            f"ADD CONSTRAINT {constraint} "
-            f"FOREIGN KEY ({col}) REFERENCES public.contacts(id) "
-            f"ON DELETE {on_delete}"
+            text(
+                f"ALTER TABLE relationship.{table} "
+                f"ADD CONSTRAINT {constraint} "
+                f"FOREIGN KEY ({col}) REFERENCES public.contacts(id) "
+                f"ON DELETE {on_delete}"
+            )
         )
 
     # Step 4: Drop the entity_id FK constraint on relationship.contacts
     # (it references public.entities and would block the DROP TABLE).
     conn.execute(
-        "ALTER TABLE relationship.contacts "
-        "DROP CONSTRAINT IF EXISTS rel_contacts_entity_id_fkey"
+        text(
+            "ALTER TABLE relationship.contacts DROP CONSTRAINT IF EXISTS rel_contacts_entity_id_fkey"
+        )
     )
 
     # Step 5: Drop relationship.contacts.
-    conn.execute("DROP TABLE relationship.contacts")
+    conn.execute(text("DROP TABLE relationship.contacts"))
 
 
 def downgrade() -> None:
     conn = op.get_bind()
 
     # Recreate relationship.contacts with the aligned schema.
-    conn.execute("""
+    conn.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS relationship.contacts (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             name TEXT NOT NULL,
@@ -132,11 +142,13 @@ def downgrade() -> None:
             entity_id UUID REFERENCES public.entities(id) ON DELETE SET NULL
         )
     """)
+    )
 
     # Copy contacts back from public that originated from relationship.
     # (We can't perfectly identify which ones came from relationship,
     # so we copy all — the downgrade is best-effort.)
-    conn.execute("""
+    conn.execute(
+        text("""
         INSERT INTO relationship.contacts (
             id, name, details, first_name, last_name, nickname,
             company, job_title, gender, pronouns, avatar_url,
@@ -151,16 +163,18 @@ def downgrade() -> None:
         FROM public.contacts
         ON CONFLICT (id) DO NOTHING
     """)
+    )
 
     # Re-point FKs back to relationship.contacts.
     for table, constraint, col, on_delete in _CHILD_FKS:
         conn.execute(
-            f"ALTER TABLE relationship.{table} "
-            f"DROP CONSTRAINT IF EXISTS {constraint}"
+            text(f"ALTER TABLE relationship.{table} DROP CONSTRAINT IF EXISTS {constraint}")
         )
         conn.execute(
-            f"ALTER TABLE relationship.{table} "
-            f"ADD CONSTRAINT {constraint} "
-            f"FOREIGN KEY ({col}) REFERENCES relationship.contacts(id) "
-            f"ON DELETE {on_delete}"
+            text(
+                f"ALTER TABLE relationship.{table} "
+                f"ADD CONSTRAINT {constraint} "
+                f"FOREIGN KEY ({col}) REFERENCES relationship.contacts(id) "
+                f"ON DELETE {on_delete}"
+            )
         )

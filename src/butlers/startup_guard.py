@@ -42,6 +42,7 @@ def _default_dashboard_url() -> str:
         f"http://localhost:{os.environ.get('DASHBOARD_PORT', _DASHBOARD_PORT_DEFAULT)}",
     )
 
+
 # ---------------------------------------------------------------------------
 # Credential check result
 # ---------------------------------------------------------------------------

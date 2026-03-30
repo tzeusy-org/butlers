@@ -315,7 +315,16 @@ class TestRecordTransaction:
         # No dedup calls when no source_message_id/account_id/external_id
         pool.fetchrow = AsyncMock(return_value=new_row)
 
-        with patch("butlers.tools.finance.transactions.asyncio") as mock_asyncio:
+        # Patch _has_column directly so the test is immune to
+        # _column_existence_cache pollution from other xdist workers.
+        with (
+            patch("butlers.tools.finance.transactions.asyncio") as mock_asyncio,
+            patch(
+                "butlers.tools.finance.transactions._has_column",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
             mock_asyncio.create_task = MagicMock()
             await record_transaction(
                 pool=pool,

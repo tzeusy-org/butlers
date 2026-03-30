@@ -210,8 +210,9 @@ class DiscordUserConnectorConfig:
         provider = os.environ.get("CONNECTOR_PROVIDER", "discord")
         channel = os.environ.get("CONNECTOR_CHANNEL", "discord")
 
-        # Credential fields default to None — resolved from DB by the CLI
-        # entrypoint, with env-var fallback there (not here).
+        # Credential fields — read from env as optional fallback; DB resolution
+        # in the CLI entrypoint takes priority when available.
+        discord_bot_token = os.environ.get("DISCORD_BOT_TOKEN")
 
         # Parse optional allowlists (comma-separated IDs)
         guild_allowlist_str = os.environ.get("DISCORD_GUILD_ALLOWLIST", "")
@@ -231,6 +232,7 @@ class DiscordUserConnectorConfig:
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
             channel=channel,
+            discord_bot_token=discord_bot_token,
             guild_allowlist=guild_allowlist,
             channel_allowlist=channel_allowlist,
             max_inflight=max_inflight,

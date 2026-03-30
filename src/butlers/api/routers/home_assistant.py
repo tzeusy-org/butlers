@@ -95,9 +95,7 @@ def _resolve_pool(db_manager: Any):
             )
             return pool
         except Exception:  # noqa: BLE001 — pool API is dynamic; exception type is unknown
-            logger.debug(
-                "Failed to obtain fallback DB pool; pool unavailable.", exc_info=True
-            )
+            logger.debug("Failed to obtain fallback DB pool; pool unavailable.", exc_info=True)
             return None
 
 

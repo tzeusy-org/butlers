@@ -265,12 +265,12 @@ class TestDeadlineList:
             alert_thresholds=[_threshold(14)],
         )
         # Default status is 'pending'; filtering by alerted should not include it
-        alerted = await deadline_list(pool, status_filter="alerted")
+        alerted = await deadline_list(pool, status="alerted")
         assert not any(r["id"] == str(tid) for r in alerted)
 
         # Update to alerted, then it should appear
         await deadline_update(pool, tid, deadline_status="alerted")
-        alerted = await deadline_list(pool, status_filter="alerted")
+        alerted = await deadline_list(pool, status="alerted")
         assert any(r["id"] == str(tid) for r in alerted)
 
     async def test_empty_list_when_no_deadlines(self, pool):

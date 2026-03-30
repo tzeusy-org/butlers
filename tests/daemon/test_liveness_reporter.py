@@ -475,9 +475,7 @@ class TestLivenessReporterBehavior:
         # Loop should have continued past connection failures
         assert call_count >= 3, f"Expected at least 3 calls, got {call_count}"
 
-    async def test_404_disables_reporter_after_consecutive_failures(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_404_disables_reporter_after_consecutive_failures(self, tmp_path: Path) -> None:
         """Persistent 404s (3 consecutive) should stop the reporter loop."""
         daemon = self._make_daemon(tmp_path)
         daemon.config.scheduler = SchedulerConfig(
@@ -519,8 +517,8 @@ class TestLivenessReporterBehavior:
         call_count = 0
         responses = [
             httpx.Response(404),  # transient 404
-            _ok_response(),       # recovery
-            _ok_response(),       # continues
+            _ok_response(),  # recovery
+            _ok_response(),  # continues
         ]
 
         async def side_effect(*args, **kwargs):

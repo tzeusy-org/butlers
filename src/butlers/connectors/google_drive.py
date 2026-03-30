@@ -95,20 +95,24 @@ _RATE_LIMIT_MAX_DELAY_S = 60.0
 
 # Google API 403 error reasons that are NOT retryable (permanent auth/config errors).
 # Retryable 403 reasons (rateLimitExceeded, userRateLimitExceeded) are not listed here.
-_NON_RETRYABLE_403_REASONS: frozenset[str] = frozenset({
-    "accessNotConfigured",
-    "insufficientPermissions",
-    "domainPolicy",
-    "forbidden",
-    "accountDisabled",
-    "countryBlocked",
-})
+_NON_RETRYABLE_403_REASONS: frozenset[str] = frozenset(
+    {
+        "accessNotConfigured",
+        "insufficientPermissions",
+        "domainPolicy",
+        "forbidden",
+        "accountDisabled",
+        "countryBlocked",
+    }
+)
 
 # ErrorInfo reasons from the ``details`` array that are non-retryable.
-_NON_RETRYABLE_ERROR_INFO_REASONS: frozenset[str] = frozenset({
-    "SERVICE_DISABLED",
-    "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
-})
+_NON_RETRYABLE_ERROR_INFO_REASONS: frozenset[str] = frozenset(
+    {
+        "SERVICE_DISABLED",
+        "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+    }
+)
 
 # Change type literals
 _CHANGE_TYPE_CREATED = "file_created"
@@ -929,8 +933,7 @@ class GDriveAccountLoop:
             detail = _extract_google_error_message(resp)
             raise RuntimeError(
                 f"Drive: getStartPageToken failed for email={self.email!r}: "
-                f"HTTP {resp.status_code}"
-                + (f" — {detail}" if detail else "")
+                f"HTTP {resp.status_code}" + (f" — {detail}" if detail else "")
             )
 
         self._metrics.record_source_api_call(api_method="changes.getStartPageToken", status="ok")
@@ -1540,6 +1543,7 @@ class GDriveConnectorManager:
 
         # Heartbeat (per-connector-manager, uses aggregated health)
         self._heartbeat: ConnectorHeartbeat | None = None
+        self._account_heartbeat_task: asyncio.Task[None] | None = None
         self._mcp_client: CachedMCPClient | None = None
         self._metrics: ConnectorMetrics | None = None
 
@@ -1692,7 +1696,10 @@ class GDriveConnectorManager:
         """Stop all account loops gracefully."""
         self._running = False
 
-        # Stop heartbeat
+        # Stop heartbeats
+        if self._account_heartbeat_task is not None:
+            self._account_heartbeat_task.cancel()
+            self._account_heartbeat_task = None
         if self._heartbeat is not None:
             await self._heartbeat.stop()
             self._heartbeat = None
@@ -1822,8 +1829,12 @@ class GDriveConnectorManager:
         Uses manager-level aggregated health for heartbeat state.
         """
         if self._mcp_client is None:
-            logger.debug("Drive manager: no MCP client — heartbeat not started")
-            return
+            if not self._switchboard_mcp_url:
+                logger.debug("Drive manager: no switchboard URL — heartbeat not started")
+                return
+            self._mcp_client = CachedMCPClient(
+                self._switchboard_mcp_url, client_name="google-drive-heartbeat"
+            )
 
         if self._metrics is None:
             self._metrics = ConnectorMetrics(
@@ -1846,6 +1857,58 @@ class GDriveConnectorManager:
         )
         self._heartbeat.start()
         logger.info("Drive manager: heartbeat started (interval=%ds)", self._heartbeat_interval_s)
+
+        # Start per-account heartbeat sync loop
+        try:
+            self._account_heartbeat_task = asyncio.create_task(self._account_heartbeat_loop())
+            logger.info(
+                "Drive manager: per-account heartbeat loop started (interval=%ds)",
+                self._heartbeat_interval_s,
+            )
+        except RuntimeError:
+            # No running event loop (e.g. unit tests calling _start_heartbeat directly)
+            logger.debug("Drive manager: per-account heartbeat loop skipped (no event loop)")
+
+    async def _account_heartbeat_loop(self) -> None:
+        """Periodically update per-account connector_registry entries with health state.
+
+        The manager-level heartbeat reports a single manager:process identity,
+        but the dashboard shows per-account entries (google_drive:user:<email>).
+        This loop keeps those entries' state and last_heartbeat_at current.
+        """
+        while self._running:
+            await asyncio.sleep(self._heartbeat_interval_s)
+            if not self._running or self._cursor_pool is None:
+                break
+            try:
+                health = self.get_health()
+                async with self._cursor_pool.acquire() as conn:
+                    for account in health.account_health:
+                        endpoint_id = account.endpoint_identity
+                        state = account.status
+                        error_msg = account.error if state == "error" else None
+                        await conn.execute(
+                            """
+                            UPDATE switchboard.connector_registry
+                            SET state = $1,
+                                error_message = $2,
+                                last_heartbeat_at = NOW(),
+                                uptime_s = $3
+                            WHERE connector_type = $4
+                              AND endpoint_identity = $5
+                            """,
+                            state,
+                            error_msg,
+                            int(time.time() - self._start_time),
+                            _CONNECTOR_TYPE,
+                            endpoint_id,
+                        )
+                logger.debug(
+                    "Drive manager: per-account heartbeat updated %d accounts",
+                    len(health.account_health),
+                )
+            except Exception:
+                logger.warning("Drive manager: per-account heartbeat update failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Task 12.1: Periodic rescan loop + start/stop lifecycle

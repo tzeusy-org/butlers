@@ -71,6 +71,7 @@ def test_run_migrations_all_upgrades_each_chain_in_order() -> None:
         patch("butlers.migrations.get_all_chains", return_value=["core", "mailbox", "switchboard"]),
         patch("butlers.migrations._build_alembic_config", return_value=config),
         patch("butlers.migrations.command.upgrade") as mock_upgrade,
+        patch("butlers.migrations._bootstrap_extensions"),
     ):
         asyncio.run(run_migrations("postgresql://db", chain="all", schema="switchboard"))
 

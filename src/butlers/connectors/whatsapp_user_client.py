@@ -504,6 +504,9 @@ class WhatsAppUserClientConnector:
             status = await self._bridge_manager.get_status()
             bridge_phone = status.get("phone")
             if bridge_phone:
+                # Normalize to E.164: bridge returns bare digits, entity_info stores with '+'
+                if not bridge_phone.startswith("+"):
+                    bridge_phone = f"+{bridge_phone}"
                 self._config = replace(self._config, endpoint_identity=f"whatsapp:{bridge_phone}")
                 logger.info(
                     "Resolved endpoint_identity from bridge: %s",

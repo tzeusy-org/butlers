@@ -1331,19 +1331,15 @@ async def _main() -> None:
             )
             try:
                 if not ha_base_url:
-                    ha_base_url = await resolve_owner_entity_info(
-                        pool, "home_assistant_url"
-                    ) or ""
+                    ha_base_url = await resolve_owner_entity_info(pool, "home_assistant_url") or ""
                 if not ha_access_token:
-                    ha_access_token = await resolve_owner_entity_info(
-                        pool, "home_assistant_token"
-                    ) or ""
+                    ha_access_token = (
+                        await resolve_owner_entity_info(pool, "home_assistant_token") or ""
+                    )
             finally:
                 await pool.close()
         except Exception:
-            logger.error(
-                "HAConnector: failed to load credentials from entity_info", exc_info=True
-            )
+            logger.error("HAConnector: failed to load credentials from entity_info", exc_info=True)
 
     if not ha_base_url:
         logger.error(

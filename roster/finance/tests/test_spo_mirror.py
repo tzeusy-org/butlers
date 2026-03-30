@@ -171,9 +171,7 @@ async def test_spo_mirror_called_with_correct_predicate_for_debit():
     # 1. Priority-2 dedup (source_message_id) → None
     # 2. Priority-3 cross-source dedup (posted_at+amount+merchant) → None
     # 3. INSERT RETURNING → row
-    pool.fetchrow = AsyncMock(
-        side_effect=[None, None, _make_asyncpg_record(inserted_row)]
-    )
+    pool.fetchrow = AsyncMock(side_effect=[None, None, _make_asyncpg_record(inserted_row)])
     pool.fetchval = AsyncMock(return_value=0)
 
     mirror_mock = AsyncMock()

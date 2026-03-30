@@ -173,6 +173,21 @@ async def memory_pool(postgres_container):
     )
     await db.provision()
 
+    # Bootstrap required extensions before running migrations (they require superuser
+    # and are not created by the migration chain itself).
+    import asyncpg as _asyncpg
+
+    bootstrap_conn = await _asyncpg.connect(
+        host=db.host, port=db.port, user=db.user, password=db.password, database=db.db_name
+    )
+    try:
+        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
+        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
+        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
+    finally:
+        await bootstrap_conn.close()
+
     db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
     # Core creates shared schema tables (shared.entities, shared.contacts, etc.).
     # Memory chain requires search_path to include 'shared' so that unqualified
@@ -651,6 +666,20 @@ async def memory_pool_with_url(postgres_container):
         max_pool_size=3,
     )
     await db.provision()
+
+    # Bootstrap required extensions before running migrations.
+    import asyncpg as _asyncpg
+
+    bootstrap_conn = await _asyncpg.connect(
+        host=db.host, port=db.port, user=db.user, password=db.password, database=db.db_name
+    )
+    try:
+        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
+        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
+        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
+    finally:
+        await bootstrap_conn.close()
 
     db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
     await run_migrations(db_url, chain="core")

@@ -78,6 +78,7 @@ async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None
         )
     return str(row["id"])
 
+
 # Module-level cache for _has_column results: (table, column) -> bool
 # Avoids repeated information_schema queries within a process lifetime.
 _column_existence_cache: dict[tuple[str, str], bool] = {}
@@ -245,13 +246,16 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
 
     # ------------------------------------------------------------------
     # Priority 3: composite fallback (posted_at + amount + merchant)
-    # Always runs as a last-resort cross-source dedup when Priorities 1–2
-    # found no match.  Narrows with account_id when available; without
-    # account_id falls back to business-identity only when source_message_id
-    # was present (cross-source scenario, e.g. email + Telegram for the same
-    # real-world transaction).
+    # Only runs when BOTH external_id AND source_message_id are absent —
+    # i.e. transactions with no provenance key at all (CSV imports, manual
+    # entries).  When source_message_id was present, P2's verdict is final.
     # ------------------------------------------------------------------
-    if posted_at is not None and stored_amount is not None and merchant is not None:
+    if (
+        source_message_id is None
+        and posted_at is not None
+        and stored_amount is not None
+        and merchant is not None
+    ):
         row = None
         if account_id is not None:
             row = await pool.fetchrow(
@@ -267,26 +271,7 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
                 stored_amount,
                 merchant,
             )
-        elif source_message_id is not None:
-            # Cross-source: source_message_id didn't match Priority 2 (different
-            # channel for the same real-world transaction).  Match on business
-            # identity without account_id.  Uses same-day matching instead of
-            # exact timestamp because different channels may record different
-            # posted_at values for the same real-world transaction (e.g. email
-            # header time vs Telegram message time).
-            row = await pool.fetchrow(
-                """
-                SELECT id FROM transactions
-                WHERE posted_at::date = $1::date
-                  AND amount = $2
-                  AND merchant = $3
-                ORDER BY created_at
-                LIMIT 1
-                """,
-                posted_at,
-                stored_amount,
-                merchant,
-            )
+        # Without account_id, composite matching is too loose — skip P3.
         if row is not None:
             return str(row["id"])
 

@@ -108,6 +108,23 @@ async def deadline_create(
     if prompt is None or not prompt.strip():
         raise ValueError("deadline_create requires a non-empty prompt")
 
+    # Validate target_date is in the future
+    today = datetime.now(UTC).date()
+    if target_date <= today:
+        raise ValueError("target_date must be in the future")
+
+    # Validate alert_thresholds is non-empty
+    if not alert_thresholds:
+        raise ValueError("alert_thresholds must contain at least one threshold")
+
+    # Validate each threshold's days_before <= lead_time_days
+    for t in alert_thresholds:
+        if t.get("days_before", 0) > lead_time_days:
+            raise ValueError(
+                f"threshold days_before ({t['days_before']}) exceeds "
+                f"lead_time_days ({lead_time_days})"
+            )
+
     # Daily cron — the deadline evaluation pass in tick() handles actual dispatch
     cron = "0 0 * * *"
     next_run_at = datetime.now(UTC)
@@ -156,7 +173,7 @@ async def deadline_create(
 
 async def deadline_update(
     pool: asyncpg.Pool,
-    task_id: uuid.UUID,
+    task_id: uuid.UUID | str,
     *,
     name: str | None = None,
     prompt: str | None = None,
@@ -187,6 +204,12 @@ async def deadline_update(
     Raises:
         ValueError: If the task is not found or is not a deadline task.
     """
+    if isinstance(task_id, str):
+        try:
+            task_id = uuid.UUID(task_id)
+        except ValueError:
+            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID")
+
     existing = await pool.fetchrow(
         "SELECT id, task_type, source FROM scheduled_tasks WHERE id = $1",
         task_id,
@@ -215,6 +238,9 @@ async def deadline_update(
         idx += 1
 
     if target_date is not None:
+        today = datetime.now(UTC).date()
+        if target_date <= today:
+            raise ValueError("target_date must be in the future")
         set_clauses.append(f"target_date = ${idx}")
         params.append(target_date)
         idx += 1
@@ -243,10 +269,21 @@ async def deadline_update(
         params.append(_jsonb_encode(depends_on))
         idx += 1
 
+    _VALID_STATUSES = {"pending", "alerted", "escalated", "completed", "expired"}
     if deadline_status is not None:
+        if deadline_status not in _VALID_STATUSES:
+            raise ValueError(
+                f"Invalid deadline_status {deadline_status!r}; "
+                f"must be one of {sorted(_VALID_STATUSES)}"
+            )
         set_clauses.append(f"deadline_status = ${idx}")
         params.append(deadline_status)
         idx += 1
+        # Auto-disable task on terminal status transitions
+        if deadline_status in ("completed", "expired") and enabled is None:
+            set_clauses.append(f"enabled = ${idx}")
+            params.append(False)
+            idx += 1
 
     if enabled is not None:
         set_clauses.append(f"enabled = ${idx}")
@@ -265,18 +302,21 @@ async def deadline_update(
 async def deadline_list(
     pool: asyncpg.Pool,
     *,
-    status_filter: str | None = None,
+    status: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return all deadline tasks, optionally filtered by deadline_status.
 
     Args:
         pool: asyncpg connection pool.
-        status_filter: Optional status to filter by (e.g., 'pending', 'alerted').
+        status: Optional status to filter by (e.g., 'pending', 'alerted').
 
     Returns:
         List of deadline task dicts.
     """
-    if status_filter is not None:
+    _VALID_STATUSES = {"pending", "alerted", "escalated", "completed", "expired"}
+    if status is not None and status not in _VALID_STATUSES:
+        raise ValueError(f"Invalid status {status!r}; must be one of {sorted(_VALID_STATUSES)}")
+    if status is not None:
         rows = await pool.fetch(
             """
             SELECT id, name, prompt, dispatch_mode, source, enabled,
@@ -288,7 +328,7 @@ async def deadline_list(
               AND deadline_status = $1
             ORDER BY target_date ASC NULLS LAST, name ASC
             """,
-            status_filter,
+            status,
         )
     else:
         rows = await pool.fetch(
@@ -307,7 +347,7 @@ async def deadline_list(
 
 async def deadline_delete(
     pool: asyncpg.Pool,
-    task_id: uuid.UUID,
+    task_id: uuid.UUID | str,
 ) -> None:
     """Delete a deadline task.
 
@@ -320,6 +360,12 @@ async def deadline_delete(
     Raises:
         ValueError: If not found, not a deadline, or is TOML-sourced.
     """
+    if isinstance(task_id, str):
+        try:
+            task_id = uuid.UUID(task_id)
+        except ValueError:
+            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID")
+
     existing = await pool.fetchrow(
         "SELECT id, task_type, source FROM scheduled_tasks WHERE id = $1",
         task_id,

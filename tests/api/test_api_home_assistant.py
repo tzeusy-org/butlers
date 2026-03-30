@@ -435,9 +435,7 @@ class TestConfigureHA:
                     json={"url": "http://ha.local:8123", "token": "token123"},
                 )
 
-        url_call = next(
-            c for c in upsert_mock.call_args_list if c.args[1] == "home_assistant_url"
-        )
+        url_call = next(c for c in upsert_mock.call_args_list if c.args[1] == "home_assistant_url")
         assert url_call.kwargs.get("secured") is False
 
     async def test_returns_502_on_unreachable(self):
@@ -591,9 +589,7 @@ class TestDeleteHAConfig:
 
         with (
             patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
-            patch(
-                _DELETE_EI_PATCH, new_callable=AsyncMock, return_value=True
-            ) as delete_mock,
+            patch(_DELETE_EI_PATCH, new_callable=AsyncMock, return_value=True) as delete_mock,
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"

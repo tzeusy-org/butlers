@@ -1699,6 +1699,178 @@ class MessagePipeline:
                         cc_output = str(getattr(spawn_result, "output", "") or "")
                         tool_calls = getattr(spawn_result, "tool_calls", []) or []
 
+                    # --- Decomposition signal extraction branch ---
+                    # When the payload is conversation_history the LLM may return
+                    # a JSON signal array instead of calling route_to_butler tools.
+                    # Parse the signals, fan out to each target butler, and
+                    # short-circuit before the standard tool-call extraction path.
+                    # If the output is not valid JSON signals, fall through to
+                    # the standard tool-call routing path.
+                    _decomp_signals: list[dict[str, Any]] = []
+                    if _payload_type == "conversation_history" and cc_output.strip():
+                        try:
+                            _parsed = json.loads(cc_output)
+                            if isinstance(_parsed, list):
+                                _decomp_signals = _parsed
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+
+                        _spawn_model = (
+                            getattr(spawn_result, "model", None)
+                            if spawn_result is not None
+                            else None
+                        )
+                        _spawn_usage = (
+                            getattr(spawn_result, "usage", None)
+                            if spawn_result is not None
+                            else None
+                        )
+
+                    if (
+                        _payload_type == "conversation_history"
+                        and not _decomp_signals
+                        and not tool_calls
+                    ):
+                        # Empty signals → decomposed_empty
+                        logger.info(
+                            "Decomposition: LLM returned empty signals",
+                            extra=self._log_fields(
+                                source=source,
+                                chat_id=chat_id,
+                                target_butler=None,
+                                latency_ms=spawn_latency_ms,
+                                request_id=request_id,
+                                lifecycle_state="decomposed_empty",
+                            ),
+                        )
+                        _empty_decomp: dict[str, Any] = {
+                            "signals": [],
+                            "reason": "no_signals_extracted",
+                        }
+                        if _spawn_model:
+                            _empty_decomp["model"] = _spawn_model
+                        if _spawn_usage:
+                            _empty_decomp["token_usage"] = _spawn_usage
+                        _empty_decomp["latency_ms"] = int(spawn_latency_ms)
+
+                        if message_inbox_id:
+                            await self._update_message_inbox_lifecycle(
+                                message_inbox_id=message_inbox_id,
+                                decomposition_output=_empty_decomp,
+                                dispatch_outcomes=None,
+                                response_summary="Decomposition: no signals extracted",
+                                lifecycle_state="decomposed_empty",
+                                classified_at=datetime.now(UTC),
+                                classification_duration_ms=spawn_latency_ms,
+                                final_state_at=datetime.now(UTC),
+                            )
+                        return RoutingResult(
+                            target_butler="decomposed_empty",
+                            route_result={
+                                "decomposition": "empty",
+                                "reason": "no_signals_extracted",
+                            },
+                            routed_targets=[],
+                            acked_targets=[],
+                            failed_targets=[],
+                        )
+
+                    if _decomp_signals:
+                        # Non-empty signals → fan out to each target butler
+                        _decomp_routed: list[str] = []
+                        _decomp_acked: list[str] = []
+                        _decomp_failed: list[str] = []
+                        _decomp_failed_details: list[str] = []
+
+                        for _sig in _decomp_signals:
+                            _target = str(
+                                _sig.get("target_butler") or _sig.get("butler") or ""
+                            ).strip()
+                            if not _target:
+                                continue
+                            _decomp_routed.append(_target)
+                            _sig_tool = str(_sig.get("tool_name") or "route.execute").strip()
+
+                            _route_args: dict[str, Any] = {
+                                **(
+                                    _sig.get("tool_args")
+                                    if isinstance(_sig.get("tool_args"), dict)
+                                    else {}
+                                ),
+                                "__switchboard_route_context": {
+                                    "request_id": request_id,
+                                    "fanout_mode": "decomposition",
+                                    "segment_id": f"decomp-{_target}",
+                                    "attempt": 1,
+                                },
+                            }
+
+                            try:
+                                _route_result = await _fallback_route(
+                                    self._pool,
+                                    target_butler=_target,
+                                    tool_name=_sig_tool,
+                                    args=_route_args,
+                                    source_butler="switchboard",
+                                )
+                                if isinstance(_route_result, dict) and _route_result.get("error"):
+                                    _decomp_failed.append(_target)
+                                    _decomp_failed_details.append(
+                                        f"{_target}: {_route_result['error']}"
+                                    )
+                                else:
+                                    _decomp_acked.append(_target)
+                            except Exception as _route_exc:
+                                _decomp_failed.append(_target)
+                                _decomp_failed_details.append(
+                                    f"{_target}: {type(_route_exc).__name__}: {_route_exc}"
+                                )
+
+                        _decomp_target = _decomp_routed[0] if len(_decomp_routed) == 1 else "multi"
+                        _decomp_lifecycle = "errored" if _decomp_failed_details else "routed"
+
+                        _decomp_output: dict[str, Any] = {
+                            "signals": _decomp_signals,
+                            "routed": _decomp_routed,
+                            "acked": _decomp_acked,
+                            "failed": _decomp_failed,
+                            "latency_ms": int(spawn_latency_ms),
+                        }
+                        if _spawn_model:
+                            _decomp_output["model"] = _spawn_model
+                        if _spawn_usage:
+                            _decomp_output["token_usage"] = _spawn_usage
+
+                        if message_inbox_id:
+                            completed_at = datetime.now(UTC)
+                            await self._update_message_inbox_lifecycle(
+                                message_inbox_id=message_inbox_id,
+                                decomposition_output=_decomp_output,
+                                dispatch_outcomes={
+                                    "request_id": request_id,
+                                    "acked": _decomp_acked,
+                                    "failed": _decomp_failed,
+                                },
+                                response_summary=cc_output[:500] if cc_output else "",
+                                lifecycle_state=_decomp_lifecycle,
+                                classified_at=completed_at,
+                                classification_duration_ms=spawn_latency_ms,
+                                final_state_at=completed_at,
+                            )
+
+                        return RoutingResult(
+                            target_butler=_decomp_target,
+                            route_result={"cc_summary": cc_output},
+                            routing_error=(
+                                "; ".join(_decomp_failed_details)
+                                if _decomp_failed_details
+                                else None
+                            ),
+                            routed_targets=_decomp_routed,
+                            acked_targets=_decomp_acked,
+                            failed_targets=_decomp_failed,
+                        )
+
                     routed, acked, failed = _extract_routed_butlers(tool_calls)
                     failed_details = [f"{b}: routing failed" for b in failed]
 

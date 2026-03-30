@@ -9,8 +9,11 @@ any test context, including roster-local test trees.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from urllib.parse import urlparse
 
+import asyncpg
 from sqlalchemy import create_engine, text
 
 
@@ -41,7 +44,41 @@ def create_migration_db(postgres_container: object, db_name: str) -> str:
     port = postgres_container.get_exposed_port(5432)  # type: ignore[attr-defined]
     user = postgres_container.username  # type: ignore[attr-defined]
     password = postgres_container.password  # type: ignore[attr-defined]
-    return f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
+    db_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
+
+    # Activate required extensions before any migration chain runs.
+    bootstrap_extensions(db_url)
+
+    return db_url
+
+
+def bootstrap_extensions(db_url: str) -> None:
+    """Install required PostgreSQL extensions on the target database.
+
+    Must be called **after** the database is created and **before** any
+    Alembic migrations run.  The pgvector/pgvector Docker image ships the
+    extension shared-object files but they still need ``CREATE EXTENSION``
+    to be activated.
+    """
+    parsed = urlparse(db_url)
+
+    async def _install() -> None:
+        conn = await asyncpg.connect(
+            host=parsed.hostname,
+            port=parsed.port,
+            user=parsed.username,
+            password=parsed.password,
+            database=parsed.path.lstrip("/"),
+        )
+        try:
+            await conn.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
+            await conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
+            await conn.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+            await conn.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
+        finally:
+            await conn.close()
+
+    asyncio.run(_install())
 
 
 # ---------------------------------------------------------------------------

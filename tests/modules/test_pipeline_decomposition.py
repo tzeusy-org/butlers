@@ -385,8 +385,8 @@ class TestEmptyDecomposition:
             message_inbox_id=uuid.uuid4(),
         )
 
-        # Standard fallback: no route_to_butler calls → general
-        assert result.target_butler == "general"
+        # Decomposition found nothing actionable → decomposed_empty
+        assert result.target_butler == "decomposed_empty"
 
 
 # ---------------------------------------------------------------------------

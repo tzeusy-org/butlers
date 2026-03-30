@@ -877,7 +877,9 @@ class ContactBackfillEngine:
 
         if local_id is not None:
             # Verify resolved contact still exists (stale source links, race conditions)
-            exists = await self._pool.fetchval("SELECT 1 FROM public.contacts WHERE id = $1", local_id)
+            exists = await self._pool.fetchval(
+                "SELECT 1 FROM public.contacts WHERE id = $1", local_id
+            )
             if not exists:
                 logger.warning(
                     "ContactBackfill: resolved local_id=%s via %s but contact missing; "

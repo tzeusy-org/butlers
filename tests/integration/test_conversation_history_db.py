@@ -46,7 +46,7 @@ def postgres_container():
 def switchboard_dsn(postgres_container):
     """Create a database, run switchboard migrations, return asyncpg DSN."""
     from alembic import command
-    from butlers.migrations import _build_alembic_config
+    from butlers.migrations import _bootstrap_extensions, _build_alembic_config
 
     db_name = _unique_db_name()
     admin_url = postgres_container.get_connection_url()
@@ -60,6 +60,8 @@ def switchboard_dsn(postgres_container):
     user = postgres_container.username
     password = postgres_container.password
     sa_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
+
+    _bootstrap_extensions(sa_url)
 
     config = _build_alembic_config(sa_url, chains=["core"])
     command.upgrade(config, "core@head")
