@@ -183,8 +183,8 @@ async def test_call_raises_runtime_error_when_no_catalog_entry() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_call_invokes_with_empty_mcp_servers_and_env() -> None:
-    """Adapter is always invoked with mcp_servers={} and env={}."""
+async def test_call_invokes_with_empty_mcp_servers_and_minimal_env() -> None:
+    """Adapter is always invoked with mcp_servers={} and a minimal env."""
     stub = _StubAdapter()
     pool = _mock_pool(runtime_type="stub-empty", model_id="m")
     register_adapter("stub-empty", type(stub))
@@ -194,7 +194,11 @@ async def test_call_invokes_with_empty_mcp_servers_and_env() -> None:
 
     await dispatcher.call("test")
     assert stub._calls[0]["mcp_servers"] == {}
-    assert stub._calls[0]["env"] == {}
+    env = stub._calls[0]["env"]
+    # Must include at least PATH and HOME so that the runtime subprocess
+    # (e.g. OpenCode) can locate its model registry and resolve shebangs.
+    assert "PATH" in env
+    assert "HOME" in env
 
 
 async def test_call_invokes_with_max_turns_one() -> None:

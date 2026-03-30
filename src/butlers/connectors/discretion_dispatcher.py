@@ -21,8 +21,9 @@ Design notes
 - ``asyncio.wait_for`` enforces the per-call wall-clock timeout; the inner
   adapter invocation may also have its own timeout, but the outer guard is
   the authoritative limit.
-- ``mcp_servers={}``, ``env={}``, and ``max_turns=1`` are always passed to
-  the adapter — discretion calls are single-turn with no tool access.
+- ``mcp_servers={}``, ``max_turns=1``, and a minimal env (PATH, HOME) are
+  always passed to the adapter — discretion calls are single-turn with no
+  tool access.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 
 import asyncpg
 
@@ -45,6 +47,22 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CONCURRENT: int = 4
 _DEFAULT_TIMEOUT_S: float = 5.0
+
+
+def _minimal_env() -> dict[str, str]:
+    """Build a minimal env dict for the runtime subprocess.
+
+    The adapter needs at least PATH (for shebang resolution) and HOME
+    (for OpenCode's internal SQLite model registry).  Without these the
+    child process cannot discover provider models and all calls fail with
+    "Model not found".
+    """
+    env: dict[str, str] = {}
+    for var in ("PATH", "HOME", "USER"):
+        value = os.environ.get(var)
+        if value:
+            env[var] = value
+    return env
 
 
 class DiscretionDispatcher:
@@ -233,7 +251,7 @@ class DiscretionDispatcher:
                 prompt=prompt,
                 system_prompt=system_prompt,
                 mcp_servers={},
-                env={},
+                env=_minimal_env(),
                 max_turns=1,
                 model=model_id,
                 runtime_args=extra_args or None,
