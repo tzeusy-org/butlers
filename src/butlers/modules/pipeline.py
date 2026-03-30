@@ -635,10 +635,6 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# Keep legacy name importable for existing test files.
-_build_signal_extraction_prompt = _format_decomp_conversation_history
-
-
 class MessagePipeline:
     """Connects input modules to the switchboard classification and routing.
 

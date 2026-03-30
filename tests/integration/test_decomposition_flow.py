@@ -3,10 +3,9 @@
 Covers the full pipeline:
   connector flush (ingest_v1 with payload_type="conversation_history")
   → switchboard ingest persists batch envelope
-  → MessagePipeline.process() detects payload_type and calls _decompose_conversation()
-  → signal extraction produces conceptual messages
-  → fan-out routes to target butlers
-  → decomposition_output stored with metadata (model, latency_ms, token_usage, signals)
+  → MessagePipeline.process() detects payload_type, loads structured history
+  → standard routing prompt with conversation context
+  → CC calls route_to_butler to dispatch to target butlers
 
 These tests use a real PostgreSQL testcontainer (via switchboard migrations) and
 mock only the LLM dispatch and route() calls to keep the test deterministic.
@@ -279,10 +278,10 @@ async def test_decomposition_flow_full_pipeline(pool):
 
     Verifies all five acceptance criteria:
     1. Batch envelope with payload_type='conversation_history' is ingested
-    2. Pipeline detects payload_type and calls _decompose_conversation()
-    3. Signal extraction produces conceptual messages
-    4. Fan-out routes to target butlers (finance, health)
-    5. decomposition_output is stored with metadata (model, latency_ms, token_usage, signals)
+    2. Pipeline detects payload_type and loads structured conversation history
+    3. Standard routing prompt includes conversation context
+    4. CC calls route_to_butler to dispatch to target butlers
+    5. Routing outcomes are stored with metadata
     """
     from butlers.modules.pipeline import MessagePipeline
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1

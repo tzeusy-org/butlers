@@ -20,7 +20,7 @@ import pytest
 
 from butlers.modules.pipeline import (
     MessagePipeline,
-    _build_signal_extraction_prompt,
+    _format_decomp_conversation_history,
 )
 from butlers.tools.switchboard.routing.contracts import (
     IngestControlV1,
@@ -127,7 +127,7 @@ def _raw_payload_with_conversation() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# _format_decomp_conversation_history (aliased as _build_signal_extraction_prompt)
+# _format_decomp_conversation_history
 # ---------------------------------------------------------------------------
 
 
@@ -135,21 +135,21 @@ class TestFormatDecompConversationHistory:
     """Verify conversation history formatting for routing context."""
 
     def test_includes_conversation_messages(self):
-        result = _build_signal_extraction_prompt(_conversation_messages())
+        result = _format_decomp_conversation_history(_conversation_messages())
         assert "I spent $50 on groceries today" in result
         assert "Alice" in result
         assert "My headache is getting worse" in result
 
     def test_empty_messages_returns_empty_string(self):
-        result = _build_signal_extraction_prompt([])
+        result = _format_decomp_conversation_history([])
         assert result == ""
 
     def test_untrusted_data_warning_present(self):
-        result = _build_signal_extraction_prompt(_conversation_messages())
+        result = _format_decomp_conversation_history(_conversation_messages())
         assert "UNTRUSTED USER DATA" in result
 
     def test_messages_fenced_in_code_blocks(self):
-        result = _build_signal_extraction_prompt(_conversation_messages())
+        result = _format_decomp_conversation_history(_conversation_messages())
         assert "```" in result
 
 
