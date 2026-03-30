@@ -30,8 +30,9 @@ Environment variables:
 - CONNECTOR_HEARTBEAT_INTERVAL_S (optional, default 120)
 - CONNECTOR_HEALTH_PORT (optional, default 40082)
 - WA_BRIDGE_SOCKET (optional, default /tmp/wa-bridge.sock)
-- WA_FLUSH_INTERVAL_S (optional, default 600)
+- WA_FLUSH_INTERVAL_S (optional, default 1800)
 - WA_BUFFER_MAX_MESSAGES (optional, default 50)
+- WA_HISTORY_TIME_WINDOW_M (optional, default 35)
 
 Security requirements:
 - Never commit credentials or session artifacts to version control
@@ -158,7 +159,8 @@ class WhatsAppUserClientConnectorConfig:
     max_inflight: int = 8
 
     # Buffering / flush config
-    flush_interval_s: int = 600
+    flush_interval_s: int = 1800
+    history_time_window_m: int = 35
     buffer_max_messages: int = 50
 
     # Health port
@@ -186,7 +188,8 @@ class WhatsAppUserClientConnectorConfig:
         backfill_window_h = int(backfill_window_str) if backfill_window_str else None
 
         max_inflight = int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8"))
-        flush_interval_s = int(os.environ.get("WA_FLUSH_INTERVAL_S", "600"))
+        flush_interval_s = int(os.environ.get("WA_FLUSH_INTERVAL_S", "1800"))
+        history_time_window_m = int(os.environ.get("WA_HISTORY_TIME_WINDOW_M", "35"))
         buffer_max_messages = int(os.environ.get("WA_BUFFER_MAX_MESSAGES", "50"))
         health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "40082"))
 
@@ -206,6 +209,7 @@ class WhatsAppUserClientConnectorConfig:
             backfill_window_h=backfill_window_h,
             max_inflight=max_inflight,
             flush_interval_s=flush_interval_s,
+            history_time_window_m=history_time_window_m,
             buffer_max_messages=buffer_max_messages,
             health_port=health_port,
             address_keywords=address_keywords,
@@ -962,6 +966,7 @@ class WhatsAppUserClientConnector:
                     "idempotency_key": f"wa_batch:{chat_jid}:{batch_event_id}",
                     "policy_tier": "passive",
                     "addressed": False,
+                    "payload_type": "conversation_history",
                 },
             }
 
@@ -1026,6 +1031,7 @@ class WhatsAppUserClientConnector:
                 "addressed": _detect_addressed_in_events(
                     buffered_events, self._config.address_keywords
                 ),
+                "payload_type": "conversation_history",
             },
         }
 

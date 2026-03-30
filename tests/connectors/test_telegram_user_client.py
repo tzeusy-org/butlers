@@ -1118,9 +1118,9 @@ class TestConfigBufferingEnvVars:
     def test_defaults_when_env_vars_absent(self, mock_env: dict[str, str]) -> None:
         """Buffering config uses expected defaults when env vars are not set."""
         config = TelegramUserClientConnectorConfig.from_env()
-        assert config.flush_interval_s == 600
+        assert config.flush_interval_s == 1800
         assert config.history_max_messages == 50
-        assert config.history_time_window_m == 30
+        assert config.history_time_window_m == 35
         assert config.buffer_max_messages == 200
 
     def test_reads_flush_interval_from_env(
@@ -2126,6 +2126,15 @@ class TestBuildBatchEnvelope:
         assert envelope["source"]["channel"] == config.channel
         assert envelope["source"]["provider"] == config.provider
         assert envelope["source"]["endpoint_identity"] == config.endpoint_identity
+
+    def test_payload_type_is_conversation_history(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """control.payload_type is 'conversation_history' on batch envelopes."""
+        connector = TelegramUserClientConnector(config)
+        buffered = [_make_batch_msg(1)]
+        envelope = connector._build_batch_envelope("chat1", buffered, buffered)
+        assert envelope["control"]["payload_type"] == "conversation_history"
 
     def test_timestamp_none_for_missing_date(
         self, config: TelegramUserClientConnectorConfig

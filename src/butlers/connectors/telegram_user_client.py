@@ -176,9 +176,9 @@ class TelegramUserClientConnectorConfig:
     max_inflight: int = 8
 
     # Buffering / flush config
-    flush_interval_s: int = 600
+    flush_interval_s: int = 1800
     history_max_messages: int = 50
-    history_time_window_m: int = 30
+    history_time_window_m: int = 35
     buffer_max_messages: int = 200
 
     # Discretion layer config
@@ -214,9 +214,9 @@ class TelegramUserClientConnectorConfig:
 
         max_inflight = int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8"))
 
-        flush_interval_s = int(os.environ.get("TELEGRAM_USER_FLUSH_INTERVAL_S", "600"))
+        flush_interval_s = int(os.environ.get("TELEGRAM_USER_FLUSH_INTERVAL_S", "1800"))
         history_max_messages = int(os.environ.get("TELEGRAM_USER_HISTORY_MAX_MESSAGES", "50"))
-        history_time_window_m = int(os.environ.get("TELEGRAM_USER_HISTORY_TIME_WINDOW_M", "30"))
+        history_time_window_m = int(os.environ.get("TELEGRAM_USER_HISTORY_TIME_WINDOW_M", "35"))
         buffer_max_messages = int(os.environ.get("TELEGRAM_USER_BUFFER_MAX_MESSAGES", "200"))
 
         def _int(key: str, default: int) -> int:
@@ -1041,6 +1041,7 @@ class TelegramUserClientConnector:
                 "addressed": _detect_addressed_in_batch(
                     new_messages_sorted, self._config.address_keywords
                 ),
+                "payload_type": "conversation_history",
             },
         }
 

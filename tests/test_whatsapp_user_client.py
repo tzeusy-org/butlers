@@ -31,7 +31,8 @@ def wa_config() -> WhatsAppUserClientConnectorConfig:
         channel="whatsapp_user_client",
         endpoint_identity="whatsapp:+15551234567",
         bridge_socket="/tmp/test-wa-bridge.sock",
-        flush_interval_s=600,
+        flush_interval_s=1800,
+        history_time_window_m=35,
         buffer_max_messages=50,
         health_port=40082,
     )
@@ -247,7 +248,8 @@ class TestWhatsAppUserClientConnectorConfig:
         assert config.provider == "whatsapp"
         assert config.channel == "whatsapp_user_client"
         assert config.max_inflight == 8
-        assert config.flush_interval_s == 600
+        assert config.flush_interval_s == 1800
+        assert config.history_time_window_m == 35
         assert config.buffer_max_messages == 50
         assert config.health_port == 40082
         assert config.bridge_socket == "/tmp/wa-bridge.sock"
@@ -265,6 +267,14 @@ class TestWhatsAppUserClientConnectorConfig:
 
         config = WhatsAppUserClientConnectorConfig.from_env()
         assert config.backfill_window_h == 24
+
+    def test_from_env_history_time_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """WA_HISTORY_TIME_WINDOW_M is read from environment when set."""
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
+        monkeypatch.setenv("WA_HISTORY_TIME_WINDOW_M", "20")
+
+        config = WhatsAppUserClientConnectorConfig.from_env()
+        assert config.history_time_window_m == 20
 
     def test_from_env_no_backfill_window_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that backfill_window_h defaults to None."""
@@ -470,6 +480,21 @@ class TestEnvelopeBuilding:
 
         assert envelope["schema_version"] == "ingest.v1"
         assert envelope["payload"]["normalized_text"] == ""
+
+    def test_batch_envelope_payload_type_non_empty(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """control.payload_type is 'conversation_history' on non-empty batch envelopes."""
+        events = [{"message_id": "msg-1", "type": "text", "content": {"text": "hello"}}]
+        envelope = connector._build_batch_envelope("chat1@g.us", events, "batch:chat1@g.us:0-0")
+        assert envelope["control"]["payload_type"] == "conversation_history"
+
+    def test_batch_envelope_payload_type_empty(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """control.payload_type is 'conversation_history' on empty batch envelopes."""
+        envelope = connector._build_batch_envelope("chat@g.us", [], "batch:chat@g.us:0-0")
+        assert envelope["control"]["payload_type"] == "conversation_history"
 
     def test_single_event_timestamp_conversion(
         self, connector: WhatsAppUserClientConnector
