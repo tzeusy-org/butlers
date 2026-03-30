@@ -475,8 +475,10 @@ class TestLivenessReporterBehavior:
         # Loop should have continued past connection failures
         assert call_count >= 3, f"Expected at least 3 calls, got {call_count}"
 
-    async def test_404_disables_reporter_without_retries(self, tmp_path: Path) -> None:
-        """A 404 endpoint response should stop the reporter loop after first attempt."""
+    async def test_404_disables_reporter_after_consecutive_failures(
+        self, tmp_path: Path
+    ) -> None:
+        """Persistent 404s (3 consecutive) should stop the reporter loop."""
         daemon = self._make_daemon(tmp_path)
         daemon.config.scheduler = SchedulerConfig(
             heartbeat_interval_seconds=1,
@@ -501,10 +503,53 @@ class TestLivenessReporterBehavior:
             patch("butlers.daemon.httpx.AsyncClient", return_value=mock_client),
             patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
         ):
-            # Loop should self-terminate after initial 404 response.
+            # Loop should self-terminate after 3 consecutive 404 responses.
             await daemon._liveness_reporter_loop()
 
-        assert call_count == 1
+        assert call_count == 3
+
+    async def test_transient_404_does_not_disable_reporter(self, tmp_path: Path) -> None:
+        """A single 404 followed by a 200 should not disable the reporter."""
+        daemon = self._make_daemon(tmp_path)
+        daemon.config.scheduler = SchedulerConfig(
+            heartbeat_interval_seconds=1,
+            switchboard_url="http://test-switchboard:41200",
+        )
+
+        call_count = 0
+        responses = [
+            httpx.Response(404),  # transient 404
+            _ok_response(),       # recovery
+            _ok_response(),       # continues
+        ]
+
+        async def side_effect(*args, **kwargs):
+            nonlocal call_count
+            idx = min(call_count, len(responses) - 1)
+            call_count += 1
+            return responses[idx]
+
+        mock_client = _make_mock_client(post_side_effect=side_effect)
+
+        _real_sleep = asyncio.sleep
+
+        async def fast_sleep(delay: float) -> None:
+            await _real_sleep(0)
+
+        with (
+            patch("butlers.daemon.httpx.AsyncClient", return_value=mock_client),
+            patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
+        ):
+            task = asyncio.create_task(daemon._liveness_reporter_loop())
+            await _real_sleep(0.1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Should have continued past the transient 404
+        assert call_count >= 3
 
     async def test_connection_failure_logged_at_warning_not_error(
         self, tmp_path: Path, caplog

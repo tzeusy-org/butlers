@@ -2625,25 +2625,43 @@ class ButlerDaemon:
         )
 
         payload = {"butler_name": butler_name}
+        consecutive_404s = 0
+        max_consecutive_404s = 3
 
         async def _post_heartbeat(phase: str) -> bool:
             """POST one heartbeat and return whether loop should continue.
 
-            A persistent 404 means the target service does not expose the
-            Switchboard heartbeat endpoint (wrong host/port/path). In that
-            case we stop retrying to avoid noisy, unproductive log spam.
+            A persistent 404 (3 consecutive) means the target service does not
+            expose the Switchboard heartbeat endpoint (wrong host/port/path).
+            In that case we stop retrying to avoid noisy, unproductive log spam.
+            A single 404 during a dashboard restart is tolerated.
             """
+            nonlocal consecutive_404s
             try:
                 resp = await client.post(url, json=payload)
                 if resp.status_code == 404:
+                    consecutive_404s += 1
+                    if consecutive_404s >= max_consecutive_404s:
+                        logger.warning(
+                            "Liveness reporter: %s heartbeat endpoint not found (404) "
+                            "%d consecutive times for butler %s at %s; disabling reporter",
+                            phase,
+                            consecutive_404s,
+                            butler_name,
+                            url,
+                        )
+                        return False
                     logger.warning(
-                        "Liveness reporter: %s heartbeat endpoint not found (404) "
-                        "for butler %s at %s; disabling reporter",
+                        "Liveness reporter: %s heartbeat got 404 for butler %s at %s "
+                        "(%d/%d before disable)",
                         phase,
                         butler_name,
                         url,
+                        consecutive_404s,
+                        max_consecutive_404s,
                     )
-                    return False
+                    return True
+                consecutive_404s = 0
                 resp.raise_for_status()
                 logger.debug(
                     "Liveness reporter: %s heartbeat sent for butler %s (status %d)",
@@ -4726,7 +4744,7 @@ class ButlerDaemon:
 
             Returns deadlines sorted by target_date (soonest first).
             """
-            deadlines = await _deadline_list(pool, status_filter=status_filter)
+            deadlines = await _deadline_list(pool, status=status_filter)
             return deadlines
 
         @mcp.tool()
