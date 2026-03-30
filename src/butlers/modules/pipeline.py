@@ -658,8 +658,7 @@ def _build_signal_extraction_prompt(
     parts.append("\n")
 
     parts.append(
-        "Extract all actionable signals from the conversation above. "
-        "Return a JSON array only."
+        "Extract all actionable signals from the conversation above. Return a JSON array only."
     )
     return "".join(parts)
 
@@ -798,20 +797,16 @@ class MessagePipeline:
                             raw_payload = json.loads(raw_payload)
                         payload_section = raw_payload.get("payload", {})
                         raw_inner = payload_section.get("raw") or {}
-                        conversation_messages = raw_inner.get(
-                            "conversation_history", []
-                        )
+                        conversation_messages = raw_inner.get("conversation_history", [])
             except Exception:
                 logger.debug(
-                    "Failed to load conversation_history from message_inbox; "
-                    "falling back to empty",
+                    "Failed to load conversation_history from message_inbox; falling back to empty",
                     exc_info=True,
                 )
 
         if not conversation_messages:
             logger.info(
-                "Decomposition: no conversation_history found; "
-                "setting decomposed_empty",
+                "Decomposition: no conversation_history found; setting decomposed_empty",
                 extra=self._log_fields(
                     source=source,
                     chat_id=chat_id,
@@ -852,15 +847,11 @@ class MessagePipeline:
             )
 
         # Load available butlers for prompt building
-        with tracer.start_as_current_span(
-            "butlers.switchboard.decomposition.load_butlers"
-        ):
+        with tracer.start_as_current_span("butlers.switchboard.decomposition.load_butlers"):
             butlers = await _load_available_butlers(self._pool)
 
         # Build signal-extraction prompt
-        extraction_prompt = _build_signal_extraction_prompt(
-            conversation_messages, butlers
-        )
+        extraction_prompt = _build_signal_extraction_prompt(conversation_messages, butlers)
 
         # Invoke LLM via dispatch_fn (direct API call, not CC skill)
         signals: list[dict[str, Any]] = []
@@ -881,19 +872,13 @@ class MessagePipeline:
 
                 extraction_output = ""
                 if spawn_result is not None:
-                    extraction_output = str(
-                        getattr(spawn_result, "output", "") or ""
-                    )
+                    extraction_output = str(getattr(spawn_result, "output", "") or "")
                     # Extract model and usage metadata if available
-                    llm_model = str(
-                        getattr(spawn_result, "model", "") or "unknown"
-                    )
+                    llm_model = str(getattr(spawn_result, "model", "") or "unknown")
                     usage = getattr(spawn_result, "usage", None)
                     if isinstance(usage, dict):
                         token_usage = {
-                            k: v
-                            for k, v in usage.items()
-                            if isinstance(v, (int, float))
+                            k: v for k, v in usage.items() if isinstance(v, (int, float))
                         }
 
                 # Parse JSON array from LLM output
@@ -904,7 +889,7 @@ class MessagePipeline:
                     first_newline = cleaned.index("\n") if "\n" in cleaned else 3
                     cleaned = cleaned[first_newline + 1 :]
                 if cleaned.endswith("```"):
-                    cleaned = cleaned[: -3]
+                    cleaned = cleaned[:-3]
                 cleaned = cleaned.strip()
 
                 if cleaned:
@@ -916,9 +901,7 @@ class MessagePipeline:
                             "Signal extraction returned non-array: %s",
                             type(parsed).__name__,
                         )
-                extraction_span.set_attribute(
-                    "decomposition.signal_count", len(signals)
-                )
+                extraction_span.set_attribute("decomposition.signal_count", len(signals))
             except json.JSONDecodeError as jde:
                 logger.warning(
                     "Signal extraction JSON parse failed: %s",
@@ -987,9 +970,7 @@ class MessagePipeline:
                     1,
                     {
                         "source_channel": source,
-                        "connector_type": source_metadata.get(
-                            "tool_name", "unknown"
-                        ),
+                        "connector_type": source_metadata.get("tool_name", "unknown"),
                     },
                 )
             except Exception:
@@ -1035,14 +1016,10 @@ class MessagePipeline:
         for idx, signal in enumerate(signals):
             target_butler = str(signal.get("target_butler", "")).strip()
             if not target_butler:
-                logger.warning(
-                    "Signal %d missing target_butler; skipping", idx
-                )
+                logger.warning("Signal %d missing target_butler; skipping", idx)
                 continue
 
-            tool_name = str(
-                signal.get("tool_name", "route.execute")
-            ).strip()
+            tool_name = str(signal.get("tool_name", "route.execute")).strip()
             tool_args = signal.get("tool_args", {})
             if not isinstance(tool_args, dict):
                 tool_args = {}
@@ -1059,16 +1036,10 @@ class MessagePipeline:
                     "request_id": request_id,
                     "received_at": received_at.isoformat(),
                     "source_channel": source,
-                    "source_endpoint_identity": source_metadata.get(
-                        "identity", "unknown"
-                    ),
-                    "source_sender_identity": source_metadata.get(
-                        "identity", "unknown"
-                    ),
+                    "source_endpoint_identity": source_metadata.get("identity", "unknown"),
+                    "source_sender_identity": source_metadata.get("identity", "unknown"),
                     "source_thread_identity": (
-                        request_context.get("source_thread_identity")
-                        if request_context
-                        else None
+                        request_context.get("source_thread_identity") if request_context else None
                     ),
                     "trace_context": {},
                     "decomposition_signal_index": idx,
@@ -1097,17 +1068,12 @@ class MessagePipeline:
             }
 
             routed.append(target_butler)
-            route_start = time.perf_counter()
             try:
                 with tracer.start_as_current_span(
                     "butlers.switchboard.decomposition.route_fanout"
                 ) as route_span:
-                    route_span.set_attribute(
-                        "decomposition.target_butler", target_butler
-                    )
-                    route_span.set_attribute(
-                        "decomposition.signal_index", idx
-                    )
+                    route_span.set_attribute("decomposition.target_butler", target_butler)
+                    route_span.set_attribute("decomposition.signal_index", idx)
                     route_result = await _route(
                         self._pool,
                         target_butler=target_butler,
@@ -1115,13 +1081,9 @@ class MessagePipeline:
                         args=route_envelope,
                         source_butler="switchboard",
                     )
-                    if isinstance(route_result, dict) and route_result.get(
-                        "error"
-                    ):
+                    if isinstance(route_result, dict) and route_result.get("error"):
                         failed.append(target_butler)
-                        failed_details.append(
-                            f"{target_butler}: {route_result['error']}"
-                        )
+                        failed_details.append(f"{target_butler}: {route_result['error']}")
                         dispatch_outcomes[target_butler] = {
                             "status": "error",
                             "error": str(route_result["error"]),
@@ -1139,10 +1101,7 @@ class MessagePipeline:
                     target_butler,
                 )
                 failed.append(target_butler)
-                failed_details.append(
-                    f"{target_butler}: {type(route_exc).__name__}: "
-                    f"{route_exc}"
-                )
+                failed_details.append(f"{target_butler}: {type(route_exc).__name__}: {route_exc}")
                 dispatch_outcomes[target_butler] = {
                     "status": "error",
                     "error": f"{type(route_exc).__name__}: {route_exc}",
@@ -1990,9 +1949,7 @@ class MessagePipeline:
                 # "conversation_history", decompose the batch into per-butler
                 # conceptual messages instead of spawning a standard LLM
                 # classification session.
-                _payload_type = (
-                    request_context.get("payload_type") if request_context else None
-                )
+                _payload_type = request_context.get("payload_type") if request_context else None
                 if _payload_type == "conversation_history":
                     logger.info(
                         "Pipeline entering conversation decomposition branch",

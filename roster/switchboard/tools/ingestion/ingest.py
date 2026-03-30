@@ -734,8 +734,11 @@ async def ingest_v1(
         "control": {
             "policy_tier": envelope.control.policy_tier,
             "ingestion_tier": ingestion_tier,
-            **({"payload_type": envelope.control.payload_type}
-               if envelope.control.payload_type else {}),
+            **(
+                {"payload_type": envelope.control.payload_type}
+                if envelope.control.payload_type
+                else {}
+            ),
         },
     }
 

@@ -3816,9 +3816,7 @@ class ButlerDaemon:
                     source["addressed"] = True
 
                 # Extract payload_type from control for decomposition branch
-                _payload_type = (
-                    control.get("payload_type") if control is not None else None
-                )
+                _payload_type = control.get("payload_type") if control is not None else None
 
                 # Route accepted message via durable buffer (bounded queue)
                 # or fall back to direct create_task if buffer is unavailable.

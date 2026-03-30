@@ -22,7 +22,6 @@ import pytest
 
 from butlers.modules.pipeline import (
     MessagePipeline,
-    RoutingResult,
     _build_signal_extraction_prompt,
 )
 from butlers.tools.switchboard.routing.contracts import (
