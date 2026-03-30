@@ -166,11 +166,12 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
         produce two distinct transactions in the ledger.
         Requires ``source_message_id`` to be non-None in *txn*.
 
-    **Priority 3 — composite fallback** (CSV / manual entry)
-        Used when neither higher-priority key is available.  Matches on the
-        combination of (``account_id``, ``posted_at``, ``amount``, ``merchant``).
-        Only attempted when both ``external_id`` and ``source_message_id`` are
-        absent *and* ``account_id`` is present.
+    **Priority 3 — composite fallback** (cross-source / CSV / manual entry)
+        Always attempted as a last resort when Priorities 1–2 found no match.
+        Matches on (``posted_at``, ``amount``, ``merchant``) plus
+        ``account_id`` when available.  Catches cross-source duplicates where
+        the same real-world transaction arrives from different channels with
+        different ``source_message_id`` values.
 
     Parameters
     ----------
@@ -243,29 +244,44 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
             return str(row["id"])
 
     # ------------------------------------------------------------------
-    # Priority 3: composite fallback (account_id + posted_at + amount + merchant)
+    # Priority 3: composite fallback (posted_at + amount + merchant)
+    # Always runs as a last-resort cross-source dedup when Priorities 1–2
+    # found no match.  Narrows with account_id when available; without
+    # account_id falls back to business-identity only when source_message_id
+    # was present (cross-source scenario, e.g. email + Telegram for the same
+    # real-world transaction).
     # ------------------------------------------------------------------
-    if (
-        external_id is None
-        and source_message_id is None
-        and account_id is not None
-        and posted_at is not None
-        and stored_amount is not None
-        and merchant is not None
-    ):
-        row = await pool.fetchrow(
-            """
-            SELECT id FROM transactions
-            WHERE account_id = $1::uuid
-              AND posted_at = $2
-              AND amount = $3
-              AND merchant = $4
-            """,
-            str(account_id),
-            posted_at,
-            stored_amount,
-            merchant,
-        )
+    if posted_at is not None and stored_amount is not None and merchant is not None:
+        row = None
+        if account_id is not None:
+            row = await pool.fetchrow(
+                """
+                SELECT id FROM transactions
+                WHERE account_id = $1::uuid
+                  AND posted_at = $2
+                  AND amount = $3
+                  AND merchant = $4
+                """,
+                str(account_id),
+                posted_at,
+                stored_amount,
+                merchant,
+            )
+        elif source_message_id is not None:
+            # Cross-source: source_message_id didn't match Priority 2 (different
+            # channel for the same real-world transaction).  Match on business
+            # identity without account_id.
+            row = await pool.fetchrow(
+                """
+                SELECT id FROM transactions
+                WHERE posted_at = $1
+                  AND amount = $2
+                  AND merchant = $3
+                """,
+                posted_at,
+                stored_amount,
+                merchant,
+            )
         if row is not None:
             return str(row["id"])
 

@@ -230,8 +230,13 @@ async def test_record_transaction_dedupe_via_source_message_id(pool):
     assert count == 1
 
 
-async def test_record_transaction_different_source_ids_not_deduped(pool):
-    """Different source_message_ids create separate rows."""
+async def test_cross_source_dedup_same_business_identity(pool):
+    """Different source_message_ids with same business identity are deduped.
+
+    Catches cross-source duplicates where the same real-world transaction
+    arrives from different channels (e.g. email + Telegram) with different
+    source_message_ids but identical merchant, amount, and posted_at.
+    """
     from butlers.tools.finance.transactions import record_transaction
 
     now = _utcnow()
@@ -254,7 +259,7 @@ async def test_record_transaction_different_source_ids_not_deduped(pool):
         source_message_id="msg-lyft-002",
     )
 
-    assert first["id"] != second["id"]
+    assert first["id"] == second["id"]
 
 
 async def test_record_transaction_no_source_id_allows_duplicates(pool):
