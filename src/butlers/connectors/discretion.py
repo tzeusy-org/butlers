@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
+from prometheus_client import Counter
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -36,6 +38,22 @@ _INNER_CIRCLE_ROLES: frozenset[str] = frozenset({"family", "close-friends"})
 # bypass discretion evaluation entirely.  Dashboard messages are submitted
 # directly by the owner via the web interface; they must never be filtered.
 DISCRETION_BYPASS_CHANNELS: frozenset[str] = frozenset({"dashboard"})
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+
+discretion_evaluations_total = Counter(
+    "discretion_evaluations_total",
+    "Total discretion evaluations by outcome",
+    labelnames=["source", "verdict", "outcome"],
+)
+"""Labels:
+
+- source: evaluator source name (e.g. Telegram chat ID)
+- verdict: FORWARD or IGNORE
+- outcome: ok, bypass, timeout, error, parse_error, fail_open, fail_closed
+"""
 
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a personal-assistant discretion filter. "
@@ -393,6 +411,11 @@ class DiscretionEvaluator:
 
         # Weight bypass: high-trust senders skip the LLM entirely.
         if weight >= self._weight_bypass:
+            discretion_evaluations_total.labels(
+                source=self._source,
+                verdict="FORWARD",
+                outcome="bypass",
+            ).inc()
             return DiscretionResult(
                 verdict="FORWARD",
                 reason="weight-bypass",
@@ -423,19 +446,33 @@ class DiscretionEvaluator:
                 weight,
                 fail_verdict,
             )
+            discretion_evaluations_total.labels(
+                source=self._source,
+                verdict=fail_verdict,
+                outcome="timeout",
+            ).inc()
             return DiscretionResult(
                 verdict=fail_verdict,
                 reason=f"{fail_label}: timeout",
                 is_fail_open=fail_open,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
+            # Log at ERROR with traceback — these are silent killers that
+            # cause the model to show 0 usage while messages flow through
+            # on the fail-open/closed default.
+            logger.error(
                 "Discretion LLM error for source=%s (weight=%.2f): %s — defaulting %s",
                 self._source,
                 weight,
                 exc,
                 fail_verdict,
+                exc_info=True,
             )
+            discretion_evaluations_total.labels(
+                source=self._source,
+                verdict=fail_verdict,
+                outcome="error",
+            ).inc()
             return DiscretionResult(
                 verdict=fail_verdict,
                 reason=f"{fail_label}: {type(exc).__name__}",
@@ -458,10 +495,20 @@ class DiscretionEvaluator:
                 raw[:200],
                 fail_verdict,
             )
+            discretion_evaluations_total.labels(
+                source=self._source,
+                verdict=fail_verdict,
+                outcome="parse_error",
+            ).inc()
             return DiscretionResult(
                 verdict=fail_verdict,
                 reason=f"{fail_label}: parse_error",
                 is_fail_open=fail_open,
             )
 
+        discretion_evaluations_total.labels(
+            source=self._source,
+            verdict=verdict,
+            outcome="ok",
+        ).inc()
         return DiscretionResult(verdict=verdict, reason=reason, is_fail_open=False)
