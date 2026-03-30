@@ -26,6 +26,9 @@ import { SecretsTable } from "@/components/secrets/SecretsTable";
 import { GoogleOAuthSection } from "@/components/settings/GoogleOAuthSection";
 import { SpotifySection } from "@/components/settings/SpotifySetupCard";
 import { HomeAssistantSection } from "@/components/settings/HomeAssistantSetupCard";
+import { OwnTracksSection } from "@/components/settings/OwnTracksSetupCard";
+import { SteamSection } from "@/components/settings/SteamSetupCard";
+import { WhatsAppSection } from "@/components/settings/WhatsAppSetupCard";
 import { useButlers } from "@/hooks/use-butlers";
 import { useSecrets } from "@/hooks/use-secrets";
 import {
@@ -209,8 +212,17 @@ function UserSecretsSection() {
               <div className="py-6">
                 <SpotifySection />
               </div>
-              <div className="pt-6">
+              <div className="py-6">
                 <HomeAssistantSection />
+              </div>
+              <div className="py-6">
+                <WhatsAppSection />
+              </div>
+              <div className="py-6">
+                <OwnTracksSection />
+              </div>
+              <div className="pt-6">
+                <SteamSection />
               </div>
             </div>
           </CardContent>

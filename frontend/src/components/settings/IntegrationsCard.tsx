@@ -1,9 +1,8 @@
 /**
  * IntegrationsCard — consolidated card for system-level external service integrations.
  *
- * Renders WhatsApp, Steam, and OwnTracks as sections within a single card on the
- * settings page. Google OAuth, Spotify, and Home Assistant have moved to the
- * Secrets page (User tab → Integrations section) as they are identity-bound.
+ * All integration cards have been moved to the Secrets page (User tab →
+ * Integrations section). This card will be removed by bu-um75.4.
  */
 
 import {
@@ -14,9 +13,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-import { OwnTracksSection } from "./OwnTracksSetupCard";
-import { SteamSection } from "./SteamSetupCard";
-import { WhatsAppSection } from "./WhatsAppSetupCard";
 
 export function IntegrationsCard() {
   return (
@@ -29,14 +25,8 @@ export function IntegrationsCard() {
       </CardHeader>
       <CardContent>
         <div className="divide-y">
-          <div className="pb-6">
-            <WhatsAppSection />
-          </div>
-          <div className="py-6">
-            <SteamSection />
-          </div>
-          <div className="pt-6">
-            <OwnTracksSection />
+          <div className="py-6 text-muted-foreground text-sm">
+            All integrations have been moved to the Secrets &gt; User tab.
           </div>
         </div>
       </CardContent>
