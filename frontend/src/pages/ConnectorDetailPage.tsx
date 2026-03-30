@@ -52,6 +52,10 @@ import { LivenessBadge } from "@/components/ingestion/LivenessBadge";
 import { VolumeTrendChart } from "@/components/ingestion/VolumeTrendChart";
 import { ConnectorRulesSection } from "@/components/ingestion/ConnectorRulesSection";
 import {
+  BatchSettingsCard,
+  BATCH_CONNECTOR_TYPES,
+} from "@/components/ingestion/BatchSettingsCard";
+import {
   useConnectorDetail,
   useConnectorStats,
   useUpdateConnectorCursor,
@@ -479,6 +483,14 @@ export default function ConnectorDetailPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Batch settings card — only for batch connector types */}
+      {connector && BATCH_CONNECTOR_TYPES.has(connector.connector_type) && (
+        <BatchSettingsCard
+          connector={connector}
+          settingsMutation={settingsMutation}
+        />
       )}
 
       {/* Stats summary card */}
