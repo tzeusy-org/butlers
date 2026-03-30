@@ -11,9 +11,7 @@ import type {
   ProviderConfigCreate,
   ProviderConfigUpdate,
 } from "@/api/index.ts";
-import { getGoogleOAuthStartUrl } from "@/api/index.ts";
 import { BlobStorageCard } from "@/components/settings/BlobStorageCard.tsx";
-import { IntegrationsCard } from "@/components/settings/IntegrationsCard.tsx";
 import { ModelCatalogCard } from "@/components/settings/ModelCatalogCard.tsx";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -60,10 +58,6 @@ import {
   useTestProviderConnectivity,
   useUpdateProvider,
 } from "@/hooks/use-providers";
-import {
-  useGoogleAccounts,
-  useGoogleAccountsHealth,
-} from "@/hooks/use-secrets";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { RECENT_SEARCHES_KEY } from "@/lib/local-settings";
 
@@ -765,79 +759,6 @@ function CLIAuthCard() {
 }
 
 // ---------------------------------------------------------------------------
-// Expired auth warning banner
-// ---------------------------------------------------------------------------
-
-function ExpiredAuthBanner() {
-  const accountsQuery = useGoogleAccounts();
-  const accounts = accountsQuery.data ?? [];
-  const providersQuery = useCLIAuthProviders();
-  const providers = providersQuery.data ?? [];
-
-  // Fetch per-account token health for all Google accounts
-  const accountHealthResults = useGoogleAccountsHealth(accounts.map((a) => a.id));
-
-  // Google accounts where token probe failed
-  const expiredGoogleAccounts = accounts.filter((_account, i) => {
-    const status = accountHealthResults[i]?.data;
-    return status && !status.token_valid && status.has_refresh_token;
-  });
-
-  // OAuth-based CLI providers (device-code) that are not authenticated
-  const expiredCLIProviders = providers.filter(
-    (p) => p.auth_mode === "device_code" && p.health === "not_authenticated",
-  );
-
-  if (expiredGoogleAccounts.length === 0 && expiredCLIProviders.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="rounded-lg border border-destructive bg-destructive/10 p-4 space-y-3">
-      <p className="text-sm font-semibold text-destructive">
-        OAuth tokens need re-authorization
-      </p>
-      {expiredGoogleAccounts.map((account) => {
-        const reAuthUrl = getGoogleOAuthStartUrl({
-          accountHint: account.email ?? undefined,
-          forceConsent: true,
-        });
-        return (
-          <div key={account.id} className="flex items-center justify-between gap-2">
-            <p className="text-sm text-destructive">
-              <span className="font-medium">{account.email ?? account.id}</span>{" "}
-              — Google token expired
-            </p>
-            <a href={reAuthUrl} target="_blank" rel="noopener noreferrer">
-              <Button variant="destructive" size="sm">
-                Re-authorize
-              </Button>
-            </a>
-          </div>
-        );
-      })}
-      {expiredCLIProviders.map((provider) => (
-        <div key={provider.name} className="flex items-center justify-between gap-2">
-          <p className="text-sm text-destructive">
-            <span className="font-medium">{provider.display_name}</span>{" "}
-            — token expired
-          </p>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() =>
-              document.getElementById("cli-auth-card")?.scrollIntoView({ behavior: "smooth" })
-            }
-          >
-            Re-authenticate
-          </Button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -865,17 +786,13 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
         <p className="text-muted-foreground mt-1">
-          Local dashboard preferences for this browser.
+          System configuration and dashboard preferences.
         </p>
       </div>
-
-      <ExpiredAuthBanner />
 
       <ModelCatalogCard />
 
       <CLIAuthCard />
-
-      <IntegrationsCard />
 
       <BlobStorageCard />
 
