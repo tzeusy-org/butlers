@@ -1004,7 +1004,10 @@ class WhatsAppUserClientConnector:
                     "observed_at": flush_ts,
                 },
                 "sender": {"identity": "multiple"},
-                "payload": {"raw": {}, "normalized_text": normalized_text},
+                "payload": {
+                    "raw": {"conversation_history": []},
+                    "normalized_text": normalized_text,
+                },
                 "control": {
                     "idempotency_key": f"wa_batch:{chat_jid}:{batch_event_id}",
                     "policy_tier": "passive",
@@ -1044,11 +1047,38 @@ class WhatsAppUserClientConnector:
 
         flush_ts = datetime.now(UTC).isoformat()
 
+        # Build conversation_history: one entry per buffered event, sorted ascending by message ID.
+        conversation_history: list[dict[str, Any]] = []
+        for event in buffered_events:
+            msg_id = event.get("message_id") or event.get("id")
+            sender_id = event.get("sender_jid") or event.get("from_jid")
+            text = normalize_message_text(event)
+            ts = event.get("timestamp") or event.get("observed_at")
+            if ts is not None:
+                if isinstance(ts, (int, float)):
+                    timestamp = datetime.fromtimestamp(ts, UTC).isoformat()
+                else:
+                    timestamp = str(ts)
+            else:
+                timestamp = None
+            reply_to = (event.get("content") or {}).get("quoted_message_id")
+            conversation_history.append(
+                {
+                    "message_id": msg_id,
+                    "sender_id": sender_id,
+                    "text": text,
+                    "timestamp": timestamp,
+                    "is_new": True,
+                    "reply_to": reply_to,
+                }
+            )
+
         # Build raw payload from all events
         raw_payload = {
             "events": buffered_events,
             "chat_jid": chat_jid,
             "batch_size": len(buffered_events),
+            "conversation_history": conversation_history,
         }
 
         return {

@@ -496,6 +496,97 @@ class TestEnvelopeBuilding:
         envelope = connector._build_batch_envelope("chat@g.us", [], "batch:chat@g.us:0-0")
         assert envelope["control"]["payload_type"] == "conversation_history"
 
+    def test_batch_envelope_conversation_history_present(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """Non-empty batch envelope includes conversation_history in raw payload."""
+        events = [
+            {
+                "message_id": f"msg-{i}",
+                "chat_jid": "chat1@g.us",
+                "sender_jid": f"sender{i}@s.whatsapp.net",
+                "type": "text",
+                "content": {"text": f"Message {i}"},
+            }
+            for i in range(3)
+        ]
+        envelope = connector._build_batch_envelope(
+            "chat1@g.us", events, "batch:chat1@g.us:msg-0-msg-2"
+        )
+        ch = envelope["payload"]["raw"]["conversation_history"]
+        assert isinstance(ch, list)
+        assert len(ch) == 3
+
+    def test_batch_envelope_conversation_history_fields(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """Each conversation_history entry has the required fields matching Telegram format."""
+        events = [
+            {
+                "message_id": "msg-42",
+                "chat_jid": "chat1@g.us",
+                "sender_jid": "alice@s.whatsapp.net",
+                "timestamp": "2024-01-01T12:00:00+00:00",
+                "type": "text",
+                "content": {"text": "Hello"},
+            }
+        ]
+        envelope = connector._build_batch_envelope(
+            "chat1@g.us", events, "batch:chat1@g.us:msg-42-msg-42"
+        )
+        entry = envelope["payload"]["raw"]["conversation_history"][0]
+        assert entry["message_id"] == "msg-42"
+        assert entry["sender_id"] == "alice@s.whatsapp.net"
+        assert entry["text"] == "Hello"
+        assert entry["timestamp"] == "2024-01-01T12:00:00+00:00"
+        assert entry["is_new"] is True
+        assert entry["reply_to"] is None
+
+    def test_batch_envelope_conversation_history_reply_to(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """conversation_history reply_to is populated from content.quoted_message_id."""
+        events = [
+            {
+                "message_id": "msg-99",
+                "sender_jid": "bob@s.whatsapp.net",
+                "type": "text",
+                "content": {"text": "Replying!", "quoted_message_id": "msg-10"},
+            }
+        ]
+        envelope = connector._build_batch_envelope(
+            "chat2@g.us", events, "batch:chat2@g.us:msg-99-msg-99"
+        )
+        entry = envelope["payload"]["raw"]["conversation_history"][0]
+        assert entry["reply_to"] == "msg-10"
+
+    def test_batch_envelope_conversation_history_unix_timestamp(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """Unix integer timestamps are converted to ISO format in conversation_history."""
+        events = [
+            {
+                "message_id": "msg-ts",
+                "sender_jid": "carol@s.whatsapp.net",
+                "timestamp": 1700000000,
+                "type": "text",
+                "content": {"text": "Time test"},
+            }
+        ]
+        envelope = connector._build_batch_envelope(
+            "chat3@g.us", events, "batch:chat3@g.us:msg-ts-msg-ts"
+        )
+        entry = envelope["payload"]["raw"]["conversation_history"][0]
+        assert "T" in entry["timestamp"]
+        assert "2023" in entry["timestamp"]
+
+    def test_batch_envelope_empty_has_conversation_history_key(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """Empty batch envelope raw payload contains conversation_history as empty list."""
+        envelope = connector._build_batch_envelope("chat@g.us", [], "batch:chat@g.us:0-0")
+        assert envelope["payload"]["raw"]["conversation_history"] == []
+
     def test_single_event_timestamp_conversion(
         self, connector: WhatsAppUserClientConnector
     ) -> None:
