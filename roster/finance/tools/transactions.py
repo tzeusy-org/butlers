@@ -270,13 +270,18 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
         elif source_message_id is not None:
             # Cross-source: source_message_id didn't match Priority 2 (different
             # channel for the same real-world transaction).  Match on business
-            # identity without account_id.
+            # identity without account_id.  Uses same-day matching instead of
+            # exact timestamp because different channels may record different
+            # posted_at values for the same real-world transaction (e.g. email
+            # header time vs Telegram message time).
             row = await pool.fetchrow(
                 """
                 SELECT id FROM transactions
-                WHERE posted_at = $1
+                WHERE posted_at::date = $1::date
                   AND amount = $2
                   AND merchant = $3
+                ORDER BY created_at
+                LIMIT 1
                 """,
                 posted_at,
                 stored_amount,

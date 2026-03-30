@@ -235,8 +235,11 @@ async def test_cross_source_dedup_same_business_identity(pool):
 
     Catches cross-source duplicates where the same real-world transaction
     arrives from different channels (e.g. email + Telegram) with different
-    source_message_ids but identical merchant, amount, and posted_at.
+    source_message_ids and slightly different timestamps but identical
+    merchant and amount on the same day.
     """
+    from datetime import timedelta
+
     from butlers.tools.finance.transactions import record_transaction
 
     now = _utcnow()
@@ -249,9 +252,11 @@ async def test_cross_source_dedup_same_business_identity(pool):
         category="transport",
         source_message_id="msg-lyft-001",
     )
+    # Second ingestion from different channel — different source_message_id
+    # and posted_at offset by a few minutes (simulating email vs Telegram).
     second = await record_transaction(
         pool=pool,
-        posted_at=now,
+        posted_at=now + timedelta(minutes=3),
         merchant="Lyft",
         amount=-12.00,
         currency="USD",
