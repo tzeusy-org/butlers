@@ -26,10 +26,21 @@ Typical usage to get a status without exiting::
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+_DASHBOARD_PORT_DEFAULT = "41200"
+
+
+def _default_dashboard_url() -> str:
+    """Resolve dashboard URL from environment, falling back to localhost:41200."""
+    return os.environ.get(
+        "DASHBOARD_URL",
+        f"http://localhost:{os.environ.get('DASHBOARD_PORT', _DASHBOARD_PORT_DEFAULT)}",
+    )
 
 # ---------------------------------------------------------------------------
 # Credential check result
@@ -73,7 +84,7 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
         "\n"
         "To complete Google OAuth bootstrap:\n"
         "  1. Start the Butlers dashboard:  uv run butlers dashboard\n"
-        "  2. Open http://localhost:41200 in your browser.\n"
+        f"  2. Open {_default_dashboard_url()} in your browser.\n"
         "  3. Click 'Connect Google' and follow the OAuth flow.\n"
         "  4. After successful authorization, the refresh token is stored in the DB.\n"
         "\n"
@@ -146,7 +157,7 @@ async def check_google_credentials_with_db(
 def require_google_credentials_or_exit(
     *,
     caller: str = "component",
-    dashboard_url: str = "http://localhost:41200",
+    dashboard_url: str | None = None,
     exit_code: int = 1,
 ) -> None:
     """Check for Google credentials and exit with a clear message if missing.
@@ -164,6 +175,9 @@ def require_google_credentials_or_exit(
     exit_code:
         Exit code to use when credentials are missing (default: 1).
     """
+    if dashboard_url is None:
+        dashboard_url = _default_dashboard_url()
+
     result = check_google_credentials()
     if result.ok:
         logger.debug("[%s] Google credentials check: OK", caller)

@@ -683,7 +683,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
     # Default: derive from the Switchboard butler's known port (41100)
     # unless this butler IS the switchboard.
     if switchboard_url is None and name != "switchboard":
-        switchboard_url = "http://localhost:41100/sse"
+        switchboard_url = os.environ.get("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
 
     # --- [butler.security] sub-section ---
     security_section = butler_section.get("security", {})

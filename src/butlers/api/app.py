@@ -155,7 +155,8 @@ def create_app(
         the environment variable (useful in tests).
     """
     if cors_origins is None:
-        cors_origins = ["http://localhost:41173"]
+        _default = os.environ.get("DASHBOARD_CORS_ORIGINS", "http://localhost:41173")
+        cors_origins = [o.strip() for o in _default.split(",") if o.strip()]
 
     app = FastAPI(
         title="Butlers Dashboard API",

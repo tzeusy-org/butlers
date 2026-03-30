@@ -401,7 +401,7 @@ services:
       - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
     environment:
       <<: *postgres-env
-      BUTLERS_SWITCHBOARD_URL: http://localhost:41100
+      BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
     volumes:
@@ -494,7 +494,7 @@ services:
     command: []
     environment:
       <<: *postgres-env
-      BUTLERS_SWITCHBOARD_URL: http://localhost:41100
+      BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
     volumes:

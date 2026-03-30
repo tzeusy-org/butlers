@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import socket
 import sys
@@ -160,7 +161,13 @@ def list_cmd(butlers_dir: Path) -> None:
 
 @cli.command()
 @click.argument("name")
-@click.option("--port", type=int, default=41100, help="Port for the butler's MCP server")
+@click.option(
+    "--port",
+    type=int,
+    default=int(os.environ.get("BUTLER_MCP_PORT", "41100")),
+    show_default=True,
+    help="Port for the butler's MCP server",
+)
 @click.option(
     "--dir",
     "butlers_dir",
@@ -211,7 +218,7 @@ schema = "{name}"
 @click.option(
     "--port",
     type=int,
-    default=41200,
+    default=int(os.environ.get("DASHBOARD_PORT", "41200")),
     show_default=True,
     help="Port for the dashboard server",
 )
