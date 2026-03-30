@@ -866,3 +866,284 @@ class TestIngestControlPayloadType:
         """IngestControlV1 rejects invalid payload_type values."""
         with pytest.raises(Exception):
             IngestControlV1(payload_type="invalid_type")
+
+
+# ---------------------------------------------------------------------------
+# metadata_only policy bypass (gap from docstring)
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataOnlyPolicyBypass:
+    """Verify metadata_only triage decision bypasses decomposition."""
+
+    async def test_metadata_only_bypasses_decomposition(self):
+        """metadata_only triage decision bypasses decomposition and LLM."""
+
+        async def mock_dispatch(**kwargs):
+            raise AssertionError("dispatch_fn should not be called for metadata_only bypass")
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=mock_dispatch,
+        )
+
+        import uuid
+
+        result = await pipeline.process(
+            message_text="test",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {
+                    "payload_type": "conversation_history",
+                    "triage_decision": "metadata_only",
+                },
+                "request_id": str(uuid.uuid4()),
+            },
+        )
+
+        assert result.target_butler == "metadata_only"
+        assert result.route_result.get("triage_decision") == "metadata_only"
+        assert result.route_result.get("policy_bypass") is True
+
+
+# ---------------------------------------------------------------------------
+# All signals fail — lifecycle_state becomes "errored"
+# ---------------------------------------------------------------------------
+
+
+class TestDecompositionAllFail:
+    """Verify lifecycle state when every fan-out route fails."""
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch("butlers.tools.switchboard.routing.route.route", new_callable=AsyncMock)
+    async def test_all_routes_fail_sets_failed_targets(self, mock_route, mock_load):
+        """When all routes fail, every signal ends up in failed_targets."""
+        mock_route.return_value = {"error": "butler unavailable"}
+
+        raw_payload = _raw_payload_with_conversation()
+        signals = _signals_two_butlers()
+        fake_conn = FakeConn(fetchrow_result={"raw_payload": json.dumps(raw_payload)})
+        pool = FakePool(conn=fake_conn)
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output=json.dumps(signals))
+
+        pipeline = MessagePipeline(
+            switchboard_pool=pool,
+            dispatch_fn=mock_dispatch,
+        )
+
+        import uuid
+
+        result = await pipeline.process(
+            message_text="test",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+                "request_id": str(uuid.uuid4()),
+            },
+            message_inbox_id=uuid.uuid4(),
+        )
+
+        # Both signals failed — none acked
+        assert set(result.failed_targets) == {"finance", "health"}
+        assert result.acked_targets == []
+        assert result.routing_error is not None
+        # Multi signals were attempted
+        assert set(result.routed_targets) == {"finance", "health"}
+
+
+# ---------------------------------------------------------------------------
+# dispatch_fn returns None — treated as empty output
+# ---------------------------------------------------------------------------
+
+
+class TestDecompositionDispatchReturnsNone:
+    """Verify None return from dispatch_fn is handled gracefully."""
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_dispatch_returns_none_treated_as_empty(self, mock_load):
+        """When dispatch_fn returns None, signals are empty → decomposed_empty."""
+        raw_payload = _raw_payload_with_conversation()
+        fake_conn = FakeConn(fetchrow_result={"raw_payload": json.dumps(raw_payload)})
+        pool = FakePool(conn=fake_conn)
+
+        async def mock_dispatch(**kwargs):
+            return None  # dispatch_fn explicitly returns None
+
+        pipeline = MessagePipeline(
+            switchboard_pool=pool,
+            dispatch_fn=mock_dispatch,
+        )
+
+        import uuid
+
+        result = await pipeline.process(
+            message_text="test",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+                "request_id": str(uuid.uuid4()),
+            },
+            message_inbox_id=uuid.uuid4(),
+        )
+
+        assert result.target_butler == "decomposed_empty"
+        assert result.route_result.get("reason") == "no_signals_extracted"
+
+
+# ---------------------------------------------------------------------------
+# Signal with invalid tool_args type (not a dict)
+# ---------------------------------------------------------------------------
+
+
+class TestSignalToolArgsCoercion:
+    """Verify signals with non-dict tool_args are coerced safely."""
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch("butlers.tools.switchboard.routing.route.route", new_callable=AsyncMock)
+    async def test_signal_with_string_tool_args_coerced_to_empty_dict(self, mock_route, mock_load):
+        """Signal with non-dict tool_args (e.g. a string) is coerced to empty dict."""
+        mock_route.return_value = {"status": "ok"}
+
+        raw_payload = _raw_payload_with_conversation()
+        signals = [
+            {
+                "signal_type": "finance",
+                "target_butler": "finance",
+                "tool_name": "route.execute",
+                "tool_args": "not a dict",  # invalid — should be coerced to {}
+                "confidence": "HIGH",
+                "excerpts": [],
+            }
+        ]
+        fake_conn = FakeConn(fetchrow_result={"raw_payload": json.dumps(raw_payload)})
+        pool = FakePool(conn=fake_conn)
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output=json.dumps(signals))
+
+        pipeline = MessagePipeline(
+            switchboard_pool=pool,
+            dispatch_fn=mock_dispatch,
+        )
+
+        import uuid
+
+        result = await pipeline.process(
+            message_text="test",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+                "request_id": str(uuid.uuid4()),
+            },
+            message_inbox_id=uuid.uuid4(),
+        )
+
+        # Route was still attempted with coerced tool_args={}
+        assert result.routed_targets == ["finance"]
+        assert mock_route.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# DB row with raw_payload as pre-parsed dict (not string)
+# ---------------------------------------------------------------------------
+
+
+class TestDecompositionRawPayloadDict:
+    """Verify raw_payload pre-parsed as dict is handled correctly."""
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch("butlers.tools.switchboard.routing.route.route", new_callable=AsyncMock)
+    async def test_raw_payload_as_dict_not_string(self, mock_route, mock_load):
+        """raw_payload stored as dict (not JSON string) is loaded without error."""
+        mock_route.return_value = {"status": "ok"}
+
+        raw_payload = _raw_payload_with_conversation()
+        signals = [_signals_two_butlers()[0]]  # finance only
+
+        # DB returns dict directly (not JSON string)
+        fake_conn = FakeConn(fetchrow_result={"raw_payload": raw_payload})
+        pool = FakePool(conn=fake_conn)
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output=json.dumps(signals))
+
+        pipeline = MessagePipeline(
+            switchboard_pool=pool,
+            dispatch_fn=mock_dispatch,
+        )
+
+        import uuid
+
+        result = await pipeline.process(
+            message_text="test",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+                "request_id": str(uuid.uuid4()),
+            },
+            message_inbox_id=uuid.uuid4(),
+        )
+
+        assert result.routed_targets == ["finance"]
+        assert result.target_butler == "finance"
+
+
+# ---------------------------------------------------------------------------
+# No message_inbox_id with empty conversation history
+# ---------------------------------------------------------------------------
+
+
+class TestDecompositionNoInboxId:
+    """Verify decomposition works when message_inbox_id is None."""
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_no_inbox_id_returns_decomposed_empty_without_db_query(self, mock_load):
+        """With message_inbox_id=None, decomposition returns empty without DB lookup."""
+        # Pool should never be acquired since inbox_id is None
+        pool = FakePool(conn=FakeConn())
+
+        async def mock_dispatch(**kwargs):
+            raise AssertionError("Should not reach LLM with no conversation history")
+
+        pipeline = MessagePipeline(
+            switchboard_pool=pool,
+            dispatch_fn=mock_dispatch,
+        )
+
+        import uuid
+
+        result = await pipeline.process(
+            message_text="test",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+                "request_id": str(uuid.uuid4()),
+            },
+            message_inbox_id=None,  # explicitly None
+        )
+
+        # No DB → no conversation_history → decomposed_empty
+        assert result.target_butler == "decomposed_empty"
+        assert result.route_result.get("reason") == "no_conversation_history"
