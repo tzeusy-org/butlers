@@ -3734,18 +3734,51 @@ class ButlerDaemon:
 
                 routing_failed = False
                 _routing_error_detail: str | None = None
+
+                # Resolve the actual sender identity for identity resolution.
+                # For single messages, sender.identity is the sender's ID.
+                # For batch messages, sender.identity is "multiple" and per-sender
+                # details are in sender.participants / sender.owner_sender_id.
+                _sender_identity = sender.get("identity", "unknown")
+                _source_id: str | None = None
+                _sender_name: str | None = None
+
+                if _sender_identity == "multiple":
+                    # Batch envelope: extract the primary non-owner sender so
+                    # identity resolution maps to the correct contact/entity.
+                    _participants: dict[str, str] = sender.get("participants") or {}
+                    _owner_sid = sender.get("owner_sender_id")
+                    _non_owner = [
+                        sid for sid in _participants if sid != _owner_sid
+                    ]
+                    if _non_owner:
+                        _source_id = str(_non_owner[0])
+                        _sender_name = _participants.get(_non_owner[0])
+                    elif _participants:
+                        # All participants are the owner (self-chat)
+                        _first = next(iter(_participants))
+                        _source_id = str(_first)
+                        _sender_name = _participants.get(_first)
+                elif _sender_identity not in ("unknown", ""):
+                    # Single message: sender.identity is the actual sender ID.
+                    _source_id = _sender_identity
+
                 _tool_args: dict[str, Any] = {
                     "source": channel,
                     "source_channel": channel,
                     "source_identity": endpoint_identity,
                     "source_endpoint_identity": f"{channel}:{endpoint_identity}",
-                    "sender_identity": sender.get("identity", "unknown"),
+                    "sender_identity": _sender_identity,
                     "external_event_id": event.get("external_event_id", ""),
                     "external_thread_id": external_thread_id,
                     "source_tool": "ingest",
                     "request_id": request_id,
                     "request_context": request_context,
                 }
+                if _source_id is not None:
+                    _tool_args["source_id"] = _source_id
+                if _sender_name is not None:
+                    _tool_args["sender_name"] = _sender_name
                 if attachments:
                     _tool_args["attachments"] = attachments
 

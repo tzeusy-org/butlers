@@ -1031,6 +1031,13 @@ class TelegramUserClientConnector:
         normalized_text = "\n".join(header_lines + text_parts + footer_lines)
 
         # Build conversation_history: all context messages, sorted ascending by ID.
+        # Collect display names for all context senders (superset of new-message senders).
+        all_sender_ids: dict[str, str] = dict(seen_sender_ids)  # start with new-msg names
+        for msg in context_messages:
+            sid = self._extract_sender_identity(msg)
+            if sid not in all_sender_ids:
+                all_sender_ids[sid] = self._get_sender_display_name(msg)
+
         conversation_history: list[dict[str, Any]] = []
         for msg in sorted(context_messages, key=lambda m: getattr(m, "id", 0)):
             msg_id = getattr(msg, "id", None)
@@ -1045,10 +1052,12 @@ class TelegramUserClientConnector:
                 )
             timestamp = msg_date.isoformat() if msg_date is not None else None
             reply_to = getattr(msg, "reply_to_msg_id", None)
+            sid_str = self._extract_sender_identity(msg)
             conversation_history.append(
                 {
                     "message_id": msg_id,
                     "sender_id": sender_id,
+                    "display_name": all_sender_ids.get(sid_str, sid_str),
                     "text": text,
                     "timestamp": timestamp,
                     "is_new": msg_id in buffered_ids,
@@ -1072,6 +1081,8 @@ class TelegramUserClientConnector:
             },
             "sender": {
                 "identity": "multiple",
+                "participants": all_sender_ids,
+                "owner_sender_id": str(owner_sender_id) if owner_sender_id is not None else None,
             },
             "payload": {
                 "raw": {"conversation_history": conversation_history},

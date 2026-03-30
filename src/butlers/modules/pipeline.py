@@ -601,7 +601,8 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     messages:
         The ``conversation_history`` array from the batch envelope's
         ``payload.raw.conversation_history``.  Each dict has keys like
-        ``sender``, ``text``, ``timestamp``, ``message_id``.
+        ``sender_id``, ``display_name``, ``text``, ``timestamp``,
+        ``message_id``.
 
     Returns
     -------
@@ -621,7 +622,7 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     ]
 
     for msg in messages:
-        sender = msg.get("sender", "unknown")
+        sender = msg.get("display_name") or msg.get("sender_id") or msg.get("sender", "unknown")
         ts = msg.get("timestamp", "")
         text = msg.get("text", "")
         lines.append(f"**{sender}** ({ts}):")
