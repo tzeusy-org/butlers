@@ -100,6 +100,40 @@ async def load_cursor(
     return row["checkpoint_cursor"]
 
 
+_SELECT_SETTINGS_SQL = """\
+SELECT settings
+FROM switchboard.connector_registry
+WHERE connector_type = $1
+  AND endpoint_identity = $2
+"""
+
+
+async def load_connector_settings(
+    pool: asyncpg.Pool,
+    connector_type: str,
+    endpoint_identity: str,
+) -> dict | None:
+    """Read the ``settings`` JSONB column from ``switchboard.connector_registry``.
+
+    Returns the settings dict when present, or ``None`` when the row is missing
+    or the settings column is NULL.
+    """
+    import json as _json
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            _SELECT_SETTINGS_SQL,
+            connector_type,
+            endpoint_identity,
+        )
+    if row is None or row["settings"] is None:
+        return None
+    settings = row["settings"]
+    if isinstance(settings, str):
+        settings = _json.loads(settings)
+    return settings
+
+
 async def create_cursor_pool(
     *,
     host: str = "localhost",

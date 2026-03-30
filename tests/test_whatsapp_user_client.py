@@ -895,3 +895,159 @@ class TestFlushScanner:
 
         await connector._scan_and_flush()
         assert "new@g.us" not in flushed
+
+    async def test_scan_and_flush_uses_explicit_interval(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """_scan_and_flush uses provided flush_interval_s instead of config default."""
+        flushed = []
+
+        async def mock_flush(jid: str) -> None:
+            flushed.append(jid)
+
+        connector._flush_chat_buffer = mock_flush  # type: ignore[method-assign]
+
+        buf = ChatBuffer(chat_jid="explicit@g.us", messages=[{"id": "1"}])
+        # 20s old, overdue for short_interval=10
+        buf.last_flush_ts = time.monotonic() - 20
+        connector._chat_buffers["explicit@g.us"] = buf
+
+        await connector._scan_and_flush(flush_interval_s=10)
+        assert "explicit@g.us" in flushed
+
+    async def test_scan_and_flush_defaults_to_config_interval(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """_scan_and_flush with no argument falls back to config.flush_interval_s."""
+        flushed = []
+
+        async def mock_flush(jid: str) -> None:
+            flushed.append(jid)
+
+        connector._flush_chat_buffer = mock_flush  # type: ignore[method-assign]
+
+        buf = ChatBuffer(chat_jid="default@g.us", messages=[{"id": "1"}])
+        # Overdue by more than 1800s
+        buf.last_flush_ts = time.monotonic() - 2000
+        connector._chat_buffers["default@g.us"] = buf
+
+        await connector._scan_and_flush()  # no explicit interval
+        assert "default@g.us" in flushed
+
+
+# ---------------------------------------------------------------------------
+# Tests: Flush interval live-reload from dashboard settings
+# ---------------------------------------------------------------------------
+
+
+class TestFlushIntervalLiveReload:
+    """Tests for dashboard settings live-reload of flush_interval_s (WhatsApp)."""
+
+    async def test_load_flush_interval_from_db_returns_dashboard_value(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """_load_flush_interval_from_db returns the dashboard-configured value."""
+        with patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(return_value={"flush_interval_s": 900}),
+        ):
+            result = await connector._load_flush_interval_from_db()
+
+        assert result == 900
+
+    async def test_load_flush_interval_from_db_returns_none_when_unset(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """_load_flush_interval_from_db returns None when settings has no flush_interval_s."""
+        with patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(return_value={}),
+        ):
+            result = await connector._load_flush_interval_from_db()
+
+        assert result is None
+
+    async def test_load_flush_interval_from_db_returns_none_when_no_settings_row(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """_load_flush_interval_from_db returns None when no settings row exists."""
+        with patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await connector._load_flush_interval_from_db()
+
+        assert result is None
+
+    async def test_load_flush_interval_from_db_returns_none_when_pool_is_none(
+        self, wa_config: WhatsAppUserClientConnectorConfig
+    ) -> None:
+        """_load_flush_interval_from_db returns None when no pool is configured."""
+        connector = WhatsAppUserClientConnector(wa_config, cursor_pool=None)
+
+        result = await connector._load_flush_interval_from_db()
+
+        assert result is None
+
+    async def test_load_flush_interval_from_db_returns_none_on_db_error(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """_load_flush_interval_from_db returns None (fail-safe) when DB raises."""
+        with patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(side_effect=Exception("DB connection refused")),
+        ):
+            result = await connector._load_flush_interval_from_db()
+
+        assert result is None
+
+    async def test_flush_scanner_loop_uses_dashboard_interval_over_env(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """Dashboard flush_interval_s (900) takes precedence over env/config default (1800)."""
+        scan_calls: list[int | None] = []
+
+        async def tracking_scan(flush_interval_s: int | None = None) -> None:
+            scan_calls.append(flush_interval_s)
+
+        connector._scan_and_flush = tracking_scan  # type: ignore[method-assign]
+
+        _sleep_sides: list = [None, asyncio.CancelledError()]
+        with patch.object(
+            connector,
+            "_load_flush_interval_from_db",
+            new=AsyncMock(return_value=900),
+        ):
+            with patch("asyncio.sleep", new=AsyncMock(side_effect=_sleep_sides)):
+                try:
+                    await connector._flush_scanner_loop()
+                except asyncio.CancelledError:
+                    pass
+
+        assert scan_calls == [900]
+
+    async def test_flush_scanner_loop_falls_back_to_config_when_no_db_value(
+        self, connector: WhatsAppUserClientConnector
+    ) -> None:
+        """Flush scanner uses config.flush_interval_s when DB returns no value."""
+        scan_calls: list[int | None] = []
+
+        async def tracking_scan(flush_interval_s: int | None = None) -> None:
+            scan_calls.append(flush_interval_s)
+
+        connector._scan_and_flush = tracking_scan  # type: ignore[method-assign]
+
+        _sleep_sides: list = [None, asyncio.CancelledError()]
+        with patch.object(
+            connector,
+            "_load_flush_interval_from_db",
+            new=AsyncMock(return_value=None),
+        ):
+            with patch("asyncio.sleep", new=AsyncMock(side_effect=_sleep_sides)):
+                try:
+                    await connector._flush_scanner_loop()
+                except asyncio.CancelledError:
+                    pass
+
+        # Should pass config.flush_interval_s (1800)
+        assert scan_calls == [connector._config.flush_interval_s]

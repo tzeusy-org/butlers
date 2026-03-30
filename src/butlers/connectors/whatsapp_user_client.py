@@ -709,19 +709,62 @@ class WhatsAppUserClientConnector:
     # Internal: Flush scanner
     # -------------------------------------------------------------------------
 
+    async def _load_flush_interval_from_db(self) -> int | None:
+        """Read ``flush_interval_s`` from ``connector_registry.settings`` JSONB.
+
+        Returns the dashboard-configured value, or ``None`` when unset / unavailable.
+        The caller is responsible for applying the fallback chain:
+        dashboard setting > env var > hardcoded default (1800 s).
+        """
+        if self._cursor_pool is None:
+            return None
+        try:
+            from butlers.connectors.cursor_store import load_connector_settings
+
+            settings = await load_connector_settings(
+                self._cursor_pool,
+                "whatsapp_user_client",
+                self._config.endpoint_identity,
+            )
+            if settings is None:
+                return None
+            raw = settings.get("flush_interval_s")
+            if raw is None:
+                return None
+            return int(raw)
+        except Exception as exc:
+            logger.debug("WA: Failed to read flush_interval_s from DB (non-fatal): %s", exc)
+            return None
+
     async def _flush_scanner_loop(self) -> None:
-        """Background task: scan all chat buffers every 60 seconds."""
+        """Background task: scan all chat buffers every 60 seconds.
+
+        On each wake cycle, reads ``flush_interval_s`` from the dashboard
+        settings (``connector_registry.settings``) to support live-reload
+        without a connector restart.  Precedence: dashboard > env var > default.
+        """
         logger.debug("WA flush scanner started (interval=%ds)", _FLUSH_SCANNER_INTERVAL_S)
         try:
             while True:
                 await asyncio.sleep(_FLUSH_SCANNER_INTERVAL_S)
-                await self._scan_and_flush()
+                db_interval = await self._load_flush_interval_from_db()
+                effective_interval = (
+                    db_interval if db_interval is not None else self._config.flush_interval_s
+                )
+                await self._scan_and_flush(effective_interval)
         except asyncio.CancelledError:
             logger.debug("WA flush scanner cancelled")
             raise
 
-    async def _scan_and_flush(self) -> None:
-        """Iterate all chat buffers and flush those whose interval has elapsed."""
+    async def _scan_and_flush(self, flush_interval_s: int | None = None) -> None:
+        """Iterate all chat buffers and flush those whose interval has elapsed.
+
+        Args:
+            flush_interval_s: Effective flush interval in seconds.  When
+                ``None``, falls back to ``self._config.flush_interval_s``.
+        """
+        if flush_interval_s is None:
+            flush_interval_s = self._config.flush_interval_s
         now = time.monotonic()
         chat_jids = list(self._chat_buffers.keys())
         for jid in chat_jids:
@@ -731,7 +774,7 @@ class WhatsAppUserClientConnector:
             if not buf.messages:
                 continue
             elapsed = now - buf.last_flush_ts
-            if elapsed >= self._config.flush_interval_s:
+            if elapsed >= flush_interval_s:
                 logger.info(
                     "Flush interval elapsed for chat %s (elapsed=%.1fs), flushing",
                     jid,

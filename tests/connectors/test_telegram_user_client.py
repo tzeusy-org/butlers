@@ -1442,6 +1442,217 @@ class TestFlushScanner:
         with pytest.raises(asyncio.CancelledError):
             await task
 
+    async def test_scan_and_flush_uses_explicit_interval(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_scan_and_flush uses the provided flush_interval_s instead of config default."""
+        connector = TelegramUserClientConnector(config)
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+
+        # Use a very small explicit interval so the buffer appears overdue
+        short_interval = 10
+        buf = ChatBuffer()
+        buf.messages = [_make_mock_message(1, chat_id=6666)]
+        # last_flush_ts is 20s ago → overdue for short_interval=10
+        buf.last_flush_ts = time.monotonic() - 20
+        connector._chat_buffers["6666"] = buf
+
+        flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            await original_flush(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+        await connector._scan_and_flush(flush_interval_s=short_interval)
+
+        assert "6666" in flush_calls
+
+    async def test_scan_and_flush_no_flush_when_not_overdue_for_explicit_interval(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_scan_and_flush does not flush when explicit interval has not elapsed."""
+        connector = TelegramUserClientConnector(config)
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+
+        big_interval = 9999
+        buf = ChatBuffer()
+        buf.messages = [_make_mock_message(1, chat_id=7777)]
+        # last_flush_ts only 5s ago → not overdue for big_interval=9999
+        buf.last_flush_ts = time.monotonic() - 5
+        connector._chat_buffers["7777"] = buf
+
+        flush_calls: list[str] = []
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+        await connector._scan_and_flush(flush_interval_s=big_interval)
+
+        assert "7777" not in flush_calls
+
+    async def test_scan_and_flush_defaults_to_config_interval(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_scan_and_flush with no argument falls back to config.flush_interval_s."""
+        connector = TelegramUserClientConnector(config)
+        connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+
+        buf = ChatBuffer()
+        buf.messages = [_make_mock_message(1, chat_id=8888)]
+        # Overdue by more than the default 1800s config value
+        buf.last_flush_ts = time.monotonic() - config.flush_interval_s - 10
+        connector._chat_buffers["8888"] = buf
+
+        flush_calls: list[str] = []
+        original_flush = connector._flush_chat_buffer
+
+        async def tracking_flush(chat_id: str) -> None:
+            flush_calls.append(chat_id)
+            await original_flush(chat_id)
+
+        connector._flush_chat_buffer = tracking_flush  # type: ignore[method-assign]
+        await connector._scan_and_flush()  # no explicit interval
+
+        assert "8888" in flush_calls
+
+
+class TestFlushIntervalLiveReload:
+    """Tests for dashboard settings live-reload of flush_interval_s (Telegram)."""
+
+    async def test_load_flush_interval_from_db_returns_dashboard_value(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_load_flush_interval_from_db returns the dashboard-configured value."""
+        mock_pool = MagicMock()
+
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_pool)
+
+        with patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(return_value={"flush_interval_s": 900}),
+        ):
+            result = await connector._load_flush_interval_from_db()
+
+        assert result == 900
+
+    async def test_load_flush_interval_from_db_returns_none_when_unset(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_load_flush_interval_from_db returns None when settings has no flush_interval_s."""
+        mock_pool = MagicMock()
+
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_pool)
+
+        with patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(return_value={}),
+        ):
+            result = await connector._load_flush_interval_from_db()
+
+        assert result is None
+
+    async def test_load_flush_interval_from_db_returns_none_when_no_settings_row(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_load_flush_interval_from_db returns None when no settings row exists."""
+        mock_pool = MagicMock()
+
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_pool)
+
+        with patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await connector._load_flush_interval_from_db()
+
+        assert result is None
+
+    async def test_load_flush_interval_from_db_returns_none_when_pool_is_none(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_load_flush_interval_from_db returns None when no pool is configured."""
+        connector = TelegramUserClientConnector(config, cursor_pool=None)
+
+        result = await connector._load_flush_interval_from_db()
+
+        assert result is None
+
+    async def test_load_flush_interval_from_db_returns_none_on_db_error(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_load_flush_interval_from_db returns None (fail-safe) when DB raises."""
+        mock_pool = MagicMock()
+
+        connector = TelegramUserClientConnector(config, cursor_pool=mock_pool)
+
+        with patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(side_effect=Exception("DB connection refused")),
+        ):
+            result = await connector._load_flush_interval_from_db()
+
+        assert result is None
+
+    async def test_flush_scanner_loop_uses_dashboard_interval_over_env(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Dashboard flush_interval_s (900) takes precedence over env/config default (1800)."""
+        connector = TelegramUserClientConnector(config)
+
+        scan_calls: list[int | None] = []
+
+        async def tracking_scan(flush_interval_s: int | None = None) -> None:
+            scan_calls.append(flush_interval_s)
+
+        connector._scan_and_flush = tracking_scan  # type: ignore[method-assign]
+
+        # Patch DB to return 900
+        _sleep_sides: list = [None, asyncio.CancelledError()]
+        with patch.object(
+            connector,
+            "_load_flush_interval_from_db",
+            new=AsyncMock(return_value=900),
+        ):
+            with patch("asyncio.sleep", new=AsyncMock(side_effect=_sleep_sides)):
+                try:
+                    await connector._flush_scanner_loop()
+                except asyncio.CancelledError:
+                    pass
+
+        assert scan_calls == [900]
+
+    async def test_flush_scanner_loop_falls_back_to_config_when_no_db_value(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Flush scanner uses config.flush_interval_s when DB returns no value."""
+        connector = TelegramUserClientConnector(config)
+
+        scan_calls: list[int | None] = []
+
+        async def tracking_scan(flush_interval_s: int | None = None) -> None:
+            scan_calls.append(flush_interval_s)
+
+        connector._scan_and_flush = tracking_scan  # type: ignore[method-assign]
+
+        # Patch DB to return None (no dashboard setting)
+        _sleep_sides: list = [None, asyncio.CancelledError()]
+        with patch.object(
+            connector,
+            "_load_flush_interval_from_db",
+            new=AsyncMock(return_value=None),
+        ):
+            with patch("asyncio.sleep", new=AsyncMock(side_effect=_sleep_sides)):
+                try:
+                    await connector._flush_scanner_loop()
+                except asyncio.CancelledError:
+                    pass
+
+        # Should pass config.flush_interval_s (1800)
+        assert scan_calls == [config.flush_interval_s]
+
 
 # ---------------------------------------------------------------------------
 # Graceful shutdown — flush all buffers
