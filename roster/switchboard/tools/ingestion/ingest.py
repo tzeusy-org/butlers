@@ -368,6 +368,11 @@ def _build_request_context(
     # Tier annotation (always stored; defaults to "full" for backward compat)
     context["ingestion_tier"] = control.ingestion_tier
 
+    # Payload type annotation: signals batch conversation_history envelopes
+    # to the decomposition branch in pipeline.process().
+    if control.payload_type:
+        context["payload_type"] = control.payload_type
+
     # Policy decision annotation: embed for downstream pipeline visibility.
     # Keys use "triage_" prefix for backward compatibility with existing consumers.
     if triage_decision is not None:
@@ -729,6 +734,8 @@ async def ingest_v1(
         "control": {
             "policy_tier": envelope.control.policy_tier,
             "ingestion_tier": ingestion_tier,
+            **({"payload_type": envelope.control.payload_type}
+               if envelope.control.payload_type else {}),
         },
     }
 

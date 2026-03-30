@@ -1928,6 +1928,8 @@ class ButlerDaemon:
                 request_context["triage_decision"] = ref.triage_decision
             if ref.triage_target is not None:
                 request_context["triage_target"] = ref.triage_target
+            if ref.payload_type is not None:
+                request_context["payload_type"] = ref.payload_type
 
             # Fire 👀 reaction before pipeline processing (telegram_bot only).
             if channel == "telegram_bot" and telegram_mod is not None:
@@ -3813,6 +3815,11 @@ class ButlerDaemon:
                 if control is not None and control.get("addressed"):
                     source["addressed"] = True
 
+                # Extract payload_type from control for decomposition branch
+                _payload_type = (
+                    control.get("payload_type") if control is not None else None
+                )
+
                 # Route accepted message via durable buffer (bounded queue)
                 # or fall back to direct create_task if buffer is unavailable.
                 if not result.duplicate and pipeline is not None:
@@ -3836,6 +3843,7 @@ class ButlerDaemon:
                                 triage_decision=result.triage_decision,
                                 triage_target=result.triage_target,
                                 attachments=_attachments,
+                                payload_type=_payload_type,
                             )
                         else:
                             # Fallback: unbounded create_task (buffer not wired)

@@ -88,6 +88,7 @@ class _MessageRef:
     triage_decision: str | None = field(default=None)
     triage_target: str | None = field(default=None)
     attachments: list[dict[str, Any]] | None = field(default=None)
+    payload_type: str | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +295,7 @@ class DurableBuffer:
         triage_decision: str | None = None,
         triage_target: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        payload_type: str | None = None,
     ) -> bool:
         """Attempt to enqueue a message reference (non-blocking, hot path).
 
@@ -324,6 +326,7 @@ class DurableBuffer:
             triage_decision=triage_decision,
             triage_target=triage_target,
             attachments=attachments,
+            payload_type=payload_type,
         )
 
         queue = self._tier_queues[policy_tier]
@@ -647,9 +650,10 @@ class DurableBuffer:
                 # Another scanner or worker already claimed it
                 continue
 
-            # Recover triage decision from stored request_context
+            # Recover triage decision and payload_type from stored request_context
             triage_decision = request_context.get("triage_decision")
             triage_target = request_context.get("triage_target")
+            payload_type = request_context.get("payload_type")
 
             ref = _MessageRef(
                 request_id=request_id,
@@ -662,6 +666,7 @@ class DurableBuffer:
                 policy_tier=policy_tier,
                 triage_decision=triage_decision,
                 triage_target=triage_target,
+                payload_type=payload_type,
             )
 
             tier_queue = self._tier_queues[policy_tier]

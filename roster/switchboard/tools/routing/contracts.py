@@ -224,6 +224,9 @@ class IngestPayloadV1(BaseModel):
     attachments: tuple[IngestAttachment, ...] | None = None
 
 
+PayloadType = Literal["conversation_history"]
+
+
 class IngestControlV1(BaseModel):
     """Optional ingest control metadata.
 
@@ -240,6 +243,7 @@ class IngestControlV1(BaseModel):
     policy_tier: PolicyTier = "default"
     ingestion_tier: IngestionTier = "full"
     addressed: bool = False
+    payload_type: PayloadType | None = None
 
 
 class IngestEnvelopeV1(BaseModel):
@@ -642,6 +646,7 @@ __all__ = [
     "IngestAttachment",
     "IngestControlV1",
     "IngestionTier",
+    "PayloadType",
     "IngestEnvelopeV1",
     "IngestEventV1",
     "IngestPayloadV1",
