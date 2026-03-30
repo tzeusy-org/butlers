@@ -258,6 +258,53 @@ async def ingestion_events_count(
     return await pool.fetchval(sql, *args) or 0
 
 
+async def ingestion_event_get_inbox_lifecycle(
+    pool: asyncpg.Pool,
+    event_id: str | UUID,
+) -> dict[str, Any] | None:
+    """Fetch ``lifecycle_state`` and ``decomposition_output`` from ``message_inbox``.
+
+    ``message_inbox.id`` equals the ingestion event's ``request_id`` (UUID7),
+    so this is a direct primary-key lookup.  The table is partitioned by
+    ``received_at``; without a known partition key we search across all
+    partitions.  The switchboard pool's ``search_path`` already includes the
+    switchboard schema so no schema prefix is required.
+
+    Args:
+        pool: asyncpg connection pool scoped to the switchboard schema (i.e.
+            ``search_path`` includes the switchboard schema so that
+            ``message_inbox`` is visible without a schema prefix).
+        event_id: UUID of the ingestion event (matches ``message_inbox.id``).
+
+    Returns:
+        A dict with ``lifecycle_state`` (str) and ``decomposition_output``
+        (dict | None) keys, or ``None`` if no matching row is found.
+    """
+    if isinstance(event_id, str):
+        event_id = UUID(event_id)
+
+    row = await pool.fetchrow(
+        """
+        SELECT lifecycle_state, decomposition_output
+        FROM message_inbox
+        WHERE id = $1
+        LIMIT 1
+        """,
+        event_id,
+    )
+    if row is None:
+        return None
+
+    decomposition_output = row["decomposition_output"]
+    if isinstance(decomposition_output, str):
+        decomposition_output = json.loads(decomposition_output)
+
+    return {
+        "lifecycle_state": row["lifecycle_state"],
+        "decomposition_output": decomposition_output,
+    }
+
+
 async def ingestion_event_mark_failed(
     pool: asyncpg.Pool,
     event_id: str | UUID,

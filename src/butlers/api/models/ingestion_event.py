@@ -37,7 +37,16 @@ class IngestionEventSummary(BaseModel):
 
 
 class IngestionEventDetail(IngestionEventSummary):
-    """Full ingestion event detail (same fields; alias for future extension)."""
+    """Full ingestion event detail, augmented with decomposition lifecycle state.
+
+    Includes ``lifecycle_state`` and ``decomposition_output`` from
+    ``message_inbox`` when available (joined via the switchboard schema pool).
+    Both fields are ``None`` when the message_inbox row is not accessible
+    (e.g. the switchboard pool is unavailable or the row has been pruned).
+    """
+
+    lifecycle_state: str | None = None
+    decomposition_output: dict[str, Any] | None = None
 
 
 class IngestionEventSession(BaseModel):

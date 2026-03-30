@@ -144,6 +144,8 @@ def _app_with_mock_db(
     shared_pool: AsyncMock | None = None,
     fan_out_results: dict | None = None,
     shared_pool_error: Exception | None = None,
+    switchboard_pool: AsyncMock | None = None,
+    switchboard_pool_error: Exception | None = None,
 ) -> FastAPI:
     """Wire a FastAPI app with a mocked DatabaseManager.
 
@@ -158,6 +160,12 @@ def _app_with_mock_db(
         Return value for mock_db.fan_out(); defaults to empty dict.
     shared_pool_error:
         If set, credential_shared_pool() raises this exception.
+    switchboard_pool:
+        Mock pool to return from db.pool("switchboard"). If None and
+        switchboard_pool_error is None, the switchboard pool call raises
+        KeyError (simulating an unregistered pool).
+    switchboard_pool_error:
+        If set, db.pool("switchboard") raises this exception.
     """
     mock_db = MagicMock(spec=DatabaseManager)
 
@@ -174,6 +182,15 @@ def _app_with_mock_db(
         mock_db.fan_out = AsyncMock(return_value=fan_out_results)
     else:
         mock_db.fan_out = AsyncMock(return_value={})
+
+    # Wire db.pool("switchboard") for message_inbox lifecycle enrichment.
+    if switchboard_pool_error is not None:
+        mock_db.pool.side_effect = switchboard_pool_error
+    elif switchboard_pool is not None:
+        mock_db.pool.return_value = switchboard_pool
+    else:
+        # Default: raise KeyError as if switchboard is not registered.
+        mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
 
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
@@ -984,3 +1001,137 @@ class TestReplayEndpoint:
             resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
 
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/{requestId} — lifecycle enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionEventDetailLifecycle:
+    """Tests for lifecycle_state and decomposition_output enrichment in event detail.
+
+    The detail endpoint joins message_inbox (switchboard schema) to surface
+    decomposition lifecycle state.  These tests verify the enrichment path
+    including the graceful-degradation cases.
+    """
+
+    async def test_detail_includes_lifecycle_state_when_switchboard_available(self, app):
+        """lifecycle_state from message_inbox should appear in event detail."""
+        event_row = _make_event_row(event_id=_REQUEST_ID)
+
+        shared_pool = AsyncMock()
+        shared_pool.fetchrow = AsyncMock(return_value=event_row)
+
+        switchboard_pool = AsyncMock()
+        switchboard_pool.fetchrow = AsyncMock(
+            return_value={
+                "lifecycle_state": "decomposed_empty",
+                "decomposition_output": None,
+            }
+        )
+
+        _app_with_mock_db(app, shared_pool=shared_pool, switchboard_pool=switchboard_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{_REQUEST_ID}")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["lifecycle_state"] == "decomposed_empty"
+        assert data["decomposition_output"] is None
+
+    async def test_detail_includes_decomposition_output_when_available(self, app):
+        """decomposition_output from message_inbox should appear in event detail."""
+        event_row = _make_event_row(event_id=_REQUEST_ID)
+        decomp = {"signals": [{"type": "task", "butler": "atlas"}], "model": "claude-3"}
+
+        shared_pool = AsyncMock()
+        shared_pool.fetchrow = AsyncMock(return_value=event_row)
+
+        switchboard_pool = AsyncMock()
+        switchboard_pool.fetchrow = AsyncMock(
+            return_value={
+                "lifecycle_state": "routed",
+                "decomposition_output": decomp,
+            }
+        )
+
+        _app_with_mock_db(app, shared_pool=shared_pool, switchboard_pool=switchboard_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{_REQUEST_ID}")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["lifecycle_state"] == "routed"
+        assert data["decomposition_output"] == decomp
+
+    async def test_detail_lifecycle_fields_null_when_switchboard_pool_unavailable(self, app):
+        """lifecycle_state and decomposition_output must be null when switchboard pool is absent."""
+        event_row = _make_event_row(event_id=_REQUEST_ID)
+
+        shared_pool = AsyncMock()
+        shared_pool.fetchrow = AsyncMock(return_value=event_row)
+
+        # switchboard_pool not provided → KeyError (default behaviour)
+        _app_with_mock_db(app, shared_pool=shared_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{_REQUEST_ID}")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["lifecycle_state"] is None
+        assert data["decomposition_output"] is None
+
+    async def test_detail_lifecycle_fields_null_when_inbox_row_pruned(self, app):
+        """lifecycle_state and decomposition_output must be null when inbox row is pruned."""
+        event_row = _make_event_row(event_id=_REQUEST_ID)
+
+        shared_pool = AsyncMock()
+        shared_pool.fetchrow = AsyncMock(return_value=event_row)
+
+        switchboard_pool = AsyncMock()
+        switchboard_pool.fetchrow = AsyncMock(return_value=None)  # row pruned
+
+        _app_with_mock_db(app, shared_pool=shared_pool, switchboard_pool=switchboard_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{_REQUEST_ID}")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["lifecycle_state"] is None
+        assert data["decomposition_output"] is None
+
+    async def test_detail_lifecycle_fields_null_when_inbox_query_raises(self, app):
+        """lifecycle_state and decomposition_output are null even when inbox query raises."""
+        event_row = _make_event_row(event_id=_REQUEST_ID)
+
+        shared_pool = AsyncMock()
+        shared_pool.fetchrow = AsyncMock(return_value=event_row)
+
+        switchboard_pool = AsyncMock()
+        switchboard_pool.fetchrow = AsyncMock(side_effect=RuntimeError("DB error"))
+
+        _app_with_mock_db(app, shared_pool=shared_pool, switchboard_pool=switchboard_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{_REQUEST_ID}")
+
+        # Event still returned — lifecycle fields gracefully degraded to null
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["lifecycle_state"] is None
+        assert data["decomposition_output"] is None

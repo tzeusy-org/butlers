@@ -33,6 +33,7 @@ from butlers.api.models.ingestion_event import (
 from butlers.api.pricing import PricingConfig
 from butlers.core.ingestion_events import (
     ingestion_event_get,
+    ingestion_event_get_inbox_lifecycle,
     ingestion_event_replay_request,
     ingestion_event_rollup,
     ingestion_event_sessions,
@@ -119,6 +120,11 @@ async def get_ingestion_event(
     """Return a single ingestion event by its UUID.
 
     Returns 404 when no event with that ``request_id`` exists.
+
+    The response includes ``lifecycle_state`` and ``decomposition_output``
+    fields sourced from ``message_inbox`` (switchboard schema) when the
+    switchboard pool is registered.  If the switchboard pool is unavailable
+    or the ``message_inbox`` row has been pruned, both fields are ``null``.
     """
     try:
         pool = db.credential_shared_pool()
@@ -132,6 +138,23 @@ async def get_ingestion_event(
 
     if event is None:
         raise HTTPException(status_code=404, detail=f"Ingestion event '{request_id}' not found")
+
+    # Augment with lifecycle fields from message_inbox (switchboard schema).
+    # Best-effort: if the switchboard pool is not registered or the inbox row
+    # has been pruned, lifecycle fields remain None.
+    try:
+        switchboard_pool = db.pool("switchboard")
+        inbox_lifecycle = await ingestion_event_get_inbox_lifecycle(switchboard_pool, request_id)
+        if inbox_lifecycle is not None:
+            event.update(inbox_lifecycle)
+    except (KeyError, Exception):
+        # KeyError → switchboard pool not registered; other exceptions → DB error.
+        # Both are non-fatal: lifecycle fields default to None.
+        logger.debug(
+            "Could not fetch message_inbox lifecycle for %s "
+            "(switchboard pool unavailable or row pruned)",
+            request_id,
+        )
 
     return ApiResponse[IngestionEventDetail](data=IngestionEventDetail(**event))
 

@@ -1199,3 +1199,104 @@ class TestIngestionEventReplayRequest:
         pool = _FakePool()
         with pytest.raises(ValueError):
             await ingestion_event_replay_request(pool, "not-a-uuid")
+
+
+# ---------------------------------------------------------------------------
+# ingestion_event_get_inbox_lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionEventGetInboxLifecycle:
+    """Tests for the message_inbox lifecycle lookup.
+
+    Verifies that ``ingestion_event_get_inbox_lifecycle`` returns the correct
+    fields and handles missing rows and UUID coercion correctly.
+    """
+
+    async def test_returns_lifecycle_state_and_decomposition_output(self) -> None:
+        """Should return dict with lifecycle_state and decomposition_output."""
+        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
+
+        event_id = uuid.uuid4()
+        decomp = {"signals": [], "reason": "no_signals_extracted"}
+        row = _FakeRecord(
+            {
+                "lifecycle_state": "decomposed_empty",
+                "decomposition_output": decomp,
+            }
+        )
+        pool = _FakePool(fetchrow_result=row)
+        result = await ingestion_event_get_inbox_lifecycle(pool, event_id)
+        assert result is not None
+        assert result["lifecycle_state"] == "decomposed_empty"
+        assert result["decomposition_output"] == decomp
+
+    async def test_returns_none_when_no_inbox_row(self) -> None:
+        """Returns None when message_inbox has no matching row (pruned)."""
+        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
+
+        event_id = uuid.uuid4()
+        pool = _FakePool(fetchrow_result=None)
+        result = await ingestion_event_get_inbox_lifecycle(pool, event_id)
+        assert result is None
+
+    async def test_null_decomposition_output_returned_as_none(self) -> None:
+        """decomposition_output=NULL from the DB should become Python None."""
+        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
+
+        event_id = uuid.uuid4()
+        row = _FakeRecord({"lifecycle_state": "accepted", "decomposition_output": None})
+        pool = _FakePool(fetchrow_result=row)
+        result = await ingestion_event_get_inbox_lifecycle(pool, event_id)
+        assert result is not None
+        assert result["lifecycle_state"] == "accepted"
+        assert result["decomposition_output"] is None
+
+    async def test_accepts_uuid_string_as_event_id(self) -> None:
+        """Should accept a UUID string and coerce it to UUID for the query."""
+        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
+
+        event_id = uuid.uuid4()
+        row = _FakeRecord({"lifecycle_state": "routed", "decomposition_output": None})
+        pool = _FakePool(fetchrow_result=row)
+        result = await ingestion_event_get_inbox_lifecycle(pool, str(event_id))
+        assert result is not None
+        # Verify the query received a UUID (not a string)
+        fetchrow_call = next((c for c in pool.calls if c[0] == "fetchrow"), None)
+        assert fetchrow_call is not None
+        assert isinstance(fetchrow_call[2][0], uuid.UUID)
+        assert fetchrow_call[2][0] == event_id
+
+    async def test_query_targets_message_inbox(self) -> None:
+        """Query must reference message_inbox and filter by id."""
+        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
+
+        event_id = uuid.uuid4()
+        pool = _FakePool(fetchrow_result=None)
+        await ingestion_event_get_inbox_lifecycle(pool, event_id)
+        fetchrow_calls = [(sql, args) for method, sql, args in pool.calls if method == "fetchrow"]
+        assert fetchrow_calls, "Expected at least one fetchrow call"
+        sql, args = fetchrow_calls[0]
+        assert "message_inbox" in sql
+        assert "lifecycle_state" in sql
+        assert "decomposition_output" in sql
+        assert args[0] == event_id
+
+    async def test_deserialises_json_string_decomposition_output(self) -> None:
+        """decomposition_output returned as JSON string should be deserialised to dict."""
+        import json
+
+        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
+
+        event_id = uuid.uuid4()
+        decomp = {"signals": [{"butler": "atlas"}], "model": "claude-3"}
+        row = _FakeRecord(
+            {
+                "lifecycle_state": "routed",
+                "decomposition_output": json.dumps(decomp),
+            }
+        )
+        pool = _FakePool(fetchrow_result=row)
+        result = await ingestion_event_get_inbox_lifecycle(pool, event_id)
+        assert result is not None
+        assert result["decomposition_output"] == decomp
