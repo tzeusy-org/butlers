@@ -95,6 +95,38 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Addressed-mention detection for passive connectors
+# ---------------------------------------------------------------------------
+
+# Default trigger keywords that indicate the user is explicitly addressing
+# butlers.  Case-insensitive prefix match against the first word(s) of a
+# message.  Configurable via CONNECTOR_ADDRESS_KEYWORDS env var (comma-sep).
+_DEFAULT_ADDRESS_KEYWORDS: frozenset[str] = frozenset(
+    {"@butler", "@butlers", "hey butler", "hey butlers", "ok butler", "ok butlers"}
+)
+
+
+def _detect_addressed(normalized_text: str, keywords: frozenset[str]) -> bool:
+    """Return True if *normalized_text* starts with an address keyword."""
+    if not normalized_text:
+        return False
+    lowered = normalized_text.lower().strip()
+    return any(lowered.startswith(kw) for kw in keywords)
+
+
+def _detect_addressed_in_batch(
+    messages: list[Any],
+    keywords: frozenset[str],
+) -> bool:
+    """Return True if ANY message in a batch contains an address keyword."""
+    for msg in messages:
+        text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
+        if _detect_addressed(text, keywords):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Chat buffer data structure
 # ---------------------------------------------------------------------------
 
@@ -155,6 +187,9 @@ class TelegramUserClientConnectorConfig:
     discretion_weight_bypass: float = 1.0
     discretion_weight_fail_open: float = 0.5
 
+    # Address-mention keywords for passive→interactive promotion
+    address_keywords: frozenset[str] = field(default_factory=lambda: _DEFAULT_ADDRESS_KEYWORDS)
+
     @classmethod
     def from_env(cls) -> TelegramUserClientConnectorConfig:
         """Load non-credential configuration from environment variables.
@@ -197,6 +232,14 @@ class TelegramUserClientConnectorConfig:
         discretion_weight_bypass = _float("TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS", 1.0)
         discretion_weight_fail_open = _float("TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN", 0.5)
 
+        # Address keywords (comma-separated, case-insensitive)
+        _raw_keywords = os.environ.get("CONNECTOR_ADDRESS_KEYWORDS", "").strip()
+        address_keywords = (
+            frozenset(k.strip().lower() for k in _raw_keywords.split(",") if k.strip())
+            if _raw_keywords
+            else _DEFAULT_ADDRESS_KEYWORDS
+        )
+
         # Credential fields default to empty — must be populated from DB.
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
@@ -215,6 +258,7 @@ class TelegramUserClientConnectorConfig:
             discretion_window_seconds=discretion_window_seconds,
             discretion_weight_bypass=discretion_weight_bypass,
             discretion_weight_fail_open=discretion_weight_fail_open,
+            address_keywords=address_keywords,
         )
 
 
@@ -993,7 +1037,10 @@ class TelegramUserClientConnector:
             },
             "control": {
                 "idempotency_key": f"tg_batch:{chat_id}:{min_id}:{max_id}",
-                "policy_tier": "interactive",
+                "policy_tier": "passive",
+                "addressed": _detect_addressed_in_batch(
+                    new_messages_sorted, self._config.address_keywords
+                ),
             },
         }
 
@@ -1556,7 +1603,8 @@ class TelegramUserClientConnector:
             },
             "control": {
                 "idempotency_key": idem_key,
-                "policy_tier": "interactive",
+                "policy_tier": "passive",
+                "addressed": _detect_addressed(normalized_text, self._config.address_keywords),
             },
         }
 

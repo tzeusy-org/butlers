@@ -325,7 +325,7 @@ class TestTelegramUserClientConnector:
             },
             "control": {
                 "idempotency_key": "tg:67890:12345",
-                "policy_tier": "interactive",
+                "policy_tier": "passive",
             },
         }
 
@@ -363,7 +363,7 @@ class TestTelegramUserClientConnector:
             "payload": {"raw": {}, "normalized_text": "test"},
             "control": {
                 "idempotency_key": "tg:67890:12345",
-                "policy_tier": "interactive",
+                "policy_tier": "passive",
             },
         }
 
@@ -394,7 +394,7 @@ class TestTelegramUserClientConnector:
             "event": {"external_event_id": "1", "observed_at": datetime.now(UTC).isoformat()},
             "sender": {"identity": "1"},
             "payload": {"raw": {}, "normalized_text": "test"},
-            "control": {"idempotency_key": "test", "policy_tier": "interactive"},
+            "control": {"idempotency_key": "test", "policy_tier": "passive"},
         }
 
         with patch.object(

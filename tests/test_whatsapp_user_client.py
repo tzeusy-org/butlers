@@ -423,7 +423,7 @@ class TestEnvelopeBuilding:
         assert envelope["payload"]["normalized_text"] == "Hello"
         assert "ABCD1234" in envelope["control"]["idempotency_key"]
         assert "whatsapp:" in envelope["control"]["idempotency_key"]
-        assert envelope["control"]["policy_tier"] == "default"
+        assert envelope["control"]["policy_tier"] == "passive"
 
     def test_single_event_idempotency_key_format(
         self, connector: WhatsAppUserClientConnector

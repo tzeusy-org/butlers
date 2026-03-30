@@ -55,7 +55,7 @@ SourceProvider = Literal[
 ]
 NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
 NotifyIntent = Literal["send", "reply", "react", "insight"]
-PolicyTier = Literal["default", "interactive", "high_priority"]
+PolicyTier = Literal["default", "interactive", "passive", "high_priority"]
 IngestionTier = Literal["full", "metadata"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
 _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = {
@@ -239,6 +239,7 @@ class IngestControlV1(BaseModel):
     trace_context: dict[str, Any] = Field(default_factory=dict)
     policy_tier: PolicyTier = "default"
     ingestion_tier: IngestionTier = "full"
+    addressed: bool = False
 
 
 class IngestEnvelopeV1(BaseModel):
@@ -302,6 +303,7 @@ class RouteRequestContextV1(BaseModel):
     source_sender_contact_id: NonEmptyStr | None = None
     source_sender_entity_id: NonEmptyStr | None = None
     source_thread_identity: NonEmptyStr | None = None
+    addressed: bool = False
     subrequest_id: NonEmptyStr | None = None
     segment_id: NonEmptyStr | None = None
     trace_context: dict[str, Any] = Field(default_factory=dict)

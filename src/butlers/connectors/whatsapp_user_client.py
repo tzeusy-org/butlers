@@ -72,6 +72,35 @@ from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Addressed-mention detection for passive connectors
+# ---------------------------------------------------------------------------
+
+_DEFAULT_ADDRESS_KEYWORDS: frozenset[str] = frozenset(
+    {"@butler", "@butlers", "hey butler", "hey butlers", "ok butler", "ok butlers"}
+)
+
+
+def _detect_addressed(text: str, keywords: frozenset[str]) -> bool:
+    """Return True if *text* starts with an address keyword (case-insensitive)."""
+    if not text:
+        return False
+    lowered = text.lower().strip()
+    return any(lowered.startswith(kw) for kw in keywords)
+
+
+def _detect_addressed_in_events(
+    events: list[dict[str, Any]],
+    keywords: frozenset[str],
+) -> bool:
+    """Return True if ANY event in a batch contains an address keyword."""
+    for evt in events:
+        text = evt.get("text") or evt.get("body") or ""
+        if _detect_addressed(text, keywords):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -135,6 +164,9 @@ class WhatsAppUserClientConnectorConfig:
     # Health port
     health_port: int = 40082
 
+    # Address-mention keywords for passive→interactive promotion
+    address_keywords: frozenset[str] = field(default_factory=lambda: _DEFAULT_ADDRESS_KEYWORDS)
+
     @classmethod
     def from_env(cls) -> WhatsAppUserClientConnectorConfig:
         """Load non-credential configuration from environment variables.
@@ -158,6 +190,14 @@ class WhatsAppUserClientConnectorConfig:
         buffer_max_messages = int(os.environ.get("WA_BUFFER_MAX_MESSAGES", "50"))
         health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "40082"))
 
+        # Address keywords (comma-separated, case-insensitive)
+        _raw_keywords = os.environ.get("CONNECTOR_ADDRESS_KEYWORDS", "").strip()
+        address_keywords = (
+            frozenset(k.strip().lower() for k in _raw_keywords.split(",") if k.strip())
+            if _raw_keywords
+            else _DEFAULT_ADDRESS_KEYWORDS
+        )
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -168,6 +208,7 @@ class WhatsAppUserClientConnectorConfig:
             flush_interval_s=flush_interval_s,
             buffer_max_messages=buffer_max_messages,
             health_port=health_port,
+            address_keywords=address_keywords,
         )
 
 
@@ -919,7 +960,8 @@ class WhatsAppUserClientConnector:
                 "payload": {"raw": {}, "normalized_text": normalized_text},
                 "control": {
                     "idempotency_key": f"wa_batch:{chat_jid}:{batch_event_id}",
-                    "policy_tier": "default",
+                    "policy_tier": "passive",
+                    "addressed": False,
                 },
             }
 
@@ -980,7 +1022,10 @@ class WhatsAppUserClientConnector:
             },
             "control": {
                 "idempotency_key": f"wa_batch:{chat_jid}:{batch_event_id}",
-                "policy_tier": "default",
+                "policy_tier": "passive",
+                "addressed": _detect_addressed_in_events(
+                    buffered_events, self._config.address_keywords
+                ),
             },
         }
 
@@ -999,7 +1044,8 @@ class WhatsAppUserClientConnector:
         - payload.raw = full bridge event JSON
         - payload.normalized_text = extracted/annotated text
         - control.idempotency_key = "whatsapp:<endpoint_identity>:<message_id>"
-        - control.policy_tier = "default"
+        - control.policy_tier = "passive"
+        - control.addressed = True if message starts with an address keyword
         """
         msg_id = str(event.get("message_id") or event.get("id") or "unknown")
         chat_jid = event.get("chat_jid") or event.get("chat_id") or ""
@@ -1037,7 +1083,8 @@ class WhatsAppUserClientConnector:
             },
             "control": {
                 "idempotency_key": idempotency_key,
-                "policy_tier": "default",
+                "policy_tier": "passive",
+                "addressed": _detect_addressed(normalized_text, self._config.address_keywords),
             },
         }
 
