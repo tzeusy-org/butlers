@@ -2034,34 +2034,11 @@ async def run_google_drive_connector() -> None:
         cursor_pool=cursor_pool,
     )
     try:
-        # Perform initial account sync and start account loops.
-        added, removed, unchanged = await manager.sync_accounts()
-        logger.info(
-            "Google Drive connector: initial account sync complete "
-            "(added=%d removed=%d unchanged=%d)",
-            len(added),
-            len(removed),
-            len(unchanged),
-        )
-
-        # Run the periodic re-scan loop until cancelled.
-        while True:
-            await asyncio.sleep(process_config.account_rescan_interval_s)
-            try:
-                added, removed, unchanged = await manager.sync_accounts()
-                if added or removed:
-                    logger.info(
-                        "Google Drive connector: account re-scan complete "
-                        "(added=%d removed=%d unchanged=%d)",
-                        len(added),
-                        len(removed),
-                        len(unchanged),
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("Google Drive connector: account re-scan error (non-fatal): %s", exc)
+        # manager.start() handles: health server, SIGHUP, account sync,
+        # heartbeat, and the rescan loop — then calls stop() on exit.
+        await manager.start()
     finally:
+        # stop() is idempotent; safe to call even if manager.start() already did.
         await manager.stop()
         if cursor_pool is not None:
             await cursor_pool.close()
