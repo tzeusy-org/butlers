@@ -393,6 +393,14 @@ class CreateEntityInfoResponse(BaseModel):
     secured: bool
 
 
+class OwnerEntityInfoResponse(BaseModel):
+    """Response for GET /owner/entity-info — all entity_info entries for the owner entity."""
+
+    entity_id: UUID
+    entity_name: str
+    entries: list[EntityInfoEntry] = Field(default_factory=list)
+
+
 class DunbarEntry(BaseModel):
     """Dunbar tier ranking entry for a single contact/entity."""
 

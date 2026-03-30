@@ -210,7 +210,8 @@ class DiscordUserConnectorConfig:
         provider = os.environ.get("CONNECTOR_PROVIDER", "discord")
         channel = os.environ.get("CONNECTOR_CHANNEL", "discord")
 
-        discord_bot_token = os.environ.get("DISCORD_BOT_TOKEN")
+        # Credential fields default to None — resolved from DB by the CLI
+        # entrypoint, with env-var fallback there (not here).
 
         # Parse optional allowlists (comma-separated IDs)
         guild_allowlist_str = os.environ.get("DISCORD_GUILD_ALLOWLIST", "")
@@ -230,7 +231,6 @@ class DiscordUserConnectorConfig:
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
             channel=channel,
-            discord_bot_token=discord_bot_token,
             guild_allowlist=guild_allowlist,
             channel_allowlist=channel_allowlist,
             max_inflight=max_inflight,
@@ -1356,6 +1356,12 @@ async def run_discord_user_connector() -> None:
         db_token = await _resolve_discord_bot_token_from_db()
         if db_token:
             config = replace(config, discord_bot_token=db_token)
+
+    # Env-var fallback (backward-compatible).
+    if not config.discord_bot_token:
+        env_token = os.environ.get("DISCORD_BOT_TOKEN")
+        if env_token:
+            config = replace(config, discord_bot_token=env_token)
 
     if not config.discord_bot_token:
         raise ValueError(

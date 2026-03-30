@@ -173,8 +173,8 @@ class TelegramModule(Module):
     def _get_bot_token(self) -> str:
         """Resolve Telegram bot token from startup-cached credentials.
 
-        The token is pre-resolved at startup: user-scope from owner entity_info,
-        bot-scope from CredentialStore.
+        The bot token is an ecosystem-wide (Tier 1) credential resolved
+        exclusively from CredentialStore at startup.
         """
         if not self._config.bot.enabled:
             raise RuntimeError("Telegram bot scope modules.telegram.bot is disabled")
@@ -241,8 +241,6 @@ class TelegramModule(Module):
             When provided, tokens are resolved DB-first with env fallback.
             When ``None`` (e.g. tests), resolution falls back to env vars only.
         """
-        from butlers.credential_store import resolve_owner_entity_info
-
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
@@ -250,21 +248,12 @@ class TelegramModule(Module):
         self._db = db
         self._resolved_credentials = {}
 
-        # --- User-scope: resolve exclusively from owner entity_info ----------
-        pool = getattr(db, "pool", None) if db is not None else None
-        if pool is not None and self._config.user.enabled:
-            user_token_env = self._config.user.token_env
-            value = await resolve_owner_entity_info(pool, "telegram_bot_token")
-            if value is not None:
-                self._resolved_credentials[user_token_env] = value
-
-        # --- Bot-scope only: CredentialStore ----------------------------------
+        # --- Bot-scope: CredentialStore (ecosystem-wide Tier 1 credential) ----
         if credential_store is not None:
             bot_token_env = self._config.bot.token_env
-            if bot_token_env not in self._resolved_credentials:
-                value = await credential_store.resolve(bot_token_env)
-                if value is not None:
-                    self._resolved_credentials[bot_token_env] = value
+            value = await credential_store.resolve(bot_token_env)
+            if value is not None:
+                self._resolved_credentials[bot_token_env] = value
 
         if self._config.webhook_url:
             await self._set_webhook(self._config.webhook_url)

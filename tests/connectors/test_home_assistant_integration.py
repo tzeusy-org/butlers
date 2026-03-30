@@ -1045,21 +1045,9 @@ class TestDashboardSettingsFlow:
 
         stored_creds: dict[str, str] = {}
 
-        # Mock the credential store that the endpoint will use
-        mock_cred_store = AsyncMock()
-
-        async def _mock_store(key: str, value: str, **_kwargs: Any) -> None:
-            stored_creds[key] = value
-
-        mock_cred_store.store = _mock_store
-
-        # Mock the db_manager dependency that returns our credential store
-        mock_db_manager = MagicMock()
-        mock_db_manager.credential_shared_pool = MagicMock(
-            side_effect=AttributeError("Simulate no shared pool")
-        )
-        mock_db_manager.butler_names = ["test_butler"]
-        mock_db_manager.pool = MagicMock(return_value=MagicMock())
+        async def _mock_upsert(_pool: Any, info_type: str, value: str, **_kw: Any) -> bool:
+            stored_creds[info_type] = value
+            return True
 
         # Keep a reference to the real AsyncClient so the ASGI test transport is
         # not affected. Only the outbound HA validation call (inside the endpoint
@@ -1078,8 +1066,12 @@ class TestDashboardSettingsFlow:
         with (
             patch("httpx.AsyncClient", side_effect=_patched_client_factory),
             patch(
-                "butlers.api.routers.home_assistant._make_credential_store",
-                return_value=mock_cred_store,
+                "butlers.api.routers.home_assistant._resolve_pool",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "butlers.api.routers.home_assistant.upsert_owner_entity_info",
+                side_effect=_mock_upsert,
             ),
         ):
             async with _real_async_client(
@@ -1098,9 +1090,9 @@ class TestDashboardSettingsFlow:
             f"Expected 200, got {response.status_code}: {response.text}"
         )
 
-        # Both credentials must have been persisted
-        assert "home_assistant:base_url" in stored_creds
-        assert "home_assistant:access_token" in stored_creds
+        # Both credentials must have been persisted to entity_info
+        assert "home_assistant_url" in stored_creds
+        assert "home_assistant_token" in stored_creds
 
     async def test_settings_api_rejects_invalid_token(self) -> None:
         """POST /api/settings/home-assistant returns 400 for auth failure (HTTP 401 from HA)."""
@@ -1113,10 +1105,6 @@ class TestDashboardSettingsFlow:
         mock_ha_response = MagicMock()
         mock_ha_response.status_code = 401
         mock_ha_response.raise_for_status.side_effect = Exception("401 Unauthorized")
-
-        # Mock the credential store for the endpoint
-        mock_cred_store = AsyncMock()
-        mock_cred_store.store = AsyncMock()
 
         _real_async_client = httpx.AsyncClient
 
@@ -1132,8 +1120,8 @@ class TestDashboardSettingsFlow:
         with (
             patch("httpx.AsyncClient", side_effect=_patched_client_factory),
             patch(
-                "butlers.api.routers.home_assistant._make_credential_store",
-                return_value=mock_cred_store,
+                "butlers.api.routers.home_assistant._resolve_pool",
+                return_value=MagicMock(),
             ),
         ):
             async with _real_async_client(
@@ -1165,10 +1153,6 @@ class TestDashboardSettingsFlow:
 
         app = create_app(api_key="")
 
-        # Mock the credential store for the endpoint
-        mock_cred_store = AsyncMock()
-        mock_cred_store.store = AsyncMock()
-
         _real_async_client = httpx.AsyncClient
 
         def _patched_client_factory(*args: Any, **kwargs: Any) -> Any:
@@ -1183,8 +1167,8 @@ class TestDashboardSettingsFlow:
         with (
             patch("httpx.AsyncClient", side_effect=_patched_client_factory),
             patch(
-                "butlers.api.routers.home_assistant._make_credential_store",
-                return_value=mock_cred_store,
+                "butlers.api.routers.home_assistant._resolve_pool",
+                return_value=MagicMock(),
             ),
         ):
             async with _real_async_client(
@@ -1222,38 +1206,19 @@ class TestMainCredentialResolution:
     .load() to retrieve credentials.
     """
 
-    async def test_main_resolves_credentials_from_store(
+    async def test_main_resolves_credentials_from_entity_info(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """_main() creates a pool, instantiates CredentialStore(pool), calls load()."""
+        """_main() resolves HA credentials from entity_info via resolve_owner_entity_info."""
         import asyncio
 
         from butlers.connectors.home_assistant import _main
 
         # Track calls to verify correct API usage
-        load_calls: list[str] = []
+        resolve_calls: list[str] = []
         pool_closed = False
 
-        class _MockConn:
-            async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
-                key = args[0] if args else ""
-                if key == "home_assistant:base_url":
-                    return {"secret_value": "http://ha.local:8123"}
-                if key == "home_assistant:access_token":
-                    return {"secret_value": "test-token-abc"}
-                return None
-
-        class _MockAcquire:
-            async def __aenter__(self) -> _MockConn:
-                return _MockConn()
-
-            async def __aexit__(self, *_: Any) -> None:
-                pass
-
         class _MockPool:
-            def acquire(self) -> _MockAcquire:
-                return _MockAcquire()
-
             async def close(self) -> None:
                 nonlocal pool_closed
                 pool_closed = True
@@ -1261,27 +1226,26 @@ class TestMainCredentialResolution:
         async def _mock_create_pool(**_kwargs: Any) -> _MockPool:
             return _MockPool()
 
-        # Track CredentialStore instantiation and load calls
-        from butlers import credential_store as cs_module
+        async def _mock_resolve_owner_entity_info(
+            _pool: Any, info_type: str
+        ) -> str | None:
+            resolve_calls.append(info_type)
+            if info_type == "home_assistant_url":
+                return "http://ha.local:8123"
+            if info_type == "home_assistant_token":
+                return "test-token-abc"
+            return None
 
-        original_cls = cs_module.CredentialStore
-
-        class _TrackingCredentialStore(original_cls):  # type: ignore[misc]
-            def __init__(self, pool: Any, **kwargs: Any) -> None:
-                # Must be called with a pool (not db_params/schema/db_name)
-                super().__init__(pool, **kwargs)
-
-            async def load(self, key: str) -> str | None:
-                load_calls.append(key)
-                return await super().load(key)
-
-        # Monkeypatch: asyncpg.create_pool and CredentialStore
+        # Monkeypatch: asyncpg.create_pool and resolve_owner_entity_info
         import asyncpg  # type: ignore[import]
 
         monkeypatch.setattr(asyncpg, "create_pool", _mock_create_pool)
-        monkeypatch.setattr(cs_module, "CredentialStore", _TrackingCredentialStore)
 
-        # Env: clear env-override vars so the DB path is exercised
+        from butlers import credential_store as cs_module
+
+        monkeypatch.setattr(cs_module, "resolve_owner_entity_info", _mock_resolve_owner_entity_info)
+
+        # Env: clear env-override vars so the entity_info path is exercised
         monkeypatch.delenv("HA_BASE_URL", raising=False)
         monkeypatch.delenv("HA_ACCESS_TOKEN", raising=False)
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.local/mcp/sse")
@@ -1307,12 +1271,12 @@ class TestMainCredentialResolution:
                 mock_event_cls.return_value = mock_event
                 await _main()
 
-        # Verify correct credential keys were requested via load()
-        assert "home_assistant:base_url" in load_calls, (
-            f"Expected load('home_assistant:base_url') to be called; got: {load_calls}"
+        # Verify correct entity_info types were requested
+        assert "home_assistant_url" in resolve_calls, (
+            f"Expected resolve('home_assistant_url') to be called; got: {resolve_calls}"
         )
-        assert "home_assistant:access_token" in load_calls, (
-            f"Expected load('home_assistant:access_token') to be called; got: {load_calls}"
+        assert "home_assistant_token" in resolve_calls, (
+            f"Expected resolve('home_assistant_token') to be called; got: {resolve_calls}"
         )
         # Verify pool was properly closed after credential resolution
         assert pool_closed, "Pool must be closed after credential resolution"

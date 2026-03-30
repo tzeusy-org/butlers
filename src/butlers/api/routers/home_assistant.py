@@ -35,7 +35,11 @@ from butlers.api.models.home_assistant import (
     HADeleteResponse,
     HAStatusResponse,
 )
-from butlers.credential_store import CredentialStore
+from butlers.credential_store import (
+    delete_owner_entity_info,
+    resolve_owner_entity_info,
+    upsert_owner_entity_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +49,10 @@ router = APIRouter(prefix="/api/settings/home-assistant", tags=["home-assistant-
 # Credential key constants
 # ---------------------------------------------------------------------------
 
-_CRED_HA_URL = "home_assistant:base_url"
-_CRED_HA_TOKEN = "home_assistant:access_token"
+_EI_HA_URL = "home_assistant_url"
+_EI_HA_TOKEN = "home_assistant_token"
 
-_ALL_CRED_KEYS = (_CRED_HA_URL, _CRED_HA_TOKEN)
+_ALL_EI_TYPES = (_EI_HA_URL, _EI_HA_TOKEN)
 
 # ---------------------------------------------------------------------------
 # Dependency injection stub
@@ -64,8 +68,8 @@ def _get_db_manager() -> Any:
     return None
 
 
-def _make_credential_store(db_manager: Any) -> CredentialStore | None:
-    """Build a CredentialStore from the shared credential pool.
+def _resolve_pool(db_manager: Any):
+    """Resolve an asyncpg pool from the DatabaseManager.
 
     Returns None when db_manager is None or no usable pool can be resolved.
     Resolution order:
@@ -76,7 +80,7 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
         return None
 
     try:
-        pool = db_manager.credential_shared_pool()
+        return db_manager.credential_shared_pool()
     except Exception:  # noqa: BLE001 — pool API is dynamic; exception type is unknown
         logger.debug("Shared credential pool unavailable", exc_info=True)
         butler_names = getattr(db_manager, "butler_names", [])
@@ -89,13 +93,12 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
                 "Shared credential pool unavailable; using fallback pool from %s",
                 butler_names[0],
             )
+            return pool
         except Exception:  # noqa: BLE001 — pool API is dynamic; exception type is unknown
             logger.debug(
-                "Failed to obtain fallback DB pool; credential store unavailable.", exc_info=True
+                "Failed to obtain fallback DB pool; pool unavailable.", exc_info=True
             )
             return None
-
-    return CredentialStore(pool)
 
 
 # ---------------------------------------------------------------------------
@@ -209,16 +212,16 @@ async def get_ha_status(
     ``connected`` state reflects that credentials are stored and were
     validated at configuration time, not that HA is reachable right now.
     """
-    cred_store = _make_credential_store(db_manager)
-    if cred_store is None:
+    pool = _resolve_pool(db_manager)
+    if pool is None:
         return HAStatusResponse(
             state=HAConnectionState.not_configured,
             url_configured=False,
             token_configured=False,
         )
 
-    ha_url = await cred_store.resolve(_CRED_HA_URL)
-    ha_token = await cred_store.resolve(_CRED_HA_TOKEN)
+    ha_url = await resolve_owner_entity_info(pool, _EI_HA_URL)
+    ha_token = await resolve_owner_entity_info(pool, _EI_HA_TOKEN)
 
     url_configured = bool(ha_url)
     token_configured = bool(ha_token)
@@ -258,8 +261,8 @@ async def configure_ha(
     Raises HTTP 503 when the credential database is unavailable.
     Raises HTTP 502 when HA cannot be reached or authentication fails.
     """
-    cred_store = _make_credential_store(db_manager)
-    if cred_store is None:
+    pool = _resolve_pool(db_manager)
+    if pool is None:
         raise HTTPException(
             status_code=503,
             detail=("Credential database is unavailable. Ensure the database service is running."),
@@ -275,21 +278,9 @@ async def configure_ha(
             detail=str(exc),
         ) from exc
 
-    # Persist validated credentials
-    await cred_store.store(
-        _CRED_HA_URL,
-        body.url,
-        category="home_assistant",
-        description="Home Assistant base URL",
-        is_sensitive=False,
-    )
-    await cred_store.store(
-        _CRED_HA_TOKEN,
-        body.token,
-        category="home_assistant",
-        description="Home Assistant long-lived access token",
-        is_sensitive=True,
-    )
+    # Persist validated credentials to entity_info
+    await upsert_owner_entity_info(pool, _EI_HA_URL, body.url, secured=False)
+    await upsert_owner_entity_info(pool, _EI_HA_TOKEN, body.token, secured=True)
 
     masked_url = _mask_url(body.url)
     logger.info("Home Assistant credentials stored (url=%s)", masked_url)
@@ -310,13 +301,13 @@ async def configure_ha(
 async def delete_ha_config(
     db_manager: Any = Depends(_get_db_manager),
 ) -> HADeleteResponse:
-    """Remove stored Home Assistant credentials from CredentialStore.
+    """Remove stored Home Assistant credentials from entity_info.
 
-    Deletes both ``home_assistant:base_url`` and ``home_assistant:access_token``.
+    Deletes both ``home_assistant_url`` and ``home_assistant_token``.
     Returns success=True even when no credentials were stored (idempotent).
     """
-    cred_store = _make_credential_store(db_manager)
-    if cred_store is None:
+    pool = _resolve_pool(db_manager)
+    if pool is None:
         # No DB — nothing to delete; treat as success
         logger.info("HA delete requested but credential store is unavailable; treating as success")
         return HADeleteResponse(
@@ -325,8 +316,8 @@ async def delete_ha_config(
         )
 
     deleted_count = 0
-    for key in _ALL_CRED_KEYS:
-        if await cred_store.delete(key):
+    for ei_type in _ALL_EI_TYPES:
+        if await delete_owner_entity_info(pool, ei_type):
             deleted_count += 1
 
     logger.info("Home Assistant credentials deleted: %d key(s) removed", deleted_count)

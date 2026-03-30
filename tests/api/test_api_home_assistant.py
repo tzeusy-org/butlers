@@ -1,12 +1,12 @@
 """Tests for Home Assistant settings API router.
 
-Covers all endpoints with mocked CredentialStore and mocked HTTP validation:
+Covers all endpoints with mocked entity_info functions and mocked HTTP validation:
 - GET    /api/settings/home-assistant  — connection status
 - POST   /api/settings/home-assistant  — validate and save credentials
 - DELETE /api/settings/home-assistant  — remove credentials
 
-HA HTTP validation calls are mocked via patch. CredentialStore is injected
-via dependency_overrides on a shared module-scoped app fixture.
+HA HTTP validation calls are mocked via patch. The entity_info functions
+(resolve/upsert/delete) are mocked to avoid needing a real database.
 """
 
 from __future__ import annotations
@@ -26,40 +26,21 @@ from butlers.api.routers.home_assistant import (
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
-# Patch target
+# Patch targets
 # ---------------------------------------------------------------------------
 
 _VALIDATE_PATCH = "butlers.api.routers.home_assistant._validate_ha_connection"
-_MAKE_CRED_STORE_PATCH = "butlers.api.routers.home_assistant._make_credential_store"
+_RESOLVE_POOL_PATCH = "butlers.api.routers.home_assistant._resolve_pool"
+_RESOLVE_EI_PATCH = "butlers.api.routers.home_assistant.resolve_owner_entity_info"
+_UPSERT_EI_PATCH = "butlers.api.routers.home_assistant.upsert_owner_entity_info"
+_DELETE_EI_PATCH = "butlers.api.routers.home_assistant.delete_owner_entity_info"
 
 # ---------------------------------------------------------------------------
-# CredentialStore mock helpers
+# Mock helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_cred_store(
-    *,
-    ha_url: str | None = None,
-    ha_token: str | None = None,
-) -> MagicMock:
-    """Build a mock CredentialStore that returns specified values per key."""
-    store = MagicMock()
-
-    creds: dict[str, str | None] = {
-        "home_assistant:base_url": ha_url,
-        "home_assistant:access_token": ha_token,
-    }
-
-    async def _resolve(key: str, **_kwargs) -> str | None:
-        return creds.get(key)
-
-    store.resolve = AsyncMock(side_effect=_resolve)
-    store.store = AsyncMock(return_value=None)
-    store.delete = AsyncMock(return_value=True)
-    return store
-
-
-def _make_db_manager(cred_store: MagicMock) -> MagicMock:
+def _make_db_manager() -> MagicMock:
     """Build a mock DatabaseManager with credential_shared_pool."""
     pool = MagicMock()
     db_manager = MagicMock()
@@ -67,19 +48,36 @@ def _make_db_manager(cred_store: MagicMock) -> MagicMock:
     return db_manager
 
 
+def _make_resolve_side_effect(
+    *,
+    ha_url: str | None = None,
+    ha_token: str | None = None,
+) -> AsyncMock:
+    """Return an AsyncMock for resolve_owner_entity_info with per-type values."""
+    values = {
+        "home_assistant_url": ha_url,
+        "home_assistant_token": ha_token,
+    }
+
+    async def _resolve(_pool, info_type: str) -> str | None:
+        return values.get(info_type)
+
+    return AsyncMock(side_effect=_resolve)
+
+
 # ---------------------------------------------------------------------------
 # App fixture builder
 # ---------------------------------------------------------------------------
 
 
-def _build_app(cred_store: MagicMock | None):
+def _build_app(has_db: bool = True):
     """Return an app with mocked DB dependency wired in."""
     from butlers.api.app import create_app
 
     _app = create_app(api_key="")
 
-    if cred_store is not None:
-        db_manager = _make_db_manager(cred_store)
+    if has_db:
+        db_manager = _make_db_manager()
         _app.dependency_overrides[_get_db_manager] = lambda: db_manager
 
     return _app
@@ -236,10 +234,13 @@ class TestValidateHAConnection:
 class TestGetHAStatus:
     async def test_not_configured_when_no_credentials(self):
         """Returns not_configured when no credentials are stored."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+        app = _build_app()
+        mock_resolve = _make_resolve_side_effect()
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store):
+        with (
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
+            patch(_RESOLVE_EI_PATCH, side_effect=mock_resolve.side_effect),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -254,10 +255,13 @@ class TestGetHAStatus:
 
     async def test_not_configured_when_only_url(self):
         """Returns not_configured when URL is set but token is missing."""
-        cred_store = _make_cred_store(ha_url="http://ha.local:8123")
-        app = _build_app(cred_store)
+        app = _build_app()
+        mock_resolve = _make_resolve_side_effect(ha_url="http://ha.local:8123")
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store):
+        with (
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
+            patch(_RESOLVE_EI_PATCH, side_effect=mock_resolve.side_effect),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -271,10 +275,13 @@ class TestGetHAStatus:
 
     async def test_not_configured_when_only_token(self):
         """Returns not_configured when token is set but URL is missing."""
-        cred_store = _make_cred_store(ha_token="mytoken")
-        app = _build_app(cred_store)
+        app = _build_app()
+        mock_resolve = _make_resolve_side_effect(ha_token="mytoken")
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store):
+        with (
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
+            patch(_RESOLVE_EI_PATCH, side_effect=mock_resolve.side_effect),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -288,13 +295,16 @@ class TestGetHAStatus:
 
     async def test_connected_when_both_credentials_present(self):
         """Returns connected when both URL and token are stored."""
-        cred_store = _make_cred_store(
+        app = _build_app()
+        mock_resolve = _make_resolve_side_effect(
             ha_url="http://homeassistant.local:8123",
             ha_token="secret_token",
         )
-        app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store):
+        with (
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
+            patch(_RESOLVE_EI_PATCH, side_effect=mock_resolve.side_effect),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -309,13 +319,16 @@ class TestGetHAStatus:
 
     async def test_masked_url_strips_path(self):
         """Masked URL contains only origin even if stored URL has a path."""
-        cred_store = _make_cred_store(
+        app = _build_app()
+        mock_resolve = _make_resolve_side_effect(
             ha_url="http://homeassistant.local:8123/api/",
             ha_token="secret_token",
         )
-        app = _build_app(cred_store)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store):
+        with (
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
+            patch(_RESOLVE_EI_PATCH, side_effect=mock_resolve.side_effect),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -325,10 +338,10 @@ class TestGetHAStatus:
         assert body["masked_url"] == "http://homeassistant.local:8123"
 
     async def test_not_configured_when_no_db(self):
-        """Returns not_configured gracefully when credential store is unavailable."""
-        app = _build_app(None)
+        """Returns not_configured gracefully when pool is unavailable."""
+        app = _build_app(has_db=False)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=None):
+        with patch(_RESOLVE_POOL_PATCH, return_value=None):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -347,12 +360,13 @@ class TestGetHAStatus:
 class TestConfigureHA:
     async def test_success_stores_credentials(self):
         """Successful validation stores both URL and token and returns success."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+        app = _build_app()
+        mock_upsert = AsyncMock(return_value=True)
 
         with (
-            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
             patch(_VALIDATE_PATCH, return_value=None) as mock_validate,
+            patch(_UPSERT_EI_PATCH, side_effect=mock_upsert.side_effect) as upsert_mock,
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -376,19 +390,19 @@ class TestConfigureHA:
             "http://homeassistant.local:8123", "my_long_lived_token"
         )
 
-        # Both credentials stored
-        assert cred_store.store.call_count == 2
-        stored_keys = {call.args[0] for call in cred_store.store.call_args_list}
-        assert stored_keys == {"home_assistant:base_url", "home_assistant:access_token"}
+        # Both entity_info types upserted
+        assert upsert_mock.call_count == 2
+        upserted_types = {call.args[1] for call in upsert_mock.call_args_list}
+        assert upserted_types == {"home_assistant_url", "home_assistant_token"}
 
-    async def test_token_stored_as_sensitive(self):
-        """Token is stored with is_sensitive=True."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+    async def test_token_stored_as_secured(self):
+        """Token is stored with secured=True."""
+        app = _build_app()
 
         with (
-            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
             patch(_VALIDATE_PATCH, return_value=None),
+            patch(_UPSERT_EI_PATCH, new_callable=AsyncMock, return_value=True) as upsert_mock,
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -398,20 +412,20 @@ class TestConfigureHA:
                     json={"url": "http://ha.local:8123", "token": "token123"},
                 )
 
-        # Find the call that stored home_assistant:access_token
+        # Find the call that stored the token
         token_call = next(
-            c for c in cred_store.store.call_args_list if c.args[0] == "home_assistant:access_token"
+            c for c in upsert_mock.call_args_list if c.args[1] == "home_assistant_token"
         )
-        assert token_call.kwargs.get("is_sensitive", True) is True
+        assert token_call.kwargs.get("secured") is True
 
-    async def test_url_stored_as_not_sensitive(self):
-        """URL is stored with is_sensitive=False."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+    async def test_url_stored_as_not_secured(self):
+        """URL is stored with secured=False."""
+        app = _build_app()
 
         with (
-            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
             patch(_VALIDATE_PATCH, return_value=None),
+            patch(_UPSERT_EI_PATCH, new_callable=AsyncMock, return_value=True) as upsert_mock,
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -422,21 +436,21 @@ class TestConfigureHA:
                 )
 
         url_call = next(
-            c for c in cred_store.store.call_args_list if c.args[0] == "home_assistant:base_url"
+            c for c in upsert_mock.call_args_list if c.args[1] == "home_assistant_url"
         )
-        assert url_call.kwargs.get("is_sensitive", True) is False
+        assert url_call.kwargs.get("secured") is False
 
     async def test_returns_502_on_unreachable(self):
         """Returns 502 when HA cannot be reached."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+        app = _build_app()
 
         with (
-            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
             patch(
                 _VALIDATE_PATCH,
                 side_effect=_HAValidationError("Cannot connect", category="unreachable"),
             ),
+            patch(_UPSERT_EI_PATCH, new_callable=AsyncMock, return_value=True) as upsert_mock,
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -450,15 +464,14 @@ class TestConfigureHA:
         assert "Cannot connect" in resp.json()["detail"]
 
         # Credentials must NOT be stored on validation failure
-        cred_store.store.assert_not_called()
+        upsert_mock.assert_not_called()
 
     async def test_returns_502_on_auth_failure(self):
         """Returns 502 with informative message when authentication fails."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+        app = _build_app()
 
         with (
-            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
             patch(
                 _VALIDATE_PATCH,
                 side_effect=_HAValidationError(
@@ -480,11 +493,10 @@ class TestConfigureHA:
 
     async def test_returns_502_on_unexpected_status(self):
         """Returns 502 when HA returns an unexpected HTTP status code."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+        app = _build_app()
 
         with (
-            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
             patch(
                 _VALIDATE_PATCH,
                 side_effect=_HAValidationError(
@@ -503,10 +515,10 @@ class TestConfigureHA:
         assert resp.status_code == 502
 
     async def test_returns_503_when_no_db(self):
-        """Returns 503 when credential database is unavailable."""
-        app = _build_app(None)
+        """Returns 503 when database pool is unavailable."""
+        app = _build_app(has_db=False)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=None):
+        with patch(_RESOLVE_POOL_PATCH, return_value=None):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -520,8 +532,7 @@ class TestConfigureHA:
 
     async def test_validation_error_empty_url(self):
         """Returns 422 when URL is empty string."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+        app = _build_app()
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -535,8 +546,7 @@ class TestConfigureHA:
 
     async def test_validation_error_empty_token(self):
         """Returns 422 when token is empty string."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+        app = _build_app()
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -550,12 +560,12 @@ class TestConfigureHA:
 
     async def test_masked_url_in_response_does_not_include_token(self):
         """Response masked_url must not contain the token."""
-        cred_store = _make_cred_store()
-        app = _build_app(cred_store)
+        app = _build_app()
 
         with (
-            patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store),
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
             patch(_VALIDATE_PATCH, return_value=None),
+            patch(_UPSERT_EI_PATCH, new_callable=AsyncMock, return_value=True),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -576,14 +586,15 @@ class TestConfigureHA:
 
 class TestDeleteHAConfig:
     async def test_deletes_both_credentials(self):
-        """DELETE removes both HA_URL and HA_TOKEN and returns success."""
-        cred_store = _make_cred_store(
-            ha_url="http://ha.local:8123",
-            ha_token="secret_token",
-        )
-        app = _build_app(cred_store)
+        """DELETE removes both entity_info types and returns success."""
+        app = _build_app()
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store):
+        with (
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
+            patch(
+                _DELETE_EI_PATCH, new_callable=AsyncMock, return_value=True
+            ) as delete_mock,
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -593,17 +604,18 @@ class TestDeleteHAConfig:
         body = resp.json()
         assert body["success"] is True
 
-        # Both credential keys were deleted
-        deleted_keys = {call.args[0] for call in cred_store.delete.call_args_list}
-        assert deleted_keys == {"home_assistant:base_url", "home_assistant:access_token"}
+        # Both entity_info types were deleted
+        deleted_types = {call.args[1] for call in delete_mock.call_args_list}
+        assert deleted_types == {"home_assistant_url", "home_assistant_token"}
 
     async def test_idempotent_when_no_credentials(self):
         """DELETE succeeds even when no credentials are stored (idempotent)."""
-        cred_store = _make_cred_store()
-        cred_store.delete = AsyncMock(return_value=False)  # nothing was deleted
-        app = _build_app(cred_store)
+        app = _build_app()
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store):
+        with (
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
+            patch(_DELETE_EI_PATCH, new_callable=AsyncMock, return_value=False),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -614,10 +626,10 @@ class TestDeleteHAConfig:
         assert body["success"] is True
 
     async def test_success_when_no_db(self):
-        """DELETE returns success even when credential store is unavailable."""
-        app = _build_app(None)
+        """DELETE returns success even when pool is unavailable."""
+        app = _build_app(has_db=False)
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=None):
+        with patch(_RESOLVE_POOL_PATCH, return_value=None):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -630,14 +642,12 @@ class TestDeleteHAConfig:
 
     async def test_response_message_includes_count(self):
         """DELETE response message includes the count of deleted credentials."""
-        cred_store = _make_cred_store(
-            ha_url="http://ha.local:8123",
-            ha_token="token",
-        )
-        cred_store.delete = AsyncMock(return_value=True)
-        app = _build_app(cred_store)
+        app = _build_app()
 
-        with patch(_MAKE_CRED_STORE_PATCH, return_value=cred_store):
+        with (
+            patch(_RESOLVE_POOL_PATCH, return_value=MagicMock()),
+            patch(_DELETE_EI_PATCH, new_callable=AsyncMock, return_value=True),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:

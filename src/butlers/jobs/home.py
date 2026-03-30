@@ -57,7 +57,7 @@ import asyncpg
 import httpx
 
 from butlers.core.state import state_get
-from butlers.credential_store import resolve_owner_entity_info
+from butlers.credential_store import CredentialStore, resolve_owner_entity_info
 from butlers.modules.memory.storage import store_fact
 
 logger = logging.getLogger(__name__)
@@ -1288,13 +1288,15 @@ async def _notify_owner_telegram(
     pool: asyncpg.Pool,
     message: str,
 ) -> None:
-    """Send a Telegram message to the owner using credentials from the state store.
+    """Send a Telegram message to the owner using the bot token and owner chat ID.
 
-    Resolves ``telegram_bot_token`` and ``telegram_chat_id`` from the owner's
-    entity_info/contact_info via ``resolve_owner_entity_info``. Silently skips
-    if either credential is unavailable.
+    Resolves ``BUTLER_TELEGRAM_TOKEN`` from ``butler_secrets`` via
+    ``CredentialStore`` (ecosystem-wide Tier 1 credential) and
+    ``telegram_chat_id`` from the owner's entity_info/contact_info via
+    ``resolve_owner_entity_info`` (user-specific Tier 2). Silently skips if
+    either credential is unavailable.
     """
-    token = await resolve_owner_entity_info(pool, "telegram_bot_token")
+    token = await CredentialStore(pool).resolve("BUTLER_TELEGRAM_TOKEN")
     chat_id = await resolve_owner_entity_info(pool, "telegram_chat_id")
 
     if not token or not chat_id:

@@ -1353,6 +1353,13 @@ export interface EntityDetail extends EntitySummary {
   entity_info: EntityInfoEntry[];
 }
 
+/** Response from GET /relationship/owner/entity-info. */
+export interface OwnerEntityInfoResponse {
+  entity_id: string;
+  entity_name: string;
+  entries: EntityInfoEntry[];
+}
+
 /** Query parameters for entity list endpoints. */
 export interface EntityParams {
   q?: string;

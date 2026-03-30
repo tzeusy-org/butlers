@@ -95,22 +95,44 @@ explicit owner confirmation before proceeding.
 
 ## Credential Management
 
-Secrets follow a DB-first resolution model. The `CredentialStore` checks the
-`butler_secrets` database table first, falling back to environment variables
-only when the DB has no value. This means:
+Credentials follow a **three-tier authority model**. Each credential has exactly
+one authoritative storage location:
 
-- **All runtime secrets** (API keys, OAuth tokens, integration credentials) are
-  stored in the database and managed via the dashboard Secrets page. No secret
-  env vars are required for normal operation.
-- **Environment variables** are reserved for infrastructure bootstrap only:
-  database connection parameters (`POSTGRES_HOST/PORT/USER/PASSWORD`) and
-  optional observability (`OTEL_EXPORTER_OTLP_ENDPOINT`).
-- **Dashboard OAuth flow** handles interactive credential setup (Google OAuth,
-  Spotify PKCE, etc.). Tokens are stored in the DB after the flow completes.
-- **Bearer tokens** for webhook-based connectors (OwnTracks) are generated and
-  stored via the dashboard, validated on every incoming request.
+### Tier 0 — Bootstrap (Environment Variables)
 
-**Constraints:**
+Infrastructure credentials required before the database is available:
+`POSTGRES_HOST/PORT/USER/PASSWORD`, `SWITCHBOARD_MCP_URL`,
+`OTEL_EXPORTER_OTLP_ENDPOINT`, OAuth redirect URIs, and connector
+configuration (`CONNECTOR_*` ports, intervals, etc.).
+
+### Tier 1 — System (butler_secrets)
+
+Ecosystem-wide credentials not bound to a specific user identity. Managed via
+the **System tab** on the dashboard `/secrets` page. Examples:
+`BUTLER_TELEGRAM_TOKEN`, `GOOGLE_OAUTH_CLIENT_ID/SECRET`,
+`BLOB_S3_*`, LLM API keys (`cli-auth/*`), `owntracks_webhook_token`.
+
+Accessed at runtime via `CredentialStore.resolve()` or `CredentialStore.load()`.
+
+### Tier 2 — User (entity_info on owner entity)
+
+Identity-bound credentials tied to the owner's personal accounts. Managed via
+the **User tab** on the dashboard `/secrets` page. Examples:
+`home_assistant_token/url`, `telegram_api_id/hash/session`,
+`email/email_password`, `whatsapp_phone`. Per-account credentials (Google OAuth
+refresh tokens, Steam API keys) live on companion entities.
+
+Accessed at runtime via `resolve_owner_entity_info(pool, info_type)` for owner
+credentials, or direct SQL on companion entity UUIDs for per-account tokens.
+
+### Resolution Rules
+
+- Env vars MAY override any tier for development/testing, but the authoritative
+  source is what the dashboard writes to and connectors read from.
+- When a connector needs a credential, it MUST read from the authoritative tier.
+- New credentials MUST be classified into a tier when added.
+
+### Constraints
 
 - Credentials must never appear in git-tracked configuration files.
 - Credentials must never appear in session logs or tool call payloads sent to
@@ -119,8 +141,10 @@ only when the DB has no value. This means:
   encryption. This is consistent with the trust model: if the database is
   compromised, the attacker already has access to the data the credentials
   protect.
-- Connectors and butlers MUST use `CredentialStore.resolve()` for secret
-  access --- never direct `os.environ.get()` for API keys or tokens.
+- Tier 1 connectors MUST use `CredentialStore.resolve()` for secret access.
+- Tier 2 connectors MUST use `resolve_owner_entity_info()` --- never
+  `CredentialStore` for identity-bound credentials.
+- Direct `os.environ.get()` for API keys or tokens is forbidden outside Tier 0.
 
 ## Identity Resolution
 

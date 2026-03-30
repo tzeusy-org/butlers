@@ -140,10 +140,16 @@ function MaskedValue({
   rowState,
   butlerName,
   secretKey,
+  onReveal,
+  plainValue,
 }: {
   rowState: SecretRowState;
   butlerName: string;
   secretKey: string;
+  /** Custom reveal callback (user mode). When provided, overrides the default revealSecret API call. */
+  onReveal?: () => Promise<string | null>;
+  /** Non-secured value to display directly (no reveal needed). */
+  plainValue?: string | null;
 }) {
   const [revealed, setRevealed] = useState(false);
   const [value, setValue] = useState<string | null>(null);
@@ -153,6 +159,11 @@ function MaskedValue({
     return <span className="text-muted-foreground text-xs italic">null</span>;
   }
 
+  // Non-secured entity_info values: display directly
+  if (plainValue !== undefined && plainValue !== null) {
+    return <span className="font-mono text-sm max-w-[200px] truncate" title={plainValue}>{plainValue}</span>;
+  }
+
   async function handleReveal() {
     if (revealed) {
       setRevealed(false);
@@ -160,8 +171,13 @@ function MaskedValue({
     }
     setLoading(true);
     try {
-      const resp = await revealSecret(butlerName, secretKey);
-      setValue(resp.data.value);
+      if (onReveal) {
+        const val = await onReveal();
+        setValue(val ?? "(empty)");
+      } else {
+        const resp = await revealSecret(butlerName, secretKey);
+        setValue(resp.data.value);
+      }
       setRevealed(true);
     } catch {
       setValue("(failed to load)");
@@ -258,6 +274,60 @@ function DeleteSecretDialog({
 }
 
 // ---------------------------------------------------------------------------
+// Generic delete confirmation dialog (user mode)
+// ---------------------------------------------------------------------------
+
+function GenericDeleteDialog({
+  label,
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  label: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDelete() {
+    setError(null);
+    setLoading(true);
+    try {
+      await onConfirm();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete credential?</DialogTitle>
+          <DialogDescription>
+            This will permanently remove <code className="font-mono">{label}</code>.
+            This action cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button variant="destructive" onClick={handleDelete} disabled={loading}>
+            {loading ? "Deleting..." : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Row action icons
 // ---------------------------------------------------------------------------
 
@@ -311,11 +381,19 @@ function SecretRow({
   butlerName,
   onEdit,
   onCreateOverride,
+  mode = "system",
+  onEditRow,
+  onRevealEntry,
+  onDeleteRow,
 }: {
   secret: SecretDisplayRow;
   butlerName: string;
   onEdit: (secret: SecretEntry) => void;
   onCreateOverride: (prefill: SecretPrefill) => void;
+  mode?: "system" | "user";
+  onEditRow?: (row: SecretDisplayRow) => void;
+  onRevealEntry?: (row: SecretDisplayRow) => Promise<string | null>;
+  onDeleteRow?: (row: SecretDisplayRow) => Promise<void>;
 }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -327,8 +405,13 @@ function SecretRow({
     })
     : "N/A";
 
+  const isUser = mode === "user";
   const localSecret = secret.rowState === "local" ? secret.apiSecret : null;
-  const canEditLocal = localSecret !== null;
+  const hasEntry = isUser ? secret.rowState === "local" && !!secret.entityInfoEntry : localSecret !== null;
+  // For user mode: non-secured entries have their value visible directly
+  const plainValue = isUser && secret.entityInfoEntry && !secret.entityInfoEntry.secured
+    ? secret.entityInfoEntry.value
+    : undefined;
 
   return (
     <>
@@ -345,17 +428,25 @@ function SecretRow({
         </TableCell>
         <TableCell className="text-sm text-muted-foreground">{updatedAt}</TableCell>
         <TableCell>
-          <MaskedValue rowState={secret.rowState} butlerName={butlerName} secretKey={secret.key} />
+          <MaskedValue
+            rowState={secret.rowState}
+            butlerName={butlerName}
+            secretKey={secret.key}
+            plainValue={plainValue}
+            onReveal={isUser && onRevealEntry ? () => onRevealEntry(secret) : undefined}
+          />
         </TableCell>
         <TableCell>
-          {canEditLocal ? (
+          {hasEntry ? (
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-7 w-7 p-0"
                 onClick={() => {
-                  if (localSecret) {
+                  if (isUser && onEditRow) {
+                    onEditRow(secret);
+                  } else if (localSecret) {
                     onEdit(localSecret);
                   }
                 }}
@@ -379,23 +470,40 @@ function SecretRow({
               size="sm"
               className="h-7 px-2 text-xs"
               aria-label={secret.rowState === "inherited" ? `Override ${secret.key}` : `Set ${secret.key}`}
-              onClick={() => onCreateOverride({
-                key: secret.key,
-                category: secret.category,
-                description: secret.description,
-              })}
+              onClick={() => {
+                if (isUser && onEditRow) {
+                  onEditRow(secret);
+                } else {
+                  onCreateOverride({
+                    key: secret.key,
+                    category: secret.category,
+                    description: secret.description,
+                  });
+                }
+              }}
             >
               {secret.rowState === "inherited" ? "Override" : "Set value"}
             </Button>
           )}
         </TableCell>
       </TableRow>
-      {canEditLocal ? (
+      {hasEntry && !isUser ? (
         <DeleteSecretDialog
           butlerName={butlerName}
           secretKey={secret.key}
           open={deleteOpen}
           onOpenChange={setDeleteOpen}
+        />
+      ) : null}
+      {hasEntry && isUser ? (
+        <GenericDeleteDialog
+          label={secret.key}
+          open={deleteOpen}
+          onOpenChange={setDeleteOpen}
+          onConfirm={async () => {
+            if (onDeleteRow) await onDeleteRow(secret);
+            setDeleteOpen(false);
+          }}
         />
       ) : null}
     </>
@@ -412,19 +520,30 @@ function CategoryGroupRows({
   butlerName,
   onEdit,
   onCreateOverride,
+  mode,
+  onEditRow,
+  onRevealEntry,
+  onDeleteRow,
+  categoryLabelFn,
 }: {
   category: string;
   secrets: SecretDisplayRow[];
   butlerName: string;
   onEdit: (secret: SecretEntry) => void;
   onCreateOverride: (prefill: SecretPrefill) => void;
+  mode?: "system" | "user";
+  onEditRow?: (row: SecretDisplayRow) => void;
+  onRevealEntry?: (row: SecretDisplayRow) => Promise<string | null>;
+  onDeleteRow?: (row: SecretDisplayRow) => Promise<void>;
+  categoryLabelFn?: (category: string) => string;
 }) {
+  const label = categoryLabelFn ? categoryLabelFn(category) : getCategoryLabel(category);
   return (
     <>
       <TableRow className="bg-muted/30 hover:bg-muted/30">
         <TableCell colSpan={7} className="py-1.5 px-4">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            {getCategoryLabel(category)}
+            {label}
           </span>
         </TableCell>
       </TableRow>
@@ -435,6 +554,10 @@ function CategoryGroupRows({
           butlerName={butlerName}
           onEdit={onEdit}
           onCreateOverride={onCreateOverride}
+          mode={mode}
+          onEditRow={onEditRow}
+          onRevealEntry={onRevealEntry}
+          onDeleteRow={onDeleteRow}
         />
       ))}
     </>
@@ -452,6 +575,18 @@ interface SecretsTableProps {
   isError: boolean;
   onEdit: (secret: SecretEntry) => void;
   onCreateOverride: (prefill: SecretPrefill) => void;
+  /** When "user", the table renders entity_info entries instead of butler_secrets. */
+  mode?: "system" | "user";
+  /** Pre-built rows for user mode (bypasses buildSecretRows). */
+  userRows?: SecretDisplayRow[];
+  /** Edit callback for user mode rows. */
+  onEditRow?: (row: SecretDisplayRow) => void;
+  /** Reveal callback for user mode secured entries. */
+  onRevealEntry?: (row: SecretDisplayRow) => Promise<string | null>;
+  /** Delete callback for user mode entries. */
+  onDeleteRow?: (row: SecretDisplayRow) => Promise<void>;
+  /** Category label function override (user mode uses different labels). */
+  categoryLabelFn?: (category: string) => string;
 }
 
 export function SecretsTable({
@@ -461,6 +596,12 @@ export function SecretsTable({
   isError,
   onEdit,
   onCreateOverride,
+  mode = "system",
+  userRows,
+  onEditRow,
+  onRevealEntry,
+  onDeleteRow,
+  categoryLabelFn,
 }: SecretsTableProps) {
   if (isLoading) {
     return (
@@ -480,7 +621,7 @@ export function SecretsTable({
     );
   }
 
-  const rows = buildSecretRows(secrets);
+  const rows = mode === "user" && userRows ? userRows : buildSecretRows(secrets);
 
   if (rows.length === 0) {
     return (
@@ -513,7 +654,7 @@ export function SecretsTable({
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead className="w-[200px]">Key</TableHead>
+          <TableHead className="w-[200px]">{mode === "user" ? "Type" : "Key"}</TableHead>
           <TableHead>Description</TableHead>
           <TableHead className="w-[110px]">Status</TableHead>
           <TableHead className="w-[110px]">Source</TableHead>
@@ -531,6 +672,11 @@ export function SecretsTable({
             butlerName={butlerName}
             onEdit={onEdit}
             onCreateOverride={onCreateOverride}
+            mode={mode}
+            onEditRow={onEditRow}
+            onRevealEntry={onRevealEntry}
+            onDeleteRow={onDeleteRow}
+            categoryLabelFn={categoryLabelFn}
           />
         ))}
       </TableBody>

@@ -25,8 +25,8 @@ Environment variables:
 - CONNECTOR_PROVIDER (default: home_assistant)
 - CONNECTOR_CHANNEL (default: home_assistant)
 - CONNECTOR_HEALTH_PORT (default: 40087)
-- HA_BASE_URL: HA instance base URL (overrides CredentialStore)
-- HA_ACCESS_TOKEN: HA long-lived access token (overrides CredentialStore)
+- HA_BASE_URL: HA instance base URL (overrides entity_info)
+- HA_ACCESS_TOKEN: HA long-lived access token (overrides entity_info)
 - HA_DOMAIN_ALLOWLIST: comma-separated domain allowlist
 - HA_POLL_INTERVAL_S (default: 60): REST fallback poll interval
 - HA_CHECKPOINT_OVERLAP_S (default: 30): checkpoint resume safety margin
@@ -1306,7 +1306,7 @@ async def _main() -> None:
     config = HAConnectorConfig.from_env()
     connector = HAConnector(config=config)
 
-    # Resolve HA credentials (CredentialStore or env override)
+    # Resolve HA credentials: env override → entity_info (authoritative source)
     ha_base_url = os.environ.get("HA_BASE_URL", "").strip()
     ha_access_token = os.environ.get("HA_ACCESS_TOKEN", "").strip()
 
@@ -1314,47 +1314,48 @@ async def _main() -> None:
         try:
             import asyncpg
 
-            from butlers.credential_store import CredentialStore, shared_db_name_from_env
+            from butlers.credential_store import resolve_owner_entity_info, shared_db_name_from_env
             from butlers.db import db_params_from_env
 
             db_params = db_params_from_env()
-            shared_db_name = shared_db_name_from_env()
             pool: asyncpg.Pool = await asyncpg.create_pool(
                 host=db_params["host"],
                 port=db_params["port"],
                 user=db_params["user"],
                 password=db_params["password"],
-                database=shared_db_name,
+                database=shared_db_name_from_env(),
                 ssl=db_params.get("ssl"),  # type: ignore[arg-type]
                 min_size=1,
                 max_size=2,
                 command_timeout=5,
-                server_settings={"search_path": "shared,public"},
             )
             try:
-                cred_store = CredentialStore(pool)
                 if not ha_base_url:
-                    ha_base_url = await cred_store.load("home_assistant:base_url") or ""
+                    ha_base_url = await resolve_owner_entity_info(
+                        pool, "home_assistant_url"
+                    ) or ""
                 if not ha_access_token:
-                    ha_access_token = await cred_store.load("home_assistant:access_token") or ""
+                    ha_access_token = await resolve_owner_entity_info(
+                        pool, "home_assistant_token"
+                    ) or ""
             finally:
                 await pool.close()
         except Exception:
             logger.error(
-                "HAConnector: failed to load credentials from CredentialStore", exc_info=True
+                "HAConnector: failed to load credentials from entity_info", exc_info=True
             )
 
     if not ha_base_url:
         logger.error(
-            "HAConnector: HA_BASE_URL not set and 'home_assistant:base_url' not found in "
-            "CredentialStore. Set HA_BASE_URL or configure credentials via the dashboard."
+            "HAConnector: HA_BASE_URL not set and 'home_assistant_url' not found in "
+            "entity_info. Set HA_BASE_URL or configure credentials on the owner entity."
         )
         raise SystemExit(1)
 
     if not ha_access_token:
         logger.error(
-            "HAConnector: HA_ACCESS_TOKEN not set and 'home_assistant:access_token' not found "
-            "in CredentialStore. Set HA_ACCESS_TOKEN or configure credentials via the dashboard."
+            "HAConnector: HA_ACCESS_TOKEN not set and 'home_assistant_token' not found "
+            "in entity_info. Set HA_ACCESS_TOKEN or configure credentials on the owner entity."
         )
         raise SystemExit(1)
 

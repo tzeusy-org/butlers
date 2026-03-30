@@ -61,6 +61,7 @@ if _models_path.exists():
         CreateContactInfoResponse = _models_module.CreateContactInfoResponse
         PatchContactInfoRequest = _models_module.PatchContactInfoRequest
         OwnerSetupStatus = _models_module.OwnerSetupStatus
+        OwnerEntityInfoResponse = _models_module.OwnerEntityInfoResponse
         EntitySuggestion = _models_module.EntitySuggestion
         UnlinkedContactSummary = _models_module.UnlinkedContactSummary
         UnlinkedContactsResponse = _models_module.UnlinkedContactsResponse
@@ -1524,6 +1525,68 @@ async def get_owner_setup_status(
         has_telegram="telegram" in found_types,
         has_telegram_chat_id="telegram_chat_id" in found_types,
         has_email="email" in found_types,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /owner/entity-info
+# ---------------------------------------------------------------------------
+
+
+@router.get("/owner/entity-info", response_model=OwnerEntityInfoResponse)
+async def get_owner_entity_info(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> OwnerEntityInfoResponse:
+    """Return all entity_info entries for the owner entity.
+
+    Used by the dashboard Secrets page (User tab) to manage owner-specific
+    credentials (Telegram API keys, HA token, etc.) without needing to know
+    the owner entity UUID.
+
+    Secured values are masked (value=None) in the response. Use
+    GET /entities/{id}/secrets/{info_id} to reveal a secured value.
+    """
+    pool = _pool(db)
+
+    owner_row = await pool.fetchrow(
+        """
+        SELECT id, canonical_name
+        FROM public.entities
+        WHERE 'owner' = ANY(COALESCE(roles, '{}'))
+        LIMIT 1
+        """,
+    )
+    if owner_row is None:
+        raise HTTPException(status_code=404, detail="No owner entity found")
+
+    owner_entity_id = owner_row["id"]
+
+    info_rows = await pool.fetch(
+        """
+        SELECT id, type, value, label, is_primary, secured
+        FROM public.entity_info
+        WHERE entity_id = $1
+        ORDER BY type
+        """,
+        owner_entity_id,
+    )
+
+    entries = [
+        EntityInfoEntry(
+            id=r["id"],
+            type=r["type"],
+            value=None if r["secured"] else r["value"],
+            label=r["label"],
+            is_primary=r["is_primary"],
+            secured=r["secured"],
+        )
+        for r in info_rows
+    ]
+
+    return OwnerEntityInfoResponse(
+        entity_id=owner_entity_id,
+        entity_name=owner_row["canonical_name"] or "",
+        entries=entries,
     )
 
 

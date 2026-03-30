@@ -1,6 +1,8 @@
 import { useState } from "react";
 
 import type { SecretEntry } from "@/api/index.ts";
+import { revealEntitySecret } from "@/api/index.ts";
+import type { SecretDisplayRow } from "@/lib/secrets-rows";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -17,11 +19,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SecretFormModal } from "@/components/secrets/SecretFormModal";
+import { UserSecretFormModal } from "@/components/secrets/UserSecretFormModal";
 import { SecretsTable } from "@/components/secrets/SecretsTable";
 import { useButlers } from "@/hooks/use-butlers";
 import { useSecrets } from "@/hooks/use-secrets";
+import {
+  useOwnerEntityInfo,
+  useDeleteOwnerEntityInfo,
+} from "@/hooks/use-owner-secrets";
 import { buildSecretsTargets, SHARED_SECRETS_TARGET } from "@/pages/secretsTargets";
+import { buildUserSecretRows } from "@/lib/user-secrets-rows";
+import { userCategoryLabel } from "@/lib/user-secret-templates";
 
 function formatSecretsTargetLabel(target: string): string {
   if (target.trim().toLowerCase() === SHARED_SECRETS_TARGET) {
@@ -31,10 +41,10 @@ function formatSecretsTargetLabel(target: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Generic secrets section (shared + per-butler)
+// System secrets section (existing behavior, unchanged)
 // ---------------------------------------------------------------------------
 
-function GenericSecretsSection() {
+function SystemSecretsSection() {
   interface SecretPrefill {
     key: string;
     category: string;
@@ -50,7 +60,6 @@ function GenericSecretsSection() {
   const [addPrefill, setAddPrefill] = useState<SecretPrefill | null>(null);
   const [editSecret, setEditSecret] = useState<SecretEntry | null>(null);
 
-  // Pick first available target by default once loaded.
   const activeTarget = selectedTarget || (secretTargets[0] ?? "");
 
   const { data: secretsResponse, isLoading, isError } = useSecrets(activeTarget);
@@ -70,14 +79,13 @@ function GenericSecretsSection() {
       <CardHeader>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <CardTitle>Secrets</CardTitle>
+            <CardTitle>System Secrets</CardTitle>
             <CardDescription>
-              Known secret requirements plus resolved values, grouped by category.
+              Ecosystem-wide credentials stored in the database.
               Manage shared defaults and local per-butler overrides.
             </CardDescription>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {/* Butler selector */}
             {butlersLoading ? (
               <Skeleton className="h-9 w-36" />
             ) : secretTargets.length > 1 ? (
@@ -127,7 +135,6 @@ function GenericSecretsSection() {
         )}
       </CardContent>
 
-      {/* Add modal */}
       <SecretFormModal
         butlerName={activeTarget}
         prefill={addPrefill}
@@ -138,13 +145,119 @@ function GenericSecretsSection() {
         }}
       />
 
-      {/* Edit modal */}
       <SecretFormModal
         butlerName={activeTarget}
         editSecret={editSecret}
         open={!!editSecret}
         onOpenChange={(open) => {
           if (!open) setEditSecret(null);
+        }}
+      />
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// User secrets section (entity_info on owner entity)
+// ---------------------------------------------------------------------------
+
+function UserSecretsSection() {
+  const { data: ownerData, isLoading, isError, error } = useOwnerEntityInfo();
+  const deleteMutation = useDeleteOwnerEntityInfo();
+
+  const [editRow, setEditRow] = useState<SecretDisplayRow | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+
+  const entityId = ownerData?.entity_id ?? "";
+  const entries = ownerData?.entries ?? [];
+  const userRows = buildUserSecretRows(entries);
+
+  async function handleRevealEntry(row: SecretDisplayRow): Promise<string | null> {
+    if (!row.entityInfoEntry || !entityId) return null;
+    const resp = await revealEntitySecret(entityId, row.entityInfoEntry.id);
+    return resp.value ?? null;
+  }
+
+  async function handleDeleteRow(row: SecretDisplayRow): Promise<void> {
+    if (!row.entityInfoEntry || !entityId) return;
+    await deleteMutation.mutateAsync({ entityId, infoId: row.entityInfoEntry.id });
+  }
+
+  function handleEditRow(row: SecretDisplayRow) {
+    setEditRow(row);
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle>
+              User Credentials
+              {ownerData?.entity_name ? (
+                <span className="text-muted-foreground font-normal text-base ml-2">
+                  ({ownerData.entity_name})
+                </span>
+              ) : null}
+            </CardTitle>
+            <CardDescription>
+              Identity-bound credentials on the owner entity.
+              Telegram API keys, Home Assistant tokens, and other personal credentials.
+            </CardDescription>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => {
+              setEditRow(null);
+              setAddOpen(true);
+            }}
+            disabled={!entityId}
+          >
+            Add Credential
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isError ? (
+          <p className="text-sm text-destructive">
+            {(error as Error)?.message?.includes("404")
+              ? "No owner entity found. Create one in the Entities page first."
+              : "Failed to load user credentials."}
+          </p>
+        ) : (
+          <SecretsTable
+            mode="user"
+            butlerName=""
+            secrets={[]}
+            userRows={userRows}
+            isLoading={isLoading}
+            isError={false}
+            onEdit={() => {}}
+            onCreateOverride={() => {}}
+            onEditRow={handleEditRow}
+            onRevealEntry={handleRevealEntry}
+            onDeleteRow={handleDeleteRow}
+            categoryLabelFn={userCategoryLabel}
+          />
+        )}
+      </CardContent>
+
+      {/* Add modal */}
+      <UserSecretFormModal
+        entityId={entityId}
+        open={addOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+        }}
+      />
+
+      {/* Edit modal */}
+      <UserSecretFormModal
+        entityId={entityId}
+        editRow={editRow}
+        open={!!editRow}
+        onOpenChange={(open) => {
+          if (!open) setEditRow(null);
         }}
       />
     </Card>
@@ -161,13 +274,22 @@ export default function SecretsPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Secrets</h1>
         <p className="text-muted-foreground mt-1">
-          Manage secrets stored in the database.
-          Suggested keys, inherited sources, and local overrides are shown without exposing values.
+          Manage system-wide and user-specific credentials.
         </p>
       </div>
 
-      {/* Generic secrets management */}
-      <GenericSecretsSection />
+      <Tabs defaultValue="system">
+        <TabsList>
+          <TabsTrigger value="system">System</TabsTrigger>
+          <TabsTrigger value="user">User</TabsTrigger>
+        </TabsList>
+        <TabsContent value="system">
+          <SystemSecretsSection />
+        </TabsContent>
+        <TabsContent value="user">
+          <UserSecretsSection />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

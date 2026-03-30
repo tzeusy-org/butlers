@@ -161,19 +161,37 @@ This sets:
 
 Alembic's `version_locations` setting is always configured with ALL known chain directories, regardless of which chain is being upgraded. This ensures Alembic can resolve every revision in `alembic_version` even when upgrading a single branch. Without this, cross-chain references would fail resolution.
 
-### Credential Store
+### Credential Store — Three-Tier Authority Model
 
-The `CredentialStore` class (`src/butlers/credential_store.py`) provides DB-first credential resolution backed by the `butler_secrets` table.
+Credentials follow a three-tier authority model. Each credential has exactly one authoritative storage location.
 
-#### Resolution Order
+#### Tier 0 — Bootstrap (Environment Variables)
 
-When a module calls `store.resolve("TELEGRAM_BOT_TOKEN")`:
+Infrastructure credentials required before the database is available: `POSTGRES_*`, `SWITCHBOARD_MCP_URL`, `OTEL_EXPORTER_OTLP_ENDPOINT`, OAuth redirect URIs, and connector configuration variables. These are the only credentials that may be read directly from `os.environ`.
+
+#### Tier 1 — System (butler_secrets)
+
+Ecosystem-wide credentials not bound to a specific user identity. The `CredentialStore` class (`src/butlers/credential_store.py`) provides DB-first resolution backed by the `butler_secrets` table. Managed via the **System tab** on the dashboard `/secrets` page.
+
+**Resolution order** for `store.resolve("TELEGRAM_BOT_TOKEN")`:
 
 1. **Local database** -- Query `butler_secrets` in the butler's own schema.
 2. **Shared database** -- Query `butler_secrets` in configured fallback pools (the shared `butlers` database).
-3. **Environment variable** -- Fall back to `os.environ["TELEGRAM_BOT_TOKEN"]` if `env_fallback=True` (default).
+3. **Environment variable** -- Fall back to `os.environ["TELEGRAM_BOT_TOKEN"]` if `env_fallback=True` (default `False`).
 
-Database-stored credentials always take precedence over environment variables. This ensures dashboard-stored secrets are authoritative.
+Database-stored credentials always take precedence over environment variables.
+
+**Examples:** `BUTLER_TELEGRAM_TOKEN`, `GOOGLE_OAUTH_CLIENT_ID/SECRET`, `BLOB_S3_*`, LLM API keys (`cli-auth/*`), `DISCORD_BOT_TOKEN`, `owntracks_webhook_token`.
+
+#### Tier 2 — User (entity_info on owner entity)
+
+Identity-bound credentials tied to the owner's personal accounts. Stored in `public.entity_info` on the owner entity (resolved via `'owner' = ANY(e.roles)`). Managed via the **User tab** on the dashboard `/secrets` page.
+
+Accessed at runtime via `resolve_owner_entity_info(pool, info_type)` which joins `entity_info` to `entities`, preferring `is_primary=true` rows. Per-account credentials (Google OAuth refresh tokens, Steam API keys) live on companion entities and are resolved via direct SQL keyed by the companion entity UUID.
+
+**Examples:** `home_assistant_token/url`, `telegram_api_id/hash/session/chat_id`, `email/email_password`, `whatsapp_phone`, `google_oauth_refresh` (companion), `steam_api_key` (companion).
+
+**Key rule:** Connectors needing Tier 2 credentials MUST use `resolve_owner_entity_info()`, never `CredentialStore`.
 
 #### butler_secrets Table
 
@@ -195,10 +213,6 @@ CREATE TABLE butler_secrets (
 - `expires_at` supports time-bounded secrets.
 - `list_secrets()` returns `SecretMetadata` objects only -- raw values are NEVER included in list responses.
 - Secret values are NEVER logged, even at DEBUG level.
-
-#### Entity-Based Credentials
-
-Identity-bound credentials (OAuth tokens, Telegram user-client sessions) are stored in `public.entity_info` rather than `butler_secrets`. The `resolve_owner_entity_info(pool, info_type)` function queries the owner entity's entity_info entries.
 
 #### CLI Auth Token Persistence
 

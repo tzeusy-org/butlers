@@ -1,4 +1,4 @@
-import type { SecretEntry } from "@/api/types.ts";
+import type { SecretEntry, EntityInfoEntry } from "@/api/types.ts";
 import { categoryFromKey, SECRET_TEMPLATES } from "@/lib/secret-templates";
 
 const CATEGORY_ORDER = ["core", "telegram", "email", "google", "gemini", "general"];
@@ -13,6 +13,8 @@ export interface SecretDisplayRow {
   rowState: SecretRowState;
   updatedAt: string | null;
   apiSecret: SecretEntry | null;
+  /** Present for User-tab rows (entity_info entries). */
+  entityInfoEntry?: EntityInfoEntry | null;
 }
 
 function normalizeSource(source: string): string {

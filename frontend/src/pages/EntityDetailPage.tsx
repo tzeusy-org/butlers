@@ -47,39 +47,11 @@ import {
 // Entity info type helpers
 // ---------------------------------------------------------------------------
 
-const ENTITY_INFO_TYPES = [
-  "telegram",
-  "telegram_chat_id",
-  "telegram_api_id",
-  "telegram_api_hash",
-  // telegram_user_session — managed via the interactive Telegram Session Setup card
-  "home_assistant_url",
-  "home_assistant_token",
-  "google_oauth_refresh",
-  "other",
-] as const;
-
-const SECURED_TYPES = new Set<string>([
-  "telegram_api_hash",
-  "telegram_user_session",
-  "home_assistant_token",
-  "google_oauth_refresh",
-]);
-
-function entityInfoTypeLabel(type: string): string {
-  switch (type) {
-    case "telegram": return "Telegram Handle";
-    case "telegram_chat_id": return "Telegram Chat ID";
-    case "telegram_api_id": return "Telegram API ID";
-    case "telegram_api_hash": return "Telegram API Hash";
-    case "telegram_user_session": return "Telegram User Session";
-    case "home_assistant_url": return "Home Assistant URL";
-    case "home_assistant_token": return "Home Assistant Token";
-    case "google_oauth_refresh": return "Google OAuth Refresh";
-    case "other": return "Other";
-    default: return type;
-  }
-}
+import {
+  ENTITY_INFO_TYPES,
+  SECURED_USER_TYPES as SECURED_TYPES,
+  entityInfoTypeLabel,
+} from "@/lib/user-secret-templates";
 
 // ---------------------------------------------------------------------------
 // SecuredInfoEntry — masked value with click-to-reveal

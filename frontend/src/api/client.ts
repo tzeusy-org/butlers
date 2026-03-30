@@ -119,6 +119,7 @@ import type {
   CreateContactInfoResponse,
   PatchContactInfoRequest,
   OwnerSetupStatus,
+  OwnerEntityInfoResponse,
   UnlinkedContactsResponse,
   EntityLinkSuggestion,
   LinkEntityRequest,
@@ -1296,6 +1297,11 @@ export function promoteEntity(
     `/memory/entities/${encodeURIComponent(entityId)}/promote`,
     { method: "POST" },
   );
+}
+
+/** Get all entity_info entries for the owner entity. */
+export function getOwnerEntityInfo(): Promise<OwnerEntityInfoResponse> {
+  return apiFetch<OwnerEntityInfoResponse>("/relationship/owner/entity-info");
 }
 
 /** Create an entity_info entry for an entity. */
