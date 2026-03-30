@@ -1633,9 +1633,9 @@ class CalendarConnectorRuntime:
     def _get_health_state(self) -> tuple[str, str | None]:
         """Return (state, error_message) tuple for heartbeat."""
         if self._source_api_ok is None:
-            return "starting", None
+            return "degraded", "Starting up, API not yet checked"
         if self._source_api_ok:
-            return "ok", None
+            return "healthy", None
         return "error", "Google Calendar API is not reachable"
 
     def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
