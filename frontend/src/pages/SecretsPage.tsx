@@ -23,6 +23,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SecretFormModal } from "@/components/secrets/SecretFormModal";
 import { UserSecretFormModal } from "@/components/secrets/UserSecretFormModal";
 import { SecretsTable } from "@/components/secrets/SecretsTable";
+import { GoogleOAuthSection } from "@/components/settings/GoogleOAuthSection";
+import { SpotifySection } from "@/components/settings/SpotifySetupCard";
+import { HomeAssistantSection } from "@/components/settings/HomeAssistantSetupCard";
 import { useButlers } from "@/hooks/use-butlers";
 import { useSecrets } from "@/hooks/use-secrets";
 import {
@@ -197,10 +200,19 @@ function UserSecretsSection() {
         <p className="text-sm text-muted-foreground mb-4">
           Account-login integrations that bind external services to your identity.
         </p>
-        {/* Integration cards will be added here by subsequent tasks */}
         <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            No integrations configured yet.
+          <CardContent className="pt-6">
+            <div className="divide-y">
+              <div className="pb-6">
+                <GoogleOAuthSection />
+              </div>
+              <div className="py-6">
+                <SpotifySection />
+              </div>
+              <div className="pt-6">
+                <HomeAssistantSection />
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>
