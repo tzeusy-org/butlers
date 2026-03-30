@@ -38,7 +38,9 @@ from butlers.connectors.google_drive import (
     _build_normalized_text,
     _detect_change_type,
     _exponential_backoff_retry,
+    _extract_google_error_message,
     _FileMetadata,
+    _is_retryable_403,
     _make_idempotency_key,
     _redact_email,
     build_changes_list_url,
@@ -1360,11 +1362,98 @@ class TestRateLimitHandlingAndErrorIsolation:
 
         assert result.status_code == 200
 
-    async def test_retries_on_403(self) -> None:
-        """Retries on 403 Forbidden (Drive rate-limit)."""
+    async def test_retries_on_403_rate_limit(self) -> None:
+        """Retries on 403 when the response indicates a retryable rate limit."""
         forbidden = MagicMock()
         forbidden.status_code = 403
         forbidden.headers = {}
+        forbidden.json.return_value = {
+            "error": {
+                "errors": [{"reason": "rateLimitExceeded", "domain": "usageLimits"}],
+                "code": 403,
+                "message": "Rate Limit Exceeded",
+            }
+        }
+
+        success = MagicMock()
+        success.status_code = 200
+
+        responses_iter = iter([forbidden, success])
+
+        async def mock_call() -> MagicMock:
+            return next(responses_iter)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await _exponential_backoff_retry(mock_call, max_retries=3)
+
+        assert result.status_code == 200
+
+    async def test_no_retry_on_non_retryable_403(self) -> None:
+        """Does not retry on 403 with a non-retryable reason like SERVICE_DISABLED."""
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.headers = {}
+        forbidden.json.return_value = {
+            "error": {
+                "code": 403,
+                "message": "Google Drive API has not been used in project 12345",
+                "errors": [
+                    {"reason": "accessNotConfigured", "domain": "usageLimits"}
+                ],
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "SERVICE_DISABLED",
+                    }
+                ],
+            }
+        }
+
+        call_count = 0
+
+        async def mock_call() -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            return forbidden
+
+        result = await _exponential_backoff_retry(mock_call, max_retries=5)
+
+        assert result.status_code == 403
+        assert call_count == 1  # No retries — returned immediately
+
+    async def test_no_retry_on_insufficient_permissions_403(self) -> None:
+        """Does not retry on 403 with insufficientPermissions reason."""
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.headers = {}
+        forbidden.json.return_value = {
+            "error": {
+                "code": 403,
+                "message": "Insufficient Permission",
+                "errors": [
+                    {"reason": "insufficientPermissions", "domain": "global"}
+                ],
+            }
+        }
+
+        call_count = 0
+
+        async def mock_call() -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            return forbidden
+
+        result = await _exponential_backoff_retry(mock_call, max_retries=5)
+
+        assert result.status_code == 403
+        assert call_count == 1
+
+    async def test_retries_on_403_with_unparseable_body(self) -> None:
+        """Retries on 403 when the response body cannot be parsed (assumes retryable)."""
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.headers = {}
+        forbidden.json.side_effect = Exception("not json")
 
         success = MagicMock()
         success.status_code = 200
@@ -1454,6 +1543,49 @@ class TestRateLimitHandlingAndErrorIsolation:
         result = await _exponential_backoff_retry(mock_call, retry_on=(429, 503))
         assert result.status_code == 404
         assert call_count == 1  # No retries
+
+    async def test_is_retryable_403_rate_limit(self) -> None:
+        """_is_retryable_403 returns True for rateLimitExceeded."""
+        resp = MagicMock()
+        resp.json.return_value = {
+            "error": {"errors": [{"reason": "rateLimitExceeded"}]}
+        }
+        assert _is_retryable_403(resp) is True
+
+    async def test_is_retryable_403_service_disabled(self) -> None:
+        """_is_retryable_403 returns False for SERVICE_DISABLED."""
+        resp = MagicMock()
+        resp.json.return_value = {
+            "error": {
+                "errors": [{"reason": "accessNotConfigured"}],
+                "details": [{"reason": "SERVICE_DISABLED"}],
+            }
+        }
+        assert _is_retryable_403(resp) is False
+
+    async def test_is_retryable_403_unparseable(self) -> None:
+        """_is_retryable_403 returns True when body can't be parsed."""
+        resp = MagicMock()
+        resp.json.side_effect = ValueError("bad json")
+        assert _is_retryable_403(resp) is True
+
+    async def test_extract_google_error_message(self) -> None:
+        """_extract_google_error_message extracts the message field."""
+        resp = MagicMock()
+        resp.json.return_value = {"error": {"message": "API disabled"}}
+        assert _extract_google_error_message(resp) == "API disabled"
+
+    async def test_extract_google_error_message_missing(self) -> None:
+        """_extract_google_error_message returns empty string on missing message."""
+        resp = MagicMock()
+        resp.json.return_value = {}
+        assert _extract_google_error_message(resp) == ""
+
+    async def test_extract_google_error_message_unparseable(self) -> None:
+        """_extract_google_error_message returns empty string on parse failure."""
+        resp = MagicMock()
+        resp.json.side_effect = Exception("not json")
+        assert _extract_google_error_message(resp) == ""
 
     async def test_error_isolation_between_account_loops(
         self,
@@ -3093,7 +3225,13 @@ class TestGetStartPageToken:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 403
-        mock_resp.json.return_value = {}
+        mock_resp.json.return_value = {
+            "error": {
+                "code": 403,
+                "message": "Drive API is disabled",
+                "errors": [{"reason": "accessNotConfigured", "domain": "usageLimits"}],
+            }
+        }
         # headers needed for backoff retry logic
         mock_resp.headers = {}
 
@@ -3102,7 +3240,7 @@ class TestGetStartPageToken:
         loop._http_client = http_mock
         loop._get_access_token = AsyncMock(return_value="fake-access-token")  # type: ignore[method-assign]
 
-        with pytest.raises(RuntimeError, match="getStartPageToken failed"):
+        with pytest.raises(RuntimeError, match="getStartPageToken failed.*Drive API is disabled"):
             await loop._get_start_page_token()
 
     async def test_missing_start_token_in_response_raises(

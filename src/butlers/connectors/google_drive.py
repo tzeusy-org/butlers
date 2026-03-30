@@ -93,6 +93,23 @@ _RATE_LIMIT_MAX_RETRIES = 5
 _RATE_LIMIT_BASE_DELAY_S = 1.0
 _RATE_LIMIT_MAX_DELAY_S = 60.0
 
+# Google API 403 error reasons that are NOT retryable (permanent auth/config errors).
+# Retryable 403 reasons (rateLimitExceeded, userRateLimitExceeded) are not listed here.
+_NON_RETRYABLE_403_REASONS: frozenset[str] = frozenset({
+    "accessNotConfigured",
+    "insufficientPermissions",
+    "domainPolicy",
+    "forbidden",
+    "accountDisabled",
+    "countryBlocked",
+})
+
+# ErrorInfo reasons from the ``details`` array that are non-retryable.
+_NON_RETRYABLE_ERROR_INFO_REASONS: frozenset[str] = frozenset({
+    "SERVICE_DISABLED",
+    "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+})
+
 # Change type literals
 _CHANGE_TYPE_CREATED = "file_created"
 _CHANGE_TYPE_MODIFIED = "file_modified"
@@ -545,6 +562,42 @@ def _redact_email(email: str | None) -> str | None:
     return f"{visible}***{domain}"
 
 
+def _is_retryable_403(response: Any) -> bool:
+    """Return True if a 403 response is a retryable rate limit, False if permanent.
+
+    Google uses HTTP 403 for both rate limits (retryable) and permission/config
+    errors (non-retryable).  This inspects the response body to distinguish them.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        return True  # Can't parse body — assume retryable to be safe
+
+    error = body.get("error", {})
+
+    # Check legacy errors[].reason field
+    for err in error.get("errors", []):
+        reason = err.get("reason", "")
+        if reason in _NON_RETRYABLE_403_REASONS:
+            return False
+
+    # Check structured details[].reason (ErrorInfo)
+    for detail in error.get("details", []):
+        if detail.get("reason") in _NON_RETRYABLE_ERROR_INFO_REASONS:
+            return False
+
+    return True
+
+
+def _extract_google_error_message(response: Any) -> str:
+    """Extract the human-readable error message from a Google API error response."""
+    try:
+        body = response.json()
+        return body.get("error", {}).get("message", "")
+    except Exception:
+        return ""
+
+
 async def _exponential_backoff_retry(
     coro_factory: Any,
     *,
@@ -586,6 +639,15 @@ async def _exponential_backoff_retry(
 
         status = getattr(response, "status_code", 200)
         if status not in retry_on:
+            return response
+
+        # For 403, check if it's a retryable rate limit or a permanent error.
+        if status == 403 and not _is_retryable_403(response):
+            error_msg = _extract_google_error_message(response)
+            logger.error(
+                "Drive API returned non-retryable 403 (not a rate limit, will not retry): %s",
+                error_msg or "(no message in response body)",
+            )
             return response
 
         if attempt >= max_retries:
@@ -864,8 +926,11 @@ class GDriveAccountLoop:
             self._metrics.record_source_api_call(
                 api_method="changes.getStartPageToken", status="error"
             )
+            detail = _extract_google_error_message(resp)
             raise RuntimeError(
-                f"Drive: getStartPageToken failed for email={self.email!r}: HTTP {resp.status_code}"
+                f"Drive: getStartPageToken failed for email={self.email!r}: "
+                f"HTTP {resp.status_code}"
+                + (f" — {detail}" if detail else "")
             )
 
         self._metrics.record_source_api_call(api_method="changes.getStartPageToken", status="ok")
@@ -915,8 +980,10 @@ class GDriveAccountLoop:
 
         if resp.status_code != 200:
             self._metrics.record_source_api_call(api_method="changes.list", status="error")
+            detail = _extract_google_error_message(resp)
             raise RuntimeError(
                 f"Drive: changes.list failed for email={self.email!r}: HTTP {resp.status_code}"
+                + (f" — {detail}" if detail else "")
             )
 
         self._metrics.record_source_api_call(api_method="changes.list", status="ok")
