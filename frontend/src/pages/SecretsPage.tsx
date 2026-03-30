@@ -188,59 +188,86 @@ function UserSecretsSection() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <CardTitle>
-              User Credentials
-              {ownerData?.entity_name ? (
-                <span className="text-muted-foreground font-normal text-base ml-2">
-                  ({ownerData.entity_name})
-                </span>
-              ) : null}
-            </CardTitle>
-            <CardDescription>
-              Identity-bound credentials on the owner entity.
-              Telegram API keys, Home Assistant tokens, and other personal credentials.
-            </CardDescription>
-          </div>
-          <Button
-            size="sm"
-            onClick={() => {
-              setEditRow(null);
-              setAddOpen(true);
-            }}
-            disabled={!entityId}
-          >
-            Add Credential
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        {isError ? (
-          <p className="text-sm text-destructive">
-            {(error as Error)?.message?.includes("404")
-              ? "No owner entity found. Create one in the Entities page first."
-              : "Failed to load user credentials."}
-          </p>
-        ) : (
-          <SecretsTable
-            mode="user"
-            butlerName=""
-            secrets={[]}
-            userRows={userRows}
-            isLoading={isLoading}
-            isError={false}
-            onEdit={() => {}}
-            onCreateOverride={() => {}}
-            onEditRow={handleEditRow}
-            onRevealEntry={handleRevealEntry}
-            onDeleteRow={handleDeleteRow}
-            categoryLabelFn={userCategoryLabel}
-          />
-        )}
-      </CardContent>
+    <div className="space-y-6">
+      {/* ------------------------------------------------------------------ */}
+      {/* Integrations section                                                */}
+      {/* ------------------------------------------------------------------ */}
+      <div>
+        <h2 className="text-lg font-semibold mb-1">Integrations</h2>
+        <p className="text-sm text-muted-foreground mb-4">
+          Account-login integrations that bind external services to your identity.
+        </p>
+        {/* Integration cards will be added here by subsequent tasks */}
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No integrations configured yet.
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Credentials section                                                  */}
+      {/* ------------------------------------------------------------------ */}
+      <div>
+        <h2 className="text-lg font-semibold mb-1">
+          Credentials
+          {ownerData?.entity_name ? (
+            <span className="text-muted-foreground font-normal text-base ml-2">
+              ({ownerData.entity_name})
+            </span>
+          ) : null}
+        </h2>
+        <p className="text-sm text-muted-foreground mb-4">
+          Identity-bound credentials on the owner entity.
+          Telegram API keys, Home Assistant tokens, and other personal credentials.
+        </p>
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <CardTitle className="text-base">Stored Credentials</CardTitle>
+                <CardDescription>
+                  Raw credential entries managed on the owner entity record.
+                </CardDescription>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setEditRow(null);
+                  setAddOpen(true);
+                }}
+                disabled={!entityId}
+              >
+                Add Credential
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {isError ? (
+              <p className="text-sm text-destructive">
+                {(error as Error)?.message?.includes("404")
+                  ? "No owner entity found. Create one in the Entities page first."
+                  : "Failed to load user credentials."}
+              </p>
+            ) : (
+              <SecretsTable
+                mode="user"
+                butlerName=""
+                secrets={[]}
+                userRows={userRows}
+                isLoading={isLoading}
+                isError={false}
+                onEdit={() => {}}
+                onCreateOverride={() => {}}
+                onEditRow={handleEditRow}
+                onRevealEntry={handleRevealEntry}
+                onDeleteRow={handleDeleteRow}
+                categoryLabelFn={userCategoryLabel}
+              />
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Add modal */}
       <UserSecretFormModal
@@ -260,7 +287,7 @@ function UserSecretsSection() {
           if (!open) setEditRow(null);
         }}
       />
-    </Card>
+    </div>
   );
 }
 
