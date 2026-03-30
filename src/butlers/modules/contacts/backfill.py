@@ -142,7 +142,7 @@ class ContactBackfillResolver:
         row = await self._pool.fetchrow(
             """
             SELECT sl.local_contact_id FROM contacts_source_links sl
-            JOIN contacts c ON c.id = sl.local_contact_id
+            JOIN public.contacts c ON c.id = sl.local_contact_id
             WHERE sl.provider = $1 AND sl.account_id = $2 AND sl.external_contact_id = $3
               AND sl.deleted_at IS NULL
             """,
@@ -281,7 +281,7 @@ class ContactBackfillWriter:
             try:
                 row = await self._pool.fetchrow(
                     """
-                    INSERT INTO contacts (
+                    INSERT INTO public.contacts (
                         name, first_name, last_name, nickname,
                         company, job_title, avatar_url, metadata, entity_id
                     )
@@ -304,7 +304,7 @@ class ContactBackfillWriter:
         if entity_id is None:
             row = await self._pool.fetchrow(
                 """
-                INSERT INTO contacts (
+                INSERT INTO public.contacts (
                     name, first_name, last_name, nickname,
                     company, job_title, avatar_url, metadata
                 )
@@ -395,7 +395,7 @@ class ContactBackfillWriter:
         dict[str, str]
             Mapping of {field: 'updated' | 'skipped_local_edit' | 'conflict'}.
         """
-        row = await self._pool.fetchrow("SELECT * FROM contacts WHERE id = $1", local_id)
+        row = await self._pool.fetchrow("SELECT * FROM public.contacts WHERE id = $1", local_id)
         if row is None:
             raise ValueError(f"Contact {local_id} not found for backfill update")
 
@@ -487,7 +487,7 @@ class ContactBackfillWriter:
 
             if set_clauses:
                 await self._pool.execute(
-                    f"UPDATE contacts SET {', '.join(set_clauses)} WHERE id = $1",  # noqa: S608
+                    f"UPDATE public.contacts SET {', '.join(set_clauses)} WHERE id = $1",  # noqa: S608
                     *params,
                 )
 
@@ -877,7 +877,7 @@ class ContactBackfillEngine:
 
         if local_id is not None:
             # Verify resolved contact still exists (stale source links, race conditions)
-            exists = await self._pool.fetchval("SELECT 1 FROM contacts WHERE id = $1", local_id)
+            exists = await self._pool.fetchval("SELECT 1 FROM public.contacts WHERE id = $1", local_id)
             if not exists:
                 logger.warning(
                     "ContactBackfill: resolved local_id=%s via %s but contact missing; "
