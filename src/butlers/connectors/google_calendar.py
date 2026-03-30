@@ -1555,7 +1555,6 @@ class CalendarConnectorRuntime:
                             "external_event_id": f"{event_id}:starting_soon:{lead_minutes}m",
                             "external_thread_id": event_id,
                             "observed_at": observed_at,
-                            "event_type": "event_starting_soon",
                         },
                         "sender": {
                             "identity": self._config.email,
@@ -2226,7 +2225,6 @@ def _build_ingest_envelope(
             "external_event_id": event_id,
             "external_thread_id": None,
             "observed_at": observed_at,
-            "event_type": f"calendar.event.{change_type}",
         },
         "sender": {
             "identity": organizer_email,

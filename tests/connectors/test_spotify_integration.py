@@ -175,10 +175,9 @@ class TestConnectorPollToSwitchboardFlow:
 
         # Verify ingest.v1 envelope schema
         assert env["schema_version"] == "ingest.v1"
-        assert env["source"]["channel"] == "spotify"
+        assert env["source"]["channel"] == "spotify_user_client"
         assert env["source"]["provider"] == "spotify"
         assert env["source"]["endpoint_identity"] == _ENDPOINT_IDENTITY
-        assert env["event"]["event_type"] == "spotify.track_change"
         assert env["sender"]["identity"] == _USER_ID
         assert "idempotency_key" in env["control"]
         assert env["control"]["policy_tier"] == "default"
@@ -219,7 +218,7 @@ class TestConnectorPollToSwitchboardFlow:
         call_args = mcp_mock.call_tool.call_args_list[0]
         assert call_args[0][0] == "ingest"
         envelope = call_args[0][1]
-        assert envelope["event"]["event_type"] == "spotify.track_change"
+        assert "event_type" not in envelope["event"]
 
     async def test_no_playback_does_not_submit_envelope(self, connector: SpotifyConnector) -> None:
         """When nothing is playing (204), no ingest envelope is submitted."""
@@ -273,9 +272,14 @@ class TestConnectorPollToSwitchboardFlow:
             )
             await connector._handle_active_playback(payload2, payload2["item"], t1, t1.isoformat())
 
-        event_types = [e["event"]["event_type"] for e in submitted]
-        assert "spotify.session_summary" in event_types
-        assert "spotify.track_change" in event_types
+        has_summary = any(
+            e["event"]["external_event_id"].startswith("spotify:session:") for e in submitted
+        )
+        has_track_change = any(
+            not e["event"]["external_event_id"].startswith("spotify:session:") for e in submitted
+        )
+        assert has_summary
+        assert has_track_change
 
 
 # ---------------------------------------------------------------------------
@@ -489,8 +493,10 @@ class TestSessionAggregationLifecycle:
             assert connector._session_tracker.state == "active"
 
         # No session_summary should have been emitted — session continues
-        event_types = [e["event"]["event_type"] for e in submitted]
-        assert "spotify.session_summary" not in event_types
+        has_summary = any(
+            e["event"]["external_event_id"].startswith("spotify:session:") for e in submitted
+        )
+        assert not has_summary
 
     async def test_pause_beyond_timeout_closes_session(self, connector: SpotifyConnector) -> None:
         """Pause exceeding idle timeout → session_summary emitted and state returns to idle."""
@@ -521,8 +527,10 @@ class TestSessionAggregationLifecycle:
             await conn._handle_no_playback(t2, t2.isoformat())
 
         assert conn._session_tracker.state == "idle"
-        event_types = [e["event"]["event_type"] for e in submitted]
-        assert "spotify.session_summary" in event_types
+        has_summary = any(
+            e["event"]["external_event_id"].startswith("spotify:session:") for e in submitted
+        )
+        assert has_summary
 
     async def test_resume_with_different_context_after_timeout_emits_summary(
         self, connector: SpotifyConnector
@@ -565,9 +573,16 @@ class TestSessionAggregationLifecycle:
             )
             await conn._handle_active_playback(payload2, payload2["item"], t3, t3.isoformat())
 
-        event_types = [e["event"]["event_type"] for e in submitted]
-        assert "spotify.session_summary" in event_types
-        assert event_types.count("spotify.track_change") >= 2
+        summaries = [
+            e for e in submitted
+            if e["event"]["external_event_id"].startswith("spotify:session:")
+        ]
+        track_changes = [
+            e for e in submitted
+            if not e["event"]["external_event_id"].startswith("spotify:session:")
+        ]
+        assert len(summaries) >= 1
+        assert len(track_changes) >= 2
 
     async def test_context_change_while_playing_emits_summary(
         self, connector: SpotifyConnector
@@ -594,12 +609,12 @@ class TestSessionAggregationLifecycle:
             )
             await connector._handle_active_playback(payload2, payload2["item"], t1, t1.isoformat())
 
-        event_types = [e["event"]["event_type"] for e in submitted]
+        is_summary = [
+            e["event"]["external_event_id"].startswith("spotify:session:") for e in submitted
+        ]
         # session_summary must come before the second track_change
-        first_summary_idx = next(
-            (i for i, t in enumerate(event_types) if t == "spotify.session_summary"), None
-        )
-        track_change_indices = [i for i, t in enumerate(event_types) if t == "spotify.track_change"]
+        first_summary_idx = next((i for i, s in enumerate(is_summary) if s), None)
+        track_change_indices = [i for i, s in enumerate(is_summary) if not s]
         second_track_idx = track_change_indices[1] if len(track_change_indices) > 1 else None
         assert first_summary_idx is not None
         assert second_track_idx is not None
@@ -848,7 +863,7 @@ class TestCheckpointPersistenceAndResume:
             await conn._poll_recently_played(_T0, _T0.isoformat())
 
         assert len(submitted) == 1
-        assert submitted[0]["event"]["event_type"] == "spotify.track_change"
+        assert "event_type" not in submitted[0]["event"]
 
     async def test_cursor_advances_to_latest_recently_played_track(self) -> None:
         """Cursor is advanced to the played_at timestamp of the most recent processed track."""

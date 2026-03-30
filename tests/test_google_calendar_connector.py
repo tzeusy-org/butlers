@@ -227,7 +227,6 @@ class TestBuildStartingSoonEnvelope:
             event, _ENDPOINT_IDENTITY, _ACCOUNT_EMAIL, _OBSERVED_AT, lead_minutes=15
         )
 
-        assert env["event"]["event_type"] == "event_starting_soon"
         assert env["event"]["external_event_id"] == "starting_soon:ev10"
         # thread_id is the original event id
         assert env["event"]["external_thread_id"] == "ev10"
@@ -773,7 +772,7 @@ class TestStartingSoonNotifications:
         submitted = await self._run_check_starting_soon(loop, {"ev1": event})
 
         assert len(submitted) == 1
-        assert submitted[0]["event"]["event_type"] == "event_starting_soon"
+        assert "event_type" not in submitted[0]["event"]
 
     async def test_event_outside_window_no_notification(self) -> None:
         """An event outside the lead window should not trigger a notification."""
@@ -849,7 +848,7 @@ class TestStartingSoonNotifications:
         await loop._check_starting_soon()
 
         assert len(submitted) == 1
-        assert submitted[0]["event"]["event_type"] == "event_starting_soon"
+        assert "event_type" not in submitted[0]["event"]
 
     async def test_lead_minutes_zero_disables_notifications(self) -> None:
         """Setting lead_minutes=0 should completely disable starting-soon notifications."""

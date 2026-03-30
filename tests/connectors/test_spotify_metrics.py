@@ -477,7 +477,7 @@ class TestConnectorMetricsIntegration:
         envelope = {
             "schema_version": "ingest.v1",
             "source": {
-                "channel": "spotify",
+                "channel": "spotify_user_client",
                 "provider": "spotify",
                 "endpoint_identity": "spotify:alice",
             },
@@ -485,7 +485,6 @@ class TestConnectorMetricsIntegration:
                 "external_event_id": "spotify:1000:t1",
                 "external_thread_id": None,
                 "observed_at": now.isoformat(),
-                "event_type": "spotify.track_change",
             },
             "sender": {"identity": "alice"},
             "payload": {"raw": {}, "normalized_text": "test"},

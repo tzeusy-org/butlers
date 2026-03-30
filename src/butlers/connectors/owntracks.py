@@ -826,7 +826,6 @@ def build_location_envelope(
             "endpoint_identity": endpoint_identity,
         },
         "event": {
-            "event_type": "owntracks.location",
             "external_event_id": f"{tst}:location",
             "external_thread_id": f"owntracks:{tid}",
             "observed_at": observed_at,
@@ -867,7 +866,6 @@ def build_transition_envelope(
             "endpoint_identity": endpoint_identity,
         },
         "event": {
-            "event_type": "owntracks.transition",
             "external_event_id": f"{tst}:transition:{event}",
             "external_thread_id": f"owntracks:{tid}",
             "observed_at": observed_at,
@@ -907,7 +905,6 @@ def build_waypoints_envelope(
             "endpoint_identity": endpoint_identity,
         },
         "event": {
-            "event_type": "owntracks.waypoints",
             "external_event_id": f"{tst}:waypoints",
             "external_thread_id": f"owntracks:{tid}",
             "observed_at": observed_at,

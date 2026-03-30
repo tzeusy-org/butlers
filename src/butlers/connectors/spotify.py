@@ -82,7 +82,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONNECTOR_TYPE = "spotify"
-_CONNECTOR_CHANNEL = "spotify"
+_CONNECTOR_CHANNEL = "spotify_user_client"
 _CONNECTOR_PROVIDER = "spotify"
 
 # Spotify API URLs
@@ -430,7 +430,6 @@ def build_track_change_envelope(
             "external_event_id": external_event_id,
             "external_thread_id": context_uri,
             "observed_at": observed_at,
-            "event_type": "spotify.track_change",
         },
         "sender": {
             "identity": spotify_user_id,
@@ -484,7 +483,6 @@ def build_session_summary_envelope(
             "external_event_id": external_event_id,
             "external_thread_id": session.context_uri,
             "observed_at": observed_at,
-            "event_type": "spotify.session_summary",
         },
         "sender": {
             "identity": spotify_user_id,

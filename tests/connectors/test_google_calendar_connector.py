@@ -352,7 +352,7 @@ class TestBuildIngestEnvelope:
                 organizer_email="org@y.com",
                 normalized_text=f"[{change_type.upper()}] X",
             )
-            assert envelope["event"]["event_type"] == f"calendar.event.{change_type}"
+            assert "event_type" not in envelope["event"]
 
     def test_policy_tier_default(self) -> None:
         envelope = _build_ingest_envelope(

@@ -309,7 +309,6 @@ class TestBuildTrackChangeEnvelope:
         assert envelope["source"]["channel"] == _CONNECTOR_CHANNEL
         assert envelope["source"]["provider"] == _CONNECTOR_PROVIDER
         assert envelope["source"]["endpoint_identity"] == "spotify:alice"
-        assert envelope["event"]["event_type"] == "spotify.track_change"
         assert envelope["event"]["external_event_id"] == "spotify:1000000:track123"
         assert envelope["event"]["external_thread_id"] == "spotify:playlist:abc"
         assert envelope["sender"]["identity"] == "alice"
@@ -403,7 +402,6 @@ class TestBuildSessionSummaryEnvelope:
 
         assert envelope["schema_version"] == "ingest.v1"
         assert envelope["source"]["channel"] == _CONNECTOR_CHANNEL
-        assert envelope["event"]["event_type"] == "spotify.session_summary"
         assert envelope["event"]["external_thread_id"] == "spotify:playlist:abc"
         assert "session_start_ms" not in envelope["event"]["external_event_id"]
         assert envelope["event"]["external_event_id"].startswith("spotify:session:")
@@ -457,7 +455,7 @@ class TestSpotifyConnectorConstants:
 
     def test_connector_type_constant(self) -> None:
         assert _CONNECTOR_TYPE == "spotify"
-        assert _CONNECTOR_CHANNEL == "spotify"
+        assert _CONNECTOR_CHANNEL == "spotify_user_client"
         assert _CONNECTOR_PROVIDER == "spotify"
 
 

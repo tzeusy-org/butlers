@@ -214,7 +214,6 @@ class TestLocationWebhookFlow:
         assert envelope["source"]["channel"] == "owntracks"
         assert envelope["source"]["provider"] == "owntracks"
         assert envelope["source"]["endpoint_identity"] == _ENDPOINT_IDENTITY
-        assert envelope["event"]["event_type"] == "owntracks.location"
         assert envelope["event"]["external_event_id"] == f"{_TST}:location"
         assert envelope["event"]["external_thread_id"] == f"owntracks:{_TRACKER_ID}"
         assert envelope["sender"]["identity"] == f"owntracks:{_TRACKER_ID}"
@@ -339,7 +338,6 @@ class TestTransitionWebhookFlow:
             headers={"Authorization": f"Bearer {_VALID_TOKEN}"},
         )
         envelope = mock_call_tool.await_args[0][1]
-        assert envelope["event"]["event_type"] == "owntracks.transition"
         assert envelope["event"]["external_event_id"] == f"{_TST}:transition:enter"
 
     def test_transition_enter_normalized_text(
@@ -592,7 +590,7 @@ class TestUnknownPayloadType:
         )
         mock_call_tool.assert_awaited_once()
         envelope = mock_call_tool.await_args[0][1]
-        assert envelope["event"]["event_type"] == "owntracks.waypoints"
+        assert "event_type" not in envelope["event"]
 
 
 # ---------------------------------------------------------------------------

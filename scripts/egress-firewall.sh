@@ -45,7 +45,7 @@ fi
 ALLOWED_TAILNET_HOSTS="${ALLOWED_TAILNET_HOSTS:-}"
 
 # Resolve the egress network's bridge interface name.
-COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-rig}"
+COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-butlers-dev}"
 EGRESS_NETWORK="${COMPOSE_PROJECT}_egress"
 
 resolve_bridge() {
@@ -53,7 +53,7 @@ resolve_bridge() {
   bridge=$(docker network inspect "$EGRESS_NETWORK" \
     --format '{{ .Options.com.docker.network.bridge.name }}' 2>/dev/null) || true
 
-  if [ -z "$bridge" ]; then
+  if [ -z "$bridge" ] || [ "$bridge" = "<no value>" ]; then
     local net_id
     net_id=$(docker network inspect "$EGRESS_NETWORK" --format '{{.Id}}' 2>/dev/null) || true
     if [ -n "$net_id" ]; then
