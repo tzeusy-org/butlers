@@ -833,6 +833,7 @@ def _make_entity_list_row(
     unidentified: bool = False,
     source_butler: str | None = None,
     source_scope: str | None = None,
+    archived: bool = False,
     created_at: str = "2025-06-01T12:00:00",
     updated_at: str = "2025-06-01T12:00:00",
 ) -> dict:
@@ -847,6 +848,7 @@ def _make_entity_list_row(
         "unidentified": unidentified,
         "source_butler": source_butler,
         "source_scope": source_scope,
+        "archived": archived,
         "created_at": created_at,
         "updated_at": updated_at,
     }
