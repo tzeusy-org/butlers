@@ -2441,8 +2441,8 @@ async def get_dunbar_ranking(
         ),
         pool.fetchrow(
             """
-            SELECT entity_id FROM contacts
-            WHERE 'owner' = ANY(roles) AND entity_id IS NOT NULL
+            SELECT id FROM public.entities
+            WHERE 'owner' = ANY(COALESCE(roles, '{}'))
             LIMIT 1
             """
         ),
@@ -2465,6 +2465,6 @@ async def get_dunbar_ranking(
         if r["entity_id"] is not None
     ]
 
-    owner_entity_id = owner_row["entity_id"] if owner_row else None
+    owner_entity_id = owner_row["id"] if owner_row else None
 
     return DunbarRankingResponse(entries=entries, owner_entity_id=owner_entity_id)

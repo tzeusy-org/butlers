@@ -1018,7 +1018,7 @@ def test_dunbar_ranking_avatar_url_null_when_not_set(app):
     entity_name_rows = [{"id": entity_id, "canonical_name": "Bob Jones"}]
     # Contact has no avatar set (avatar_url is None in DB)
     avatar_rows = [{"id": contact_id, "avatar_url": None}]
-    owner_row = {"entity_id": entity_id}
+    owner_row = {"id": entity_id}
 
     app, _, rel_pkg, orig = _app_with_dunbar_mock(
         app,
