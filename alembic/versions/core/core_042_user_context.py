@@ -8,6 +8,10 @@ Creates ``shared.user_context`` as a shared situational-awareness store used
 by all butlers to publish and query presence-like signals (traveling, sleeping,
 meeting, etc.).
 
+NOTE: core_046 (migrate_user_context_to_public) later relocates this table from
+the ``shared`` schema into the ``public`` schema, consolidating it alongside other
+cross-butler tables.
+
 Table design:
 
   shared.user_context
