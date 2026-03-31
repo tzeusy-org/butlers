@@ -3,7 +3,7 @@
 Tests set_context(), clear_context(), get_active_context(), and
 is_user_in_context() against a real PostgreSQL testcontainer.
 
-Isolation: the shared.user_context table is created inline per-test via the
+Isolation: the public.user_context table is created inline per-test via the
 provisioned_postgres_pool fixture (fresh database per test invocation).
 
 Requires Docker (for the Postgres testcontainer).
@@ -24,13 +24,11 @@ pytestmark = [
 ]
 
 # ---------------------------------------------------------------------------
-# DDL — mirrors alembic/versions/core/core_042_user_context.py (PR #884 / bu-mft2)
+# DDL — mirrors alembic/versions/core/core_046_migrate_user_context_to_public.py
 # ---------------------------------------------------------------------------
 
 _DDL = """
-CREATE SCHEMA IF NOT EXISTS shared;
-
-CREATE TABLE IF NOT EXISTS shared.user_context (
+CREATE TABLE IF NOT EXISTS public.user_context (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     signal_type   TEXT        NOT NULL,
     value         TEXT,
@@ -46,11 +44,11 @@ CREATE TABLE IF NOT EXISTS shared.user_context (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_context_active_signal_type
-ON shared.user_context (signal_type)
+ON public.user_context (signal_type)
 WHERE superseded_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_user_context_expires_at
-ON shared.user_context (expires_at);
+ON public.user_context (expires_at);
 """
 
 # ---------------------------------------------------------------------------
@@ -60,7 +58,7 @@ ON shared.user_context (expires_at);
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
-    """Create a fresh database with the shared.user_context table."""
+    """Create a fresh database with the public.user_context table."""
     async with provisioned_postgres_pool() as p:
         await p.execute(_DDL)
         yield p
@@ -86,7 +84,7 @@ class TestSetContext:
 
         row = await pool.fetchrow(
             "SELECT signal_type, value, set_by_butler, confidence, superseded_at "
-            "FROM shared.user_context WHERE signal_type = 'meeting'"
+            "FROM public.user_context WHERE signal_type = 'meeting'"
         )
         assert row is not None
         assert row["signal_type"] == "meeting"
@@ -103,7 +101,7 @@ class TestSetContext:
         await set_context(pool, butler_name="general", signal_type="meeting", value="second")
 
         rows = await pool.fetch(
-            "SELECT value FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT value FROM public.user_context WHERE signal_type = 'meeting'"
         )
         assert len(rows) == 1
         assert rows[0]["value"] == "second"
@@ -116,11 +114,11 @@ class TestSetContext:
         await set_context(pool, butler_name="general", signal_type="meeting")
         # Manually supersede it
         await pool.execute(
-            "UPDATE shared.user_context SET superseded_at = NOW() WHERE signal_type = 'meeting'"
+            "UPDATE public.user_context SET superseded_at = NOW() WHERE signal_type = 'meeting'"
         )
         # Verify it's superseded
         row = await pool.fetchrow(
-            "SELECT superseded_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT superseded_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
         assert row["superseded_at"] is not None
 
@@ -128,7 +126,7 @@ class TestSetContext:
         await set_context(pool, butler_name="general", signal_type="meeting", value="re-activated")
 
         row = await pool.fetchrow(
-            "SELECT value, superseded_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT value, superseded_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
         assert row["superseded_at"] is None
         assert row["value"] == "re-activated"
@@ -154,7 +152,7 @@ class TestSetContext:
             pass
 
         count = await pool.fetchval(
-            "SELECT COUNT(*) FROM shared.user_context WHERE signal_type = 'invalid_xyz'"
+            "SELECT COUNT(*) FROM public.user_context WHERE signal_type = 'invalid_xyz'"
         )
         assert count == 0
 
@@ -179,7 +177,7 @@ class TestSetContext:
             pass
 
         count = await pool.fetchval(
-            "SELECT COUNT(*) FROM shared.user_context "
+            "SELECT COUNT(*) FROM public.user_context "
             "WHERE signal_type = 'exercising' AND set_by_butler = 'finance'"
         )
         assert count == 0
@@ -197,7 +195,7 @@ class TestSetContext:
         )
 
         row = await pool.fetchrow(
-            "SELECT expires_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT expires_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
         # Should be clamped to ~4 hours from now, not 100 hours
         now = datetime.now(tz=UTC)
@@ -211,7 +209,7 @@ class TestSetContext:
         await set_context(pool, butler_name="general", signal_type="meeting")
 
         row = await pool.fetchrow(
-            "SELECT expires_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT expires_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
         now = datetime.now(tz=UTC)
         # meeting default = 1 hour
@@ -226,13 +224,13 @@ class TestSetContext:
 
         await set_context(pool, butler_name="general", signal_type="meeting", value="first")
         first_row = await pool.fetchrow(
-            "SELECT set_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT set_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
 
         await asyncio.sleep(0.01)  # tiny pause to ensure set_at differs
         await set_context(pool, butler_name="general", signal_type="meeting", value="second")
         second_row = await pool.fetchrow(
-            "SELECT set_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT set_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
 
         assert second_row["set_at"] >= first_row["set_at"]
@@ -251,7 +249,7 @@ class TestSetContext:
         )
 
         raw = await pool.fetchval(
-            "SELECT metadata FROM shared.user_context WHERE signal_type = 'traveling'"
+            "SELECT metadata FROM public.user_context WHERE signal_type = 'traveling'"
         )
         if isinstance(raw, str):
             parsed = json.loads(raw)
@@ -274,7 +272,7 @@ class TestClearContext:
         await clear_context(pool, butler_name="health", signal_type="exercising")
 
         row = await pool.fetchrow(
-            "SELECT superseded_at FROM shared.user_context WHERE signal_type = 'exercising'"
+            "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert row["superseded_at"] is not None
 
@@ -301,7 +299,7 @@ class TestClearContext:
         await clear_context(pool, butler_name="general", signal_type="exercising")
 
         row = await pool.fetchrow(
-            "SELECT superseded_at FROM shared.user_context "
+            "SELECT superseded_at FROM public.user_context "
             "WHERE signal_type = 'exercising' AND set_by_butler = 'health'"
         )
         assert row["superseded_at"] is None  # health's signal is unaffected
@@ -323,7 +321,7 @@ class TestClearContext:
         await clear_context(pool, butler_name="general", signal_type="meeting")
 
         rows = await pool.fetch(
-            "SELECT superseded_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT superseded_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
         assert len(rows) == 1
         assert rows[0]["superseded_at"] is not None
@@ -378,7 +376,7 @@ class TestGetActiveContext:
         past = datetime.now(tz=UTC) - timedelta(hours=1)
         await pool.execute(
             """
-            INSERT INTO shared.user_context
+            INSERT INTO public.user_context
                 (signal_type, value, set_by_butler, set_at, expires_at, confidence)
             VALUES ('dnd', NULL, 'general', NOW(), $1, 1.0)
             """,
@@ -484,7 +482,7 @@ class TestIsUserInContext:
         past = datetime.now(tz=UTC) - timedelta(hours=1)
         await pool.execute(
             """
-            INSERT INTO shared.user_context
+            INSERT INTO public.user_context
                 (signal_type, set_by_butler, set_at, expires_at, confidence)
             VALUES ('traveling', 'travel', NOW(), $1, 0.9)
             """,

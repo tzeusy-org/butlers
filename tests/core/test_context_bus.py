@@ -284,7 +284,7 @@ class TestContextBusIntegration:
 
     @pytest.fixture(scope="class")
     async def pool(self, postgres_container):
-        """Provision a fresh database with shared.user_context and return a pool."""
+        """Provision a fresh database with public.user_context and return a pool."""
         from butlers.db import Database
 
         db = Database(
@@ -299,10 +299,9 @@ class TestContextBusIntegration:
         await db.provision()
         p = await db.connect()
 
-        # Create the shared schema and user_context table
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # Create the user_context table in the public schema
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS shared.user_context (
+            CREATE TABLE IF NOT EXISTS public.user_context (
                 id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
                 signal_type   TEXT        NOT NULL,
                 value         TEXT,
@@ -324,7 +323,7 @@ class TestContextBusIntegration:
     # Truncate before each test for isolation
     @pytest.fixture(autouse=True)
     async def truncate(self, pool):
-        await pool.execute("TRUNCATE shared.user_context")
+        await pool.execute("TRUNCATE public.user_context")
         yield
 
     # -----------------------------------------------------------------------
@@ -334,7 +333,7 @@ class TestContextBusIntegration:
     async def test_set_context_inserts_new_row(self, pool):
         await set_context(pool, butler_name="health", signal_type="exercising")
         row = await pool.fetchrow(
-            "SELECT * FROM shared.user_context WHERE signal_type = 'exercising'"
+            "SELECT * FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert row is not None
         assert row["set_by_butler"] == "health"
@@ -344,7 +343,7 @@ class TestContextBusIntegration:
         await set_context(pool, butler_name="health", signal_type="exercising", value="run")
         await set_context(pool, butler_name="health", signal_type="exercising", value="swim")
         rows = await pool.fetch(
-            "SELECT * FROM shared.user_context WHERE signal_type = 'exercising'"
+            "SELECT * FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert len(rows) == 1
         assert rows[0]["value"] == "swim"
@@ -353,20 +352,20 @@ class TestContextBusIntegration:
         await set_context(pool, butler_name="health", signal_type="exercising")
         # Manually supersede
         await pool.execute(
-            "UPDATE shared.user_context SET superseded_at = now() "
+            "UPDATE public.user_context SET superseded_at = now() "
             "WHERE signal_type = 'exercising' AND set_by_butler = 'health'"
         )
         # Re-set should clear superseded_at
         await set_context(pool, butler_name="health", signal_type="exercising")
         row = await pool.fetchrow(
-            "SELECT superseded_at FROM shared.user_context WHERE signal_type = 'exercising'"
+            "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert row["superseded_at"] is None
 
     async def test_set_context_applies_default_ttl(self, pool):
         await set_context(pool, butler_name="general", signal_type="meeting")
         row = await pool.fetchrow(
-            "SELECT set_at, expires_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT set_at, expires_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
         # Default TTL for meeting is 1 hour
         delta = row["expires_at"] - row["set_at"]
@@ -377,7 +376,7 @@ class TestContextBusIntegration:
         far_future = now + timedelta(hours=100)  # far beyond meeting max (4h)
         await set_context(pool, butler_name="general", signal_type="meeting", expires_at=far_future)
         row = await pool.fetchrow(
-            "SELECT set_at, expires_at FROM shared.user_context WHERE signal_type = 'meeting'"
+            "SELECT set_at, expires_at FROM public.user_context WHERE signal_type = 'meeting'"
         )
         delta = row["expires_at"] - row["set_at"]
         assert delta <= timedelta(hours=4) + timedelta(seconds=2)
@@ -386,7 +385,7 @@ class TestContextBusIntegration:
         payload = {"location": "gym", "activity": "weights"}
         await set_context(pool, butler_name="health", signal_type="exercising", metadata=payload)
         row = await pool.fetchrow(
-            "SELECT metadata FROM shared.user_context WHERE signal_type = 'exercising'"
+            "SELECT metadata FROM public.user_context WHERE signal_type = 'exercising'"
         )
         raw = row["metadata"]
         if isinstance(raw, str):
@@ -401,7 +400,7 @@ class TestContextBusIntegration:
         await set_context(pool, butler_name="health", signal_type="exercising")
         await clear_context(pool, "health", "exercising")
         row = await pool.fetchrow(
-            "SELECT superseded_at FROM shared.user_context WHERE signal_type = 'exercising'"
+            "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert row["superseded_at"] is not None
 
@@ -410,7 +409,7 @@ class TestContextBusIntegration:
         await set_context(pool, butler_name="health", signal_type="exercising")
         await clear_context(pool, "general", "exercising")  # different butler
         row = await pool.fetchrow(
-            "SELECT superseded_at FROM shared.user_context WHERE signal_type = 'exercising'"
+            "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert row["superseded_at"] is None
 
@@ -447,7 +446,7 @@ class TestContextBusIntegration:
         await set_context(pool, butler_name="general", signal_type="meeting")
         # Manually expire the row
         await pool.execute(
-            "UPDATE shared.user_context SET expires_at = now() - interval '1 second' "
+            "UPDATE public.user_context SET expires_at = now() - interval '1 second' "
             "WHERE signal_type = 'meeting'"
         )
         results = await get_active_context(pool)
@@ -456,7 +455,7 @@ class TestContextBusIntegration:
     async def test_get_active_context_excludes_superseded(self, pool):
         await set_context(pool, butler_name="general", signal_type="meeting")
         await pool.execute(
-            "UPDATE shared.user_context SET superseded_at = now() WHERE signal_type = 'meeting'"
+            "UPDATE public.user_context SET superseded_at = now() WHERE signal_type = 'meeting'"
         )
         results = await get_active_context(pool)
         assert not any(e.signal_type == "meeting" for e in results)
@@ -501,7 +500,7 @@ class TestContextBusIntegration:
     async def test_is_user_in_context_excludes_expired(self, pool):
         await set_context(pool, butler_name="travel", signal_type="traveling")
         await pool.execute(
-            "UPDATE shared.user_context SET expires_at = now() - interval '1 second' "
+            "UPDATE public.user_context SET expires_at = now() - interval '1 second' "
             "WHERE signal_type = 'traveling'"
         )
         result = await is_user_in_context(pool, "traveling")

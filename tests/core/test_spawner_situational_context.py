@@ -115,9 +115,9 @@ class TestFetchSituationalContextPreamble:
         assert any("my-butler" in m for m in warning_messages)
 
     async def test_missing_table_logs_warning_once(self, caplog: pytest.LogCaptureFixture):
-        """Missing shared.user_context table logs WARNING only on first call per butler."""
+        """Missing public.user_context table logs WARNING only on first call per butler."""
         _spawner_module._missing_context_table_logged.discard("once-butler")
-        missing_table_err = RuntimeError('relation "shared.user_context" does not exist')
+        missing_table_err = RuntimeError('relation "public.user_context" does not exist')
 
         with (
             patch(
@@ -144,7 +144,7 @@ class TestFetchSituationalContextPreamble:
         """Each butler gets its own once-per-warning for missing table."""
         _spawner_module._missing_context_table_logged.discard("butler-a")
         _spawner_module._missing_context_table_logged.discard("butler-b")
-        missing_table_err = RuntimeError('relation "shared.user_context" does not exist')
+        missing_table_err = RuntimeError('relation "public.user_context" does not exist')
 
         with (
             patch(
