@@ -111,7 +111,7 @@ async def _create_pool(db_name: str, schema: str) -> asyncpg.Pool:
     if database_url:
         pool = await asyncpg.create_pool(
             dsn=database_url,
-            server_settings={"search_path": f"{schema},shared,public"},
+            server_settings={"search_path": f"{schema},public"},
         )
     else:
         pool = await asyncpg.create_pool(
@@ -120,7 +120,7 @@ async def _create_pool(db_name: str, schema: str) -> asyncpg.Pool:
             user=os.environ.get("POSTGRES_USER", "butlers"),
             password=os.environ.get("POSTGRES_PASSWORD", "butlers"),
             database=db_name,
-            server_settings={"search_path": f"{schema},shared,public"},
+            server_settings={"search_path": f"{schema},public"},
         )
     assert pool is not None
     return pool
