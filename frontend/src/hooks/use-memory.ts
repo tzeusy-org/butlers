@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  archiveEntity,
   createEntityInfo,
   deleteEntity,
   deleteEntityInfo,
@@ -22,6 +23,7 @@ import {
   promoteEntity,
   revealEntitySecret,
   setEntityLinkedContact,
+  unarchiveEntity,
   unlinkEntityContact,
   updateEntity,
   updateEntityInfo,
@@ -172,6 +174,28 @@ export function useDeleteEntity() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (entityId: string) => deleteEntity(entityId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Archive an entity (hide from default views). */
+export function useArchiveEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => archiveEntity(entityId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Restore an archived entity. */
+export function useUnarchiveEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => unarchiveEntity(entityId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
     },

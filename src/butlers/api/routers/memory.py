@@ -745,6 +745,10 @@ async def list_entities(
         None,
         description="Filter by unidentified status: true=only unidentified, false=only confirmed",
     ),
+    archived: bool = Query(
+        False,
+        description="When true, return only archived entities; when false (default), exclude them",
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -762,6 +766,11 @@ async def list_entities(
         "(e.metadata->>'deleted_at') IS NULL",
         "NOT ('google_account' = ANY(e.roles))",
     ]
+
+    if archived:
+        conditions.append("(e.metadata->>'archived_at') IS NOT NULL")
+    else:
+        conditions.append("(e.metadata->>'archived_at') IS NULL")
     args: list[object] = []
     idx = 1
 
@@ -812,7 +821,8 @@ async def list_entities(
         f" e.roles AS linked_contact_roles,"
         f" COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified,"
         f" e.metadata->>'source_butler' AS source_butler,"
-        f" e.metadata->>'source_scope' AS source_scope"
+        f" e.metadata->>'source_scope' AS source_scope,"
+        f" (e.metadata->>'archived_at') IS NOT NULL AS archived"
         f" FROM public.entities e{where}",
         *args,
     )
@@ -858,6 +868,7 @@ async def list_entities(
                 unidentified=r["unidentified"],
                 source_butler=r["source_butler"],
                 source_scope=r["source_scope"],
+                archived=r["archived"],
                 created_at=str(r["created_at"]),
                 updated_at=str(r["updated_at"]),
                 dunbar_tier=dunbar_info["dunbar_tier"] if dunbar_info else None,
@@ -1314,6 +1325,86 @@ async def delete_entity(
     # Unlink any contacts referencing this entity
     await pool.execute(
         "UPDATE public.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
+        eid,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/entities/{entity_id}/archive
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/{entity_id}/archive", status_code=204)
+async def archive_entity(
+    entity_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Archive an entity by setting metadata.archived_at.
+
+    Archived entities are hidden from the default list view but remain fully
+    intact (contacts stay linked, facts are preserved).  Owner entities cannot
+    be archived (returns 403).
+    """
+    import uuid as _uuid
+    from datetime import datetime
+
+    pool = _any_pool(db)
+    eid = _uuid.UUID(entity_id)
+
+    row = await pool.fetchrow(
+        "SELECT id, roles, metadata FROM public.entities WHERE id = $1",
+        eid,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    roles = list(row["roles"]) if row["roles"] else []
+    if "owner" in roles:
+        raise HTTPException(status_code=403, detail="Cannot archive owner entity")
+
+    metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+    if metadata.get("archived_at"):
+        return  # Already archived — idempotent
+
+    archived_at = datetime.now(UTC).isoformat()
+    await pool.execute(
+        "UPDATE public.entities"
+        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,"
+        " updated_at = now()"
+        " WHERE id = $1",
+        eid,
+        json.dumps({"archived_at": archived_at}),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/entities/{entity_id}/unarchive
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/{entity_id}/unarchive", status_code=204)
+async def unarchive_entity(
+    entity_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Restore an archived entity by removing metadata.archived_at."""
+    import uuid as _uuid
+
+    pool = _any_pool(db)
+    eid = _uuid.UUID(entity_id)
+
+    row = await pool.fetchrow(
+        "SELECT id FROM public.entities WHERE id = $1",
+        eid,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    await pool.execute(
+        "UPDATE public.entities"
+        " SET metadata = metadata - 'archived_at',"
+        " updated_at = now()"
+        " WHERE id = $1",
         eid,
     )
 

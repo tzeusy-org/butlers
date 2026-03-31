@@ -1281,6 +1281,7 @@ export interface EntitySummary {
   unidentified: boolean;
   source_butler: string | null;
   source_scope: string | null;
+  archived: boolean;
   created_at: string;
   updated_at: string;
   dunbar_tier: number | null;
@@ -1365,6 +1366,7 @@ export interface EntityParams {
   q?: string;
   entity_type?: string;
   unidentified?: boolean;
+  archived?: boolean;
   offset?: number;
   limit?: number;
 }

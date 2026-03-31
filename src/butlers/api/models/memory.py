@@ -123,6 +123,7 @@ class EntitySummary(BaseModel):
     unidentified: bool = False
     source_butler: str | None = None
     source_scope: str | None = None
+    archived: bool = False
     created_at: str
     updated_at: str
     dunbar_tier: int | None = None

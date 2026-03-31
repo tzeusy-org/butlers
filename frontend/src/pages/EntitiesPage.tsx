@@ -2,6 +2,8 @@ import type React from "react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
+  ArchiveIcon,
+  ArchiveRestoreIcon,
   CheckCircleIcon,
   EditIcon,
   GitMergeIcon,
@@ -51,10 +53,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  useArchiveEntity,
   useDeleteEntity,
   useEntities,
   useMergeEntity,
   usePromoteEntity,
+  useUnarchiveEntity,
 } from "@/hooks/use-memory";
 
 const PAGE_SIZE = 50;
@@ -565,10 +569,13 @@ export default function EntitiesPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set(DEFAULT_TYPES));
+  const [showArchived, setShowArchived] = useState(false);
   const [page, setPage] = useState(0);
   const [mergeTarget, setMergeTarget] = useState<EntitySummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EntitySummary | null>(null);
   const deleteMutation = useDeleteEntity();
+  const archiveMutation = useArchiveEntity();
+  const unarchiveMutation = useUnarchiveEntity();
 
   // Fetch confirmed entities (excluding unidentified) for the main table
   const typeParam =
@@ -579,6 +586,7 @@ export default function EntitiesPage() {
     q: search || undefined,
     entity_type: typeParam,
     unidentified: false,
+    archived: showArchived || undefined,
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
   };
@@ -660,6 +668,16 @@ export default function EntitiesPage() {
                 </Button>
               ))}
             </div>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground ml-2 cursor-pointer select-none">
+              <Checkbox
+                checked={showArchived}
+                onCheckedChange={(checked) => {
+                  setShowArchived(!!checked);
+                  setPage(0);
+                }}
+              />
+              Show archived
+            </label>
           </div>
 
           {/* Table */}
@@ -715,6 +733,11 @@ export default function EntitiesPage() {
                                 className="text-xs"
                               >
                                 Unidentified
+                              </Badge>
+                            )}
+                            {entity.archived && (
+                              <Badge variant="outline" className="text-xs">
+                                Archived
                               </Badge>
                             )}
                           </span>
@@ -801,6 +824,54 @@ export default function EntitiesPage() {
                                 </Button>
                               </TooltipTrigger>
                               <TooltipContent>Merge</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                {entity.archived ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    disabled={unarchiveMutation.isPending}
+                                    onClick={async () => {
+                                      try {
+                                        await unarchiveMutation.mutateAsync(entity.id);
+                                        toast.success(`Unarchived ${entity.canonical_name}`);
+                                      } catch (err) {
+                                        toast.error(
+                                          `Unarchive failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    <ArchiveRestoreIcon />
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    disabled={entity.roles?.includes("owner") || archiveMutation.isPending}
+                                    onClick={async () => {
+                                      try {
+                                        await archiveMutation.mutateAsync(entity.id);
+                                        toast.success(`Archived ${entity.canonical_name}`);
+                                      } catch (err) {
+                                        toast.error(
+                                          `Archive failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    <ArchiveIcon />
+                                  </Button>
+                                )}
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {entity.archived
+                                  ? "Unarchive"
+                                  : entity.roles?.includes("owner")
+                                    ? "Cannot archive owner"
+                                    : "Archive"}
+                              </TooltipContent>
                             </Tooltip>
                             <Tooltip>
                               <TooltipTrigger asChild>
