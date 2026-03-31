@@ -245,7 +245,7 @@ def normalize_message_text(event: dict[str, Any]) -> str:
     content = event.get("content", {}) or {}
 
     if msg_type == "text":
-        return content.get("text", "") or event.get("text", "")
+        return content.get("text") or event.get("text") or "[empty message]"
 
     if msg_type == "image":
         caption = content.get("caption", "")
@@ -992,7 +992,7 @@ class WhatsAppUserClientConnector:
         normalized_text with header identifying the chat and time window.
         """
         if not buffered_events:
-            normalized_text = ""
+            normalized_text = "[no messages]"
             flush_ts = datetime.now(UTC).isoformat()
             return {
                 "schema_version": "ingest.v1",

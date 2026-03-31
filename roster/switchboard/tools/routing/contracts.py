@@ -37,6 +37,7 @@ SourceChannel = Literal[
     "home_assistant",
     "gaming",
     "google_drive",
+    "discord",
 ]
 SourceProvider = Literal[
     "telegram",
@@ -52,6 +53,7 @@ SourceProvider = Literal[
     "home_assistant",
     "steam",
     "google_drive",
+    "discord",
 ]
 NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
 NotifyIntent = Literal["send", "reply", "react", "insight"]
@@ -74,6 +76,7 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "home_assistant": frozenset({"home_assistant"}),
     "gaming": frozenset({"steam"}),
     "google_drive": frozenset({"google_drive"}),
+    "discord": frozenset({"discord"}),
 }
 _THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(

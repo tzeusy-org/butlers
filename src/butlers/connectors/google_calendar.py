@@ -442,7 +442,7 @@ def build_event_envelope(
 
     event_id = event.get("id", "unknown")
     updated = event.get("updated", observed_at.isoformat())
-    organizer_email = event.get("organizer", {}).get("email", "")
+    organizer_email = event.get("organizer", {}).get("email") or "unknown"
     idempotency_key = f"gcal:{endpoint_identity}:{event_id}:{updated}"
 
     # Build simple normalized text for this envelope
@@ -505,7 +505,7 @@ def build_starting_soon_envelope(
         observed_at = datetime.now(UTC)
 
     event_id = event.get("id", "unknown")
-    organizer_email = event.get("organizer", {}).get("email", "")
+    organizer_email = event.get("organizer", {}).get("email") or "unknown"
     idempotency_key = f"gcal:{endpoint_identity}:starting_soon:{event_id}:{lead_minutes}"
 
     # Build normalized text for starting-soon

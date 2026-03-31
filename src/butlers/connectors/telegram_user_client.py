@@ -1619,8 +1619,12 @@ class TelegramUserClientConnector:
                 sender_id = str(from_id.user_id)
 
         # Extract message text and sanitize for XSS protection
-        if hasattr(message, "message"):
-            normalized_text = html.escape(message.message or "")
+        if hasattr(message, "message") and message.message:
+            normalized_text = html.escape(message.message)
+        elif hasattr(message, "media") and message.media:
+            normalized_text = "[media]"
+        else:
+            normalized_text = "[message]"
 
         # Convert message to dict for raw payload
         # Telethon objects have to_dict() method
