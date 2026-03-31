@@ -98,11 +98,10 @@ class TestRevisionMetadata:
 
 class TestUserContextTable:
     def test_creates_user_context_table(self) -> None:
-        """upgrade() creates the user_context table."""
+        """upgrade() creates the shared.user_context table."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "CREATE TABLE IF NOT EXISTS" in source
-        assert "user_context" in source
+        assert "CREATE TABLE IF NOT EXISTS shared.user_context" in source
 
     def test_has_id_column(self) -> None:
         """user_context has a UUID primary key 'id'."""
@@ -227,7 +226,7 @@ class TestPartialIndex:
         """Partial index is on the signal_type column."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "user_context (signal_type)" in source
+        assert "ON shared.user_context (signal_type)" in source
 
     def test_partial_index_where_superseded_at_is_null(self) -> None:
         """Partial index WHERE clause includes superseded_at IS NULL."""
@@ -260,11 +259,10 @@ class TestPartialIndex:
 
 class TestDowngrade:
     def test_drops_user_context_table(self) -> None:
-        """downgrade() drops the user_context table."""
+        """downgrade() drops shared.user_context."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
-        assert "DROP TABLE IF EXISTS" in source
-        assert "user_context" in source
+        assert "DROP TABLE IF EXISTS shared.user_context" in source
 
     def test_drops_partial_index(self) -> None:
         """downgrade() drops idx_user_context_active_signals."""

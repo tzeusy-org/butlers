@@ -94,12 +94,10 @@ class TestRevisionMetadata:
 
 class TestUpgrade:
     def test_moves_table_to_public_schema(self) -> None:
-        """upgrade() uses ALTER TABLE user_context SET SCHEMA public."""
+        """upgrade() uses ALTER TABLE shared.user_context SET SCHEMA public."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "ALTER TABLE" in source
-        assert "user_context" in source
-        assert "SET SCHEMA public" in source
+        assert "ALTER TABLE shared.user_context SET SCHEMA public" in source
 
     def test_drops_shared_schema(self) -> None:
         """upgrade() drops the shared schema after migration."""
@@ -129,10 +127,10 @@ class TestUpgrade:
 
 class TestDowngrade:
     def test_recreates_prior_schema(self) -> None:
-        """downgrade() recreates the prior schema with CREATE SCHEMA IF NOT EXISTS."""
+        """downgrade() recreates the shared schema with CREATE SCHEMA IF NOT EXISTS shared."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
-        assert "CREATE SCHEMA IF NOT EXISTS" in source
+        assert "CREATE SCHEMA IF NOT EXISTS shared" in source
 
     def test_moves_table_back_to_prior_schema(self) -> None:
         """downgrade() moves public.user_context back to its prior schema via SET SCHEMA."""
