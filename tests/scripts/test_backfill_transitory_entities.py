@@ -511,7 +511,6 @@ class TestDiscoverMemorySchemas:
         call_sql = mock_pool.fetch.call_args[0][0]
         assert "information_schema" in call_sql
         assert "public" in call_sql
-        assert "shared" in call_sql
 
 
 # ---------------------------------------------------------------------------

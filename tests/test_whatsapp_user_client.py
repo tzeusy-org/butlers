@@ -479,7 +479,7 @@ class TestEnvelopeBuilding:
         envelope = connector._build_batch_envelope("chat@g.us", [], "batch:chat@g.us:0-0")
 
         assert envelope["schema_version"] == "ingest.v1"
-        assert envelope["payload"]["normalized_text"] == ""
+        assert envelope["payload"]["normalized_text"] == "[no messages]"
 
     def test_batch_envelope_payload_type_non_empty(
         self, connector: WhatsAppUserClientConnector

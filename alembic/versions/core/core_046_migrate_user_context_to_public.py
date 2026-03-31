@@ -49,27 +49,47 @@ def upgrade() -> None:
     conn = op.get_bind()
 
     # -------------------------------------------------------------------------
-    # 1. Move shared.user_context to the public schema.
+    # 1. Move shared.user_context to the public schema (if it still exists).
+    #    The shared schema may already have been removed in earlier cleanups.
     # -------------------------------------------------------------------------
-    op.execute("ALTER TABLE shared.user_context SET SCHEMA public")
-
-    # -------------------------------------------------------------------------
-    # 2. Verify the shared schema is now empty (safety guard).
-    # -------------------------------------------------------------------------
-    remaining = conn.execute(
-        text("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'shared'")
-    ).scalar()
-    if remaining:
-        raise RuntimeError(
-            f"shared schema still contains {remaining} table(s) after migrating "
-            "user_context; aborting DROP SCHEMA to prevent data loss."
+    has_shared_table = conn.execute(
+        text(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'shared' AND table_name = 'user_context'"
         )
+    ).scalar()
+
+    has_public_table = conn.execute(
+        text(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'user_context'"
+        )
+    ).scalar()
+
+    if has_shared_table and not has_public_table:
+        op.execute("ALTER TABLE shared.user_context SET SCHEMA public")
+    elif has_shared_table and has_public_table:
+        # Table already exists in public (e.g. from a prior schema-scoped run);
+        # just drop the shared copy to keep the schema empty for cleanup below.
+        op.execute("DROP TABLE shared.user_context")
+
+        # ---------------------------------------------------------------------
+        # 2. Verify the shared schema is now empty (safety guard).
+        # ---------------------------------------------------------------------
+        remaining = conn.execute(
+            text(
+                "SELECT count(*) FROM information_schema.tables "
+                "WHERE table_schema = 'shared'"
+            )
+        ).scalar()
+        if remaining:
+            raise RuntimeError(
+                f"shared schema still contains {remaining} table(s) after migrating "
+                "user_context; aborting DROP SCHEMA to prevent data loss."
+            )
 
     # -------------------------------------------------------------------------
-    # 3. Drop the now-empty shared schema.
-    # Use RESTRICT (default) rather than CASCADE: if any unexpected objects
-    # remain (sequences, types, views), PostgreSQL will fail loudly rather
-    # than silently dropping them.
+    # 3. Drop the shared schema if it exists.
     # -------------------------------------------------------------------------
     op.execute("DROP SCHEMA IF EXISTS shared")
 

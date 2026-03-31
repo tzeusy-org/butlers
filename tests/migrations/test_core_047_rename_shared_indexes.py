@@ -1,8 +1,8 @@
-"""Unit tests for core_046_rename_shared_indexes migration.
+"""Unit tests for core_047_rename_shared_indexes migration.
 
 Verifies:
 1. Migration file exists and is importable.
-2. Revision metadata is correct (ID core_046, chains from core_045).
+2. Revision metadata is correct (ID core_047, chains from core_046).
 3. upgrade() renames all shared_ prefixed indexes and constraints on public
    schema tables to non-shared equivalents.
 4. downgrade() restores the old shared_ names.
@@ -25,7 +25,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 VERSIONS_DIR = Path(__file__).resolve().parent.parent.parent / "alembic" / "versions" / "core"
-MIGRATION_FILE = VERSIONS_DIR / "core_046_rename_shared_indexes.py"
+MIGRATION_FILE = VERSIONS_DIR / "core_047_rename_shared_indexes.py"
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +34,8 @@ MIGRATION_FILE = VERSIONS_DIR / "core_046_rename_shared_indexes.py"
 
 
 def _load_migration():
-    """Dynamically load the core_046 migration module."""
-    spec = importlib.util.spec_from_file_location("core_046_rename_shared_indexes", MIGRATION_FILE)
+    """Dynamically load the core_047 migration module."""
+    spec = importlib.util.spec_from_file_location("core_047_rename_shared_indexes", MIGRATION_FILE)
     assert spec is not None
     assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -64,12 +64,12 @@ class TestMigrationFileLayout:
 class TestRevisionMetadata:
     def test_revision_id(self) -> None:
         mod = _load_migration()
-        assert mod.revision == "core_046"
+        assert mod.revision == "core_047"
 
     def test_down_revision(self) -> None:
-        """Must chain from core_045."""
+        """Must chain from core_046."""
         mod = _load_migration()
-        assert mod.down_revision == "core_045"
+        assert mod.down_revision == "core_046"
 
     def test_branch_labels_are_none(self) -> None:
         mod = _load_migration()

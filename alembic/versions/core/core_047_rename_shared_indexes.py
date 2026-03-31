@@ -1,7 +1,7 @@
 """rename_shared_indexes: rename legacy shared_ prefixed indexes and constraints.
 
-Revision ID: core_046
-Revises: core_045
+Revision ID: core_047
+Revises: core_046
 Create Date: 2026-03-31 00:00:00.000000
 
 Renames all indexes and constraints on public schema tables that still carry
@@ -41,8 +41,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_046"
-down_revision = "core_045"
+revision = "core_047"
+down_revision = "core_046"
 branch_labels = None
 depends_on = None
 

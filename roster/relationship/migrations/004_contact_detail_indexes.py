@@ -30,10 +30,6 @@ def upgrade() -> None:
         CREATE INDEX IF NOT EXISTS idx_important_dates_contact_id
             ON important_dates (contact_id)
     """)
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_addresses_contact_id
-            ON addresses (contact_id)
-    """)
     # Compound index for the email/phone correlated subqueries
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_contact_info_contact_type
@@ -44,5 +40,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_contact_labels_contact_id")
     op.execute("DROP INDEX IF EXISTS idx_important_dates_contact_id")
-    op.execute("DROP INDEX IF EXISTS idx_addresses_contact_id")
     op.execute("DROP INDEX IF EXISTS public.idx_contact_info_contact_type")
