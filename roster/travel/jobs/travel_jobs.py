@@ -51,13 +51,9 @@ _DOC_EXPIRY_COOLDOWN_INFO = 14  # days (90-day warnings)
 # expires_at for document expiry candidates: 14 days from now (re-check periodically)
 _DOC_EXPIRY_CANDIDATE_EXPIRES_DAYS = 14
 
-# Medication prep priorities and thresholds
-_MEDICATION_URGENT_DAYS = 7  # trips within 7 days → priority 75
-_MEDICATION_WINDOW_DAYS = 14  # trips within 14 days → priority 55
-_MEDICATION_MIN_TRIP_DAYS = 3  # only generate if trip duration > 3 days
-
-_MEDICATION_PRIORITY_URGENT = 75
-_MEDICATION_PRIORITY_INFO = 55
+# Medication prep: cross-butler health data must come through the MCP layer,
+# not direct SQL. The shared schema has been dropped. Medication prep insights
+# are intentionally disabled until a health butler MCP integration is available.
 
 # Document types scanned for insight expiry warnings
 _INSIGHT_EXPIRY_DOC_TYPES = {"visa", "insurance"}
@@ -542,85 +538,11 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             return stats
 
     # -----------------------------------------------------------------------
-    # 3. Medication prep insights (trips >3 days within 14 days, active meds)
+    # 3. Medication prep insights — intentional no-op
     # -----------------------------------------------------------------------
-    # Check if there are any active medications tracked via the shared schema.
-    # The health butler owns medications — the travel butler checks via the
-    # shared.medications view if available, or falls back to a graceful no-op.
-    has_active_meds = False
-    try:
-        med_row = await db_pool.fetchrow(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM shared.medications
-                WHERE status = 'active'
-            ) AS has_meds
-            """
-        )
-        if med_row is not None:
-            has_active_meds = bool(med_row["has_meds"])
-    except (asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError):
-        # shared.medications may not exist on all deployments — graceful no-op
-        logger.debug(
-            "Travel insight scan: shared.medications not available, "
-            "skipping medication prep insights"
-        )
-
-    if has_active_meds:
-        med_window_end = today + timedelta(days=_MEDICATION_WINDOW_DAYS)
-        med_trip_rows = await db_pool.fetch(
-            """
-            SELECT id, name, destination, start_date, end_date, status
-            FROM travel.trips
-            WHERE status = 'planned'
-              AND start_date >= $1
-              AND start_date <= $2
-            ORDER BY start_date ASC
-            """,
-            today,
-            med_window_end,
-        )
-
-        for row in med_trip_rows:
-            start_d = _parse_date_from_db(row["start_date"])
-            end_d = _parse_date_from_db(row["end_date"])
-            if start_d is None or end_d is None:
-                continue
-
-            trip_duration = (end_d - start_d).days
-            if trip_duration <= _MEDICATION_MIN_TRIP_DAYS:
-                continue
-
-            days_until = (start_d - today).days
-            trip_id = str(row["id"])
-            destination = row["destination"] or row["name"]
-            trip_name = row["name"]
-
-            if days_until <= _MEDICATION_URGENT_DAYS:
-                priority = _MEDICATION_PRIORITY_URGENT
-            else:
-                priority = _MEDICATION_PRIORITY_INFO
-
-            dedup_key = f"travel:medication-prep:{trip_id}"
-            expires_at = datetime(start_d.year, start_d.month, start_d.day, tzinfo=UTC)
-            message = (
-                f"Your trip to {destination} is {trip_duration} days long — "
-                "ensure you have enough medication supply before departure."
-            )
-
-            should_continue = await _submit(
-                priority=priority,
-                category="medication-prep",
-                dedup_key=dedup_key,
-                message=message,
-                expires_at=expires_at,
-            )
-            if not should_continue:
-                logger.info(
-                    "Travel insight scan: verbosity=off, exiting early after medication-prep check"
-                )
-                stats["early_exit"] = True
-                return stats
+    # The shared schema has been dropped. Cross-butler health data (medications)
+    # must be fetched through the MCP layer, not direct SQL. Until a health
+    # butler MCP integration is wired up, medication prep insights are disabled.
 
     logger.info(
         "Travel insight scan complete: proposed=%d, accepted=%d, "
