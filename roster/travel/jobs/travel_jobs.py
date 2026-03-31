@@ -51,10 +51,6 @@ _DOC_EXPIRY_COOLDOWN_INFO = 14  # days (90-day warnings)
 # expires_at for document expiry candidates: 14 days from now (re-check periodically)
 _DOC_EXPIRY_CANDIDATE_EXPIRES_DAYS = 14
 
-# Medication prep: cross-butler health data must come through the MCP layer,
-# not direct SQL. The shared schema has been dropped. Medication prep insights
-# are intentionally disabled until a health butler MCP integration is available.
-
 # Document types scanned for insight expiry warnings
 _INSIGHT_EXPIRY_DOC_TYPES = {"visa", "insurance"}
 
