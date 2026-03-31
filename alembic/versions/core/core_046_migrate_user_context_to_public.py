@@ -20,8 +20,10 @@ Migration steps:
    is evaluated at upgrade time; if any tables remain we raise to avoid silent
    data loss.
 
-3. DROP SCHEMA IF EXISTS shared CASCADE
-   Removes the now-empty shared schema.
+3. DROP SCHEMA IF EXISTS shared
+   Removes the now-empty shared schema using RESTRICT (default) so that
+   PostgreSQL raises an error if any unexpected objects remain, providing
+   a stronger safety guarantee than CASCADE.
 
 Design notes:
 - ALTER TABLE SET SCHEMA is preferred over CREATE+INSERT+DROP because it
@@ -65,8 +67,11 @@ def upgrade() -> None:
 
     # -------------------------------------------------------------------------
     # 3. Drop the now-empty shared schema.
+    # Use RESTRICT (default) rather than CASCADE: if any unexpected objects
+    # remain (sequences, types, views), PostgreSQL will fail loudly rather
+    # than silently dropping them.
     # -------------------------------------------------------------------------
-    op.execute("DROP SCHEMA IF EXISTS shared CASCADE")
+    op.execute("DROP SCHEMA IF EXISTS shared")
 
 
 def downgrade() -> None:
