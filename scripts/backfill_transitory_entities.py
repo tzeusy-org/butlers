@@ -306,7 +306,7 @@ async def resolve_or_create_entity(
         async with conn.transaction():
             entity_id = await conn.fetchval(
                 """
-                INSERT INTO entities
+                INSERT INTO public.entities
                     (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
                 VALUES ($1, $2, $3, $4, $5::jsonb, $6)
                 RETURNING id
@@ -325,7 +325,7 @@ async def resolve_or_create_entity(
     # Entity already exists — resolve it
     entity_id = await conn.fetchval(
         """
-        SELECT id FROM entities
+        SELECT id FROM public.entities
         WHERE tenant_id = $1
           AND canonical_name = $2
           AND entity_type = $3
@@ -339,7 +339,7 @@ async def resolve_or_create_entity(
         # Tombstoned entity — widen to any type as a fallback
         entity_id = await conn.fetchval(
             """
-            SELECT id FROM entities
+            SELECT id FROM public.entities
             WHERE tenant_id = $1
               AND canonical_name = $2
               AND (metadata->>'merged_into') IS NULL
