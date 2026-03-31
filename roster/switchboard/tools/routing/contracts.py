@@ -185,6 +185,10 @@ class IngestSenderV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     identity: NonEmptyStr
+    participants: dict[str, str] | None = None
+    """Batch envelopes: mapping of sender_id → display_name for all participants."""
+    owner_sender_id: str | None = None
+    """Batch envelopes: the owner's sender_id, used to distinguish other senders."""
 
 
 class IngestAttachment(BaseModel):
