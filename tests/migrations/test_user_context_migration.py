@@ -9,9 +9,9 @@ Covers:
   - Partial index on signal_type WHERE superseded_at IS NULL
   - Downgrade removes all artifacts
 
-NOTE: core_046 (migrate_user_context_to_public) later moves this table from the
-shared schema into the public schema. These tests verify the initial creation in
-shared; subsequent schema migration is validated separately.
+NOTE: core_046 (migrate_user_context_to_public) later relocates this table from
+the ``shared`` schema into the ``public`` schema. These tests verify the initial
+creation in ``shared``; subsequent schema migration is validated separately.
 """
 
 from __future__ import annotations
