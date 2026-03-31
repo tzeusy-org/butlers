@@ -961,46 +961,56 @@ async def get_contact(
     if row is None:
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    # Labels
-    label_rows = await pool.fetch(
-        """
-        SELECT l.id, l.name, l.color
-        FROM contact_labels cl
-        JOIN labels l ON l.id = cl.label_id
-        WHERE cl.contact_id = $1
-        ORDER BY l.name
-        """,
-        contact_id,
+    # Run independent detail queries concurrently
+    label_rows, birthday_row, addr_row, ci_rows = await asyncio.gather(
+        pool.fetch(
+            """
+            SELECT l.id, l.name, l.color
+            FROM contact_labels cl
+            JOIN labels l ON l.id = cl.label_id
+            WHERE cl.contact_id = $1
+            ORDER BY l.name
+            """,
+            contact_id,
+        ),
+        pool.fetchrow(
+            """
+            SELECT month, day, year
+            FROM important_dates
+            WHERE contact_id = $1 AND label = 'birthday'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            contact_id,
+        ),
+        pool.fetchrow(
+            """
+            SELECT line_1, line_2, city, province, postal_code, country
+            FROM addresses
+            WHERE contact_id = $1
+            ORDER BY is_current DESC NULLS LAST, id
+            LIMIT 1
+            """,
+            contact_id,
+        ),
+        pool.fetch(
+            """
+            SELECT id, type, value, is_primary, secured, parent_id
+            FROM public.contact_info
+            WHERE contact_id = $1
+            ORDER BY is_primary DESC NULLS LAST, type, id
+            """,
+            contact_id,
+        ),
     )
+
     labels = [Label(id=lr["id"], name=lr["name"], color=lr["color"]) for lr in label_rows]
 
-    # Birthday from important_dates
-    birthday_row = await pool.fetchrow(
-        """
-        SELECT month, day, year
-        FROM important_dates
-        WHERE contact_id = $1 AND label = 'birthday'
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        contact_id,
-    )
     birthday: date | None = None
     if birthday_row is not None:
         year = birthday_row["year"] or 1900
         birthday = date(year, birthday_row["month"], birthday_row["day"])
 
-    # Address from addresses table (current)
-    addr_row = await pool.fetchrow(
-        """
-        SELECT line_1, line_2, city, province, postal_code, country
-        FROM addresses
-        WHERE contact_id = $1
-        ORDER BY is_current DESC NULLS LAST, id
-        LIMIT 1
-        """,
-        contact_id,
-    )
     address: str | None = None
     if addr_row is not None:
         parts = [
@@ -1012,17 +1022,6 @@ async def get_contact(
             addr_row["country"],
         ]
         address = ", ".join(p for p in parts if p)
-
-    # All contact_info entries — mask secured values
-    ci_rows = await pool.fetch(
-        """
-        SELECT id, type, value, is_primary, secured, parent_id
-        FROM public.contact_info
-        WHERE contact_id = $1
-        ORDER BY is_primary DESC NULLS LAST, type, id
-        """,
-        contact_id,
-    )
     contact_info_entries = [
         ContactInfoEntry(
             id=ci["id"],
