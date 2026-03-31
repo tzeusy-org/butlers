@@ -502,13 +502,13 @@ async def fetch_situational_context_preamble(
                 _missing_context_table_logged.add(butler_name)
                 logger.warning(
                     "Skipping situational context preamble for butler %s: "
-                    "shared.user_context table is missing. Run migrations (bu-1e2p).",
+                    "public.user_context table is missing. Run migrations (bu-1e2p).",
                     butler_name,
                 )
             else:
                 logger.debug(
                     "Skipping situational context preamble for butler %s; "
-                    "shared.user_context table is still missing",
+                    "public.user_context table is still missing",
                     butler_name,
                 )
         else:

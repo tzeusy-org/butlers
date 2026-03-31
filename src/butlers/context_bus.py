@@ -1,6 +1,6 @@
 """Situational Context Bus.
 
-Provides shared situational awareness via a ``shared.user_context`` table.
+Provides shared situational awareness via a ``public.user_context`` table.
 Butlers read and write context signals (traveling, sleeping, meeting, etc.)
 with TTL-based expiry, confidence scoring, and per-signal write permissions.
 
@@ -36,7 +36,7 @@ class ContextSignal(StrEnum):
 
 @dataclass
 class ContextEntry:
-    """A single active context signal from the shared.user_context table."""
+    """A single active context signal from the public.user_context table."""
 
     signal_type: str
     value: str | None
@@ -181,7 +181,7 @@ async def get_active_context(pool: Any) -> list[ContextEntry]:
     rows = await pool.fetch(
         """
         SELECT signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata
-        FROM shared.user_context
+        FROM public.user_context
         WHERE superseded_at IS NULL AND expires_at > now()
         ORDER BY confidence DESC, set_at DESC
         """
@@ -225,7 +225,7 @@ async def is_user_in_context(
     row = await pool.fetchrow(
         """
         SELECT 1
-        FROM shared.user_context
+        FROM public.user_context
         WHERE signal_type = $1
           AND superseded_at IS NULL
           AND expires_at > now()
@@ -315,7 +315,7 @@ async def set_context(
 
     await pool.execute(
         """
-        INSERT INTO shared.user_context
+        INSERT INTO public.user_context
             (signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata,
              superseded_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
@@ -360,7 +360,7 @@ async def clear_context(
     """
     await pool.execute(
         """
-        UPDATE shared.user_context
+        UPDATE public.user_context
         SET superseded_at = now()
         WHERE signal_type = $1
           AND set_by_butler = $2
