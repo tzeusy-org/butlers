@@ -80,9 +80,7 @@ async def pool(provisioned_postgres_pool):
                 ON activity_feed (contact_id, created_at)
         """)
 
-        # Create shared schema and public.contact_info
-        # (moved from per-butler schema in contacts_002)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # Create public.entities and public.contact_info
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

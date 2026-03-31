@@ -32,7 +32,6 @@ pytestmark = [
 # Minimal schema DDL — TEXT embedding avoids pgvector dependency in tests
 # ---------------------------------------------------------------------------
 
-_DDL_SHARED_SCHEMA = "CREATE SCHEMA IF NOT EXISTS shared"
 _DDL_SHARED_ENTITIES = """
 CREATE TABLE IF NOT EXISTS public.entities (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -136,7 +135,6 @@ ON CONFLICT (name) DO NOTHING
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with memory/facts infrastructure."""
     async with provisioned_postgres_pool() as p:
-        await p.execute(_DDL_SHARED_SCHEMA)
         await p.execute(_DDL_SHARED_ENTITIES)
         await p.execute(_DDL_PREDICATE_REGISTRY)
         await p.execute(_DDL_FACTS)

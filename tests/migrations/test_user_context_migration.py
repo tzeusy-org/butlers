@@ -3,15 +3,15 @@
 Covers:
   - File layout and module loadability
   - Revision chain (core_042 revises core_041)
-  - shared.user_context table columns and constraints
+  - user_context table columns and constraints
   - UNIQUE constraint on (signal_type, set_by_butler)
   - CHECK constraint on confidence (0.0–1.0)
   - Partial index on signal_type WHERE superseded_at IS NULL
   - Downgrade removes all artifacts
 
 NOTE: core_046 (migrate_user_context_to_public) later relocates this table from
-the ``shared`` schema into the ``public`` schema. These tests verify the initial
-creation in ``shared``; subsequent schema migration is validated separately.
+the initial schema into the ``public`` schema. These tests verify the initial
+table creation; subsequent schema migration is validated separately.
 """
 
 from __future__ import annotations
@@ -92,16 +92,17 @@ class TestRevisionMetadata:
 
 
 # ---------------------------------------------------------------------------
-# shared.user_context table — columns
+# user_context table — columns
 # ---------------------------------------------------------------------------
 
 
 class TestUserContextTable:
     def test_creates_user_context_table(self) -> None:
-        """upgrade() creates the shared.user_context table."""
+        """upgrade() creates the user_context table."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "CREATE TABLE IF NOT EXISTS shared.user_context" in source
+        assert "CREATE TABLE IF NOT EXISTS" in source
+        assert "user_context" in source
 
     def test_has_id_column(self) -> None:
         """user_context has a UUID primary key 'id'."""
@@ -172,11 +173,11 @@ class TestUserContextTable:
         source = inspect.getsource(mod.upgrade)
         assert "superseded_at TIMESTAMPTZ" in source
 
-    def test_ensures_shared_schema(self) -> None:
-        """upgrade() creates the shared schema with IF NOT EXISTS guard."""
+    def test_ensures_schema(self) -> None:
+        """upgrade() uses CREATE SCHEMA IF NOT EXISTS to guard schema creation."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "CREATE SCHEMA IF NOT EXISTS shared" in source
+        assert "CREATE SCHEMA IF NOT EXISTS" in source
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +227,7 @@ class TestPartialIndex:
         """Partial index is on the signal_type column."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "ON shared.user_context (signal_type)" in source
+        assert "user_context (signal_type)" in source
 
     def test_partial_index_where_superseded_at_is_null(self) -> None:
         """Partial index WHERE clause includes superseded_at IS NULL."""
@@ -259,10 +260,11 @@ class TestPartialIndex:
 
 class TestDowngrade:
     def test_drops_user_context_table(self) -> None:
-        """downgrade() drops shared.user_context."""
+        """downgrade() drops the user_context table."""
         mod = _load_migration()
         source = inspect.getsource(mod.downgrade)
-        assert "DROP TABLE IF EXISTS shared.user_context" in source
+        assert "DROP TABLE IF EXISTS" in source
+        assert "user_context" in source
 
     def test_drops_partial_index(self) -> None:
         """downgrade() drops idx_user_context_active_signals."""

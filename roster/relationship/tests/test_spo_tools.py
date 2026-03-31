@@ -167,8 +167,7 @@ async def pool(provisioned_postgres_pool):
             CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
             ON facts (subject, predicate)
         """)
-        # Shared schema + entities (needed by store_fact for entity_id validation)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # public.entities (needed by store_fact for entity_id validation)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

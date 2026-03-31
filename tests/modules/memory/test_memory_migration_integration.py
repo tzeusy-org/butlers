@@ -156,7 +156,7 @@ async def memory_pool(postgres_container):
     Memory migrations are run against a dedicated butler schema (``memory_test``)
     which mirrors production: ``SET search_path TO memory_test, shared, public``
     is applied so unqualified table references in migrations (e.g. ``UPDATE
-    entities`` in mem_013) resolve correctly through ``shared.entities``.
+    entities`` in mem_013) resolve correctly through ``public.entities``.
     """
     from butlers.db import Database
     from butlers.migrations import run_migrations
@@ -189,9 +189,9 @@ async def memory_pool(postgres_container):
         await bootstrap_conn.close()
 
     db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
-    # Core creates shared schema tables (shared.entities, shared.contacts, etc.).
-    # Memory chain requires search_path to include 'shared' so that unqualified
-    # references like 'entities' in mem_013 resolve to shared.entities.
+    # Core creates public schema tables (public.entities, public.contacts, etc.).
+    # Memory chain requires search_path to include 'public' so that unqualified
+    # references like 'entities' in mem_013 resolve to public.entities.
     await run_migrations(db_url, chain="core")
     _run_memory_migrations(db_url, _TEST_BUTLER_SCHEMA)
 

@@ -108,7 +108,6 @@ CREATE TABLE IF NOT EXISTS public.entities (
 
 async def _setup_relationship_schema(pool) -> None:
     """Create the relationship-related tables needed for insight scan tests."""
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
     await pool.execute(CREATE_ENTITIES_SQL)
     await pool.execute(CREATE_CONTACTS_SQL)
     await pool.execute(CREATE_IMPORTANT_DATES_SQL)
