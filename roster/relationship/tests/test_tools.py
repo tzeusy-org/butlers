@@ -331,8 +331,7 @@ async def pool(provisioned_postgres_pool):
             CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks (completed)
         """)
 
-        # Shared schema + entities (needed by store_fact for entity_id validation)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # public.entities (needed by store_fact for entity_id validation)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -594,7 +593,7 @@ async def test_contact_get_archived_returns_stale_dunbar(pool):
 
     # Directly create contact and entity rows to avoid entity_create issues
     entity_row = await pool.fetchrow(
-        "INSERT INTO shared.entities (name, tenant_id) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO public.entities (name, tenant_id) VALUES ($1, $2) RETURNING id",
         "Archived Contact",
         "relationship",
     )
@@ -631,7 +630,7 @@ async def test_contact_get_active_returns_not_stale_dunbar(pool):
 
     # Directly create contact and entity rows
     entity_row = await pool.fetchrow(
-        "INSERT INTO shared.entities (name, tenant_id) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO public.entities (name, tenant_id) VALUES ($1, $2) RETURNING id",
         "Active Contact",
         "relationship",
     )

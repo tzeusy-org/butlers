@@ -27,8 +27,7 @@ def _utcnow() -> datetime:
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with facts-based health tables and return a pool."""
     async with provisioned_postgres_pool() as p:
-        # Shared schema and entities (owner entity resolution)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # public.entities (owner entity resolution)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

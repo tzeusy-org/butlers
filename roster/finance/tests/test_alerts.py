@@ -25,7 +25,6 @@ pytestmark = [
 # Schema DDL
 # ---------------------------------------------------------------------------
 
-_DDL_SHARED_SCHEMA = "CREATE SCHEMA IF NOT EXISTS shared"
 _DDL_SHARED_ENTITIES = """
 CREATE TABLE IF NOT EXISTS public.entities (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -130,7 +129,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS facts_active_property_unique
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with facts + subscriptions + transactions tables."""
     async with provisioned_postgres_pool() as p:
-        await p.execute(_DDL_SHARED_SCHEMA)
         await p.execute(_DDL_SHARED_ENTITIES)
         await p.execute(_DDL_FACTS)
         await p.execute(_DDL_FACTS_UNIQUE_INDEX)

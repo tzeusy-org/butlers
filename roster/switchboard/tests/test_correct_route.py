@@ -49,8 +49,7 @@ pytestmark = [
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with the tables needed by correct_route."""
     async with provisioned_postgres_pool() as p:
-        # shared schema + public.ingestion_events (from core_019 + core_032)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # public.ingestion_events (from core_019 + core_032)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.ingestion_events (
                 id                       UUID PRIMARY KEY,

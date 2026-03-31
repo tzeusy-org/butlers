@@ -64,8 +64,7 @@ async def crm_pool(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
-        # Create shared schema and public.contact_info (moved from per-butler schema)
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # Create public.contact_info (cross-butler identity table in public schema)
         await pool.execute("""
             CREATE TABLE IF NOT EXISTS public.contact_info (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1039,7 +1038,6 @@ async def crm_pool_with_identity(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
         await pool.execute("""
             CREATE TABLE IF NOT EXISTS public.contact_info (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

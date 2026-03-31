@@ -305,8 +305,7 @@ pytestmark_integration = [
 async def dunbar_pool(provisioned_postgres_pool):
     """Provision a fresh DB with all tables needed by the Dunbar engine."""
     async with provisioned_postgres_pool() as p:
-        # shared schema + entities
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # public.entities
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

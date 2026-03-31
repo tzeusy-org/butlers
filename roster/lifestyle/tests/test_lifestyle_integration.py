@@ -153,8 +153,7 @@ async def lifestyle_pool(provisioned_postgres_pool):
       - src/butlers/modules/memory/migrations/026_preferences_predicates.py (lifestyle predicates)
     """
     async with provisioned_postgres_pool() as p:
-        # shared schema required by store_fact (entity resolution)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # public.entities required by store_fact (entity resolution)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

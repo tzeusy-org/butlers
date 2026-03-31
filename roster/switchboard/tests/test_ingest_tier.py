@@ -122,8 +122,7 @@ async def pool(provisioned_postgres_pool):
             "SELECT switchboard_message_inbox_ensure_partition(now() + INTERVAL '1 month')"
         )
 
-        # Create shared schema and public.ingestion_events table (core_019 migration)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        # Create public.ingestion_events table (core_019 migration)
         await p.execute(
             """
             CREATE TABLE IF NOT EXISTS public.ingestion_events (

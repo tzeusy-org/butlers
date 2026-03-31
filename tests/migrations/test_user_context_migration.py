@@ -3,15 +3,15 @@
 Covers:
   - File layout and module loadability
   - Revision chain (core_042 revises core_041)
-  - shared.user_context table columns and constraints
+  - user_context table columns and constraints
   - UNIQUE constraint on (signal_type, set_by_butler)
   - CHECK constraint on confidence (0.0–1.0)
   - Partial index on signal_type WHERE superseded_at IS NULL
   - Downgrade removes all artifacts
 
 NOTE: core_046 (migrate_user_context_to_public) later relocates this table from
-the ``shared`` schema into the ``public`` schema. These tests verify the initial
-creation in ``shared``; subsequent schema migration is validated separately.
+the initial schema into the ``public`` schema. These tests verify the initial
+table creation; subsequent schema migration is validated separately.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ class TestRevisionMetadata:
 
 
 # ---------------------------------------------------------------------------
-# shared.user_context table — columns
+# user_context table — columns
 # ---------------------------------------------------------------------------
 
 
@@ -172,11 +172,11 @@ class TestUserContextTable:
         source = inspect.getsource(mod.upgrade)
         assert "superseded_at TIMESTAMPTZ" in source
 
-    def test_ensures_shared_schema(self) -> None:
-        """upgrade() creates the shared schema with IF NOT EXISTS guard."""
+    def test_ensures_schema(self) -> None:
+        """upgrade() uses CREATE SCHEMA IF NOT EXISTS to guard schema creation."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "CREATE SCHEMA IF NOT EXISTS shared" in source
+        assert "CREATE SCHEMA IF NOT EXISTS" in source
 
 
 # ---------------------------------------------------------------------------
