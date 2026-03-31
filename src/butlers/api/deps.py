@@ -59,6 +59,23 @@ class ButlerConnectionInfo:
         return f"http://{host}:{self.port}/sse"
 
 
+class ButlerNotFoundError(KeyError):
+    """Raised when a butler name is not found in the registry.
+
+    Subclasses ``KeyError`` for backward compatibility with code that catches
+    ``KeyError`` for butler-lookup failures, but is distinct from raw
+    ``KeyError`` so that the API middleware can return a targeted 404 response
+    instead of masking unrelated dict-access bugs as routing errors.
+    """
+
+    def __init__(self, butler_name: str) -> None:
+        self.butler_name = butler_name
+        super().__init__(butler_name)
+
+    def __str__(self) -> str:
+        return f"Butler not found: {self.butler_name!r}"
+
+
 class ButlerUnreachableError(Exception):
     """Raised when a butler MCP server cannot be reached."""
 

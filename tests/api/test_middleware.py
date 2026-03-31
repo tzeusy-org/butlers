@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.deps import ButlerUnreachableError
+from butlers.api.deps import ButlerNotFoundError, ButlerUnreachableError
 from butlers.api.models import ErrorResponse
 
 pytestmark = pytest.mark.unit
@@ -21,7 +21,7 @@ def _app_with_error_routes(app: FastAPI) -> FastAPI:
 
     @app.get("/api/test/not-found")
     async def raise_not_found():
-        raise KeyError("atlas")
+        raise ButlerNotFoundError("atlas")
 
     @app.get("/api/test/validation")
     async def raise_validation():
@@ -31,9 +31,11 @@ def _app_with_error_routes(app: FastAPI) -> FastAPI:
     async def raise_internal():
         raise RuntimeError("something broke")
 
-    @app.get("/api/test/key-error-empty")
-    async def raise_key_error_empty():
-        raise KeyError()
+    @app.get("/api/test/raw-key-error")
+    async def raise_raw_key_error():
+        # Simulates a dict-access bug in an endpoint handler.
+        d: dict = {}
+        return d["missing_key"]
 
     return app
 
@@ -90,7 +92,9 @@ class TestButlerUnreachableHandler:
         assert parsed.error.butler == "atlas"
 
 
-class TestKeyErrorHandler:
+class TestButlerNotFoundHandler:
+    """ButlerNotFoundError (dedicated subclass) must produce a 404 with BUTLER_NOT_FOUND code."""
+
     async def test_returns_404(self, app):
         _app_with_error_routes(app)
         async with httpx.AsyncClient(
@@ -130,18 +134,6 @@ class TestKeyErrorHandler:
         body = resp.json()
         assert "atlas" in body["error"]["message"]
 
-    async def test_empty_key_error(self, app):
-        _app_with_error_routes(app)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/test/key-error-empty")
-
-        assert resp.status_code == 404
-        body = resp.json()
-        assert body["error"]["code"] == "BUTLER_NOT_FOUND"
-        assert body["error"]["butler"] is None
-
     async def test_response_validates_as_error_response(self, app):
         _app_with_error_routes(app)
         async with httpx.AsyncClient(
@@ -152,6 +144,44 @@ class TestKeyErrorHandler:
         parsed = ErrorResponse.model_validate(resp.json())
         assert parsed.error.code == "BUTLER_NOT_FOUND"
         assert parsed.error.butler == "atlas"
+
+
+class TestRawKeyErrorHandler:
+    """Raw KeyError (e.g. from a dict-access bug) must produce a 500, not a 404.
+
+    This is the regression guard for the original bug: the old middleware
+    converted ALL KeyError exceptions to BUTLER_NOT_FOUND 404s, masking real
+    bugs as routing errors.
+    """
+
+    async def test_raw_key_error_returns_500(self, app):
+        _app_with_error_routes(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/test/raw-key-error")
+
+        assert resp.status_code == 500
+
+    async def test_raw_key_error_code_is_internal_error(self, app):
+        _app_with_error_routes(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/test/raw-key-error")
+
+        body = resp.json()
+        assert body["error"]["code"] == "INTERNAL_ERROR"
+
+    async def test_raw_key_error_is_not_butler_not_found(self, app):
+        _app_with_error_routes(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/test/raw-key-error")
+
+        body = resp.json()
+        assert body["error"]["code"] != "BUTLER_NOT_FOUND"
 
 
 class TestValueErrorHandler:

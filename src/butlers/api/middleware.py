@@ -6,9 +6,15 @@ JSON responses.
 
 Status code mapping:
 - ``ButlerUnreachableError`` → 502 Bad Gateway
-- ``KeyError`` (unknown butler lookup) → 404 Not Found
+- ``ButlerNotFoundError`` (unknown butler lookup) → 404 Not Found
 - ``ValueError`` → 400 Bad Request
 - Any other ``Exception`` → 500 Internal Server Error
+
+Note: Only ``ButlerNotFoundError`` (a named subclass of ``KeyError``) is mapped
+to 404.  Raw ``KeyError`` exceptions — e.g. from dict-access bugs in endpoint
+handlers — are **not** caught here and will propagate to ``CatchAllErrorMiddleware``
+as 500 responses with a stack trace in the server logs.  This prevents endpoint
+bugs from silently masquerading as butler-routing errors.
 
 Also provides ``ApiKeyMiddleware`` for optional API-key authentication on all
 ``/api/*`` routes (excluding health endpoints).  Authentication is enabled only
@@ -26,7 +32,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from butlers.api.deps import ButlerUnreachableError
+from butlers.api.deps import ButlerNotFoundError, ButlerUnreachableError
 from butlers.api.models import ErrorDetail, ErrorResponse
 
 logger = logging.getLogger(__name__)
@@ -52,18 +58,18 @@ async def _handle_butler_unreachable(
     return JSONResponse(status_code=502, content=body.model_dump())
 
 
-async def _handle_key_error(
+async def _handle_butler_not_found(
     request: Request,
-    exc: KeyError,
+    exc: ButlerNotFoundError,
 ) -> JSONResponse:
     """Return 404 when a butler name is not found in the pool/registry."""
-    butler_name = exc.args[0] if exc.args else None
+    butler_name = exc.butler_name
     logger.info("Butler not found: %s", butler_name)
     body = ErrorResponse(
         error=ErrorDetail(
             code="BUTLER_NOT_FOUND",
-            message=f"Butler not found: {butler_name}",
-            butler=str(butler_name) if butler_name is not None else None,
+            message=f"Butler not found: {butler_name!r}",
+            butler=butler_name,
         )
     )
     return JSONResponse(status_code=404, content=body.model_dump())
@@ -208,6 +214,6 @@ def register_error_handlers(app: FastAPI) -> None:
     and its configuration is injected at app-creation time.
     """
     app.add_exception_handler(ButlerUnreachableError, _handle_butler_unreachable)  # type: ignore[arg-type]
-    app.add_exception_handler(KeyError, _handle_key_error)  # type: ignore[arg-type]
+    app.add_exception_handler(ButlerNotFoundError, _handle_butler_not_found)  # type: ignore[arg-type]
     app.add_exception_handler(ValueError, _handle_value_error)  # type: ignore[arg-type]
     app.add_middleware(CatchAllErrorMiddleware)

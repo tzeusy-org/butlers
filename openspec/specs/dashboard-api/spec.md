@@ -67,8 +67,9 @@ All API responses use consistent wrapper types. Backend Pydantic models and fron
 - **THEN** a 502 response with `code: "BUTLER_UNREACHABLE"` and `butler: "<name>"` is returned
 
 #### Scenario: Butler not found
-- **WHEN** a `KeyError` is raised (unknown butler lookup)
-- **THEN** a 404 response with `code: "BUTLER_NOT_FOUND"` is returned
+- **WHEN** a `ButlerNotFoundError` is raised (unknown butler lookup)
+- **THEN** a 404 response with `code: "BUTLER_NOT_FOUND"` and `butler: "<name>"` is returned
+- **NOTE** Raw `KeyError` (e.g. from dict-access bugs) is **not** caught by this handler — it propagates to the catch-all and produces a 500 INTERNAL_ERROR response
 
 #### Scenario: Validation error
 - **WHEN** a `ValueError` is raised
