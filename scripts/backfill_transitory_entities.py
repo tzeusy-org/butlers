@@ -2,7 +2,7 @@
 """Backfill string-anchored facts with transitory entities.
 
 Finds active facts stored with bare string subjects (entity_id IS NULL) across all
-butler schemas, creates transitory entities in shared.entities, and links the facts
+butler schemas, creates transitory entities in public.entities, and links the facts
 to those entities.
 
 Usage:
@@ -306,7 +306,7 @@ async def resolve_or_create_entity(
         async with conn.transaction():
             entity_id = await conn.fetchval(
                 """
-                INSERT INTO shared.entities
+                INSERT INTO public.entities
                     (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
                 VALUES ($1, $2, $3, $4, $5::jsonb, $6)
                 RETURNING id
@@ -325,7 +325,7 @@ async def resolve_or_create_entity(
     # Entity already exists — resolve it
     entity_id = await conn.fetchval(
         """
-        SELECT id FROM shared.entities
+        SELECT id FROM public.entities
         WHERE tenant_id = $1
           AND canonical_name = $2
           AND entity_type = $3
@@ -339,7 +339,7 @@ async def resolve_or_create_entity(
         # Tombstoned entity — widen to any type as a fallback
         entity_id = await conn.fetchval(
             """
-            SELECT id FROM shared.entities
+            SELECT id FROM public.entities
             WHERE tenant_id = $1
               AND canonical_name = $2
               AND (metadata->>'merged_into') IS NULL
@@ -367,7 +367,7 @@ async def backfill_schema(
 
     For each unique (subject, scope) pair with entity_id IS NULL:
       1. Infer entity_type from subject + scope
-      2. Create (or resolve) a transitory entity in shared.entities
+      2. Create (or resolve) a transitory entity in public.entities
       3. UPDATE matching facts to set entity_id
 
     Args:
@@ -385,7 +385,7 @@ async def backfill_schema(
     async with pool.acquire() as conn:
         # Set search_path so unqualified table references resolve to this schema.
         # schema has already been validated as a safe identifier above.
-        await conn.execute(f"SET search_path TO {schema}, shared, public")
+        await conn.execute(f"SET search_path TO {schema}, public")
 
         # Run diagnostic
         try:
@@ -461,7 +461,7 @@ async def discover_memory_schemas(pool: asyncpg.Pool) -> list[str]:
         SELECT DISTINCT table_schema
         FROM information_schema.tables
         WHERE table_name = 'facts'
-          AND table_schema NOT IN ('public', 'information_schema', 'shared')
+          AND table_schema NOT IN ('public', 'information_schema')
           AND table_schema NOT LIKE 'pg_%'
         ORDER BY table_schema
         """

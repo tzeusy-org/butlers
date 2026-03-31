@@ -30,7 +30,7 @@ DEFAULT_SCHEMA = "relationship"
 
 
 async def run(dsn: str, schema: str, dry_run: bool) -> None:
-    search_path = f"{schema}, shared, public"
+    search_path = f"{schema}, public"
     pool = await asyncpg.create_pool(
         dsn,
         min_size=1,

@@ -49,7 +49,7 @@ async def migrate(
     conn = await asyncpg.connect(db_url)
     try:
         # Set search path to the butler's schema
-        await conn.execute(f"SET search_path TO {schema}, shared, public")
+        await conn.execute(f"SET search_path TO {schema}, public")
 
         rows = await conn.fetch(
             "SELECT message_id, attachment_id, blob_ref FROM attachment_refs "

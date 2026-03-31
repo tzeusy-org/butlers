@@ -165,12 +165,10 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         if target_schema is not None:
             own_schema = _quote_ident(target_schema)
-            shared_schema = _quote_ident("shared")
             # Alembic ensures version_table before running revisions, so create
             # the target schema first when running schema-scoped migrations.
             connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {own_schema}")
-            connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {shared_schema}")
-            connection.exec_driver_sql(f"SET search_path TO {own_schema}, {shared_schema}, public")
+            connection.exec_driver_sql(f"SET search_path TO {own_schema}, public")
             # SQLAlchemy opens an implicit transaction for the preflight DDL/SET
             # above; commit it so Alembic controls the migration transaction.
             connection.commit()
