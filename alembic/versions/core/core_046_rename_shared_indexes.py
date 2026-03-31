@@ -52,16 +52,27 @@ depends_on = None
 # ---------------------------------------------------------------------------
 
 
-def _rename_index_if_exists(old_name: str, new_name: str) -> None:
-    """Rename a PostgreSQL index if old_name exists; no-op otherwise."""
+_SCHEMA = "public"
+
+
+def _rename_index_if_exists(old_name: str, new_name: str, schema: str = _SCHEMA) -> None:
+    """Rename a PostgreSQL index if old_name exists and new_name does not; no-op otherwise.
+
+    Uses schema-qualified existence checks and quoted identifiers for robustness.
+    """
     op.execute(f"""
         DO $$
         BEGIN
             IF EXISTS (
                 SELECT 1 FROM pg_indexes
-                WHERE indexname = '{old_name}'
+                WHERE schemaname = '{schema}'
+                  AND indexname  = '{old_name}'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname = '{schema}'
+                  AND indexname  = '{new_name}'
             ) THEN
-                ALTER INDEX public.{old_name} RENAME TO {new_name};
+                ALTER INDEX "{schema}"."{old_name}" RENAME TO "{new_name}";
             END IF;
         END
         $$;
@@ -69,9 +80,10 @@ def _rename_index_if_exists(old_name: str, new_name: str) -> None:
 
 
 def _rename_constraint_if_exists(table_fqn: str, old_name: str, new_name: str) -> None:
-    """Rename a table constraint if old_name exists; no-op otherwise.
+    """Rename a table constraint if old_name exists and new_name does not; no-op otherwise.
 
     table_fqn must be schema-qualified (e.g. 'public.entities').
+    Uses quoted identifiers and a NOT EXISTS guard for full idempotency.
     """
     schema, table = table_fqn.split(".")
     op.execute(f"""
@@ -82,8 +94,13 @@ def _rename_constraint_if_exists(table_fqn: str, old_name: str, new_name: str) -
                 WHERE constraint_schema = '{schema}'
                   AND table_name        = '{table}'
                   AND constraint_name   = '{old_name}'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE constraint_schema = '{schema}'
+                  AND table_name        = '{table}'
+                  AND constraint_name   = '{new_name}'
             ) THEN
-                ALTER TABLE {table_fqn} RENAME CONSTRAINT {old_name} TO {new_name};
+                ALTER TABLE "{schema}"."{table}" RENAME CONSTRAINT "{old_name}" TO "{new_name}";
             END IF;
         END
         $$;

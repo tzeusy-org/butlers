@@ -193,9 +193,21 @@ class TestIdempotencyGuards:
         assert "IF EXISTS" in self._src
         assert "pg_indexes" in self._src
 
+    def test_index_guard_filters_by_schemaname(self) -> None:
+        """pg_indexes check must include schemaname to avoid cross-schema false matches."""
+        assert "schemaname" in self._src
+
+    def test_index_guard_has_not_exists_guard(self) -> None:
+        """Index rename must guard against target already existing (idempotency for re-runs)."""
+        assert "NOT EXISTS" in self._src
+
     def test_uses_if_exists_for_constraints(self) -> None:
         """Constraint renames must check existence via information_schema."""
         assert "information_schema.table_constraints" in self._src
+
+    def test_constraint_guard_has_not_exists_guard(self) -> None:
+        """Constraint rename must guard against target already existing (re-run idempotency)."""
+        assert "NOT EXISTS" in self._src
 
     def test_uses_alter_index_rename(self) -> None:
         assert "ALTER INDEX" in self._src
@@ -203,6 +215,11 @@ class TestIdempotencyGuards:
 
     def test_uses_alter_table_rename_constraint(self) -> None:
         assert "RENAME CONSTRAINT" in self._src
+
+    def test_identifiers_are_quoted(self) -> None:
+        """Identifiers must be double-quoted in SQL for robustness."""
+        # ALTER INDEX "schema"."name" RENAME TO "name" uses double-quoting
+        assert 'ALTER INDEX "' in self._src
 
 
 # ---------------------------------------------------------------------------
