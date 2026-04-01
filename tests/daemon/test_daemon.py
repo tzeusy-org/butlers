@@ -2932,6 +2932,37 @@ class TestNotifyTool:
         assert "No bot <-> user telegram chat has been configured" in result["error"]
         mock_client.call_tool.assert_not_awaited()
 
+    async def test_notify_delivery_level_failure_surfaces_as_error(self, butler_dir: Path) -> None:
+        """notify should surface delivery-level failures (status=failed in payload)."""
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+
+        # Switchboard deliver() returns a structured failure, but the MCP call
+        # itself succeeds (is_error=False).  notify() must detect the inner
+        # status="failed" and translate it to status="error".
+        mock_call_result = MagicMock()
+        mock_call_result.is_error = False
+        mock_call_result.data = {
+            "notification_id": "a9f943ce-8800-47dc-9190-cb50f3bbb8b6",
+            "status": "failed",
+            "error": "Telegram reply source_thread_identity must include an integer message_id.",
+            "error_class": "validation_error",
+            "retryable": False,
+        }
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=mock_call_result)
+        daemon.switchboard_client = mock_client
+
+        result = await notify_fn(channel="email", message="Hello")
+
+        assert result["status"] == "error"
+        assert "source_thread_identity" in result["error"]
+        assert result["error_class"] == "validation_error"
+        assert result["retryable"] is False
+        assert result["notification_id"] == "a9f943ce-8800-47dc-9190-cb50f3bbb8b6"
+
     async def test_notify_switchboard_returns_error(self, butler_dir: Path) -> None:
         """notify should return error when Switchboard's deliver() returns error."""
         patches = _patch_infra()

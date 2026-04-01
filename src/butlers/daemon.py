@@ -5430,8 +5430,18 @@ class ButlerDaemon:
                     # Extract error text from the result content
                     error_text = str(result.content[0].text) if result.content else "Unknown error"
                     return {"status": "error", "error": error_text}
-                # Extract the data from the successful result
-                return {"status": "ok", "result": result.data}
+                # Check inner payload for delivery-level failures (e.g. validation
+                # errors from Switchboard/Messenger that don't raise MCP errors).
+                data = result.data
+                if isinstance(data, dict) and data.get("status") == "failed":
+                    return {
+                        "status": "error",
+                        "error": data.get("error", "Delivery failed"),
+                        "error_class": data.get("error_class", "delivery_error"),
+                        "retryable": data.get("retryable", False),
+                        "notification_id": data.get("notification_id"),
+                    }
+                return {"status": "ok", "result": data}
             except TimeoutError:
                 logger.warning(
                     "notify() timed out after %ds for butler %s",
