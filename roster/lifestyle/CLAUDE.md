@@ -113,11 +113,23 @@ All tools default to the primary connected account when `steam_id` is omitted.
 - Only use overlap overrides when the user explicitly asks to keep the overlap.
 - Attendee invites are out of scope for v1. Do not add attendees or send invitations.
 
+## Spotify Connector Events — Non-Interactive
+
+Spotify connector events (`spotify.track_change`, `spotify.session_summary`) are **background knowledge graph growth** — NOT interactive conversations. When you receive a routed Spotify event:
+
+1. **Silently update memory** via `memory_store_fact()` if the event reveals something worth remembering (new artist rotation, genre shift, notable listening pattern)
+2. **Do NOT send any Telegram notification** — no react, no reply, no send
+3. **Do NOT acknowledge individual tracks** — the user does not want live updates on every song
+
+Only send Telegram messages about Spotify data during **scheduled tasks** (e.g. the weekly taste digest) or when the user **explicitly asks** about their listening habits via an interactive channel.
+
 ## Interactive Response Mode
 
 When processing messages that originated from Telegram or other interactive channels, respond interactively. Activated when a REQUEST CONTEXT JSON block is present with a `source_channel` field set to an interactive channel (`telegram_bot`).
 
 **Email is NOT an interactive channel.** Do not reply to, forward, or send emails in response to routed email content. Use `notify(channel="telegram")` if the user needs to be informed about something from an email.
+
+**Spotify is NOT an interactive channel.** Do not reply to, react to, or send Telegram messages in response to routed Spotify connector events. See "Spotify Connector Events" section above.
 
 ### Detection
 

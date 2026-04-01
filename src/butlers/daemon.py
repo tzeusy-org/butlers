@@ -3323,55 +3323,89 @@ class ButlerDaemon:
                         thread_identity = (
                             notify_context.source_thread_identity if notify_context else None
                         )
-                        if not thread_identity:
-                            raise ValueError(
-                                "notify_request.request_context.source_thread_identity is required "
-                                "for telegram reply intent."
+                        # Parse thread identity as telegram chat_id:message_id.
+                        # If missing or not valid Telegram format, fall back to
+                        # send intent so the message still reaches the user.
+                        _tg_reply_ok = False
+                        if thread_identity:
+                            chat_id, separator, message_id_raw = thread_identity.partition(
+                                ":"
                             )
-                        chat_id, separator, message_id_raw = thread_identity.partition(":")
-                        if not chat_id or not separator or not message_id_raw:
-                            raise ValueError(
-                                "Telegram reply requires source_thread_identity formatted as "
-                                "'<chat_id>:<message_id>'."
+                            if chat_id and separator and message_id_raw:
+                                try:
+                                    reply_message_id = int(message_id_raw)
+                                    _tg_reply_ok = True
+                                except ValueError:
+                                    pass
+
+                        if _tg_reply_ok:
+                            adapter_result = await telegram_module._reply_to_message(
+                                chat_id, reply_message_id, rendered_text
                             )
-                        try:
-                            reply_message_id = int(message_id_raw)
-                        except ValueError as exc:
-                            raise ValueError(
-                                "Telegram reply source_thread_identity must include an integer "
-                                "message_id."
-                            ) from exc
-                        adapter_result = await telegram_module._reply_to_message(
-                            chat_id, reply_message_id, rendered_text
-                        )
+                        else:
+                            # Fallback: send as new message instead of replying.
+                            logger.warning(
+                                "notify reply: source_thread_identity %r is not a valid "
+                                "Telegram chat_id:message_id — falling back to send.",
+                                thread_identity,
+                            )
+                            fallback_recipient = notify_request.delivery.recipient
+                            if not fallback_recipient:
+                                fallback_recipient = await daemon._resolve_default_notify_recipient(
+                                    channel="telegram",
+                                    intent="send",
+                                    recipient=None,
+                                    request_context=(
+                                        notify_context.model_dump()
+                                        if notify_context is not None
+                                        else None
+                                    ),
+                                )
+                            if not fallback_recipient:
+                                raise ValueError(
+                                    "Cannot fall back to send: no recipient available "
+                                    "and source_thread_identity is not valid Telegram format."
+                                )
+                            adapter_result = await telegram_module._send_message(
+                                fallback_recipient,
+                                rendered_text,
+                            )
                     elif intent == "react":
                         thread_identity = (
                             notify_context.source_thread_identity if notify_context else None
                         )
-                        if not thread_identity:
-                            raise ValueError(
-                                "notify_request.request_context.source_thread_identity is required "
-                                "for telegram react intent."
+                        # Parse thread identity as telegram chat_id:message_id.
+                        # If missing or not valid Telegram format (e.g. a Spotify
+                        # URI), skip silently — cannot react to a non-Telegram msg.
+                        _tg_react_ok = False
+                        if thread_identity:
+                            chat_id, separator, message_id_raw = thread_identity.partition(
+                                ":"
                             )
-                        chat_id, separator, message_id_raw = thread_identity.partition(":")
-                        if not chat_id or not separator or not message_id_raw:
-                            raise ValueError(
-                                "Telegram react requires source_thread_identity formatted as "
-                                "'<chat_id>:<message_id>'."
+                            if chat_id and separator and message_id_raw:
+                                try:
+                                    target_message_id = int(message_id_raw)
+                                    _tg_react_ok = True
+                                except ValueError:
+                                    pass
+
+                        if not _tg_react_ok:
+                            logger.info(
+                                "notify react: source_thread_identity %r is not a valid "
+                                "Telegram chat_id:message_id — skipping react.",
+                                thread_identity,
                             )
-                        try:
-                            target_message_id = int(message_id_raw)
-                        except ValueError as exc:
-                            raise ValueError(
-                                "Telegram react source_thread_identity must include an integer "
-                                "message_id."
-                            ) from exc
-                        emoji = notify_request.delivery.emoji
-                        if not emoji:
-                            raise ValueError("React intent requires delivery.emoji.")
-                        adapter_result = await telegram_module._react_to_message(
-                            chat_id, target_message_id, emoji
-                        )
+                            adapter_result = {
+                                "status": "skipped",
+                                "reason": "source_thread_identity is not valid Telegram format",
+                            }
+                        else:
+                            emoji = notify_request.delivery.emoji
+                            if not emoji:
+                                raise ValueError("React intent requires delivery.emoji.")
+                            adapter_result = await telegram_module._react_to_message(
+                                chat_id, target_message_id, emoji
+                            )
                     else:
                         raise ValueError(f"Unsupported telegram intent: {intent}")
 
