@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from butlers.connectors.spotify_session import (
+    DEFAULT_DIGEST_INTERVAL_S,
     DEFAULT_IDLE_TIMEOUT_S,
     ListeningSessionTracker,
     PollResult,
@@ -126,15 +127,15 @@ def test_idle_playback_detected_transitions_to_active() -> None:
     assert tracker.state == SessionState.ACTIVE
 
 
-def test_idle_to_active_emits_track_change() -> None:
+def test_idle_to_active_emits_context_start() -> None:
     tracker = ListeningSessionTracker()
     events = tracker.on_poll(_playing(played_at_ms=_ms(0)), now=_now(0))
     assert len(events) == 1
     ev = events[0]
-    assert ev.event_type == "spotify.track_change"
+    assert ev.event_type == "spotify.context_start"
 
 
-def test_idle_to_active_track_change_fields() -> None:
+def test_idle_to_active_context_start_fields() -> None:
     tracker = ListeningSessionTracker()
     raw = {"item": {"id": TRACK_A}}
     result = _playing(
@@ -190,20 +191,19 @@ def test_active_same_track_stays_active() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Active state: track change (same context)
+# Active state: track change (same context) — accumulated silently
 # ---------------------------------------------------------------------------
 
 
-def test_active_track_change_emits_track_change_event() -> None:
+def test_active_track_change_no_event_emitted() -> None:
+    """Same-context track changes are accumulated silently (batched via digest)."""
     tracker = ListeningSessionTracker()
     tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(0)), now=_now(0))
     events = tracker.on_poll(
         _playing(track_id=TRACK_B, track_name="Song B", played_at_ms=_ms(60)),
         now=_now(60),
     )
-    assert len(events) == 1
-    assert events[0].event_type == "spotify.track_change"
-    assert events[0].track_id == TRACK_B
+    assert events == []
 
 
 def test_active_track_change_updates_current_track_id() -> None:
@@ -213,15 +213,14 @@ def test_active_track_change_updates_current_track_id() -> None:
     assert tracker.current_track_id == TRACK_B
 
 
-def test_active_rapid_track_changes_each_emit_event() -> None:
+def test_active_rapid_track_changes_no_events() -> None:
+    """Rapid track changes within same context produce no events (accumulated)."""
     tracker = ListeningSessionTracker()
     tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(0)), now=_now(0))
     events_b = tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(1)), now=_now(1))
     events_c = tracker.on_poll(_playing(track_id=TRACK_C, played_at_ms=_ms(2)), now=_now(2))
-    assert len(events_b) == 1
-    assert events_b[0].track_id == TRACK_B
-    assert len(events_c) == 1
-    assert events_c[0].track_id == TRACK_C
+    assert events_b == []
+    assert events_c == []
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +268,7 @@ def test_active_context_change_summary_track_count() -> None:
     assert summary.context_uri == CTX_PLAYLIST_1
 
 
-def test_active_context_change_emits_track_change_for_new_context() -> None:
+def test_active_context_change_emits_context_start_for_new_context() -> None:
     tracker = ListeningSessionTracker()
     tracker.on_poll(
         _playing(track_id=TRACK_A, context_uri=CTX_PLAYLIST_1, played_at_ms=_ms(0)),
@@ -279,14 +278,14 @@ def test_active_context_change_emits_track_change_for_new_context() -> None:
         _playing(track_id=TRACK_B, context_uri=CTX_PLAYLIST_2, played_at_ms=_ms(60)),
         now=_now(60),
     )
-    track_change_events = [e for e in events if e.event_type == "spotify.track_change"]
-    assert len(track_change_events) == 1
-    assert track_change_events[0].track_id == TRACK_B
-    assert track_change_events[0].context_uri == CTX_PLAYLIST_2
+    context_start_events = [e for e in events if e.event_type == "spotify.context_start"]
+    assert len(context_start_events) == 1
+    assert context_start_events[0].track_id == TRACK_B
+    assert context_start_events[0].context_uri == CTX_PLAYLIST_2
 
 
 def test_active_context_change_events_order() -> None:
-    """session_summary should be emitted before track_change for the new context."""
+    """session_summary should be emitted before context_start for the new context."""
     tracker = ListeningSessionTracker()
     tracker.on_poll(
         _playing(track_id=TRACK_A, context_uri=CTX_PLAYLIST_1, played_at_ms=_ms(0)),
@@ -298,7 +297,7 @@ def test_active_context_change_events_order() -> None:
     )
     assert len(events) == 2
     assert events[0].event_type == "spotify.session_summary"
-    assert events[1].event_type == "spotify.track_change"
+    assert events[1].event_type == "spotify.context_start"
 
 
 def test_active_context_change_starts_new_session() -> None:
@@ -450,7 +449,7 @@ def test_draining_resume_same_context_no_session_summary() -> None:
     assert summary_events == []
 
 
-def test_draining_resume_same_context_same_track_no_track_change() -> None:
+def test_draining_resume_same_context_same_track_no_event() -> None:
     tracker = ListeningSessionTracker()
     tracker.on_poll(
         _playing(track_id=TRACK_A, context_uri=CTX_PLAYLIST_1, played_at_ms=_ms(0)),
@@ -461,11 +460,11 @@ def test_draining_resume_same_context_same_track_no_track_change() -> None:
         _playing(track_id=TRACK_A, context_uri=CTX_PLAYLIST_1, played_at_ms=_ms(20)),
         now=_now(20),
     )
-    track_changes = [e for e in events if e.event_type == "spotify.track_change"]
-    assert track_changes == []
+    assert events == []
 
 
-def test_draining_resume_same_context_new_track_emits_track_change() -> None:
+def test_draining_resume_same_context_new_track_accumulated_silently() -> None:
+    """Resuming in same context with a new track accumulates silently (no event)."""
     tracker = ListeningSessionTracker()
     tracker.on_poll(
         _playing(track_id=TRACK_A, context_uri=CTX_PLAYLIST_1, played_at_ms=_ms(0)),
@@ -476,9 +475,8 @@ def test_draining_resume_same_context_new_track_emits_track_change() -> None:
         _playing(track_id=TRACK_B, context_uri=CTX_PLAYLIST_1, played_at_ms=_ms(20)),
         now=_now(20),
     )
-    track_changes = [e for e in events if e.event_type == "spotify.track_change"]
-    assert len(track_changes) == 1
-    assert track_changes[0].track_id == TRACK_B
+    assert events == []
+    assert tracker.current_track_id == TRACK_B
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +500,7 @@ def test_draining_resume_different_context_emits_session_summary() -> None:
     assert summaries[0].context_uri == CTX_PLAYLIST_1
 
 
-def test_draining_resume_different_context_emits_track_change() -> None:
+def test_draining_resume_different_context_emits_context_start() -> None:
     tracker = ListeningSessionTracker()
     tracker.on_poll(
         _playing(track_id=TRACK_A, context_uri=CTX_PLAYLIST_1, played_at_ms=_ms(0)),
@@ -513,10 +511,10 @@ def test_draining_resume_different_context_emits_track_change() -> None:
         _playing(track_id=TRACK_B, context_uri=CTX_PLAYLIST_2, played_at_ms=_ms(20)),
         now=_now(20),
     )
-    changes = [e for e in events if e.event_type == "spotify.track_change"]
-    assert len(changes) == 1
-    assert changes[0].track_id == TRACK_B
-    assert changes[0].context_uri == CTX_PLAYLIST_2
+    starts = [e for e in events if e.event_type == "spotify.context_start"]
+    assert len(starts) == 1
+    assert starts[0].track_id == TRACK_B
+    assert starts[0].context_uri == CTX_PLAYLIST_2
 
 
 def test_draining_resume_different_context_transitions_to_active() -> None:
@@ -678,9 +676,8 @@ def test_context_none_does_not_trigger_context_change() -> None:
     events = tracker.on_poll(
         _playing(track_id=TRACK_B, context_uri=None, played_at_ms=_ms(60)), now=_now(60)
     )
-    # Only a track_change event, no session_summary
-    summaries = [e for e in events if e.event_type == "spotify.session_summary"]
-    assert summaries == []
+    # No events at all — same context, track change is accumulated silently
+    assert events == []
 
 
 def test_context_change_none_to_playlist() -> None:
@@ -721,3 +718,107 @@ def test_multiple_full_sessions_sequential() -> None:
     [s2] = tracker.on_poll(_stopped(), now=_now(160 + timeout_s + 1))
     assert s2.event_type == "spotify.session_summary"
     assert s2.track_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Digest interval
+# ---------------------------------------------------------------------------
+
+
+def test_default_digest_interval_constant() -> None:
+    """The default digest interval should be 3600 s (1 hour)."""
+    assert DEFAULT_DIGEST_INTERVAL_S == 3600
+
+
+def test_digest_not_emitted_before_interval() -> None:
+    """No digest should fire before digest_interval_s elapses."""
+    tracker = ListeningSessionTracker(digest_interval_s=60.0)
+    tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(0)), now=_now(0))
+    # Track change at 30s — accumulated, not yet 60s
+    events = tracker.on_poll(
+        _playing(track_id=TRACK_B, played_at_ms=_ms(30)), now=_now(30)
+    )
+    assert events == []
+
+
+def test_digest_emitted_after_interval() -> None:
+    """A listening_digest should fire once digest_interval_s elapses."""
+    tracker = ListeningSessionTracker(digest_interval_s=60.0)
+    # context_start at t=0
+    tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(0)), now=_now(0))
+    # Accumulate a track at t=30
+    tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(30)), now=_now(30))
+    # Poll at t=61 — should trigger digest
+    events = tracker.on_poll(
+        _playing(track_id=TRACK_B, played_at_ms=_ms(61)), now=_now(61)
+    )
+    assert len(events) == 1
+    assert events[0].event_type == "spotify.listening_digest"
+    assert events[0].track_count == 2  # TRACK_A + TRACK_B
+    assert "Song A" in events[0].tracks_played
+
+
+def test_digest_includes_track_details() -> None:
+    """Digest events should carry full TrackDetail objects."""
+    tracker = ListeningSessionTracker(digest_interval_s=10.0)
+    tracker.on_poll(
+        _playing(track_id=TRACK_A, track_name="Song A", played_at_ms=_ms(0)), now=_now(0)
+    )
+    tracker.on_poll(
+        _playing(track_id=TRACK_B, track_name="Song B", played_at_ms=_ms(5)), now=_now(5)
+    )
+    events = tracker.on_poll(
+        _playing(track_id=TRACK_B, played_at_ms=_ms(11)), now=_now(11)
+    )
+    [digest] = [e for e in events if e.event_type == "spotify.listening_digest"]
+    assert len(digest.digest_tracks) == 2
+    assert digest.digest_tracks[0].track_id == TRACK_A
+    assert digest.digest_tracks[1].track_id == TRACK_B
+
+
+def test_digest_resets_after_emission() -> None:
+    """After a digest fires, the next digest window starts fresh."""
+    tracker = ListeningSessionTracker(digest_interval_s=10.0)
+    tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(0)), now=_now(0))
+    tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(5)), now=_now(5))
+    # First digest at t=11
+    events1 = tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(11)), now=_now(11))
+    assert any(e.event_type == "spotify.listening_digest" for e in events1)
+
+    # Accumulate more tracks
+    tracker.on_poll(_playing(track_id=TRACK_C, played_at_ms=_ms(15)), now=_now(15))
+    # Second digest at t=22
+    events2 = tracker.on_poll(_playing(track_id=TRACK_C, played_at_ms=_ms(22)), now=_now(22))
+    digests2 = [e for e in events2 if e.event_type == "spotify.listening_digest"]
+    assert len(digests2) == 1
+    # Should only contain TRACK_C (accumulated after first digest)
+    assert digests2[0].track_count == 1
+
+
+def test_digest_not_emitted_when_no_tracks_accumulated() -> None:
+    """No digest if no new tracks since last digest."""
+    tracker = ListeningSessionTracker(digest_interval_s=10.0)
+    tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(0)), now=_now(0))
+    # First digest fires
+    events1 = tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(11)), now=_now(11))
+    # digest_tracks was [TRACK_A], so digest fires
+    digests1 = [e for e in events1 if e.event_type == "spotify.listening_digest"]
+    assert len(digests1) == 1
+
+    # Same track, no new accumulation — no digest at t=22
+    events2 = tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(22)), now=_now(22))
+    digests2 = [e for e in events2 if e.event_type == "spotify.listening_digest"]
+    assert digests2 == []
+
+
+def test_digest_not_emitted_in_draining_state() -> None:
+    """Digest should not fire while draining (only in active state)."""
+    tracker = ListeningSessionTracker(digest_interval_s=10.0)
+    tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(0)), now=_now(0))
+    tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(5)), now=_now(5))
+    # Enter draining
+    tracker.on_poll(_stopped(), now=_now(8))
+    # Poll while draining past digest interval — no digest
+    events = tracker.on_poll(_stopped(), now=_now(20))
+    digests = [e for e in events if e.event_type == "spotify.listening_digest"]
+    assert digests == []

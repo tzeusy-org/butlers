@@ -93,6 +93,7 @@ _SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 _DEFAULT_POLL_ACTIVE_S = 60
 _DEFAULT_POLL_IDLE_S = 300
 _DEFAULT_SESSION_IDLE_TIMEOUT_S = 300
+_DEFAULT_DIGEST_INTERVAL_S = 3600
 _DEFAULT_HEALTH_PORT = 40083
 _DEFAULT_MAX_INFLIGHT = 8
 
@@ -125,9 +126,15 @@ spotify_polls_total = Counter(
     labelnames=["endpoint_identity", "status"],
 )
 
-spotify_track_changes_total = Counter(
-    "connector_spotify_track_changes_total",
-    "Total number of track change events emitted",
+spotify_context_starts_total = Counter(
+    "connector_spotify_context_starts_total",
+    "Total number of context start events emitted",
+    labelnames=["endpoint_identity"],
+)
+
+spotify_digests_total = Counter(
+    "connector_spotify_digests_total",
+    "Total number of listening digest events emitted",
     labelnames=["endpoint_identity"],
 )
 
@@ -168,6 +175,7 @@ class SpotifyConnectorConfig:
     poll_active_s: int = _DEFAULT_POLL_ACTIVE_S
     poll_idle_s: int = _DEFAULT_POLL_IDLE_S
     session_idle_timeout_s: int = _DEFAULT_SESSION_IDLE_TIMEOUT_S
+    digest_interval_s: int = _DEFAULT_DIGEST_INTERVAL_S
 
     # Concurrency / health
     max_inflight: int = _DEFAULT_MAX_INFLIGHT
@@ -199,6 +207,7 @@ class SpotifyConnectorConfig:
             session_idle_timeout_s=_int(
                 "SPOTIFY_SESSION_IDLE_TIMEOUT_S", _DEFAULT_SESSION_IDLE_TIMEOUT_S
             ),
+            digest_interval_s=_int("SPOTIFY_DIGEST_INTERVAL_S", _DEFAULT_DIGEST_INTERVAL_S),
             max_inflight=_int("CONNECTOR_MAX_INFLIGHT", _DEFAULT_MAX_INFLIGHT),
             health_port=_int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT),
         )
@@ -223,6 +232,7 @@ class ListeningSession:
     track_names: list[str] = field(default_factory=list)
     last_activity_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     drain_started_at: datetime | None = None
+    last_digest_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def track_count(self) -> int:
@@ -237,23 +247,26 @@ class ListeningSession:
 class ListeningSessionTracker:
     """State machine for aggregating Spotify playback into listening sessions.
 
+    Emits batched events to minimise downstream token costs:
+    - context_start: when a new playlist/album context begins
+    - session_summary: when a session ends (context change, idle timeout)
+
+    Individual track changes within a session are accumulated silently.
+    The connector checks for periodic digest emission separately.
+
     States:
         idle     — no active playback
         active   — currently playing
         draining — playback stopped; waiting for idle timeout before closing session
-
-    Transitions:
-        idle + playback detected               → active (start new session)
-        active + same track                    → active (update last_activity_at)
-        active + track changed, same context   → active (continue session, emit track_change)
-        active + context changed               → emit session_summary, active (new session)
-        active + playback stopped              → draining
-        draining + playback resumed            → active (same session, no event)
-        draining + idle timeout exceeded       → idle (emit session_summary)
     """
 
-    def __init__(self, idle_timeout_s: int = _DEFAULT_SESSION_IDLE_TIMEOUT_S) -> None:
+    def __init__(
+        self,
+        idle_timeout_s: int = _DEFAULT_SESSION_IDLE_TIMEOUT_S,
+        digest_interval_s: int = _DEFAULT_DIGEST_INTERVAL_S,
+    ) -> None:
         self._idle_timeout_s = idle_timeout_s
+        self._digest_interval = timedelta(seconds=digest_interval_s)
         self._state: SessionState = "idle"
         self._session: ListeningSession | None = None
         self._last_track_id: str | None = None
@@ -278,9 +291,11 @@ class ListeningSessionTracker:
 
         Returns:
             (events, closed_sessions) where events is a list of event type strings
-            ("track_change") and closed_sessions is a list of sessions that were closed.
+            ("context_start") and closed_sessions is a list of sessions that were
+            closed (each should emit a session_summary).
 
-        Callers should inspect the returned event types and construct envelopes accordingly.
+        Track changes within the same context are accumulated silently — no event
+        is returned for them.
         """
         if now is None:
             now = datetime.now(UTC)
@@ -295,10 +310,11 @@ class ListeningSessionTracker:
                 started_at=now,
                 track_names=[track_name],
                 last_activity_at=now,
+                last_digest_at=now,
             )
             self._last_track_id = track_id
             self._state = "active"
-            events.append("track_change")
+            events.append("context_start")
 
         elif self._state == "active":
             assert self._session is not None
@@ -306,11 +322,10 @@ class ListeningSessionTracker:
                 # Same track: update last activity, no event
                 self._session.last_activity_at = now
             elif context_uri == self._session.context_uri:
-                # Track changed, same context: continue session
+                # Track changed, same context: accumulate silently
                 self._last_track_id = track_id
                 self._session.track_names.append(track_name)
                 self._session.last_activity_at = now
-                events.append("track_change")
             else:
                 # Context changed: close current session, start new one
                 old_session = self._session
@@ -320,10 +335,11 @@ class ListeningSessionTracker:
                     started_at=now,
                     track_names=[track_name],
                     last_activity_at=now,
+                    last_digest_at=now,
                 )
                 self._last_track_id = track_id
                 # State remains active
-                events.append("track_change")
+                events.append("context_start")
 
         elif self._state == "draining":
             assert self._session is not None
@@ -333,10 +349,26 @@ class ListeningSessionTracker:
             if track_id != self._last_track_id:
                 self._last_track_id = track_id
                 self._session.track_names.append(track_name)
-                events.append("track_change")
+                # Same context resume: accumulate silently (no event)
+                # Different context is not possible here — context_uri not
+                # checked in draining resume (upstream handles context change)
             self._state = "active"
 
         return events, closed_sessions
+
+    def check_digest_due(self, now: datetime | None = None) -> bool:
+        """Return True if a listening_digest should be emitted."""
+        if self._state != "active" or self._session is None:
+            return False
+        if now is None:
+            now = datetime.now(UTC)
+        elapsed = now - self._session.last_digest_at
+        return elapsed >= self._digest_interval and self._session.track_count > 0
+
+    def mark_digest_emitted(self, now: datetime | None = None) -> None:
+        """Record that a digest was just emitted, resetting the timer."""
+        if self._session is not None:
+            self._session.last_digest_at = now or datetime.now(UTC)
 
     def process_no_playback(self, now: datetime | None = None) -> list[ListeningSession]:
         """Process a poll result with no active playback.
@@ -393,7 +425,7 @@ class SpotifyRateLimitError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def build_track_change_envelope(
+def build_context_start_envelope(
     *,
     endpoint_identity: str,
     spotify_user_id: str,
@@ -408,16 +440,22 @@ def build_track_change_envelope(
     raw_payload: dict[str, Any],
     observed_at: str,
 ) -> dict[str, Any]:
-    """Build an ingest.v1 envelope for a spotify.track_change event."""
+    """Build an ingest.v1 envelope for a spotify.context_start event.
+
+    Emitted once when a new listening context begins (playlist, album, etc.).
+    """
     artist_str = ", ".join(artist_names) if artist_names else "unknown artist"
     context_label = context_uri.split(":")[-1] if context_uri else None
     if context_label:
-        normalized_text = f"Listening to {track_name} by {artist_str} on {context_label}"
+        normalized_text = (
+            f"Started listening to {context_label} — first track: "
+            f"{track_name} by {artist_str}"
+        )
     else:
-        normalized_text = f"Listening to {track_name} by {artist_str}"
+        normalized_text = f"Started listening to {track_name} by {artist_str}"
 
-    idempotency_key = f"spotify:{endpoint_identity}:{timestamp_ms}:{track_id}"
-    external_event_id = f"spotify:{timestamp_ms}:{track_id}"
+    idempotency_key = f"spotify:{endpoint_identity}:ctx:{timestamp_ms}:{context_uri or track_id}"
+    external_event_id = f"spotify:ctx:{timestamp_ms}:{context_uri or track_id}"
 
     return {
         "schema_version": "ingest.v1",
@@ -436,6 +474,67 @@ def build_track_change_envelope(
         },
         "payload": {
             "raw": raw_payload,
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "idempotency_key": idempotency_key,
+            "policy_tier": "default",
+            "ingestion_tier": "full",
+        },
+    }
+
+
+def build_listening_digest_envelope(
+    *,
+    endpoint_identity: str,
+    spotify_user_id: str,
+    session: ListeningSession,
+    observed_at: str,
+) -> dict[str, Any]:
+    """Build an ingest.v1 envelope for a spotify.listening_digest event.
+
+    Emitted periodically (default every 60 min) during active listening with
+    all tracks accumulated since the last digest or context_start.
+    """
+    track_count = session.track_count
+    context_label = session.context_uri.split(":")[-1] if session.context_uri else None
+    track_list = ", ".join(session.track_names[:5])
+    if track_count > 5:
+        track_list += f" (+{track_count - 5} more)"
+
+    if context_label:
+        normalized_text = (
+            f"Listening digest: {track_count} tracks on {context_label} — {track_list}"
+        )
+    else:
+        normalized_text = f"Listening digest: {track_count} tracks — {track_list}"
+
+    digest_start_ms = int(session.last_digest_at.timestamp() * 1000)
+    idempotency_key = f"spotify:{endpoint_identity}:digest:{digest_start_ms}"
+    external_event_id = f"spotify:digest:{digest_start_ms}"
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": _CONNECTOR_CHANNEL,
+            "provider": _CONNECTOR_PROVIDER,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": external_event_id,
+            "external_thread_id": session.context_uri,
+            "observed_at": observed_at,
+        },
+        "sender": {
+            "identity": spotify_user_id,
+        },
+        "payload": {
+            "raw": {
+                "digest_start": session.last_digest_at.isoformat(),
+                "track_count": track_count,
+                "context_uri": session.context_uri,
+                "tracks": session.track_names,
+            },
             "normalized_text": normalized_text,
         },
         "control": {
@@ -552,7 +651,8 @@ class SpotifyConnector:
 
         # Session tracking
         self._session_tracker = ListeningSessionTracker(
-            idle_timeout_s=config.session_idle_timeout_s
+            idle_timeout_s=config.session_idle_timeout_s,
+            digest_interval_s=config.digest_interval_s,
         )
 
         # Auth error state
@@ -1251,9 +1351,9 @@ class SpotifyConnector:
         for closed in closed_sessions:
             await self._emit_session_summary(closed, observed_at)
 
-        # Emit track change if flagged
-        if "track_change" in events:
-            envelope = build_track_change_envelope(
+        # Emit context_start if a new context began
+        if "context_start" in events:
+            envelope = build_context_start_envelope(
                 endpoint_identity=self._endpoint_identity,
                 spotify_user_id=self._spotify_user_id,
                 track_id=track_id,
@@ -1269,7 +1369,26 @@ class SpotifyConnector:
             )
             await self._submit_envelope(envelope)
             if self._endpoint_identity:
-                spotify_track_changes_total.labels(endpoint_identity=self._endpoint_identity).inc()
+                spotify_context_starts_total.labels(
+                    endpoint_identity=self._endpoint_identity
+                ).inc()
+
+        # Emit periodic listening digest if due
+        if self._session_tracker.check_digest_due(now):
+            session = self._session_tracker.current_session
+            if session is not None:
+                digest_envelope = build_listening_digest_envelope(
+                    endpoint_identity=self._endpoint_identity,
+                    spotify_user_id=self._spotify_user_id,
+                    session=session,
+                    observed_at=observed_at,
+                )
+                await self._submit_envelope(digest_envelope)
+                self._session_tracker.mark_digest_emitted(now)
+                if self._endpoint_identity:
+                    spotify_digests_total.labels(
+                        endpoint_identity=self._endpoint_identity
+                    ).inc()
 
         if self._endpoint_identity:
             spotify_polls_total.labels(
@@ -1298,7 +1417,11 @@ class SpotifyConnector:
             ).inc()
 
     async def _poll_recently_played(self, now: datetime, observed_at: str) -> None:
-        """Poll recently-played for gap-filling using the stored cursor."""
+        """Poll recently-played for gap-filling using the stored cursor.
+
+        Gap-fill tracks are batched into a single digest envelope rather than
+        emitting per-track events, to reduce downstream token costs.
+        """
         try:
             items = await self._get_recently_played(self._last_recently_played_cursor)
         except Exception as exc:
@@ -1311,12 +1434,14 @@ class SpotifyConnector:
         # Items are returned most-recent-first; process oldest-first for proper ordering
         items_ordered = list(reversed(items))
 
+        # Accumulate gap-fill tracks by context for batched submission
+        gap_tracks: list[dict[str, Any]] = []
+        last_cursor_ms = 0
+
         for item_wrapper in items_ordered:
             track = item_wrapper.get("track") or {}
             track_id = track.get("id", "")
             track_name = track.get("name", "unknown")
-            context = item_wrapper.get("context") or {}
-            context_uri = context.get("uri") if context else None
 
             # Parse played_at timestamp
             played_at_str = item_wrapper.get("played_at", "")
@@ -1327,45 +1452,72 @@ class SpotifyConnector:
             played_at_ms = int(played_at_dt.timestamp() * 1000)
 
             # Only process tracks not already observed via currently-playing
-            # (cursor is the timestamp of the last submitted currently-playing event)
             if self._last_recently_played_cursor:
                 try:
-                    last_cursor_ms = int(self._last_recently_played_cursor)
+                    cursor_ms = int(self._last_recently_played_cursor)
                 except ValueError:
-                    last_cursor_ms = 0
-                if played_at_ms <= last_cursor_ms:
+                    cursor_ms = 0
+                if played_at_ms <= cursor_ms:
                     continue
 
             if not track_id:
                 continue
 
-            # Build gap-fill envelope
-            artists = track.get("artists", []) or []
-            artist_names = [a.get("name", "") for a in artists if a.get("name")]
-            album = track.get("album", {}) or {}
-            album_name = album.get("name", "unknown")
-            duration_ms = int(track.get("duration_ms", 0))
+            gap_tracks.append({"name": track_name, "played_at_ms": played_at_ms})
+            last_cursor_ms = max(last_cursor_ms, played_at_ms)
 
-            envelope = build_track_change_envelope(
-                endpoint_identity=self._endpoint_identity,
-                spotify_user_id=self._spotify_user_id,
-                track_id=track_id,
-                track_name=track_name,
-                artist_names=artist_names,
-                album_name=album_name,
-                duration_ms=duration_ms,
-                context_uri=context_uri,
-                device_name=None,
-                timestamp_ms=played_at_ms,
-                raw_payload=item_wrapper,
-                observed_at=played_at_dt.isoformat(),
+        # Emit a single batched gap-fill digest if we found any tracks
+        if gap_tracks:
+            track_names = [t["name"] for t in gap_tracks]
+            track_count = len(gap_tracks)
+            track_list = ", ".join(track_names[:5])
+            if track_count > 5:
+                track_list += f" (+{track_count - 5} more)"
+
+            normalized_text = f"Gap-fill digest: {track_count} recently played — {track_list}"
+
+            first_ms = gap_tracks[0]["played_at_ms"]
+            last_ms = gap_tracks[-1]["played_at_ms"]
+            idempotency_key = (
+                f"spotify:{self._endpoint_identity}:gapfill:{first_ms}:{last_ms}"
             )
-            await self._submit_envelope(envelope)
-            if self._endpoint_identity:
-                spotify_track_changes_total.labels(endpoint_identity=self._endpoint_identity).inc()
+            external_event_id = f"spotify:gapfill:{first_ms}:{last_ms}"
 
-            # Advance cursor
-            self._last_recently_played_cursor = str(played_at_ms)
+            envelope = {
+                "schema_version": "ingest.v1",
+                "source": {
+                    "channel": _CONNECTOR_CHANNEL,
+                    "provider": _CONNECTOR_PROVIDER,
+                    "endpoint_identity": self._endpoint_identity,
+                },
+                "event": {
+                    "external_event_id": external_event_id,
+                    "external_thread_id": None,
+                    "observed_at": observed_at,
+                },
+                "sender": {
+                    "identity": self._spotify_user_id,
+                },
+                "payload": {
+                    "raw": {
+                        "gap_fill": True,
+                        "track_count": track_count,
+                        "tracks": track_names,
+                        "first_played_at_ms": first_ms,
+                        "last_played_at_ms": last_ms,
+                    },
+                    "normalized_text": normalized_text,
+                },
+                "control": {
+                    "idempotency_key": idempotency_key,
+                    "policy_tier": "default",
+                    "ingestion_tier": "full",
+                },
+            }
+            await self._submit_envelope(envelope)
+
+            # Advance cursor to the latest gap-fill track
+            self._last_recently_played_cursor = str(last_cursor_ms)
 
     async def _emit_session_summary(self, session: ListeningSession, observed_at: str) -> None:
         """Emit a session summary ingest envelope."""

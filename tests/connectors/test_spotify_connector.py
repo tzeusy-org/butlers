@@ -31,8 +31,9 @@ from butlers.connectors.spotify import (
     ListeningSessionTracker,
     SpotifyConnector,
     SpotifyConnectorConfig,
+    build_context_start_envelope,
+    build_listening_digest_envelope,
     build_session_summary_envelope,
-    build_track_change_envelope,
 )
 
 # ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ class TestListeningSessionTracker:
             now=now,
         )
         assert tracker.state == "active"
-        assert "track_change" in events
+        assert "context_start" in events
         assert closed == []
         assert tracker.current_session is not None
         assert tracker.current_session.track_names == ["Song A"]
@@ -153,7 +154,7 @@ class TestListeningSessionTracker:
         assert tracker.current_session is not None
         assert len(tracker.current_session.track_names) == 1
 
-    def test_active_track_change_same_context(
+    def test_active_track_change_same_context_accumulated_silently(
         self, tracker: ListeningSessionTracker, now: datetime
     ) -> None:
         tracker.process_playback(
@@ -168,7 +169,7 @@ class TestListeningSessionTracker:
             context_uri="spotify:playlist:abc",
             now=now + timedelta(seconds=60),
         )
-        assert "track_change" in events
+        assert events == []  # Accumulated silently, no per-track event
         assert closed == []
         assert tracker.state == "active"
         assert tracker.current_session is not None
@@ -189,7 +190,7 @@ class TestListeningSessionTracker:
             context_uri="spotify:album:xyz",
             now=now + timedelta(minutes=5),
         )
-        assert "track_change" in events
+        assert "context_start" in events
         assert len(closed) == 1
         assert closed[0].context_uri == "spotify:playlist:abc"
         assert closed[0].track_names == ["Song A"]
@@ -223,7 +224,7 @@ class TestListeningSessionTracker:
         # Same track resumed: no additional track_change
         assert events == []
 
-    def test_draining_resume_new_track_emits_event(
+    def test_draining_resume_new_track_accumulated_silently(
         self, tracker: ListeningSessionTracker, now: datetime
     ) -> None:
         tracker.process_playback(track_id="track1", track_name="Song A", context_uri=None, now=now)
@@ -235,7 +236,7 @@ class TestListeningSessionTracker:
             now=now + timedelta(seconds=30),
         )
         assert tracker.state == "active"
-        assert "track_change" in events
+        assert events == []  # Same context resume, accumulated silently
         assert closed == []
 
     def test_draining_idle_timeout_closes_session(self, now: datetime) -> None:
@@ -288,9 +289,9 @@ class TestListeningSessionTracker:
 # ---------------------------------------------------------------------------
 
 
-class TestBuildTrackChangeEnvelope:
+class TestBuildContextStartEnvelope:
     def test_basic_fields(self, now: datetime) -> None:
-        envelope = build_track_change_envelope(
+        envelope = build_context_start_envelope(
             endpoint_identity="spotify:alice",
             spotify_user_id="alice",
             track_id="track123",
@@ -309,7 +310,7 @@ class TestBuildTrackChangeEnvelope:
         assert envelope["source"]["channel"] == _CONNECTOR_CHANNEL
         assert envelope["source"]["provider"] == _CONNECTOR_PROVIDER
         assert envelope["source"]["endpoint_identity"] == "spotify:alice"
-        assert envelope["event"]["external_event_id"] == "spotify:1000000:track123"
+        assert envelope["event"]["external_event_id"].startswith("spotify:ctx:")
         assert envelope["event"]["external_thread_id"] == "spotify:playlist:abc"
         assert envelope["sender"]["identity"] == "alice"
         assert envelope["control"]["policy_tier"] == "default"
@@ -317,7 +318,7 @@ class TestBuildTrackChangeEnvelope:
         assert "idempotency_key" in envelope["control"]
 
     def test_normalized_text_with_context(self, now: datetime) -> None:
-        envelope = build_track_change_envelope(
+        envelope = build_context_start_envelope(
             endpoint_identity="spotify:alice",
             spotify_user_id="alice",
             track_id="t1",
@@ -334,11 +335,11 @@ class TestBuildTrackChangeEnvelope:
         text = envelope["payload"]["normalized_text"]
         assert "My Song" in text
         assert "Artist" in text
-        # Context URI last segment used
         assert "abc" in text
+        assert "Started listening" in text
 
     def test_normalized_text_without_context(self, now: datetime) -> None:
-        envelope = build_track_change_envelope(
+        envelope = build_context_start_envelope(
             endpoint_identity="spotify:alice",
             spotify_user_id="alice",
             track_id="t1",
@@ -356,32 +357,75 @@ class TestBuildTrackChangeEnvelope:
         assert "My Song" in text
         assert "Artist" in text
 
-    def test_idempotency_key_unique_per_track_and_timestamp(self, now: datetime) -> None:
-        def make_env(track_id: str, ts_ms: int) -> dict[str, Any]:
-            return build_track_change_envelope(
+    def test_idempotency_key_unique_per_context_and_timestamp(self, now: datetime) -> None:
+        def make_env(context_uri: str | None, ts_ms: int) -> dict[str, Any]:
+            return build_context_start_envelope(
                 endpoint_identity="spotify:alice",
                 spotify_user_id="alice",
-                track_id=track_id,
+                track_id="t1",
                 track_name="S",
                 artist_names=[],
                 album_name="A",
                 duration_ms=0,
-                context_uri=None,
+                context_uri=context_uri,
                 device_name=None,
                 timestamp_ms=ts_ms,
                 raw_payload={},
                 observed_at=now.isoformat(),
             )
 
-        e1 = make_env("t1", 1000)
-        e2 = make_env("t2", 1000)
-        e3 = make_env("t1", 2000)
+        e1 = make_env("spotify:playlist:abc", 1000)
+        e2 = make_env("spotify:playlist:xyz", 1000)
+        e3 = make_env("spotify:playlist:abc", 2000)
         keys = {
             e1["control"]["idempotency_key"],
             e2["control"]["idempotency_key"],
             e3["control"]["idempotency_key"],
         }
         assert len(keys) == 3
+
+
+class TestBuildListeningDigestEnvelope:
+    def test_basic_fields(self, now: datetime) -> None:
+        session = ListeningSession(
+            context_uri="spotify:playlist:abc",
+            started_at=now,
+            track_names=["Song A", "Song B", "Song C"],
+            last_digest_at=now,
+        )
+
+        envelope = build_listening_digest_envelope(
+            endpoint_identity="spotify:alice",
+            spotify_user_id="alice",
+            session=session,
+            observed_at=now.isoformat(),
+        )
+
+        assert envelope["schema_version"] == "ingest.v1"
+        assert envelope["source"]["channel"] == _CONNECTOR_CHANNEL
+        assert envelope["event"]["external_event_id"].startswith("spotify:digest:")
+        assert envelope["event"]["external_thread_id"] == "spotify:playlist:abc"
+        raw = envelope["payload"]["raw"]
+        assert raw["track_count"] == 3
+        assert raw["tracks"] == ["Song A", "Song B", "Song C"]
+
+    def test_normalized_text_includes_track_count(self, now: datetime) -> None:
+        session = ListeningSession(
+            context_uri="spotify:album:xyz",
+            started_at=now,
+            track_names=["A", "B"],
+            last_digest_at=now,
+        )
+
+        envelope = build_listening_digest_envelope(
+            endpoint_identity="spotify:alice",
+            spotify_user_id="alice",
+            session=session,
+            observed_at=now.isoformat(),
+        )
+        text = envelope["payload"]["normalized_text"]
+        assert "2 tracks" in text
+        assert "xyz" in text
 
 
 class TestBuildSessionSummaryEnvelope:

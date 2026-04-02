@@ -3,8 +3,8 @@
 Covers:
 - ConnectorMetrics integration: standard connector metrics are recorded during
   poll cycles (task 8.1)
-- Spotify-specific counters: polls_total, track_changes_total, sessions_total,
-  token_refreshes_total (task 8.2)
+- Spotify-specific counters: polls_total, context_starts_total, digests_total,
+  sessions_total, token_refreshes_total (task 8.2)
 - Spotify-specific histogram: session_duration_seconds (task 8.2)
 - Health endpoint on port 40083 (task 8.3) — server initialisation checked
   without starting a live server to keep tests fast
@@ -22,11 +22,12 @@ from butlers.connectors.spotify import (
     ListeningSession,
     SpotifyConnector,
     SpotifyConnectorConfig,
+    spotify_context_starts_total,
+    spotify_digests_total,
     spotify_polls_total,
     spotify_session_duration_seconds,
     spotify_sessions_total,
     spotify_token_refreshes_total,
-    spotify_track_changes_total,
 )
 
 pytestmark = pytest.mark.unit
@@ -53,7 +54,8 @@ def clear_spotify_metrics() -> None:
     """Clear Spotify-specific metric state before each test."""
     for collector in [
         spotify_polls_total,
-        spotify_track_changes_total,
+        spotify_context_starts_total,
+        spotify_digests_total,
         spotify_sessions_total,
         spotify_token_refreshes_total,
     ]:
@@ -164,11 +166,11 @@ class TestSpotifyPollsTotal:
         )
 
 
-class TestSpotifyTrackChangesTotal:
-    """connector_spotify_track_changes_total increments on track change events."""
+class TestSpotifyContextStartsTotal:
+    """connector_spotify_context_starts_total increments on context start events."""
 
     @pytest.mark.asyncio
-    async def test_track_changes_total_increments_on_new_track(
+    async def test_context_starts_total_increments_on_new_context(
         self, config: SpotifyConnectorConfig, now: datetime
     ) -> None:
         connector = SpotifyConnector(config=config)
@@ -194,10 +196,12 @@ class TestSpotifyTrackChangesTotal:
         with patch.object(connector, "_submit_envelope", new_callable=AsyncMock):
             await connector._handle_active_playback(payload, item, now, now.isoformat())
 
-        assert _get_counter(spotify_track_changes_total, endpoint_identity="spotify:alice") == 1.0
+        assert (
+            _get_counter(spotify_context_starts_total, endpoint_identity="spotify:alice") == 1.0
+        )
 
     @pytest.mark.asyncio
-    async def test_track_changes_total_does_not_increment_on_same_track(
+    async def test_context_starts_total_does_not_increment_on_same_track(
         self, config: SpotifyConnectorConfig, now: datetime
     ) -> None:
         connector = SpotifyConnector(config=config)
@@ -221,20 +225,23 @@ class TestSpotifyTrackChangesTotal:
         item = payload["item"]
 
         with patch.object(connector, "_submit_envelope", new_callable=AsyncMock):
-            # First call — starts session, emits track_change
+            # First call — starts session, emits context_start
             await connector._handle_active_playback(payload, item, now, now.isoformat())
             # Second call — same track, no event
             await connector._handle_active_playback(
                 payload, item, now + timedelta(seconds=30), now.isoformat()
             )
 
-        # Only 1 track_change should have been emitted (initial start)
-        assert _get_counter(spotify_track_changes_total, endpoint_identity="spotify:alice") == 1.0
+        # Only 1 context_start from the initial start
+        assert (
+            _get_counter(spotify_context_starts_total, endpoint_identity="spotify:alice") == 1.0
+        )
 
     @pytest.mark.asyncio
-    async def test_track_changes_total_increments_via_recently_played(
+    async def test_gap_fill_submits_single_batched_envelope(
         self, config: SpotifyConnectorConfig, now: datetime
     ) -> None:
+        """Gap-fill recently-played tracks are batched into one envelope."""
         connector = SpotifyConnector(config=config)
         connector._endpoint_identity = "spotify:alice"
         connector._spotify_user_id = "alice"
@@ -259,11 +266,12 @@ class TestSpotifyTrackChangesTotal:
             patch.object(
                 connector, "_get_recently_played", new_callable=AsyncMock, return_value=mock_items
             ),
-            patch.object(connector, "_submit_envelope", new_callable=AsyncMock),
+            patch.object(connector, "_submit_envelope", new_callable=AsyncMock) as mock_submit,
         ):
             await connector._poll_recently_played(now, now.isoformat())
 
-        assert _get_counter(spotify_track_changes_total, endpoint_identity="spotify:alice") == 1.0
+        # Single batched envelope, not per-track
+        assert mock_submit.await_count == 1
         assert connector._last_recently_played_cursor == str(played_at_ms)
 
 

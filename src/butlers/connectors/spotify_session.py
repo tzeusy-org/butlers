@@ -2,37 +2,42 @@
 
 Implements ``ListeningSessionTracker``: a lightweight in-memory state machine
 that aggregates Spotify poll results into logical listening sessions and emits
-``spotify.session_summary`` envelopes on session end.
+batched events to minimise downstream token costs.
 
-State machine transitions (per openspec connector-spotify design D7):
+Event model (batched)
+---------------------
+- ``spotify.context_start`` — emitted once when a new listening context begins
+  (playlist, album, etc.).  Carries the first track's metadata.
+- ``spotify.listening_digest`` — emitted periodically (default every 60 min of
+  active listening) with all tracks accumulated since the last digest or
+  context_start.
+- ``spotify.session_summary`` — emitted when a session ends (context change,
+  idle timeout, or forced shutdown).
 
-    idle ──(playback detected)──────────────────────────────→ active
+State machine transitions:
+
+    idle ──(playback detected)──────────────────────────────→ active (emit context_start)
     active ──(same track, same context)─────────────────────→ active (no event)
-    active ──(new track, same context)──────────────────────→ active (emit track_change)
-    active ──(context changed)──────────────→ active (emit session_summary, start new session)
+    active ──(new track, same context)──────────────────────→ active (accumulate silently)
+    active ──(context changed)──────────────→ active (emit session_summary + context_start)
     active ──(playback stopped)─────────────────────────────→ draining
     draining ──(idle timeout exceeded)──────────────────────→ idle (emit session_summary)
     draining ──(playback resumed, same context)──────────────→ active (continue session)
-    draining ──(playback resumed, different context)─────────→ active (emit summary, new session)
+    draining ──(playback resumed, different context)─────────→ active (emit summary + context_start)
 
-Poll result protocol
---------------------
-Callers pass a ``PollResult`` dataclass to ``on_poll()``.  The method returns
-a list of ``SessionEvent`` objects, in emission order, describing what happened
-during the poll.  Each poll may emit zero or more ``track_change`` events and
-at most one ``session_summary`` event.  On context changes (or when draining
-playback resumes with a different context), a ``spotify.session_summary`` is
-emitted for the previous session before the ``spotify.track_change`` event for
-the new context.
+At the end of every ``on_poll()`` call, the tracker checks whether a digest is
+due and appends a ``spotify.listening_digest`` event if so.
 
 Usage::
 
-    tracker = ListeningSessionTracker(idle_timeout_s=300)
+    tracker = ListeningSessionTracker(idle_timeout_s=300, digest_interval_s=3600)
 
     # inside connector poll loop:
     events = tracker.on_poll(poll_result, now=time.time())
     for ev in events:
-        if ev.event_type == "spotify.track_change":
+        if ev.event_type == "spotify.context_start":
+            ...
+        elif ev.event_type == "spotify.listening_digest":
             ...
         elif ev.event_type == "spotify.session_summary":
             ...
@@ -52,6 +57,9 @@ logger = logging.getLogger(__name__)
 # a session.  Matches SPOTIFY_SESSION_IDLE_TIMEOUT_S env var default.
 DEFAULT_IDLE_TIMEOUT_S = 300
 
+# Default interval between listening_digest events (seconds).
+DEFAULT_DIGEST_INTERVAL_S = 3600
+
 
 # ---------------------------------------------------------------------------
 # Public data types
@@ -64,6 +72,18 @@ class SessionState(Enum):
     IDLE = "idle"
     ACTIVE = "active"
     DRAINING = "draining"
+
+
+@dataclass(frozen=True)
+class TrackDetail:
+    """Lightweight record of a single track observation for digest batching."""
+
+    track_id: str
+    track_name: str | None
+    artist_names: list[str]
+    album_name: str | None
+    duration_ms: int | None
+    played_at_ms: int
 
 
 @dataclass(frozen=True)
@@ -103,26 +123,30 @@ class SessionEvent:
     """An event emitted by the state machine during a poll cycle.
 
     Attributes:
-        event_type: ``"spotify.track_change"`` or ``"spotify.session_summary"``.
-        track_id: Relevant for track_change events; the new track ID.
-        track_name: Human-readable track name (track_change events).
-        artist_names: Artist names (track_change events).
-        album_name: Album name (track_change events).
-        duration_ms: Track duration in ms (track_change events).
-        context_uri: Playlist/album URI (both event types).
-        context_name: Human-readable context name (both event types).
-        device_name: Playback device (track_change events).
+        event_type: One of ``"spotify.context_start"``,
+            ``"spotify.listening_digest"``, or ``"spotify.session_summary"``.
+        track_id: First track ID (context_start events).
+        track_name: First track name (context_start events).
+        artist_names: Artist names (context_start events).
+        album_name: Album name (context_start events).
+        duration_ms: Track duration in ms (context_start events).
+        context_uri: Playlist/album URI (all event types).
+        context_name: Human-readable context name (all event types).
+        device_name: Playback device (context_start events).
         played_at_ms: Timestamp of the poll observation in milliseconds.
-        raw_payload: Raw Spotify API response (track_change events).
+        raw_payload: Raw Spotify API response (context_start events).
         session_start_ms: Session start time in ms (session_summary events).
         session_end_ms: Session end time in ms (session_summary events).
         session_duration_ms: Total session duration in ms (session_summary events).
-        track_count: Number of unique tracks heard (session_summary events).
-        tracks_played: Ordered list of track names heard (session_summary events).
+        track_count: Number of unique tracks heard (summary/digest events).
+        tracks_played: Ordered list of track names heard (summary/digest events).
+        digest_start_ms: Start of the digest window in ms (digest events).
+        digest_end_ms: End of the digest window in ms (digest events).
+        digest_tracks: Full track details for the digest period (digest events).
     """
 
     event_type: str
-    # Track change fields
+    # context_start fields (first track in new context)
     track_id: str | None = None
     track_name: str | None = None
     artist_names: list[str] = field(default_factory=list)
@@ -139,6 +163,10 @@ class SessionEvent:
     session_duration_ms: int | None = None
     track_count: int = 0
     tracks_played: list[str] = field(default_factory=list)
+    # Digest fields
+    digest_start_ms: int | None = None
+    digest_end_ms: int | None = None
+    digest_tracks: list[TrackDetail] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -161,18 +189,39 @@ class _SessionAccumulator:
     tracks_played: list[str] = field(default_factory=list)
     # Set of track IDs for deduplication
     _seen_track_ids: set[str] = field(default_factory=set)
+    # Digest tracking: tracks accumulated since last digest (or context_start)
+    last_digest_ms: int = 0  # set to start_ms at creation
+    _digest_tracks: list[TrackDetail] = field(default_factory=list)
 
-    def record_track(self, track_id: str, track_name: str | None, played_at_ms: int) -> None:
+    def __post_init__(self) -> None:
+        if self.last_digest_ms == 0:
+            self.last_digest_ms = self.start_ms
+
+    def record_track(
+        self,
+        track_id: str,
+        track_name: str | None,
+        played_at_ms: int,
+        *,
+        detail: TrackDetail | None = None,
+    ) -> None:
         """Add a track to the session accumulator."""
         self._seen_track_ids.add(track_id)
         if track_name:
             self.tracks_played.append(track_name)
         self.last_active_ms = played_at_ms
+        if detail is not None:
+            self._digest_tracks.append(detail)
 
     @property
     def track_count(self) -> int:
         """Number of unique tracks observed in this session."""
         return len(self._seen_track_ids)
+
+    @property
+    def digest_track_count(self) -> int:
+        """Number of tracks accumulated since the last digest."""
+        return len(self._digest_tracks)
 
     def build_summary_event(self, end_ms: int) -> SessionEvent:
         """Produce a session_summary SessionEvent."""
@@ -189,6 +238,25 @@ class _SessionAccumulator:
             tracks_played=list(self.tracks_played),
         )
 
+    def build_digest_event(self, now_ms: int) -> SessionEvent:
+        """Produce a listening_digest SessionEvent and reset digest state."""
+        tracks = list(self._digest_tracks)
+        names = [t.track_name for t in tracks if t.track_name]
+        event = SessionEvent(
+            event_type="spotify.listening_digest",
+            context_uri=self.context_uri,
+            context_name=self.context_name,
+            played_at_ms=now_ms,
+            track_count=len(tracks),
+            tracks_played=names,
+            digest_start_ms=self.last_digest_ms,
+            digest_end_ms=now_ms,
+            digest_tracks=tracks,
+        )
+        self._digest_tracks.clear()
+        self.last_digest_ms = now_ms
+        return event
+
 
 # ---------------------------------------------------------------------------
 # State machine
@@ -202,10 +270,17 @@ class ListeningSessionTracker:
         idle_timeout_s: Seconds of no playback before the draining state ends
             the current session and transitions back to idle.  Defaults to
             ``DEFAULT_IDLE_TIMEOUT_S`` (300 s).
+        digest_interval_s: Seconds between ``listening_digest`` events during
+            active playback.  Defaults to ``DEFAULT_DIGEST_INTERVAL_S`` (3600 s).
     """
 
-    def __init__(self, idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S) -> None:
+    def __init__(
+        self,
+        idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S,
+        digest_interval_s: float = DEFAULT_DIGEST_INTERVAL_S,
+    ) -> None:
         self._idle_timeout_s = idle_timeout_s
+        self._digest_interval_ms = int(digest_interval_s * 1000)
         self._state: SessionState = SessionState.IDLE
         self._current_track_id: str | None = None
         self._session: _SessionAccumulator | None = None
@@ -240,7 +315,8 @@ class ListeningSessionTracker:
 
         Returns:
             A list of ``SessionEvent`` objects (may be empty).  Events appear
-            in emission order: track_change events before session_summary.
+            in emission order: context_start / session_summary first, then
+            any listening_digest that became due.
         """
         if now is None:
             now = time.time()
@@ -255,6 +331,9 @@ class ListeningSessionTracker:
             events.extend(self._handle_active(result, played_at_ms, now))
         elif self._state == SessionState.DRAINING:
             events.extend(self._handle_draining(result, played_at_ms, now))
+
+        # Check if a periodic digest is due
+        events.extend(self._check_digest(played_at_ms))
 
         return events
 
@@ -300,13 +379,14 @@ class ListeningSessionTracker:
             return []
 
         # Playback detected → start new session, transition to ACTIVE.
+        detail = self._make_track_detail(result, played_at_ms)
         self._session = _SessionAccumulator(
             context_uri=result.context_uri,
             context_name=result.context_name,
             start_ms=played_at_ms,
             last_active_ms=played_at_ms,
         )
-        self._session.record_track(result.track_id, result.track_name, played_at_ms)
+        self._session.record_track(result.track_id, result.track_name, played_at_ms, detail=detail)
         self._current_track_id = result.track_id
         self._state = SessionState.ACTIVE
         logger.debug(
@@ -315,8 +395,8 @@ class ListeningSessionTracker:
             result.context_uri,
         )
 
-        # Emit a track_change event for the newly-started track.
-        return [self._make_track_change_event(result, played_at_ms)]
+        # Emit a context_start event for the new listening context.
+        return [self._make_context_start_event(result, played_at_ms)]
 
     def _handle_active(
         self,
@@ -351,28 +431,33 @@ class ListeningSessionTracker:
             )
 
             # Start fresh session for the new context.
+            detail = self._make_track_detail(result, played_at_ms)
             self._session = _SessionAccumulator(
                 context_uri=result.context_uri,
                 context_name=result.context_name,
                 start_ms=played_at_ms,
                 last_active_ms=played_at_ms,
             )
-            self._session.record_track(result.track_id, result.track_name, played_at_ms)
+            self._session.record_track(
+                result.track_id, result.track_name, played_at_ms, detail=detail
+            )
             self._current_track_id = result.track_id
-            # Emit track_change for the first track of the new context.
-            events.append(self._make_track_change_event(result, played_at_ms))
+            # Emit context_start for the new listening context.
+            events.append(self._make_context_start_event(result, played_at_ms))
             return events
 
-        # Same context — check for track change.
+        # Same context — accumulate silently (no per-track events).
         if result.track_id != self._current_track_id:
             assert self._session is not None
-            self._session.record_track(result.track_id, result.track_name, played_at_ms)
+            detail = self._make_track_detail(result, played_at_ms)
+            self._session.record_track(
+                result.track_id, result.track_name, played_at_ms, detail=detail
+            )
             self._current_track_id = result.track_id
             logger.debug(
-                "active: track changed → %s",
+                "active: track changed → %s (accumulated, no event)",
                 result.track_id,
             )
-            events.append(self._make_track_change_event(result, played_at_ms))
         else:
             # Same track, same context — update last_active timestamp only.
             assert self._session is not None
@@ -404,25 +489,30 @@ class ListeningSessionTracker:
                     self._session.context_uri,
                     result.context_uri,
                 )
+                detail = self._make_track_detail(result, played_at_ms)
                 self._session = _SessionAccumulator(
                     context_uri=result.context_uri,
                     context_name=result.context_name,
                     start_ms=played_at_ms,
                     last_active_ms=played_at_ms,
                 )
-                self._session.record_track(result.track_id, result.track_name, played_at_ms)
+                self._session.record_track(
+                    result.track_id, result.track_name, played_at_ms, detail=detail
+                )
                 self._current_track_id = result.track_id
                 self._drain_started_at = None
                 self._state = SessionState.ACTIVE
-                events.append(self._make_track_change_event(result, played_at_ms))
+                events.append(self._make_context_start_event(result, played_at_ms))
                 return events
 
-            # Same context → resume, no event.
+            # Same context → resume, accumulate silently.
             assert self._session is not None
             if result.track_id != self._current_track_id:
-                self._session.record_track(result.track_id, result.track_name, played_at_ms)
+                detail = self._make_track_detail(result, played_at_ms)
+                self._session.record_track(
+                    result.track_id, result.track_name, played_at_ms, detail=detail
+                )
                 self._current_track_id = result.track_id
-                events.append(self._make_track_change_event(result, played_at_ms))
             else:
                 self._session.last_active_ms = played_at_ms
 
@@ -469,11 +559,22 @@ class ListeningSessionTracker:
         self._current_track_id = None
         self._drain_started_at = None
 
+    def _check_digest(self, now_ms: int) -> list[SessionEvent]:
+        """Emit a listening_digest if enough time has elapsed since the last one."""
+        if self._state != SessionState.ACTIVE or self._session is None:
+            return []
+        if self._session.digest_track_count == 0:
+            return []
+        elapsed_ms = now_ms - self._session.last_digest_ms
+        if elapsed_ms >= self._digest_interval_ms:
+            return [self._session.build_digest_event(now_ms)]
+        return []
+
     @staticmethod
-    def _make_track_change_event(result: PollResult, played_at_ms: int) -> SessionEvent:
-        """Build a track_change SessionEvent from a PollResult."""
+    def _make_context_start_event(result: PollResult, played_at_ms: int) -> SessionEvent:
+        """Build a context_start SessionEvent from a PollResult."""
         return SessionEvent(
-            event_type="spotify.track_change",
+            event_type="spotify.context_start",
             track_id=result.track_id,
             track_name=result.track_name,
             artist_names=list(result.artist_names),
@@ -484,4 +585,16 @@ class ListeningSessionTracker:
             device_name=result.device_name,
             played_at_ms=played_at_ms,
             raw_payload=result.raw_payload,
+        )
+
+    @staticmethod
+    def _make_track_detail(result: PollResult, played_at_ms: int) -> TrackDetail:
+        """Build a TrackDetail from a PollResult for digest accumulation."""
+        return TrackDetail(
+            track_id=result.track_id or "",
+            track_name=result.track_name,
+            artist_names=list(result.artist_names),
+            album_name=result.album_name,
+            duration_ms=result.duration_ms,
+            played_at_ms=played_at_ms,
         )
