@@ -238,61 +238,78 @@ async def list_contacts(
 
     where = " WHERE " + " AND ".join(conditions)
 
-    # Count
+    # Count and data queries run in parallel — they share the same WHERE but
+    # are otherwise independent.
     count_sql = f"SELECT count(DISTINCT c.id) FROM contacts c{joins}{where}"
-    total = await pool.fetchval(count_sql, *args) or 0
 
-    # Data query — fetch contacts with labels, primary email/phone, last interaction
     data_sql = f"""
-        SELECT
-            c.id,
-            c.name AS full_name,
-            c.first_name,
-            c.last_name,
-            c.nickname,
-            (
-                SELECT ci.value FROM public.contact_info ci
-                WHERE ci.contact_id = c.id AND ci.type = 'email'
-                ORDER BY ci.is_primary DESC NULLS LAST, ci.id
-                LIMIT 1
-            ) AS email,
-            (
-                SELECT ci.value FROM public.contact_info ci
-                WHERE ci.contact_id = c.id AND ci.type = 'phone'
-                ORDER BY ci.is_primary DESC NULLS LAST, ci.id
-                LIMIT 1
-            ) AS phone,
-            (
-                SELECT max(i.occurred_at) FROM interactions i
-                WHERE i.contact_id = c.id
-            ) AS last_interaction_at
+        SELECT c.id, c.name AS full_name, c.first_name, c.last_name, c.nickname
         FROM contacts c{joins}{where}
         GROUP BY c.id
         ORDER BY c.name
         OFFSET ${idx} LIMIT ${idx + 1}
     """
-    args.extend([offset, limit])
-    rows = await pool.fetch(data_sql, *args)
+    data_args = [*args, offset, limit]
 
-    # Batch-fetch labels for returned contacts
+    total_raw, rows = await asyncio.gather(
+        pool.fetchval(count_sql, *args),
+        pool.fetch(data_sql, *data_args),
+    )
+    total = total_raw or 0
+
+    # Batch-fetch all supplementary data for the returned page in parallel,
+    # replacing the old per-row correlated subqueries.
     contact_ids = [row["id"] for row in rows]
     labels_by_contact: dict[UUID, list[Label]] = {cid: [] for cid in contact_ids}
+    email_by_contact: dict[UUID, str | None] = {cid: None for cid in contact_ids}
+    phone_by_contact: dict[UUID, str | None] = {cid: None for cid in contact_ids}
+    last_interaction_by_contact: dict[UUID, Any] = {cid: None for cid in contact_ids}
 
     if contact_ids:
-        label_rows = await pool.fetch(
-            """
-            SELECT cl.contact_id, l.id, l.name, l.color
-            FROM contact_labels cl
-            JOIN labels l ON l.id = cl.label_id
-            WHERE cl.contact_id = ANY($1)
-            ORDER BY l.name
-            """,
-            contact_ids,
+        label_rows, ci_rows, interaction_rows = await asyncio.gather(
+            pool.fetch(
+                """
+                SELECT cl.contact_id, l.id, l.name, l.color
+                FROM contact_labels cl
+                JOIN labels l ON l.id = cl.label_id
+                WHERE cl.contact_id = ANY($1)
+                ORDER BY l.name
+                """,
+                contact_ids,
+            ),
+            pool.fetch(
+                """
+                SELECT DISTINCT ON (ci.contact_id, ci.type)
+                    ci.contact_id, ci.type, ci.value
+                FROM public.contact_info ci
+                WHERE ci.contact_id = ANY($1)
+                  AND ci.type IN ('email', 'phone')
+                ORDER BY ci.contact_id, ci.type,
+                         ci.is_primary DESC NULLS LAST, ci.id
+                """,
+                contact_ids,
+            ),
+            pool.fetch(
+                """
+                SELECT i.contact_id, max(i.occurred_at) AS last_at
+                FROM interactions i
+                WHERE i.contact_id = ANY($1)
+                GROUP BY i.contact_id
+                """,
+                contact_ids,
+            ),
         )
         for lr in label_rows:
             labels_by_contact[lr["contact_id"]].append(
                 Label(id=lr["id"], name=lr["name"], color=lr["color"])
             )
+        for ci in ci_rows:
+            if ci["type"] == "email":
+                email_by_contact[ci["contact_id"]] = ci["value"]
+            else:
+                phone_by_contact[ci["contact_id"]] = ci["value"]
+        for ir in interaction_rows:
+            last_interaction_by_contact[ir["contact_id"]] = ir["last_at"]
 
     contacts = [
         ContactSummary(
@@ -301,10 +318,10 @@ async def list_contacts(
             first_name=row["first_name"],
             last_name=row["last_name"],
             nickname=row["nickname"],
-            email=row["email"],
-            phone=row["phone"],
+            email=email_by_contact.get(row["id"]),
+            phone=phone_by_contact.get(row["id"]),
             labels=labels_by_contact.get(row["id"], []),
-            last_interaction_at=row["last_interaction_at"],
+            last_interaction_at=last_interaction_by_contact.get(row["id"]),
         )
         for row in rows
     ]

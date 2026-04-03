@@ -156,11 +156,15 @@ def test_list_contacts_returns_contacts_with_labels(app):
         "first_name": "Alice",
         "last_name": "Smith",
         "nickname": "Ali",
-        "email": "alice@example.com",
-        "phone": "555-1234",
-        "last_interaction_at": datetime(2025, 1, 15, tzinfo=UTC),
     }
     label_rows = [{"contact_id": cid, "id": uuid4(), "name": "Friend", "color": "blue"}]
+    ci_rows = [
+        {"contact_id": cid, "type": "email", "value": "alice@example.com"},
+        {"contact_id": cid, "type": "phone", "value": "555-1234"},
+    ]
+    interaction_rows = [
+        {"contact_id": cid, "last_at": datetime(2025, 1, 15, tzinfo=UTC)},
+    ]
 
     app, mock_db, mock_pool = _app_with_mock_db(
         app,
@@ -169,8 +173,10 @@ def test_list_contacts_returns_contacts_with_labels(app):
         include_mock_pool=True,
     )
 
-    # pool.fetch is called twice: first for contacts, then for labels
-    mock_pool.fetch = AsyncMock(side_effect=[[contact_row], label_rows])
+    # pool.fetch: data query, then labels + contact_info + interactions in parallel
+    mock_pool.fetch = AsyncMock(
+        side_effect=[[contact_row], label_rows, ci_rows, interaction_rows]
+    )
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/contacts")
@@ -494,11 +500,9 @@ def test_list_contacts_reads_nickname_from_dedicated_column(app):
         "first_name": "Alice",
         "last_name": "Smith",
         "nickname": "Ali",
-        "email": "alice@example.com",
-        "phone": None,
-        "last_interaction_at": None,
     }
-    mock_pool.fetch = AsyncMock(side_effect=[[contact_row], []])
+    # data query, then labels + contact_info + interactions (all empty)
+    mock_pool.fetch = AsyncMock(side_effect=[[contact_row], [], [], []])
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/contacts")
