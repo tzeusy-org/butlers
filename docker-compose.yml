@@ -399,6 +399,12 @@ services:
     command: []
     ports:
       - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
+    # Allow bubblewrap (bwrap) sandbox inside the container — Codex CLI uses
+    # bwrap for command isolation, which requires user-namespace creation.
+    # Docker's default AppArmor profile blocks this; unconfined lifts that
+    # restriction while the bwrap sandbox itself remains fully functional.
+    security_opt:
+      - apparmor:unconfined
     environment:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
@@ -464,6 +470,7 @@ services:
       BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
       BUTLER_SHARED_DB_SCHEMA: shared
       GDRIVE_POLL_INTERVAL_S: ${GDRIVE_POLL_INTERVAL_S:-300}
+      GDRIVE_BATCH_WINDOW_S: ${GDRIVE_BATCH_WINDOW_S:-7200}
       GDRIVE_ACCOUNT_RESCAN_INTERVAL_S: ${GDRIVE_ACCOUNT_RESCAN_INTERVAL_S:-300}
     volumes:
       - ./logs:/app/logs
@@ -492,6 +499,8 @@ services:
     profiles: [hotreload]
     entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers up"]
     command: []
+    security_opt:
+      - apparmor:unconfined
     environment:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200

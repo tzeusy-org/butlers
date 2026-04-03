@@ -34,6 +34,8 @@ from butlers.connectors.google_drive import (
     GDriveCursor,
     GDriveProcessConfig,
     MultiAccountHealthStatus,
+    _build_batch_digest_envelope,
+    _build_batch_digest_text,
     _build_ingest_envelope,
     _build_normalized_text,
     _detect_change_type,
@@ -42,6 +44,7 @@ from butlers.connectors.google_drive import (
     _FileMetadata,
     _is_retryable_403,
     _make_idempotency_key,
+    _PendingChange,
     _redact_email,
     build_changes_list_url,
     build_start_page_token_url,
@@ -4276,3 +4279,365 @@ class TestReplayIngestWiring:
 
         assert len(submitted) == 1
         assert submitted[0]["schema_version"] == "ingest.v1"
+
+
+# ---------------------------------------------------------------------------
+# Batch digest tests
+# ---------------------------------------------------------------------------
+
+
+class TestBatchDigestText:
+    """Tests for _build_batch_digest_text."""
+
+    def test_single_change(self) -> None:
+        pending = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="Budget.xlsx",
+                observed_at="2026-04-04T01:09:22Z",
+                owner_email="user@example.com",
+            )
+        ]
+        text = _build_batch_digest_text(pending)
+        assert "1 change(s) across 1 file(s)" in text
+        assert "Budget.xlsx: file_modified" in text
+
+    def test_multiple_changes_same_file_coalesced(self) -> None:
+        pending = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="Budget.xlsx",
+                observed_at="2026-04-04T01:04:21Z",
+                owner_email="user@example.com",
+            ),
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="Budget.xlsx",
+                observed_at="2026-04-04T01:09:22Z",
+                owner_email="user@example.com",
+            ),
+        ]
+        text = _build_batch_digest_text(pending)
+        assert "2 change(s) across 1 file(s)" in text
+        assert "Budget.xlsx: file_modified x2" in text
+
+    def test_multiple_files(self) -> None:
+        pending = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="Budget.xlsx",
+                observed_at="2026-04-04T01:04:21Z",
+                owner_email="a@example.com",
+            ),
+            _PendingChange(
+                file_id="f2",
+                change_type="file_created",
+                name="Notes.docx",
+                observed_at="2026-04-04T01:09:22Z",
+                owner_email="b@example.com",
+            ),
+        ]
+        text = _build_batch_digest_text(pending)
+        assert "2 change(s) across 2 file(s)" in text
+        assert "Budget.xlsx: file_modified" in text
+        assert "Notes.docx: file_created" in text
+
+    def test_mixed_change_types_same_file(self) -> None:
+        pending = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_renamed",
+                name="Old.txt",
+                observed_at="2026-04-04T00:30:00Z",
+                owner_email=None,
+            ),
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="New.txt",
+                observed_at="2026-04-04T01:00:00Z",
+                owner_email=None,
+            ),
+        ]
+        text = _build_batch_digest_text(pending)
+        assert "file_renamed, file_modified x2" in text
+        # Uses latest name
+        assert "New.txt:" in text
+
+
+class TestBatchDigestEnvelope:
+    """Tests for _build_batch_digest_envelope."""
+
+    def test_envelope_structure(self) -> None:
+        pending = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="Budget.xlsx",
+                observed_at="2026-04-04T01:09:22Z",
+                owner_email="user@example.com",
+            ),
+        ]
+        envelope = _build_batch_digest_envelope(
+            endpoint_identity="google_drive:user:user@example.com",
+            pending=pending,
+            batch_opened_at="2026-04-04T00:00:00Z",
+        )
+        assert envelope["schema_version"] == "ingest.v1"
+        assert envelope["source"]["channel"] == "google_drive"
+        assert envelope["control"]["ingestion_tier"] == "metadata"
+        assert "google_drive_batch:" in envelope["payload"]["normalized_text"]
+        assert "batch" in envelope["event"]["external_thread_id"]
+
+    def test_idempotency_key_includes_batch_opened_at(self) -> None:
+        pending = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="a.txt",
+                observed_at="2026-04-04T01:00:00Z",
+                owner_email=None,
+            ),
+        ]
+        envelope = _build_batch_digest_envelope(
+            endpoint_identity="google_drive:user:test@example.com",
+            pending=pending,
+            batch_opened_at="2026-04-04T00:00:00+00:00",
+        )
+        assert "2026-04-04T00:00:00+00:00" in envelope["control"]["idempotency_key"]
+
+
+class TestBatchBuffering:
+    """Tests for batch buffering in _poll_once and flush logic."""
+
+    @pytest.fixture
+    def batch_config(self) -> GDriveAccountConfig:
+        """Account config with 2h batch window."""
+        return GDriveAccountConfig(
+            email=_FAKE_EMAIL,
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="refresh-token",
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+            poll_interval_s=300,
+            batch_window_s=7200,
+        )
+
+    async def test_poll_once_buffers_when_batch_enabled(
+        self, batch_config: GDriveAccountConfig
+    ) -> None:
+        """With batch_window_s > 0, _poll_once buffers changes instead of submitting."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=batch_config)
+
+        submitted: list[dict[str, Any]] = []
+
+        async def _fake_submit(envelope: dict[str, Any]) -> None:
+            submitted.append(envelope)
+
+        existing_cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._submit_to_ingest_api = _fake_submit  # type: ignore[method-assign]
+
+        changes = [
+            {"fileId": "f1", "file": {"id": "f1", "name": "a.txt", "mimeType": "text/plain"}},
+            {"fileId": "f2", "file": {"id": "f2", "name": "b.txt", "mimeType": "text/plain"}},
+        ]
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={"changes": changes, "newStartPageToken": "new-tok"}
+        )
+
+        await loop._poll_once()
+
+        # Should NOT have submitted immediately
+        assert submitted == []
+        # Should have buffered
+        assert len(loop._pending_batch) == 2
+        assert loop._batch_window_opened_at is not None
+
+    async def test_immediate_submit_when_batch_disabled(
+        self, account_config: GDriveAccountConfig
+    ) -> None:
+        """With batch_window_s=0 (default), _poll_once submits immediately."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=account_config)
+
+        submitted: list[dict[str, Any]] = []
+
+        async def _fake_submit(envelope: dict[str, Any]) -> None:
+            submitted.append(envelope)
+
+        existing_cursor = GDriveCursor(
+            page_token="tok",
+            last_updated_at=datetime.now(UTC),
+        )
+        loop._load_cursor = AsyncMock(return_value=existing_cursor)  # type: ignore[method-assign]
+        loop._save_cursor = AsyncMock()  # type: ignore[method-assign]
+        loop._load_metadata_cache_from_store = AsyncMock()  # type: ignore[method-assign]
+        loop._save_metadata_cache_to_store = AsyncMock()  # type: ignore[method-assign]
+        loop._submit_to_ingest_api = _fake_submit  # type: ignore[method-assign]
+
+        changes = [
+            {"fileId": "f1", "file": {"id": "f1", "name": "a.txt", "mimeType": "text/plain"}},
+        ]
+        loop._fetch_changes_page = AsyncMock(  # type: ignore[method-assign]
+            return_value={"changes": changes, "newStartPageToken": "new-tok"}
+        )
+
+        await loop._poll_once()
+
+        assert len(submitted) == 1
+        assert loop._pending_batch == []
+
+    async def test_maybe_flush_batch_does_not_flush_before_window(
+        self, batch_config: GDriveAccountConfig
+    ) -> None:
+        """_maybe_flush_batch is a no-op when batch window hasn't elapsed."""
+        import time
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=batch_config)
+        loop._batch_window_opened_at = time.time()  # just opened
+        loop._pending_batch = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="a.txt",
+                observed_at="2026-04-04T01:00:00Z",
+                owner_email=None,
+            )
+        ]
+
+        submitted: list[dict[str, Any]] = []
+
+        async def _fake_submit(envelope: dict[str, Any]) -> None:
+            submitted.append(envelope)
+
+        loop._submit_to_ingest_api = _fake_submit  # type: ignore[method-assign]
+
+        await loop._maybe_flush_batch()
+
+        assert submitted == []
+        assert len(loop._pending_batch) == 1
+
+    async def test_maybe_flush_batch_flushes_after_window(
+        self, batch_config: GDriveAccountConfig
+    ) -> None:
+        """_maybe_flush_batch flushes when batch window has elapsed."""
+        import time
+
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=batch_config)
+        # Pretend window opened 3 hours ago (> 7200s)
+        loop._batch_window_opened_at = time.time() - 10800
+        loop._pending_batch = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="a.txt",
+                observed_at="2026-04-04T01:00:00Z",
+                owner_email=None,
+            ),
+            _PendingChange(
+                file_id="f2",
+                change_type="file_created",
+                name="b.txt",
+                observed_at="2026-04-04T01:05:00Z",
+                owner_email="other@example.com",
+            ),
+        ]
+
+        submitted: list[dict[str, Any]] = []
+
+        async def _fake_submit(envelope: dict[str, Any]) -> None:
+            submitted.append(envelope)
+
+        loop._submit_to_ingest_api = _fake_submit  # type: ignore[method-assign]
+
+        await loop._maybe_flush_batch()
+
+        assert len(submitted) == 1
+        assert "google_drive_batch:" in submitted[0]["payload"]["normalized_text"]
+        assert "2 change(s) across 2 file(s)" in submitted[0]["payload"]["normalized_text"]
+        assert loop._pending_batch == []
+        assert loop._batch_window_opened_at is None
+
+    async def test_flush_batch_on_stop(self, batch_config: GDriveAccountConfig) -> None:
+        """stop() flushes any pending batch."""
+        loop = GDriveAccountLoop(email=_FAKE_EMAIL, config=batch_config)
+        import time
+
+        loop._batch_window_opened_at = time.time()
+        loop._pending_batch = [
+            _PendingChange(
+                file_id="f1",
+                change_type="file_modified",
+                name="a.txt",
+                observed_at="2026-04-04T01:00:00Z",
+                owner_email=None,
+            )
+        ]
+
+        submitted: list[dict[str, Any]] = []
+
+        async def _fake_submit(envelope: dict[str, Any]) -> None:
+            submitted.append(envelope)
+
+        loop._submit_to_ingest_api = _fake_submit  # type: ignore[method-assign]
+
+        await loop.stop()
+
+        assert len(submitted) == 1
+        assert loop._pending_batch == []
+
+
+class TestBatchWindowConfig:
+    """Tests for batch_window_s configuration threading."""
+
+    def test_process_config_from_env_reads_batch_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
+        monkeypatch.setenv("GDRIVE_BATCH_WINDOW_S", "7200")
+        config = GDriveProcessConfig.from_env()
+        assert config.batch_window_s == 7200
+
+    def test_process_config_default_batch_window_is_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
+        config = GDriveProcessConfig.from_env()
+        assert config.batch_window_s == 0
+
+    def test_make_account_config_threads_batch_window(self) -> None:
+        proc = GDriveProcessConfig(
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+            batch_window_s=3600,
+        )
+        acct = proc.make_account_config(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+        )
+        assert acct.batch_window_s == 3600
+
+    def test_make_account_config_metadata_override(self) -> None:
+        proc = GDriveProcessConfig(
+            switchboard_mcp_url=_SWITCHBOARD_URL,
+            batch_window_s=3600,
+        )
+        acct = proc.make_account_config(
+            email=_FAKE_EMAIL,
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+            metadata_gdrive={"batch_window_s": "7200"},
+        )
+        assert acct.batch_window_s == 7200

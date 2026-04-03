@@ -26,6 +26,7 @@ Environment variables:
 - CONNECTOR_CHANNEL=google_drive (required)
 - CONNECTOR_HEALTH_PORT (optional, default 40085)
 - GDRIVE_POLL_INTERVAL_S (optional, default 300)
+- GDRIVE_BATCH_WINDOW_S (optional, default 0 = disabled; e.g. 7200 for 2h batching)
 - GDRIVE_ACCOUNT_RESCAN_INTERVAL_S (optional, default 300)
 
 Security requirements:
@@ -87,6 +88,7 @@ _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _DEFAULT_POLL_INTERVAL_S = 300
 _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S = 300
 _DEFAULT_HEALTH_PORT = 40088  # 40085 is taken by connector-google-calendar
+_DEFAULT_BATCH_WINDOW_S = 0  # 0 = disabled (immediate submit); set to e.g. 7200 for 2h batching
 
 # Rate-limit retry config (task 11.6)
 _RATE_LIMIT_MAX_RETRIES = 5
@@ -201,6 +203,8 @@ class GDriveAccountConfig:
         refresh_token: OAuth refresh token.
         switchboard_mcp_url: Switchboard MCP server URL.
         poll_interval_s: Seconds between change polling cycles.
+        batch_window_s: Seconds to accumulate changes before submitting a single
+            digest envelope. 0 = disabled (immediate per-change submission).
         max_inflight: Max concurrent inflight requests.
         health_port: TCP port for health/metrics server.
         heartbeat_interval_s: Seconds between heartbeat sends.
@@ -212,6 +216,7 @@ class GDriveAccountConfig:
     refresh_token: str
     switchboard_mcp_url: str
     poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S
+    batch_window_s: int = _DEFAULT_BATCH_WINDOW_S
     max_inflight: int = 8
     health_port: int = _DEFAULT_HEALTH_PORT
     heartbeat_interval_s: int = 120
@@ -236,6 +241,7 @@ class GDriveProcessConfig:
 
     switchboard_mcp_url: str
     poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S
+    batch_window_s: int = _DEFAULT_BATCH_WINDOW_S
     account_rescan_interval_s: int = _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
     max_inflight: int = 8
     health_port: int = _DEFAULT_HEALTH_PORT
@@ -262,6 +268,7 @@ class GDriveProcessConfig:
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             poll_interval_s=_int_env("GDRIVE_POLL_INTERVAL_S", _DEFAULT_POLL_INTERVAL_S),
+            batch_window_s=_int_env("GDRIVE_BATCH_WINDOW_S", _DEFAULT_BATCH_WINDOW_S),
             account_rescan_interval_s=_int_env(
                 "GDRIVE_ACCOUNT_RESCAN_INTERVAL_S", _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
             ),
@@ -281,11 +288,17 @@ class GDriveProcessConfig:
     ) -> GDriveAccountConfig:
         """Build a per-account config, applying metadata overrides from google_accounts."""
         poll_interval = self.poll_interval_s
+        batch_window = self.batch_window_s
 
         if metadata_gdrive:
             if "poll_interval_s" in metadata_gdrive:
                 try:
                     poll_interval = int(metadata_gdrive["poll_interval_s"])
+                except (ValueError, TypeError):
+                    pass
+            if "batch_window_s" in metadata_gdrive:
+                try:
+                    batch_window = int(metadata_gdrive["batch_window_s"])
                 except (ValueError, TypeError):
                     pass
 
@@ -296,6 +309,7 @@ class GDriveProcessConfig:
             refresh_token=refresh_token,
             switchboard_mcp_url=self.switchboard_mcp_url,
             poll_interval_s=poll_interval,
+            batch_window_s=batch_window,
             max_inflight=self.max_inflight,
             health_port=self.health_port,
             heartbeat_interval_s=self.heartbeat_interval_s,
@@ -480,6 +494,98 @@ def _make_idempotency_key(
     so that re-ingesting the same file change produces the same key.
     """
     return f"gdrive:{endpoint_identity}:{file_id}:{modified_time_epoch}"
+
+
+# ---------------------------------------------------------------------------
+# Batch digest helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _PendingChange:
+    """A buffered change awaiting batch flush."""
+
+    file_id: str
+    change_type: str
+    name: str
+    observed_at: str
+    owner_email: str | None
+
+
+def _build_batch_digest_text(pending: list[_PendingChange]) -> str:
+    """Build a single normalized_text summarizing all buffered changes.
+
+    Groups changes per file and produces a compact digest so Switchboard
+    triggers only one LLM session per batch window.
+    """
+    # Group by file_id, preserving insertion order
+    by_file: dict[str, list[_PendingChange]] = {}
+    for p in pending:
+        by_file.setdefault(p.file_id, []).append(p)
+
+    total = len(pending)
+    file_count = len(by_file)
+
+    lines = [f"google_drive_batch: {total} change(s) across {file_count} file(s)"]
+    for file_id, changes in by_file.items():
+        name = changes[-1].name  # latest name
+        types = [c.change_type for c in changes]
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique_types: list[str] = []
+        for t in types:
+            if t not in seen:
+                seen.add(t)
+                unique_types.append(t)
+
+        type_str = ", ".join(unique_types)
+        count_suffix = f" x{len(changes)}" if len(changes) > 1 else ""
+        lines.append(f"- {name}: {type_str}{count_suffix}")
+
+    return "\n".join(lines)
+
+
+def _build_batch_digest_envelope(
+    *,
+    endpoint_identity: str,
+    pending: list[_PendingChange],
+    batch_opened_at: str,
+) -> dict[str, Any]:
+    """Build a single ingest.v1 envelope for an entire batch window.
+
+    Uses a synthetic thread_id so the batch digest doesn't collide with
+    per-file threads.  The idempotency_key includes the batch window start
+    time so that a restart after flush doesn't re-submit.
+    """
+    normalized_text = _build_batch_digest_text(pending)
+    observed_at = datetime.now(UTC).isoformat()
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": _CONNECTOR_CHANNEL,
+            "provider": _CONNECTOR_PROVIDER,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": f"gdrive:batch:{endpoint_identity}:{batch_opened_at}",
+            "external_thread_id": f"gdrive:batch:{endpoint_identity}",
+            "observed_at": observed_at,
+        },
+        "sender": {
+            "identity": endpoint_identity,
+        },
+        "payload": {
+            "raw": None,
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "policy_tier": "default",
+            "ingestion_tier": "metadata",
+            "idempotency_key": f"gdrive:batch:{endpoint_identity}:{batch_opened_at}",
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -753,6 +859,10 @@ class GDriveAccountLoop:
             endpoint_identity=self.endpoint_identity,
         )
 
+        # Batch buffer — accumulates changes when batch_window_s > 0
+        self._pending_batch: list[_PendingChange] = []
+        self._batch_window_opened_at: float | None = None
+
     def start(self) -> None:
         """Launch the per-account poll loop as an asyncio task."""
         self._task = asyncio.create_task(self._run(), name=f"gdrive-account-{self.email}")
@@ -806,6 +916,8 @@ class GDriveAccountLoop:
             finally:
                 # Flush filtered events accumulated during this cycle (task 11.2)
                 await self._flush_filtered_events()
+                # Flush batch buffer if the window has elapsed
+                await self._maybe_flush_batch()
                 # Update Drive-specific metadata cache size gauge (task 11.5)
                 gdrive_metadata_cache_size.labels(endpoint_identity=self.endpoint_identity).set(
                     len(self._metadata_cache)
@@ -1163,16 +1275,21 @@ class GDriveAccountLoop:
         # Process changes — collect accepted envelopes (task 9.4: checkpoint after acceptance)
         observed_at = datetime.now(UTC).isoformat()
         accepted_count = 0
+        batching = self._config.batch_window_s > 0
         for change in all_changes:
             envelope = self.process_change(change, observed_at=observed_at)
             if envelope is not None:
-                await self._submit_to_ingest_api(envelope)
+                if batching:
+                    self._buffer_change(change, envelope, observed_at)
+                else:
+                    await self._submit_to_ingest_api(envelope)
                 accepted_count += 1
 
         logger.info(
-            "Drive: processed %d changes (%d accepted) for email=%s",
+            "Drive: processed %d changes (%d accepted, batch_pending=%d) for email=%s",
             len(all_changes),
             accepted_count,
+            len(self._pending_batch),
             self.email,
         )
 
@@ -1186,6 +1303,68 @@ class GDriveAccountLoop:
 
         # Persist updated metadata cache (task 9.5)
         await self._save_metadata_cache_to_store()
+
+    def _buffer_change(
+        self,
+        change: dict[str, Any],
+        envelope: dict[str, Any],
+        observed_at: str,
+    ) -> None:
+        """Append a processed change to the batch buffer."""
+        if self._batch_window_opened_at is None:
+            self._batch_window_opened_at = time.time()
+
+        file_id = (change.get("file") or {}).get("id") or change.get("fileId", "")
+        file_data = change.get("file") or {}
+        cached = self._metadata_cache.get(file_id)
+        change_type = _detect_change_type(change, cached)
+        name = file_data.get("name") or (cached.name if cached else "unknown")
+        owner_email = envelope.get("sender", {}).get("identity")
+
+        self._pending_batch.append(
+            _PendingChange(
+                file_id=file_id,
+                change_type=change_type,
+                name=name,
+                observed_at=observed_at,
+                owner_email=owner_email,
+            )
+        )
+
+    async def _maybe_flush_batch(self) -> None:
+        """Flush the batch buffer if the batch window has elapsed."""
+        if not self._pending_batch or self._batch_window_opened_at is None:
+            return
+        elapsed = time.time() - self._batch_window_opened_at
+        if elapsed < self._config.batch_window_s:
+            return
+        await self._flush_batch()
+
+    async def _flush_batch(self) -> None:
+        """Submit all buffered changes as a single digest envelope and clear the buffer."""
+        if not self._pending_batch:
+            return
+
+        opened_at = datetime.fromtimestamp(
+            self._batch_window_opened_at or time.time(), UTC
+        ).isoformat()
+
+        envelope = _build_batch_digest_envelope(
+            endpoint_identity=self.endpoint_identity,
+            pending=self._pending_batch,
+            batch_opened_at=opened_at,
+        )
+
+        logger.info(
+            "Drive: flushing batch digest (%d changes) for email=%s",
+            len(self._pending_batch),
+            self.email,
+        )
+
+        await self._submit_to_ingest_api(envelope)
+
+        self._pending_batch.clear()
+        self._batch_window_opened_at = None
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to Switchboard via MCP ingest tool.
@@ -1271,13 +1450,18 @@ class GDriveAccountLoop:
                 self._error = str(exc)
 
     async def stop(self) -> None:
-        """Gracefully stop the account loop."""
+        """Gracefully stop the account loop, flushing any pending batch."""
         if self._task is not None and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
+        # Flush any remaining batch so changes aren't lost on shutdown
+        try:
+            await self._flush_batch()
+        except Exception as exc:
+            logger.warning("Drive: error flushing batch on stop for email=%s: %s", self.email, exc)
         try:
             await self._mcp_client.aclose()
         except Exception as exc:
@@ -2007,6 +2191,7 @@ async def run_google_drive_connector() -> None:
     - CONNECTOR_PROVIDER=google_drive (set in Docker env; constant in code)
     - CONNECTOR_CHANNEL=google_drive (set in Docker env; constant in code)
     - GDRIVE_POLL_INTERVAL_S (optional, default 300)
+    - GDRIVE_BATCH_WINDOW_S (optional, default 0 = disabled; e.g. 7200 for 2h batching)
     - GDRIVE_ACCOUNT_RESCAN_INTERVAL_S (optional, default 300)
     - CONNECTOR_HEALTH_PORT (optional, default 40085)
     - CONNECTOR_MAX_INFLIGHT (optional, default 8)
