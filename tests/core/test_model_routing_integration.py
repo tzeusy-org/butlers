@@ -84,6 +84,16 @@ async def _create_model_routing_schema(pool: asyncpg.Pool) -> None:
         )
     """)
 
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS public.model_round_robin_counters (
+            butler_name      TEXT NOT NULL,
+            complexity_tier  TEXT NOT NULL,
+            counter          BIGINT NOT NULL DEFAULT 0,
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (butler_name, complexity_tier)
+        )
+    """)
+
 
 async def _create_sessions_schema(pool: asyncpg.Pool) -> None:
     """Create minimal sessions table for testing session recording."""

@@ -27,6 +27,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse
 from butlers.api.pricing import ModelPricing, PricingConfig, TieredModelPricing
+from butlers.core.model_routing import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -837,40 +838,17 @@ async def resolve_model_preview(
 ) -> ApiResponse[ResolveModelResponse]:
     """Preview which model would be selected for a butler + complexity tier.
 
-    Executes the same resolution logic as the spawner: LEFT JOIN the catalog
-    with per-butler overrides, COALESCE enabled/priority/tier, return the
-    highest-priority matching row.
-
-    Also returns actual quota status by querying the ledger directly (does not
-    use the check_token_quota fast-path that returns zeroes for unlimited entries).
+    Calls the shared ``resolve_model()`` function (same round-robin logic the
+    spawner uses).  Also returns actual quota status by querying the ledger
+    directly (does not use the check_token_quota fast-path that returns zeroes
+    for unlimited entries).
     """
     _validate_complexity_tier(complexity)
     pool = _shared_pool(db)
 
-    row = await pool.fetchrow(
-        """
-        SELECT
-            mc.id         AS catalog_entry_id,
-            mc.runtime_type,
-            mc.model_id,
-            mc.extra_args
-        FROM public.model_catalog mc
-        LEFT JOIN public.butler_model_overrides bmo
-            ON bmo.catalog_entry_id = mc.id
-            AND bmo.butler_name = $1
-        WHERE
-            COALESCE(bmo.enabled, mc.enabled) = true
-            AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
-        ORDER BY
-            COALESCE(bmo.priority, mc.priority) DESC,
-            mc.created_at ASC
-        LIMIT 1
-        """,
-        name,
-        complexity,
-    )
+    result = await resolve_model(pool, name, complexity)
 
-    if row is None:
+    if result is None:
         return ApiResponse[ResolveModelResponse](
             data=ResolveModelResponse(
                 butler_name=name,
@@ -879,8 +857,7 @@ async def resolve_model_preview(
             )
         )
 
-    raw_entry_id = _row_value(row, "catalog_entry_id")
-    catalog_entry_id: UUID | None = UUID(str(raw_entry_id)) if raw_entry_id is not None else None
+    runtime_type, model_id, extra_args, catalog_entry_id = result
 
     # Query actual usage from ledger (always, even for unlimited entries).
     # Only possible when we have a catalog_entry_id from the row.
@@ -944,9 +921,9 @@ async def resolve_model_preview(
         data=ResolveModelResponse(
             butler_name=name,
             complexity=complexity,
-            runtime_type=row["runtime_type"],
-            model_id=row["model_id"],
-            extra_args=_coerce_extra_args(_row_value(row, "extra_args")),
+            runtime_type=runtime_type,
+            model_id=model_id,
+            extra_args=extra_args,
             resolved=True,
             quota_blocked=quota_blocked,
             usage_24h=usage_24h,

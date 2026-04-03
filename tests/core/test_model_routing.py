@@ -6,7 +6,7 @@ Covers:
 - per-butler override remaps complexity tier
 - per-butler override overrides priority
 - no matching candidates returns None
-- priority tie-breaking by created_at (stable ordering)
+- round-robin rotation among same-priority entries
 - Complexity enum validates all four tiers
 - resolve_model accepts both Complexity enum and raw string
 """
@@ -105,6 +105,16 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
             CONSTRAINT chk_butler_model_overrides_complexity_tier
                 CHECK (complexity_tier IS NULL
                        OR complexity_tier IN ('trivial', 'medium', 'high', 'extra_high'))
+        )
+    """)
+
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS public.model_round_robin_counters (
+            butler_name      TEXT NOT NULL,
+            complexity_tier  TEXT NOT NULL,
+            counter          BIGINT NOT NULL DEFAULT 0,
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (butler_name, complexity_tier)
         )
     """)
 
@@ -363,8 +373,8 @@ async def test_resolve_no_candidates_returns_none(postgres_container: Any) -> No
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_tie_breaking_by_created_at(postgres_container: Any) -> None:
-    """Two entries with the same priority: earlier created_at wins."""
+async def test_resolve_round_robin_same_priority(postgres_container: Any) -> None:
+    """Two entries with equal priority: resolve_model cycles through them round-robin."""
     async with _make_pool(postgres_container) as pool:
         await pool.execute("""
             INSERT INTO public.model_catalog
@@ -372,15 +382,158 @@ async def test_resolve_tie_breaking_by_created_at(postgres_container: Any) -> No
             VALUES
                 ('first',  'claude', 'model-first',  'medium', 10,
                  '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'),
-                ('second', 'codex',       'model-second', 'medium', 10,
+                ('second', 'codex',  'model-second', 'medium', 10,
                  '2026-01-02 00:00:00+00', '2026-01-02 00:00:00+00')
         """)
 
-        result = await resolve_model(pool, "general", Complexity.MEDIUM)
-        assert result is not None
-        # first entry (earlier created_at) wins when priority is equal
-        assert len(result) == 4
-        assert result[1] == "model-first"
+        # Call 1: counter=0, 0%2=0 → model-first (earliest created_at)
+        r1 = await resolve_model(pool, "general", Complexity.MEDIUM)
+        assert r1 is not None and r1[1] == "model-first"
+
+        # Call 2: counter=1, 1%2=1 → model-second
+        r2 = await resolve_model(pool, "general", Complexity.MEDIUM)
+        assert r2 is not None and r2[1] == "model-second"
+
+        # Call 3: counter=2, 2%2=0 → back to model-first
+        r3 = await resolve_model(pool, "general", Complexity.MEDIUM)
+        assert r3 is not None and r3[1] == "model-first"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_round_robin_single_candidate(postgres_container: Any) -> None:
+    """Single candidate at top priority: always returned regardless of counter."""
+    async with _make_pool(postgres_container) as pool:
+        await _insert_catalog_entry(
+            pool,
+            alias="only",
+            runtime_type="claude",
+            model_id="only-model",
+            complexity_tier="medium",
+            priority=10,
+        )
+
+        for _ in range(3):
+            result = await resolve_model(pool, "general", Complexity.MEDIUM)
+            assert result is not None and result[1] == "only-model"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_round_robin_three_candidates(postgres_container: Any) -> None:
+    """Three same-priority entries cycle 0, 1, 2, 0, 1, 2."""
+    async with _make_pool(postgres_container) as pool:
+        await pool.execute("""
+            INSERT INTO public.model_catalog
+                (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
+            VALUES
+                ('a', 'rt', 'model-a', 'high', 5,
+                 '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'),
+                ('b', 'rt', 'model-b', 'high', 5,
+                 '2026-01-02 00:00:00+00', '2026-01-02 00:00:00+00'),
+                ('c', 'rt', 'model-c', 'high', 5,
+                 '2026-01-03 00:00:00+00', '2026-01-03 00:00:00+00')
+        """)
+
+        expected = ["model-a", "model-b", "model-c", "model-a", "model-b", "model-c"]
+        for model_id in expected:
+            result = await resolve_model(pool, "general", Complexity.HIGH)
+            assert result is not None and result[1] == model_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_round_robin_ignores_lower_priority(postgres_container: Any) -> None:
+    """Only top-priority entries participate in round-robin rotation."""
+    async with _make_pool(postgres_container) as pool:
+        await pool.execute("""
+            INSERT INTO public.model_catalog
+                (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
+            VALUES
+                ('top1', 'rt', 'model-top1', 'medium', 20,
+                 '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'),
+                ('top2', 'rt', 'model-top2', 'medium', 20,
+                 '2026-01-02 00:00:00+00', '2026-01-02 00:00:00+00'),
+                ('low',  'rt', 'model-low',  'medium', 10,
+                 '2026-01-03 00:00:00+00', '2026-01-03 00:00:00+00')
+        """)
+
+        results = []
+        for _ in range(4):
+            r = await resolve_model(pool, "general", Complexity.MEDIUM)
+            assert r is not None
+            results.append(r[1])
+
+        # Only the two priority-20 models should appear
+        assert set(results) == {"model-top1", "model-top2"}
+        assert "model-low" not in results
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_round_robin_independent_per_butler(postgres_container: Any) -> None:
+    """Different butlers have independent round-robin counters."""
+    async with _make_pool(postgres_container) as pool:
+        await pool.execute("""
+            INSERT INTO public.model_catalog
+                (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
+            VALUES
+                ('x', 'rt', 'model-x', 'medium', 10,
+                 '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'),
+                ('y', 'rt', 'model-y', 'medium', 10,
+                 '2026-01-02 00:00:00+00', '2026-01-02 00:00:00+00')
+        """)
+
+        # Both butlers start at counter=0 → model-x
+        r_alice = await resolve_model(pool, "alice", Complexity.MEDIUM)
+        r_bob = await resolve_model(pool, "bob", Complexity.MEDIUM)
+        assert r_alice is not None and r_alice[1] == "model-x"
+        assert r_bob is not None and r_bob[1] == "model-x"
+
+        # Second call: both advance to counter=1 → model-y
+        r_alice2 = await resolve_model(pool, "alice", Complexity.MEDIUM)
+        r_bob2 = await resolve_model(pool, "bob", Complexity.MEDIUM)
+        assert r_alice2 is not None and r_alice2[1] == "model-y"
+        assert r_bob2 is not None and r_bob2[1] == "model-y"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_round_robin_independent_per_tier(postgres_container: Any) -> None:
+    """Same butler, different tiers have independent counters."""
+    async with _make_pool(postgres_container) as pool:
+        await pool.execute("""
+            INSERT INTO public.model_catalog
+                (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
+            VALUES
+                ('m1', 'rt', 'med-1', 'medium', 10,
+                 '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'),
+                ('m2', 'rt', 'med-2', 'medium', 10,
+                 '2026-01-02 00:00:00+00', '2026-01-02 00:00:00+00'),
+                ('h1', 'rt', 'high-1', 'high', 10,
+                 '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'),
+                ('h2', 'rt', 'high-2', 'high', 10,
+                 '2026-01-02 00:00:00+00', '2026-01-02 00:00:00+00')
+        """)
+
+        # First call for each tier → index 0
+        rm = await resolve_model(pool, "general", Complexity.MEDIUM)
+        rh = await resolve_model(pool, "general", Complexity.HIGH)
+        assert rm is not None and rm[1] == "med-1"
+        assert rh is not None and rh[1] == "high-1"
+
+        # Advance medium counter but not high
+        rm2 = await resolve_model(pool, "general", Complexity.MEDIUM)
+        assert rm2 is not None and rm2[1] == "med-2"
+
+        # High still at counter=1 → high-2
+        rh2 = await resolve_model(pool, "general", Complexity.HIGH)
+        assert rh2 is not None and rh2[1] == "high-2"
 
 
 @pytest.mark.integration

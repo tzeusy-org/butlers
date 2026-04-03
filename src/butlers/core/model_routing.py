@@ -18,9 +18,13 @@ For a given ``butler_name`` and ``complexity_tier``:
 3. Effective priority: ``COALESCE(bmo.priority, mc.priority)``
 4. Effective tier:     ``COALESCE(bmo.complexity_tier, mc.complexity_tier)``
 5. Filter: effective enabled = true AND effective tier = $complexity_tier.
-6. Order by effective priority DESC, then mc.created_at ASC (stable tie-break).
-7. Return the first row as (runtime_type, model_id, extra_args, catalog_entry_id),
-   or None if no matching entries exist.
+6. Among entries with the highest effective priority, assign deterministic
+   indices ordered by ``mc.created_at ASC, mc.id ASC``.
+7. Atomically increment a per-``(butler_name, complexity_tier)`` counter in
+   ``public.model_round_robin_counters`` and select the candidate at index
+   ``counter % candidate_count`` (round-robin).
+8. Return the selected row as (runtime_type, model_id, extra_args,
+   catalog_entry_id), or None if no matching entries exist.
 """
 
 from __future__ import annotations
@@ -73,26 +77,49 @@ class QuotaStatus:
 
 
 # SQL that performs the full resolution in a single round-trip.
-# Uses a LEFT JOIN so global-only entries (no override row) are still returned.
-# COALESCE applies the per-butler override for enabled/priority/complexity_tier
-# when a matching override row exists, otherwise falls back to the catalog value.
+# Uses CTEs to:
+# 1. Find all enabled candidates at the highest effective priority for the tier.
+# 2. Atomically increment a round-robin counter for (butler_name, complexity_tier).
+# 3. Select the candidate at index (counter % total) for fair rotation.
 _RESOLVE_SQL = """
-SELECT
-    mc.runtime_type,
-    mc.model_id,
-    mc.extra_args,
-    mc.id
-FROM public.model_catalog mc
-LEFT JOIN public.butler_model_overrides bmo
-    ON bmo.catalog_entry_id = mc.id
-    AND bmo.butler_name = $1
-WHERE
-    COALESCE(bmo.enabled, mc.enabled) = true
-    AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
-ORDER BY
-    COALESCE(bmo.priority, mc.priority) DESC,
-    mc.created_at ASC
-LIMIT 1
+WITH candidates AS (
+    SELECT
+        mc.runtime_type,
+        mc.model_id,
+        mc.extra_args,
+        mc.id,
+        ROW_NUMBER() OVER (ORDER BY mc.created_at ASC, mc.id ASC) - 1 AS rn,
+        COUNT(*) OVER () AS total
+    FROM public.model_catalog mc
+    LEFT JOIN public.butler_model_overrides bmo
+        ON bmo.catalog_entry_id = mc.id
+        AND bmo.butler_name = $1
+    WHERE
+        COALESCE(bmo.enabled, mc.enabled) = true
+        AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
+        AND COALESCE(bmo.priority, mc.priority) = (
+            SELECT MAX(COALESCE(bmo2.priority, mc2.priority))
+            FROM public.model_catalog mc2
+            LEFT JOIN public.butler_model_overrides bmo2
+                ON bmo2.catalog_entry_id = mc2.id
+                AND bmo2.butler_name = $1
+            WHERE
+                COALESCE(bmo2.enabled, mc2.enabled) = true
+                AND COALESCE(bmo2.complexity_tier, mc2.complexity_tier) = $2
+        )
+),
+next_counter AS (
+    INSERT INTO public.model_round_robin_counters
+        (butler_name, complexity_tier, counter, updated_at)
+    VALUES ($1, $2, 0, now())
+    ON CONFLICT (butler_name, complexity_tier)
+    DO UPDATE SET counter = public.model_round_robin_counters.counter + 1,
+                  updated_at = now()
+    RETURNING counter
+)
+SELECT c.runtime_type, c.model_id, c.extra_args, c.id
+FROM candidates c, next_counter nc
+WHERE c.rn = (nc.counter % c.total)
 """
 
 # CTE-based single-query for both 24h and 30d windows.
@@ -156,6 +183,11 @@ async def resolve_model(
     LEFT JOIN.  Per-butler overrides can remap enabled state, priority, and
     complexity tier without duplicating the catalog row.
 
+    When multiple entries share the highest effective priority for a tier,
+    selection rotates round-robin using an atomic counter in
+    ``public.model_round_robin_counters``.  Each ``(butler_name,
+    complexity_tier)`` pair maintains an independent counter.
+
     Parameters
     ----------
     pool:
@@ -172,7 +204,7 @@ async def resolve_model(
     -------
     tuple[str, str, list[str], uuid.UUID] | None
         ``(runtime_type, model_id, extra_args, catalog_entry_id)`` for the
-        highest-priority matching entry, or ``None`` if no enabled entries match.
+        selected entry, or ``None`` if no enabled entries match.
         ``extra_args`` is a list of CLI token strings (e.g. ``["--config", "k=v"]``).
         ``catalog_entry_id`` is the UUID primary key of the matched catalog row.
     """
