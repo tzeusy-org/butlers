@@ -354,17 +354,20 @@ def _make_config(
     model: str | None | object = _SENTINEL,
     max_concurrent_sessions: int = 1,
     max_queued_sessions: int = 100,
+    session_timeout_s: int = 1800,
 ) -> ButlerConfig:
     if model is not _SENTINEL:
         runtime = RuntimeConfig(
             model=model,
             max_concurrent_sessions=max_concurrent_sessions,
             max_queued_sessions=max_queued_sessions,
+            session_timeout_s=session_timeout_s,
         )
     else:
         runtime = RuntimeConfig(
             max_concurrent_sessions=max_concurrent_sessions,
             max_queued_sessions=max_queued_sessions,
+            session_timeout_s=session_timeout_s,
         )
     return ButlerConfig(
         name=name,
@@ -578,6 +581,46 @@ class TestSpawnerInvocation:
         assert second.success is True
         assert adapter.created_worker_ids == [1, 2]
         assert adapter.invoked_worker_ids == [1, 2]
+
+    async def test_session_timeout_cancels_hung_invoke(self, tmp_path: Path):
+        """Sessions exceeding session_timeout_s are cancelled and return a timeout error."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(session_timeout_s=1)
+
+        # Adapter that hangs for 60s — will be cancelled by the 1s timeout
+        adapter = MockAdapter(result_text="never reached", delay=60)
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        result = await spawner.trigger("hung prompt", "route")
+        assert result.success is False
+        assert result.error is not None
+        assert "timed out" in result.error.lower()
+        assert result.duration_ms >= 900  # at least ~1s
+
+    async def test_session_timeout_releases_semaphore(self, tmp_path: Path):
+        """After a timeout, the concurrency semaphore is released for subsequent sessions."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(session_timeout_s=1)
+
+        adapter = SequenceMockAdapter(
+            sequence=[
+                {"delay": 60},  # first call hangs → timeout
+                {"result_text": "ok"},  # second call succeeds
+            ]
+        )
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        # First trigger should timeout
+        r1 = await spawner.trigger("hung", "route")
+        assert r1.success is False
+        assert "timed out" in r1.error.lower()
+
+        # Second trigger should succeed — semaphore was released
+        r2 = await spawner.trigger("ok", "route")
+        assert r2.success is True
+        assert r2.output == "ok"
 
 
 # ---------------------------------------------------------------------------

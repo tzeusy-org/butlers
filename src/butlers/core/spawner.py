@@ -1285,9 +1285,17 @@ class Spawner:
             }
             if merged_args:
                 invoke_kwargs["runtime_args"] = merged_args
-            result_text, tool_calls, usage = await runtime.invoke(
-                **invoke_kwargs,
-            )
+            timeout_s = self._config.runtime.session_timeout_s
+            try:
+                result_text, tool_calls, usage = await asyncio.wait_for(
+                    runtime.invoke(**invoke_kwargs),
+                    timeout=timeout_s,
+                )
+            except TimeoutError:
+                raise TimeoutError(
+                    f"Session timed out after {timeout_s}s "
+                    f"(model={model}, butler={self._config.name})"
+                )
             if runtime_session_id:
                 executed_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
                 tool_calls = _merge_tool_call_records(tool_calls, executed_tool_calls)

@@ -76,6 +76,11 @@ class RuntimeConfig:
     max_queued_sessions controls spawner queue backpressure. Once the queue is
     full, new triggers are rejected immediately instead of waiting unboundedly.
 
+    session_timeout_s controls the maximum wall-clock duration of a single
+    runtime invocation. Sessions exceeding this limit are cancelled and marked
+    as failed, releasing their concurrency slots. Default of 1800 (30 minutes)
+    prevents hung runtime processes from permanently blocking the pipeline.
+
     args is an optional ordered list of additional CLI arguments passed to the
     selected runtime adapter invocation. Arguments are passed as-is (no shell
     parsing), so each CLI token should be a separate list entry.
@@ -85,6 +90,7 @@ class RuntimeConfig:
     model: str | None = DEFAULT_MODEL
     max_concurrent_sessions: int = 1
     max_queued_sessions: int = 100
+    session_timeout_s: int = 1800
     args: tuple[str, ...] = ()
 
 
@@ -310,6 +316,7 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
     model = runtime_section.get("model")
     max_concurrent_sessions = int(runtime_section.get("max_concurrent_sessions", 1))
     max_queued_sessions = int(runtime_section.get("max_queued_sessions", 100))
+    session_timeout_s = int(runtime_section.get("session_timeout_s", 1800))
     raw_runtime_args = runtime_section.get("args", [])
 
     if not isinstance(raw_runtime_args, list):
@@ -331,6 +338,11 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
             f"Invalid butler.runtime.max_queued_sessions: {max_queued_sessions!r}. "
             "Must be a positive integer."
         )
+    if session_timeout_s <= 0:
+        raise ConfigError(
+            f"Invalid butler.runtime.session_timeout_s: {session_timeout_s!r}. "
+            "Must be a positive integer."
+        )
 
     # Normalise empty/whitespace string → use default
     if isinstance(model, str) and not model.strip():
@@ -341,11 +353,13 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
             model=model,
             max_concurrent_sessions=max_concurrent_sessions,
             max_queued_sessions=max_queued_sessions,
+            session_timeout_s=session_timeout_s,
             args=tuple(runtime_args),
         )
     return RuntimeConfig(
         max_concurrent_sessions=max_concurrent_sessions,
         max_queued_sessions=max_queued_sessions,
+        session_timeout_s=session_timeout_s,
         args=tuple(runtime_args),
     )
 
@@ -770,6 +784,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         model=butler_runtime.model,
         max_concurrent_sessions=butler_runtime.max_concurrent_sessions,
         max_queued_sessions=butler_runtime.max_queued_sessions,
+        session_timeout_s=butler_runtime.session_timeout_s,
         args=butler_runtime.args,
     )
 
