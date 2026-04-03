@@ -1485,6 +1485,22 @@ class MessagePipeline:
                             lifecycle_state="skipped",
                         ),
                     )
+                    if message_inbox_id:
+                        completed_at = datetime.now(UTC)
+                        await self._update_message_inbox_lifecycle(
+                            message_inbox_id=message_inbox_id,
+                            decomposition_output={
+                                "request_id": request_id,
+                                "policy_bypass": True,
+                                "triage_decision": "skip",
+                            },
+                            dispatch_outcomes={"request_id": request_id},
+                            response_summary="Policy bypass: skip",
+                            lifecycle_state="skipped",
+                            classified_at=completed_at,
+                            classification_duration_ms=0.0,
+                            final_state_at=completed_at,
+                        )
                     return RoutingResult(
                         target_butler="skipped",
                         route_result={"policy_bypass": True, "triage_decision": "skip"},
@@ -1502,6 +1518,22 @@ class MessagePipeline:
                             lifecycle_state="metadata_only",
                         ),
                     )
+                    if message_inbox_id:
+                        completed_at = datetime.now(UTC)
+                        await self._update_message_inbox_lifecycle(
+                            message_inbox_id=message_inbox_id,
+                            decomposition_output={
+                                "request_id": request_id,
+                                "policy_bypass": True,
+                                "triage_decision": "metadata_only",
+                            },
+                            dispatch_outcomes={"request_id": request_id},
+                            response_summary="Policy bypass: metadata_only",
+                            lifecycle_state="metadata_only",
+                            classified_at=completed_at,
+                            classification_duration_ms=0.0,
+                            final_state_at=completed_at,
+                        )
                     return RoutingResult(
                         target_butler="metadata_only",
                         route_result={"policy_bypass": True, "triage_decision": "metadata_only"},
