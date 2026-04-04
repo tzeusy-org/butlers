@@ -50,7 +50,7 @@ def _mock_mcp_manager(*, trigger_result=None, tick_result=None,
                       unreachable=False, timeout=False):
     mgr = MagicMock(spec=MCPClientManager)
     if unreachable:
-        mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("general", "unreachable"))
+        mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("general", cause=ConnectionRefusedError("unreachable")))
     elif timeout:
         mgr.get_client = AsyncMock(side_effect=TimeoutError())
     else:
@@ -120,8 +120,10 @@ class TestButlerList:
             resp = await client.get("/api/butlers")
         assert resp.status_code == 200
         body = resp.json()
-        # response is either a list or {"data": [...]}
-        items = body if isinstance(body, list) else body.get("data", [])
+        assert isinstance(body, dict)
+        assert "data" in body
+        assert "meta" in body
+        items = body["data"]
         assert len(items) >= 1
         assert items[0]["name"] == "general"
 

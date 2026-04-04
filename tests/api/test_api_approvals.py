@@ -119,12 +119,12 @@ async def test_get_action_not_found_returns_404(app):
     assert resp.status_code == 404
 
 
-async def test_get_action_invalid_uuid_returns_4xx(app):
+async def test_get_action_invalid_uuid_returns_400(app):
     app, _ = _app_with_mock_db(app)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url="http://test") as client:
         resp = await client.get("/api/approvals/actions/not-a-uuid")
-    assert resp.status_code in (400, 422)
+    assert resp.status_code == 400
 
 
 async def test_list_rules_returns_paginated_structure(app):

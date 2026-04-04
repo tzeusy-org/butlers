@@ -118,7 +118,7 @@ class TestHealingAPI:
         pool = _mock_pool(fetch_rows=fetch_rows, fetchrow_result=fetchrow_result,
                           fetchval_result=fetchval)
         db = _mock_db_shared(pool)
-        app = create_app()
+        app = create_app(api_key="")
         app.dependency_overrides[_healing_get_db] = lambda: db
         app.dependency_overrides[_get_dispatch_fn] = lambda: None
         return app, pool
@@ -171,7 +171,7 @@ class TestHomeAssistantAPI:
     async def test_save_credentials_validates_and_returns_200(self):
         from butlers.api.routers.home_assistant import _get_db_manager as _ha_get_db
         mock_pool = _mock_pool()
-        app = create_app()
+        app = create_app(api_key="")
         app.dependency_overrides[_ha_get_db] = lambda: _mock_db_shared(mock_pool)
         with (
             patch(_HA_VALIDATE, AsyncMock(return_value={"version": "2024.1"})),
@@ -188,7 +188,7 @@ class TestHomeAssistantAPI:
 
     async def test_save_credentials_422_missing_url(self):
         from butlers.api.routers.home_assistant import _get_db_manager as _ha_get_db
-        app = create_app()
+        app = create_app(api_key="")
         app.dependency_overrides[_ha_get_db] = lambda: MagicMock(spec=DatabaseManager)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
@@ -203,7 +203,7 @@ class TestHomeAssistantAPI:
 
 class TestSteamAPI:
     def _make_app(self, *, db=None):
-        app = create_app()
+        app = create_app(api_key="")
         if db is None:
             db = _mock_db_shared(_mock_pool())
         app.dependency_overrides[_steam_get_db] = lambda: db
@@ -265,7 +265,7 @@ class TestSpotifyAPI:
         pool.acquire = _acquire
         db = MagicMock()
         db.credential_shared_pool.return_value = pool
-        app = create_app()
+        app = create_app(api_key="")
         app.dependency_overrides[_spotify_get_db] = lambda: db
         return app
 
@@ -273,12 +273,10 @@ class TestSpotifyAPI:
         app = self._make_app()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
-            resp = await client.post("/api/connectors/spotify/oauth/start",
-                                     json={"redirect_uri": "http://localhost/callback"})
-        assert resp.status_code in (200, 422)
-        if resp.status_code == 200:
-            body = resp.json()
-            assert "authorization_url" in body or "auth_url" in body or "url" in body
+            resp = await client.post("/api/connectors/spotify/oauth/start")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "authorization_url" in body
 
     async def test_status_endpoint_returns_200(self):
         app = self._make_app()
@@ -310,7 +308,7 @@ class TestOwnTracksAPI:
             db.credential_shared_pool.return_value = pool
         else:
             db.credential_shared_pool.side_effect = KeyError("no pool")
-        app = create_app()
+        app = create_app(api_key="")
         app.dependency_overrides[_owntracks_get_db] = lambda: db
         return app
 
@@ -339,7 +337,7 @@ class TestOwnTracksAPI:
 
 class TestWhatsAppAPI:
     def _make_app(self):
-        app = create_app()
+        app = create_app(api_key="")
         app.dependency_overrides[_get_bridge_socket_path] = lambda: "/tmp/test-bridge.sock"
         return app
 
@@ -378,7 +376,7 @@ class TestRelationshipAPI:
         db.pool.return_value = pool
         # Also provide butler_names and configs so discovery succeeds
         db.butler_names = ["relationship"]
-        app = create_app()
+        app = create_app(api_key="")
         app.dependency_overrides[rel_mod._get_db_manager] = lambda: db
         # Provide butler config so the relationship butler is recognized
         from butlers.api.deps import get_butler_configs
@@ -411,7 +409,7 @@ class TestRelationshipAPI:
 class TestModulesAPI:
     async def test_get_module_states_unreachable_returns_gracefully(self, app):
         mock_mcp = MagicMock(spec=MCPClientManager)
-        mock_mcp.get_client.side_effect = ButlerUnreachableError("general", "down")
+        mock_mcp.get_client.side_effect = ButlerUnreachableError("general", cause=ConnectionRefusedError("down"))
         config = ButlerConnectionInfo("general", 41200)
         app.dependency_overrides[get_butler_configs] = lambda: [config]
         app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
