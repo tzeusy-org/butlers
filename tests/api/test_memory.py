@@ -25,7 +25,9 @@ _LIST_ENDPOINTS = [
 ]
 
 
-def _app_with_mock_db(app: FastAPI, *, fetch_rows=None, fetchval_result=0, fetchrow_result=None, pool_available=True):
+def _app_with_mock_db(
+    app: FastAPI, *, fetch_rows=None, fetchval_result=0, fetchrow_result=None, pool_available=True
+):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
@@ -85,12 +87,25 @@ async def test_stats_returns_structure(app):
 async def test_get_fact_returns_detail(app):
     """GET /api/memory/facts/{id} returns fact data when found."""
     row = {
-        "id": "fact-001", "subject": "user", "predicate": "prefers",
-        "content": "dark mode", "importance": 5.0, "confidence": 0.9,
-        "decay_rate": 0.008, "permanence": "standard", "source_butler": "atlas",
-        "source_episode_id": None, "supersedes_id": None, "validity": "active",
-        "scope": "global", "reference_count": 2, "created_at": "2025-06-01T12:00:00",
-        "last_referenced_at": None, "last_confirmed_at": None, "tags": [], "metadata": {},
+        "id": "fact-001",
+        "subject": "user",
+        "predicate": "prefers",
+        "content": "dark mode",
+        "importance": 5.0,
+        "confidence": 0.9,
+        "decay_rate": 0.008,
+        "permanence": "standard",
+        "source_butler": "atlas",
+        "source_episode_id": None,
+        "supersedes_id": None,
+        "validity": "active",
+        "scope": "global",
+        "reference_count": 2,
+        "created_at": "2025-06-01T12:00:00",
+        "last_referenced_at": None,
+        "last_confirmed_at": None,
+        "tags": [],
+        "metadata": {},
     }
     _app_with_mock_db(app, fetchrow_result=row)
     async with httpx.AsyncClient(

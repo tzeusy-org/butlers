@@ -132,12 +132,15 @@ class TestTierForContext:
             )
         )
 
-    @pytest.mark.parametrize("context,expected_threshold", [
-        (0, 0),
-        (100_000, 100_000),
-        (200_000, 100_000),
-        (1_000_000, 500_000),
-    ])
+    @pytest.mark.parametrize(
+        "context,expected_threshold",
+        [
+            (0, 0),
+            (100_000, 100_000),
+            (200_000, 100_000),
+            (1_000_000, 500_000),
+        ],
+    )
     def test_tier_selection(self, tiered, context, expected_threshold):
         assert tiered.tier_for_context(context).context_threshold == expected_threshold
 
@@ -150,7 +153,9 @@ class TestTierForContext:
 class TestEstimateCost:
     def test_basic_calculation(self, config):
         # 1000 * $3/1M + 500 * $15/1M = $0.003 + $0.0075 = $0.0105
-        cost = config.estimate_cost("claude-sonnet-4-5-20250929", input_tokens=1000, output_tokens=500)
+        cost = config.estimate_cost(
+            "claude-sonnet-4-5-20250929", input_tokens=1000, output_tokens=500
+        )
         assert cost == pytest.approx(0.0105)
 
     def test_unknown_model_returns_none(self, config):
@@ -162,11 +167,15 @@ class TestEstimateCost:
 
     def test_tiered_high_tier(self, tiered_config):
         # context=300K → tier 1: 1M*$5/1M + 1M*$22.5/1M = $27.50
-        assert tiered_config.estimate_cost("gpt-5.4", 1_000_000, 1_000_000, context_tokens=300_000) == pytest.approx(27.50)
+        assert tiered_config.estimate_cost(
+            "gpt-5.4", 1_000_000, 1_000_000, context_tokens=300_000
+        ) == pytest.approx(27.50)
 
     def test_tiered_cached_input(self, tiered_config):
         # 1M cached * $0.25/1M = $0.25
-        assert tiered_config.estimate_cost("gpt-5.4", 0, 0, cached_input_tokens=1_000_000) == pytest.approx(0.25)
+        assert tiered_config.estimate_cost(
+            "gpt-5.4", 0, 0, cached_input_tokens=1_000_000
+        ) == pytest.approx(0.25)
 
     def test_session_cost_unknown_model_returns_zero(self, config):
         assert estimate_session_cost(config, "nonexistent", 1000, 500) == 0.0
@@ -185,6 +194,7 @@ class TestEstimateCost:
 class TestPricingDependency:
     def test_get_pricing_raises_before_init(self):
         import butlers.api.deps as deps_mod
+
         original = deps_mod._pricing_config
         deps_mod._pricing_config = None
         try:
@@ -195,6 +205,7 @@ class TestPricingDependency:
 
     def test_init_and_get_pricing(self, pricing_file):
         import butlers.api.deps as deps_mod
+
         original = deps_mod._pricing_config
         try:
             result = deps_mod.init_pricing(pricing_file)

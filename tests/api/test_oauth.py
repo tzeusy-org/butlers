@@ -47,8 +47,9 @@ def clear_states():
     _clear_state_store()
 
 
-def _make_app(app, *, client_id="test-client-id.apps.googleusercontent.com",
-              client_secret="test-secret"):
+def _make_app(
+    app, *, client_id="test-client-id.apps.googleusercontent.com", client_secret="test-secret"
+):
     secrets = {
         "GOOGLE_OAUTH_CLIENT_ID": client_id,
         "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
@@ -111,6 +112,7 @@ class TestStateStore:
     def test_expired_state_rejected(self):
 
         from butlers.api.routers import oauth as _mod
+
         state = _generate_state()
         entry = _mod._StateEntry(expiry=0.0)
         _mod._state_store[state] = entry
@@ -126,7 +128,8 @@ class TestOAuthStart:
     async def test_start_redirects_by_default(self, app):
         _make_app(app)
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test",
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
             follow_redirects=False,
         ) as client:
             resp = await client.get("/api/oauth/google/start")
@@ -210,8 +213,13 @@ _BASE_ENV = {
 }
 
 
-def _make_status_app(app, *, client_id="test-client-id.apps.googleusercontent.com",
-                     client_secret="test-secret", refresh_token=None):
+def _make_status_app(
+    app,
+    *,
+    client_id="test-client-id.apps.googleusercontent.com",
+    client_secret="test-secret",
+    refresh_token=None,
+):
     """Wire app for oauth/status tests."""
     secrets = {"GOOGLE_OAUTH_CLIENT_ID": client_id, "GOOGLE_OAUTH_CLIENT_SECRET": client_secret}
     contact_info = {}

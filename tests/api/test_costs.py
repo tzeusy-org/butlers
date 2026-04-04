@@ -270,7 +270,9 @@ class TestCostSummary:
             "total_sessions": 5,
             "total_input_tokens": 10000,
             "total_output_tokens": 5000,
-            "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
+            "by_model": {
+                "claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}
+            },
         }
         gen_data = {
             "total_sessions": 3,
@@ -301,7 +303,9 @@ class TestCostSummary:
             "total_output_tokens": 500,
             "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}},
         }
-        mgr = _mock_mgr_with({"sw": _make_tool_result(sw_data), "broken": ButlerUnreachableError("broken")})
+        mgr = _mock_mgr_with(
+            {"sw": _make_tool_result(sw_data), "broken": ButlerUnreachableError("broken")}
+        )
         _wire(app, mgr, configs, _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -378,9 +382,27 @@ class TestDailyCosts:
         configs = [ButlerConnectionInfo(name="sw", port=41100)]
         daily_data = {
             "days": [
-                {"date": "2026-02-10", "sessions": 1, "input_tokens": 100, "output_tokens": 50, "by_model": {}},
-                {"date": "2026-02-08", "sessions": 2, "input_tokens": 200, "output_tokens": 100, "by_model": {}},
-                {"date": "2026-02-09", "sessions": 3, "input_tokens": 300, "output_tokens": 150, "by_model": {}},
+                {
+                    "date": "2026-02-10",
+                    "sessions": 1,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "by_model": {},
+                },
+                {
+                    "date": "2026-02-08",
+                    "sessions": 2,
+                    "input_tokens": 200,
+                    "output_tokens": 100,
+                    "by_model": {},
+                },
+                {
+                    "date": "2026-02-09",
+                    "sessions": 3,
+                    "input_tokens": 300,
+                    "output_tokens": 150,
+                    "by_model": {},
+                },
             ]
         }
         mgr = _mock_mgr_with({"sw": _make_tool_result(daily_data)})
@@ -388,7 +410,9 @@ class TestDailyCosts:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/costs/daily", params={"from": "2026-02-08", "to": "2026-02-10"})
+            resp = await client.get(
+                "/api/costs/daily", params={"from": "2026-02-08", "to": "2026-02-10"}
+            )
         data = resp.json()["data"]
         assert [d["date"] for d in data] == ["2026-02-08", "2026-02-09", "2026-02-10"]
 
@@ -430,7 +454,11 @@ class TestBySchedule:
     async def test_zero_runs_avoids_division_by_zero(self, app):
         configs = [ButlerConnectionInfo(name="sw", port=41100)]
         mgr = _mock_mgr_with(
-            {"sw": _make_tool_result(self._schedule_data(total_runs=0, total_input_tokens=0, total_output_tokens=0))}
+            {
+                "sw": _make_tool_result(
+                    self._schedule_data(total_runs=0, total_input_tokens=0, total_output_tokens=0)
+                )
+            }
         )
         _wire(app, mgr, configs, _flat_pricing())
         async with httpx.AsyncClient(
@@ -446,14 +474,38 @@ class TestBySchedule:
             ButlerConnectionInfo(name="a", port=41100),
             ButlerConnectionInfo(name="b", port=41101),
         ]
-        cheap = {"schedules": [{"name": "cheap", "cron": "0 8 * * *", "model": "claude-sonnet-4-20250514",
-                                "total_runs": 10, "total_input_tokens": 1000, "total_output_tokens": 500, "runs_per_day": 0.5}]}
-        expensive = {"schedules": [{"name": "expensive", "cron": "0 8 * * *", "model": "claude-sonnet-4-20250514",
-                                    "total_runs": 100, "total_input_tokens": 100000, "total_output_tokens": 50000, "runs_per_day": 5.0}]}
+        cheap = {
+            "schedules": [
+                {
+                    "name": "cheap",
+                    "cron": "0 8 * * *",
+                    "model": "claude-sonnet-4-20250514",
+                    "total_runs": 10,
+                    "total_input_tokens": 1000,
+                    "total_output_tokens": 500,
+                    "runs_per_day": 0.5,
+                }
+            ]
+        }
+        expensive = {
+            "schedules": [
+                {
+                    "name": "expensive",
+                    "cron": "0 8 * * *",
+                    "model": "claude-sonnet-4-20250514",
+                    "total_runs": 100,
+                    "total_input_tokens": 100000,
+                    "total_output_tokens": 50000,
+                    "runs_per_day": 5.0,
+                }
+            ]
+        }
 
         async def _get(name: str):
             c = MagicMock()
-            c.call_tool = AsyncMock(return_value=_make_tool_result(cheap if name == "a" else expensive))
+            c.call_tool = AsyncMock(
+                return_value=_make_tool_result(cheap if name == "a" else expensive)
+            )
             return c
 
         mgr = MagicMock(spec=MCPClientManager)

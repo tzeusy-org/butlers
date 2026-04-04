@@ -46,11 +46,14 @@ def _mock_audit_db():
     return db
 
 
-def _mock_mcp_manager(*, trigger_result=None, tick_result=None,
-                      unreachable=False, timeout=False):
+def _mock_mcp_manager(*, trigger_result=None, tick_result=None, unreachable=False, timeout=False):
     mgr = MagicMock(spec=MCPClientManager)
     if unreachable:
-        mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("general", cause=ConnectionRefusedError("unreachable")))
+        mgr.get_client = AsyncMock(
+            side_effect=ButlerUnreachableError(
+                "general", cause=ConnectionRefusedError("unreachable")
+            )
+        )
     elif timeout:
         mgr.get_client = AsyncMock(side_effect=TimeoutError())
     else:
@@ -115,8 +118,9 @@ class TestButlerList:
         configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=True)
         _wire(app, configs, mgr)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers")
         assert resp.status_code == 200
         body = resp.json()
@@ -132,8 +136,9 @@ class TestButlerList:
         configs = [ButlerConnectionInfo("general", 41101)]
         mgr = make_mock_mcp_manager(online=False)
         _wire(app, configs, mgr)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers")
         assert resp.status_code == 200  # never 500
 
@@ -147,8 +152,9 @@ class TestButlerConfig:
     async def test_returns_404_for_unknown_butler(self, roster_dir):
         configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers/nonexistent/config")
         assert resp.status_code == 404
 
@@ -156,8 +162,9 @@ class TestButlerConfig:
         make_butler_dir(roster_dir, "general", 41101, claude_md="Be helpful.")
         configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers/general/config")
         assert resp.status_code == 200
         body = resp.json()
@@ -175,18 +182,24 @@ class TestButlerSkills:
     async def test_returns_404_for_unknown_butler(self, roster_dir):
         configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers/nonexistent/skills")
         assert resp.status_code == 404
 
     async def test_returns_skills_list(self, roster_dir):
-        make_butler_dir(roster_dir, "general", 41101,
-                        skills_with_content={"my-skill": "# My Skill\nDoes stuff."})
+        make_butler_dir(
+            roster_dir,
+            "general",
+            41101,
+            skills_with_content={"my-skill": "# My Skill\nDoes stuff."},
+        )
         configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers/general/skills")
         assert resp.status_code == 200
 
@@ -200,19 +213,19 @@ class TestButlerTrigger:
     async def test_trigger_404_for_unknown_butler(self, app, roster_dir):
         configs = [ButlerConnectionInfo("general", 41101)]
         _wire(app, configs, _mock_mcp_manager(unreachable=True))
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
-            resp = await client.post("/api/butlers/nonexistent/trigger",
-                                     json={"prompt": "hello"})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/butlers/nonexistent/trigger", json={"prompt": "hello"})
         assert resp.status_code == 404
 
     async def test_trigger_503_when_unreachable(self, app, roster_dir):
         configs = [ButlerConnectionInfo("general", 41101)]
         _wire(app, configs, _mock_mcp_manager(unreachable=True))
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
-            resp = await client.post("/api/butlers/general/trigger",
-                                     json={"prompt": "hello"})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/butlers/general/trigger", json={"prompt": "hello"})
         assert resp.status_code == 503
 
     async def test_trigger_success_returns_session_data(self, app, roster_dir):
@@ -220,10 +233,12 @@ class TestButlerTrigger:
         trigger_data = {"session_id": "sess-1", "success": True, "output": "Done"}
         mgr = _mock_mcp_manager(trigger_result=_mock_tool_result(trigger_data))
         _wire(app, configs, mgr)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
-            resp = await client.post("/api/butlers/general/trigger",
-                                     json={"prompt": "do something"})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/butlers/general/trigger", json={"prompt": "do something"}
+            )
         assert resp.status_code == 200
         body = resp.json()
         assert "data" in body
@@ -239,15 +254,17 @@ class TestButlerTick:
     async def test_tick_404_for_unknown_butler(self, app, roster_dir):
         configs = [ButlerConnectionInfo("general", 41101)]
         _wire(app, configs, _mock_mcp_manager(unreachable=True))
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.post("/api/butlers/nonexistent/tick")
         assert resp.status_code == 404
 
     async def test_tick_503_when_unreachable(self, app, roster_dir):
         configs = [ButlerConnectionInfo("general", 41101)]
         _wire(app, configs, _mock_mcp_manager(unreachable=True))
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.post("/api/butlers/general/tick")
         assert resp.status_code == 503

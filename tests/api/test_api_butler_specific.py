@@ -92,8 +92,9 @@ def _row(data: dict) -> _Row:
     return _Row(data)
 
 
-def _mock_pool(*, fetch_rows=None, fetchrow_result=None, fetchval_result=0,
-               execute_result="DELETE 1"):
+def _mock_pool(
+    *, fetch_rows=None, fetchrow_result=None, fetchval_result=0, execute_result="DELETE 1"
+):
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=fetch_rows or [])
     pool.fetchrow = AsyncMock(return_value=fetchrow_result)
@@ -115,8 +116,9 @@ def _mock_db_shared(pool):
 
 class TestHealingAPI:
     def _make_app(self, *, fetch_rows=None, fetchrow_result=None, fetchval=0):
-        pool = _mock_pool(fetch_rows=fetch_rows, fetchrow_result=fetchrow_result,
-                          fetchval_result=fetchval)
+        pool = _mock_pool(
+            fetch_rows=fetch_rows, fetchrow_result=fetchrow_result, fetchval_result=fetchval
+        )
         db = _mock_db_shared(pool)
         app = create_app(api_key="")
         app.dependency_overrides[_healing_get_db] = lambda: db
@@ -125,17 +127,32 @@ class TestHealingAPI:
 
     async def test_list_attempts_returns_paginated_structure(self):
         now = datetime.now(tz=UTC)
-        row = _row({
-            "id": uuid.uuid4(), "fingerprint": "a" * 64, "butler_name": "general",
-            "status": "investigating", "severity": 2, "exception_type": "KeyError",
-            "call_site": "foo.py:bar", "sanitized_msg": "msg", "branch_name": None,
-            "worktree_path": None, "pr_url": None, "pr_number": None,
-            "session_ids": [], "healing_session_id": None,
-            "created_at": now, "updated_at": now, "closed_at": None, "error_detail": None,
-        })
+        row = _row(
+            {
+                "id": uuid.uuid4(),
+                "fingerprint": "a" * 64,
+                "butler_name": "general",
+                "status": "investigating",
+                "severity": 2,
+                "exception_type": "KeyError",
+                "call_site": "foo.py:bar",
+                "sanitized_msg": "msg",
+                "branch_name": None,
+                "worktree_path": None,
+                "pr_url": None,
+                "pr_number": None,
+                "session_ids": [],
+                "healing_session_id": None,
+                "created_at": now,
+                "updated_at": now,
+                "closed_at": None,
+                "error_detail": None,
+            }
+        )
         app, _ = self._make_app(fetch_rows=[row], fetchval=1)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/healing/attempts")
         assert resp.status_code == 200
         body = resp.json()
@@ -143,16 +160,18 @@ class TestHealingAPI:
 
     async def test_list_attempts_invalid_status_returns_422(self):
         app, _ = self._make_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/healing/attempts", params={"status": "bad_status"})
         assert resp.status_code == 422
 
     async def test_get_attempt_404_when_not_found(self):
         app, _ = self._make_app(fetchrow_result=None)
         nid = uuid.uuid4()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get(f"/api/healing/attempts/{nid}")
         assert resp.status_code == 404
 
@@ -170,6 +189,7 @@ _HA_UPSERT_EI = "butlers.api.routers.home_assistant.upsert_owner_entity_info"
 class TestHomeAssistantAPI:
     async def test_save_credentials_validates_and_returns_200(self):
         from butlers.api.routers.home_assistant import _get_db_manager as _ha_get_db
+
         mock_pool = _mock_pool()
         app = create_app(api_key="")
         app.dependency_overrides[_ha_get_db] = lambda: _mock_db_shared(mock_pool)
@@ -178,8 +198,9 @@ class TestHomeAssistantAPI:
             patch(_HA_RESOLVE_POOL, AsyncMock(return_value=mock_pool)),
             patch(_HA_UPSERT_EI, AsyncMock()),
         ):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                         base_url="http://test") as client:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 resp = await client.post(
                     "/api/settings/home-assistant",
                     json={"url": "http://localhost:8123", "token": "test-token"},
@@ -188,10 +209,12 @@ class TestHomeAssistantAPI:
 
     async def test_save_credentials_422_missing_url(self):
         from butlers.api.routers.home_assistant import _get_db_manager as _ha_get_db
+
         app = create_app(api_key="")
         app.dependency_overrides[_ha_get_db] = lambda: MagicMock(spec=DatabaseManager)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.post("/api/settings/home-assistant", json={"token": "x"})
         assert resp.status_code == 422
 
@@ -211,10 +234,10 @@ class TestSteamAPI:
 
     async def test_list_accounts_returns_list(self):
         app = self._make_app()
-        with patch("butlers.api.routers.steam.list_steam_accounts",
-                   AsyncMock(return_value=[])):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                         base_url="http://test") as client:
+        with patch("butlers.api.routers.steam.list_steam_accounts", AsyncMock(return_value=[])):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 resp = await client.get("/api/steam/accounts")
         assert resp.status_code == 200
         body = resp.json()
@@ -222,8 +245,9 @@ class TestSteamAPI:
 
     async def test_connect_account_422_api_key_too_short(self):
         app = self._make_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.post(
                 "/api/steam/accounts",
                 json={"api_key": "short", "steam_id": 76561198000000001},
@@ -271,8 +295,9 @@ class TestSpotifyAPI:
 
     async def test_oauth_start_returns_json_with_auth_url(self):
         app = self._make_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.post("/api/connectors/spotify/oauth/start")
         assert resp.status_code == 200
         body = resp.json()
@@ -280,8 +305,9 @@ class TestSpotifyAPI:
 
     async def test_status_endpoint_returns_200(self):
         app = self._make_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/connectors/spotify/status")
         assert resp.status_code == 200
 
@@ -314,18 +340,19 @@ class TestOwnTracksAPI:
 
     async def test_status_endpoint_returns_200(self):
         app = self._make_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/connectors/owntracks/status")
         assert resp.status_code == 200
 
     async def test_generate_token_503_when_no_db(self):
         app = create_app()
         app.dependency_overrides[_owntracks_get_db] = lambda: None
-        with patch("butlers.api.routers.owntracks._make_credential_store",
-                   return_value=None):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                         base_url="http://test") as client:
+        with patch("butlers.api.routers.owntracks._make_credential_store", return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 resp = await client.post("/api/connectors/owntracks/token/generate")
         assert resp.status_code == 503
 
@@ -344,10 +371,10 @@ class TestWhatsAppAPI:
     async def test_status_connected_returns_200(self):
         app = self._make_app()
         bridge_data = {"state": "connected", "phone": "+12345677890"}
-        with patch("butlers.api.routers.whatsapp._bridge_get",
-                   AsyncMock(return_value=bridge_data)):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                         base_url="http://test") as client:
+        with patch("butlers.api.routers.whatsapp._bridge_get", AsyncMock(return_value=bridge_data)):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 resp = await client.get("/api/connectors/whatsapp/status")
         assert resp.status_code == 200
         assert resp.json()["bridge_running"] is True
@@ -355,8 +382,9 @@ class TestWhatsAppAPI:
     async def test_status_bridge_down_returns_not_configured(self):
         app = self._make_app()
         with patch("butlers.api.routers.whatsapp._bridge_get", AsyncMock(return_value=None)):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                         base_url="http://test") as client:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 resp = await client.get("/api/connectors/whatsapp/status")
         assert resp.status_code == 200
         assert resp.json()["bridge_running"] is False
@@ -380,6 +408,7 @@ class TestRelationshipAPI:
         app.dependency_overrides[rel_mod._get_db_manager] = lambda: db
         # Provide butler config so the relationship butler is recognized
         from butlers.api.deps import get_butler_configs
+
         app.dependency_overrides[get_butler_configs] = lambda: [
             ButlerConnectionInfo("relationship", 41300)
         ]
@@ -387,16 +416,18 @@ class TestRelationshipAPI:
 
     async def test_list_contacts_returns_200(self):
         app = self._make_app(fetch_rows=[])
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/relationship/contacts")
         assert resp.status_code == 200
 
     async def test_get_contact_404_when_not_found(self):
         app = self._make_app(fetchrow_result=None)
         nid = uuid.uuid4()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get(f"/api/relationship/contacts/{nid}")
         assert resp.status_code == 404
 
@@ -409,12 +440,15 @@ class TestRelationshipAPI:
 class TestModulesAPI:
     async def test_get_module_states_unreachable_returns_gracefully(self, app):
         mock_mcp = MagicMock(spec=MCPClientManager)
-        mock_mcp.get_client.side_effect = ButlerUnreachableError("general", cause=ConnectionRefusedError("down"))
+        mock_mcp.get_client.side_effect = ButlerUnreachableError(
+            "general", cause=ConnectionRefusedError("down")
+        )
         config = ButlerConnectionInfo("general", 41200)
         app.dependency_overrides[get_butler_configs] = lambda: [config]
         app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers/general/modules")
         # Either 503 or 200 with degraded/empty state is acceptable
         assert resp.status_code in (200, 503)

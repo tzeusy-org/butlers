@@ -356,7 +356,6 @@ class TestWorkspaceSync:
         )
 
 
-
 class TestCalendarWorkspaceSync:
     async def test_sync_source_key_targets_specific_source(self, app):
         source_rows = {
@@ -404,7 +403,6 @@ class TestCalendarWorkspaceSync:
             {"calendar_id": "primary"},
         )
         relationship_client.call_tool.assert_not_awaited()
-
 
 
 def _mcp_result(payload: dict | str) -> list:
@@ -615,4 +613,3 @@ class TestCalendarFanOutModuleFiltering:
                 assert "education" not in butler_names_arg, (
                     f"education was unexpectedly included in fan_out targets: {butler_names_arg}"
                 )
-

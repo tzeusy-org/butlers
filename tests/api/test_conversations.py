@@ -27,17 +27,30 @@ _BUTLER = "atlas"
 
 def _make_conversation_row(**kw):
     defaults = {
-        "id": _CONV_ID, "butler_name": _BUTLER, "title": "Hello world",
-        "status": "active", "created_at": _NOW, "updated_at": _NOW,
-        "message_count": 2, "total_input_tokens": 100, "total_output_tokens": 200,
+        "id": _CONV_ID,
+        "butler_name": _BUTLER,
+        "title": "Hello world",
+        "status": "active",
+        "created_at": _NOW,
+        "updated_at": _NOW,
+        "message_count": 2,
+        "total_input_tokens": 100,
+        "total_output_tokens": 200,
         "total_duration_ms": 1500,
     }
     defaults.update(kw)
     return defaults
 
 
-def _app_with_mock_db(app: FastAPI, *, fetch_rows=None, fetchval_result=0,
-                      fetchrow_result=None, execute_result=None, db_raises=None):
+def _app_with_mock_db(
+    app: FastAPI,
+    *,
+    fetch_rows=None,
+    fetchval_result=0,
+    fetchrow_result=None,
+    execute_result=None,
+    db_raises=None,
+):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
@@ -81,7 +94,9 @@ class TestListConversations:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(f"/api/butlers/{_BUTLER}/conversations", params={"status": "invalid"})
+            resp = await client.get(
+                f"/api/butlers/{_BUTLER}/conversations", params={"status": "invalid"}
+            )
         assert resp.status_code == 422
 
 
@@ -122,15 +137,17 @@ class TestConversationOperations:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                f"/api/butlers/{_BUTLER}/conversations/{uuid4()}/messages"
-            )
+            resp = await client.get(f"/api/butlers/{_BUTLER}/conversations/{uuid4()}/messages")
         assert resp.status_code == 404
 
     async def test_summary_returns_stats(self, app):
         row = {
-            "total_conversations": 5, "active_conversations": 3, "total_messages": 12,
-            "total_input_tokens": 1000, "total_output_tokens": 500, "total_duration_ms": 3000,
+            "total_conversations": 5,
+            "active_conversations": 3,
+            "total_messages": 12,
+            "total_input_tokens": 1000,
+            "total_output_tokens": 500,
+            "total_duration_ms": 3000,
         }
         _app_with_mock_db(app, fetchrow_result=row)
         async with httpx.AsyncClient(

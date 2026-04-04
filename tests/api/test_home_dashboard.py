@@ -25,8 +25,14 @@ def _make_entity_row(entity_id="light.living_room", state="on", area_name="livin
     row = MagicMock()
     domain = entity_id.split(".")[0] if "." in entity_id else entity_id
     row.__getitem__ = lambda self, key: {
-        "entity_id": entity_id, "state": state, "domain": domain,
-        "attributes": {"friendly_name": "Living Room Light", "area_name": area_name, "area_id": area_name},
+        "entity_id": entity_id,
+        "state": state,
+        "domain": domain,
+        "attributes": {
+            "friendly_name": "Living Room Light",
+            "area_name": area_name,
+            "area_id": area_name,
+        },
         "last_updated": datetime(2026, 3, 1, 10, 0, 0, tzinfo=UTC),
         "captured_at": "2026-03-01T10:05:00+00:00",
         "friendly_name": "Living Room Light",
@@ -37,15 +43,20 @@ def _make_entity_row(entity_id="light.living_room", state="on", area_name="livin
 def _make_maintenance_row(name="HVAC Filter", next_due_at=None):
     row = MagicMock()
     row.__getitem__ = lambda self, key: {
-        "id": uuid4(), "name": name, "category": "hvac",
-        "interval_days": 90, "last_completed_at": None,
-        "next_due_at": next_due_at, "notes": None,
+        "id": uuid4(),
+        "name": name,
+        "category": "hvac",
+        "interval_days": 90,
+        "last_completed_at": None,
+        "next_due_at": next_due_at,
+        "notes": None,
     }[key]
     return row
 
 
-def _app_with_mock_db(app: FastAPI, *, fetch_rows=None, fetchval_result=0,
-                      fetchrow_result=None, pool_available=True):
+def _app_with_mock_db(
+    app: FastAPI, *, fetch_rows=None, fetchval_result=0, fetchrow_result=None, pool_available=True
+):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)

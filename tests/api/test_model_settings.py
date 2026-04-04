@@ -23,13 +23,26 @@ from butlers.api.routers.model_settings import _get_db_manager
 pytestmark = pytest.mark.unit
 
 
-def _make_catalog_row(*, entry_id=None, alias="claude-sonnet", runtime_type="claude",
-                      model_id="claude-sonnet-4-6", complexity_tier="medium",
-                      enabled=True, priority=0, extra_args=None):
+def _make_catalog_row(
+    *,
+    entry_id=None,
+    alias="claude-sonnet",
+    runtime_type="claude",
+    model_id="claude-sonnet-4-6",
+    complexity_tier="medium",
+    enabled=True,
+    priority=0,
+    extra_args=None,
+):
     return {
-        "id": entry_id or uuid.uuid4(), "alias": alias, "runtime_type": runtime_type,
-        "model_id": model_id, "extra_args": json.dumps(extra_args or []),
-        "complexity_tier": complexity_tier, "enabled": enabled, "priority": priority,
+        "id": entry_id or uuid.uuid4(),
+        "alias": alias,
+        "runtime_type": runtime_type,
+        "model_id": model_id,
+        "extra_args": json.dumps(extra_args or []),
+        "complexity_tier": complexity_tier,
+        "enabled": enabled,
+        "priority": priority,
     }
 
 
@@ -41,20 +54,33 @@ def _mock_record(row: dict[str, Any]) -> MagicMock:
     return m
 
 
-def _app_with_pool(app, *, fetch_rows=None, fetchrow_result=None, fetchval_result=None,
-                   execute_result="DELETE 1", pool_raises=None):
+def _app_with_pool(
+    app,
+    *,
+    fetch_rows=None,
+    fetchrow_result=None,
+    fetchval_result=None,
+    execute_result="DELETE 1",
+    pool_raises=None,
+):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in (fetch_rows or [])])
-    mock_pool.fetchrow = AsyncMock(return_value=_mock_record(fetchrow_result) if fetchrow_result else None)
+    mock_pool.fetchrow = AsyncMock(
+        return_value=_mock_record(fetchrow_result) if fetchrow_result else None
+    )
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
     mock_pool.execute = AsyncMock(return_value=execute_result)
     mock_conn = AsyncMock()
     mock_conn.transaction = MagicMock(
-        return_value=AsyncMock(__aenter__=AsyncMock(return_value=None), __aexit__=AsyncMock(return_value=None))
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=None), __aexit__=AsyncMock(return_value=None)
+        )
     )
     mock_conn.fetchrow = mock_pool.fetchrow
     mock_pool.acquire = MagicMock(
-        return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock(return_value=None))
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock(return_value=None)
+        )
     )
     mock_db = MagicMock(spec=DatabaseManager)
     if pool_raises:
@@ -102,22 +128,34 @@ class TestCatalogEntries:
         ) as client:
             resp = await client.post(
                 "/api/settings/models",
-                json={"alias": "new-model", "runtime_type": "codex", "model_id": "gpt-5.1",
-                      "complexity_tier": "medium", "enabled": True, "priority": 0},
+                json={
+                    "alias": "new-model",
+                    "runtime_type": "codex",
+                    "model_id": "gpt-5.1",
+                    "complexity_tier": "medium",
+                    "enabled": True,
+                    "priority": 0,
+                },
             )
         assert resp.status_code == 201
         assert resp.json()["data"]["alias"] == "new-model"
 
     async def test_create_409_on_duplicate_alias(self, app):
         app2, mock_pool = _app_with_pool(app)
-        mock_pool.fetchrow = AsyncMock(side_effect=asyncpg.UniqueViolationError("uq_model_catalog_alias"))
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=asyncpg.UniqueViolationError("uq_model_catalog_alias")
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.post(
                 "/api/settings/models",
-                json={"alias": "claude-sonnet", "runtime_type": "claude",
-                      "model_id": "claude-sonnet-4-6", "complexity_tier": "medium"},
+                json={
+                    "alias": "claude-sonnet",
+                    "runtime_type": "claude",
+                    "model_id": "claude-sonnet-4-6",
+                    "complexity_tier": "medium",
+                },
             )
         assert resp.status_code == 409
 
@@ -128,8 +166,12 @@ class TestCatalogEntries:
         ) as client:
             resp = await client.post(
                 "/api/settings/models",
-                json={"alias": "x", "runtime_type": "claude", "model_id": "y",
-                      "complexity_tier": "invalid_tier"},
+                json={
+                    "alias": "x",
+                    "runtime_type": "claude",
+                    "model_id": "y",
+                    "complexity_tier": "invalid_tier",
+                },
             )
         assert resp.status_code == 422
 
@@ -183,7 +225,13 @@ class TestModelOverridesAndResolve:
         ) as client:
             resp = await client.put(
                 "/api/butlers/general/model-overrides",
-                json=[{"catalog_entry_id": str(uuid.uuid4()), "complexity_tier": "bad_tier",
-                       "enabled": True, "priority": 0}],
+                json=[
+                    {
+                        "catalog_entry_id": str(uuid.uuid4()),
+                        "complexity_tier": "bad_tier",
+                        "enabled": True,
+                        "priority": 0,
+                    }
+                ],
             )
         assert resp.status_code == 422

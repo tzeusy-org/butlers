@@ -115,6 +115,7 @@ def _load_rel_models():
 class TestRelationshipModels:
     def test_contact_summary_minimal(self):
         from uuid import uuid4
+
         mods = _load_rel_models()
         cid = uuid4()
         contact = mods.ContactSummary(id=cid, full_name="Alice Smith")
@@ -124,6 +125,7 @@ class TestRelationshipModels:
 
     def test_label_minimal(self):
         from uuid import uuid4
+
         mods = _load_rel_models()
         lid = uuid4()
         label = mods.Label(id=lid, name="Friend")
@@ -137,8 +139,9 @@ class TestRelationshipModels:
 
 
 @contextmanager
-def _secrets_app(app, *, list_return=None, store_side_effect=None, delete_return=True,
-                 pool_raises=None):
+def _secrets_app(
+    app, *, list_return=None, store_side_effect=None, delete_return=True, pool_raises=None
+):
     mock_pool = MagicMock()
     mock_db = MagicMock(spec=DatabaseManager)
     if pool_raises:
@@ -159,20 +162,30 @@ def _secrets_app(app, *, list_return=None, store_side_effect=None, delete_return
 
 class TestSecretsAPI:
     async def test_list_returns_entries(self, app):
-        meta = SecretMetadata(key="API_KEY", category="test", description=None,
-                              is_sensitive=True, is_set=True, created_at=_NOW,
-                              updated_at=_NOW, expires_at=None, source="database")
+        meta = SecretMetadata(
+            key="API_KEY",
+            category="test",
+            description=None,
+            is_sensitive=True,
+            is_set=True,
+            created_at=_NOW,
+            updated_at=_NOW,
+            expires_at=None,
+            source="database",
+        )
         with _secrets_app(app, list_return=[meta]) as (app, _):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                         base_url="http://test") as client:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 resp = await client.get("/api/butlers/atlas/secrets")
         assert resp.status_code == 200
         assert len(resp.json()["data"]) == 1
 
     async def test_list_503_when_pool_unavailable(self, app):
         with _secrets_app(app, pool_raises=KeyError("no pool")) as (app, _):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                         base_url="http://test") as client:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 resp = await client.get("/api/butlers/atlas/secrets")
         assert resp.status_code == 503
 
@@ -197,19 +210,26 @@ def _state_app(app, *, fetch_rows=None, fetchrow_result=None, pool_raises=None):
 
 class TestStateAPI:
     async def test_list_state_returns_array(self, app):
-        row = {"key": "alpha", "value": {"count": 1}, "updated_at": _NOW,
-               "created_at": _NOW, "butler_name": "atlas"}
+        row = {
+            "key": "alpha",
+            "value": {"count": 1},
+            "updated_at": _NOW,
+            "created_at": _NOW,
+            "butler_name": "atlas",
+        }
         _state_app(app, fetch_rows=[row])
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers/atlas/state")
         assert resp.status_code == 200
         assert "data" in resp.json()
 
     async def test_get_state_key_404_when_not_found(self, app):
         _state_app(app, fetchrow_result=None)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers/atlas/state/missing_key")
         assert resp.status_code == 404
 
@@ -233,8 +253,9 @@ class TestSearchAPI:
         pool.fetch = AsyncMock(return_value=[])
         db.pool = MagicMock(return_value=pool)
         app.dependency_overrides[_search_get_db] = lambda: db
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/search?q=hello")
         assert resp.status_code == 200
 
@@ -257,16 +278,18 @@ class TestProviderSettingsAPI:
 
     async def test_list_returns_empty(self, app):
         self._make_app(app)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/settings/providers")
         assert resp.status_code == 200
 
     async def test_delete_404_when_not_found(self, app):
         app, mock_pool = self._make_app(app)
         mock_pool.execute = AsyncMock(return_value="DELETE 0")
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.delete("/api/settings/providers/ollama")
         assert resp.status_code == 404
 
@@ -289,8 +312,9 @@ class TestTimelineAPI:
 
     async def test_timeline_returns_200(self, app):
         self._make_app(app)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/timeline")
         assert resp.status_code == 200
 
@@ -303,6 +327,7 @@ class TestTimelineAPI:
 class TestRouterDiscovery:
     def test_load_router_module_from_valid_file(self, tmp_path):
         from butlers.api.router_discovery import _load_router_module
+
         router_file = tmp_path / "router.py"
         router_file.write_text(
             "from fastapi import APIRouter\nrouter = APIRouter(prefix='/api/test')\n"
@@ -312,6 +337,7 @@ class TestRouterDiscovery:
 
     def test_discover_butler_routers_skips_missing_files(self, tmp_path):
         from butlers.api.router_discovery import discover_butler_routers
+
         # A butler dir without an api/router.py should be skipped silently
         butler_dir = tmp_path / "mybutler"
         butler_dir.mkdir()
@@ -328,14 +354,17 @@ class TestRouterDiscovery:
 class TestDBParamsFromEnv:
     def test_parses_database_url_sslmode(self, monkeypatch):
         from butlers.api.deps import _db_params_from_env
-        monkeypatch.setenv("DATABASE_URL",
-                           "postgres://u:p@db.internal:5432/postgres?sslmode=disable")
+
+        monkeypatch.setenv(
+            "DATABASE_URL", "postgres://u:p@db.internal:5432/postgres?sslmode=disable"
+        )
         params = _db_params_from_env()
         assert params["host"] == "db.internal"
         assert params["ssl"] == "disable"
 
     def test_uses_postgres_sslmode_fallback(self, monkeypatch):
         from butlers.api.deps import _db_params_from_env
+
         monkeypatch.delenv("DATABASE_URL", raising=False)
         monkeypatch.setenv("POSTGRES_HOST", "dbhost")
         monkeypatch.setenv("POSTGRES_PORT", "6543")

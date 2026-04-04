@@ -167,7 +167,9 @@ class TestHeartbeat:
 
     async def test_stale_butler_transitions_to_active(self, app):
         _app_with_mock(
-            app, fetchrow_result={"eligibility_state": "stale", "last_seen_at": None}, execute_return="UPDATE 1"
+            app,
+            fetchrow_result={"eligibility_state": "stale", "last_seen_at": None},
+            execute_return="UPDATE 1",
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -178,7 +180,9 @@ class TestHeartbeat:
 
     async def test_stale_transition_logs_eligibility_change(self, app):
         _, mock_pool = _app_with_mock(
-            app, fetchrow_result={"eligibility_state": "stale", "last_seen_at": None}, execute_return="UPDATE 1"
+            app,
+            fetchrow_result={"eligibility_state": "stale", "last_seen_at": None},
+            execute_return="UPDATE 1",
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -194,7 +198,9 @@ class TestHeartbeat:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.post("/api/switchboard/heartbeat", json={"butler_name": "nonexistent"})
+            resp = await client.post(
+                "/api/switchboard/heartbeat", json={"butler_name": "nonexistent"}
+            )
         assert resp.status_code == 404
 
     async def test_missing_butler_name_returns_422(self, app):
@@ -237,10 +243,12 @@ class TestEligibilityHistory:
         t1 = now - datetime.timedelta(hours=12)
         t2 = now - datetime.timedelta(hours=6)
         app, mock_pool = _app_with_mock(app, fetchrow_result={"eligibility_state": "active"})
-        mock_pool.fetch = AsyncMock(return_value=[
-            {"previous_state": "active", "new_state": "stale", "observed_at": t1},
-            {"previous_state": "stale", "new_state": "active", "observed_at": t2},
-        ])
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                {"previous_state": "active", "new_state": "stale", "observed_at": t1},
+                {"previous_state": "stale", "new_state": "active", "observed_at": t2},
+            ]
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -351,23 +359,66 @@ class TestIngestionRules:
         assert resp.status_code == 201
         assert resp.json()["data"]["scope"] == "global"
 
-    @pytest.mark.parametrize("bad_payload,expected_status", [
-        # connector scope with non-block action
-        ({"scope": "connector:gmail:gmail:user:dev", "rule_type": "sender_domain",
-          "condition": {"domain": "x.com", "match": "exact"}, "action": "skip", "priority": 10}, 422),
-        # invalid scope format
-        ({"scope": "invalid_scope", "rule_type": "sender_domain",
-          "condition": {"domain": "x.com", "match": "exact"}, "action": "skip", "priority": 10}, 422),
-        # invalid rule_type
-        ({"scope": "global", "rule_type": "invalid_type",
-          "condition": {"domain": "x.com"}, "action": "skip", "priority": 10}, 422),
-        # negative priority
-        ({"scope": "global", "rule_type": "sender_domain",
-          "condition": {"domain": "x.com", "match": "exact"}, "action": "skip", "priority": -1}, 422),
-        # chat_id rule for gmail (wrong connector type)
-        ({"scope": "connector:gmail:gmail:user:dev", "rule_type": "chat_id",
-          "condition": {"chat_id": "123"}, "action": "block", "priority": 10}, 422),
-    ])
+    @pytest.mark.parametrize(
+        "bad_payload,expected_status",
+        [
+            # connector scope with non-block action
+            (
+                {
+                    "scope": "connector:gmail:gmail:user:dev",
+                    "rule_type": "sender_domain",
+                    "condition": {"domain": "x.com", "match": "exact"},
+                    "action": "skip",
+                    "priority": 10,
+                },
+                422,
+            ),
+            # invalid scope format
+            (
+                {
+                    "scope": "invalid_scope",
+                    "rule_type": "sender_domain",
+                    "condition": {"domain": "x.com", "match": "exact"},
+                    "action": "skip",
+                    "priority": 10,
+                },
+                422,
+            ),
+            # invalid rule_type
+            (
+                {
+                    "scope": "global",
+                    "rule_type": "invalid_type",
+                    "condition": {"domain": "x.com"},
+                    "action": "skip",
+                    "priority": 10,
+                },
+                422,
+            ),
+            # negative priority
+            (
+                {
+                    "scope": "global",
+                    "rule_type": "sender_domain",
+                    "condition": {"domain": "x.com", "match": "exact"},
+                    "action": "skip",
+                    "priority": -1,
+                },
+                422,
+            ),
+            # chat_id rule for gmail (wrong connector type)
+            (
+                {
+                    "scope": "connector:gmail:gmail:user:dev",
+                    "rule_type": "chat_id",
+                    "condition": {"chat_id": "123"},
+                    "action": "block",
+                    "priority": 10,
+                },
+                422,
+            ),
+        ],
+    )
     async def test_create_validation_errors(self, app, bad_payload, expected_status):
         _app_with_mock(app)
         async with httpx.AsyncClient(
@@ -389,7 +440,9 @@ class TestIngestionRules:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/switchboard/ingestion-rules/11111111-1111-1111-1111-111111111112")
+            resp = await client.get(
+                "/api/switchboard/ingestion-rules/11111111-1111-1111-1111-111111111112"
+            )
         assert resp.status_code == 404
 
     async def test_update_priority(self, app):
@@ -417,7 +470,9 @@ class TestIngestionRules:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.delete("/api/switchboard/ingestion-rules/11111111-1111-1111-1111-111111111112")
+            resp = await client.delete(
+                "/api/switchboard/ingestion-rules/11111111-1111-1111-1111-111111111112"
+            )
         assert resp.status_code == 404
 
 
@@ -427,12 +482,24 @@ class TestIngestionRules:
 
 _JOB_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 _SAMPLE_JOB = {
-    "id": _JOB_ID, "connector_type": "gmail", "endpoint_identity": "user@example.com",
-    "target_categories": ["finance"], "date_from": "2020-01-01", "date_to": "2026-01-01",
-    "rate_limit_per_hour": 100, "daily_cost_cap_cents": 500,
-    "status": "pending", "cursor": None, "rows_processed": 0, "rows_skipped": 0,
-    "cost_spent_cents": 0, "error": None, "created_at": "2026-02-23T10:00:00+00:00",
-    "started_at": None, "completed_at": None, "updated_at": "2026-02-23T10:00:00+00:00",
+    "id": _JOB_ID,
+    "connector_type": "gmail",
+    "endpoint_identity": "user@example.com",
+    "target_categories": ["finance"],
+    "date_from": "2020-01-01",
+    "date_to": "2026-01-01",
+    "rate_limit_per_hour": 100,
+    "daily_cost_cap_cents": 500,
+    "status": "pending",
+    "cursor": None,
+    "rows_processed": 0,
+    "rows_skipped": 0,
+    "cost_spent_cents": 0,
+    "error": None,
+    "created_at": "2026-02-23T10:00:00+00:00",
+    "started_at": None,
+    "completed_at": None,
+    "updated_at": "2026-02-23T10:00:00+00:00",
 }
 
 
@@ -516,16 +583,23 @@ class TestBackfillJobs:
 # ---------------------------------------------------------------------------
 
 _SAMPLE_CONNECTOR = {
-    "connector_type": "telegram_bot", "endpoint_identity": "bot-123",
-    "instance_id": None, "version": "1.0.0", "state": "healthy",
-    "error_message": None, "uptime_s": 3600,
+    "connector_type": "telegram_bot",
+    "endpoint_identity": "bot-123",
+    "instance_id": None,
+    "version": "1.0.0",
+    "state": "healthy",
+    "error_message": None,
+    "uptime_s": 3600,
     "last_heartbeat_at": "2026-02-23T10:00:00+00:00",
     "first_seen_at": "2026-02-01T00:00:00+00:00",
     "registered_via": "self",
-    "counter_messages_ingested": 42, "counter_messages_failed": 1,
-    "counter_source_api_calls": 150, "counter_checkpoint_saves": 10,
+    "counter_messages_ingested": 42,
+    "counter_messages_failed": 1,
+    "counter_source_api_calls": 150,
+    "counter_checkpoint_saves": 10,
     "counter_dedupe_accepted": 0,
-    "today_messages_ingested": 7, "today_messages_failed": 0,
+    "today_messages_ingested": 7,
+    "today_messages_failed": 0,
     "checkpoint_cursor": "update-12345",
     "checkpoint_updated_at": "2026-02-23T09:55:00+00:00",
 }
@@ -566,10 +640,15 @@ class TestConnectors:
 
     async def test_ingestion_overview_returns_overview_structure(self, app):
         app, mock_pool = _app_with_mock(app, fetchval_result=5, fetch_rows=[])
-        overview_row = _make_row({
-            "tier1_count": 100, "tier2_count": 50, "tier3_count": 25,
-            "connector_count": 5, "llm_calls_saved": 75,
-        })
+        overview_row = _make_row(
+            {
+                "tier1_count": 100,
+                "tier2_count": 50,
+                "tier3_count": 25,
+                "connector_count": 5,
+                "llm_calls_saved": 75,
+            }
+        )
         mock_pool.fetchrow = AsyncMock(return_value=overview_row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

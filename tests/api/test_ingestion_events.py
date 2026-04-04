@@ -26,17 +26,32 @@ _NOW = datetime.now(tz=UTC)
 _REQUEST_ID = str(uuid4())
 
 
-def _make_event_row(*, event_id=None, status="ingested", source_channel="telegram_bot",
-                    filter_reason=None, error_detail=None):
+def _make_event_row(
+    *,
+    event_id=None,
+    status="ingested",
+    source_channel="telegram_bot",
+    filter_reason=None,
+    error_detail=None,
+):
     return {
-        "id": event_id or str(uuid4()), "received_at": _NOW,
-        "source_channel": source_channel, "source_provider": "telegram",
-        "source_endpoint_identity": None, "source_sender_identity": None,
-        "source_thread_identity": None, "external_event_id": None,
-        "dedupe_key": None, "dedupe_strategy": None,
-        "ingestion_tier": None, "policy_tier": None,
-        "triage_decision": "accepted", "triage_target": "atlas",
-        "status": status, "filter_reason": filter_reason, "error_detail": error_detail,
+        "id": event_id or str(uuid4()),
+        "received_at": _NOW,
+        "source_channel": source_channel,
+        "source_provider": "telegram",
+        "source_endpoint_identity": None,
+        "source_sender_identity": None,
+        "source_thread_identity": None,
+        "external_event_id": None,
+        "dedupe_key": None,
+        "dedupe_strategy": None,
+        "ingestion_tier": None,
+        "policy_tier": None,
+        "triage_decision": "accepted",
+        "triage_target": "atlas",
+        "status": status,
+        "filter_reason": filter_reason,
+        "error_detail": error_detail,
     }
 
 

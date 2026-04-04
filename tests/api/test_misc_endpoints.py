@@ -53,20 +53,24 @@ _roster_root = Path(__file__).resolve().parents[2] / "roster"
 class TestApp:
     async def test_health_returns_ok(self):
         app = create_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
     async def test_cors_allows_configured_origin(self):
         app = create_app(cors_origins=["http://localhost:41173"])
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.options(
                 "/api/health",
-                headers={"origin": "http://localhost:41173",
-                         "access-control-request-method": "GET"},
+                headers={
+                    "origin": "http://localhost:41173",
+                    "access-control-request-method": "GET",
+                },
             )
         assert resp.status_code == 200
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:41173"
@@ -80,30 +84,33 @@ class TestApp:
 class TestAuth:
     async def test_auth_disabled_allows_all(self):
         app = create_app(api_key="")
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/health")
         assert resp.status_code == 200
 
     async def test_auth_missing_key_returns_401(self):
         app = create_app(api_key="secret")
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/butlers")
         assert resp.status_code == 401
 
     async def test_auth_valid_key_allows_request(self):
         app = create_app(api_key="secret")
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
-            resp = await client.get("/api/butlers",
-                                    headers={"X-API-Key": "secret"})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers", headers={"X-API-Key": "secret"})
         assert resp.status_code != 401
 
     async def test_health_bypasses_auth(self):
         app = create_app(api_key="secret")
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/health")
         assert resp.status_code == 200
 
@@ -127,15 +134,17 @@ class TestMiddleware:
 
     async def test_unreachable_returns_5xx(self, app):
         self._make_app(app)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/test/unreachable")
         assert resp.status_code in (502, 503)
 
     async def test_not_found_returns_404(self, app):
         self._make_app(app)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/test/not-found")
         assert resp.status_code == 404
 
@@ -160,8 +169,9 @@ class TestSessionsAPI:
 
     async def test_list_sessions_returns_paginated_structure(self, app):
         self._make_app(app)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/sessions")
         assert resp.status_code == 200
         body = resp.json()
@@ -170,8 +180,9 @@ class TestSessionsAPI:
     async def test_get_session_404_when_not_found(self, app):
         self._make_app(app, fetchrow=None)
         sid = uuid4()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get(f"/api/butlers/atlas/sessions/{sid}")
         assert resp.status_code == 404
 
@@ -194,8 +205,9 @@ class TestAuditAPI:
 
     async def test_audit_log_returns_paginated_structure(self, app):
         self._make_app(app)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/audit-log")
         assert resp.status_code == 200
         body = resp.json()
@@ -228,8 +240,9 @@ class TestIssuesAPI:
 
     async def test_issues_returns_200(self, app):
         self._make_app(app, online=True)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/issues")
         assert resp.status_code == 200
         body = resp.json()
@@ -265,9 +278,11 @@ class TestSSE:
 class TestNotificationsAPI:
     async def test_list_returns_paginated_structure(self):
         from tests.api.conftest import build_notifications_app
+
         app, _pool, _db = build_notifications_app(rows=[], total=0)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/notifications")
         assert resp.status_code == 200
         body = resp.json()
@@ -297,15 +312,17 @@ class TestHomeButlerAPI:
 
     async def test_home_devices_returns_200(self, app):
         self._make_app(app)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/home/devices")
         assert resp.status_code == 200
 
     async def test_home_devices_503_when_pool_unavailable(self, app):
         self._make_app(app, pool_available=False)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/home/devices")
         assert resp.status_code == 503
 
@@ -341,8 +358,9 @@ class TestFinanceAPI:
 
     async def test_transactions_returns_paginated_structure(self):
         app = self._make_app()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             resp = await client.get("/api/finance/transactions")
         assert resp.status_code == 200
         body = resp.json()
