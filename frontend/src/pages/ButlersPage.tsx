@@ -36,7 +36,7 @@ function statusBadge(status: string) {
   }
 }
 
-function typeBadge(type: string | undefined) {
+function typeBadge(type: "butler" | "staffer") {
   if (type === "staffer") {
     return (
       <Badge variant="outline" className="border-violet-500 text-violet-600 text-xs">

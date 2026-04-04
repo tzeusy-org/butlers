@@ -59,7 +59,7 @@ export interface ButlerSummary {
   status: string;
   port: number;
   /** Agent type: "butler" (user-facing) or "staffer" (infrastructure). */
-  type?: string;
+  type: "butler" | "staffer";
 }
 
 /** Butler configuration files returned by GET /api/butlers/:name/config. */
