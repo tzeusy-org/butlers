@@ -17,8 +17,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.config import ButlerConfig, ButlerType
 from butlers.jobs.briefing import (
     SPECIALIST_BUTLERS,
+    _get_butler_typed_specialist_butlers,
     collect_briefing_contributions,
     combined_key,
     contribution_key,
@@ -438,3 +440,121 @@ class TestCollectBriefingContributionsMalformed:
             result = await collect_briefing_contributions(pool, {"unused_arg": "value"})
 
         assert result["contributions_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: briefing aggregation filtering (butler-typed only, staffer excluded)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_config(name: str, agent_type: ButlerType) -> MagicMock:
+    """Create a minimal mock ButlerConfig with the given name and type."""
+    cfg = MagicMock(spec=ButlerConfig)
+    cfg.name = name
+    cfg.type = agent_type
+    return cfg
+
+
+class TestBriefingAggregationFiltering:
+    """Verify collect_briefing_contributions only aggregates butler-typed agents."""
+
+    def test_get_butler_typed_specialist_butlers_excludes_staffers(self) -> None:
+        """_get_butler_typed_specialist_butlers should exclude staffer-typed agents."""
+        # Simulate a roster where one specialist is a staffer
+        mock_configs = [
+            _make_mock_config("health", ButlerType.BUTLER),
+            _make_mock_config("finance", ButlerType.BUTLER),
+            _make_mock_config("messenger", ButlerType.STAFFER),
+            # A hypothetical specialist-as-staffer (future edge case)
+            _make_mock_config("travel", ButlerType.STAFFER),
+        ]
+
+        with patch("butlers.jobs.briefing.list_butlers", return_value=mock_configs):
+            result = _get_butler_typed_specialist_butlers()
+
+        assert "health" in result
+        assert "finance" in result
+        # travel is in SPECIALIST_BUTLERS but typed as staffer — must be excluded
+        assert "travel" not in result
+        # messenger is not in SPECIALIST_BUTLERS anyway — must be excluded
+        assert "messenger" not in result
+
+    def test_get_butler_typed_specialist_butlers_fallback_on_error(self) -> None:
+        """Falls back to SPECIALIST_BUTLERS when list_butlers raises."""
+        with patch(
+            "butlers.jobs.briefing.list_butlers", side_effect=RuntimeError("roster not found")
+        ):
+            result = _get_butler_typed_specialist_butlers()
+
+        assert result == frozenset(SPECIALIST_BUTLERS)
+
+    def test_get_butler_typed_specialist_butlers_fallback_on_empty_roster(self) -> None:
+        """Falls back to SPECIALIST_BUTLERS when list_butlers returns empty list (no roster dir)."""
+        with patch("butlers.jobs.briefing.list_butlers", return_value=[]):
+            result = _get_butler_typed_specialist_butlers()
+
+        assert result == frozenset(SPECIALIST_BUTLERS)
+
+    def test_get_butler_typed_specialist_butlers_all_butler_typed(self) -> None:
+        """When all roster agents are butler-typed, returns full SPECIALIST_BUTLERS intersection."""
+        mock_configs = [_make_mock_config(name, ButlerType.BUTLER) for name in SPECIALIST_BUTLERS]
+        mock_configs.append(_make_mock_config("general", ButlerType.BUTLER))
+
+        with patch("butlers.jobs.briefing.list_butlers", return_value=mock_configs):
+            result = _get_butler_typed_specialist_butlers()
+
+        assert result == frozenset(SPECIALIST_BUTLERS)
+
+    async def test_collect_contributions_skips_staffer_typed_agent(self) -> None:
+        """Contributions from staffer-typed agents in the view are skipped."""
+        date_str = _DATE_STR_2026_03_25
+        # health is a butler; imagine travel is now typed as a staffer
+        mock_configs = [
+            _make_mock_config(name, ButlerType.BUTLER)
+            for name in SPECIALIST_BUTLERS
+            if name != "travel"
+        ] + [_make_mock_config("travel", ButlerType.STAFFER)]
+
+        rows = [
+            _make_view_row("health", _make_contribution(butler="health", date=date_str)),
+            # travel row exists in view but should be skipped since it's a staffer
+            _make_view_row("travel", _make_contribution(butler="travel", date=date_str)),
+        ]
+        pool = _make_pool(fetch_rows=rows)
+
+        with (
+            patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+            patch("butlers.jobs.briefing.list_butlers", return_value=mock_configs),
+            patch(
+                "butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1
+            ) as mock_ss,
+        ):
+            result = await collect_briefing_contributions(pool, None)
+
+        # health should be counted; travel (staffer) should be skipped
+        assert result["contributions_count"] == 1
+        payload = mock_ss.call_args[0][2]
+        butler_names = [c["butler"] for c in payload["contributions"]]
+        assert "health" in butler_names
+        assert "travel" not in butler_names
+
+        # travel must NOT appear in missing_butlers: staffers are excluded from the expected set
+        assert "travel" not in result["missing_butlers"]
+
+    async def test_collect_contributions_uses_butler_typed_set_for_missing(self) -> None:
+        """missing_butlers list only includes butler-typed agents, not staffers."""
+        # All SPECIALIST_BUTLERS are butler-typed; none have contributed today
+        mock_configs = [_make_mock_config(name, ButlerType.BUTLER) for name in SPECIALIST_BUTLERS]
+
+        pool = _make_pool(fetch_rows=[])
+
+        with (
+            patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+            patch("butlers.jobs.briefing.list_butlers", return_value=mock_configs),
+            patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
+        ):
+            result = await collect_briefing_contributions(pool, None)
+
+        # All specialists missing, none are staffers
+        assert result["missing_count"] == len(SPECIALIST_BUTLERS)
+        assert sorted(result["missing_butlers"]) == sorted(SPECIALIST_BUTLERS)

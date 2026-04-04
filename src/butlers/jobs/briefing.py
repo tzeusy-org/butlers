@@ -26,6 +26,7 @@ from typing import Any, TypedDict
 
 import asyncpg
 
+from butlers.config import ButlerType, list_butlers
 from butlers.core.state import state_delete, state_list, state_set
 
 logger = logging.getLogger(__name__)
@@ -1097,6 +1098,44 @@ async def run_home_briefing_contribution(
 # ---------------------------------------------------------------------------
 
 
+def _get_butler_typed_specialist_butlers() -> frozenset[str]:
+    """Return the set of specialist butler names that are butler-typed (not staffers).
+
+    Uses ``list_butlers()`` to discover agents from the roster and filters to those
+    with ``type == ButlerType.BUTLER`` that are also in the known ``SPECIALIST_BUTLERS``
+    list.  Falls back to the full ``SPECIALIST_BUTLERS`` tuple if roster discovery
+    fails or returns an empty result (e.g., running outside the repo tree or in a
+    Docker image that was built without the roster).
+
+    Staffer-typed agents are excluded from briefing aggregation per the
+    staffer-archetype spec (briefing exclusion requirement).
+    """
+    try:
+        all_configs = list_butlers()
+    except Exception:
+        logger.warning(
+            "collect_briefing_contributions: roster discovery raised; "
+            "falling back to hardcoded SPECIALIST_BUTLERS",
+            exc_info=True,
+        )
+        return frozenset(SPECIALIST_BUTLERS)
+
+    if not all_configs:
+        # list_butlers() returns [] when the roster directory doesn't exist (e.g.,
+        # the package is installed without the repo tree). Treat as a fallback so we
+        # don't silently skip all contributions.
+        logger.warning(
+            "collect_briefing_contributions: roster discovery returned no agents; "
+            "falling back to hardcoded SPECIALIST_BUTLERS",
+        )
+        return frozenset(SPECIALIST_BUTLERS)
+
+    butler_typed_names = {c.name for c in all_configs if c.type == ButlerType.BUTLER}
+    # Intersect with SPECIALIST_BUTLERS to only include known specialist domain butlers
+    # (excludes infrastructure butlers like switchboard, messenger, general).
+    return frozenset(SPECIALIST_BUTLERS) & butler_typed_names
+
+
 async def collect_briefing_contributions(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1105,10 +1144,11 @@ async def collect_briefing_contributions(
 
     Steps:
     1. Determine today's date in SGT.
-    2. Query ``general.v_briefing_contributions`` for today's date.
-    3. Validate each contribution; log warnings for malformed entries.
-    4. Assemble combined payload with ``contributions`` and ``missing_butlers``.
-    5. Write to ``briefing/combined/<date>`` via state_set.
+    2. Build the expected set of butler-typed specialist agents (excludes staffers).
+    3. Query ``general.v_briefing_contributions`` for today's date.
+    4. Validate each contribution; log warnings for malformed entries.
+    5. Assemble combined payload with ``contributions`` and ``missing_butlers``.
+    6. Write to ``briefing/combined/<date>`` via state_set.
 
     Args:
         pool: asyncpg connection pool for the General butler's database.
@@ -1122,6 +1162,11 @@ async def collect_briefing_contributions(
 
     date_str = today_sgt().isoformat()
     contribution_state_key = contribution_key(date_str)
+
+    # ---------------------------------------------------------------------------
+    # Determine expected contributors — butler-typed agents only (no staffers)
+    # ---------------------------------------------------------------------------
+    expected_specialist_butlers = _get_butler_typed_specialist_butlers()
 
     # ---------------------------------------------------------------------------
     # Query the cross-schema view for today's contributions
@@ -1153,10 +1198,11 @@ async def collect_briefing_contributions(
         source_butler: str = row["butler"]
         raw_value = row["value"]
 
-        # Only aggregate contributions from known specialist butlers
-        if source_butler not in SPECIALIST_BUTLERS:
+        # Only aggregate contributions from butler-typed specialist agents
+        if source_butler not in expected_specialist_butlers:
             logger.warning(
-                "Briefing contribution from unexpected butler=%s; skipping (not in SPECIALIST_BUTLERS)",  # noqa: E501
+                "Briefing contribution from unexpected butler=%s; "
+                "skipping (not a butler-typed specialist agent)",
                 source_butler,
             )
             continue
@@ -1210,7 +1256,7 @@ async def collect_briefing_contributions(
     # Sort contributions by butler name for deterministic output
     contributions.sort(key=lambda c: c["butler"])
 
-    missing_butlers = sorted(set(SPECIALIST_BUTLERS) - seen_butlers)
+    missing_butlers = sorted(expected_specialist_butlers - seen_butlers)
 
     if missing_butlers:
         logger.info(
