@@ -60,6 +60,7 @@ from butlers.api.routers.notifications import (
 from butlers.api.routers.oauth import router as oauth_router
 from butlers.api.routers.owntracks import router as owntracks_router
 from butlers.api.routers.provider_settings import router as provider_settings_router
+from butlers.api.routers.qa import router as qa_router
 from butlers.api.routers.schedules import router as schedules_router
 from butlers.api.routers.search import router as search_router
 from butlers.api.routers.secrets import router as secrets_router
@@ -237,6 +238,7 @@ def create_app(
     app.include_router(pricing_router)
     app.include_router(butler_model_router)
     app.include_router(healing_router)
+    app.include_router(qa_router)
     app.include_router(provider_settings_router)
     app.include_router(blob_storage_router)
     app.include_router(owntracks_router)
