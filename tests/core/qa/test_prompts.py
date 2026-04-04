@@ -241,3 +241,28 @@ def test_prompt_no_pii_instruction():
     prompt = build_investigation_prompt(finding, uuid.uuid4())
     prompt_lower = prompt.lower()
     assert "pii" in prompt_lower or "user data" in prompt_lower or "sensitive" in prompt_lower
+
+
+def test_prompt_braces_in_dynamic_fields_do_not_raise():
+    """build_investigation_prompt does not raise when fields contain curly braces."""
+    # event_summary from a log message or JSON can contain { or } characters
+    finding = _make_finding(
+        event_summary='{"key": "value", "error": "unexpected token {"}',
+        call_site="module.{dynamic}:42",
+        exception_type="ValueError({msg})",
+    )
+    # Should not raise KeyError or ValueError
+    prompt = build_investigation_prompt(finding, uuid.uuid4())
+    # The field values should appear in the prompt (braces preserved in output)
+    assert "key" in prompt
+    assert "dynamic" in prompt
+
+
+def test_prompt_braces_in_context_do_not_raise():
+    """build_investigation_prompt does not raise when context contains curly braces."""
+    ctx = 'Root cause in JSON: {"field": "value {placeholder}"}'
+    finding = _make_finding(context=ctx)
+    # Should not raise
+    prompt = build_investigation_prompt(finding, uuid.uuid4())
+    assert "Diagnostic Context" in prompt
+    assert "field" in prompt

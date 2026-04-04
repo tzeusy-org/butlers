@@ -338,8 +338,8 @@ async def _create_qa_pr(
             len(violations),
             violations[:3],
         )
-        # Delete the remote branch
-        await asyncio.create_subprocess_exec(
+        # Delete the remote branch (await to avoid leaking the child process)
+        delete_proc = await asyncio.create_subprocess_exec(
             "git",
             "push",
             "origin",
@@ -347,9 +347,16 @@ async def _create_qa_pr(
             branch_name,
             cwd=str(repo_root),
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        _, delete_stderr = await delete_proc.communicate()
+        if delete_proc.returncode != 0:
+            logger.warning(
+                "Failed to delete remote branch %s after anonymization failure: %s",
+                branch_name,
+                delete_stderr.decode("utf-8", errors="replace").strip(),
+            )
         return None, None, "anonymization_failed"
 
     # Step 5: gh pr create
@@ -481,13 +488,11 @@ async def _run_investigation_session(
         )
 
         if result.session_id is not None:
+            # Capture the session_id locally; do NOT call update_attempt_status here because
+            # create_or_join_attempt already inserts rows in the 'investigating' state and the
+            # state machine rejects 'investigating → investigating' transitions.  The session_id
+            # will be attached on the next valid status transition (pr_open / failed / timeout).
             investigation_session_id = result.session_id
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "investigating",
-                healing_session_id=investigation_session_id,
-            )
 
         if not result.success:
             error_detail = result.error or "Investigation agent returned non-success result"
@@ -580,8 +585,8 @@ async def _run_investigation_session(
             pr_number=pr_number,
             healing_session_id=investigation_session_id,
         )
-        # Link finding to attempt (was set at dispatch time, but ensure it's set)
-        await update_finding_attempt(pool, finding_id, attempt_id)
+        # Note: finding was already linked to attempt in dispatch_qa_investigation
+        # (via update_finding_attempt at gate 6). No redundant call needed here.
 
         logger.info("QA investigation PR created: attempt=%s pr_url=%s", attempt_id, pr_url)
         # Remove worktree; keep branch (backs the open PR)
@@ -730,18 +735,25 @@ async def _is_circuit_breaker_tripped(
     pool: asyncpg.Pool,
     threshold: int,
 ) -> bool:
-    """Return True if the last *threshold* terminal QA attempts are all failures."""
-    # Check only QA-originated attempts (qa_patrol_id IS NOT NULL)
+    """Return True if the last *threshold* terminal QA attempts are all failures.
+
+    Fetches the last *threshold* terminal QA attempts ordered by ``closed_at``
+    (regardless of their status), then checks whether all of them are failure
+    statuses.  This correctly captures "N consecutive failures" semantics:
+    if any of the last N terminal attempts was a success (e.g., ``pr_merged``),
+    the breaker stays open.
+    """
+    # Check only QA-originated terminal attempts (qa_patrol_id IS NOT NULL,
+    # closed_at IS NOT NULL ensures we only look at completed rows)
     rows = await pool.fetch(
         """
         SELECT status
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
-          AND status = ANY($1::text[])
+          AND closed_at IS NOT NULL
         ORDER BY closed_at DESC
-        LIMIT $2
+        LIMIT $1
         """,
-        list(CIRCUIT_BREAKER_FAILURE_STATUSES),
         threshold,
     )
     if len(rows) < threshold:
@@ -814,7 +826,7 @@ async def dispatch_qa_investigation(
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
-                reason="severity_below_threshold",
+                reason="severity_above_threshold",
             )
 
         # ---------------------------------------------------------------
@@ -1000,13 +1012,20 @@ async def dispatch_qa_investigation(
                 attempt_id=attempt_id,
             )
 
-        # Store worktree path and branch on the attempt row
-        await update_attempt_status(
-            pool,
+        # Store worktree path and branch on the attempt row via a direct metadata update.
+        # update_attempt_status enforces state machine transitions and rejects
+        # 'investigating → investigating', so use a targeted UPDATE instead.
+        await pool.execute(
+            """
+            UPDATE public.healing_attempts
+            SET branch_name   = $2,
+                worktree_path = $3,
+                updated_at    = now()
+            WHERE id = $1
+            """,
             attempt_id,
-            "investigating",
-            branch_name=branch_name,
-            worktree_path=str(worktree_path),
+            branch_name,
+            str(worktree_path),
         )
 
         logger.info(
@@ -1118,9 +1137,24 @@ async def dispatch_novel_findings(
         One result per input finding, in the same order.
     """
     results: list[QaDispatchResult] = []
-    queued_count = 0
+    cap_skipped = 0
 
     for triaged in novel_findings:
+        # Once the concurrency cap is reached, stop calling dispatch for remaining
+        # findings.  Continuing would cause each subsequent finding to go through
+        # create_or_join_attempt (inserting a new row) before being rejected — these
+        # orphaned 'failed' rows can then trigger cooldown for the next patrol cycle.
+        if cap_skipped > 0:
+            results.append(
+                QaDispatchResult(
+                    accepted=False,
+                    fingerprint=triaged.finding.fingerprint,
+                    reason="concurrency_cap",
+                )
+            )
+            cap_skipped += 1
+            continue
+
         result = await dispatch_qa_investigation(
             pool=pool,
             triaged_finding=triaged,
@@ -1134,13 +1168,13 @@ async def dispatch_novel_findings(
         results.append(result)
 
         if result.reason == "concurrency_cap":
-            queued_count += 1
+            cap_skipped += 1
 
-    if queued_count > 0:
+    if cap_skipped > 0:
         logger.info(
-            "QA dispatch: %d finding(s) queued due to concurrency cap "
+            "QA dispatch: %d finding(s) skipped due to concurrency cap "
             "(will be retried next patrol cycle)",
-            queued_count,
+            cap_skipped,
         )
 
     dispatched = sum(1 for r in results if r.accepted)

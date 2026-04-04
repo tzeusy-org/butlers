@@ -128,10 +128,22 @@ def build_investigation_prompt(
     str
         Formatted investigation prompt string.
     """
+    def _escape(s: str) -> str:
+        """Escape curly braces in user-controlled strings to prevent str.format() errors.
+
+        event_summary, context, call_site, etc. may come from log messages or
+        error text that contains ``{`` / ``}`` (e.g. JSON, Python format strings,
+        stack traces).  These must be escaped before being interpolated into the
+        prompt template via str.format() or they raise KeyError / ValueError.
+        """
+        return s.replace("{", "{{").replace("}", "}}")
+
     # Build optional context section (diagnostic reasoning from butler_reports source)
     context_section = ""
     if finding.context and finding.context.strip():
-        context_section = _CONTEXT_SECTION_TEMPLATE.format(context=finding.context.strip())
+        context_section = _CONTEXT_SECTION_TEMPLATE.format(
+            context=_escape(finding.context.strip())
+        )
 
     # Build optional dashboard link section
     dashboard_section = ""
@@ -141,12 +153,12 @@ def build_investigation_prompt(
 
     return _QA_INVESTIGATION_PROMPT_TEMPLATE.format(
         fingerprint=finding.fingerprint,
-        exception_type=finding.exception_type,
-        call_site=finding.call_site,
+        exception_type=_escape(finding.exception_type),
+        call_site=_escape(finding.call_site),
         severity=finding.severity,
-        event_summary=finding.event_summary,
-        source_butler=finding.source_butler,
-        source_type=finding.source_type,
+        event_summary=_escape(finding.event_summary),
+        source_butler=_escape(finding.source_butler),
+        source_type=_escape(finding.source_type),
         occurrence_count=finding.occurrence_count,
         first_seen=finding.first_seen.isoformat(),
         last_seen=finding.last_seen.isoformat(),

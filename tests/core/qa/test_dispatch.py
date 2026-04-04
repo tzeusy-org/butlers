@@ -210,7 +210,7 @@ async def test_dispatch_severity_above_threshold():
     )
 
     assert result.accepted is False
-    assert result.reason == "severity_below_threshold"
+    assert result.reason == "severity_above_threshold"
 
 
 @pytest.mark.asyncio
@@ -657,7 +657,7 @@ async def test_dispatch_novel_findings_returns_all_results():
         "butlers.core.qa.dispatch.dispatch_qa_investigation",
         new_callable=AsyncMock,
         return_value=QaDispatchResult(
-            accepted=False, fingerprint="a" * 64, reason="severity_below_threshold"
+            accepted=False, fingerprint="a" * 64, reason="severity_above_threshold"
         ),
     ) as mock_dispatch:
         results = await dispatch_novel_findings(
@@ -694,6 +694,53 @@ async def test_dispatch_novel_findings_empty_list():
 
     assert results == []
     mock_dispatch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_novel_findings_stops_after_concurrency_cap():
+    """dispatch_novel_findings stops calling dispatch_qa_investigation after cap is hit.
+
+    Once the concurrency cap is hit, remaining findings are skipped without calling
+    dispatch (preventing spurious failed attempt rows that could trigger cooldown).
+    """
+    pool = _make_pool()
+    patrol_id = uuid.uuid4()
+    config = QaDispatchConfig()
+
+    findings = [_make_triaged(_make_finding()) for _ in range(4)]
+    call_count = 0
+
+    async def dispatch_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First call: concurrency cap hit
+            return QaDispatchResult(
+                accepted=False,
+                fingerprint=findings[0].finding.fingerprint,
+                reason="concurrency_cap",
+            )
+        # Should never get here for findings[1..3]
+        return QaDispatchResult(accepted=True, fingerprint="x" * 64, reason="dispatched")
+
+    with patch(
+        "butlers.core.qa.dispatch.dispatch_qa_investigation",
+        side_effect=dispatch_side_effect,
+    ):
+        results = await dispatch_novel_findings(
+            pool=pool,
+            novel_findings=findings,
+            patrol_id=patrol_id,
+            config=config,
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    # dispatch_qa_investigation called only once (for the first finding that hit the cap)
+    assert call_count == 1
+    # All 4 results returned, remaining 3 synthesized as concurrency_cap rejections
+    assert len(results) == 4
+    assert all(r.reason == "concurrency_cap" for r in results)
 
 
 # ---------------------------------------------------------------------------
