@@ -472,3 +472,58 @@ def compute_fingerprint_from_current_exc() -> FingerprintResult | None:
     if exc_value is None:
         return None
     return compute_fingerprint(exc_value, exc_tb)
+
+
+def compute_fingerprint_from_log_entry(entry: dict) -> FingerprintResult:
+    """Compute a deterministic fingerprint from a parsed structlog JSON log entry.
+
+    This is the **QA log-scanner path** — called by the ``LogScannerSource``
+    to compute fingerprints compatible with those produced by the raw exception
+    path and the MCP tool report path.
+
+    The algorithm is identical to ``compute_fingerprint_from_report``:
+
+    1. Sanitize the event message (replace UUIDs, timestamps, numeric IDs).
+    2. Extract call site from the traceback string (if present) or use the
+       logger module path as a fallback.
+    3. Use the exception type string from the entry (or ``"unknown"``).
+    4. Hash ``exception_type || call_site || sanitized_message``.
+
+    Parameters
+    ----------
+    entry:
+        Parsed JSON object from a structlog log line.  Expected fields:
+        ``event`` (str), ``exception`` (str, optional),
+        ``traceback`` (str, optional), ``logger`` (str, optional),
+        ``level`` (str).
+
+    Returns
+    -------
+    FingerprintResult
+        Named tuple with fingerprint, severity, exception_type, call_site,
+        and sanitized_message.
+    """
+    event: str = str(entry.get("event") or entry.get("message") or entry.get("msg") or "")
+    exception_type: str = str(entry.get("exception") or entry.get("exc_type") or "unknown")
+    traceback_str: str = str(entry.get("traceback") or entry.get("exc_info") or "")
+    logger_module: str = str(entry.get("logger") or entry.get("module") or "")
+
+    # Resolve call site
+    if traceback_str:
+        call_site = _extract_call_site_from_str(traceback_str)
+    elif logger_module:
+        call_site = logger_module
+    else:
+        call_site = "<unknown>:<unknown>"
+
+    sanitized_message = _sanitize_message(event)
+    auto_severity = _score_severity(exception_type, call_site, exc=None)
+    fingerprint = _compute_hash(exception_type, call_site, sanitized_message)
+
+    return FingerprintResult(
+        fingerprint=fingerprint,
+        severity=auto_severity,
+        exception_type=exception_type,
+        call_site=call_site,
+        sanitized_message=sanitized_message,
+    )
