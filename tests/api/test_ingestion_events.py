@@ -953,12 +953,35 @@ class TestReplayEndpoint:
         detail = body.get("detail", body)
         assert detail["current_status"] == "replay_pending"
 
+    async def test_replay_of_ingested_event_returns_200(self, app):
+        """Replay of an already-ingested event resets message_inbox and returns 200."""
+        replay_id = uuid4()
+        mock_pool = AsyncMock()
+        # Step 1 (failed → ingested) misses; step 1b (ingested → replay_pending) hits.
+        mock_pool.fetchrow = AsyncMock(side_effect=[None, {"id": replay_id}])
+
+        switchboard_pool = AsyncMock()
+        switchboard_pool.execute = AsyncMock()
+
+        _app_with_mock_db(app, shared_pool=mock_pool, switchboard_pool=switchboard_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{_FILTERED_ID}/replay")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "replay_pending"
+        # message_inbox lifecycle should have been reset
+        switchboard_pool.execute.assert_called_once()
+
     async def test_replay_of_replay_complete_returns_200(self, app):
         """Replay of replay_complete event is allowed and returns 200."""
         replay_id = uuid4()
         mock_pool = AsyncMock()
-        # First fetchrow (ingestion_events UPDATE) misses, second (filtered_events) hits.
-        mock_pool.fetchrow = AsyncMock(side_effect=[None, {"id": replay_id}])
+        # Step 1 (failed→ingested) misses, step 1b (ingested→replay_pending) misses,
+        # step 2 (filtered_events) hits.
+        mock_pool.fetchrow = AsyncMock(side_effect=[None, None, {"id": replay_id}])
 
         _app_with_mock_db(app, shared_pool=mock_pool)
 

@@ -1103,23 +1103,23 @@ class TestIngestionEventReplayRequest:
         assert "failed" in sql.lower()
 
     async def test_fallback_update_targets_filtered_events(self) -> None:
-        """When ingestion_events UPDATE misses, the fallback UPDATE targets filtered_events."""
+        """When ingestion_events UPDATEs miss, the fallback UPDATE targets filtered_events."""
         from butlers.core.ingestion_events import ingestion_event_replay_request
 
         event_id = uuid.uuid4()
         returning_row = _FakeRecord({"id": event_id})
-        # First fetchrow (ingestion_events UPDATE) misses, first fetchval (status check) None,
-        # second fetchrow (filtered_events UPDATE) hits.
+        # Step 1 (failed→ingested) misses, step 1b (ingested→replay_pending) misses,
+        # step 2 (filtered_events UPDATE) hits.
         pool = _FakePool(
-            fetchrow_results=[None, returning_row],
+            fetchrow_results=[None, None, returning_row],
             fetchval_result=None,
         )
         result = await ingestion_event_replay_request(pool, event_id)
         assert result["outcome"] == "ok"
-        # The second fetchrow call should target connectors.filtered_events
+        # The third fetchrow call should target connectors.filtered_events
         fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
-        assert len(fetchrow_calls) == 2
-        _, sql, _ = fetchrow_calls[1]
+        assert len(fetchrow_calls) == 3
+        _, sql, _ = fetchrow_calls[2]
         assert "connectors.filtered_events" in sql
         assert "ANY" in sql.upper()
 

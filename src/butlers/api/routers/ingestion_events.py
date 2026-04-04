@@ -228,8 +228,17 @@ async def replay_ingestion_event(
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
+    # Obtain the switchboard pool for resetting message_inbox on replay.
+    switchboard_pool = None
     try:
-        result = await ingestion_event_replay_request(pool, event_id)
+        switchboard_pool = db.pool("switchboard")
+    except (KeyError, Exception):
+        pass  # Non-fatal: replay of ingested events will log a warning.
+
+    try:
+        result = await ingestion_event_replay_request(
+            pool, event_id, switchboard_pool=switchboard_pool
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid event_id: {exc}") from exc
 

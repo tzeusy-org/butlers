@@ -345,6 +345,8 @@ async def ingestion_event_mark_failed(
 async def ingestion_event_replay_request(
     pool: asyncpg.Pool,
     event_id: str | UUID,
+    *,
+    switchboard_pool: asyncpg.Pool | None = None,
 ) -> dict[str, Any]:
     """Request replay of a failed or filtered event.
 
@@ -352,21 +354,27 @@ async def ingestion_event_replay_request(
     falls back to ``connectors.filtered_events`` (for connector-filtered events).
 
     For failed ingestion events, resets status to ``'ingested'`` so the
-    pipeline can re-route.  For filtered events, sets status to
-    ``'replay_pending'`` for the existing replay worker.
+    pipeline can re-route.  For already-ingested events, sets status to
+    ``'replay_pending'`` and resets the corresponding ``message_inbox`` row
+    to ``'accepted'`` so the DurableBuffer scanner re-routes it.
+    For filtered events, sets status to ``'replay_pending'`` for the existing
+    replay worker.
 
     Allowed transitions:
     - ``failed``          → ``ingested``        (ingestion event — ready for re-route)
+    - ``ingested``        → ``replay_pending``  (re-process successful event via scanner)
     - ``filtered``        → ``replay_pending``  (connector filter)
     - ``error``           → ``replay_pending``  (connector error)
     - ``replay_failed``   → ``replay_pending``  (re-replay)
-    - ``ingested``        → ``replay_pending``  (re-process successful event)
     - ``replay_complete`` → ``replay_pending``  (re-replay completed event)
 
     Args:
         pool: asyncpg connection pool that can resolve both
             ``public.ingestion_events`` and ``connectors.filtered_events``.
         event_id: UUID of the event to replay.
+        switchboard_pool: Optional asyncpg pool scoped to the switchboard schema.
+            Required for replaying ``ingested`` events (resets ``message_inbox``
+            lifecycle so the DurableBuffer scanner re-routes the message).
 
     Returns:
         A dict with ``outcome`` key:
@@ -391,6 +399,47 @@ async def ingestion_event_replay_request(
     if row is not None:
         return {"outcome": "ok", "id": str(row["id"]), "source": "ingestion_events"}
 
+    # 1b. Try public.ingestion_events for already-ingested events.
+    # These events were already routed successfully.  To replay, we mark them
+    # replay_pending and reset the message_inbox row to 'accepted' so the
+    # DurableBuffer scanner re-enqueues them for re-routing.
+    ingestion_replayable = ("ingested",)
+    row = await pool.fetchrow(
+        """
+        UPDATE public.ingestion_events
+        SET status = 'replay_pending'
+        WHERE id = $1 AND status = ANY($2)
+        RETURNING id
+        """,
+        event_id,
+        list(ingestion_replayable),
+    )
+    if row is not None:
+        # Reset message_inbox lifecycle so the scanner picks it up.
+        if switchboard_pool is not None:
+            try:
+                await switchboard_pool.execute(
+                    """
+                    UPDATE message_inbox
+                    SET lifecycle_state = 'accepted',
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    event_id,
+                )
+            except Exception:
+                logger.warning(
+                    "replay: failed to reset message_inbox lifecycle for %s "
+                    "(scanner may not re-route until manual intervention)",
+                    event_id,
+                )
+        else:
+            logger.warning(
+                "replay: switchboard_pool not available; message_inbox not reset for %s",
+                event_id,
+            )
+        return {"outcome": "ok", "id": str(row["id"]), "source": "ingestion_events"}
+
     # 2. Try connectors.filtered_events (any status except replay_pending).
     filtered_replayable = (
         "filtered",
@@ -412,7 +461,7 @@ async def ingestion_event_replay_request(
     if row is not None:
         return {"outcome": "ok", "id": str(row["id"]), "source": "filtered_events"}
 
-    # 3. Check both tables for non-replayable status (e.g. replay_pending).
+    # 3. Check both tables for non-replayable status.
     for table in ("public.ingestion_events", "connectors.filtered_events"):
         current_status = await pool.fetchval(
             f"SELECT status FROM {table} WHERE id = $1",
