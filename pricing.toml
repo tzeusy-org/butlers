@@ -45,6 +45,13 @@ output_price_per_token = 0.000015   # $15.00 / 1M tokens (<272K context)
 input_price_per_token = 0.00003     # $30.00 / 1M tokens (<272K context)
 output_price_per_token = 0.00018    # $180.00 / 1M tokens (<272K context)
 
+[models."gpt-5.4-mini"]
+[[models."gpt-5.4-mini".tiers]]
+context_threshold = 0
+input_price_per_token = 0.00000075   # $0.75 / 1M tokens
+cached_input_price_per_token = 0.000000075  # $0.075 / 1M tokens
+output_price_per_token = 0.0000045   # $4.50 / 1M tokens
+
 [models."gpt-5.3-codex"]
 input_price_per_token = 0.00000175  # $1.75 / 1M tokens
 output_price_per_token = 0.000014   # $14.00 / 1M tokens
