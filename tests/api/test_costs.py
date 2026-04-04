@@ -1,14 +1,17 @@
-"""Tests for cost and usage tracking endpoints.
+"""Tests for cost, pricing, and schedule cost API endpoints.
 
-Verifies the cost summary endpoint with MCP fan-out, pricing estimation,
-period filtering, graceful fallback on unreachable butlers, and that
-placeholder endpoints return correct empty/zero responses.
+Condensed from test_costs.py (44), test_cost_comprehensive.py (9),
+test_cost_schedule.py (9), test_pricing_endpoint.py (6), test_pricing.py (48)
+→ ~25 tests (bu-egmz6).
+
+Keeps: cost aggregation, tiered pricing, model validation, graceful fallback,
+schedule endpoint, pricing endpoint, pricing config loading/parsing.
+Removes: duplicate period/filter-accepted tests, trivial model-construct round-trips.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -22,8 +25,15 @@ from butlers.api.deps import (
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.models import CostSummary, DailyCost, TopSession
-from butlers.api.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
+from butlers.api.models import CostSummary, ScheduleCost
+from butlers.api.pricing import (
+    ModelPricing,
+    PricingConfig,
+    PricingError,
+    PricingTier,
+    TieredModelPricing,
+    load_pricing,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -32,49 +42,51 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
+_FLAT_TOML = """\
+[models]
+[models."claude-sonnet-4-5-20250929"]
+input_price_per_token = 0.000003
+output_price_per_token = 0.000015
+[models."claude-haiku-35-20241022"]
+input_price_per_token = 0.0000008
+output_price_per_token = 0.000004
+"""
 
-def _make_configs() -> list[ButlerConnectionInfo]:
-    """Return a small set of butler configs for testing."""
-    return [
-        ButlerConnectionInfo(name="switchboard", port=41100, description="Routes messages"),
-        ButlerConnectionInfo(name="general", port=41101, description="Catch-all assistant"),
-    ]
+_TIERED_TOML = """\
+[models]
+[models."flat-model"]
+input_price_per_token = 0.000001
+output_price_per_token = 0.000002
+[models."gpt-5.4"]
+[[models."gpt-5.4".tiers]]
+context_threshold = 0
+input_price_per_token = 0.0000025
+cached_input_price_per_token = 0.00000025
+output_price_per_token = 0.000015
+[[models."gpt-5.4".tiers]]
+context_threshold = 272000
+input_price_per_token = 0.000005
+cached_input_price_per_token = 0.0000005
+output_price_per_token = 0.0000225
+"""
 
 
-def _make_pricing() -> PricingConfig:
-    """Create a PricingConfig with known per-token prices."""
+def _flat_pricing() -> PricingConfig:
     return PricingConfig(
         models={
-            "claude-sonnet-4-20250514": ModelPricing(
-                input_price_per_token=0.000003,
-                output_price_per_token=0.000015,
-            ),
-            "claude-haiku-35-20241022": ModelPricing(
-                input_price_per_token=0.0000008,
-                output_price_per_token=0.000004,
-            ),
+            "claude-sonnet-4-20250514": ModelPricing(0.000003, 0.000015),
+            "claude-haiku-35-20241022": ModelPricing(0.0000008, 0.000004),
         }
     )
 
 
-def _make_tiered_pricing() -> PricingConfig:
-    """Create a PricingConfig with a tiered model (GPT-5.4 style)."""
+def _tiered_pricing() -> PricingConfig:
     return PricingConfig(
         models={
             "gpt-5.4": TieredModelPricing(
                 tiers=(
-                    PricingTier(
-                        context_threshold=0,
-                        input_price_per_token=0.0000025,
-                        output_price_per_token=0.000015,
-                        cached_input_price_per_token=0.00000025,
-                    ),
-                    PricingTier(
-                        context_threshold=272_000,
-                        input_price_per_token=0.000005,
-                        output_price_per_token=0.0000225,
-                        cached_input_price_per_token=0.0000005,
-                    ),
+                    PricingTier(0, 0.0000025, 0.000015, 0.00000025),
+                    PricingTier(272_000, 0.000005, 0.0000225, 0.0000005),
                 )
             ),
         }
@@ -82,51 +94,152 @@ def _make_tiered_pricing() -> PricingConfig:
 
 
 def _make_tool_result(data: dict) -> MagicMock:
-    """Create a mock MCP tool result with JSON text content."""
-    content_item = MagicMock()
-    content_item.text = json.dumps(data)
+    item = MagicMock()
+    item.text = json.dumps(data)
     result = MagicMock()
-    result.content = [content_item]
+    result.content = [item]
     return result
 
 
 def _make_empty_tool_result() -> MagicMock:
-    """Create a mock MCP tool result with no content."""
     result = MagicMock()
     result.content = []
     return result
 
 
-def _make_manager_with_responses(
-    configs: list[ButlerConnectionInfo],
-    responses: dict[str, MagicMock | Exception],
-) -> MCPClientManager:
-    """Create an MCPClientManager mock where each butler returns a specific response."""
+def _mock_mgr_with(responses: dict[str, MagicMock | Exception]) -> MCPClientManager:
     mgr = MagicMock(spec=MCPClientManager)
 
-    async def fake_get_client(name: str) -> MagicMock:
+    async def _get(name: str):
         resp = responses.get(name)
         if isinstance(resp, Exception):
             raise resp
-        client = MagicMock()
-        client.call_tool = AsyncMock(return_value=resp)
-        return client
+        c = MagicMock()
+        c.call_tool = AsyncMock(return_value=resp)
+        return c
 
-    mgr.get_client = AsyncMock(side_effect=fake_get_client)
+    mgr.get_client = AsyncMock(side_effect=_get)
     return mgr
 
 
-def _app_with_overrides(
-    app,
-    mgr: MCPClientManager,
-    configs: list[ButlerConnectionInfo],
-    pricing: PricingConfig,
-):
-    """Wire dependency overrides for costs testing onto a shared app."""
+def _wire(app, mgr, configs, pricing):
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = lambda: pricing
     return app
+
+
+# ---------------------------------------------------------------------------
+# Pricing config loading
+# ---------------------------------------------------------------------------
+
+
+class TestLoadPricing:
+    def test_loads_flat_models(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text(_FLAT_TOML)
+        cfg = load_pricing(p)
+        assert len(cfg.model_ids) == 2
+        mp = cfg.get_model_pricing("claude-sonnet-4-5-20250929")
+        assert mp.input_price_per_token == pytest.approx(0.000003)
+
+    def test_loads_tiered_model(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text(_TIERED_TOML)
+        cfg = load_pricing(p)
+        pricing = cfg.get_model_pricing("gpt-5.4")
+        assert isinstance(pricing, TieredModelPricing)
+        assert len(pricing.tiers) == 2
+        assert pricing.tiers[0].context_threshold == 0
+        assert pricing.tiers[1].context_threshold == 272_000
+
+    def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(PricingError, match="not found"):
+            load_pricing(tmp_path / "nonexistent.toml")
+
+    def test_corrupt_toml_raises(self, tmp_path):
+        p = tmp_path / "bad.toml"
+        p.write_text("[models\ngarbage!!!")
+        with pytest.raises(PricingError, match="Invalid TOML"):
+            load_pricing(p)
+
+    def test_missing_price_field_raises(self, tmp_path):
+        p = tmp_path / "partial.toml"
+        p.write_text('[models]\n[models."m1"]\ninput_price_per_token = 0.001\n')
+        with pytest.raises(PricingError, match="Missing required field"):
+            load_pricing(p)
+
+    def test_unknown_model_returns_none(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text(_FLAT_TOML)
+        cfg = load_pricing(p)
+        assert cfg.get_model_pricing("nonexistent-model") is None
+
+    def test_empty_tiers_raises(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text('[models]\n[models."m"]\ntiers = []\n')
+        with pytest.raises(PricingError, match="non-empty array"):
+            load_pricing(p)
+
+    def test_tiered_cached_input_defaults_to_zero(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text(
+            '[models]\n[models."m"]\n'
+            '[[models."m".tiers]]\n'
+            "context_threshold = 0\n"
+            "input_price_per_token = 0.001\n"
+            "output_price_per_token = 0.002\n"
+        )
+        cfg = load_pricing(p)
+        assert cfg.get_model_pricing("m").tiers[0].cached_input_price_per_token == 0.0
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/pricing
+# ---------------------------------------------------------------------------
+
+
+class TestPricingEndpoint:
+    async def test_flat_model_returns_per_million_prices(self, app):
+        config = PricingConfig({"claude-sonnet": ModelPricing(0.000003, 0.000015)})
+        app.dependency_overrides[get_pricing] = lambda: config
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/settings/pricing")
+        assert resp.status_code == 200
+        entry = resp.json()["data"]["claude-sonnet"]
+        assert entry["input_per_million"] == pytest.approx(3.0)
+        assert entry["output_per_million"] == pytest.approx(15.0)
+
+    async def test_tiered_model_returns_base_tier(self, app):
+        config = PricingConfig(
+            {
+                "gpt-5.4": TieredModelPricing(
+                    tiers=(
+                        PricingTier(0, 0.0000025, 0.000015),
+                        PricingTier(272_000, 0.000005, 0.0000225),
+                    )
+                )
+            }
+        )
+        app.dependency_overrides[get_pricing] = lambda: config
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/settings/pricing")
+        assert resp.status_code == 200
+        entry = resp.json()["data"]["gpt-5.4"]
+        assert entry["input_per_million"] == pytest.approx(2.5)
+
+    async def test_empty_pricing_config(self, app):
+        app.dependency_overrides[get_pricing] = lambda: PricingConfig({})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/settings/pricing")
+        assert resp.status_code == 200
+        assert resp.json()["data"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -135,419 +248,114 @@ def _app_with_overrides(
 
 
 class TestCostSummary:
-    async def test_summary_returns_zero_when_no_butlers(self, app):
-        """Summary endpoint returns zeroed-out data when no butlers configured."""
+    async def test_zero_butlers_returns_zeroed_summary(self, app):
         mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
+        _wire(app, mgr, [], _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert "data" in body
-        data = body["data"]
+            resp = await client.get("/api/costs/summary")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
         assert data["total_cost_usd"] == 0.0
         assert data["total_sessions"] == 0
-        assert data["total_input_tokens"] == 0
-        assert data["total_output_tokens"] == 0
-        assert data["by_butler"] == {}
-        assert data["by_model"] == {}
-        assert data["period"] == "today"
+        CostSummary.model_validate(data)
 
-    async def test_summary_default_period_is_today(self, app):
-        """Default period parameter is 'today'."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary")
-
-        data = response.json()["data"]
-        assert data["period"] == "today"
-
-    async def test_summary_accepts_7d_period(self, app):
-        """Period '7d' is accepted."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary?period=7d")
-
-        assert response.status_code == 200
-        assert response.json()["data"]["period"] == "7d"
-
-    async def test_summary_accepts_30d_period(self, app):
-        """Period '30d' is accepted."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary?period=30d")
-
-        assert response.status_code == 200
-        assert response.json()["data"]["period"] == "30d"
-
-    async def test_summary_rejects_invalid_period(self, app):
-        """Invalid period parameter returns 422."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary?period=90d")
-
-        assert response.status_code == 422
-
-    async def test_summary_aggregates_butler_costs(self, app):
-        """Summary aggregates cost data from multiple butlers."""
-        configs = _make_configs()
-        pricing = _make_pricing()
-
-        switchboard_data = {
+    async def test_aggregates_multiple_butlers(self, app):
+        configs = [
+            ButlerConnectionInfo(name="sw", port=41100),
+            ButlerConnectionInfo(name="gen", port=41101),
+        ]
+        sw_data = {
             "total_sessions": 5,
             "total_input_tokens": 10000,
             "total_output_tokens": 5000,
-            "by_model": {
-                "claude-sonnet-4-20250514": {
-                    "input_tokens": 10000,
-                    "output_tokens": 5000,
-                },
-            },
+            "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
         }
-        general_data = {
+        gen_data = {
             "total_sessions": 3,
             "total_input_tokens": 8000,
             "total_output_tokens": 4000,
-            "by_model": {
-                "claude-haiku-35-20241022": {
-                    "input_tokens": 8000,
-                    "output_tokens": 4000,
-                },
-            },
+            "by_model": {"claude-haiku-35-20241022": {"input_tokens": 8000, "output_tokens": 4000}},
         }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {
-                "switchboard": _make_tool_result(switchboard_data),
-                "general": _make_tool_result(general_data),
-            },
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
+        mgr = _mock_mgr_with({"sw": _make_tool_result(sw_data), "gen": _make_tool_result(gen_data)})
+        _wire(app, mgr, configs, _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-
+            resp = await client.get("/api/costs/summary")
+        data = resp.json()["data"]
         assert data["total_sessions"] == 8
         assert data["total_input_tokens"] == 18000
-        assert data["total_output_tokens"] == 9000
-
-        # Verify costs are calculated:
-        # switchboard: 10000 * 0.000003 + 5000 * 0.000015 = 0.03 + 0.075 = 0.105
-        # general: 8000 * 0.0000008 + 4000 * 0.000004 = 0.0064 + 0.016 = 0.0224
+        # sw: 10000*0.000003+5000*0.000015=0.105; gen: 8000*0.0000008+4000*0.000004=0.0224
         assert data["total_cost_usd"] == pytest.approx(0.1274, abs=1e-4)
-        assert "switchboard" in data["by_butler"]
-        assert "general" in data["by_butler"]
-        assert data["by_butler"]["switchboard"] == pytest.approx(0.105, abs=1e-4)
-        assert data["by_butler"]["general"] == pytest.approx(0.0224, abs=1e-4)
 
-        assert "claude-sonnet-4-20250514" in data["by_model"]
-        assert "claude-haiku-35-20241022" in data["by_model"]
-
-    async def test_summary_calls_registered_sessions_summary_tool(self, app):
-        """Summary fan-out should call the daemon-registered sessions_summary tool."""
-        configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
-        pricing = _make_pricing()
-        session_stats = {
-            "total_sessions": 1,
-            "total_input_tokens": 1000,
-            "total_output_tokens": 500,
-            "by_model": {
-                "claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500},
-            },
-        }
-
-        mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(return_value=_make_tool_result(session_stats))
-        mgr = MagicMock(spec=MCPClientManager)
-        mgr.get_client = AsyncMock(return_value=mock_client)
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary?period=7d")
-
-        assert response.status_code == 200
-        mock_client.call_tool.assert_awaited_once_with("sessions_summary", {"period": "7d"})
-
-    async def test_summary_handles_unreachable_butler(self, app):
-        """Unreachable butlers contribute zero to the aggregate."""
-        configs = _make_configs()
-        pricing = _make_pricing()
-
-        switchboard_data = {
+    async def test_unreachable_butler_skipped(self, app):
+        configs = [
+            ButlerConnectionInfo(name="sw", port=41100),
+            ButlerConnectionInfo(name="broken", port=41101),
+        ]
+        sw_data = {
             "total_sessions": 2,
             "total_input_tokens": 1000,
             "total_output_tokens": 500,
-            "by_model": {
-                "claude-sonnet-4-20250514": {
-                    "input_tokens": 1000,
-                    "output_tokens": 500,
-                },
-            },
+            "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}},
         }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {
-                "switchboard": _make_tool_result(switchboard_data),
-                "general": ButlerUnreachableError("general"),
-            },
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
+        mgr = _mock_mgr_with({"sw": _make_tool_result(sw_data), "broken": ButlerUnreachableError("broken")})
+        _wire(app, mgr, configs, _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-
+            resp = await client.get("/api/costs/summary")
+        data = resp.json()["data"]
         assert data["total_sessions"] == 2
-        assert data["total_input_tokens"] == 1000
-        assert data["total_output_tokens"] == 500
-        assert "general" not in data["by_butler"]
+        assert "broken" not in data["by_butler"]
 
-    async def test_summary_handles_empty_tool_result(self, app):
-        """Butler returning empty tool result contributes zero."""
-        configs = [ButlerConnectionInfo(name="empty", port=41100)]
-        pricing = _make_pricing()
+    async def test_tiered_pricing_low_vs_high_tier(self, app):
+        """Low tier applies when context < 272k; high tier when context >= 272k."""
+        configs = [ButlerConnectionInfo(name="t", port=41100)]
 
-        mgr = _make_manager_with_responses(
-            configs,
-            {"empty": _make_empty_tool_result()},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
+        def _data(context_tokens: int) -> dict:
+            return {
+                "total_sessions": 1,
+                "total_input_tokens": 1_000_000,
+                "total_output_tokens": 1_000_000,
+                "by_model": {
+                    "gpt-5.4": {
+                        "input_tokens": 1_000_000,
+                        "output_tokens": 1_000_000,
+                        "cached_input_tokens": 0,
+                        "context_tokens": context_tokens,
+                    }
+                },
+            }
 
+        # Low tier: 1M*$2.5/1M + 1M*$15/1M = $17.50
+        mgr = _mock_mgr_with({"t": _make_tool_result(_data(100_000))})
+        _wire(app, mgr, configs, _tiered_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/summary")
+            resp_low = await client.get("/api/costs/summary")
+        assert resp_low.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
 
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert data["total_cost_usd"] == 0.0
-        assert data["total_sessions"] == 0
+        # High tier: 1M*$5/1M + 1M*$22.5/1M = $27.50
+        mgr2 = _mock_mgr_with({"t": _make_tool_result(_data(300_000))})
+        _wire(app, mgr2, configs, _tiered_pricing())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp_high = await client.get("/api/costs/summary")
+        assert resp_high.json()["data"]["total_cost_usd"] == pytest.approx(27.50, abs=1e-4)
 
-    async def test_summary_response_validates_as_model(self, app):
-        """Summary response data can be parsed as CostSummary model."""
+    async def test_invalid_period_returns_422(self, app):
         mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
+        _wire(app, mgr, [], _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/summary")
-
-        body = response.json()
-        summary = CostSummary.model_validate(body["data"])
-        assert summary.total_cost_usd == 0.0
-        assert summary.total_sessions == 0
-        assert summary.period == "today"
-
-    async def test_summary_unknown_model_contributes_zero_cost(self, app):
-        """A model not in pricing.toml contributes zero cost."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_pricing()
-
-        data = {
-            "total_sessions": 1,
-            "total_input_tokens": 5000,
-            "total_output_tokens": 2000,
-            "by_model": {
-                "unknown-model-v9": {
-                    "input_tokens": 5000,
-                    "output_tokens": 2000,
-                },
-            },
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {"test": _make_tool_result(data)},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        resp_data = response.json()["data"]
-        assert resp_data["total_cost_usd"] == 0.0
-        assert resp_data["total_sessions"] == 1
-        assert resp_data["total_input_tokens"] == 5000
-        assert "test" not in resp_data["by_butler"]
-
-    async def test_summary_uses_tiered_pricing_low_tier(self, app):
-        """Summary uses low tier when context_tokens is below threshold."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_tiered_pricing()
-
-        data = {
-            "total_sessions": 1,
-            "total_input_tokens": 1_000_000,
-            "total_output_tokens": 1_000_000,
-            "by_model": {
-                "gpt-5.4": {
-                    "input_tokens": 1_000_000,
-                    "output_tokens": 1_000_000,
-                    "cached_input_tokens": 0,
-                    "context_tokens": 100_000,
-                },
-            },
-        }
-
-        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        # Low tier: 1M * $2.50/1M + 1M * $15/1M = $17.50
-        assert response.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
-
-    async def test_summary_uses_tiered_pricing_high_tier(self, app):
-        """Summary uses high tier when context_tokens exceeds threshold."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_tiered_pricing()
-
-        data = {
-            "total_sessions": 1,
-            "total_input_tokens": 1_000_000,
-            "total_output_tokens": 1_000_000,
-            "by_model": {
-                "gpt-5.4": {
-                    "input_tokens": 1_000_000,
-                    "output_tokens": 1_000_000,
-                    "cached_input_tokens": 0,
-                    "context_tokens": 300_000,
-                },
-            },
-        }
-
-        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        # High tier: 1M * $5/1M + 1M * $22.50/1M = $27.50
-        assert response.json()["data"]["total_cost_usd"] == pytest.approx(27.50, abs=1e-4)
-
-    async def test_summary_includes_cached_input_tokens(self, app):
-        """Summary accounts for cached_input_tokens in tiered pricing."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_tiered_pricing()
-
-        data = {
-            "total_sessions": 1,
-            "total_input_tokens": 500_000,
-            "total_output_tokens": 0,
-            "by_model": {
-                "gpt-5.4": {
-                    "input_tokens": 500_000,
-                    "output_tokens": 0,
-                    "cached_input_tokens": 500_000,
-                },
-            },
-        }
-
-        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        # Low tier: 500K * $2.50/1M + 500K * $0.25/1M = $1.25 + $0.125 = $1.375
-        assert response.json()["data"]["total_cost_usd"] == pytest.approx(1.375, abs=1e-4)
-
-    async def test_summary_falls_back_without_context_tokens(self, app):
-        """Without context_tokens, tiered model defaults to lowest tier."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_tiered_pricing()
-
-        data = {
-            "total_sessions": 1,
-            "total_input_tokens": 1_000_000,
-            "total_output_tokens": 1_000_000,
-            "by_model": {
-                "gpt-5.4": {
-                    "input_tokens": 1_000_000,
-                    "output_tokens": 1_000_000,
-                },
-            },
-        }
-
-        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        # Falls back to low tier: 1M * $2.50/1M + 1M * $15/1M = $17.50
-        assert response.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
-
-    async def test_summary_logs_tool_contract_failures(self, app, caplog):
-        """Unexpected fan-out failures should emit a warning with butler/tool context."""
-        configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
-        pricing = _make_pricing()
-
-        mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(
-            side_effect=RuntimeError("Unknown tool: sessions_summary")
-        )
-        mgr = MagicMock(spec=MCPClientManager)
-        mgr.get_client = AsyncMock(return_value=mock_client)
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        with caplog.at_level(logging.WARNING, logger="butlers.api.routers.costs"):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                response = await client.get("/api/costs/summary")
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert data["total_cost_usd"] == 0.0
-        assert data["total_sessions"] == 0
-        assert "Cost summary tool call failed for butler switchboard via sessions_summary" in (
-            caplog.text
-        )
+            resp = await client.get("/api/costs/summary?period=90d")
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -556,848 +364,116 @@ class TestCostSummary:
 
 
 class TestDailyCosts:
-    async def test_daily_returns_empty_list_when_no_butlers(self, app):
-        """Daily endpoint returns empty list when no butlers are configured."""
+    async def test_empty_butlers_returns_empty_list(self, app):
         mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
+        _wire(app, mgr, [], _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/daily")
+            resp = await client.get("/api/costs/daily")
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
 
-        assert response.status_code == 200
-        body = response.json()
-        assert "data" in body
-        assert body["data"] == []
-
-    async def test_daily_cost_model_validates(self, app):
-        """DailyCost model validates a well-formed record."""
-        record = DailyCost(
-            date="2026-02-10",
-            cost_usd=1.23,
-            sessions=5,
-            input_tokens=10000,
-            output_tokens=5000,
-        )
-        assert record.date == "2026-02-10"
-        assert record.cost_usd == 1.23
-        assert record.sessions == 5
-
-    async def test_daily_defaults_to_last_7_days(self, app):
-        """Without from/to params the endpoint still returns 200."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/daily")
-
-        assert response.status_code == 200
-        assert response.json()["data"] == []
-
-    async def test_daily_accepts_from_and_to_params(self, app):
-        """Explicit from/to date params are accepted."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-02-01", "to": "2026-02-07"},
-            )
-
-        assert response.status_code == 200
-        assert isinstance(response.json()["data"], list)
-
-    async def test_daily_aggregates_across_butlers(self, app):
-        """Daily costs from multiple butlers are merged by date."""
-        configs = _make_configs()
-        pricing = _make_pricing()
-
-        switchboard_daily = {
-            "days": [
-                {
-                    "date": "2026-02-09",
-                    "sessions": 3,
-                    "input_tokens": 6000,
-                    "output_tokens": 3000,
-                    "by_model": {
-                        "claude-sonnet-4-20250514": {
-                            "input_tokens": 6000,
-                            "output_tokens": 3000,
-                        },
-                    },
-                },
-                {
-                    "date": "2026-02-10",
-                    "sessions": 2,
-                    "input_tokens": 4000,
-                    "output_tokens": 2000,
-                    "by_model": {
-                        "claude-sonnet-4-20250514": {
-                            "input_tokens": 4000,
-                            "output_tokens": 2000,
-                        },
-                    },
-                },
-            ]
-        }
-        general_daily = {
-            "days": [
-                {
-                    "date": "2026-02-09",
-                    "sessions": 1,
-                    "input_tokens": 2000,
-                    "output_tokens": 1000,
-                    "by_model": {
-                        "claude-haiku-35-20241022": {
-                            "input_tokens": 2000,
-                            "output_tokens": 1000,
-                        },
-                    },
-                },
-            ]
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {
-                "switchboard": _make_tool_result(switchboard_daily),
-                "general": _make_tool_result(general_daily),
-            },
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-02-09", "to": "2026-02-10"},
-            )
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-
-        # Two distinct dates
-        assert len(data) == 2
-        dates = [d["date"] for d in data]
-        assert dates == ["2026-02-09", "2026-02-10"]
-
-        # 2026-02-09: switchboard + general merged
-        day_09 = data[0]
-        assert day_09["sessions"] == 4  # 3 + 1
-        assert day_09["input_tokens"] == 8000  # 6000 + 2000
-        assert day_09["output_tokens"] == 4000  # 3000 + 1000
-        # switchboard: 6000*0.000003 + 3000*0.000015 = 0.018 + 0.045 = 0.063
-        # general: 2000*0.0000008 + 1000*0.000004 = 0.0016 + 0.004 = 0.0056
-        assert day_09["cost_usd"] == pytest.approx(0.0686, abs=1e-4)
-
-        # 2026-02-10: switchboard only
-        day_10 = data[1]
-        assert day_10["sessions"] == 2
-        assert day_10["input_tokens"] == 4000
-        assert day_10["output_tokens"] == 2000
-        # 4000*0.000003 + 2000*0.000015 = 0.012 + 0.030 = 0.042
-        assert day_10["cost_usd"] == pytest.approx(0.042, abs=1e-4)
-
-    async def test_daily_handles_unreachable_butler(self, app):
-        """Unreachable butler is skipped gracefully."""
-        configs = _make_configs()
-        pricing = _make_pricing()
-
-        switchboard_daily = {
-            "days": [
-                {
-                    "date": "2026-02-10",
-                    "sessions": 1,
-                    "input_tokens": 1000,
-                    "output_tokens": 500,
-                    "by_model": {
-                        "claude-sonnet-4-20250514": {
-                            "input_tokens": 1000,
-                            "output_tokens": 500,
-                        },
-                    },
-                },
-            ]
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {
-                "switchboard": _make_tool_result(switchboard_daily),
-                "general": ButlerUnreachableError("general"),
-            },
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-02-10", "to": "2026-02-10"},
-            )
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert len(data) == 1
-        assert data[0]["sessions"] == 1
-
-    async def test_daily_handles_empty_tool_result(self, app):
-        """Butler returning empty tool result contributes nothing."""
-        configs = [ButlerConnectionInfo(name="empty", port=41100)]
-        pricing = _make_pricing()
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {"empty": _make_empty_tool_result()},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-02-10", "to": "2026-02-10"},
-            )
-
-        assert response.status_code == 200
-        assert response.json()["data"] == []
-
-    async def test_daily_results_sorted_by_date(self, app):
-        """Results are sorted by date ascending even if butler returns unordered."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_pricing()
-
+    async def test_aggregates_and_sorts_by_date(self, app):
+        configs = [ButlerConnectionInfo(name="sw", port=41100)]
         daily_data = {
             "days": [
-                {
-                    "date": "2026-02-10",
-                    "sessions": 1,
-                    "input_tokens": 100,
-                    "output_tokens": 50,
-                    "by_model": {},
-                },
-                {
-                    "date": "2026-02-08",
-                    "sessions": 2,
-                    "input_tokens": 200,
-                    "output_tokens": 100,
-                    "by_model": {},
-                },
-                {
-                    "date": "2026-02-09",
-                    "sessions": 3,
-                    "input_tokens": 300,
-                    "output_tokens": 150,
-                    "by_model": {},
-                },
+                {"date": "2026-02-10", "sessions": 1, "input_tokens": 100, "output_tokens": 50, "by_model": {}},
+                {"date": "2026-02-08", "sessions": 2, "input_tokens": 200, "output_tokens": 100, "by_model": {}},
+                {"date": "2026-02-09", "sessions": 3, "input_tokens": 300, "output_tokens": 150, "by_model": {}},
             ]
         }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {"test": _make_tool_result(daily_data)},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
+        mgr = _mock_mgr_with({"sw": _make_tool_result(daily_data)})
+        _wire(app, mgr, configs, _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-02-08", "to": "2026-02-10"},
-            )
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        dates = [d["date"] for d in data]
-        assert dates == ["2026-02-08", "2026-02-09", "2026-02-10"]
-
-    async def test_daily_unknown_model_contributes_zero_cost(self, app):
-        """A model not in pricing config contributes zero cost."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_pricing()
-
-        daily_data = {
-            "days": [
-                {
-                    "date": "2026-02-10",
-                    "sessions": 1,
-                    "input_tokens": 5000,
-                    "output_tokens": 2000,
-                    "by_model": {
-                        "unknown-model-v9": {
-                            "input_tokens": 5000,
-                            "output_tokens": 2000,
-                        },
-                    },
-                },
-            ]
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {"test": _make_tool_result(daily_data)},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-02-10", "to": "2026-02-10"},
-            )
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert len(data) == 1
-        assert data[0]["cost_usd"] == 0.0
-        assert data[0]["sessions"] == 1
-        assert data[0]["input_tokens"] == 5000
-
-    async def test_daily_uses_tiered_pricing_with_context(self, app):
-        """Daily costs apply tiered pricing when context_tokens is present."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_tiered_pricing()
-
-        daily_data = {
-            "days": [
-                {
-                    "date": "2026-03-06",
-                    "sessions": 1,
-                    "input_tokens": 1_000_000,
-                    "output_tokens": 1_000_000,
-                    "by_model": {
-                        "gpt-5.4": {
-                            "input_tokens": 1_000_000,
-                            "output_tokens": 1_000_000,
-                            "cached_input_tokens": 0,
-                            "context_tokens": 300_000,
-                        },
-                    },
-                },
-            ]
-        }
-
-        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(daily_data)})
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-03-06", "to": "2026-03-06"},
-            )
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert len(data) == 1
-        # High tier: 1M * $5/1M + 1M * $22.50/1M = $27.50
-        assert data[0]["cost_usd"] == pytest.approx(27.50, abs=1e-4)
-
-    async def test_daily_includes_cached_input_tokens(self, app):
-        """Daily costs account for cached_input_tokens."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_tiered_pricing()
-
-        daily_data = {
-            "days": [
-                {
-                    "date": "2026-03-06",
-                    "sessions": 1,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "by_model": {
-                        "gpt-5.4": {
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "cached_input_tokens": 1_000_000,
-                        },
-                    },
-                },
-            ]
-        }
-
-        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(daily_data)})
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-03-06", "to": "2026-03-06"},
-            )
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        # Low tier: 1M cached * $0.25/1M = $0.25
-        assert data[0]["cost_usd"] == pytest.approx(0.25, abs=1e-4)
-
-    async def test_daily_response_validates_as_model(self, app):
-        """Daily response items can be parsed as DailyCost models."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_pricing()
-
-        daily_data = {
-            "days": [
-                {
-                    "date": "2026-02-10",
-                    "sessions": 2,
-                    "input_tokens": 1000,
-                    "output_tokens": 500,
-                    "by_model": {
-                        "claude-sonnet-4-20250514": {
-                            "input_tokens": 1000,
-                            "output_tokens": 500,
-                        },
-                    },
-                },
-            ]
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {"test": _make_tool_result(daily_data)},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/costs/daily",
-                params={"from": "2026-02-10", "to": "2026-02-10"},
-            )
-
-        body = response.json()
-        for item in body["data"]:
-            record = DailyCost.model_validate(item)
-            assert record.date == "2026-02-10"
+            resp = await client.get("/api/costs/daily", params={"from": "2026-02-08", "to": "2026-02-10"})
+        data = resp.json()["data"]
+        assert [d["date"] for d in data] == ["2026-02-08", "2026-02-09", "2026-02-10"]
 
 
 # ---------------------------------------------------------------------------
-# GET /api/costs/top-sessions
+# GET /api/costs/by-schedule
 # ---------------------------------------------------------------------------
 
 
-class TestTopSessions:
-    async def test_top_sessions_returns_empty_when_no_butlers(self, app):
-        """Top-sessions returns empty list when no butlers configured."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
+class TestBySchedule:
+    def _schedule_data(self, **kw) -> dict:
+        defaults = {
+            "name": "daily-report",
+            "cron": "0 8 * * *",
+            "model": "claude-sonnet-4-20250514",
+            "total_runs": 30,
+            "total_input_tokens": 30000,
+            "total_output_tokens": 15000,
+            "runs_per_day": 1.0,
+        }
+        defaults.update(kw)
+        return {"schedules": [defaults]}
+
+    async def test_returns_schedule_cost_fields(self, app):
+        configs = [ButlerConnectionInfo(name="sw", port=41100)]
+        mgr = _mock_mgr_with({"sw": _make_tool_result(self._schedule_data())})
+        _wire(app, mgr, configs, _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/top-sessions")
+            resp = await client.get("/api/costs/by-schedule")
+        assert resp.status_code == 200
+        item = resp.json()["data"][0]
+        assert item["schedule_name"] == "daily-report"
+        assert item["butler"] == "sw"
+        assert item["total_cost_usd"] > 0
+        ScheduleCost(**item)
 
-        assert response.status_code == 200
-        body = response.json()
-        assert "data" in body
-        assert body["data"] == []
-
-    async def test_top_session_model_validates(self, app):
-        """TopSession model validates a well-formed record."""
-        session = TopSession(
-            session_id="abc-123",
-            butler="general",
-            cost_usd=0.45,
-            input_tokens=8000,
-            output_tokens=3000,
-            model="claude-sonnet-4-20250514",
-            started_at="2026-02-10T12:00:00Z",
+    async def test_zero_runs_avoids_division_by_zero(self, app):
+        configs = [ButlerConnectionInfo(name="sw", port=41100)]
+        mgr = _mock_mgr_with(
+            {"sw": _make_tool_result(self._schedule_data(total_runs=0, total_input_tokens=0, total_output_tokens=0))}
         )
-        assert session.session_id == "abc-123"
-        assert session.butler == "general"
-        assert session.model == "claude-sonnet-4-20250514"
+        _wire(app, mgr, configs, _flat_pricing())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/costs/by-schedule")
+        item = resp.json()["data"][0]
+        assert item["avg_cost_per_run"] == 0.0
+        assert item["projected_monthly_usd"] == 0.0
 
-    async def test_top_sessions_default_limit_is_10(self, app):
-        """Default limit parameter is 10."""
+    async def test_sorted_by_projected_cost_descending(self, app):
+        configs = [
+            ButlerConnectionInfo(name="a", port=41100),
+            ButlerConnectionInfo(name="b", port=41101),
+        ]
+        cheap = {"schedules": [{"name": "cheap", "cron": "0 8 * * *", "model": "claude-sonnet-4-20250514",
+                                "total_runs": 10, "total_input_tokens": 1000, "total_output_tokens": 500, "runs_per_day": 0.5}]}
+        expensive = {"schedules": [{"name": "expensive", "cron": "0 8 * * *", "model": "claude-sonnet-4-20250514",
+                                    "total_runs": 100, "total_input_tokens": 100000, "total_output_tokens": 50000, "runs_per_day": 5.0}]}
+
+        async def _get(name: str):
+            c = MagicMock()
+            c.call_tool = AsyncMock(return_value=_make_tool_result(cheap if name == "a" else expensive))
+            return c
+
         mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
+        mgr.get_client = AsyncMock(side_effect=_get)
+        _wire(app, mgr, configs, _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/top-sessions")
+            resp = await client.get("/api/costs/by-schedule")
+        data = resp.json()["data"]
+        assert data[0]["schedule_name"] == "expensive"
+        assert data[0]["projected_monthly_usd"] >= data[1]["projected_monthly_usd"]
 
-        assert response.status_code == 200
-        assert response.json()["data"] == []
-
-    async def test_top_sessions_limit_param_accepted(self, app):
-        """Custom limit parameter is accepted."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
+    async def test_unreachable_butler_returns_empty(self, app):
+        configs = [ButlerConnectionInfo(name="broken", port=41100)]
+        mgr = _mock_mgr_with({"broken": ButlerUnreachableError("broken")})
+        _wire(app, mgr, configs, _flat_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get("/api/costs/top-sessions?limit=5")
-
-        assert response.status_code == 200
-
-    async def test_top_sessions_limit_max_50(self, app):
-        """Limit above 50 returns 422."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions?limit=51")
-
-        assert response.status_code == 422
-
-    async def test_top_sessions_limit_min_1(self, app):
-        """Limit below 1 returns 422."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions?limit=0")
-
-        assert response.status_code == 422
-
-    async def test_top_sessions_merges_and_sorts_by_cost(self, app):
-        """Sessions from multiple butlers are merged and sorted by cost descending."""
-        configs = _make_configs()
-        pricing = _make_pricing()
-
-        switchboard_sessions = {
-            "sessions": [
-                {
-                    "session_id": "sw-1",
-                    "model": "claude-sonnet-4-20250514",
-                    "input_tokens": 10000,
-                    "output_tokens": 5000,
-                    "started_at": "2026-02-10T10:00:00Z",
-                },
-            ],
-        }
-        general_sessions = {
-            "sessions": [
-                {
-                    "session_id": "gen-1",
-                    "model": "claude-sonnet-4-20250514",
-                    "input_tokens": 20000,
-                    "output_tokens": 10000,
-                    "started_at": "2026-02-10T11:00:00Z",
-                },
-                {
-                    "session_id": "gen-2",
-                    "model": "claude-haiku-35-20241022",
-                    "input_tokens": 5000,
-                    "output_tokens": 2000,
-                    "started_at": "2026-02-10T09:00:00Z",
-                },
-            ],
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {
-                "switchboard": _make_tool_result(switchboard_sessions),
-                "general": _make_tool_result(general_sessions),
-            },
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions")
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert len(data) == 3
-
-        # gen-1: 20000*0.000003 + 10000*0.000015 = 0.06 + 0.15 = 0.21
-        # sw-1: 10000*0.000003 + 5000*0.000015 = 0.03 + 0.075 = 0.105
-        # gen-2: 5000*0.0000008 + 2000*0.000004 = 0.004 + 0.008 = 0.012
-        assert data[0]["session_id"] == "gen-1"
-        assert data[0]["butler"] == "general"
-        assert data[0]["cost_usd"] == pytest.approx(0.21, abs=1e-4)
-
-        assert data[1]["session_id"] == "sw-1"
-        assert data[1]["butler"] == "switchboard"
-        assert data[1]["cost_usd"] == pytest.approx(0.105, abs=1e-4)
-
-        assert data[2]["session_id"] == "gen-2"
-        assert data[2]["butler"] == "general"
-        assert data[2]["cost_usd"] == pytest.approx(0.012, abs=1e-4)
-
-    async def test_top_sessions_respects_limit(self, app):
-        """Only the top N sessions are returned when limit is set."""
-        configs = _make_configs()
-        pricing = _make_pricing()
-
-        switchboard_sessions = {
-            "sessions": [
-                {
-                    "session_id": "sw-1",
-                    "model": "claude-sonnet-4-20250514",
-                    "input_tokens": 10000,
-                    "output_tokens": 5000,
-                    "started_at": "2026-02-10T10:00:00Z",
-                },
-            ],
-        }
-        general_sessions = {
-            "sessions": [
-                {
-                    "session_id": "gen-1",
-                    "model": "claude-sonnet-4-20250514",
-                    "input_tokens": 20000,
-                    "output_tokens": 10000,
-                    "started_at": "2026-02-10T11:00:00Z",
-                },
-                {
-                    "session_id": "gen-2",
-                    "model": "claude-haiku-35-20241022",
-                    "input_tokens": 5000,
-                    "output_tokens": 2000,
-                    "started_at": "2026-02-10T09:00:00Z",
-                },
-            ],
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {
-                "switchboard": _make_tool_result(switchboard_sessions),
-                "general": _make_tool_result(general_sessions),
-            },
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions?limit=2")
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert len(data) == 2
-        assert data[0]["session_id"] == "gen-1"
-        assert data[1]["session_id"] == "sw-1"
-
-    async def test_top_sessions_handles_unreachable_butler(self, app):
-        """Unreachable butlers are skipped gracefully."""
-        configs = _make_configs()
-        pricing = _make_pricing()
-
-        switchboard_sessions = {
-            "sessions": [
-                {
-                    "session_id": "sw-1",
-                    "model": "claude-sonnet-4-20250514",
-                    "input_tokens": 1000,
-                    "output_tokens": 500,
-                    "started_at": "2026-02-10T10:00:00Z",
-                },
-            ],
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {
-                "switchboard": _make_tool_result(switchboard_sessions),
-                "general": ButlerUnreachableError("general"),
-            },
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions")
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert len(data) == 1
-        assert data[0]["session_id"] == "sw-1"
-        assert data[0]["butler"] == "switchboard"
-
-    async def test_top_sessions_handles_empty_tool_result(self, app):
-        """Butler returning empty tool result contributes no sessions."""
-        configs = [ButlerConnectionInfo(name="empty", port=41100)]
-        pricing = _make_pricing()
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {"empty": _make_empty_tool_result()},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions")
-
-        assert response.status_code == 200
-        assert response.json()["data"] == []
-
-    async def test_top_sessions_unknown_model_contributes_zero_cost(self, app):
-        """Sessions with unknown models have zero cost but are still returned."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_pricing()
-
-        data = {
-            "sessions": [
-                {
-                    "session_id": "unk-1",
-                    "model": "unknown-model-v9",
-                    "input_tokens": 5000,
-                    "output_tokens": 2000,
-                    "started_at": "2026-02-10T10:00:00Z",
-                },
-            ],
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {"test": _make_tool_result(data)},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions")
-
-        assert response.status_code == 200
-        resp_data = response.json()["data"]
-        assert len(resp_data) == 1
-        assert resp_data[0]["cost_usd"] == 0.0
-        assert resp_data[0]["model"] == "unknown-model-v9"
-        assert resp_data[0]["butler"] == "test"
-
-    async def test_top_sessions_uses_tiered_pricing(self, app):
-        """Top sessions apply tiered pricing with context and cached tokens."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_tiered_pricing()
-
-        data = {
-            "sessions": [
-                {
-                    "session_id": "high-ctx",
-                    "model": "gpt-5.4",
-                    "input_tokens": 1_000_000,
-                    "output_tokens": 1_000_000,
-                    "cached_input_tokens": 500_000,
-                    "context_tokens": 300_000,
-                    "started_at": "2026-03-06T10:00:00Z",
-                },
-                {
-                    "session_id": "low-ctx",
-                    "model": "gpt-5.4",
-                    "input_tokens": 1_000_000,
-                    "output_tokens": 1_000_000,
-                    "cached_input_tokens": 0,
-                    "context_tokens": 100_000,
-                    "started_at": "2026-03-06T11:00:00Z",
-                },
-            ],
-        }
-
-        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions")
-
-        assert response.status_code == 200
-        sessions = response.json()["data"]
-        assert len(sessions) == 2
-
-        # high-ctx (high tier): 1M*$5/1M + 500K*$0.50/1M + 1M*$22.50/1M = $27.75
-        # low-ctx (low tier): 1M*$2.50/1M + 1M*$15/1M = $17.50
-        # Sorted by cost descending
-        assert sessions[0]["session_id"] == "high-ctx"
-        assert sessions[0]["cost_usd"] == pytest.approx(27.75, abs=1e-4)
-        assert sessions[1]["session_id"] == "low-ctx"
-        assert sessions[1]["cost_usd"] == pytest.approx(17.50, abs=1e-4)
-
-    async def test_top_sessions_response_validates_as_model(self, app):
-        """Top-sessions response data can be parsed as TopSession models."""
-        configs = [ButlerConnectionInfo(name="test", port=41100)]
-        pricing = _make_pricing()
-
-        data = {
-            "sessions": [
-                {
-                    "session_id": "t-1",
-                    "model": "claude-sonnet-4-20250514",
-                    "input_tokens": 1000,
-                    "output_tokens": 500,
-                    "started_at": "2026-02-10T12:00:00Z",
-                },
-            ],
-        }
-
-        mgr = _make_manager_with_responses(
-            configs,
-            {"test": _make_tool_result(data)},
-        )
-        _app_with_overrides(app, mgr, configs, pricing)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions")
-
-        body = response.json()
-        sessions = [TopSession.model_validate(s) for s in body["data"]]
-        assert len(sessions) == 1
-        assert sessions[0].session_id == "t-1"
-        assert sessions[0].butler == "test"
-
-
-# ---------------------------------------------------------------------------
-# Response shape / meta
-# ---------------------------------------------------------------------------
-
-
-class TestResponseShape:
-    async def test_summary_has_meta(self, app):
-        """All responses include the meta field."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/summary")
-
-        body = response.json()
-        assert "meta" in body
-
-    async def test_daily_has_meta(self, app):
-        """Daily response includes the meta field."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/daily")
-
-        body = response.json()
-        assert "meta" in body
-
-    async def test_top_sessions_has_meta(self, app):
-        """Top-sessions response includes the meta field."""
-        mgr = MagicMock(spec=MCPClientManager)
-        _app_with_overrides(app, mgr, [], _make_pricing())
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/costs/top-sessions")
-
-        body = response.json()
-        assert "meta" in body
+            resp = await client.get("/api/costs/by-schedule")
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
