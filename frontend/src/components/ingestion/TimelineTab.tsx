@@ -216,11 +216,26 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
 // LineageView — shows sessions and rollup for one expanded event
 // ---------------------------------------------------------------------------
 
-interface LineageViewProps {
-  requestId: string;
+/** Human-readable explanation for why an event was not processed. */
+function triageExplanation(decision: string | null | undefined): string | null {
+  switch (decision) {
+    case "metadata_only":
+      return "Metadata-only ingestion — full content was not stored and no LLM session was spawned.";
+    case "skip":
+      return "Skipped by ingestion policy — this event matched a filter rule.";
+    case "low_priority_queue":
+      return "Queued as low-priority — session may be deferred.";
+    default:
+      return null;
+  }
 }
 
-function LineageView({ requestId }: LineageViewProps) {
+interface LineageViewProps {
+  requestId: string;
+  triageDecision?: string | null;
+}
+
+function LineageView({ requestId, triageDecision }: LineageViewProps) {
   const { sessions, rollup } = useIngestionEventLineage(requestId, {
     enabled: true,
   });
@@ -248,9 +263,12 @@ function LineageView({ requestId }: LineageViewProps) {
   }
 
   if (sessionList.length === 0) {
+    const explanation = triageExplanation(triageDecision);
     return (
       <p className="px-4 pb-4 text-sm text-muted-foreground">
-        No downstream sessions found for this event.
+        {explanation
+          ? `Not processed: ${explanation}`
+          : "No downstream sessions found for this event."}
       </p>
     );
   }
@@ -503,7 +521,7 @@ function EventRow({ event, isExpanded, onToggle, onOptimisticUpdate }: EventRowP
       {isExpanded && expandable && (
         <TableRow>
           <TableCell colSpan={TOTAL_COLS} className="p-0">
-            <LineageView requestId={event.id} />
+            <LineageView requestId={event.id} triageDecision={event.triage_decision} />
           </TableCell>
         </TableRow>
       )}
