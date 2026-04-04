@@ -371,3 +371,68 @@ class TestListButlersEndpoint:
 
         for butler in body["data"]:
             assert butler["status"] == "down"
+
+    async def test_type_field_included_in_response(self, app):
+        """Response includes type field from ButlerConnectionInfo."""
+        configs = [
+            ButlerConnectionInfo(name="general", port=41101, description="Butler", type="butler"),
+            ButlerConnectionInfo(
+                name="switchboard", port=41100, description="Staffer", type="staffer"
+            ),
+        ]
+        mock_client = _make_mock_client()
+
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(return_value=mock_client)
+
+        app.dependency_overrides.update(
+            {
+                __import__(
+                    "butlers.api.deps", fromlist=["get_mcp_manager"]
+                ).get_mcp_manager: lambda: mgr,
+                __import__(
+                    "butlers.api.deps", fromlist=["get_butler_configs"]
+                ).get_butler_configs: lambda: configs,
+            }
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers")
+
+        assert response.status_code == 200
+        body = response.json()
+        by_name = {b["name"]: b for b in body["data"]}
+        assert by_name["general"]["type"] == "butler"
+        assert by_name["switchboard"]["type"] == "staffer"
+
+    async def test_type_defaults_to_butler(self, app):
+        """When type is not set, it defaults to 'butler'."""
+        configs = [
+            ButlerConnectionInfo(name="general", port=41101),  # no type set
+        ]
+        mock_client = _make_mock_client()
+
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(return_value=mock_client)
+
+        app.dependency_overrides.update(
+            {
+                __import__(
+                    "butlers.api.deps", fromlist=["get_mcp_manager"]
+                ).get_mcp_manager: lambda: mgr,
+                __import__(
+                    "butlers.api.deps", fromlist=["get_butler_configs"]
+                ).get_butler_configs: lambda: configs,
+            }
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"][0]["type"] == "butler"

@@ -304,3 +304,50 @@ class TestGetButlerDetail:
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["modules"] == []
+
+    async def test_type_field_butler(self, roster_dir):
+        """Detail response includes type='butler' for a regular butler."""
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
+        mgr = make_mock_mcp_manager(online=True)
+        app = make_test_app(roster_dir, configs, mgr)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers/general")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["type"] == "butler"
+
+    async def test_type_field_staffer(self, roster_dir):
+        """Detail response includes type='staffer' when butler.toml has type='staffer'."""
+        toml_content = (
+            "[butler]\n"
+            'name = "infra"\n'
+            "port = 41110\n"
+            'description = "Infrastructure staffer"\n'
+            'type = "staffer"\n'
+            "\n[butler.db]\n"
+            'name = "butlers"\n'
+            'schema = "infra"\n'
+            "\n[runtime]\n"
+            'type = "claude"\n'
+        )
+        staffer_dir = roster_dir / "infra"
+        staffer_dir.mkdir(parents=True, exist_ok=True)
+        (staffer_dir / "butler.toml").write_text(toml_content)
+
+        configs = [ButlerConnectionInfo("infra", 41110)]
+        mgr = make_mock_mcp_manager(online=True)
+        app = make_test_app(roster_dir, configs, mgr)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers/infra")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["type"] == "staffer"

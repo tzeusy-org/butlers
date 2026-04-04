@@ -805,6 +805,43 @@ class TestFullDiscoveryFlow:
         # These butlers should exist in the repo roster
         assert "switchboard" in names or "general" in names
 
+    def test_discovery_captures_type_default(self, tmp_path: Path):
+        """Butlers without an explicit type default to 'butler'."""
+        make_butler_dir(tmp_path, "mybutler", 9500)
+
+        results = discover_butlers(tmp_path)
+
+        assert len(results) == 1
+        assert results[0].type == "butler"
+
+    def test_discovery_captures_staffer_type(self, tmp_path: Path):
+        """Butlers with type='staffer' have type captured correctly."""
+        make_butler_dir(
+            tmp_path,
+            "router",
+            9501,
+            extra_toml="",
+        )
+        # Override the butler.toml with a staffer type
+        toml_content = (
+            "[butler]\n"
+            'name = "router"\n'
+            "port = 9501\n"
+            'description = "Router"\n'
+            'type = "staffer"\n'
+            "\n[butler.db]\n"
+            'name = "butlers"\n'
+            'schema = "router"\n'
+            "\n[runtime]\n"
+            'type = "claude"\n'
+        )
+        (tmp_path / "router" / "butler.toml").write_text(toml_content)
+
+        results = discover_butlers(tmp_path)
+
+        assert len(results) == 1
+        assert results[0].type == "staffer"
+
 
 # ---------------------------------------------------------------------------
 # Cross-cutting: response envelope shape
